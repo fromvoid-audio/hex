@@ -218,7 +218,12 @@ pub(crate) fn exercise(
         assert!(view.midi_recorder.mode == Mode::Interrupted);
         assert!(view.midi_recorder.blocks_edits());
         assert!(view.midi_recorder.pending_commit.is_none());
-        assert!(view.error.as_ref().unwrap().contains("receiptpressure"));
+        assert!(
+            view.error
+                .as_ref()
+                .unwrap()
+                .contains("recording events arrived faster than they could be saved")
+        );
         let notes = view.midi_recorder.take.as_ref().unwrap().notes();
         assert_eq!(notes.len(), 512);
         let first = notes[0].start_frame;

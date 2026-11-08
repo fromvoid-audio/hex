@@ -52,6 +52,7 @@ struct WaveformGeometryKey {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum WaveformMappingKey {
+    MusicalEvent(super::audio_event_editor::MusicalEventWaveform),
     Stretch(Arc<super::waveform_stretch::StretchProjection>),
     Loop(Arc<super::waveform_loop::LoopProjection>),
     Prepared {
@@ -109,6 +110,7 @@ pub(super) struct RenderedWaveformSample {
 #[cfg(all(test, feature = "ui-test-support"))]
 #[derive(Clone, Copy, Debug)]
 pub(super) struct WaveformPaintSample {
+    pub(super) colors: hex_widgets::WaveformColors,
     pub(super) bounds: Bounds<Pixels>,
     pub(super) mask: Bounds<Pixels>,
     pub(super) ordinates: [(f32, f32); 2],
@@ -184,6 +186,7 @@ impl WaveformGeometryCache {
         bounds: Bounds<Pixels>,
         mask: Bounds<Pixels>,
         geometry: &WaveformGeometry,
+        colors: hex_widgets::WaveformColors,
     ) {
         let _navigation_timer = super::navigation_metrics::Timer::start(
             super::navigation_metrics::Stage::PaintObservation,
@@ -192,6 +195,7 @@ impl WaveformGeometryCache {
             self.painted.pop_front();
         }
         self.painted.push_back(WaveformPaintSample {
+            colors,
             bounds,
             mask,
             ordinates: std::array::from_fn(|channel| {
@@ -259,6 +263,7 @@ impl WaveformGeometryCache {
 
 #[derive(Clone)]
 pub(super) enum WaveformMapping {
+    MusicalEvent(super::audio_event_editor::MusicalEventWaveform),
     Stretch(Arc<super::waveform_stretch::StretchProjection>),
     Loop(Arc<super::waveform_loop::LoopProjection>),
     Prepared {
@@ -451,6 +456,9 @@ fn waveform_geometry_key(
     scale: f32,
 ) -> WaveformGeometryKey {
     let mapping = match mapping {
+        WaveformMapping::MusicalEvent(projection) => {
+            WaveformMappingKey::MusicalEvent(projection.clone())
+        }
         WaveformMapping::Stretch(projection) => WaveformMappingKey::Stretch(Arc::clone(projection)),
         WaveformMapping::Loop(projection) => WaveformMappingKey::Loop(Arc::clone(projection)),
         WaveformMapping::Prepared {
@@ -552,6 +560,7 @@ pub(super) fn prepare_waveform_geometry(
         return None;
     }
     let gain = match mapping {
+        WaveformMapping::MusicalEvent(projection) => projection.gain().linear(),
         WaveformMapping::Stretch(projection) => projection.gain().linear(),
         WaveformMapping::Loop(projection) => projection.gain().linear(),
         WaveformMapping::Clip { clip, .. } => clip.gain().linear(),
@@ -573,6 +582,10 @@ pub(super) fn prepare_waveform_geometry(
             .saturating_add(fraction_u64(frames, column + 1, grid.columns))
             .max(start.saturating_add(1));
         let peaks = match mapping {
+            WaveformMapping::MusicalEvent(projection) => {
+                let ranges = projection.ranges(start..end, waveform.source_frames);
+                aggregate_ranges(waveform, ranges.as_slice())
+            }
             WaveformMapping::Loop(projection) => projection.peaks(waveform, start..end),
             WaveformMapping::Stretch(projection) => {
                 let ranges = projection.ranges(start..end, waveform.source_frames);
@@ -591,7 +604,14 @@ pub(super) fn prepare_waveform_geometry(
                 let available = waveform.source_frames as i128;
                 let start = (i128::from(start) + translation).clamp(0, available) as usize;
                 let end = (i128::from(end) + translation).clamp(0, available) as usize;
-                aggregate_peaks(waveform, start, end)
+                if waveform.is_repeated() {
+                    let budget = (4_194_304 / grid.columns).min(4_096);
+                    waveform
+                        .bounded_exact_peaks_for_frames(start, end, budget)
+                        .or_else(|| aggregate_peaks(waveform, start, end))
+                } else {
+                    aggregate_peaks(waveform, start, end)
+                }
             }
             WaveformMapping::Clip {
                 clip,
@@ -785,6 +805,107 @@ mod tests {
             )
             .expect("waveform geometry"),
         )
+    }
+
+    #[test]
+    #[ignore = "manual release profile of repeated waveform geometry"]
+    fn profile_repeated_prepared_waveform() {
+        use std::time::Instant;
+        let mut samples = vec![[0.0, 0.0]; 16_000];
+        samples[2_010] = [1.0, 1.0];
+        let audio = hex_engine::Audio::new(48_000, samples).unwrap();
+        let waveform = hex_media::waveform::summarize_repeated(
+            &audio,
+            hex_media::waveform::Repeat {
+                offset: 0,
+                period: 16_000,
+                phase: 0,
+            },
+            1_600_000,
+            1_024,
+        )
+        .unwrap();
+        let mapping = WaveformMapping::Prepared {
+            timeline_origin: 0,
+            root_offset: 0,
+            gain: hex_project::ClipGain::UNITY,
+        };
+        let extent = Bounds::new(point(px(0.0), px(0.0)), size(px(1000.0), px(100.0)));
+        let mut times = Vec::with_capacity(100);
+        for pass in 0..110 {
+            let start = Instant::now();
+            std::hint::black_box(
+                prepare_waveform_geometry(&waveform, &mapping, 0, 80_000, extent, 1000, None)
+                    .unwrap(),
+            );
+            let elapsed = start.elapsed().as_nanos();
+            if pass >= 10 {
+                times.push(elapsed);
+            }
+        }
+        times.sort_unstable();
+        eprintln!(
+            "repeated waveform 1000 columns/5 cycles: p50={}ns p95={}ns",
+            times[50], times[95]
+        );
+    }
+
+    #[test]
+    fn repeated_prepared_waveform_keeps_transients_in_their_visible_columns() {
+        let mut samples = vec![[0.0, 0.0]; 16_000];
+        samples[2_010] = [1.0, 1.0];
+        let audio = hex_engine::Audio::new(48_000, samples).unwrap();
+        let repeated = hex_media::waveform::summarize_repeated(
+            &audio,
+            hex_media::waveform::Repeat {
+                offset: 0,
+                period: 16_000,
+                phase: 0,
+            },
+            1_600_000,
+            1_024,
+        )
+        .unwrap();
+        let extent = Bounds::new(point(px(0.0), px(0.0)), size(px(100.0), px(100.0)));
+        for (start, frames_per_column) in [
+            (0_u64, 65_u64),
+            (0, 160),
+            (16_000 * 50, 160),
+            (16_000 * 50, 1_000),
+        ] {
+            let geometry = prepare_waveform_geometry(
+                &repeated,
+                &WaveformMapping::Prepared {
+                    timeline_origin: 0,
+                    root_offset: 0,
+                    gain: hex_project::ClipGain::UNITY,
+                },
+                start,
+                start + 100 * frames_per_column,
+                extent,
+                100,
+                None,
+            )
+            .unwrap();
+            let peaks: Vec<_> = geometry.channels[0].outline[..100]
+                .iter()
+                .enumerate()
+                .filter(|(_, point)| point.y < px(25.0))
+                .map(|(i, _)| i)
+                .collect();
+            let expected: Vec<_> = (0..100)
+                .filter(|column| {
+                    let a = start + *column * frames_per_column;
+                    let b = a + frames_per_column;
+                    (a..b).any(|frame| frame % 16_000 == 2_010)
+                })
+                .map(|column| column as usize)
+                .collect();
+            assert_eq!(
+                peaks, expected,
+                "start {start}, frames per column {frames_per_column}"
+            );
+        }
     }
 
     #[test]

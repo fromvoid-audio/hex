@@ -42,11 +42,9 @@ fn result(view: &EditorView, now: Instant) -> PublishedProjectSpectrum {
             .map(|i| hex_audio::spectrum::SpectrumFrame {
                 sample_rate_hz: 48_000,
                 bins_dbfs: [-6.0 - i as f32 * 0.25; hex_audio::spectrum::SPECTRUM_BANDS],
+                peak_dbfs: [-6.0 - i as f32 * 0.25; hex_audio::spectrum::SPECTRUM_BANDS],
             })
-            .collect::<Vec<_>>()
-            .into_boxed_slice()
-            .try_into()
-            .unwrap(),
+            .collect(),
     }
 }
 #[gpui::test]
@@ -204,9 +202,13 @@ fn project_spectrum_layers_preserve_all_members_colors_and_clear_replaced_contex
 fn project_spectrum_cancel_narrow_resize_restores_wide_preferred_height(cx: &mut TestAppContext) {
     cx.update(crate::editor::bind_editor_keys);
     let (project, _, _, _) = audio_project();
-    let (handle, _) = editor_window(cx, project, Arc::default());
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    editor.update(cx, |view, cx| {
+        view.project_spectrum.height = 140.0;
+        cx.notify();
+    });
     let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.simulate_resize(size(px(1500.0), px(540.0)));
+    visual.simulate_resize(size(px(1920.0), px(540.0)));
     visual.run_until_parked();
     let original = visual.debug_bounds("project-spectrum").unwrap().size.height;
     visual.simulate_resize(size(px(880.0), px(540.0)));
@@ -223,7 +225,7 @@ fn project_spectrum_cancel_narrow_resize_restores_wide_preferred_height(cx: &mut
         Modifiers::default(),
     );
     visual.simulate_keystrokes("escape");
-    visual.simulate_resize(size(px(1500.0), px(540.0)));
+    visual.simulate_resize(size(px(1920.0), px(540.0)));
     visual.run_until_parked();
     assert_eq!(
         visual.debug_bounds("project-spectrum").unwrap().size.height,
@@ -380,7 +382,7 @@ fn project_spectrum_keeps_workspace_with_populated_details_and_returns(cx: &mut 
 }
 
 #[gpui::test]
-fn project_spectrum_compact_live_header_restores_height_and_keeps_device_details(
+fn reclaimed_top_chrome_keeps_full_spectrum_and_device_details_at_minimum_size(
     cx: &mut TestAppContext,
 ) {
     let (project, _, _, _) = audio_project();
@@ -393,13 +395,11 @@ fn project_spectrum_compact_live_header_restores_height_and_keeps_device_details
     });
     visual.simulate_resize(size(px(880.0), px(540.0)));
     visual.run_until_parked();
-    assert_eq!(
-        visual.debug_bounds("project-spectrum").unwrap().size.height,
-        px(22.0)
-    );
+    let spectrum = visual.debug_bounds("project-spectrum").unwrap();
+    assert!(spectrum.size.height >= px(72.0) && spectrum.size.height <= px(120.0));
     assert!(
         visual.debug_bounds("project-spectrum-plot").is_some(),
-        "compact expanded mode retains live master and every selected layer"
+        "full expanded mode retains live master and every selected layer"
     );
     assert!(
         visual.debug_bounds("clip-detail-viewport").is_none(),
@@ -471,5 +471,53 @@ fn workspace_three_returns_spectrum_resize_preserves_capture(cx: &mut TestAppCon
         editor.read_with(&visual, |v, _| {
             assert_eq!(v.mode, crate::editor::EditorMode::Session)
         });
+    }
+}
+
+#[gpui::test]
+fn browser_and_spectrum_share_columns_in_both_workspaces(cx: &mut TestAppContext) {
+    let (project, _, _, _) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let before = editor.read_with(&visual, |view, _| view.state.as_ref().unwrap().clone());
+    for mode in [
+        crate::editor::EditorMode::Arrangement,
+        crate::editor::EditorMode::Session,
+    ] {
+        for (width, height) in [(880.0, 540.0), (1440.0, 800.0)] {
+            visual.simulate_resize(size(px(width), px(height)));
+            editor.update(&mut visual, |view, cx| {
+                view.set_mode(mode);
+                view.browser.open = true;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            let toolbar = visual.debug_bounds("editor-toolbar").unwrap();
+            let browser = visual.debug_bounds("resize-browser-hit-region").unwrap();
+            let spectrum = visual.debug_bounds("project-spectrum").unwrap();
+            let status = visual.debug_bounds("editor-status-bar").unwrap();
+            assert_eq!(browser.top(), toolbar.bottom());
+            assert_eq!(spectrum.top(), browser.top());
+            assert_eq!(spectrum.left(), browser.right());
+            assert_eq!(browser.bottom(), status.top());
+            assert_eq!(spectrum.right(), status.right());
+            let toggle = visual
+                .debug_bounds("toggle browser · cmd+alt+b")
+                .unwrap()
+                .center();
+            visual.simulate_click(toggle, Modifiers::default());
+            let expanded = visual.debug_bounds("project-spectrum").unwrap();
+            assert!(expanded.size.width > spectrum.size.width);
+            assert_eq!(expanded.top(), spectrum.top());
+            assert_eq!(expanded.right(), spectrum.right());
+            visual.simulate_click(toggle, Modifiers::default());
+            assert_eq!(visual.debug_bounds("project-spectrum").unwrap(), spectrum);
+            editor.read_with(&visual, |view, _| {
+                assert_eq!(view.state.as_ref().unwrap().project, before.project);
+                assert_eq!(view.state.as_ref().unwrap().revision, before.revision);
+                assert!(view.pending_requests.is_empty());
+                assert!(view.last_enqueued_edit.is_none());
+            });
+        }
     }
 }

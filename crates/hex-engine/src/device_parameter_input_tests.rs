@@ -29,6 +29,105 @@ fn fixture() -> (Editor, hex_project::TrackId, DeviceId) {
     };
     (editor, track, device)
 }
+
+#[test]
+fn external_reading_union_keeps_live_arm_and_distinct_provider_and_host_slots() {
+    let (editor, _, device) = fixture();
+    let target = |target| native_parameter_input_target(editor.project(), device, target).unwrap();
+    let gain = target(DeviceAutomationTarget::Parameter(parameter::GAIN));
+    let mute = target(DeviceAutomationTarget::Parameter(parameter::MUTE));
+    let host = target(DeviceAutomationTarget::HostOutputGain);
+    let registry = hex_devices::native_registry().unwrap();
+    let current = editor.project().device(device).unwrap();
+    let program = prepare_with_registry_inputs_and_external(
+        current,
+        &registry,
+        Some(gain),
+        &[gain, mute, host],
+    )
+    .unwrap();
+    assert_eq!(program.input_target(), Some(gain.target()));
+    assert!(program.parameter_ids().contains(&parameter::GAIN));
+    assert!(program.parameter_ids().contains(&parameter::MUTE));
+    assert_eq!(program.parameter_ids().len(), 2);
+    assert!(program.has_host_target(DeviceAutomationTarget::HostOutputGain));
+    assert!(
+        program.storage_vectors().2.is_empty(),
+        "external targets do not add authored points"
+    );
+    let quote = quote_with_inputs_and_external(current, Some(gain), &[gain, mute, host]).unwrap();
+    assert!(quote >= program.storage_bytes().unwrap());
+    let live_only = prepare_with_registry_and_input(current, &registry, Some(gain)).unwrap();
+    let growth =
+        input_and_external_growth_overlap(current, Some(gain), &[gain, mute, host]).unwrap();
+    assert!(
+        growth >= live_only.storage_bytes().unwrap(),
+        "old reading vectors coexist during growth"
+    );
+    assert!(
+        prepare_with_registry_inputs_and_external(current, &registry, None, &[gain, gain]).is_err()
+    );
+    assert!(quote_with_inputs_and_external(current, None, &[gain, gain]).is_err());
+    let over_limit = vec![gain; MAX_EXTERNAL_PARAMETER_TARGETS + 1];
+    assert!(
+        prepare_with_registry_inputs_and_external(current, &registry, None, &over_limit).is_err()
+    );
+    assert_eq!(
+        quote_with_inputs_and_external(current, None, &over_limit),
+        Err(crate::AudioStorageError::Capacity)
+    );
+}
+
+#[test]
+fn ordinary_factory_prepares_external_provider_union_with_live_arm() {
+    let (editor, _, device) = fixture();
+    let target = |target| native_parameter_input_target(editor.project(), device, target).unwrap();
+    let gain = target(DeviceAutomationTarget::Parameter(parameter::GAIN));
+    let mute = target(DeviceAutomationTarget::Parameter(parameter::MUTE));
+    let host = target(DeviceAutomationTarget::HostOutputGain);
+    let registry = hex_devices::native_registry().unwrap();
+    let instruments = hex_devices::native_instrument_registry().unwrap();
+    let media = std::collections::BTreeMap::new();
+    let (compiled, _) = crate::compile::project_with_source_bank(
+        editor.project(),
+        crate::compile::SourceBank::Resident(&media),
+        Some(std::sync::Arc::new(crate::SineTable::new())),
+        &registry,
+        &instruments,
+        None,
+        None,
+        None,
+        Some(gain),
+        &[mute, host],
+    )
+    .unwrap();
+    let prepared = &compiled.tracks()[0].device_chain;
+    assert_eq!(prepared.len(), 1);
+    assert_eq!(prepared[0].automation.input_target(), Some(gain.target()));
+    assert!(
+        prepared[0]
+            .automation
+            .parameter_ids()
+            .contains(&parameter::GAIN)
+    );
+    assert!(
+        prepared[0]
+            .automation
+            .parameter_ids()
+            .contains(&parameter::MUTE)
+    );
+    assert!(
+        prepared[0]
+            .automation
+            .has_host_target(DeviceAutomationTarget::HostOutputGain)
+    );
+    let chain = hex_lattice::NativeRuntimeChain::new_prepared(prepared.to_vec()).unwrap();
+    assert_eq!(
+        chain.len(),
+        1,
+        "the actual factory admits the complete provider union"
+    );
+}
 #[test]
 fn canonical_input_target_resolves_each_effect_owner_and_exact_current_value_domains() {
     let (mut editor, track, device) = fixture();
@@ -203,12 +302,10 @@ fn canonical_input_target_resolves_each_effect_owner_and_exact_current_value_dom
 fn native_input_refuses_unsupported_foreign_and_source_owners() {
     let (mut editor, track, _) = fixture();
     for state in [
-        hex_devices::overdrive::OVERDRIVE_DEFINITION
-            .default_state()
-            .unwrap(),
+        hex_devices::limiter::DEFINITION.default_state().unwrap(),
         NativeDeviceState::new(DeviceTypeId::from_static("test.foreign"), 1, vec![]).unwrap(),
     ] {
-        let unsupported = state.type_id() == hex_devices::overdrive::OVERDRIVE_TYPE_ID;
+        let unsupported = state.type_id() == hex_devices::limiter::TYPE_ID;
         let Created::Device(device) = editor
             .execute(Command::InsertDevice {
                 track,
@@ -223,7 +320,7 @@ fn native_input_refuses_unsupported_foreign_and_source_owners() {
             native_parameter_input_target(
                 editor.project(),
                 device,
-                DeviceAutomationTarget::Parameter(ParameterId::from_static(1))
+                DeviceAutomationTarget::Parameter(hex_devices::limiter::parameter::ROUTING)
             )
             .is_err()
         );
@@ -346,12 +443,161 @@ fn input_quote_preparation_share_reading_slot_growth_and_host_only_laws() {
     )
     .unwrap();
     let armed = prepare_with_registry_and_input(current, &registry, Some(host)).unwrap();
-    assert!(armed.parameter_ids().is_empty());
+    assert_eq!(armed.parameter_ids(), &[parameter::GAIN]);
     assert_eq!(armed.input_target(), Some(host.target()));
-    assert_eq!(armed.storage_bytes(), Some(0));
-    assert_eq!(quote_with_input(current, Some(host)).unwrap(), 0);
     assert_eq!(
-        input_construction_growth_overlap(current, Some(host)).unwrap(),
-        0
+        armed.storage_bytes(),
+        Some(quote_with_input(current, Some(host)).unwrap())
+    );
+    assert!(
+        input_construction_growth_overlap(current, Some(host)).unwrap()
+            >= armed.storage_bytes().unwrap()
+    );
+}
+
+#[test]
+fn read_selection_changes_values_without_removing_retained_native_or_host_eligibility() {
+    use hex_lattice::{NativeInstrumentClock, NativeParameterAutomation};
+    struct Clock;
+    impl NativeInstrumentClock for Clock {
+        fn beat_at_offset(&self, _: usize) -> Option<u64> {
+            Some(0)
+        }
+        fn arrangement_beat_at_offset(&self, _: usize) -> Option<u64> {
+            Some(0)
+        }
+    }
+    let (mut editor, _, device) = fixture();
+    let targets = [
+        DeviceAutomationTarget::Parameter(parameter::GAIN),
+        DeviceAutomationTarget::HostInputGain,
+    ];
+    for target in targets {
+        editor
+            .execute(Command::ReplaceDeviceAutomationTarget {
+                device,
+                target,
+                points: vec![AutomationPoint {
+                    beat: BeatTime::ZERO,
+                    value: AutomationValue::new(0.8).unwrap(),
+                    outgoing: AutomationInterpolation::Step,
+                }],
+            })
+            .unwrap();
+    }
+    let saved = editor.project().device(device).unwrap().state().clone();
+    let authored = prepare(editor.project().device(device).unwrap()).unwrap();
+    let descriptor = authored.descriptor(parameter::GAIN);
+    assert!(
+        authored
+            .block(Some(&Clock), 1)
+            .value_at(parameter::GAIN, 0)
+            .is_some()
+    );
+    for selection in [
+        AutomationReadSelection::Base,
+        AutomationReadSelection::Authored,
+    ] {
+        for target in targets {
+            editor
+                .execute(Command::SetDeviceAutomationReadSelection {
+                    device,
+                    target,
+                    selection,
+                })
+                .unwrap();
+        }
+        let current = editor.project().device(device).unwrap();
+        let program = prepare(current).unwrap();
+        assert_eq!(program.parameter_ids(), authored.parameter_ids());
+        assert_eq!(program.descriptor(parameter::GAIN), descriptor);
+        assert!(program.has_host_target(DeviceAutomationTarget::HostInputGain));
+        assert_eq!(program.input_target(), None);
+        assert_eq!(program.storage_bytes(), Some(quote(current).unwrap()));
+        assert_eq!(current.state(), &saved);
+        let values = program.block(Some(&Clock), 1);
+        assert_eq!(
+            values.value_at(parameter::GAIN, 0).is_some(),
+            selection == AutomationReadSelection::Authored
+        );
+        assert_eq!(
+            values
+                .host_gain_at(DeviceAutomationTarget::HostInputGain, 0)
+                .is_some(),
+            selection == AutomationReadSelection::Authored
+        );
+        assert_eq!(
+            program.storage_vectors().2.len(),
+            if selection == AutomationReadSelection::Base {
+                0
+            } else {
+                2
+            }
+        );
+        assert!(
+            current
+                .automation()
+                .iter()
+                .all(|lane| lane.points.len() == 1)
+        );
+    }
+}
+#[test]
+fn unread_slots_are_quoted_before_base_live_and_external_union_preparation() {
+    let (mut editor, _, device) = fixture();
+    let target = DeviceAutomationTarget::Parameter(parameter::GAIN);
+    editor
+        .execute(Command::ReplaceDeviceAutomationTarget {
+            device,
+            target,
+            points: vec![AutomationPoint {
+                beat: BeatTime::ZERO,
+                value: AutomationValue::new(0.7).unwrap(),
+                outgoing: AutomationInterpolation::Step,
+            }],
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetDeviceAutomationReadSelection {
+            device,
+            target,
+            selection: AutomationReadSelection::Base,
+        })
+        .unwrap();
+    let input = native_parameter_input_target(
+        editor.project(),
+        device,
+        DeviceAutomationTarget::Parameter(parameter::WIDTH),
+    )
+    .unwrap();
+    let retained = native_parameter_input_target(editor.project(), device, target).unwrap();
+    let host = native_parameter_input_target(
+        editor.project(),
+        device,
+        DeviceAutomationTarget::HostOutputGain,
+    )
+    .unwrap();
+    let current = editor.project().device(device).unwrap();
+    let registry = hex_devices::native_registry().unwrap();
+    let plain = prepare(current).unwrap();
+    assert_eq!(plain.parameter_ids(), &[parameter::GAIN]);
+    assert_eq!(quote(current).unwrap(), plain.storage_bytes().unwrap());
+    let external = [retained, input, host];
+    let program =
+        prepare_with_registry_inputs_and_external(current, &registry, Some(input), &external)
+            .unwrap();
+    assert_eq!(
+        program.parameter_ids(),
+        &[parameter::GAIN, parameter::WIDTH]
+    );
+    assert!(program.storage_vectors().2.is_empty());
+    assert_eq!(program.input_target(), Some(input.target()));
+    assert_eq!(
+        quote_with_inputs_and_external(current, Some(input), &external).unwrap(),
+        program.storage_bytes().unwrap()
+    );
+    assert!(
+        input_and_external_growth_overlap(current, Some(input), &external).unwrap()
+            >= plain.storage_bytes().unwrap()
     );
 }

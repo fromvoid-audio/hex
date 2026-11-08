@@ -24,8 +24,9 @@ fn all_canonical_device_owners_refuse_unconsumed_curves_without_changing_source(
             panic!("track");
         };
         let state =
-            hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.overdrive"))
+            hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.limiter"))
                 .unwrap();
+        let parameter = ParameterId::new(if owner < 3 { 7 } else { 1 }).unwrap();
         let device = match owner {
             0 => match editor
                 .execute(Command::InsertDevice {
@@ -108,7 +109,7 @@ fn all_canonical_device_owners_refuse_unconsumed_curves_without_changing_source(
         editor
             .execute(Command::ReplaceDeviceAutomation {
                 device,
-                parameter: ParameterId::new(1).unwrap(),
+                parameter,
                 points: vec![AutomationPoint {
                     beat: BeatTime::ZERO,
                     value: AutomationValue::new(0.75).unwrap(),
@@ -147,7 +148,7 @@ fn all_canonical_device_owners_refuse_unconsumed_curves_without_changing_source(
         editor
             .execute(Command::ReplaceDeviceAutomation {
                 device,
-                parameter: ParameterId::new(1).unwrap(),
+                parameter,
                 points: Vec::new(),
             })
             .unwrap();

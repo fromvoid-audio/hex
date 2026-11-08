@@ -14,6 +14,7 @@ impl EditorView {
         };
         if self.mode != super::EditorMode::Arrangement
             || self.context_menu.is_some()
+            || super::device_panel::picker_is_open(self)
             || self.active_clip_drag.is_some()
             || self.active_browser_audio_drag.is_some()
             || self.active_native_device_drag.is_some()
@@ -131,6 +132,7 @@ impl EditorView {
             return self.arrangement_surface(upper, returns, main, cx);
         };
         self.sync_track_layout(state.project.tracks());
+        let clip_move_guide = self.displayed_clip_move_guide_frame();
         let ruler_width = (f32::from(window.bounds().size.width)
             - self.browser_content_width(window)
             - self.track_header_width())
@@ -149,27 +151,13 @@ impl EditorView {
                 ruler_width,
                 self.snap_grid,
             );
-            let overview = super::overview::widget(
-                super::overview::cached(
-                    &self.overview_cache,
-                    self.project_generation,
-                    &state,
-                    self.viewport_horizon(state.timeline_frames),
-                    self.arrangement_focus_ranges(),
-                    self.arrangement_revealed_track(),
-                ),
-                empty_viewport,
-                self.track_header_width(),
-                cx.entity(),
-            );
             let upper = div()
                 .flex_1()
                 .min_h_0()
                 .flex()
                 .flex_col()
                 .bg(rgb(theme::color(theme::PaletteRole::Background)))
-                .children([overview])
-                .child(self.ruler(&state, ruler_width, cx))
+                .child(self.ruler(&state, ruler_width, clip_move_guide, cx))
                 .child(super::loop_rail::view(
                     self,
                     &state,
@@ -178,34 +166,39 @@ impl EditorView {
                     cx,
                 ))
                 .children([self.arrangement_body(
-                    div()
-                        .relative()
-                        .flex_1()
-                        .min_h_0()
-                        .flex()
-                        .flex_col()
-                        .children([timeline_grid_layer(
-                            &bands,
-                            &grid,
-                            empty_viewport,
-                            self.track_header_width(),
-                            window.scale_factor(),
-                        )])
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_h_0()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_xs()
-                                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                                .child(theme::text(if self.arrangement_focus.projection.enabled {
-                                    "no clips in selected sections · q clears section focus"
-                                } else {
-                                    "no tracks · import audio or add a track"
-                                })),
-                        ),
+                    self.decorate_focused_empty_tracks(
+                        window.scale_factor(),
+                        div()
+                            .relative()
+                            .flex_1()
+                            .min_h_0()
+                            .flex()
+                            .flex_col()
+                            .children([timeline_grid_layer(
+                                &bands,
+                                &grid,
+                                empty_viewport,
+                                self.track_header_width(),
+                                window.scale_factor(),
+                            )])
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_xs()
+                                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                                    .child(theme::text(
+                                        if self.arrangement_focus.projection.enabled {
+                                            "no clips in selected sections · q clears section focus"
+                                        } else {
+                                            "no tracks · import audio or add a track"
+                                        },
+                                    )),
+                            ),
+                    ),
                     cx,
                 )]);
             let main =
@@ -223,28 +216,14 @@ impl EditorView {
             ruler_width,
             self.snap_grid,
         );
-        let overview = super::overview::widget(
-            super::overview::cached(
-                &self.overview_cache,
-                self.project_generation,
-                &state,
-                self.viewport_horizon(state.timeline_frames),
-                self.arrangement_focus_ranges(),
-                self.arrangement_revealed_track(),
-            ),
-            viewport,
-            self.track_header_width(),
-            cx.entity(),
-        );
         let rows_viewport = viewport;
         let rows_grid = grid.clone();
         let track_scale_factor = window.scale_factor();
-        let playhead = self.cursor_position();
         let rows_entity = cx.entity();
         let rows = list(self.track_scroll.list.clone(), move |index, _, cx| {
             rows_entity
                 .update(cx, |this, cx| {
-                    let Some(state) = this.state.as_ref().cloned() else {
+                    let Some(state) = this.arrangement_rows_state() else {
                         return div();
                     };
                     let Some(index) = this.arrangement_track_index(index) else {
@@ -289,34 +268,14 @@ impl EditorView {
                 window.scale_factor(),
             )])
             .child(rows);
-        if let Some(position) = viewport.fraction(playhead) {
-            content = content.child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .left_0()
-                    .right(px(self.track_header_width()))
-                    .child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .bottom_0()
-                            .left(relative(position.clamp(0.0, 1.0)))
-                            .w(px(1.0))
-                            .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
-                    ),
-            );
-        }
-        content = content.children(self.edit_cursor_layer(viewport));
+        content = content.children(self.edit_cursor_layer(viewport, clip_move_guide, cx));
         content = content.children(self.track_reorder_line());
         let upper = div()
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
-            .children([overview])
-            .child(self.ruler(&state, ruler_width, cx))
+            .child(self.ruler(&state, ruler_width, clip_move_guide, cx))
             .child(super::loop_rail::view(self, &state, viewport, &grid, cx))
             .children([self.arrangement_body(content, cx)])
             .children(super::gain_lane::view(
@@ -354,7 +313,10 @@ impl EditorView {
             canvas(
                 |_, _, _| (),
                 move |bounds, _, window, cx| {
-                    measure_entity.update(cx, |view, _| {
+                    measure_entity.update(cx, |view, cx| {
+                        if view.clip_paint_held() && view.focus.is_focused(window) {
+                            window.renew_pointer_capture(cx.entity_id(), gpui::CursorStyle::Arrow);
+                        }
                         view.arrangement_bounds = Some(super::drag::LaneBounds {
                             left: f32::from(bounds.origin.x),
                             width: f32::from(bounds.size.width),
@@ -379,9 +341,14 @@ impl EditorView {
                         if !delta_y.is_finite() || delta_y == 0.0 {
                             return;
                         }
+                        if super::device_panel::picker_is_open(zoom_entity.read(cx)) {
+                            return;
+                        }
                         cx.stop_propagation();
                         let did_zoom = zoom_entity.update(cx, |view, _| {
-                            if view.context_menu.is_some() {
+                            if view.context_menu.is_some()
+                                || super::device_panel::picker_is_open(view)
+                            {
                                 return false;
                             }
                             view.zoom_timeline_wheel_at(
@@ -462,6 +429,16 @@ impl EditorView {
                         let x = f32::from(event.position.x);
                         let y = f32::from(event.position.y);
                         let (started, moving) = cursor_down_entity.update(cx, |view, cx| {
+                            // An open menu paints above this body; its rows
+                            // own the press, never a section or range gesture.
+                            if view.context_menu.is_some()
+                                || super::device_panel::picker_is_open(view)
+                            {
+                                return (false, false);
+                            }
+                            if view.pointer_hits_section_launch(x, y) {
+                                return (false, false);
+                            }
                             if view.time_selection_key_held {
                                 let started = view.begin_main_time_selection_gesture(
                                     x,
@@ -476,6 +453,7 @@ impl EditorView {
                                 );
                                 if started {
                                     view.focus.focus(window);
+                                    view.focus_detail_context(window, cx);
                                     cx.notify();
                                 }
                                 return (started, false);
@@ -494,7 +472,7 @@ impl EditorView {
                                 cx.notify();
                                 return (true, false);
                             }
-                            if view.pointer_hits_priority_clip_control(x, y) {
+                            if view.pointer_hits_priority_clip_control(x, y, event.modifiers.alt) {
                                 return (false, false);
                             }
                             if event.click_count == 2
@@ -502,6 +480,9 @@ impl EditorView {
                                 && view.begin_clip_paint(x, y, event.modifiers.platform)
                             {
                                 view.focus.focus(window);
+                                if !view.capture_clip_paint(window, cx) {
+                                    view.cancel_clip_paint();
+                                }
                                 cx.notify();
                                 return (true, false);
                             }
@@ -527,6 +508,7 @@ impl EditorView {
                             if started {
                                 view.focus.focus(window);
                                 if !move_started {
+                                    view.focus_detail_context(window, cx);
                                     cx.notify();
                                 }
                             }
@@ -643,39 +625,96 @@ impl EditorView {
         {
             None
         } else {
-            self.active_browser_audio_drag
+            self.pending_sample_drop
                 .as_ref()
-                .filter(|drag| self.browser_audio_drag_is_current(drag))
-                .and_then(|drag| drag.insertion_line_y.get())
+                .and_then(|drop| drop.insertion_line_y)
+                .or_else(|| self.displayed_browser_audio_drag()?.insertion_line_y.get())
                 .or_else(|| {
-                    self.active_clip_drag
-                        .as_ref()
-                        .filter(|drag| self.drag_start_is_current(drag))
+                    self.displayed_clip_drag()
                         .and_then(|drag| drag.insertion_line_y.get())
                 })
         };
-        if let Some(line_y) = insertion_line_y {
-            if let Some(bounds) = self.arrangement_bounds {
-                let relative_y = line_y - bounds.top;
-                if relative_y.is_finite() && relative_y >= 0.0 && relative_y < bounds.height {
-                    body = body.child(
-                        div()
-                            .id("track-insert-preview")
-                            .debug_selector(|| "track-insert-preview".to_owned())
-                            .absolute()
-                            .left_0()
-                            .right_0()
-                            .top(px((relative_y - 1.0).max(0.0)))
-                            .h(px(2.0))
-                            .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
-                    );
-                }
+        if let Some(line_y) = insertion_line_y
+            && let Some(bounds) = self.arrangement_bounds
+        {
+            let relative_y = line_y - bounds.top;
+            if relative_y.is_finite() && relative_y >= 0.0 && relative_y < bounds.height {
+                body = body.child(
+                    div()
+                        .id("track-insert-preview")
+                        .debug_selector(|| "track-insert-preview".to_owned())
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .top(px((relative_y - 1.0).max(0.0)))
+                        .h(px(2.0))
+                        .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                        .children(
+                            self.displayed_clip_drag()
+                                .filter(|drag| drag.alias_copy())
+                                .map(|_| super::tracks::alias_drag_badge()),
+                        ),
+                );
             }
         }
         body.children(
             self.time_selection_cursor_layer()
                 .map(|layer| layer.right(px(header_width))),
         )
+    }
+
+    /// Paint after the body and Main have measured their current-frame bounds.
+    /// The shared timeline line spans gain/Return rows without owning any input.
+    fn arrangement_playback_layer(&self, cx: &Context<Self>) -> Div {
+        let entity = cx.entity();
+        div()
+            .debug_selector(|| "arrangement-playback-layer".into())
+            .absolute()
+            .inset_0()
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |_, _, window, cx| {
+                        let view = entity.read(cx);
+                        let Some(state) = view.state.as_ref() else {
+                            return;
+                        };
+                        let (Some(body), Some(main)) =
+                            (view.arrangement_bounds, view.main_track_lane_bounds)
+                        else {
+                            return;
+                        };
+                        let width = body.width - view.track_header_width();
+                        let height = main.top - body.top;
+                        if !width.is_finite()
+                            || !height.is_finite()
+                            || width <= 0.0
+                            || height <= 0.0
+                        {
+                            return;
+                        }
+                        let viewport = view.visible_viewport(state.timeline_frames);
+                        // Use the audible position, compensated for Main latency.
+                        let Some(position) = viewport.fraction(view.audible_cursor_position())
+                        else {
+                            return;
+                        };
+                        let bounds = gpui::Bounds::new(
+                            gpui::point(
+                                px(body.left + width * position.clamp(0.0, 1.0)),
+                                px(body.top),
+                            ),
+                            gpui::size(px(1.0), px(height)),
+                        );
+                        window.paint_quad(gpui::fill(
+                            bounds,
+                            rgb(theme::color(theme::PaletteRole::Text)),
+                        ));
+                    },
+                )
+                .absolute()
+                .inset_0(),
+            )
     }
 
     fn arrangement_surface(
@@ -689,6 +728,7 @@ impl EditorView {
         let clip_entity = entity.clone();
         let device_entity = entity.clone();
         div()
+            .relative()
             .flex_1()
             .min_h_0()
             .flex()
@@ -696,6 +736,7 @@ impl EditorView {
             .child(upper.flex_1().min_h_0())
             .child(returns)
             .child(main)
+            .child(self.arrangement_playback_layer(cx))
             .child(self.track_resize_events(cx))
             .children([self.track_reorder_events(cx)])
             .on_drag_move::<super::drag::NativeDeviceDrag>(move |event, _, cx| {
@@ -791,6 +832,7 @@ impl EditorView {
             .min_w_0()
             .h_full()
             .children([main_track_grid_layer(bands, lines, viewport, scale)])
+            .child(super::arrangement_map::view(self, viewport))
             .children(self.main_time_selection_overlay(viewport))
             .children(self.section_elements(viewport, scale, cx))
             .children([self.section_pointer_events(cx)])
@@ -867,6 +909,8 @@ impl EditorView {
                             .child(theme::text("main")),
                     )
                     .child(div().flex_1())
+                    .children(self.track_latency_indicator(super::track_latency::Owner::Main))
+                    .child(self.sample_arm_button(super::sample_recorder::Arm::Main, cx))
                     .children(
                         (self.main_track_height() > super::track_layout::HEADER_ONLY_HEIGHT)
                             .then(|| self.main_track_controls(cx)),
@@ -896,7 +940,13 @@ impl EditorView {
             }))
     }
 
-    fn ruler(&self, state: &ViewState, ruler_width: f32, cx: &mut Context<Self>) -> Div {
+    fn ruler(
+        &self,
+        state: &ViewState,
+        ruler_width: f32,
+        clip_move_guide: Option<u64>,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let viewport = self.visible_viewport(state.timeline_frames);
         let labels = div()
             .absolute()
@@ -940,7 +990,6 @@ impl EditorView {
                 .into()
             })
             .children([labels])
-            .children(self.edit_cursor_markers(viewport, hex_widgets::TimeMarkerEdge::Top))
             .children([canvas(
                 |_, _, _| (),
                 move |bounds, _, window, _cx| {
@@ -1005,9 +1054,14 @@ impl EditorView {
                         if !delta_y.is_finite() || delta_y == 0.0 {
                             return;
                         }
+                        if super::device_panel::picker_is_open(wheel_entity.read(cx)) {
+                            return;
+                        }
                         cx.stop_propagation();
                         let did_zoom = wheel_entity.update(cx, |view, _| {
-                            if view.context_menu.is_some() {
+                            if view.context_menu.is_some()
+                                || super::device_panel::picker_is_open(view)
+                            {
                                 return false;
                             }
                             view.zoom_timeline_wheel_at(
@@ -1027,7 +1081,13 @@ impl EditorView {
             .top_0()
             .bottom_0()
             .left_0()
-            .right_0()]);
+            .right_0()])
+            .children(self.edit_cursor_markers(
+                viewport,
+                hex_widgets::TimeMarkerEdge::Top,
+                clip_move_guide,
+                cx,
+            ));
         super::timeline_strip::ruler_surface()
             .debug_selector(|| "arrangement-time-ruler".into())
             .flex()

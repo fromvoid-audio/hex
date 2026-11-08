@@ -20,10 +20,18 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use crate::compile::{PreparedAudioSourceRef, resolve_prepared, resolve_resident};
 
+fn requires_shared_source_admission(
+    receiver: Option<TrackId>,
+    contributors: impl IntoIterator<Item = TrackId>,
+) -> bool {
+    receiver.is_some_and(|receiver| contributors.into_iter().any(|track| track != receiver))
+}
+
 struct PreparedTrackInstrumentConfig {
     track: TrackId,
     config: Option<Arc<dyn PreparedNativeInstrument>>,
     mutable_limits: Option<crate::midi_compile::MutableInstrumentLimits>,
+    foreign_events: bool,
     device_id: Option<DeviceId>,
     tuning_identity: crate::shared_analytic::TuningIdentity,
     state: Option<hex_lattice_contract::NativeDeviceState>,
@@ -33,6 +41,18 @@ struct PreparedTrackInstrumentConfig {
     resource_factory_inline_bound: Option<usize>,
     history_retarget_target: Option<Box<dyn PreparedInstrumentHistoryRetarget>>,
     history_retarget_requires_quiescence: bool,
+}
+
+impl PreparedTrackInstrumentConfig {
+    fn instrument_enabled(&self) -> bool {
+        !self.bypassed && (self.config.is_some() || self.foreign_events)
+    }
+
+    fn clip_instrument_enabled(&self, clip: &hex_project::SessionMidiClip) -> bool {
+        clip.active()
+            && self.instrument_enabled()
+            && (!self.foreign_events || clip.volume().is_unity())
+    }
 }
 
 struct PreparedMutableTrackInstrument {
@@ -211,13 +231,12 @@ impl PreparedSessionAudioClip {
     /// Constant-work source mapping; loops reduce elapsed before addition so a
     /// long-running cell cannot overflow or walk every intervening cycle.
     pub(crate) fn source_frame(&self, elapsed: u64) -> Option<u64> {
-        match self.loop_range {
-            Some(range) => range.frame_at(self.source_start, elapsed),
-            None => self
-                .source_start
-                .checked_add(elapsed)
-                .filter(|frame| *frame < self.source_end),
-        }
+        hex_project::session_audio_source_frame(
+            self.source_start,
+            self.source_end,
+            self.loop_range,
+            elapsed,
+        )
     }
     pub(crate) fn playback_end(&self) -> u64 {
         self.loop_range.map_or(self.source_end, |range| range.end())
@@ -583,9 +602,16 @@ impl PreparedSessionInventory {
                 .as_ref()
                 .filter(|_| has_receiver)
                 .map(|prepared| Arc::clone(&prepared.config));
+            let foreign_events = slot.is_some_and(|device| {
+                !device.bypassed() && crate::compile::is_vst3_instrument(device)
+            });
             let mutable_limits = source_config
                 .as_ref()
-                .and_then(|prepared| prepared.mutable_limits);
+                .and_then(|prepared| prepared.mutable_limits)
+                .or_else(|| {
+                    foreign_events
+                        .then_some(crate::mutable_instrument::authored_gate::FOREIGN_GATE_LIMITS)
+                });
             let mutable_runtime = source_config.and_then(|prepared| {
                 track
                     .receives_source_audio()
@@ -633,6 +659,7 @@ impl PreparedSessionInventory {
                 track: track.id(),
                 config,
                 mutable_limits,
+                foreign_events,
                 device_id: slot.map(|device| device.id()),
                 tuning_identity: shared_contexts.tuning_identity(),
                 state: slot.map(|device| device.state().clone().without_host_gains()),
@@ -681,7 +708,7 @@ impl PreparedSessionInventory {
             let config = instrument_configs
                 .get(track_index)
                 .ok_or(crate::Invalid("Session MIDI instrument is missing"))?;
-            let enabled = clip.active() && config.config.is_some() && !config.bypassed;
+            let enabled = config.clip_instrument_enabled(clip);
             let shared_context = config.device_id.and_then(|device| {
                 shared_contexts
                     .index_for_device(device)
@@ -838,7 +865,7 @@ impl PreparedSessionInventory {
             .zip(note_keys_by_track)
             .enumerate()
         {
-            let enabled = config.config.is_some() && !config.bypassed;
+            let enabled = config.instrument_enabled();
             if unchanged_sources
                 .get(index)
                 .copied()
@@ -1162,7 +1189,12 @@ impl PreparedSessionInventory {
             .iter()
             .filter(|source| source.receiver().is_some())
         {
-            if project.source_contributors(source.id()).count() < 2 {
+            if !requires_shared_source_admission(
+                source.receiver(),
+                project
+                    .source_contributors(source.id())
+                    .map(|track| track.id()),
+            ) {
                 continue;
             }
             let mut source_work = SessionWorkEnvelope::default();
@@ -1518,7 +1550,12 @@ impl PreparedSessionInventory {
             .iter()
             .filter(|source| source.receiver().is_some() && !source.instrument().bypassed())
         {
-            if canonical.source_contributors(source.id()).count() < 2 {
+            if !requires_shared_source_admission(
+                source.receiver(),
+                canonical
+                    .source_contributors(source.id())
+                    .map(|track| track.id()),
+            ) {
                 continue;
             }
             let limits = self
@@ -1832,6 +1869,27 @@ mod tests {
                 velocity: 100,
             })
             .expect("add MIDI note");
+    }
+
+    #[test]
+    fn remote_single_contributor_requires_shared_source_admission() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let receiver = add_track(&mut editor, "receiver");
+        let contributor = add_track(&mut editor, "contributor");
+        assert!(!requires_shared_source_admission(Some(receiver), []));
+        assert!(!requires_shared_source_admission(
+            Some(receiver),
+            [receiver]
+        ));
+        assert!(requires_shared_source_admission(
+            Some(receiver),
+            [contributor]
+        ));
+        assert!(requires_shared_source_admission(
+            Some(receiver),
+            [receiver, contributor]
+        ));
+        assert!(!requires_shared_source_admission(None, [contributor]));
     }
 
     #[test]

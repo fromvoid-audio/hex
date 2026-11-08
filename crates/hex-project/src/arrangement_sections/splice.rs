@@ -160,6 +160,7 @@ pub(super) fn duplicate(project: &mut Project, section: SectionId) -> Result<Cre
         return Err(Invalid("arrangement section limit reached"));
     }
     let mut copy = marker.clone();
+    copy.color = super::color::duplicate_color(project, section);
     copy.id = SectionId(0);
     copy.start = marker.end;
     copy.end = BeatTime::from_raw(
@@ -331,6 +332,7 @@ pub(super) fn preview_duplicate(
         return Err(Invalid("arrangement section limit reached"));
     }
     let mut copy = marker.clone();
+    copy.color = super::color::duplicate_color(project, section);
     copy.id = SectionId(0);
     copy.start = marker.end;
     copy.end = BeatTime::from_raw(
@@ -568,6 +570,15 @@ fn apply_transform(
     Ok(())
 }
 
+/// Fence the moved music's tempo. Authored points always stay; a seam that
+/// repeats the tempo already in effect there changes no clock, and inserting
+/// it anyway piles same-tempo points up with every structural section edit.
+fn seam(points: &mut BTreeMap<u64, crate::Tempo>, beat: u64, tempo: crate::Tempo) {
+    let prevailing = points.range(..=beat).next_back().map(|(_, tempo)| *tempo);
+    if points.contains_key(&beat) || prevailing != Some(tempo) {
+        points.insert(beat, tempo);
+    }
+}
 fn transformed_tempo(old: &TempoMap, transform: Transform) -> Result<TempoMap, Invalid> {
     // Duplicating music cannot change a single global tempo. Preserve its exact
     // clock, including fractional BPMs, rather than adding same-tempo seams.
@@ -599,8 +610,8 @@ fn transformed_tempo(old: &TempoMap, transform: Transform) -> Result<TempoMap, I
                     );
                 }
             }
-            points.insert(at.raw(), prior);
-            points.insert(end.raw(), old.tempo_at(at));
+            seam(&mut points, at.raw(), prior);
+            seam(&mut points, end.raw(), old.tempo_at(at));
         }
         Transform::Delete { .. } => {
             for point in old.points() {
@@ -610,7 +621,7 @@ fn transformed_tempo(old: &TempoMap, transform: Transform) -> Result<TempoMap, I
                     points.insert(point.beat().raw() - length, point.tempo());
                 }
             }
-            points.insert(start.raw(), old.tempo_at(end));
+            seam(&mut points, start.raw(), old.tempo_at(end));
         }
         Transform::Duplicate { .. } => {
             for point in old.points() {
@@ -633,8 +644,9 @@ fn transformed_tempo(old: &TempoMap, transform: Transform) -> Result<TempoMap, I
                     points.insert(shifted, point.tempo());
                 }
             }
-            points.insert(end.raw(), old.tempo_at(start));
-            points.insert(
+            seam(&mut points, end.raw(), old.tempo_at(start));
+            seam(
+                &mut points,
                 end.raw()
                     .checked_add(length)
                     .ok_or(Invalid("section tempo end overflow"))?,
@@ -740,11 +752,31 @@ fn transform_audio(
     new: &TempoMap,
     next_id: &mut u64,
 ) -> Result<Vec<crate::Clip>, Invalid> {
-    let (start_frame, end_frame, frame_length) = (frames.start, frames.end, frames.length);
     let clip_end = original
         .start()
         .checked_add(original.duration())
         .ok_or(Invalid("audio section clip end overflow"))?;
+    // A musical clip whose beat edge lies on a fence may sit one residual
+    // sample beside it. Treat that edge as on the fence rather than cutting a
+    // one-sample fragment whose beat and frame land on opposite sides.
+    let fence = |frame: u64| {
+        let Some(edit) = original
+            .audio_edit()
+            .filter(|edit| edit.live_musical_start().is_some())
+        else {
+            return frame;
+        };
+        let nominal = |actual: u64, offset: i8| i128::from(actual) - i128::from(offset);
+        if i128::from(frame) == nominal(original.start(), edit.placement_start_offset) {
+            original.start()
+        } else if i128::from(frame) == nominal(clip_end, edit.placement_end_offset) {
+            clip_end
+        } else {
+            frame
+        }
+    };
+    let (start_frame, end_frame, frame_length) =
+        (fence(frames.start), fence(frames.end), frames.length);
     let mut cuts = vec![original.start(), clip_end];
     let splice_frames = if matches!(transform, Transform::Insert { .. }) {
         vec![start_frame]
@@ -792,7 +824,16 @@ fn transform_audio(
                 .ok_or(Invalid("section audio duplicate overflow"))?;
             vec![Some(source_start), Some(shifted)]
         } else {
-            vec![transform.frame_map(source_start, start_frame, end_frame)?]
+            // A snapped edge moves with its authored fence and lands on the
+            // mapped fence itself, as its beat does, dropping the residual.
+            let authored = if source_start == start_frame {
+                frames.start
+            } else if source_start == end_frame {
+                frames.end
+            } else {
+                source_start
+            };
+            vec![transform.frame_map(authored, frames.start, frames.end)?]
         };
         for (destination_index, destination) in destinations.into_iter().enumerate() {
             let Some(destination) = destination else {
@@ -807,9 +848,7 @@ fn transform_audio(
             };
             let mut fragment = retained.clone();
             fragment.id = id;
-            let destination_end = destination
-                .checked_add(source_end - source_start)
-                .ok_or(Invalid("section audio destination overflow"))?;
+            let mut destination = destination;
             if let Some(edit) = fragment.audio_edit_mut()
                 && let Some(musical_start) = edit.live_musical_start()
             {
@@ -822,6 +861,9 @@ fn transform_audio(
                 } else {
                     musical_start
                 };
+                // A duplicated source fragment stays in place by frame. Its beat
+                // may sit on the end fence (a residual sample inside it), where
+                // map_position would move only the beat, so keep it too.
                 let destination_beat = if is_copy {
                     BeatTime::from_raw(
                         source_beat
@@ -829,11 +871,14 @@ fn transform_audio(
                             .checked_add(transform.length())
                             .ok_or(Invalid("section audio timing overflow"))?,
                     )
+                } else if is_duplicate_source {
+                    source_beat
                 } else {
                     transform.map_position(source_beat)?
                 };
                 edit.timing = crate::AudioClipTiming::Musical(destination_beat);
-                edit.retain_frame_bounds(destination, destination_end, new)?;
+                destination =
+                    edit.retain_moved_frame_span(destination, source_end - source_start, new)?;
             }
             fragment.start = destination;
             crate::audio_edit::project_clip(&mut fragment, new)?;

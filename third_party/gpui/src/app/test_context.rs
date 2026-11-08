@@ -359,6 +359,24 @@ impl TestAppContext {
     pub fn pending_save_options(&self) -> Option<(std::path::PathBuf, Option<String>)> {
         self.test_platform.pending_save_options()
     }
+    /// Hex patch: deliver an OS termination request (Dock Quit, logout,
+    /// restart) to the app's [`App::on_should_quit`] handler. Returns true when
+    /// the app deferred its answer; false means it would terminate immediately.
+    pub fn simulate_should_quit(&self) -> bool {
+        self.test_platform.simulate_should_quit()
+    }
+
+    /// Hex patch: whether a simulated termination request awaits its reply.
+    pub fn quit_request_pending(&self) -> bool {
+        self.test_platform.quit_request_pending()
+    }
+
+    /// Hex patch: every [`App::reply_to_quit`] answer to a pending simulated
+    /// request, in order (`true` terminates, `false` cancels).
+    pub fn quit_replies(&self) -> Vec<bool> {
+        self.test_platform.quit_replies()
+    }
+
     /// Complete the injected Open request with a platform error, without a panel.
     pub fn simulate_paths_error(&self, message: &str) {
         self.test_platform.simulate_paths_error(message);
@@ -778,6 +796,24 @@ impl VisualTestContext {
             window.rendered_frame.scene.monochrome_sprites.iter()
                 .filter(|sprite| sprite.bounds.intersects(&scaled))
                 .map(|sprite| sprite.color)
+                .collect()
+        })
+    }
+
+    /// Bounds of bottom-to-top monochrome sprites in a rendered element.
+    pub fn rendered_vertical_glyph_bounds(
+        &mut self,
+        selector: &'static str,
+    ) -> Vec<Bounds<crate::ScaledPixels>> {
+        self.update(|window, _| {
+            let Some(bounds) = window.rendered_frame.debug_bounds.get(selector) else {
+                return Vec::new();
+            };
+            let bounds = bounds.scale(window.scale_factor());
+            window.rendered_frame.scene.monochrome_sprites.iter()
+                .filter(|sprite| sprite.transformation.rotation_scale == [[0.0, 1.0], [-1.0, 0.0]])
+                .map(|sprite| sprite.painted_bounds())
+                .filter(|glyph| glyph.intersects(&bounds))
                 .collect()
         })
     }

@@ -532,3 +532,74 @@ fn failed_derived_configuration_keeps_controls_cache_atomic_for_same_value_retry
         UTILITY_DEFINITION.prepare_effect_matrix(&expected).unwrap()
     );
 }
+
+#[test]
+fn bypass_advances_the_same_filter_and_automated_control_history() {
+    let base = UTILITY_DEFINITION.default_state().unwrap();
+    let factory = UtilityDefinition::prepare_owned_automated_filter(&base, 48_000).unwrap();
+    let values = |muted| {
+        Values::new(vec![
+            (parameter::MUTE, ParameterValue::Bool(muted)),
+            (parameter::DC_REMOVE, ParameterValue::Bool(true)),
+            (parameter::BASS_MONO, ParameterValue::Bool(true)),
+        ])
+    };
+    let unmuted = values(false);
+    for muted in [false, true] {
+        let values = values(muted);
+        let mut active = factory.create_runtime();
+        let mut bypassed = factory.create_runtime();
+        let input = signal();
+        // Seed an audible residual before the automation can mute the output.
+        for runtime in [&mut active, &mut bypassed] {
+            let mut warmup = input.clone();
+            runtime
+                .process_block_with_automation(
+                    &mut warmup,
+                    None,
+                    &unmuted,
+                    &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                )
+                .unwrap();
+            assert!(!runtime.is_quiescent());
+        }
+        let mut wet = input.clone();
+        let mut dry = input.clone();
+        active
+            .process_block_with_automation(
+                &mut wet,
+                None,
+                &values,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+        bypassed
+            .process_bypassed_block_with_automation(
+                &mut dry,
+                None,
+                &values,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+        assert_eq!(dry, input);
+        let mut after_active = signal();
+        let mut after_bypass = after_active.clone();
+        active
+            .process_block_with_automation(
+                &mut after_active,
+                None,
+                &unmuted,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+        bypassed
+            .process_block_with_automation(
+                &mut after_bypass,
+                None,
+                &unmuted,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+        assert_eq!(after_bypass, after_active);
+    }
+}

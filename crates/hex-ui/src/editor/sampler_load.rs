@@ -183,7 +183,7 @@ impl EditorView {
             .is_some_and(|active| Rc::ptr_eq(&active.destination, &drag.destination))
             && !self.opening_project
             && !self.close_prompt_open
-            && self.browser.scan_generation() == drag.browser_generation
+            && Some(self.browser.scan_generation()) == drag.browser_generation
             && drag.project_generation == self.project_generation
             && self
                 .state
@@ -212,6 +212,11 @@ impl EditorView {
                     .is_some_and(|(id, _)| *id == device) =>
             {
                 self.load_first_sampler(target, cx);
+                if self.sampler_load.pending.is_some()
+                    || self.sampler_replacement_pending_id().is_some()
+                {
+                    self.stop_browser_preview_for_drop();
+                }
             }
             Ok(_) => {
                 self.error = Some("sample drop canceled · sampler changed".into());

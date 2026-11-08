@@ -11,6 +11,12 @@ use std::sync::Arc;
 
 const TIMELINE_FRAMES: u64 = 384_000;
 
+/// Edge-trim grab point in the clip-name band. A hovered clip shows its
+/// corner fade handles over the rest of the edge, and those take precedence.
+pub(super) fn trim_grab_point(bounds: gpui::Bounds<gpui::Pixels>) -> gpui::Point<gpui::Pixels> {
+    gpui::point(bounds.center().x, bounds.top() + bounds.size.height / 6.0)
+}
+
 pub(super) fn audio_project() -> (
     Project,
     hex_project::TrackId,
@@ -284,6 +290,8 @@ fn drag_source_to_inserted_track(
         source_surface.origin.x + source_surface.size.width / 2.0,
         source_surface.origin.y + source_surface.size.height / 2.0,
     );
+    let expected_gain =
+        editor.read_with(cx, |view, _| view.track_defaults.captured_gain().unwrap());
     let modifiers = Modifiers {
         alt: copy,
         ..Modifiers::default()
@@ -390,6 +398,14 @@ fn drag_source_to_inserted_track(
         assert!(drag.lane_hovered.get());
         assert!(drag.preview.get().is_none());
     });
+    let guide_x = editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        let preview = super::drag::preview_for(&state.project, source_track, expected).unwrap();
+        let viewport = view.visible_viewport(state.timeline_frames);
+        source_lane.left()
+            + source_lane.size.width * viewport.fraction(preview.start_frame).unwrap()
+    });
+    assert_clip_move_guides(visual, guide_x);
     let line = visual
         .debug_bounds("track-insert-preview")
         .expect("new-track target shows insertion line");
@@ -453,12 +469,12 @@ fn drag_source_to_inserted_track(
         super::drag::ClipPosition::Audio { start, .. } => assert!(
             if copy {
                 matches!(view.last_enqueued_edit.as_ref(), Some(Command::CopyClipToNewTrack {
-                    clip: copied_clip, before_track, start: copied_start, ..
-                }) if *copied_clip == clip && *before_track == anchor && *copied_start == start)
+                    clip: copied_clip, before_track, initial_gain, start: copied_start, ..
+                }) if *copied_clip == clip && *before_track == anchor && *copied_start == start && *initial_gain == Some(expected_gain))
             } else {
                 matches!(view.last_enqueued_edit.as_ref(), Some(Command::MoveClipToNewTrack {
-                    clip: moved_clip, before_track, start: moved_start, ..
-                }) if *moved_clip == clip && *before_track == anchor && *moved_start == start)
+                    clip: moved_clip, before_track, initial_gain, start: moved_start, ..
+                }) if *moved_clip == clip && *before_track == anchor && *moved_start == start && *initial_gain == Some(expected_gain))
             },
             "audio new-track release request={:?}, destination={expected:?}, error={:?}",
             view.last_enqueued_edit,
@@ -467,19 +483,283 @@ fn drag_source_to_inserted_track(
         super::drag::ClipPosition::Midi { start, .. } => assert!(
             if copy {
                 matches!(view.last_enqueued_edit.as_ref(), Some(Command::CopyMidiClipToNewTrack {
-                    clip: copied_clip, before_track, start: copied_start, ..
-                }) if *copied_clip == clip && *before_track == anchor && *copied_start == start)
+                    clip: copied_clip, before_track, initial_gain, start: copied_start, ..
+                }) if *copied_clip == clip && *before_track == anchor && *copied_start == start && *initial_gain == Some(expected_gain))
             } else {
                 matches!(view.last_enqueued_edit.as_ref(), Some(Command::MoveMidiClipToNewTrack {
-                    clip: moved_clip, before_track, start: moved_start, ..
-                }) if *moved_clip == clip && *before_track == anchor && *moved_start == start)
+                    clip: moved_clip, before_track, initial_gain, start: moved_start, ..
+                }) if *moved_clip == clip && *before_track == anchor && *moved_start == start && *initial_gain == Some(expected_gain))
             },
             "midi new-track release request={:?}, destination={expected:?}, error={:?}",
             view.last_enqueued_edit,
             view.error
         ),
     });
+    for _ in 0..2 {
+        editor.update(cx, |view, cx| {
+            assert!(view.active_clip_drag.is_none());
+            assert!(view.pending_clip_move.is_some());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds("track-insert-preview"), Some(line));
+        assert_clip_move_guides(visual, guide_x);
+        if anchor.is_none() {
+            assert!(visual.debug_bounds("clip-drag-append-preview").is_some());
+        }
+    }
     target
+}
+
+#[gpui::test]
+fn new_track_clip_release_keeps_preview_until_worker_accepts_or_refuses(cx: &mut TestAppContext) {
+    use hex_session::service::Request;
+    for midi in [false, true] {
+        for copy in [false, true] {
+            for refuse in [false, true] {
+                let (_files, handle, editor) = upper_rail_owned_fixture(cx);
+                let mut visual = VisualTestContext::from_window(handle, cx);
+                visual.simulate_resize(gpui::size(px(1280.0), px(800.0)));
+                visual.run_until_parked();
+                editor.update(&mut visual, |view, _| {
+                    view.track_defaults.set_test_state(0.5, false, true)
+                });
+                let (source, anchor, audio) = editor.read_with(&visual, |view, _| {
+                    let project = &view.state.as_ref().unwrap().project;
+                    (
+                        project.tracks()[0].id(),
+                        project.tracks()[1].id(),
+                        project.tracks()[0].clips()[0].id(),
+                    )
+                });
+                let clip = if midi {
+                    editor.update(&mut visual, |view, _| {
+                        assert!(view.enqueue(Request::Edit(Command::RemoveClip(audio))))
+                    });
+                    pump_move(&editor, &mut visual);
+                    editor.update(&mut visual, |view, _| {
+                        assert!(view.enqueue(Request::Edit(Command::PlaceMidiClip {
+                            track: source,
+                            start: BeatTime::ZERO,
+                            length: BeatTime::ONE,
+                        })))
+                    });
+                    pump_move(&editor, &mut visual);
+                    editor.read_with(&visual, |view, _| {
+                        view.state
+                            .as_ref()
+                            .unwrap()
+                            .project
+                            .track(source)
+                            .unwrap()
+                            .midi_clips()[0]
+                            .id()
+                    })
+                } else {
+                    audio
+                };
+                let before = editor.read_with(&visual, |view, _| {
+                    Arc::clone(&view.state.as_ref().unwrap().project)
+                });
+                if refuse {
+                    // Advance only the real worker, leaving the displayed snapshot stale.
+                    // The captured insertion anchor is then rejected by the worker.
+                    editor.update(&mut visual, |view, _| {
+                        view.service
+                            .submit(Request::Edit(Command::RemoveTrack(anchor)))
+                            .unwrap();
+                        upper_rail_next(&view.service);
+                    });
+                }
+                drag_source_to_inserted_track(
+                    cx,
+                    &mut visual,
+                    &editor,
+                    &before,
+                    clip,
+                    source,
+                    Some(anchor),
+                    copy,
+                );
+                editor.update(&mut visual, |view, _| {
+                    view.track_defaults.set_test_state(0.25, false, true)
+                });
+                if refuse {
+                    editor.update(&mut visual, |view, cx| {
+                        let event = upper_rail_terminal(&view.service);
+                        assert!(event.error.is_some());
+                        view.receive(event);
+                        assert!(view.pending_clip_move.is_none());
+                        assert!(view.state.as_ref().unwrap().project.track(anchor).is_none());
+                        cx.notify();
+                    });
+                } else {
+                    pump_move(&editor, &mut visual);
+                    editor.read_with(&visual, |view, _| {
+                        assert!(view.pending_clip_move.is_none());
+                        assert_eq!(
+                            view.state.as_ref().unwrap().project.tracks().len(),
+                            before.tracks().len() + 1
+                        );
+                        assert_eq!(view.state.as_ref().unwrap().project.tracks()[1].gain(), 0.5);
+                    });
+                }
+                visual.run_until_parked();
+                assert!(visual.debug_bounds("track-insert-preview").is_none());
+            }
+        }
+    }
+}
+
+#[gpui::test]
+fn new_track_clip_drop_refuses_unavailable_defaults_without_blocking_existing_tracks(
+    cx: &mut TestAppContext,
+) {
+    for loading in [true, false] {
+        let (project, _, anchor, clip) = audio_project();
+        let (handle, editor) = editor_window(cx, project, Arc::default());
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        editor.update(&mut visual, |view, _| {
+            view.track_defaults.set_test_state(0.5, loading, false)
+        });
+        let down = visual
+            .debug_bounds(selector(format!("clip-drag-surface-{}", clip.value())))
+            .unwrap()
+            .center();
+        let lane = visual
+            .debug_bounds(selector(format!("arrangement-lane-{}", anchor.value())))
+            .unwrap();
+        let target = point(
+            lane.origin.x + lane.size.width * 0.7,
+            lane.origin.y + px(1.0),
+        );
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            point(down.x + px(12.0), down.y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        editor.read_with(&visual, |view, _| {
+            assert!(view.error.as_deref().unwrap().contains(if loading {
+                "loading"
+            } else {
+                "open settings"
+            }));
+            assert!(view.last_enqueued_edit.is_none());
+            assert!(view.pending_clip_move.is_none());
+        });
+        editor.update(&mut visual, |view, _| view.error = None);
+        let (_, target) = drag_source_to_target(cx, &mut visual, &editor, clip, 1, 90.0);
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        editor.read_with(&visual, |view, _| {
+            assert!(matches!(
+                view.last_enqueued_edit,
+                Some(Command::MoveClipWithOverwrite { .. })
+            ));
+        });
+    }
+}
+
+#[gpui::test]
+fn linked_clip_new_track_drop_captures_gain_and_retains_link(cx: &mut TestAppContext) {
+    for midi in [false, true] {
+        let (_files, handle, editor) = upper_rail_owned_fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(gpui::size(px(1280.0), px(800.0)));
+        visual.run_until_parked();
+        editor.update(&mut visual, |view, _| {
+            view.track_defaults.set_test_state(0.5, false, true)
+        });
+        let (source, anchor, audio) = editor.read_with(&visual, |view, _| {
+            let p = &view.state.as_ref().unwrap().project;
+            (
+                p.tracks()[0].id(),
+                p.tracks()[1].id(),
+                p.tracks()[0].clips()[0].id(),
+            )
+        });
+        let clip = if midi {
+            editor.update(&mut visual, |view, _| {
+                assert!(
+                    view.enqueue(hex_session::service::Request::Edit(Command::RemoveClip(
+                        audio
+                    )))
+                )
+            });
+            pump_move(&editor, &mut visual);
+            editor.update(&mut visual, |view, _| {
+                assert!(view.enqueue(hex_session::service::Request::Edit(
+                    Command::PlaceMidiClip {
+                        track: source,
+                        start: BeatTime::ZERO,
+                        length: BeatTime::ONE
+                    }
+                )))
+            });
+            pump_move(&editor, &mut visual);
+            editor.read_with(&visual, |view, _| {
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .track(source)
+                    .unwrap()
+                    .midi_clips()[0]
+                    .id()
+            })
+        } else {
+            audio
+        };
+        let source_bounds = visual
+            .debug_bounds(selector(format!("clip-drag-surface-{}", clip.value())))
+            .unwrap();
+        let lane = visual
+            .debug_bounds(selector(format!("arrangement-lane-{}", anchor.value())))
+            .unwrap();
+        let down = source_bounds.center();
+        let target = point(
+            lane.origin.x + lane.size.width * 0.7,
+            lane.origin.y + px(1.0),
+        );
+        let modifiers = Modifiers {
+            alt: true,
+            platform: true,
+            ..Default::default()
+        };
+        visual.simulate_mouse_down(down, MouseButton::Left, modifiers);
+        visual.simulate_mouse_move(
+            point(down.x + px(12.0), down.y),
+            MouseButton::Left,
+            modifiers,
+        );
+        visual.simulate_mouse_move(target, MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        visual.simulate_mouse_up(target, MouseButton::Left, modifiers);
+        editor.read_with(&visual, |view, _| {
+            assert!(matches!(view.last_enqueued_edit.as_ref(), Some(Command::DuplicateAliasClipToNewTrack { initial_gain: Some(gain), .. }) if *gain == 0.5));
+            assert!(view.pending_clip_move.is_some());
+        });
+        editor.update(&mut visual, |view, _| {
+            view.track_defaults.set_test_state(0.25, false, true)
+        });
+        pump_move(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            let p = &view.state.as_ref().unwrap().project;
+            let target = &p.tracks()[1];
+            assert_eq!(target.gain(), 0.5);
+            let linked = if midi {
+                target.midi_clips()[0].id()
+            } else {
+                target.clips()[0].id()
+            };
+            assert_eq!(p.clip_alias(clip), p.clip_alias(linked));
+            assert!(view.pending_clip_move.is_none());
+        });
+    }
 }
 
 #[gpui::test]
@@ -762,8 +1042,10 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
     let original_bounds = visual
         .debug_bounds(clip_selector)
         .expect("painted audio clip");
+    // Edge trimming covers only the header rail at the top of the clip.
     assert_eq!(handle_bounds.origin.y, original_bounds.origin.y);
-    assert_eq!(handle_bounds.size.height, original_bounds.size.height);
+    let header = super::trim::edge_trim_height(f32::from(original_bounds.size.height));
+    assert!((f32::from(handle_bounds.size.height) - header).abs() <= 1.0);
     let move_bounds = visual
         .debug_bounds(Box::leak(
             format!("clip-drag-surface-{}", clip.value()).into_boxed_str(),
@@ -803,10 +1085,7 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
             ))
             .is_some()
     );
-    let down = point(
-        handle_bounds.origin.x + handle_bounds.size.width / 2.0,
-        handle_bounds.origin.y + handle_bounds.size.height / 2.0,
-    );
+    let down = trim_grab_point(handle_bounds);
     visual.simulate_mouse_move(down, None, Modifiers::default());
     visual.run_until_parked();
     assert_eq!(
@@ -817,7 +1096,7 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.pointer_down.as_ref().map(|down| down.part),
+            view.pointer_down.as_ref().map(|down| down.part()),
             Some(hex_widgets::RectanglePart::Trailing),
             "right trim edge captures its edge mouse-down: {:?}",
             view.pointer_down
@@ -1304,10 +1583,7 @@ fn rendered_midi_trim_previews_note_geometry_and_commits_release_snap(cx: &mut T
     assert_eq!(original_bounds.origin.y, lane.origin.y);
     assert_eq!(original_bounds.size.height, lane.size.height);
     assert!(visual.debug_bounds("clip-musical-grid").is_some());
-    let down = point(
-        handle_bounds.origin.x + handle_bounds.size.width / 2.0,
-        handle_bounds.origin.y + handle_bounds.size.height / 2.0,
-    );
+    let down = trim_grab_point(handle_bounds);
     visual.simulate_mouse_move(down, None, Modifiers::default());
     visual.run_until_parked();
     assert_eq!(
@@ -1429,10 +1705,7 @@ fn rendered_midi_left_trim_keeps_source_note_timeline_position(cx: &mut TestAppC
             format!("arrangement-lane-{}", source.value()).into_boxed_str(),
         ))
         .expect("source lane");
-    let down = point(
-        handle_bounds.origin.x + handle_bounds.size.width / 2.0,
-        handle_bounds.origin.y + handle_bounds.size.height / 2.0,
-    );
+    let down = trim_grab_point(handle_bounds);
     visual.simulate_mouse_move(down, None, Modifiers::default());
     visual.run_until_parked();
     assert_eq!(
@@ -1487,16 +1760,15 @@ fn rendered_midi_left_trim_keeps_source_note_timeline_position(cx: &mut TestAppC
             .expect("fixed source clip bounds"),
         original_bounds
     );
-    let note_bounds = visual
-        .debug_bounds("midi-trim-preview-note-72")
-        .expect("retained source note is painted in the trimmed preview");
+    let notes = super::midi_thumbnail::rendered_note_layer(&mut visual, "midi-trim-preview-notes");
     let note_frame = 72_000.0_f64; // beat 3 at the project's 120 bpm default
     let expected_note_x = f32::from(lane.origin.x)
         + (f64::from(lane.size.width) * note_frame / TIMELINE_FRAMES as f64) as f32;
     assert!(
-        (f32::from(note_bounds.origin.x) - expected_note_x).abs() < 2.0,
-        "advancing the source marker keeps the later note at its original timeline x: got {}, expected {expected_note_x}, preview={preview:?}",
-        f32::from(note_bounds.origin.x)
+        notes
+            .iter()
+            .any(|(bounds, _)| (f32::from(bounds.origin.x) - expected_note_x).abs() < 2.0),
+        "advancing the source marker keeps the later note at its original timeline x: got {notes:?}, expected {expected_note_x}, preview={preview:?}"
     );
     visual.simulate_mouse_up(target, MouseButton::Left, command);
     visual.run_until_parked();
@@ -1569,8 +1841,12 @@ fn command_modifier_bypasses_adaptive_snap_while_drag_is_held_and_on_release(
         }
     });
 
+    let free_preview = visual.debug_bounds("clip-drop-preview").unwrap();
+    assert_clip_move_guides(&mut visual, free_preview.left());
     visual.simulate_modifiers_change(Modifiers::default());
     visual.run_until_parked();
+    let snapped_preview = visual.debug_bounds("clip-drop-preview").unwrap();
+    assert_clip_move_guides(&mut visual, snapped_preview.left());
     let grid_released = visual
         .debug_bounds("arrangement-grid-line-0")
         .expect("grid remains visible after releasing command");
@@ -2069,7 +2345,7 @@ fn held_clip_drag_scrolls_preview_without_editing_and_rejects_stale_project(
     });
     visual.simulate_mouse_move(edge, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
-    editor.update(cx, |view, cx| {
+    let now = editor.update(cx, |view, cx| {
         let now = Instant::now();
         let before = view
             .active_clip_drag
@@ -2088,6 +2364,13 @@ fn held_clip_drag_scrolls_preview_without_editing_and_rejects_stale_project(
             Some(&original)
         );
         assert!(view.drag_start_is_current(drag));
+        cx.notify();
+        now
+    });
+    visual.run_until_parked();
+    let preview = visual.debug_bounds("clip-drop-preview").unwrap();
+    assert_clip_move_guides(visual, preview.left());
+    editor.update(cx, |view, cx| {
         let viewport = view.viewport;
         let previous = view.state.as_ref().unwrap();
         view.state = Some(Arc::new(ViewState {
@@ -2659,6 +2942,17 @@ fn selector(value: String) -> &'static str {
     Box::leak(value.into_boxed_str())
 }
 
+fn assert_clip_move_guides(visual: &mut VisualTestContext, expected_x: gpui::Pixels) {
+    for edge in ["top", "bottom"] {
+        let selector = Box::leak(format!("clip-move-guide-{edge}").into_boxed_str());
+        let marker = visual.debug_bounds(selector).expect("painted drag guide");
+        assert!(
+            (marker.center().x - expected_x).abs() <= px(1.0),
+            "{edge} guide follows the dragged anchor"
+        );
+    }
+}
+
 fn assert_move_handoff(cx: &mut TestAppContext, midi: &[bool], vertical: bool) {
     assert_drag_handoff(cx, midi, vertical, false);
 }
@@ -2816,6 +3110,283 @@ fn assert_drag_handoff_with_pending_request(
     copy: bool,
     pending: bool,
 ) {
+    assert_drag_handoff_at_grab(cx, midi, vertical, copy, pending, None, None);
+}
+
+#[gpui::test]
+fn initial_left_third_keeps_the_move_start_on_grid(cx: &mut TestAppContext) {
+    for midi in [false, true] {
+        assert_drag_handoff_at_grab(cx, &[midi], false, false, false, Some(1.0 / 3.0), None);
+    }
+}
+
+#[gpui::test]
+fn initial_two_thirds_boundary_snaps_the_move_end(cx: &mut TestAppContext) {
+    for midi in [false, true] {
+        assert_drag_handoff_at_grab(cx, &[midi], false, false, false, Some(2.0 / 3.0), None);
+    }
+}
+
+#[gpui::test]
+fn initial_right_third_retains_one_snap_delta_for_mixed_group_copy(cx: &mut TestAppContext) {
+    assert_drag_handoff_at_grab(cx, &[false, true], true, true, false, Some(5.0 / 6.0), None);
+}
+
+#[gpui::test]
+fn cropped_clip_move_chooses_from_the_full_audio_and_midi_span(cx: &mut TestAppContext) {
+    cx.update(super::bind_editor_keys);
+    for midi in [false, true] {
+        let (project, source, target, clip) = if midi {
+            midi_project()
+        } else {
+            audio_project()
+        };
+        let (start, end) = if midi {
+            let clip = project.midi_clip(clip).unwrap();
+            (
+                project.tempo_map().beat_to_frame(clip.start()).unwrap(),
+                project
+                    .tempo_map()
+                    .beat_to_frame(BeatTime::from_raw(clip.start().raw() + clip.length().raw()))
+                    .unwrap(),
+            )
+        } else {
+            let clip = project.clip(clip).unwrap();
+            (clip.start(), clip.start() + clip.duration())
+        };
+        let threshold = start + (end - start) * 2 / 3;
+        let before = project.snapshot();
+        let preview = if midi {
+            Arc::new(
+                hex_engine::compile::project_with_midi_preview(&project, &Default::default())
+                    .unwrap()
+                    .1,
+            )
+        } else {
+            Arc::default()
+        };
+        let (handle, editor) = editor_window(cx, project, preview);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        editor.update(&mut visual, |view, cx| {
+            view.viewport = Some(super::viewport::Viewport {
+                start: threshold,
+                length: TIMELINE_FRAMES - threshold,
+            });
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let surface = visual
+            .debug_bounds(selector(format!("clip-drag-surface-{}", clip.value())))
+            .unwrap();
+        let down = point(
+            surface.left() + surface.size.width / 4.0,
+            surface.center().y,
+        );
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            point(down.x + px(12.0), down.y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        let lane = editor.read_with(&visual, |view, _| view.drag_lanes[&target]);
+        visual.simulate_mouse_move(
+            point(down.x + px(80.0), px(lane.top + lane.height / 2.0)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            let drag = view.active_clip_drag.as_ref().unwrap();
+            assert_eq!(drag.source_track, source);
+            assert_eq!(
+                drag.snap_edge.get(),
+                Some(super::drag::ClipSnapEdge::Trailing),
+                "the left quarter of this visible fragment is already in the real trailing third"
+            );
+        });
+        visual.simulate_keystrokes("escape");
+        editor.read_with(&visual, |view, _| {
+            assert!(view.active_clip_drag.is_none());
+            assert!(view.last_enqueued_edit.is_none());
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+        });
+    }
+}
+
+#[derive(Clone, Copy)]
+struct OriginProbe {
+    dx: f32,
+    grid: super::musical_time::SnapGrid,
+    bypass: bool,
+    viewport_length: u64,
+}
+impl Default for OriginProbe {
+    fn default() -> Self {
+        Self {
+            dx: 2.0,
+            grid: super::musical_time::SnapGrid::Quarter,
+            bypass: false,
+            viewport_length: 384_000,
+        }
+    }
+}
+impl OriginProbe {
+    fn preserves_origin(self) -> bool {
+        !self.bypass && self.dx.abs() <= 8.0
+    }
+}
+
+fn assert_audio_origin_window(cx: &mut TestAppContext, viewport_length: u64) {
+    // A fixed frame radius cannot satisfy both zooms' near/far pixel pairs.
+    for dx in [7.0, 9.0] {
+        assert_drag_handoff_at_grab(
+            cx,
+            &[false],
+            true,
+            false,
+            false,
+            Some(1.0 / 3.0),
+            Some(OriginProbe {
+                dx,
+                viewport_length,
+                ..Default::default()
+            }),
+        );
+    }
+}
+#[gpui::test]
+fn audio_origin_capture_uses_window_distance_at_close_zoom(cx: &mut TestAppContext) {
+    assert_audio_origin_window(cx, 192_000);
+}
+#[gpui::test]
+fn audio_origin_capture_uses_window_distance_at_wide_zoom(cx: &mut TestAppContext) {
+    assert_audio_origin_window(cx, 384_000);
+}
+#[gpui::test]
+fn midi_origin_capture_is_beat_exact_at_both_edges(cx: &mut TestAppContext) {
+    for grab in [1.0 / 3.0, 5.0 / 6.0] {
+        assert_drag_handoff_at_grab(
+            cx,
+            &[true],
+            true,
+            false,
+            false,
+            Some(grab),
+            Some(OriginProbe::default()),
+        );
+    }
+}
+#[gpui::test]
+fn origin_capture_still_applies_with_the_grid_off(cx: &mut TestAppContext) {
+    for midi in [false, true] {
+        assert_drag_handoff_at_grab(
+            cx,
+            &[midi],
+            true,
+            false,
+            false,
+            Some(1.0 / 3.0),
+            Some(OriginProbe {
+                grid: super::musical_time::SnapGrid::Off,
+                ..Default::default()
+            }),
+        );
+    }
+}
+#[gpui::test]
+fn command_bypasses_audio_origin_and_both_grid_settings(cx: &mut TestAppContext) {
+    for grid in [
+        super::musical_time::SnapGrid::Quarter,
+        super::musical_time::SnapGrid::Off,
+    ] {
+        assert_drag_handoff_at_grab(
+            cx,
+            &[false],
+            true,
+            false,
+            false,
+            Some(1.0 / 3.0),
+            Some(OriginProbe {
+                grid,
+                bypass: true,
+                ..Default::default()
+            }),
+        );
+    }
+}
+#[gpui::test]
+fn command_bypasses_midi_origin_and_both_grid_settings(cx: &mut TestAppContext) {
+    for grid in [
+        super::musical_time::SnapGrid::Quarter,
+        super::musical_time::SnapGrid::Off,
+    ] {
+        assert_drag_handoff_at_grab(
+            cx,
+            &[true],
+            true,
+            false,
+            false,
+            Some(1.0 / 3.0),
+            Some(OriginProbe {
+                grid,
+                bypass: true,
+                ..Default::default()
+            }),
+        );
+    }
+}
+#[gpui::test]
+fn outside_origin_capture_returns_to_the_edge_grid(cx: &mut TestAppContext) {
+    for midi in [false, true] {
+        assert_drag_handoff_at_grab(
+            cx,
+            &[midi],
+            true,
+            false,
+            false,
+            Some(5.0 / 6.0),
+            Some(OriginProbe {
+                dx: 20.0,
+                ..Default::default()
+            }),
+        );
+    }
+}
+#[gpui::test]
+fn origin_capture_keeps_one_delta_for_mixed_group_move(cx: &mut TestAppContext) {
+    assert_drag_handoff_at_grab(
+        cx,
+        &[false, true],
+        true,
+        false,
+        false,
+        Some(5.0 / 6.0),
+        Some(OriginProbe::default()),
+    );
+}
+#[gpui::test]
+fn origin_capture_keeps_mixed_copy_paint_through_a_queued_ack(cx: &mut TestAppContext) {
+    assert_drag_handoff_at_grab(
+        cx,
+        &[false, true],
+        true,
+        true,
+        true,
+        Some(5.0 / 6.0),
+        Some(OriginProbe::default()),
+    );
+}
+
+fn assert_drag_handoff_at_grab(
+    cx: &mut TestAppContext,
+    midi: &[bool],
+    vertical: bool,
+    copy: bool,
+    pending: bool,
+    grab_fraction: Option<f32>,
+    origin: Option<OriginProbe>,
+) {
     use hex_session::service::Request;
     let (_files, handle, editor) = upper_rail_owned_fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -2842,6 +3413,17 @@ fn assert_drag_handoff_with_pending_request(
     );
     if midi[0] {
         edit(Command::RemoveClip(audio), &mut visual);
+    } else if grab_fraction.is_some() {
+        edit(
+            Command::TrimClip {
+                clip: audio,
+                start: 0,
+                duration: 84_000,
+                source_offset: 0,
+                source_length: 84_000,
+            },
+            &mut visual,
+        );
     }
     let mut clips = Vec::new();
     for (index, is_midi) in midi.iter().copied().enumerate() {
@@ -2850,7 +3432,11 @@ fn assert_drag_handoff_with_pending_request(
                 Command::PlaceMidiClip {
                     track: tracks[index],
                     start: BeatTime::from_quarters(2 * index as u64).unwrap(),
-                    length: BeatTime::ONE,
+                    length: if grab_fraction.is_some() {
+                        BeatTime::from_raw(BeatTime::ONE.raw() * 3 / 2)
+                    } else {
+                        BeatTime::ONE
+                    },
                 },
                 &mut visual,
             );
@@ -2900,6 +3486,41 @@ fn assert_drag_handoff_with_pending_request(
         };
         clips.push(clip);
     }
+    if origin.is_some() {
+        for (clip, midi) in clips.iter().zip(midi) {
+            let command = editor.read_with(&visual, |v, _| {
+                let project = &v.state.as_ref().unwrap().project;
+                if *midi {
+                    let item = project.midi_clip(*clip).unwrap();
+                    Command::MoveMidiClip {
+                        clip: *clip,
+                        track: project
+                            .tracks()
+                            .iter()
+                            .find(|t| t.midi_clips().iter().any(|c| c.id() == *clip))
+                            .unwrap()
+                            .id(),
+                        start: BeatTime::from_raw(
+                            item.start().raw() + BeatTime::ONE.raw() / 3 + 137,
+                        ),
+                    }
+                } else {
+                    let item = project.clip(*clip).unwrap();
+                    Command::MoveClip {
+                        clip: *clip,
+                        track: project
+                            .tracks()
+                            .iter()
+                            .find(|t| t.clips().iter().any(|c| c.id() == *clip))
+                            .unwrap()
+                            .id(),
+                        start: item.start() + 15_137,
+                    }
+                }
+            });
+            edit(command, &mut visual);
+        }
+    }
     for (i, clip) in clips.iter().enumerate() {
         let header = visual
             .debug_bounds(selector(format!("clip-name-{}", clip.value())))
@@ -2914,26 +3535,142 @@ fn assert_drag_handoff_with_pending_request(
     }
     visual.run_until_parked();
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.clone());
+    if grab_fraction.is_some() {
+        editor.update(&mut visual, |view, cx| {
+            view.snap_grid = super::musical_time::SnapGrid::Quarter;
+            cx.notify();
+        });
+    }
+    if let Some(probe) = origin {
+        editor.update(&mut visual, |view, cx| {
+            view.snap_grid = probe.grid;
+            view.viewport = Some(super::viewport::Viewport {
+                start: 0,
+                length: probe.viewport_length,
+            });
+            cx.notify();
+        });
+        visual.run_until_parked();
+    }
     let anchor = clips[0]; // Deliberately drag the non-primary member of a group.
-    let down = visual
+    let move_bounds = visual
         .debug_bounds(selector(format!("clip-drag-surface-{}", anchor.value())))
-        .unwrap()
-        .center();
+        .unwrap();
+    let source_bounds = visual
+        .debug_bounds(selector(if grab_fraction.is_some() {
+            format!(
+                "{}clip-visual-{}",
+                if midi[0] { "midi-" } else { "" },
+                anchor.value()
+            )
+        } else {
+            format!("clip-drag-surface-{}", anchor.value())
+        }))
+        .unwrap();
+    let down = point(
+        source_bounds.left() + source_bounds.size.width * grab_fraction.unwrap_or(0.5),
+        move_bounds.center().y,
+    );
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    if let Some(fraction) = grab_fraction {
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.pointer_down.unwrap().snap_edge,
+                Some(if fraction >= 2.0 / 3.0 {
+                    super::drag::ClipSnapEdge::Trailing
+                } else {
+                    super::drag::ClipSnapEdge::Leading
+                }),
+                "edge is fixed at the initial press"
+            );
+        });
+    }
     visual.simulate_mouse_move(
         point(down.x + px(12.0), down.y),
         MouseButton::Left,
         Modifiers::default(),
     );
     let lane = editor.read_with(&visual, |v, _| v.drag_lanes[&tracks[usize::from(vertical)]]);
-    let end = point(down.x + px(120.0), px(lane.top + lane.height * 0.5));
+    let end = point(
+        down.x + px(origin.map_or(120.0, |probe| probe.dx)),
+        px(lane.top + lane.height * 0.5),
+    );
     visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
     let release_modifiers = Modifiers {
         alt: copy,
+        platform: origin.is_some_and(|probe| probe.bypass),
         ..Default::default()
     };
     visual.simulate_modifiers_change(release_modifiers);
     visual.run_until_parked();
+    if let Some(fraction) = grab_fraction {
+        editor.read_with(&visual, |view, _| {
+            use super::drag::{ClipPosition, ClipSnapEdge};
+            let drag = view.active_clip_drag.as_ref().unwrap();
+            let trailing = fraction >= 2.0 / 3.0;
+            assert_eq!(drag.source_span.get(), Some((f32::from(source_bounds.left()), f32::from(source_bounds.size.width))),
+                "snap capture uses the completed full clip bounds");
+            assert_eq!(
+                drag.snap_edge.get(),
+                Some(if trailing {
+                    ClipSnapEdge::Trailing
+                } else {
+                    ClipSnapEdge::Leading
+                }),
+                "fraction={fraction}, source={source_bounds:?}, original={:?}, press={:?}, offset={:?}",
+                drag.position, drag.capture.get(), drag.grab_offset.get()
+            );
+            let placed = drag.preview.get().unwrap().position;
+            if let Some(probe) = origin {
+                if probe.preserves_origin() { assert_eq!(placed, drag.position, "captured typed origin"); }
+                else { assert_ne!(placed, drag.position, "free or out-of-capture movement"); }
+                if probe.bypass {
+                    let (original, actual) = match (drag.position, placed) {
+                        (ClipPosition::Audio { start: original, .. }, ClipPosition::Audio { start: actual, .. }) => (original, actual),
+                        (ClipPosition::Midi { start: original, .. }, ClipPosition::Midi { start: actual, .. }) => (view.state.as_ref().unwrap().project.tempo_map().beat_to_frame(original).unwrap(), view.state.as_ref().unwrap().project.tempo_map().beat_to_frame(actual).unwrap()),
+                        _ => panic!("clip kind changed"),
+                    };
+                    let expected = original as f64 + f64::from(probe.dx) * drag.viewport().length as f64 / f64::from(lane.width);
+                    assert!((actual as f64 - expected).abs() <= 2.0, "command is free: actual={actual}, expected={expected}");
+                }
+                if probe.bypass || matches!(probe.grid, super::musical_time::SnapGrid::Off) { return; }
+                if probe.preserves_origin() { return; }
+            }
+            match (drag.position, placed) {
+                (
+                    ClipPosition::Audio { duration, .. },
+                    ClipPosition::Audio {
+                        start,
+                        duration: moved,
+                    },
+                ) => {
+                    assert_eq!(duration, moved);
+                    assert_eq!((start + if trailing { duration } else { 0 }) % 24_000, 0);
+                    if trailing {
+                        assert_ne!(start % 24_000, 0);
+                    }
+                }
+                (
+                    ClipPosition::Midi { length, .. },
+                    ClipPosition::Midi {
+                        start,
+                        length: moved,
+                    },
+                ) => {
+                    assert_eq!(length, moved);
+                    assert_eq!(
+                        (start.raw() + if trailing { length.raw() } else { 0 })
+                            % BeatTime::ONE.raw(),
+                        0
+                    );
+                    if trailing {
+                        assert_ne!(start.raw() % BeatTime::ONE.raw(), 0);
+                    }
+                }
+                _ => panic!("clip kind changed"),
+            }
+        });
+    }
     let previews: Vec<_> = clips
         .iter()
         .map(|clip| {
@@ -2951,6 +3688,8 @@ fn assert_drag_handoff_with_pending_request(
             (preview, bounds, fill, title, title_fill)
         })
         .collect();
+    let anchor_x = previews[0].1.left();
+    assert_clip_move_guides(&mut visual, anchor_x);
     let held_notes: Vec<_> = clips
         .iter()
         .zip(midi)
@@ -2991,6 +3730,7 @@ fn assert_drag_handoff_with_pending_request(
     for _ in 0..2 {
         editor.update(&mut visual, |_, cx| cx.notify());
         visual.run_until_parked();
+        assert_clip_move_guides(&mut visual, anchor_x);
         assert!(
             visual.debug_bounds("clip-drop-overlap-0").is_none(),
             "release retires hover feedback independently of destination paint"
@@ -3090,6 +3830,8 @@ fn assert_drag_handoff_with_pending_request(
             "exact canonical content, IDs, offsets and extent"
         );
     });
+    assert!(visual.debug_bounds("clip-move-guide-top").is_none());
+    assert!(visual.debug_bounds("clip-move-guide-bottom").is_none());
     for ((clip, is_midi), (preview, held, _, _, _)) in canonical_ids.iter().zip(midi).zip(&previews)
     {
         assert!(visual.debug_bounds(preview).is_none());
@@ -3105,6 +3847,26 @@ fn assert_drag_handoff_with_pending_request(
         assert!((f32::from(actual.top() - held.top())).abs() <= 1.0);
         assert!((f32::from(actual.size.width - held.size.width)).abs() <= 1.0);
         assert!(visual.rendered_background(canonical).is_some());
+    }
+    if origin.is_some_and(OriginProbe::preserves_origin) {
+        editor.read_with(&visual, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            for ((original, current), midi) in clips.iter().zip(&canonical_ids).zip(midi) {
+                if *midi {
+                    assert_eq!(
+                        project.midi_clip(*current).unwrap().start(),
+                        before.midi_clip(*original).unwrap().start(),
+                        "group MIDI origin stays Q32.32 exact"
+                    );
+                } else {
+                    assert_eq!(
+                        project.clip(*current).unwrap().start(),
+                        before.clip(*original).unwrap().start(),
+                        "group audio origin stays frame exact"
+                    );
+                }
+            }
+        });
     }
     let committed = expected.project().snapshot();
     visual.simulate_keystrokes("cmd-z");
@@ -3142,6 +3904,7 @@ fn rendered_move_cancel_and_stale_controls_restore_source(cx: &mut TestAppContex
         let old = visual.debug_bounds(source).unwrap();
         let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
         let (_, end) = drag_source_to_target(cx, &mut visual, &editor, clip, 1, 120.0);
+        assert!(visual.debug_bounds("clip-move-guide-top").is_some());
         match control {
             0 => visual.simulate_keystrokes("escape"),
             1 => visual.update(|window, cx| {
@@ -3181,6 +3944,8 @@ fn rendered_move_cancel_and_stale_controls_restore_source(cx: &mut TestAppContex
             v.error = None;
         });
         pump_move(&editor, &mut visual);
+        assert!(visual.debug_bounds("clip-move-guide-top").is_none());
+        assert!(visual.debug_bounds("clip-move-guide-bottom").is_none());
         editor.read_with(&visual, |v, _| {
             assert!(v.pending_clip_move.is_none() && v.active_clip_drag.is_none());
             if control < 2 {
@@ -3289,4 +4054,107 @@ fn rendered_move_real_refusal_retires_only_its_matching_fifo_terminal(cx: &mut T
     );
     let source = selector(format!("clip-visual-{}", clip.value()));
     assert!(visual.debug_bounds(source).is_some() && visual.rendered_background(source).is_some());
+}
+
+#[gpui::test]
+fn alias_drag_preview_and_release_follow_live_modifiers_for_audio_and_midi(
+    cx: &mut TestAppContext,
+) {
+    for midi in [false, true] {
+        let (project, _, target, clip) = if midi {
+            midi_project()
+        } else {
+            audio_project()
+        };
+        let midi_preview = if midi {
+            let (_, preview) =
+                hex_engine::compile::project_with_midi_preview(&project, &Default::default())
+                    .unwrap();
+            Arc::new(preview)
+        } else {
+            Arc::default()
+        };
+        let (handle, editor) = editor_window(cx, project, midi_preview);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        let (_, release) = drag_source_to_target(cx, &mut visual, &editor, clip, 1, 90.0);
+        assert!(visual.debug_bounds("clip-alias-drag-indicator").is_none());
+        let alias = Modifiers {
+            alt: true,
+            platform: true,
+            ..Modifiers::default()
+        };
+        visual.simulate_modifiers_change(alias);
+        visual.run_until_parked();
+        let badge = visual.debug_bounds("clip-alias-drag-indicator").unwrap();
+        let preview = visual.debug_bounds("clip-drop-preview").unwrap();
+        assert!(
+            badge.right() <= preview.right() - px(5.0),
+            "alias badge clears the clip corner cut"
+        );
+        visual.simulate_modifiers_change(Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("clip-alias-drag-indicator").is_none());
+        visual.simulate_modifiers_change(alias);
+        visual.run_until_parked();
+        visual.simulate_mouse_up(release, MouseButton::Left, alias);
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert!(matches!(view.last_enqueued_edit.as_ref(), Some(Command::DuplicateAliasClipsAt { clips, anchor, track, .. }) if clips == &[clip] && *anchor == clip && *track == target));
+            assert!(view.pending_clip_move.is_some(), "preview remains in custody until the worker reply");
+        });
+        assert!(visual.debug_bounds("clip-alias-drag-indicator").is_some());
+    }
+}
+
+#[gpui::test]
+fn drag_guides_preserve_locked_play_start_through_cancel_and_ack(cx: &mut TestAppContext) {
+    for cancel in [true, false] {
+        let (_files, handle, editor) = upper_rail_owned_fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(gpui::size(px(1280.0), px(800.0)));
+        visual.run_until_parked();
+        let clip = editor.update(&mut visual, |view, cx| {
+            let track = &view.state.as_ref().unwrap().project.tracks()[0];
+            let clip = track.clips()[0].id();
+            let cursor = super::edit_cursor::EditCursor {
+                track: track.id(),
+                frame: 24_000,
+                generation: view.project_generation,
+                pulse_color: crate::theme::time_position_marker_color(),
+                pulse_started: std::time::Instant::now(),
+            };
+            view.edit_cursor = Some(cursor);
+            view.locked_play_start = Some(cursor);
+            cx.notify();
+            clip
+        });
+        visual.run_until_parked();
+        let (_, end) = drag_source_to_target(cx, &mut visual, &editor, clip, 1, 120.0);
+        assert!(visual.debug_bounds("clip-move-guide-top").is_some());
+        assert!(visual.debug_bounds("locked-play-start-top").is_some());
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.playback_start_frame(), 24_000)
+        });
+        if cancel {
+            visual.simulate_keystrokes("escape");
+        }
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        if !cancel {
+            visual.run_until_parked();
+            assert!(visual.debug_bounds("clip-move-guide-top").is_some());
+            pump_move(&editor, &mut visual);
+        }
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("clip-move-guide-top").is_none());
+        assert!(visual.debug_bounds("clip-move-guide-bottom").is_none());
+        assert!(visual.debug_bounds("locked-play-start-top").is_some());
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.valid_locked_play_start().unwrap().frame, 24_000);
+            assert_eq!(view.playback_start_frame(), 24_000);
+            assert!(view.last_transport_command.is_none());
+        });
+    }
 }
