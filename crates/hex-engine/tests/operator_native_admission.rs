@@ -350,7 +350,7 @@ fn registered_operator_matches_independent_arrangement_session_seek_and_loop_pcm
         .iter()
         .find(|entry| entry.type_id == OPERATOR)
         .expect("Operator catalog entry");
-    assert_eq!(operator.parameters.len(), 428);
+    assert_eq!(operator.parameters.len(), 432);
     let enables: Vec<_> = operator
         .parameters
         .iter()
