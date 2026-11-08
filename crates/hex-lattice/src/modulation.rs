@@ -181,6 +181,14 @@ impl PreparedModulation {
             .map(|target| target.authored.descriptor)
     }
 
+    /// Semantics the host must revalidate against the current provider state.
+    pub fn semantics(&self, id: ParameterId) -> Option<ParameterSemantics> {
+        let index = self.ids.binary_search(&id).ok()?;
+        self.targets
+            .get(index)
+            .map(|target| target.authored.semantics)
+    }
+
     /// Number of source buffers required by this prepared program.
     pub fn source_count(&self) -> usize {
         self.source_count
@@ -382,6 +390,11 @@ mod tests {
             Some(targets[0].descriptor)
         );
         assert_eq!(program.descriptor(ParameterId::from_static(3)), None);
+        assert_eq!(
+            program.semantics(targets[0].descriptor.id),
+            Some(targets[0].semantics)
+        );
+        assert_eq!(program.semantics(ParameterId::from_static(3)), None);
         assert_eq!(program.source_count(), 2);
         let a = [0.0, 1.0, -1.0];
         let b = [0.0, -1.0, 1.0];
