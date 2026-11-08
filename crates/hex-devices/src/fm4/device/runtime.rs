@@ -353,24 +353,40 @@ impl Runtime {
                 envelope.release = voice.release_ceiling;
                 let amplitude = envelope.level(voice.age, voice.gate.unwrap_or(u64::MAX))
                     * (f64::from(voice.velocity) / 127.0);
-                let mut configuration = self.effective;
-                for (phase, offset) in configuration.phases.iter_mut().zip(voice.phase_offsets) {
-                    *phase = phase.wrapping_add(offset);
-                }
                 let sample = if amplitude == 0.0 {
                     0.0
                 } else {
-                    (configuration.routed_output::<false>(
-                        self.config.table,
-                        voice.age,
-                        &steps,
-                        [1.0; 4],
-                    ) * amplitude) as f32
+                    let output = if voice.phase_offsets == [0; 4] {
+                        self.effective.routed_output::<false>(
+                            self.config.table,
+                            voice.age,
+                            &steps,
+                            [1.0; 4],
+                        )
+                    } else {
+                        let mut configuration = self.effective;
+                        for (phase, offset) in
+                            configuration.phases.iter_mut().zip(voice.phase_offsets)
+                        {
+                            *phase = phase.wrapping_add(offset);
+                        }
+                        configuration.routed_output::<false>(
+                            self.config.table,
+                            voice.age,
+                            &steps,
+                            [1.0; 4],
+                        )
+                    };
+                    (output * amplitude) as f32
                 };
-                let gain = gains
-                    .binary_search_by_key(&voice.id, |gain| gain.occurrence_id())
-                    .ok()
-                    .map_or(1.0, |index| gains[index].value_at_offset(offset as u64));
+                let gain = if gains.is_empty() {
+                    1.0
+                } else {
+                    gains
+                        .binary_search_by_key(&voice.id, |gain| gain.occurrence_id())
+                        .ok()
+                        .map_or(1.0, |index| gains[index].value_at_offset(offset as u64))
+                };
                 sum += f64::from(sample) * gain;
                 voice.advance(1);
             }
