@@ -16,6 +16,7 @@
 use super::{Session, recovery};
 use hex_storage::automation_draft::DraftWriter;
 mod native_device;
+mod recovery_copy;
 pub use hex_storage::automation_draft::{
     AppliedEvent, DraftAbortReason, DraftClock, DraftProgress, DraftProvenance, DraftTarget,
     DraftTerminal,
@@ -23,6 +24,7 @@ pub use hex_storage::automation_draft::{
 pub use native_device::{
     DeviceDraftInput, Vst3ApplicationValue, Vst3CaptureTarget, Vst3ParameterApplication,
 };
+pub use recovery_copy::{RecoverySource, copy_failed_on_control};
 use std::{
     collections::VecDeque,
     path::{Path, PathBuf},

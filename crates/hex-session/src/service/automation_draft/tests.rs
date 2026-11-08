@@ -74,6 +74,165 @@ fn reader(path: &Path) -> DraftReader {
     )
     .unwrap()
 }
+
+fn failed_outcome(path: PathBuf, acknowledged: u64, events: &[AppliedEvent]) -> DraftWorkerOutcome {
+    let retained = if events.is_empty() {
+        Vec::new()
+    } else {
+        let mut batch = Box::new(Batch {
+            slot: 0,
+            ticket: 1,
+            events: [event(1); EVENTS_PER_BATCH],
+            len: events.len(),
+        });
+        batch.events[..events.len()].copy_from_slice(events);
+        vec![RetainedBatch(batch)]
+    };
+    DraftWorkerOutcome {
+        path,
+        admitted_events: acknowledged + events.len() as u64,
+        progress: DraftProgress {
+            durable_events: acknowledged,
+            ..Default::default()
+        },
+        requested_terminal: DraftTerminal::Interrupted,
+        failure: Some("test failure".into()),
+        retained,
+    }
+}
+
+fn copy_test(
+    outcome: &DraftWorkerOutcome,
+    destination: &Path,
+    limits: DraftReadLimits,
+    max_events: u64,
+) -> Result<(), String> {
+    let captured = reader(&outcome.path);
+    let project = captured.source().clone();
+    let target = captured.target();
+    let provenance = captured.provenance();
+    let clock = captured.capture_clock();
+    drop(captured);
+    copy_failed_on_control(
+        outcome,
+        RecoverySource {
+            project: &project,
+            target,
+            provenance,
+            clock,
+        },
+        destination,
+        limits,
+        max_events,
+    )
+}
+
+#[test]
+fn failed_copy_reconciles_partial_and_complete_overlaps() {
+    for visible in 1..=3 {
+        let files = Files::new();
+        let source = files.path("source");
+        let output = files.path("copy");
+        let (project, target, stamp) = fixture();
+        let mut writer = DraftWriter::create_new(&source, &project, target, stamp).unwrap();
+        writer
+            .append(&(1..=visible).map(event).collect::<Vec<_>>())
+            .unwrap();
+        drop(writer);
+        let original = fs::read(&source).unwrap();
+        let outcome = failed_outcome(source.clone(), 1, &[event(2), event(3)]);
+        copy_test(
+            &outcome,
+            &output,
+            DraftReadLimits {
+                max_source_bytes: 65536,
+            },
+            3,
+        )
+        .unwrap();
+        let mut recovered = reader(&output);
+        let mut page = [None; 4];
+        assert_eq!(recovered.read_events(0, &mut page).unwrap(), 3);
+        assert_eq!(
+            &page[..3],
+            &[Some(event(1)), Some(event(2)), Some(event(3))]
+        );
+        assert_eq!(recovered.outcome(), DraftOutcome::Interrupted);
+        assert_eq!(fs::read(&source).unwrap(), original);
+        assert_eq!(outcome.retained[0].events(), &[event(2), event(3)]);
+    }
+}
+
+#[test]
+fn failed_copy_refuses_inconsistent_custody_and_keeps_original() {
+    let files = Files::new();
+    let source = files.path("source");
+    let (project, target, stamp) = fixture();
+    let mut writer = DraftWriter::create_new(&source, &project, target, stamp).unwrap();
+    writer.append(&[event(1), event(2)]).unwrap();
+    drop(writer);
+    let original = fs::read(&source).unwrap();
+    let limits = DraftReadLimits {
+        max_source_bytes: 65536,
+    };
+    let mismatch = failed_outcome(source.clone(), 1, &[event(3)]);
+    assert!(copy_test(&mismatch, &files.path("mismatch"), limits, 4).is_err());
+    let missing = failed_outcome(source.clone(), 3, &[]);
+    assert!(copy_test(&missing, &files.path("missing"), limits, 4).is_err());
+    let duplicate = failed_outcome(source.clone(), 2, &[event(2)]);
+    assert!(copy_test(&duplicate, &files.path("duplicate"), limits, 4).is_err());
+    assert!(copy_test(&duplicate, &files.path("budget"), limits, 1).is_err());
+    let collision = files.path("collision");
+    fs::write(&collision, b"keep").unwrap();
+    let valid = failed_outcome(source.clone(), 2, &[]);
+    let (expected_project, expected_target, mut wrong_stamp) = fixture();
+    wrong_stamp.gesture_serial += 1;
+    assert!(
+        copy_failed_on_control(
+            &valid,
+            RecoverySource {
+                project: &expected_project,
+                target: expected_target,
+                provenance: wrong_stamp,
+                clock: None
+            },
+            &files.path("wrong-identity"),
+            limits,
+            4
+        )
+        .is_err()
+    );
+    assert!(!files.path("wrong-identity").exists());
+    assert!(copy_test(&valid, &collision, limits, 4).is_err());
+    assert_eq!(fs::read(&collision).unwrap(), b"keep");
+    assert_eq!(fs::read(&source).unwrap(), original);
+}
+
+#[test]
+fn failed_copy_retains_valid_prefix_after_damaged_tail_and_reports_output_error() {
+    let files = Files::new();
+    let source = files.path("source");
+    let (project, target, stamp) = fixture();
+    let mut writer = DraftWriter::create_new(&source, &project, target, stamp).unwrap();
+    writer.append(&[event(1)]).unwrap();
+    drop(writer);
+    let mut bytes = fs::read(&source).unwrap();
+    bytes.push(3);
+    fs::write(&source, &bytes).unwrap();
+    let outcome = failed_outcome(source.clone(), 1, &[event(2)]);
+    let limits = DraftReadLimits {
+        max_source_bytes: 65536,
+    };
+    assert!(copy_test(&outcome, &files.path("missing-dir").join("copy"), limits, 2).is_err());
+    let output = files.path("copy");
+    copy_test(&outcome, &output, limits, 2).unwrap();
+    let mut recovered = reader(&output);
+    let mut page = [None; 2];
+    assert_eq!(recovered.read_events(0, &mut page).unwrap(), 2);
+    assert_eq!(page, [Some(event(1)), Some(event(2))]);
+    assert_eq!(recovered.outcome(), DraftOutcome::Interrupted);
+    assert_eq!(fs::read(source).unwrap(), bytes);
+}
 fn send(input: &mut DraftInput, events: &[AppliedEvent]) {
     let mut batch = input.reserve_batch().unwrap().unwrap();
     for event in events {
