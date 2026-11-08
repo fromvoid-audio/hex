@@ -219,6 +219,7 @@ fn outgoing_gain_holds_left_limit_and_retired_ids_are_never_dispatched() {
             &mut events,
             None,
             &resources,
+            None,
         )
         .unwrap();
     runtime.commit_block();
@@ -268,7 +269,8 @@ fn foreign_live_id_refuses_before_output_and_rollback_keeps_original_history() {
                 &[],
                 &mut events,
                 None,
-                &resources
+                &resources,
+                None,
             )
             .is_err()
     );
@@ -288,6 +290,7 @@ fn foreign_live_id_refuses_before_output_and_rollback_keeps_original_history() {
             &mut events,
             None,
             &resources,
+            None,
         )
         .unwrap();
     runtime.commit_block();
@@ -334,6 +337,7 @@ fn retired_gain_never_reacquires_a_new_curve_or_a_rebased_old_clock() {
             &mut events,
             None,
             &resources,
+            None,
         )
         .unwrap();
     runtime.commit_block();
