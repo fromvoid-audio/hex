@@ -2132,6 +2132,15 @@ impl EditorView {
             let diagnostic = "original media changed · reopen or relink it";
             let message = fault_with_action_errors(&self.error, diagnostic, &action_errors);
             visible_change |= replace_error(&mut self.error, &message);
+        } else if audio
+            .control
+            .status()
+            .is_some_and(|status| status.take_stream_read_failure())
+        {
+            visible_change |= replace_status(&mut self.status, "streamed media read failed");
+            let diagnostic = "streamed media read failed · check original media and retry playback";
+            let message = fault_with_action_errors(&self.error, diagnostic, &action_errors);
+            visible_change |= replace_error(&mut self.error, &message);
         } else if self.stream_source_warning {
             self.stream_source_warning = false;
             if self.status == "streamed media unavailable" {
