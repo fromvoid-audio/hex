@@ -43,6 +43,7 @@ mod cpu_meter;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod delete_ui_tests;
 mod device_automation;
+mod history_playback;
 mod leftover_recovery;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod navigation_metrics;
