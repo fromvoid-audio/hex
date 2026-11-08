@@ -60,6 +60,7 @@ impl Context {
 pub(super) struct PendingDelivery {
     pub(super) target: hex_audio::foreign_parameter_delivery::Target,
     pub(super) context: Context,
+    pub(super) receipt: Option<Receipt>,
 }
 impl PendingDelivery {
     fn source(self) -> DeviceAutomationSource {
@@ -136,31 +137,47 @@ impl Gesture {
         control: &mut PublicationControl,
     ) -> Result<bool, Error> {
         let pending = self.pending.as_mut().ok_or_else(lost)?;
-        let expected = pending.delivery.ok_or_else(lost)?.target;
-        let Some(receipt) = control.try_native_source_parameter_delivery_on_control() else {
+        let delivery = pending.delivery.as_mut().ok_or_else(lost)?;
+        let expected = delivery.target;
+        // The final-output witness and SDK mailbox ACK have separate custody.
+        // Drain the ACK even if output was already confirmed, before Release
+        // can reuse that mailbox. Retain an early witness while ACK is busy.
+        if !pending.sdk_finished {
             match poll_input(control, self.binding, &pending.token) {
                 Ok(
                     NativeWorkerParameterProgress::Processed(_)
                     | NativeWorkerParameterProgress::Flushed,
-                ) => pending.processed = true,
+                ) => {
+                    pending.processed = true;
+                    pending.sdk_finished = true;
+                }
                 Ok(NativeWorkerParameterProgress::Pending) | Err("native preparation is busy") => {}
                 _ => {
+                    pending.sdk_finished = true;
                     control.cancel_native_source_parameter_delivery_on_control(expected);
                 }
             }
-            return Ok(false);
-        };
-        let actual = match receipt {
-            Receipt::Delivered { target, .. }
-            | Receipt::Released { target, .. }
-            | Receipt::Aborted { target, .. } => target,
-        };
-        if actual != expected {
-            control.cancel_native_source_parameter_delivery_on_control(expected);
-            return Err(lost());
         }
+        if delivery.receipt.is_none()
+            && let Some(receipt) = control.try_native_source_parameter_delivery_on_control()
+        {
+            let actual = match receipt {
+                Receipt::Delivered { target, .. }
+                | Receipt::Released { target, .. }
+                | Receipt::Aborted { target, .. } => target,
+            };
+            if actual != expected {
+                control.cancel_native_source_parameter_delivery_on_control(expected);
+                return Err(lost());
+            }
+            delivery.receipt = Some(receipt);
+        }
+        if !pending.sdk_finished || delivery.receipt.is_none() {
+            return Ok(false);
+        }
+        let receipt = delivery.receipt;
         let pending = self.pending.take().ok_or_else(lost)?;
-        self.observe_delivery(pending, Some(receipt))?;
+        self.observe_delivery(pending, receipt)?;
         Ok(true)
     }
     fn poll_retired(&mut self) {

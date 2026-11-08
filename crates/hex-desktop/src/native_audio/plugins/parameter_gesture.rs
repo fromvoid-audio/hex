@@ -34,6 +34,7 @@ struct PendingPoint {
     opening_hold: bool,
     delivery: Option<delivery::PendingDelivery>,
     processed: bool,
+    sdk_finished: bool,
 }
 
 pub(super) struct Gesture {
@@ -531,6 +532,7 @@ impl Gesture {
                         Some(delivery::PendingDelivery {
                             target: delivery,
                             context: source,
+                            receipt: None,
                         }),
                     )
                 } else {
@@ -561,6 +563,7 @@ impl Gesture {
                         Some(delivery::PendingDelivery {
                             target: delivery,
                             context: source,
+                            receipt: None,
                         }),
                     )
                 } else {
@@ -584,6 +587,7 @@ impl Gesture {
                 opening_hold,
                 delivery,
                 processed: false,
+                sdk_finished: false,
             });
             self.drain_point(control)?;
         }

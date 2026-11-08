@@ -238,6 +238,7 @@ impl Gesture {
                         opening_hold: false,
                         delivery: None,
                         processed: false,
+                        sdk_finished: false,
                     })
                 }
                 Err(reason) if source_gone(reason) => live.discard = true,
