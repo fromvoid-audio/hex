@@ -1,7 +1,7 @@
 use super::*;
 use crate::{Command, Editor, TrackSelectionIds};
 use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
-fn state() -> NativeDeviceState {
+pub(super) fn state() -> NativeDeviceState {
     NativeDeviceState::new(DeviceTypeId::new("test.automation").unwrap(), 1, vec![1, 2]).unwrap()
 }
 fn point(quarters: u32, value: f32, outgoing: AutomationInterpolation) -> AutomationPoint {
@@ -11,13 +11,13 @@ fn point(quarters: u32, value: f32, outgoing: AutomationInterpolation) -> Automa
         outgoing,
     }
 }
-fn points() -> Vec<AutomationPoint> {
+pub(super) fn points() -> Vec<AutomationPoint> {
     vec![
         point(1, 0.25, AutomationInterpolation::Linear),
         point(3, 0.75, AutomationInterpolation::Step),
     ]
 }
-fn fixture() -> (Editor, crate::TrackId, DeviceId) {
+pub(super) fn fixture() -> (Editor, crate::TrackId, DeviceId) {
     let mut e = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let Created::Track(track) = e
         .execute(Command::AddTrack {
@@ -286,6 +286,7 @@ fn provider_replacement_refuses_to_reinterpret_existing_parameter_ids() {
             comparison: None,
         },
         Command::ReplaceDeviceStateWithIdentityReservation {
+            automation: None,
             device,
             expected_state: state(),
             expected_variant: crate::DeviceVariant::A,

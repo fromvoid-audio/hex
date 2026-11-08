@@ -120,10 +120,10 @@ mod device;
 mod device_automation;
 pub use device_automation::{
     AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
-    DeviceAutomation, DeviceAutomationTarget, DeviceAutomationTouchSpan, DeviceAutomationTouchStep,
-    MAX_DEVICE_AUTOMATION_LANES, MAX_DEVICE_AUTOMATION_POINTS,
-    MAX_DEVICE_AUTOMATION_POINTS_PER_LANE, MAX_DEVICE_AUTOMATION_TOUCH_SPANS,
-    validate_device_automation,
+    DeviceAutomation, DeviceAutomationReplacement, DeviceAutomationTarget,
+    DeviceAutomationTouchSpan, DeviceAutomationTouchStep, MAX_DEVICE_AUTOMATION_LANES,
+    MAX_DEVICE_AUTOMATION_POINTS, MAX_DEVICE_AUTOMATION_POINTS_PER_LANE,
+    MAX_DEVICE_AUTOMATION_TOUCH_SPANS, validate_device_automation,
 };
 mod device_clipboard;
 pub use device_clipboard::{DeviceChainOwner, DeviceClipboard, DeviceSelectionIds};

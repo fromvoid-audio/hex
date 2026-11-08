@@ -402,6 +402,9 @@ pub enum Command {
     /// Expected source, active A/B slot and allocator cursor prevent stale UI edits overwriting
     /// another edit; history preserves the allocator high-water mark on undo.
     ReplaceDeviceStateWithIdentityReservation {
+        /// None preserves inventory; Some atomically replaces it after an exact
+        /// authored-inventory comparison, without inferring provider-ID mappings.
+        automation: Option<crate::DeviceAutomationReplacement>,
         device: DeviceId,
         expected_state: hex_lattice_contract::NativeDeviceState,
         expected_variant: crate::DeviceVariant,
