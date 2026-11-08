@@ -789,6 +789,11 @@ fn recorded_session_gesture_commits_one_take_and_reopens() {
                 "session_record"
                     | "session_record_changed"
                     | "session_barriers"
+                    | "session_save"
+                    | "session_barrier_undo"
+                    | "session_barrier_export"
+                    | "session_barrier_refused"
+                    | "session_barrier_stop"
                     | "session_stop"
                     | "session_refused"
                     | "session_cancel"
@@ -1982,37 +1987,185 @@ fn verify_instrument_takeover(
             send(h, &mut client, true);
             return;
         }
-        if case == "session_barriers" {
+        if matches!(
+            case.as_str(),
+            "session_barrier_undo" | "session_barrier_export"
+        ) {
+            let files = Files::new();
+            let path = files.0.join("recorded.wav");
+            h.service
+                .submit(if case == "session_barrier_undo" {
+                    Request::Undo
+                } else {
+                    Request::ExportRange {
+                        path: path.clone(),
+                        start: 0,
+                        frames: Some(512),
+                        signal: hex_session::service::ExportSignal::Main,
+                        control: hex_session::service::ExportControl::default(),
+                        format: hex_session::service::ExportFormat::Pcm16,
+                        overwrite: false,
+                    }
+                })
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut recorded = None;
+            let completed = loop {
+                h.pump();
+                h.render_worker_step();
+                if let Ok(event) = h.service.try_event() {
+                    assert!(event.error.is_none(), "{case}: {:?}", event.error);
+                    if let Some(ack) = event.gesture_ack.as_ref() {
+                        assert!(ack.accepted && !ack.preview_retained && !ack.source_lost);
+                        assert!(recorded.replace(event.state.project.clone()).is_none());
+                        assert_ne!(event.state.project.as_ref(), &before);
+                    } else if event.request_complete {
+                        assert!(recorded.is_some(), "take must precede original action");
+                        break event;
+                    }
+                }
+                assert!(Instant::now() < deadline, "{case}: terminal timed out");
+                std::thread::yield_now();
+            };
+            if case == "session_barrier_undo" {
+                assert_eq!(completed.state.project.as_ref(), &before);
+                let redone = super::automation::edit_with_running_callback(h, Request::Redo);
+                assert!(redone.error.is_none(), "{:?}", redone.error);
+                assert_eq!(redone.state.project, recorded.unwrap());
+            } else {
+                assert_eq!(completed.state.project, recorded.unwrap());
+                loop {
+                    h.pump();
+                    h.render_worker_step();
+                    if let Ok(export) = h.service.try_export_event() {
+                        assert_eq!(export.revision, completed.state.revision);
+                        // Offline foreign automation has a separate Engine/SDK
+                        // owner (#2955). This barrier must preserve its explicit
+                        // refusal at the exact committed revision, never export
+                        // the old curve or publish a misleading file.
+                        assert!(
+                            export.result.unwrap_err().contains(
+                                "vst3 automation requires interactive arrangement playback"
+                            )
+                        );
+                        assert!(!path.exists());
+                        break;
+                    }
+                    assert!(Instant::now() < deadline, "export timed out");
+                    std::thread::yield_now();
+                }
+            }
+            return;
+        }
+        if matches!(
+            case.as_str(),
+            "session_barrier_refused" | "session_barrier_stop"
+        ) {
+            let files = Files::new();
+            let path = files.0.join("must-not-save.hex");
+            let correlation = hex_session::service::SaveCorrelation {
+                request_id: 33,
+                project_generation: origin.context.project_generation,
+                revision: origin.context.editor_revision,
+            };
+            if case == "session_barrier_refused" {
+                h.refuse.store(true, std::sync::atomic::Ordering::Release);
+            }
+            h.service
+                .submit_correlated_save(Request::SaveNew(path.clone()), correlation)
+                .unwrap();
+            if case == "session_barrier_stop" {
+                h.audio.as_ref().unwrap().control.stop();
+            }
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut terminal = false;
+            loop {
+                h.pump();
+                h.render_worker_step();
+                if let Ok(event) = h.service.try_event() {
+                    if let Some(ack) = event.gesture_ack.as_ref() {
+                        assert!(!terminal);
+                        terminal = true;
+                        assert!(!ack.accepted && !ack.preview_retained, "{case}: {ack:?}");
+                    }
+                    if event.save_complete {
+                        assert!(terminal && event.error.is_some());
+                        assert_eq!(event.save_correlation, Some(correlation));
+                        assert_eq!(event.state.project.as_ref(), &before);
+                        assert!(!path.exists());
+                        break;
+                    }
+                }
+                assert!(Instant::now() < deadline, "{case}: refusal timed out");
+                std::thread::yield_now();
+            }
+            h.refuse.store(false, std::sync::atomic::Ordering::Release);
+            return;
+        }
+        if matches!(case.as_str(), "session_barriers" | "session_save") {
             let files = Files::new();
             let path = files.0.join("after-recording.hex");
-            for request in [
-                Request::SaveNew(path.clone()),
-                Request::Undo,
-                Request::Redo,
-                Request::Export(files.0.join("blocked.wav")),
-            ] {
-                let refused = super::automation::edit_with_running_callback(h, request);
-                assert!(
-                    refused.error.as_ref().is_some_and(
-                        |reason| reason.contains("finish or cancel the vst3 recording")
-                    ),
-                    "{:?}",
-                    refused.error
-                );
-                assert!(refused.gesture_ack.is_none());
-                assert!(refused.active_device_gesture.is_some());
-                assert_eq!(refused.state.project.as_ref(), &before);
-                assert!(!path.exists());
-                assert!(
-                    (peak(h) - baseline * 1.5).abs() < 0.0001,
-                    "barrier refusal must preserve the accepted SDK preview"
-                );
-            }
-            client.cancel().unwrap();
-            send(h, &mut client, true);
-            let saved = h.run(Request::SaveNew(path.clone()));
-            assert!(saved.save_complete && saved.error.is_none());
-            assert_eq!(hex_storage::load(path).unwrap(), before);
+            let correlation = hex_session::service::SaveCorrelation {
+                request_id: 31,
+                project_generation: origin.context.project_generation,
+                revision: origin.context.editor_revision,
+            };
+            h.service
+                .submit_correlated_save(Request::SaveNew(path.clone()), correlation)
+                .unwrap();
+            // Later work stays in the existing FIFO until the original Save has
+            // finished; it must neither overtake nor cause a second take.
+            h.service.submit(Request::Undo).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut terminal = None;
+            let saved = loop {
+                h.pump();
+                h.render_worker_step();
+                if let Ok(event) = h.service.try_event() {
+                    assert!(event.error.is_none(), "{case}: {:?}", event.error);
+                    if let Some(ack) = event.gesture_ack.as_ref() {
+                        assert!(
+                            terminal.replace(ack.clone()).is_none(),
+                            "one gesture terminal"
+                        );
+                        assert!(ack.accepted && !ack.preview_retained && !ack.source_lost);
+                        assert_eq!(ack.key, client.snapshot().unwrap().key);
+                        assert!(event.active_device_gesture.is_none());
+                    }
+                    if event.save_complete {
+                        assert_eq!(event.save_correlation, Some(correlation));
+                        assert!(terminal.is_some(), "gesture must finish before save");
+                        break event;
+                    }
+                }
+                assert!(Instant::now() < deadline, "recording save timed out");
+                std::thread::yield_now();
+            };
+            assert_ne!(saved.state.project.as_ref(), &before);
+            assert_eq!(hex_storage::load(path).unwrap(), *saved.state.project);
+            let target = DeviceAutomationTarget::Vst3 { parameter: 7 };
+            let recorded = saved
+                .state
+                .project
+                .device(device)
+                .unwrap()
+                .automation_target(target)
+                .unwrap();
+            assert_eq!(recorded.touch.len(), 1);
+            let undone = loop {
+                h.pump();
+                h.render_worker_step();
+                if let Ok(event) = h.service.try_event() {
+                    assert!(event.gesture_ack.is_none(), "one gesture terminal");
+                    if event.request_complete {
+                        break event;
+                    }
+                }
+                assert!(Instant::now() < deadline, "queued Undo timed out");
+                std::thread::yield_now();
+            };
+            assert!(undone.error.is_none(), "{:?}", undone.error);
+            assert_eq!(undone.state.project.as_ref(), &before);
             return;
         }
         if case == "session_cancel" {

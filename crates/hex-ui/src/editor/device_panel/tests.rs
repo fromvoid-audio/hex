@@ -37,6 +37,7 @@ mod operator_fine_ui_tests;
 mod operator_harmonic_ui_tests;
 mod operator_navigation_tests;
 mod operator_preview_navigation_tests;
+mod operator_selector_keys_ui_tests;
 mod operator_tab_tests;
 mod operator_tuning_ui_tests;
 mod overdrive_ui_tests;
