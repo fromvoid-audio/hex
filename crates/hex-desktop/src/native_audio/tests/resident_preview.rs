@@ -695,6 +695,8 @@ pub(super) struct ResidentHarness {
     pub(super) plugin_records: Arc<std::sync::atomic::AtomicUsize>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) plugin_progress: Arc<Mutex<crate::native_audio::plugins::PreparationObservation>>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) plugin_failure: Arc<Mutex<Option<String>>>,
 }
 impl ResidentHarness {
     pub(super) fn new() -> Self {
@@ -853,11 +855,14 @@ impl ResidentHarness {
             crate::native_audio::plugins::PreparationObservation::default(),
         ));
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let plugin_failure = Arc::new(Mutex::new(None));
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         if let Some((host, presentation)) = plugin {
             inner.plugins = crate::native_audio::plugins::Plugins::with_fixture(host, presentation);
             inner.plugins.catalog = catalog;
             inner.plugins.facts_gate = facts_gate;
             inner.plugins.progress = Some(Arc::clone(&plugin_progress));
+            inner.plugins.failure_observation = Some(Arc::clone(&plugin_failure));
             // This optional Session-poll diagnostic can lag actual DSP replies.
             // The continuity driver must work without it as a processing clock.
             if std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").as_deref()
@@ -957,6 +962,8 @@ impl ResidentHarness {
             plugin_records,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             plugin_progress,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            plugin_failure,
         }
     }
     /// Attach the actual already-open output and latest submission observation
