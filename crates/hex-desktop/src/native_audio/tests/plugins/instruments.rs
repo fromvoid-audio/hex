@@ -853,8 +853,28 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         output_frames: 512,
     });
     let automation_parameter = std::env::var("HEX_TEST_VST3_INSTRUMENT_AUTOMATION_PARAMETER").ok();
-    let mut harness = if automation_parameter.is_some() || (shared_authoring && installed.is_some())
-    {
+    let recording_catalog = std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE")
+        .ok()
+        .filter(|case| case.starts_with("session_"))
+        .map(|_| {
+            let files = Files::new();
+            let mut selected = selection();
+            let module = files.0.canonicalize().unwrap().join("original.vst3");
+            super::ui::copy_original_module(&selected.module, &module);
+            selected.module = module;
+            hex_ui::write_plugin_effect_test_catalog(&files.0, &selected, "Instrument|Synth", 0)
+                .unwrap();
+            files
+        });
+    let mut harness = if let Some(files) = recording_catalog.as_ref() {
+        ResidentHarness::with_plugins_at_rate_and_catalog(
+            host(),
+            presentation,
+            rate,
+            files.0.canonicalize().unwrap().join("plugin-catalog.json"),
+            8192,
+        )
+    } else if automation_parameter.is_some() || (shared_authoring && installed.is_some()) {
         let catalog = PathBuf::from(std::env::var_os("HEX_TEST_VST3_INSTRUMENT_CATALOG").unwrap());
         ResidentHarness::with_plugins_at_rate_and_catalog(host(), presentation, rate, catalog, 8192)
     } else {
@@ -2061,7 +2081,31 @@ fn verify_instrument_takeover(
                 }
                 assert!(Instant::now() < deadline, "replay open did not complete");
             };
-            super::super::resident_lifecycle::finish_replacement(h, &opened, old_output);
+            let first_applied =
+                super::super::resident_lifecycle::finish_replacement(h, &opened, old_output);
+            let foreign_ready = |h: &ResidentHarness| {
+                h.submitted_observation().unwrap().foreign_processor(
+                    device.value(),
+                    before.device(device).unwrap().state().type_id(),
+                ) == Some(true)
+            };
+            if !foreign_ready(h) {
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while !foreign_ready(h) {
+                    h.pump();
+                    h.render_worker_step();
+                    if let Ok(event) = h.service.try_event() {
+                        assert!(event.error.is_none(), "{:?}", event.error);
+                    }
+                    assert!(
+                        Instant::now() < deadline,
+                        "restored SDK source unavailable: {:?}; {:?}",
+                        h.unavailable,
+                        h.plugin_progress.lock().unwrap()
+                    );
+                }
+                h.applied(first_applied);
+            }
             assert_eq!(
                 opened.state.project.as_ref(),
                 &hex_storage::load(path).unwrap()
