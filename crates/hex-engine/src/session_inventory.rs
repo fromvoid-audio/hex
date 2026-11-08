@@ -1360,6 +1360,19 @@ impl PreparedSessionInventory {
         &self.scenes
     }
 
+    /// Finite ordinary source-program allowance for one immutable revision.
+    /// Each distinct program visits one root and four vector DATA rows, even
+    /// when a vector is empty. This does not widen restricted graph admission.
+    pub fn instrument_automation_reservation() -> crate::AudioStorageLedgerReservation {
+        instrument_automation::reservation()
+    }
+
+    pub(crate) fn instrument_automation_construction_bytes(
+        project: &Project,
+    ) -> Result<usize, crate::Invalid> {
+        instrument_automation::construction_bytes(project)
+    }
+
     /// Program backing only; this does not audit the complete native graph.
     pub fn visit_instrument_automation_storage<'a>(
         &'a self,

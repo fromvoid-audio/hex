@@ -6,23 +6,25 @@ use std::{collections::BTreeMap, sync::Arc};
 
 pub use crate::midi_compile::midi_events;
 
-/// Reject unsupported serial effects before either playback preparation path.
+/// Retain live revision refusal while offline serial effects qualify.
 /// Unbound retained source definitions remain metadata, not active effects.
 pub(crate) fn refuse_serial_effect_units(project: &hex_project::Project) -> Result<(), Invalid> {
-    if project
-        .tracks()
-        .iter()
-        .flat_map(|track| track.devices())
-        .chain(
-            project
-                .return_tracks()
-                .iter()
-                .flat_map(|track| track.devices()),
-        )
-        .chain(project.main_devices())
-        .any(|device| device.parent().is_some())
-    {
+    if crate::device_automation::effect_devices(project).any(|device| device.parent().is_some()) {
         return Err(Invalid("serial device units are not prepared"));
+    }
+    Ok(())
+}
+
+/// Offline unit admission uses the caller's actual effect registry. Live revision
+/// admission remains guarded until handoff and callback contracts are qualified.
+fn validate_serial_effect_units(
+    project: &hex_project::Project,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+) -> Result<(), Invalid> {
+    if crate::device_automation::effect_devices(project).any(|device| {
+        device.parent().is_some() && registry.definition(device.state().type_id()).is_none()
+    }) {
+        return Err(Invalid("serial child is not a supported effect"));
     }
     Ok(())
 }
@@ -579,7 +581,7 @@ fn compile_project_inner<'a>(
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
     // #2740 supplies the pitch-aware runtime. Refuse until then rather than
     // accepting a saved tuned project and silently playing equal temperament.
-    refuse_serial_effect_units(snapshot)?;
+    validate_serial_effect_units(snapshot, registry)?;
     crate::device_automation::validate_project_with_registry(snapshot, registry)?;
     let (foreign_bytes, _) = crate::foreign_automation::candidate::quote_ordinary(snapshot)
         .map_err(|_| Invalid("authored vst3 project exceeds its preparation bounds"))?;
