@@ -529,7 +529,7 @@ fn run_direct_saturator_edit_probe(
             state: edited,
         })?;
     }
-    control
+    let edited_revision = control
         .publish(Playback::try_from_prepared_with_session(prepare(
             editor.project(),
         )?)?)
@@ -539,6 +539,10 @@ fn run_direct_saturator_edit_probe(
     for _ in 0..8 {
         measured_block(&mut callback, &mut small);
     }
+    assert_eq!(
+        control.status.applied_revision.load(Ordering::Acquire),
+        edited_revision
+    );
     if retained_gains {
         for parameter in [parameter::DRIVE, parameter::OUTPUT] {
             editor.execute(Command::SetDeviceAutomationReadSelection {
@@ -547,12 +551,16 @@ fn run_direct_saturator_edit_probe(
                 selection: hex_project::AutomationReadSelection::Authored,
             })?;
         }
-        control
+        let resumed_revision = control
             .publish(Playback::try_from_prepared_with_session(prepare(
                 editor.project(),
             )?)?)
             .map_err(|_| "reenable publication")?;
         measured_block(&mut callback, &mut small);
+        assert_eq!(
+            control.status.applied_revision.load(Ordering::Acquire),
+            resumed_revision
+        );
     }
     assert!(control.status.rejected_revision().is_none());
     control.request_shutdown();
