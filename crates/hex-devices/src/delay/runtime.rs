@@ -339,6 +339,9 @@ impl Runtime {
         }
         Ok(())
     }
+    // Preserve block-loop optimization: an out-of-line call here regresses
+    // canonical processing. The measured old/new kernel comparison covers it.
+    #[inline(always)]
     fn process_frame(
         &mut self,
         frame: &mut StereoFrame,
