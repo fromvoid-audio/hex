@@ -160,6 +160,7 @@ pub(super) static CONFIRMED_TEST_ENDS: AtomicU64 = AtomicU64::new(0);
 pub(super) static CONFIRMED_TEST_NOOPS: AtomicU64 = AtomicU64::new(0);
 struct ResidentSink {
     inner: NativeAudioSink,
+    control_polls: Arc<AtomicU64>,
     initial_rate: u32,
     refuse: Arc<AtomicBool>,
     budget_refuse: Arc<AtomicBool>,
@@ -595,6 +596,8 @@ impl WorkerAudioSink for ResidentSink {
             self.inner.resident.pending.is_some(),
             std::sync::atomic::Ordering::Release,
         );
+        self.control_polls
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
     }
     fn close(&mut self) {
         self.inner.close();
@@ -603,6 +606,7 @@ impl WorkerAudioSink for ResidentSink {
 
 pub(super) struct ResidentHarness {
     pub(super) service: Service,
+    pub(super) control_polls: Arc<AtomicU64>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     event_sender: mpsc::SyncSender<EditorAudioEvent>,
     events: mpsc::Receiver<EditorAudioEvent>,
@@ -819,12 +823,14 @@ impl ResidentHarness {
         let file_publication_waiting = Arc::new(AtomicBool::new(false));
         let pending_observation_generation = Arc::new(AtomicU64::new(0));
         let publication_probe = Arc::new(Mutex::new(None));
+        let control_polls = Arc::new(AtomicU64::new(0));
         let service = Service::with_audio_sink_and_native_reservation(
             16,
             frame_limit,
             recovery,
             Box::new(ResidentSink {
                 inner,
+                control_polls: Arc::clone(&control_polls),
                 initial_rate: rate,
                 refuse: Arc::clone(&refuse),
                 budget_refuse: Arc::clone(&budget_refuse),
@@ -839,6 +845,7 @@ impl ResidentHarness {
         .unwrap();
         Self {
             service,
+            control_polls,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             event_sender: sender,
             events,

@@ -188,6 +188,14 @@ fn render_completed_block(harness: &ResidentHarness) -> [hex_engine::Frame; 256]
         );
         std::thread::yield_now();
     }
+    // Give the other asynchronous owner a real turn after the published DSP
+    // prefix. Commit cleanup can enqueue Release only after observing that
+    // prefix; accelerated headless quanta must not starve this control lane.
+    let polled = harness.control_polls.load(Acquire);
+    while harness.control_polls.load(Acquire) == polled {
+        assert!(Instant::now() < deadline, "native control did not poll");
+        std::thread::yield_now();
+    }
     frames
 }
 
@@ -1666,7 +1674,7 @@ fn verify_instrument_takeover(
         applied = h.applied(applied).0;
     }
     let peak = |h: &ResidentHarness| {
-        let peak = (0..4)
+        (0..4)
             .map(|_| {
                 render_completed_block(h)
                     .into_iter()
@@ -1675,9 +1683,7 @@ fn verify_instrument_takeover(
                     .fold(0.0, f32::max)
             })
             .last()
-            .unwrap();
-        println!("instrument peak: case={case} peak={peak}");
-        peak
+            .unwrap()
     };
     if playing {
         h.audio
