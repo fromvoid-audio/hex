@@ -69,11 +69,15 @@ pub(super) struct Refused {
     pub(super) kinds: PendingKinds,
 }
 
+fn is_initial_observation(request: &Request) -> bool {
+    request.is_read_only_observation() && !matches!(request, Request::ContinuePluginParameters)
+}
+
 impl EditorView {
     pub(super) fn classify_submission(&self, request: &Request) -> Submission {
         Submission {
             kinds: PendingKinds {
-                parameter_observation: matches!(request, Request::QueryPluginParameters(_)),
+                parameter_observation: is_initial_observation(request),
                 trim: self.pending_trim_matches(request),
                 loop_region: self.pending_loop_matches(request),
                 group_copy: self.pending_group_copy_matches(request),
@@ -328,3 +332,17 @@ impl EditorView {
 
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests;
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+
+    #[test]
+    fn recovery_reads_do_not_count_as_editor_mutations() {
+        assert!(is_initial_observation(
+            &Request::QueryFailedPluginAutomation { request_id: 7 }
+        ));
+        assert!(!is_initial_observation(&Request::ContinuePluginParameters));
+        assert!(!is_initial_observation(&Request::Undo));
+    }
+}
