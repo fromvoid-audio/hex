@@ -82,6 +82,7 @@ fn seed_existing_lane(
             })
             .unwrap();
         let request = Request::Edit(Command::ReplaceDeviceStateWithIdentityReservation {
+            automation: None,
             device,
             expected_state,
             expected_variant,

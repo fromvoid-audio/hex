@@ -40,6 +40,7 @@ use std::{
 };
 
 mod layout;
+use layout::{result_label, result_row, selection_ink};
 
 // Preference diagnostics remain useful without unbounded field/path text in UI tooltips.
 fn places_error(prefix: &str, error: &hex_preferences::PreferencesError) -> String {
@@ -60,7 +61,8 @@ pub(super) const MIN_WORKSPACE_WIDTH: f32 = 560.0;
 const COLLAPSED_WIDTH: f32 = 28.0;
 const PLACE_CAPACITY: usize = 16;
 const DEFAULT_PLACE_COUNT: usize = 2;
-const ROW_HEIGHT: f32 = 22.0;
+/// Uniform virtual height, including plugin groups and history scroll restoration.
+const ROW_HEIGHT: f32 = 18.0;
 const PREVIEW_CACHE_CAPACITY: usize = 16;
 const GAIN_SEARCH_ERROR: &str = "finish or cancel the gain value edit before search";
 
@@ -2433,24 +2435,9 @@ impl EditorView {
         let selected = self.browser.results_focused && self.browser.selected_index == index;
         let click_path = path.clone();
         let click_kind = entry.kind;
-        let mut row = div()
+        let mut row = result_row(selected)
             .id(gpui::SharedString::from(tree::row_id(&path)))
             .debug_selector(|| format!("browser-entry-{index}"))
-            .w_full()
-            .min_w_0()
-            .overflow_hidden()
-            .h(px(ROW_HEIGHT))
-            .px_1()
-            .flex()
-            .items_center()
-            .gap_1()
-            .cursor_pointer()
-            .bg(rgb(if selected {
-                theme::color(theme::PaletteRole::Hover)
-            } else {
-                theme::color(theme::PaletteRole::Surface)
-            }))
-            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, event: &MouseDownEvent, window, cx| {
@@ -2598,14 +2585,18 @@ impl EditorView {
         let mut control = div()
             .w(px(16.0))
             .flex_shrink_0()
-            .text_xs()
-            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+            .h(px(ROW_HEIGHT))
+            .flex()
+            .items_center()
+            .text_size(px(10.0))
+            .line_height(px(ROW_HEIGHT))
+            .text_color(rgb(selection_ink(selected, theme::PaletteRole::Muted)))
             .children(disclosure.map(theme::text))
             .children(icon.map(|path| {
                 gpui::svg()
                     .path(path)
                     .size(px(14.0))
-                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                    .text_color(rgb(selection_ink(selected, theme::PaletteRole::Muted)))
             }));
         if icon.is_some() && entry.kind != EntryKind::Directory {
             control = control.debug_selector(move || format!("browser-file-icon-{index}"));
@@ -2642,16 +2633,8 @@ impl EditorView {
             )
             .child(control)
             .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .line_clamp(1)
-                    .text_ellipsis()
-                    .text_xs()
-                    .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                    .debug_selector(move || format!("browser-entry-label-{index}"))
-                    .child(theme::text(entry.name)),
+                result_label(entry.name, selected, theme::PaletteRole::Text)
+                    .debug_selector(move || format!("browser-entry-label-{index}")),
             )
     }
 
@@ -2676,25 +2659,13 @@ impl EditorView {
             destination: Rc::new(Cell::new(None)),
             return_destination: Rc::new(Cell::new(None)),
         });
-        let row = div()
+        let label_id = format!("browser-device-label-{class_label}-{debug_type}");
+        let selected = self.browser.results_focused && self.browser.selected_index == index;
+        let row = result_row(selected)
             .id(gpui::SharedString::from(format!(
                 "browser-device-{class_label}-{debug_type}"
             )))
             .debug_selector(move || format!("browser-device-{class_label}-{debug_type}"))
-            .h(px(ROW_HEIGHT))
-            .px_1()
-            .flex()
-            .items_center()
-            .gap_1()
-            .cursor_pointer()
-            .bg(rgb(theme::color(
-                if self.browser.results_focused && self.browser.selected_index == index {
-                    theme::PaletteRole::Hover
-                } else {
-                    theme::PaletteRole::Surface
-                },
-            )))
-            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, event: &MouseDownEvent, window, cx| {
@@ -2732,8 +2703,13 @@ impl EditorView {
             .child(
                 div()
                     .w(px(16.0))
-                    .text_xs()
-                    .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
+                    .h(px(ROW_HEIGHT))
+                    .text_size(px(10.0))
+                    .line_height(px(ROW_HEIGHT))
+                    .text_color(rgb(selection_ink(
+                        selected,
+                        theme::PaletteRole::SecondaryText,
+                    )))
                     .child(theme::text(
                         if class == hex_engine::NativeDeviceClass::Instrument {
                             "⌘"
@@ -2743,15 +2719,8 @@ impl EditorView {
                     )),
             )
             .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .line_clamp(1)
-                    .text_ellipsis()
-                    .text_xs()
-                    .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                    .child(theme::text(name)),
+                result_label(name, selected, theme::PaletteRole::Text)
+                    .debug_selector(move || label_id.clone()),
             );
         Self::with_browser_device_drag(row, payload, cx)
     }

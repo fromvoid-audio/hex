@@ -167,18 +167,68 @@ fn picker_icon(icon: Div) -> Div {
 
 // Width/minimum-resize custody stays independent of compact row height.
 fn picker_ink(active: bool, missing: bool) -> u32 {
+    selection_ink(
+        active,
+        if missing {
+            theme::PaletteRole::Muted
+        } else {
+            theme::PaletteRole::Text
+        },
+    )
+}
+
+pub(super) fn selection_ink(active: bool, idle: theme::PaletteRole) -> u32 {
     if active {
         theme::readable_text(
             theme::color(theme::PaletteRole::Secondary),
             theme::color(theme::PaletteRole::Background),
         )
     } else {
-        theme::color(if missing {
-            theme::PaletteRole::Muted
-        } else {
-            theme::PaletteRole::Text
-        })
+        theme::color(idle)
     }
+}
+
+/// One visual row contract for files, native devices, plugins and virtual groups.
+pub(super) fn result_row(selected: bool) -> Div {
+    div()
+        .h(px(ROW_HEIGHT))
+        .w_full()
+        .min_w_0()
+        .overflow_hidden()
+        .px_1()
+        .flex()
+        .items_center()
+        .gap_1()
+        .cursor_pointer()
+        .bg(rgb(theme::color(if selected {
+            theme::PaletteRole::Secondary
+        } else {
+            theme::PaletteRole::Surface
+        })))
+        .when(!selected, |row| {
+            row.hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
+        })
+        .text_size(px(10.0))
+        .line_height(px(ROW_HEIGHT))
+        .text_color(rgb(selection_ink(selected, theme::PaletteRole::Text)))
+}
+
+pub(super) fn result_label(
+    value: impl AsRef<str>,
+    selected: bool,
+    idle: theme::PaletteRole,
+) -> Div {
+    div()
+        .flex_1()
+        .min_w_0()
+        .overflow_hidden()
+        .line_clamp(1)
+        .text_ellipsis()
+        .h(px(ROW_HEIGHT))
+        .text_size(px(10.0))
+        .line_height(px(ROW_HEIGHT))
+        .text_color(rgb(selection_ink(selected, idle)))
+        .child(theme::text(value))
 }
 
 fn picker_row(active: bool, missing: bool) -> Div {

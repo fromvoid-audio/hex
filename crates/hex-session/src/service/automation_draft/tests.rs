@@ -385,6 +385,11 @@ fn writer_refusal_retains_all_unsynced_batches_and_never_invents_completion() {
         assert_eq!(outcome.retained[0].events(), &[event(1)]);
         assert_eq!(outcome.retained[1].events(), &[event(3)]);
         assert_eq!(reader(&path).outcome(), DraftOutcome::Interrupted);
+        assert!(
+            reader(&path)
+                .matches_prefix(outcome.durable_prefix)
+                .unwrap()
+        );
         assert!(input.progress().failed);
     }
 }
