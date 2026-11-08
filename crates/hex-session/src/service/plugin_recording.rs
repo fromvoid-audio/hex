@@ -80,6 +80,49 @@ pub(super) fn generic_sealed_recovery_idle(state: &State, lane: &Lane) -> bool {
     !state.pending() && state.failed.is_none() && !lane.busy() && !lane.has_failed_custody()
 }
 
+/// Discover original custody without changing the writer, SDK receipts or files.
+pub(super) fn failed_custody(
+    state: &State,
+    lane: &Lane,
+    gesture_active: bool,
+) -> Result<DeviceAutomationTakeProgress, String> {
+    use DeviceAutomationTakeProgress as Progress;
+    let Some((scope, path)) = lane.failed_plugin_identity() else {
+        return Ok(
+            if state.failed.is_some()
+                || state
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.outcome.as_ref().is_some_and(Result::is_err))
+            {
+                Progress::FailedPluginPending
+            } else {
+                Progress::FailedPluginUnavailable
+            },
+        );
+    };
+    if gesture_active
+        || state.active.is_some()
+        || state.terminal.is_some()
+        || state.failed.as_ref().is_some_and(|failed| !failed.ended)
+    {
+        return Ok(Progress::FailedPluginPending);
+    }
+    let source = lane.failed_source(scope)?;
+    if state
+        .failed
+        .as_ref()
+        .is_some_and(|failed| failed.path != path)
+    {
+        return Err("vst3 recovery draft identities disagree".into());
+    }
+    state.failed_observations(scope, source)?;
+    Ok(Progress::FailedPluginCustody {
+        scope,
+        path: path.to_owned(),
+    })
+}
+
 pub(super) fn inspect_failed_copy(
     state: &State,
     lane: &Lane,

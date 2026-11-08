@@ -676,6 +676,10 @@ pub enum Request {
         scope: DeviceAutomationTakeScope,
         action: DeviceAutomationTakeAction,
     },
+    /// Read the retained VST3 take identity without changing its custody.
+    QueryFailedPluginAutomation {
+        request_id: u64,
+    },
     /// Recover one completed device take without reconstructing its old worker.
     /// Current context fences publication; expected target/provenance bind only
     /// the immutable file. Every path echoes request_id through take completion.
@@ -2851,6 +2855,29 @@ fn run_worker(
         let mut failed_plugin_adoption = None;
         let mut failed_plugin_publication_confirmed = false;
         let resolved_edit = match &request {
+            Request::QueryFailedPluginAutomation { request_id } => {
+                let gesture_active = pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some();
+                let result = plugin_recording::failed_custody(
+                    &plugin_recording,
+                    &native_automation_take,
+                    gesture_active,
+                );
+                let mut completion = DeviceAutomationTakeCompletion {
+                    request_id: *request_id,
+                    progress: DeviceAutomationTakeProgress::Refused,
+                };
+                let resolved = match result {
+                    Ok(progress) => {
+                        completion.progress = progress;
+                        None
+                    }
+                    Err(reason) => Some(Err(reason)),
+                };
+                device_automation_take_complete = Some(completion);
+                resolved
+            }
             Request::RecoverDeviceAutomationTake {
                 request_id,
                 context,
@@ -3815,6 +3842,7 @@ fn run_worker(
                     | Request::SamplerEdit(_)
                     | Request::ContinueSamplerEdit
                     | Request::DeviceAutomationTake { .. }
+                    | Request::QueryFailedPluginAutomation { .. }
                     | Request::RecoverDeviceAutomationTake { .. }
                     | Request::InsertPluginEffect(_)
                     | Request::ContinuePluginEffect
@@ -6420,6 +6448,7 @@ fn run_worker(
                     }
                 }
                 Request::DeviceAutomationTake { .. }
+                | Request::QueryFailedPluginAutomation { .. }
                 | Request::RecoverDeviceAutomationTake { .. } => {}
                 Request::ArmNativeParameterRecording {
                     project_generation: expected_generation,

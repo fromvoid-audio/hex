@@ -2360,6 +2360,20 @@ fn verify_instrument_takeover(
             };
             assert_eq!(std::fs::read(&paths[0]).unwrap(), original);
             assert_eq!(h.service.try_event().ok().and_then(|e| e.error), None);
+            let mut discovered = super::automation::edit_with_running_callback(
+                h,
+                Request::QueryFailedPluginAutomation { request_id: 493 },
+            );
+            assert!(discovered.error.is_none(), "{:?}", discovered.error);
+            let discovery = discovered.device_automation_take_complete.take().unwrap();
+            assert_eq!(discovery.request_id, 493);
+            assert_eq!(
+                discovery.progress,
+                Progress::FailedPluginCustody {
+                    scope,
+                    path: paths[0].clone(),
+                }
+            );
             if case != "session_writer_failure" {
                 use hex_storage::automation_draft::DraftTerminal;
                 assert!(
@@ -2423,6 +2437,14 @@ fn verify_instrument_takeover(
                 let after = committed.state.project.clone();
                 assert_eq!(std::fs::read(&paths[0]).unwrap(), original);
                 assert_eq!(std::fs::read(&copy).unwrap(), copy_bytes);
+                let mut cleared = super::automation::edit_with_running_callback(
+                    h,
+                    Request::QueryFailedPluginAutomation { request_id: 498 },
+                );
+                assert!(cleared.error.is_none(), "{:?}", cleared.error);
+                let cleared = cleared.device_automation_take_complete.take().unwrap();
+                assert_eq!(cleared.request_id, 498);
+                assert_eq!(cleared.progress, Progress::FailedPluginUnavailable);
                 let duplicate = super::automation::edit_with_running_callback(h, adopt(497));
                 assert!(duplicate.error.is_some());
                 assert_eq!(duplicate.state.project, after);

@@ -86,6 +86,12 @@ fn successive_native_takes_keep_the_arm_and_refusals_keep_the_recovery_file() {
     }));
     assert!(authored.error.is_none(), "{:?}", authored.error);
     let revision = authored.state.revision;
+    let mut queried = submit(Request::QueryFailedPluginAutomation { request_id: 912 });
+    assert!(queried.error.is_none());
+    let completion = queried.device_automation_take_complete.take().unwrap();
+    assert_eq!(completion.request_id, 912);
+    assert_eq!(completion.progress, Progress::FailedPluginUnavailable);
+    assert_eq!(queried.state.revision, revision);
     let scope = || {
         let armed = submit(Request::ArmNativeParameterRecording {
             project_generation: 0,
