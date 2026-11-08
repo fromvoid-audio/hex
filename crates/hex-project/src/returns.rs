@@ -184,12 +184,22 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
                     if index == source_index {
                         return Err(Invalid("return device cannot be moved before itself"));
                     }
-                    index - usize::from(index > source_index)
+                    index
                 }
-                None => project.returns[source].devices.len().saturating_sub(1),
+                None => project.returns[source].devices.len(),
             };
-            let moving = project.returns[source].devices.remove(source_index);
-            project.returns[source].devices.insert(destination, moving);
+            let span = crate::device_inventory::serial_unit_span(
+                &project.returns[source].devices,
+                source_index,
+            )?;
+            if span.contains(&destination) {
+                return Err(Invalid("return device cannot be moved inside its unit"));
+            }
+            crate::device::move_serial_unit(
+                &mut project.returns[source].devices,
+                source_index,
+                destination,
+            )?;
             Ok(crate::Created::None)
         }
         _ => Err(Invalid("command is not a return-track edit")),
