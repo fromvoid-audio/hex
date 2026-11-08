@@ -43,8 +43,8 @@
 //! combines the final-stage and shaper factors for that same sample, and converts
 //! each process call's minimum to dB. Each factor retains the 1e-30 floor.
 //!
-//! Closed transactions at the same rate retain full history for a compatible
-//! layout, including silent attenuation and parameter ramps. A layout change
+//! The classic factory's closed transactions at the same rate retain full
+//! history for a compatible layout, including silent attenuation and parameter ramps. A layout change
 //! (lookahead, routing or true-peak latency) is admitted only when the donor has
 //! no queued output in either stage; it explicitly resets both candidate
 //! histories to the new configuration. Physical storage layouts must also match
@@ -914,4 +914,4 @@ impl OwnedProcessorRuntime for Runtime {
 #[cfg(test)]
 mod storage_tests;
 
-pub(super) mod lookahead;
+pub(super) mod structural;
