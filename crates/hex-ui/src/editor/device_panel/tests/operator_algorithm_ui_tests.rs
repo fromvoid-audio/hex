@@ -97,6 +97,11 @@ fn algorithms_replace_the_matrix_and_commit_one_canonical_history_edit(cx: &mut 
             format!("operator-detail-{}", device.value()).into_boxed_str(),
         ))
         .unwrap();
+    let voices = visual
+        .debug_bounds(Box::leak(
+            format!("operator-voices-{}", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
     for parameter in
         (601..=608).chain((620..=639).filter(|parameter| !matches!(*parameter, 626 | 634)))
     {
@@ -105,9 +110,10 @@ fn algorithms_replace_the_matrix_and_commit_one_canonical_history_edit(cx: &mut 
         let bounds = visual
             .debug_bounds(selector)
             .expect("canonical global control");
+        let region = if parameter == 601 { voices } else { detail };
         assert!(
-            bounds.right() <= detail.right() && bounds.bottom() <= detail.bottom(),
-            "parameter {parameter} bounds {bounds:?} outside {detail:?}"
+            bounds.right() <= region.right() && bounds.bottom() <= region.bottom(),
+            "parameter {parameter} bounds {bounds:?} outside its region {region:?}"
         );
     }
     for parameter in [626, 634] {
