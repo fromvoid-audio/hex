@@ -690,6 +690,51 @@ fn confirmed_point_survives_output_close_while_sdk_ack_is_pending() {
     }
 }
 
+#[test]
+#[ignore = "explicit source-bound signed SDK receipts required"]
+fn recorded_touch_admission_and_exclusive_restoration_use_actual_output() {
+    const CASE: &str = "HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE";
+    if std::env::var_os(CASE).is_none() {
+        for case in ["touch", "touch_empty", "touch_commit"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    std::thread::current().name().unwrap(),
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env(CASE, case)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{case}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        }
+        return;
+    }
+    instrument_entrypoint(InstrumentWorkflow::Takeover);
+    if std::env::var_os("HEX_DESKTOP_TEST_INSTRUMENT_CHILD").is_some() {
+        use crate::native_audio::tests::resident_preview::{
+            CONFIRMED_TEST_ENDS, CONFIRMED_TEST_NOOPS, CONFIRMED_TEST_POINTS, CONFIRMED_TEST_READY,
+        };
+        assert!(CONFIRMED_TEST_READY.load(Acquire) > 0);
+        if std::env::var(CASE).unwrap() == "touch_empty" {
+            assert_eq!(CONFIRMED_TEST_POINTS.load(Acquire), 0);
+            assert!(CONFIRMED_TEST_NOOPS.load(Acquire) > 0);
+        } else {
+            assert!(CONFIRMED_TEST_POINTS.load(Acquire) > 0);
+            assert_eq!(
+                CONFIRMED_TEST_POINTS.load(Acquire),
+                CONFIRMED_TEST_ENDS.load(Acquire)
+            );
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum InstrumentWorkflow {
     Playback,
@@ -1765,6 +1810,11 @@ fn verify_instrument_takeover(
     for request_id in [12, 13] {
         client.begin_plugin(query(h, request_id)).unwrap();
         assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
+        if case == "touch_empty" {
+            client.cancel().unwrap();
+            send(h, &mut client, true);
+            return;
+        }
         client
             .change_plugin(PluginParameterValue::new(0.75).unwrap())
             .unwrap();
@@ -1784,6 +1834,17 @@ fn verify_instrument_takeover(
                 "held MIDI must continue through preview"
             );
         }
+        if case == "touch_commit" {
+            client
+                .finish_plugin(PluginParameterValue::new(0.75).unwrap())
+                .unwrap();
+            // The ordinary Session path deliberately refuses opaque commit:
+            // canonical take adoption is the next consumer increment.
+            let ended = send(h, &mut client, false);
+            assert_eq!(ended.state.project.as_ref(), &before);
+            assert!((peak(h) - baseline).abs() < 0.0001);
+            return;
+        }
         client.cancel().unwrap();
         assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
         if playing {
@@ -1792,6 +1853,9 @@ fn verify_instrument_takeover(
                 "cancel must resume authored input"
             );
         }
+    }
+    if case == "touch" {
+        return;
     }
     client.begin_plugin(query(h, 14)).unwrap();
     send(h, &mut client, true);

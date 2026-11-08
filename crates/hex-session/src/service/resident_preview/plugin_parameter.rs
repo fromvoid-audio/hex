@@ -132,6 +132,7 @@ pub(super) fn operation(
                 reading_class,
                 isolated_class,
                 confirm_delivery: false,
+                record_touch: false,
                 instrument: session
                     .project()
                     .native_sources()

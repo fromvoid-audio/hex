@@ -2,6 +2,7 @@
 //! receipts and retains a batch until Session acknowledges its admission.
 //! The disk worker seals the file independently of callback and UI lifetimes.
 use super::Session;
+mod plugin_observation;
 use super::automation_draft::{
     DeviceDraftInput, DraftProvenance, DraftWorker, DraftWorkerOutcome, Vst3CaptureTarget,
     Vst3ParameterApplication,
@@ -57,7 +58,7 @@ impl DeviceAutomationTakeScope {
 
 /// Copied observation of the applied and playing resident output. The
 /// callback still checks the actual source and epoch when admitting Begin.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct DeviceAutomationSource {
     pub target: DeviceCaptureTarget,
     pub sample_rate: u32,
@@ -84,6 +85,9 @@ pub enum DeviceAutomationTakeAction {
     Finish(NativeParameterApplication),
     AppendVst3(Arc<[(u64, Vst3ParameterApplication)]>),
     FinishVst3(Vst3ParameterApplication),
+    /// Original SDK/final-output observation. Retain it until Appended or
+    /// Sealing; Backpressured does not consume its sequence or original clock.
+    PluginObservation(Box<super::PluginParameterObservation>),
     Abort(DraftAbortReason),
     Interrupt,
     /// Poll without waiting for disk. A sealed matching take commits during
@@ -118,6 +122,7 @@ pub(super) struct Lane {
 
 struct Active {
     scope: DeviceAutomationTakeScope,
+    source: DeviceAutomationSource,
     input: DeviceDraftInput,
     worker: DraftWorker,
 }
@@ -182,6 +187,7 @@ impl Lane {
         }?;
         self.active = Some(Active {
             scope,
+            source,
             input,
             worker,
         });
@@ -204,10 +210,20 @@ impl Lane {
         if active.scope != scope {
             return Err("device automation receipt belongs to another take".into());
         }
+        let translated;
+        let action = if let DeviceAutomationTakeAction::PluginObservation(observation) = action {
+            translated = active.plugin_action(observation)?;
+            &translated
+        } else {
+            action
+        };
         while active.input.poll().is_some() {}
         let progress = match action {
             DeviceAutomationTakeAction::Begin => {
                 return Err("device automation take is already active".into());
+            }
+            DeviceAutomationTakeAction::PluginObservation(_) => {
+                return Err("nested plugin observation is unavailable".into());
             }
             DeviceAutomationTakeAction::Append(batch) => {
                 if active
