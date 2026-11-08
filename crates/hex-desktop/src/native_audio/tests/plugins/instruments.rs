@@ -996,7 +996,10 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         (applied, _) = harness.applied(applied);
         Some(console)
     };
-    let insertion = if let Some(bundle) = installed.as_ref() {
+    let insertion = if paced {
+        let bundle = installed
+            .as_ref()
+            .expect("paced test requires an installed instrument");
         PluginEffectInsertion {
             context: note
                 .state
@@ -1014,7 +1017,15 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
             control: Arc::new(PluginEffectControl::default()),
         }
     } else {
-        request(&note.state, PluginEffectDestination::Instrument(track))
+        let mut insertion = request(&note.state, PluginEffectDestination::Instrument(track));
+        if let Some(bundle) = installed.as_ref() {
+            insertion.selection = installed_selection(
+                &PathBuf::from(std::env::var_os("HEX_TEST_VST3_INSTRUMENT_CATALOG").unwrap()),
+                bundle,
+                hex_plugin_catalog::PluginRole::Instrument,
+            );
+        }
+        insertion
     };
     harness
         .service
