@@ -104,6 +104,21 @@ impl Fence {
     pub(super) fn active(&self) -> bool {
         self.gate() & 1 != 0
     }
+    /// Interrupt an acknowledged native epoch witness before clearing a
+    /// priority Stop marker. Arrangement fences retain their installation
+    /// custody; a pending native fence may acknowledge after Stop is applied.
+    /// A delayed store cannot overwrite cancellation of a later operation.
+    pub(super) fn interrupt_for_stop(&self) {
+        let operation = self.gate();
+        if self.native_epoch.load(SeqCst) {
+            self.interrupt_operation_for_stop(operation);
+        }
+    }
+    fn interrupt_operation_for_stop(&self, operation: u64) {
+        if operation & 1 != 0 && self.ack.load(SeqCst) == operation {
+            self.abort.fetch_max(operation, SeqCst);
+        }
+    }
     fn begin(
         &self,
         source: AppliedAudioSource,
@@ -567,6 +582,69 @@ mod tests {
         assert_eq!(fence.state(next), StoppedEditFenceState::Pending);
         fence.acknowledge(next.operation, Some(source()), false, 0, false, 0);
         assert_eq!(fence.native_epoch_context(next), Some(source().context));
+    }
+    #[test]
+    fn consumed_stop_marker_already_interrupts_the_ready_fence() {
+        let (control, callback) = channel(48_000).unwrap();
+        let fence = &callback.status.sampler_edit;
+        let first = fence.begin_source(source(), 0, false, false, true).unwrap();
+        fence.acknowledge(first.operation, Some(source()), false, 0, false, 0);
+        assert_eq!(fence.state(first), StoppedEditFenceState::Ready);
+        control.stop();
+        let marker = std::cell::Cell::new(0);
+        #[cfg(feature = "allocation-probe")]
+        {
+            let counts = allocation_counter::measure(|| marker.set(callback.take_stop_marker()));
+            assert_eq!(
+                (
+                    counts.count_total,
+                    counts.bytes_total,
+                    counts.count_current,
+                    counts.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        {
+            marker.set(callback.take_stop_marker());
+        }
+        assert_ne!(marker.get(), 0);
+        // Observe the exact window after marker removal and before Stop's
+        // transport action. The old witness cannot remain ready here.
+        assert_eq!(fence.state(first), StoppedEditFenceState::Refused);
+        fence.acknowledge(first.operation, Some(source()), false, 0, false, 0);
+        fence.retire_abort_on_control();
+        let next = fence.begin_source(source(), 0, false, false, true).unwrap();
+        fence.acknowledge(next.operation, Some(source()), false, 0, false, 0);
+        assert_eq!(callback.take_stop_marker(), 0);
+        assert_eq!(fence.state(next), StoppedEditFenceState::Ready);
+    }
+    #[test]
+    fn delayed_old_stop_cannot_overwrite_a_newer_fence_abort() {
+        let fence = Fence::default();
+        let old = fence.begin(source(), 0).unwrap();
+        fence.acknowledge(old.operation, Some(source()), false, 0, false, 0);
+        fence.release(old);
+        let next = fence.begin(source(), 0).unwrap();
+        fence.release(next);
+        assert_eq!(fence.state(next), StoppedEditFenceState::Refused);
+        fence.interrupt_operation_for_stop(old.operation);
+        assert_eq!(fence.state(next), StoppedEditFenceState::Refused);
+        fence.acknowledge(next.operation, Some(source()), false, 0, false, 0);
+        fence.retire_abort_on_control();
+        assert!(!fence.active());
+    }
+    #[test]
+    fn pending_fence_can_acknowledge_after_an_already_queued_stop() {
+        let (control, callback) = channel(48_000).unwrap();
+        control.stop();
+        let fence = &callback.status.sampler_edit;
+        let token = fence.begin_source(source(), 0, false, false, true).unwrap();
+        assert_eq!(fence.state(token), StoppedEditFenceState::Pending);
+        assert_ne!(callback.take_stop_marker(), 0);
+        fence.acknowledge(token.operation, Some(source()), false, 0, false, 0);
+        assert_eq!(fence.state(token), StoppedEditFenceState::Ready);
     }
     #[test]
     fn earlier_play_is_consumed_before_stopped_ack_and_later_play_never_replays() {

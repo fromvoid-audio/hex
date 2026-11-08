@@ -84,9 +84,14 @@ use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
 #[cfg(test)]
 #[path = "device_unit_order_tests.rs"]
 mod unit_order_tests;
+#[path = "device_unit_parent.rs"]
+mod unit_parent;
 #[cfg(test)]
 #[path = "device_unit_removal_tests.rs"]
 mod unit_removal_tests;
+#[cfg(test)]
+#[path = "device_unit_track_tests.rs"]
+mod unit_track_tests;
 
 pub const MAX_DEVICES_PER_TRACK: usize = 64;
 pub const MAX_DEVICES: usize = crate::MAX_TRACKS * (MAX_DEVICES_PER_TRACK + 1)
@@ -229,6 +234,13 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             before,
         } => {
             move_track_device(project, device, track, before)?;
+            Ok(crate::Created::None)
+        }
+        Command::InsertNestedDevice { parent, state } => {
+            unit_parent::insert(project, parent, state)
+        }
+        Command::ReparentDevice { device, parent } => {
+            unit_parent::apply(project, device, parent)?;
             Ok(crate::Created::None)
         }
         Command::ReplaceDeviceState { device, state } => {
@@ -462,6 +474,47 @@ pub(crate) fn move_serial_unit(
     Ok(())
 }
 
+/// Effect order and instrument order share local indices but distinct anchors.
+fn move_local_unit(
+    track: &mut crate::Track,
+    source: usize,
+    destination: usize,
+    before_instrument: bool,
+) -> Result<(), Invalid> {
+    let span = crate::device_inventory::serial_unit_span(&track.devices, source)?;
+    if span.contains(&destination) && !before_instrument {
+        return Ok(());
+    }
+    let count = span.len();
+    let after_remove = if destination >= span.end {
+        destination
+            .checked_sub(count)
+            .ok_or(Invalid("device position underflow"))?
+    } else {
+        destination
+    };
+    let gap = match track.instrument_position {
+        Some(gap) => {
+            let gap = if span.start < gap {
+                gap.checked_sub(count)
+                    .ok_or(Invalid("instrument position underflow"))?
+            } else {
+                gap
+            };
+            Some(if before_instrument || after_remove < gap {
+                gap.checked_add(count)
+                    .ok_or(Invalid("instrument position overflow"))?
+            } else {
+                gap
+            })
+        }
+        None => None,
+    };
+    move_serial_unit(&mut track.devices, source, destination)?;
+    track.instrument_position = gap;
+    Ok(())
+}
+
 fn move_device(
     project: &mut Project,
     id: DeviceId,
@@ -477,62 +530,92 @@ fn move_device(
     if before == Some(id) && source_index == target_index {
         return Ok(());
     }
-    let target_len_after = project.tracks[target_index]
+    if source_index == target_index {
+        let destination = anchor_index(&project.tracks[source_index].devices, before)?;
+        return move_local_unit(
+            &mut project.tracks[source_index],
+            source_position,
+            destination,
+            false,
+        );
+    }
+    let destination = anchor_index(&project.tracks[target_index].devices, before)?;
+    transfer_local_unit(
+        project,
+        source_index,
+        source_position,
+        target_index,
+        destination,
+        false,
+    )
+}
+
+/// Transfer a complete root between distinct local owners on the private candidate.
+/// Reserve bounded storage and compute both instrument gaps before draining nodes.
+fn transfer_local_unit(
+    project: &mut Project,
+    source: usize,
+    position: usize,
+    target: usize,
+    destination: usize,
+    before_instrument: bool,
+) -> Result<(), Invalid> {
+    let source_track = &project.tracks[source];
+    let span = crate::device_inventory::serial_unit_span(&source_track.devices, position)?;
+    if source_track.devices[position].parent().is_some() {
+        return Err(Invalid(
+            "moving nested devices between tracks requires reparenting",
+        ));
+    }
+    let count = span.len();
+    let target_track = &project.tracks[target];
+    if destination > target_track.devices.len() {
+        return Err(Invalid("device insertion position is out of bounds"));
+    }
+    if target_track
         .devices
         .len()
-        .saturating_sub(usize::from(source_index == target_index));
-    if source_index != target_index && target_len_after >= MAX_DEVICES_PER_TRACK {
+        .checked_add(count)
+        .is_none_or(|len| len > MAX_DEVICES_PER_TRACK)
+    {
         return Err(Invalid("track device limit reached"));
     }
-    if source_index == target_index {
-        let devices = &project.tracks[source_index].devices;
-        let destination = match before {
-            Some(anchor) => {
-                let anchor_position = devices
-                    .iter()
-                    .position(|device| device.id == anchor)
-                    .ok_or(Invalid("device insertion anchor no longer exists"))?;
-                if anchor_position == source_position {
-                    return Err(Invalid("device cannot be moved before itself"));
-                }
-                anchor_position - usize::from(anchor_position > source_position)
+    let source_gap = source_track
+        .instrument_position
+        .map(|gap| {
+            if position < gap {
+                gap.checked_sub(count)
+                    .ok_or(Invalid("instrument position underflow"))
+            } else {
+                Ok(gap)
             }
-            None => devices
-                .len()
-                .checked_sub(1)
-                .ok_or(Invalid("device count underflow"))?,
-        };
-        let old_gap = project.tracks[source_index].instrument_position;
-        let gap_after_remove = old_gap.map(|gap| if source_position < gap { gap - 1 } else { gap });
-        let gap_after_insert =
-            gap_after_remove.map(|gap| if destination < gap { gap + 1 } else { gap });
-        let moving = project.tracks[source_index].devices.remove(source_position);
-        project.tracks[source_index]
-            .devices
-            .insert(destination, moving);
-        project.tracks[source_index].instrument_position = gap_after_insert;
-    } else {
-        let destination = anchor_index(&project.tracks[target_index].devices, before)?;
-        let old_gap = project.tracks[source_index].instrument_position;
-        let moving = project.tracks[source_index].devices.remove(source_position);
-        if old_gap.is_some_and(|gap| source_position < gap) {
-            project.tracks[source_index].instrument_position =
-                old_gap.and_then(|gap| gap.checked_sub(1));
-        }
-        project.tracks[target_index]
-            .devices
-            .insert(destination, moving);
-        if project.tracks[target_index]
-            .instrument_position
-            .is_some_and(|gap| destination < gap)
-        {
-            let gap = project.tracks[target_index]
-                .instrument_position
-                .and_then(|gap| gap.checked_add(1))
-                .ok_or(Invalid("instrument position overflow"))?;
-            project.tracks[target_index].instrument_position = Some(gap);
-        }
-    }
+        })
+        .transpose()?;
+    let target_gap = target_track
+        .instrument_position
+        .map(|gap| {
+            if before_instrument || destination < gap {
+                gap.checked_add(count)
+                    .ok_or(Invalid("instrument position overflow"))
+            } else {
+                Ok(gap)
+            }
+        })
+        .transpose()?;
+    let mut moving = Vec::new();
+    moving
+        .try_reserve_exact(count)
+        .map_err(|_| Invalid("could not reserve moving device unit"))?;
+    project.tracks[target]
+        .devices
+        .try_reserve(count)
+        .map_err(|_| Invalid("could not reserve destination device unit"))?;
+    moving.extend(project.tracks[source].devices.drain(span));
+    project.tracks[target]
+        .devices
+        .splice(destination..destination, moving);
+    project.tracks[source].instrument_position = source_gap;
+    project.tracks[target].instrument_position = target_gap;
     Ok(())
 }
 
@@ -613,87 +696,62 @@ fn move_track_device(
             return Err(Invalid("device insertion anchor belongs to another track"));
         }
     }
-    if matches!(source, DeviceLocation::Instrument { .. })
-        && source_index != target_index
-        && project.tracks[target_index].instrument.is_some()
-    {
-        return Err(Invalid("target track already has an instrument"));
-    }
-    let target_effects_after = project.tracks[target_index]
-        .devices
-        .len()
-        .checked_sub(usize::from(
-            source_index == target_index && matches!(source, DeviceLocation::Effect { .. }),
-        ))
-        .ok_or(Invalid("device count underflow"))?;
-    if matches!(source, DeviceLocation::Effect { .. })
-        && source_index != target_index
-        && target_effects_after >= MAX_DEVICES_PER_TRACK
-    {
-        return Err(Invalid("track device limit reached"));
-    }
-
-    let receiver_transfer = match source {
-        DeviceLocation::Instrument { track } => {
-            let source_track = project.tracks[track].id;
-            project.tracks[track].source_id().filter(|source| {
-                project
-                    .native_source(*source)
-                    .is_some_and(|definition| definition.receiver() == Some(source_track))
-            })
-        }
-        DeviceLocation::Effect { .. } => None,
-    };
-
-    let moving = match source {
-        DeviceLocation::Effect { track, index } => {
-            let old_position = project.tracks[track].instrument_position;
-            let device = project.tracks[track].devices.remove(index);
-            if old_position.is_some_and(|position| index < position) {
-                project.tracks[track].instrument_position =
-                    old_position.and_then(|p| p.checked_sub(1));
-            }
-            (Some(device), None)
-        }
-        DeviceLocation::Instrument { track } => {
-            let device = project.tracks[track]
-                .instrument
-                .take()
-                .ok_or(Invalid("instrument slot is already empty"))?;
-            project.tracks[track].instrument_position = None;
-            (None, Some(device))
-        }
-    };
-    {
-        let target = &mut project.tracks[target_index];
-        if let Some(binding) = moving.1 {
-            let position = chain_effect_index_before(target, before)?;
-            target.instrument = Some(binding);
-            target.instrument_position = Some(position);
-        } else {
-            let position = chain_effect_index_before(target, before)?;
+    if let DeviceLocation::Effect { track, index } = source {
+        if track == target_index {
+            let target = &project.tracks[target_index];
+            let destination = chain_effect_index_before(target, before)?;
             let before_instrument = before.is_some_and(|anchor| {
                 target
                     .instrument
                     .as_ref()
                     .is_some_and(|instrument| instrument.id == anchor)
             });
-            let device = moving.0.ok_or(Invalid("moving effect is missing"))?;
-            target.devices.insert(position, device);
-            if before_instrument
-                || target
-                    .instrument_position
-                    .is_some_and(|instrument_position| position < instrument_position)
-            {
-                target.instrument_position = Some(
-                    target
-                        .instrument_position
-                        .and_then(|instrument_position| instrument_position.checked_add(1))
-                        .ok_or(Invalid("instrument position overflow"))?,
-                );
-            }
+            return move_local_unit(
+                &mut project.tracks[target_index],
+                index,
+                destination,
+                before_instrument,
+            );
         }
+        let target = &project.tracks[target_index];
+        let destination = chain_effect_index_before(target, before)?;
+        let before_instrument = before.is_some_and(|anchor| {
+            target
+                .instrument
+                .as_ref()
+                .is_some_and(|instrument| instrument.id == anchor)
+        });
+        return transfer_local_unit(
+            project,
+            track,
+            index,
+            target_index,
+            destination,
+            before_instrument,
+        );
     }
+
+    if matches!(source, DeviceLocation::Instrument { .. })
+        && source_index != target_index
+        && project.tracks[target_index].instrument.is_some()
+    {
+        return Err(Invalid("target track already has an instrument"));
+    }
+    let source_track = project.tracks[source_index].id;
+    let receiver_transfer = project.tracks[source_index].source_id().filter(|source| {
+        project
+            .native_source(*source)
+            .is_some_and(|definition| definition.receiver() == Some(source_track))
+    });
+    let binding = project.tracks[source_index]
+        .instrument
+        .take()
+        .ok_or(Invalid("instrument slot is already empty"))?;
+    project.tracks[source_index].instrument_position = None;
+    let target = &mut project.tracks[target_index];
+    let position = chain_effect_index_before(target, before)?;
+    target.instrument = Some(binding);
+    target.instrument_position = Some(position);
     if let Some(source) = receiver_transfer {
         project.set_native_source_receiver(source, Some(target_track))?;
     }
