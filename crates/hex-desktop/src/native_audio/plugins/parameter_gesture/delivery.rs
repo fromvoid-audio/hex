@@ -393,6 +393,10 @@ impl Plugins {
         let Some(gesture) = self.parameter_gesture.as_mut() else {
             return;
         };
+        // A queued witness can be consumed during retirement itself. Mark
+        // closure first so that immediate drain cannot retire the gesture
+        // before emitting its terminal after the original point.
+        gesture.recording_output_closed();
         if gesture
             .pending
             .as_ref()
