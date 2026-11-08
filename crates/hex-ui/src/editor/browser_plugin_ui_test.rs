@@ -1138,11 +1138,12 @@ fn all_search_keeps_within_kind_order_and_single_kind_queries(cx: &mut TestAppCo
 }
 
 #[gpui::test]
-fn vst_effect_drag_to_unselected_track_header_reaches_plugin_worker(cx: &mut TestAppContext) {
+fn vst_effect_drag_to_unselected_track_reaches_plugin_worker(cx: &mut TestAppContext) {
     cx.update(crate::editor::bind_editor_keys);
-    for mode in [
-        crate::editor::EditorMode::Arrangement,
-        crate::editor::EditorMode::Session,
+    for (mode, lane) in [
+        (crate::editor::EditorMode::Arrangement, false),
+        (crate::editor::EditorMode::Session, false),
+        (crate::editor::EditorMode::Arrangement, true),
     ] {
         let (handle, editor, tracks, directory, _) =
             browser_drag_fixture_with_tracks(cx, &["selected", "target"]);
@@ -1186,7 +1187,9 @@ fn vst_effect_drag_to_unselected_track_header_reaches_plugin_worker(cx: &mut Tes
         let selector = Box::leak(
             format!(
                 "{}-{}",
-                if mode == crate::editor::EditorMode::Arrangement {
+                if lane {
+                    "arrangement-lane"
+                } else if mode == crate::editor::EditorMode::Arrangement {
                     "arrangement-track-header"
                 } else {
                     "session-track"
@@ -1225,6 +1228,28 @@ fn vst_effect_drag_to_unselected_track_header_reaches_plugin_worker(cx: &mut Tes
             });
             visual.run_until_parked();
         }
+        if lane {
+            let lane_bounds = visual.debug_bounds(selector).unwrap();
+            let insertion = point(lane_bounds.center().x, lane_bounds.origin.y);
+            visual.simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(
+                point(source.x + px(12.0), source.y),
+                MouseButton::Left,
+                Modifiers::default(),
+            );
+            visual.simulate_mouse_move(insertion, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            assert!(
+                visual
+                    .debug_bounds("arrangement-device-drop-preview")
+                    .is_none()
+            );
+            visual.simulate_mouse_up(insertion, MouseButton::Left, Modifiers::default());
+            editor.read_with(&visual, |view, _| {
+                assert!(view.pending_plugin_effect.is_none())
+            });
+            visual.run_until_parked();
+        }
         let original_feedback = visual.rendered_background(selector);
         visual.simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(
@@ -1234,7 +1259,15 @@ fn vst_effect_drag_to_unselected_track_header_reaches_plugin_worker(cx: &mut Tes
         );
         visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
-        assert_ne!(visual.rendered_background(selector), original_feedback);
+        if lane {
+            assert!(
+                visual
+                    .debug_bounds("arrangement-device-drop-preview")
+                    .is_some()
+            );
+        } else {
+            assert_ne!(visual.rendered_background(selector), original_feedback);
+        }
         editor.read_with(&visual, |view, _| {
             assert!(
                 view.pending_plugin_effect.is_none(),

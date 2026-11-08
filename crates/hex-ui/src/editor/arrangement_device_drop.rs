@@ -60,16 +60,27 @@ impl EditorView {
             return;
         }
         self.arrangement_device_preview = None;
-        // Existing-device moves retain their rail/card contract.
-        if !matches!(drag.source, NativeDeviceDragSource::Browser { .. })
-            || !self.native_device_drag_is_current(drag)
-            || self.mode != EditorMode::Arrangement
-        {
+        // Existing-device moves retain their rail/card contract. Plugin
+        // effects can target a track, while creating a track requires a
+        // separate atomic plugin-preparation contract.
+        let plugin_effect = match &drag.source {
+            NativeDeviceDragSource::Browser { .. } => false,
+            NativeDeviceDragSource::PluginEffect(selection)
+                if selection.role == hex_plugin_catalog::PluginRole::Effect =>
+            {
+                true
+            }
+            _ => return,
+        };
+        if !self.native_device_drag_is_current(drag) || self.mode != EditorMode::Arrangement {
             return;
         }
         let Some(target) = self.painted_arrangement_drop_target(x, y) else {
             return;
         };
+        if plugin_effect && matches!(target, ArrangementDropTarget::NewTrack { .. }) {
+            return;
+        }
         let destination = match target {
             ArrangementDropTarget::NewTrack { before_track, .. } => {
                 ArrangementDeviceDestination::NewTrack { before_track }
@@ -128,7 +139,17 @@ impl EditorView {
         let source = &drag.source;
         self.clear_native_device_drag(drag);
         cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
-        if let (true, Some(preview), NativeDeviceDragSource::Browser { class, type_id }) =
+        if let (true, Some(preview), NativeDeviceDragSource::PluginEffect(selection)) =
+            (valid, captured, source)
+            && let ArrangementDeviceDestination::ExistingTrack { track, .. } = preview.destination
+        {
+            self.insert_plugin_effect(
+                selection,
+                hex_session::service::PluginEffectDestination::Track(track),
+                None,
+                cx,
+            );
+        } else if let (true, Some(preview), NativeDeviceDragSource::Browser { class, type_id }) =
             (valid, captured, source)
         {
             let gain = match self.device_track_gain(preview.destination) {
