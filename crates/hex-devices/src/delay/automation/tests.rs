@@ -1,3 +1,4 @@
+mod flags;
 mod timing;
 use super::*;
 use hex_lattice::{
