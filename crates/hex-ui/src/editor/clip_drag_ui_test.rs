@@ -3156,7 +3156,16 @@ fn cropped_clip_move_chooses_from_the_full_audio_and_midi_span(cx: &mut TestAppC
         };
         let threshold = start + (end - start) * 2 / 3;
         let before = project.snapshot();
-        let (handle, editor) = editor_window(cx, project, Arc::default());
+        let preview = if midi {
+            Arc::new(
+                hex_engine::compile::project_with_midi_preview(&project, &Default::default())
+                    .unwrap()
+                    .1,
+            )
+        } else {
+            Arc::default()
+        };
+        let (handle, editor) = editor_window(cx, project, preview);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
         editor.update(&mut visual, |view, cx| {
