@@ -134,21 +134,6 @@ impl EditorView {
                 cx.notify();
             })),
         );
-        if show_main {
-            strip = strip
-                .child(div().flex_1())
-                .child(
-                    div()
-                        .id("console-main-header")
-                        .debug_selector(|| "console-main-header".into())
-                        .on_click(cx.listener(|view, _, window, cx| {
-                            super::device_panel::select_main(view, window, cx)
-                        }))
-                        .child(theme::text("main")),
-                )
-                .child(self.sample_arm_button(super::sample_recorder::Arm::Main, cx))
-                .children([self.main_track_controls(cx)]);
-        }
         strip
     }
 
