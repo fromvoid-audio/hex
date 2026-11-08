@@ -278,6 +278,16 @@ fn loop_rail_command_click_activates_resizable_ends_preserve_enable_and_toolbar_
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
 
+    assert_eq!(
+        visual.rendered_background("loop-rail-range"),
+        Some(
+            gpui::Hsla::from(gpui::rgb(crate::theme::color(
+                crate::theme::PaletteRole::Muted
+            )))
+            .alpha(0.62)
+            .into()
+        )
+    );
     let midpoint = rail_point(&mut visual, 0.25);
     let command = Modifiers {
         platform: true,
@@ -288,6 +298,17 @@ fn loop_rail_command_click_activates_resizable_ends_preserve_enable_and_toolbar_
     visual.run_until_parked();
     wait_for_loop(cx, handle, &editor, Some((48_000, 192_000, true)));
 
+    visual.run_until_parked();
+    assert_eq!(
+        visual.rendered_background("loop-rail-range"),
+        Some(
+            gpui::Hsla::from(gpui::rgb(crate::theme::color(
+                crate::theme::PaletteRole::Text
+            )))
+            .alpha(0.94)
+            .into()
+        )
+    );
     let start = rail_point(&mut visual, 0.125);
     visual.simulate_mouse_move(start, None, Modifiers::default());
     visual.run_until_parked();
@@ -320,7 +341,17 @@ fn loop_rail_command_click_activates_resizable_ends_preserve_enable_and_toolbar_
     visual.simulate_mouse_up(toggle.center(), MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     wait_for_loop(cx, handle, &editor, Some((96_000, 288_000, false)));
-    assert!(visual.debug_bounds("loop-rail-range").is_some());
+    visual.run_until_parked();
+    assert_eq!(
+        visual.rendered_background("loop-rail-range"),
+        Some(
+            gpui::Hsla::from(gpui::rgb(crate::theme::color(
+                crate::theme::PaletteRole::Muted
+            )))
+            .alpha(0.62)
+            .into()
+        )
+    );
 }
 
 #[gpui::test]
