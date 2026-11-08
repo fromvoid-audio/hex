@@ -2,10 +2,11 @@
 //!
 //! Canonical coefficients are prepared on control from the RBJ audio-EQ
 //! cookbook equations. The callback retains fixed coefficient banks and
-//! transposed-direct-form-II histories. Shared gain, frequency, Q, enable and filter-type automation
-//! designs active-bank targets in fixed inline storage and reuses the rate-scaled
-//! coefficient/gain smoother. Routing automation remains unsupported. Compatible copies retain admitted trajectories; missing views
-//! restore canonical controls, and detached tails freeze their targets.
+//! transposed-direct-form-II histories. Shared gain, frequency, Q, enable and
+//! filter-type automation designs active-bank targets in fixed inline storage
+//! and reuses the rate-scaled coefficient/gain smoother. Routing automation
+//! remains unsupported. Compatible copies retain admitted trajectories; missing
+//! views restore canonical controls, and detached tails freeze their targets.
 mod automation;
 use hex_lattice::{
     NativeDeviceDefinition, NativeProcessorAudition, NativeProcessorRuntime, OutputTail,

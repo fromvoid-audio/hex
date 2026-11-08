@@ -85,21 +85,25 @@ fn eq8_gain_automation_callback_publication_history_and_save_reopen() -> Result<
                 p::gain(bank, band),
                 p::q(bank, band),
             ] {
+                let is_enable = parameter == p::enabled(bank, band);
                 editor.execute(Command::ReplaceDeviceAutomation {
                     device,
                     parameter,
                     points: vec![
                         AutomationPoint {
                             beat: BeatTime::ZERO,
-                            value: AutomationValue::new(0.4)?,
-                            outgoing: AutomationInterpolation::Linear,
+                            value: AutomationValue::new(if is_enable { 0.0 } else { 0.4 })?,
+                            outgoing: if is_enable {
+                                AutomationInterpolation::Step
+                            } else {
+                                AutomationInterpolation::Linear
+                            },
                         },
                         AutomationPoint {
-                            beat: editor
-                                .project()
-                                .tempo_map()
-                                .frame_to_beat((BLOCK * 2) as u64)?,
-                            value: AutomationValue::new(0.6)?,
+                            beat: editor.project().tempo_map().frame_to_beat(
+                                (if is_enable { BLOCK * 3 / 2 } else { BLOCK * 2 }) as u64,
+                            )?,
+                            value: AutomationValue::new(if is_enable { 1.0 } else { 0.6 })?,
                             outgoing: AutomationInterpolation::Step,
                         },
                     ],
