@@ -469,11 +469,19 @@ impl State {
         scalars_changed: bool,
     ) {
         if scalars_changed {
-            self.branches[self.active].history.parameters =
-                p.parameters(self.layouts[self.active], settings);
+            let parameters = p.parameters(self.layouts[self.active], settings);
+            self.branches[self.active].history.parameters = parameters;
             if self.phase != Phase::Stable {
                 let next = 1 - self.active;
-                self.branches[next].history.parameters = p.parameters(self.layouts[next], settings);
+                // Mode/rate are fixed: only link differs between these layouts.
+                let mut parameters = parameters;
+                parameters.link =
+                    f64::from(settings.value(if p.config(self.layouts[next]).mid_side {
+                        LINK_MID_SIDE
+                    } else {
+                        LINK
+                    }));
+                self.branches[next].history.parameters = parameters;
             }
         }
         if self.pristine {
