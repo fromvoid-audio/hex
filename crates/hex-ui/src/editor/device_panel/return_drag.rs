@@ -73,6 +73,14 @@ pub(super) fn render_chain(
                 cx,
                 device.id(),
                 NativeDeviceClass::Effect,
+                focus.clone(),
+                rendered,
+            );
+            let rendered = super::super::device_preset::card(
+                view,
+                cx,
+                device.id(),
+                NativeDeviceClass::Effect,
                 focus,
                 rendered,
             );

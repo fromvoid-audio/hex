@@ -3415,12 +3415,7 @@ fn utility_panel_matches_compact_geometry_and_uses_shared_mode_popup(cx: &mut Te
             format!("device-drag-title-{}", device.value()).into_boxed_str(),
         ))
         .expect("Utility title");
-    for suffix in [
-        "device-bypass",
-        "device-preset-load",
-        "device-preset-save",
-        "device-remove",
-    ] {
+    for suffix in ["device-bypass", "device-preset-menu", "device-remove"] {
         let selector = Box::leak(format!("{suffix}-{}", device.value()).into_boxed_str());
         let action = visual.debug_bounds(selector).expect("header action");
         assert!(action.origin.x >= frame.origin.x);
