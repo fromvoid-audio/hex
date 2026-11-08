@@ -206,6 +206,9 @@ pub(super) struct Runtime {
     // rings are known to be empty without a callback-time scan.
     pristine: bool,
 }
+fn time_alpha(rate: u32, hq: bool) -> f64 {
+    1.0 - (-1.0 / (f64::from(rate) * if hq { 0.02 } else { 0.01 })).exp()
+}
 fn finite(v: f64) -> f32 {
     v.clamp(-f64::from(f32::MAX), f64::from(f32::MAX)) as f32
 }
@@ -251,8 +254,10 @@ impl Runtime {
         controls.inherit(&old.controls);
         self.primary = old;
         self.primary.controls = controls;
-        (self.primary.dry_gain, self.primary.wet_gain) =
-            mix_gains(self.primary.mix, self.settings.flag(EQUAL_LOUDNESS));
+        (self.primary.dry_gain, self.primary.wet_gain) = mix_gains(
+            self.primary.mix,
+            self.primary.controls.effective_ref().flags.equal_loudness,
+        );
         // Bound targets are installed by the next borrowed sample/fallback.
         // Only unbound canonical controls retime this shared ramp immediately.
         let mut unbound = old_settings;
@@ -269,11 +274,12 @@ impl Runtime {
         self.open = false;
     }
     fn block_settings(&self) -> BlockSettings {
-        let hq = self.settings.flag(HIGH_QUALITY);
+        let flags = self.speculative.controls.effective_ref().flags;
+        let hq = flags.high_quality;
         BlockSettings {
-            freeze: self.settings.flag(FREEZE) && !self.releasing,
+            freeze: flags.freeze && !self.releasing,
             hq,
-            alpha: 1.0 - (-1.0 / (f64::from(self.rate) * if hq { 0.02 } else { 0.01 })).exp(),
+            alpha: time_alpha(self.rate, hq),
             fade_frames: self.rate.div_ceil(20),
         }
     }
@@ -324,7 +330,11 @@ impl Runtime {
             .speculative
             .controls
             .resolve(&automation::BINDINGS, values)?;
-        let block = self.block_settings();
+        let mut block = self.block_settings();
+        let flags_admitted = [11, 12, 13, 14, 25, 26]
+            .iter()
+            .any(|&i| self.speculative.controls.admitted(i));
+        let mut refresh_flags = true;
         let timing_admitted = [0, 3, 4, 5, 6, 7, 8, 9, 10]
             .iter()
             .any(|&i| self.speculative.controls.admitted(i));
@@ -353,6 +363,15 @@ impl Runtime {
                 if retime {
                     self.speculative.ramp_left = self.rate.div_ceil(100);
                 }
+                if refresh_flags {
+                    let flags = self.speculative.controls.effective_ref().flags;
+                    block.freeze = flags.freeze && !self.releasing;
+                    if block.hq != flags.high_quality {
+                        block.hq = flags.high_quality;
+                        block.alpha = time_alpha(self.rate, block.hq);
+                    }
+                    refresh_flags = flags_admitted;
+                }
             }
             self.process_frame(
                 frame,
@@ -373,7 +392,6 @@ impl Runtime {
         bypassed: bool,
         block: BlockSettings,
     ) {
-        let settings = self.settings;
         let rate = self.rate;
         let BlockSettings {
             freeze,
@@ -402,7 +420,7 @@ impl Runtime {
             s.times = requested;
             s.old_times = requested;
         }
-        match settings.choice(SMOOTHING) {
+        match targets.flags.smoothing {
             0 => {
                 for (time, target) in s.times.iter_mut().zip(requested) {
                     *time += alpha * (target - *time);
@@ -433,18 +451,18 @@ impl Runtime {
             s.feedback += (f64::from(targets.feedback) - s.feedback) / f64::from(s.ramp_left);
             s.mix += (f64::from(targets.mix) - s.mix) / f64::from(s.ramp_left);
             s.filter_mix +=
-                (f64::from(settings.flag(FILTER)) - s.filter_mix) / f64::from(s.ramp_left);
+                (f64::from(targets.flags.filter) - s.filter_mix) / f64::from(s.ramp_left);
             s.frequency += (f64::from(targets.frequency) - s.frequency) / f64::from(s.ramp_left);
             s.width += (f64::from(targets.width) - s.width) / f64::from(s.ramp_left);
             s.ramp_left -= 1;
             if s.ramp_left == 0 {
                 s.feedback = f64::from(targets.feedback);
                 s.mix = f64::from(targets.mix);
-                s.filter_mix = f64::from(settings.flag(FILTER));
+                s.filter_mix = f64::from(targets.flags.filter);
                 s.frequency = f64::from(targets.frequency);
                 s.width = f64::from(targets.width);
             }
-            (s.dry_gain, s.wet_gain) = mix_gains(s.mix, settings.flag(EQUAL_LOUDNESS));
+            (s.dry_gain, s.wet_gain) = mix_gains(s.mix, targets.flags.equal_loudness);
         }
         let scalar = &*s;
         let mut wet = std::array::from_fn::<_, 2, _>(|lane| {
@@ -470,12 +488,12 @@ impl Runtime {
         let dry = frame.map(|v| if v.is_finite() { f64::from(v) } else { 0.0 });
         let mut write = [0.0; 2];
         for lane in 0..2 {
-            let feedback = if settings.flag(PING_PONG) {
+            let feedback = if targets.flags.ping_pong {
                 wet[1 - lane]
             } else {
                 wet[lane]
             };
-            let input = if settings.flag(PING_PONG) {
+            let input = if targets.flags.ping_pong {
                 if lane == 0 {
                     (dry[0] + dry[1]) * 0.5
                 } else {
@@ -625,11 +643,11 @@ impl OwnedProcessorRuntime for Runtime {
     }
     fn committed_is_quiescent(&self) -> bool {
         self.primary
-            .quiet(self.settings.flag(FREEZE) && !self.releasing)
+            .quiet(self.primary.controls.effective_ref().flags.freeze && !self.releasing)
     }
     fn speculative_is_quiescent(&self) -> bool {
         self.speculative
-            .quiet(self.settings.flag(FREEZE) && !self.releasing)
+            .quiet(self.speculative.controls.effective_ref().flags.freeze && !self.releasing)
     }
     fn can_inherit_from(&self, old: &dyn OwnedProcessorRuntime) -> bool {
         old.as_any()
@@ -678,6 +696,7 @@ impl OwnedProcessorRuntime for Runtime {
                 && self.rate == old.rate
                 && self.settings == old.settings
                 && !self.settings.flag(FREEZE)
+                && !old.primary.controls.effective_ref().flags.freeze
                 && self.committed.len() == old.committed.len()
                 && self.scratch.len() == old.scratch.len()
         })
