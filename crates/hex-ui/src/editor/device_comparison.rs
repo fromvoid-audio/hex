@@ -23,55 +23,11 @@ fn intent(
     class: NativeDeviceClass,
     action: Action,
 ) -> Option<Intent> {
-    let state = view.state.as_ref()?;
-    let entry = state.project.device(device)?;
-    let panel = view.device_panel.owner?;
-    let actual_class = match panel {
-        device_panel::DevicePanelOwner::Main => {
-            if !state
-                .project
-                .main_devices()
-                .iter()
-                .any(|entry| entry.id() == device)
-            {
-                return None;
-            }
-            NativeDeviceClass::Effect
-        }
-        device_panel::DevicePanelOwner::Track(track) => {
-            let track = state.project.track(track)?;
-            if track.instrument().is_some_and(|entry| entry.id() == device) {
-                NativeDeviceClass::Instrument
-            } else if track.devices().iter().any(|entry| entry.id() == device) {
-                NativeDeviceClass::Effect
-            } else {
-                return None;
-            }
-        }
-        device_panel::DevicePanelOwner::Return(bus) => {
-            let bus = state
-                .project
-                .return_tracks()
-                .iter()
-                .find(|entry| entry.id() == bus)?;
-            if !bus.devices().iter().any(|entry| entry.id() == device) {
-                return None;
-            }
-            NativeDeviceClass::Effect
-        }
-    };
-    if actual_class != class {
-        return None;
-    }
+    let target = super::device_action_owner::Target::capture(view, device, class)?;
+    let entry = view.state.as_ref()?.project.device(device)?;
     Some(Intent {
-        owner: Owner {
-            project_generation: view.project_generation,
-            revision: state.revision,
-            device,
-            class,
-            type_id: entry.state().type_id(),
-        },
-        panel,
+        owner: target.owner,
+        panel: target.panel,
         expected: entry.active_variant(),
         action,
     })
@@ -163,23 +119,6 @@ pub(super) fn card(
 }
 
 impl EditorView {
-    /// Reconcile before the root's key context is composed. Dismissing during
-    /// overlay construction would leave the painted tree in menu-key mode.
-    pub(super) fn reconcile_device_comparison_menu(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let stale = self.context_menu.as_ref().is_some_and(|menu| menu.items.iter().any(|item| {
-            matches!(&item.action, EditorContextAction::DeviceComparison(target) if !current(self, target))
-        }));
-        if stale {
-            if let Some(menu) = &mut self.context_menu {
-                menu.previous_focus = Some(self.focus.clone());
-            }
-            self.dismiss_context_menu(window, cx);
-        }
-    }
     fn comparison_ready(&mut self, target: Intent, cx: &mut Context<Self>) -> bool {
         if !current(self, &target) {
             self.error = Some("device comparison changed · retry from the current device".into());

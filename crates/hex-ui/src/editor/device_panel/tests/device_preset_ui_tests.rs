@@ -1,11 +1,179 @@
+use super::device_comparison_tests::Directory;
 use super::*;
 
 fn save_button(visual: &mut VisualTestContext, device: DeviceId) -> Bounds<Pixels> {
     visual
         .debug_bounds(Box::leak(
-            format!("device-preset-save-{}", device.value()).into_boxed_str(),
+            format!("device-preset-menu-{}", device.value()).into_boxed_str(),
         ))
         .expect("discoverable save action")
+}
+
+fn click_save(visual: &mut VisualTestContext, device: DeviceId) {
+    let bounds = save_button(visual, device);
+    visual.simulate_click(bounds.center(), Modifiers::default());
+    visual.run_until_parked();
+    if let Some(menu) = visual.debug_bounds("context-menu-panel") {
+        visual.simulate_click(
+            point(menu.center().x, menu.top() + px(38.0)),
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+    }
+}
+
+#[gpui::test]
+fn sidebar_menu_keyboard_saves_default_to_configured_disk_and_retires_when_hidden(
+    cx: &mut TestAppContext,
+) {
+    let directory = Directory::new();
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let original = state.project.clone();
+    let revision = state.revision;
+    let expected = state
+        .project
+        .device(device)
+        .unwrap()
+        .state()
+        .payload()
+        .to_vec();
+    let (handle, editor) = directory.window(cx, service, state, track, None);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+    let title = visual
+        .debug_bounds(Box::leak(
+            format!("device-drag-title-{}", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    visual.simulate_click(title.center(), Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_keystrokes("shift-f10");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.context_menu
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .map(|i| i.label)
+                .collect::<Vec<_>>(),
+            ["load preset", "save preset", "save as default"]
+        )
+    });
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    visual.update(|window, app| {
+        editor.read_with(app, |view, _| {
+            assert!(
+                view.device_panel
+                    .chain_window
+                    .device_is_focused(device, window)
+            )
+        })
+    });
+    visual.simulate_keystrokes("shift-f10");
+    visual.run_until_parked();
+    visual.simulate_keystrokes("down down enter");
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+    });
+    let root = editor.read_with(cx, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert_eq!(view.state.as_ref().unwrap().project, original);
+        assert_eq!(view.state.as_ref().unwrap().revision, revision);
+        view.browser.data_directory().unwrap().to_path_buf()
+    });
+    assert!(root.starts_with(&directory.0));
+    let file = root.join("device-defaults/v1/effect/device-hex.utility.hex-device-preset.json");
+    let json: serde_json::Value = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+    assert_eq!(json["payload"], serde_json::json!(expected));
+    visual.run_until_parked();
+    let button = save_button(&mut visual, device);
+    visual.simulate_click(button.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, cx| {
+        view.clip_view_open = false;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| assert!(view.context_menu.is_none()));
+}
+
+#[gpui::test]
+fn return_and_main_menu_ownership_refuses_a_stale_action_and_saves_the_main_state(
+    cx: &mut TestAppContext,
+) {
+    let directory = Directory::new();
+    let (service, state, track, bus, returned, _) = actor_return_utility_fixture();
+    let main_state = hex_engine::patch_native_device_parameter_for_class(
+        NativeDeviceClass::Effect,
+        state.project.device(returned).unwrap().state(),
+        hex_lattice_contract::ParameterId::from_static(1),
+        ParameterValue::Float(0.42),
+    )
+    .unwrap();
+    service
+        .submit(Request::Edit(Command::InsertMainDevice {
+            before: None,
+            state: main_state.clone(),
+        }))
+        .unwrap();
+    let state = receive_service_event(&service).state;
+    let main = state.project.main_devices()[0].id();
+    let original = state.project.clone();
+    let (handle, editor) = directory.window(cx, service, state, track, Some(bus));
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let button = save_button(&mut visual, returned);
+    visual.simulate_click(button.center(), Modifiers::default());
+    visual.run_until_parked();
+    let stale = editor.read_with(cx, |view, _| {
+        view.context_menu.as_ref().unwrap().items[2].action.clone()
+    });
+    visual.update(|window, app| {
+        editor.update(app, |view, cx| {
+            super::super::select_main(view, window, cx);
+        });
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| assert!(view.context_menu.is_none()));
+    editor.update(&mut visual, |view, cx| {
+        view.perform_device_preset_action(
+            match stale {
+                super::super::super::context_menu::EditorContextAction::DevicePreset(intent) => {
+                    intent
+                }
+                _ => panic!("preset intent"),
+            },
+            cx,
+        )
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.worker_requests_pending, 0);
+        assert_eq!(view.state.as_ref().unwrap().project, original);
+    });
+    let button = save_button(&mut visual, main);
+    visual.simulate_click(button.center(), Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_keystrokes("down down enter");
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+    });
+    let root = editor.read_with(cx, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert_eq!(view.state.as_ref().unwrap().project, original);
+        view.browser.data_directory().unwrap().to_path_buf()
+    });
+    let json: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(
+            root.join("device-defaults/v1/effect/device-hex.utility.hex-device-preset.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(json["payload"], serde_json::json!(main_state.payload()));
 }
 
 #[gpui::test]
@@ -26,7 +194,7 @@ fn device_preset_rendered_save_cancel_and_stale_dialog_preserve_project(cx: &mut
     let save = save_button(&mut visual, device);
     let load = visual
         .debug_bounds(Box::leak(
-            format!("device-preset-load-{}", device.value()).into_boxed_str(),
+            format!("device-preset-menu-{}", device.value()).into_boxed_str(),
         ))
         .unwrap();
     assert!(load.size.width > px(0.0));
@@ -37,7 +205,7 @@ fn device_preset_rendered_save_cancel_and_stale_dialog_preserve_project(cx: &mut
         .unwrap();
     assert!(save.origin.x >= frame.origin.x && save.right() <= frame.right());
     assert!(load.origin.x >= frame.origin.x && load.right() <= frame.right());
-    visual.simulate_click(save.center(), Modifiers::default());
+    click_save(&mut visual, device);
     visual.run_until_parked();
     editor.read_with(cx, |view, _| assert!(view.preset_dialog_open));
     cx.simulate_new_path_selection(|_| None);
@@ -78,8 +246,7 @@ fn device_preset_rendered_save_and_worker_load_one_history_step(cx: &mut TestApp
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    let bounds = save_button(&mut visual, device);
-    visual.simulate_click(bounds.center(), Modifiers::default());
+    click_save(&mut visual, device);
     visual.run_until_parked();
     cx.simulate_new_path_selection(|_| Some(path.clone()));
     visual.run_until_parked();
@@ -146,8 +313,7 @@ fn device_preset_return_owner_exposes_actions_and_cancel_keeps_sends(cx: &mut Te
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    let bounds = save_button(&mut visual, device);
-    visual.simulate_click(bounds.center(), Modifiers::default());
+    click_save(&mut visual, device);
     visual.run_until_parked();
     editor.read_with(cx, |view, _| assert!(view.preset_dialog_open));
     cx.simulate_new_path_selection(|_| None);
@@ -202,7 +368,7 @@ fn device_preset_operator_header_saves_complete_native_state(cx: &mut TestAppCon
     let save = save_button(&mut visual, device);
     let load = visual
         .debug_bounds(Box::leak(
-            format!("device-preset-load-{}", device.value()).into_boxed_str(),
+            format!("device-preset-menu-{}", device.value()).into_boxed_str(),
         ))
         .unwrap();
     let frame = visual
@@ -247,7 +413,7 @@ fn device_preset_operator_header_saves_complete_native_state(cx: &mut TestAppCon
     };
     enter_typed_value(&mut visual, device, ratio, "--");
     assert_draft(&mut visual, true, true, "--");
-    visual.simulate_click(save.center(), Modifiers::default());
+    click_save(&mut visual, device);
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert!(
@@ -288,7 +454,7 @@ fn device_preset_operator_header_saves_complete_native_state(cx: &mut TestAppCon
         assert!(entity.read(cx).is_editing());
         assert_eq!(entity.read(cx).display_text(), "1.23");
     });
-    visual.simulate_click(save.center(), Modifiers::default());
+    click_save(&mut visual, device);
     visual.run_until_parked();
     cx.simulate_new_path_selection(|_| Some(path.clone()));
     visual.run_until_parked();
