@@ -6,6 +6,27 @@ use std::{collections::BTreeMap, sync::Arc};
 
 pub use crate::midi_compile::midi_events;
 
+/// Reject unsupported serial effects before either playback preparation path.
+/// Unbound retained source definitions remain metadata, not active effects.
+pub(crate) fn refuse_serial_effect_units(project: &hex_project::Project) -> Result<(), Invalid> {
+    if project
+        .tracks()
+        .iter()
+        .flat_map(|track| track.devices())
+        .chain(
+            project
+                .return_tracks()
+                .iter()
+                .flat_map(|track| track.devices()),
+        )
+        .chain(project.main_devices())
+        .any(|device| device.parent().is_some())
+    {
+        return Err(Invalid("serial device units are not prepared"));
+    }
+    Ok(())
+}
+
 /// One prepared Arrangement audio dependency. Streamed entries must come from
 /// the caller's verified catalog for the requested project-open generation.
 #[derive(Clone, Debug)]
@@ -558,6 +579,7 @@ fn compile_project_inner<'a>(
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
     // #2740 supplies the pitch-aware runtime. Refuse until then rather than
     // accepting a saved tuned project and silently playing equal temperament.
+    refuse_serial_effect_units(snapshot)?;
     crate::device_automation::validate_project_with_registry(snapshot, registry)?;
     let (foreign_bytes, _) = crate::foreign_automation::candidate::quote_ordinary(snapshot)
         .map_err(|_| Invalid("authored vst3 project exceeds its preparation bounds"))?;

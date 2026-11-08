@@ -27,7 +27,7 @@ impl Project {
                 ));
             }
         }
-        for device in self.device_roots() {
+        for device in self.devices() {
             for reference in device
                 .authored_states()
                 .flat_map(|state| state.asset_references())
@@ -41,7 +41,7 @@ impl Project {
     }
 
     pub(crate) fn device_uses_asset(&self, asset: AssetId) -> bool {
-        self.device_roots().any(|device| {
+        self.devices().any(|device| {
             device
                 .authored_states()
                 .flat_map(|state| state.asset_references())

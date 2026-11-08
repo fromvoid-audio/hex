@@ -282,6 +282,56 @@ impl PreparedForeignAutomation {
         self.retain_previous_since_on_control(previous, Some(received))
     }
 
+    /// Keep the predecessor's current program and precisely the additional
+    /// predecessor revisions selected by the caller. The caller must establish
+    /// that no omitted revision can be needed by any callback or graph; keys
+    /// alone are not a source, installation, or quiescence witness. A refusal
+    /// leaves both owners unchanged, including their actual allocations.
+    pub fn retain_selected_on_control(
+        &mut self,
+        previous: &Self,
+        required: &[NonZeroU64],
+    ) -> Result<(), DeviceContractError> {
+        if self.binding != previous.binding
+            || self.revision <= previous.revision
+            || required.len() > MAX_RETAINED_FOREIGN_PROGRAMS
+            || required
+                .iter()
+                .any(|key| !previous.borrow().contains_revision(*key))
+            || previous
+                .retained
+                .iter()
+                .flatten()
+                .any(|entry| entry.revision >= previous.revision)
+            || self
+                .retained
+                .iter()
+                .flatten()
+                .any(|entry| entry.revision >= self.revision)
+        {
+            return Err(DeviceContractError::ForeignProcessingFailed);
+        }
+        let mut candidate = self.clone();
+        let mut filtered = previous.clone();
+        for owner in [&mut candidate, &mut filtered] {
+            for slot in &mut owner.retained {
+                if slot.as_ref().is_some_and(|entry| {
+                    entry.revision != previous.revision && !required.contains(&entry.revision)
+                }) {
+                    let bytes = slot.as_ref().map_or(0, |entry| entry.bytes);
+                    owner.storage_bytes = owner
+                        .storage_bytes
+                        .checked_sub(bytes)
+                        .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
+                    *slot = None;
+                }
+            }
+        }
+        candidate.retain_previous_on_control(&filtered)?;
+        *self = candidate;
+        Ok(())
+    }
+
     fn retain_previous_since_on_control(
         &mut self,
         previous: &Self,

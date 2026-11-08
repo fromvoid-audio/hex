@@ -121,6 +121,9 @@ impl DeviceAutomationSource {
 #[derive(Debug)]
 pub enum DeviceAutomationTakeAction {
     Begin,
+    /// Per-take deterministic writer refusal, available only in explicit fixtures.
+    #[cfg(feature = "recording-fault-test-support")]
+    InjectWriterFailure,
     Append(Arc<[(u64, NativeParameterApplication)]>),
     Finish(NativeParameterApplication),
     AppendVst3(Arc<[(u64, Vst3ParameterApplication)]>),
@@ -148,6 +151,10 @@ pub enum DeviceAutomationTakeAction {
     PollFailedCopy,
     /// Retrieve the last successful VST3 copy's identity without releasing custody.
     InspectFailedPluginCopy,
+    /// Adopt a verified failed VST3 copy on its unchanged live source.
+    AdoptFailedPluginCopy {
+        max_events: u64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -158,6 +165,8 @@ pub enum DeviceAutomationTakeProgress {
     Sealing,
     Pending,
     Committed,
+    /// The edit committed but a custody recheck refused release.
+    CommittedWithRetainedCustody(PathBuf),
     Retained(PathBuf),
     VerifiedCopy {
         path: PathBuf,
@@ -251,6 +260,17 @@ impl Lane {
         Ok(failed.source)
     }
 
+    pub(super) fn failed_outcome(
+        &self,
+        scope: DeviceAutomationTakeScope,
+    ) -> Result<&Arc<DraftWorkerOutcome>, String> {
+        self.failed_source(scope)?;
+        self.failed
+            .as_ref()
+            .map(|failed| &failed.outcome)
+            .ok_or_else(|| "no failed device automation custody is available".into())
+    }
+
     pub(super) fn copy_failed_plugin(
         &mut self,
         scope: DeviceAutomationTakeScope,
@@ -319,6 +339,28 @@ impl Lane {
             path: copy.path.clone(),
             receipt: copy.receipt,
         }))
+    }
+
+    pub(super) fn release_failed_plugin_copy(
+        &mut self,
+        scope: DeviceAutomationTakeScope,
+        path: &Path,
+        receipt: RecoveryCopyReceipt,
+        observations: &[super::PluginParameterObservation],
+    ) -> Result<(), String> {
+        let Step::Progress(DeviceAutomationTakeProgress::VerifiedCopy {
+            path: found,
+            receipt: identity,
+        }) = self.inspect_failed_plugin_copy(scope, observations)?
+        else {
+            return Err("verified VST3 recovery copy is unavailable".into());
+        };
+        if found != path || identity != receipt {
+            return Err("verified VST3 recovery copy changed".into());
+        }
+        self.verified_plugin_copy = None;
+        self.failed = None;
+        Ok(())
     }
 
     pub(super) fn path(&self) -> Option<&Path> {
@@ -481,10 +523,19 @@ impl Lane {
         };
         while active.input.poll().is_some() {}
         let progress = match action {
+            #[cfg(feature = "recording-fault-test-support")]
+            DeviceAutomationTakeAction::InjectWriterFailure => {
+                if !matches!(scope.target, DeviceCaptureTarget::Vst3(_)) {
+                    return Err("writer failure fixture requires a vst3 take".into());
+                }
+                active.input.inject_next_append_failure()?;
+                Progress::Appended
+            }
             DeviceAutomationTakeAction::CopyFailed { .. }
             | DeviceAutomationTakeAction::CopyFailedPlugin { .. }
             | DeviceAutomationTakeAction::PollFailedCopy
-            | DeviceAutomationTakeAction::InspectFailedPluginCopy => {
+            | DeviceAutomationTakeAction::InspectFailedPluginCopy
+            | DeviceAutomationTakeAction::AdoptFailedPluginCopy { .. } => {
                 return Err("invalid active automation recovery action".into());
             }
             DeviceAutomationTakeAction::Begin => {

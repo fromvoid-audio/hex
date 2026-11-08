@@ -156,6 +156,7 @@ pub struct SendLevelSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceSnapshot {
+    pub parent: Option<u64>,
     pub automation: Vec<crate::DeviceAutomation>,
     pub comparison: Option<crate::DeviceComparison>,
     pub id: u64,
@@ -358,6 +359,7 @@ impl Project {
                         .devices
                         .iter()
                         .map(|device| DeviceSnapshot {
+                            parent: device.parent.map(|id| id.value()),
                             automation: device.automation().to_vec(),
                             comparison: device.comparison.clone(),
                             id: device.id.value(),
@@ -366,6 +368,7 @@ impl Project {
                         })
                         .collect(),
                     instrument: track.instrument.as_ref().map(|instrument| DeviceSnapshot {
+                        parent: instrument.parent.map(|id| id.value()),
                         automation: Vec::new(),
                         comparison: instrument.comparison.clone(),
                         id: instrument.id.value(),
@@ -455,6 +458,7 @@ impl Project {
                         .devices
                         .iter()
                         .map(|device| DeviceSnapshot {
+                            parent: device.parent.map(|id| id.value()),
                             automation: device.automation().to_vec(),
                             comparison: device.comparison.clone(),
                             id: device.id.value(),
@@ -538,6 +542,7 @@ impl Project {
                 .main_devices
                 .iter()
                 .map(|device| DeviceSnapshot {
+                    parent: device.parent.map(|id| id.value()),
                     automation: device.automation().to_vec(),
                     comparison: device.comparison.clone(),
                     id: device.id.value(),
@@ -821,6 +826,7 @@ impl Project {
         for device in snapshot.main_devices {
             insert_id(device.id, &mut ids, &mut max_id)?;
             main_devices.push(Device {
+                parent: device.parent.map(DeviceId),
                 automation: device.automation,
                 comparison: device.comparison,
                 id: DeviceId(device.id),
@@ -852,6 +858,7 @@ impl Project {
                     comparison.validate(&device.state)?;
                 }
                 devices.push(Device {
+                    parent: device.parent.map(DeviceId),
                     automation: device.automation,
                     id: DeviceId(device.id),
                     state: device.state,
@@ -890,6 +897,7 @@ impl Project {
                     return Err(Invalid("project device limit reached"));
                 }
                 devices.push(Device {
+                    parent: device.parent.map(DeviceId),
                     automation: device.automation,
                     comparison: device.comparison,
                     id: DeviceId(device.id),
@@ -941,6 +949,7 @@ impl Project {
             for device in track.devices {
                 insert_id(device.id, &mut ids, &mut max_id)?;
                 devices.push(Device {
+                    parent: device.parent.map(DeviceId),
                     automation: device.automation,
                     comparison: device.comparison,
                     id: DeviceId(device.id),
@@ -1372,6 +1381,7 @@ impl Project {
                 }
             }
         }
+        project.validate_serial_units()?;
         project.validate_source_bindings()?;
         project.validate_track_hierarchy()?;
         if !return_feeds.is_empty() || !audio_feeds.is_empty() || !midi_routes.is_empty() {

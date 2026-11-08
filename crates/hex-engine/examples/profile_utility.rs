@@ -52,6 +52,7 @@ fn fixture(count: usize) -> Result<Project, Box<dyn Error>> {
                 soloed: false,
                 devices: (0..count)
                     .map(|device| DeviceSnapshot {
+                        parent: None,
                         automation: Vec::new(),
                         comparison: None,
                         id: 300 + (track * count + device) as u64,

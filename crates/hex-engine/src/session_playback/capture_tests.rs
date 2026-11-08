@@ -61,6 +61,7 @@ fn audio_fixture_project(sends: bool, return_muted: bool, solo: bool) -> Project
             gain: 0.25,
             muted: return_muted,
             devices: vec![DeviceSnapshot {
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: 21,
@@ -166,6 +167,7 @@ fn nonlinear_track_and_shared_return_capture_follow_actual_processing_order() {
         };
         let mut snapshot = audio_fixture_project(true, false, false).snapshot();
         snapshot.tracks[0].devices.push(DeviceSnapshot {
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: 22,
@@ -175,6 +177,7 @@ fn nonlinear_track_and_shared_return_capture_follow_actual_processing_order() {
         snapshot.return_tracks[0].devices.insert(
             0,
             DeviceSnapshot {
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: 23,
@@ -782,6 +785,7 @@ fn hybrid_metered_capture_preserves_prefix_suffix_send_return_processing_order()
         routed.next_id = 110;
         routed.tracks[0].devices = vec![
             DeviceSnapshot {
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: 100,
@@ -789,6 +793,7 @@ fn hybrid_metered_capture_preserves_prefix_suffix_send_return_processing_order()
                 state: prefix,
             },
             DeviceSnapshot {
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: 101,
@@ -807,6 +812,7 @@ fn hybrid_metered_capture_preserves_prefix_suffix_send_return_processing_order()
             gain: 0.25,
             muted: false,
             devices: vec![DeviceSnapshot {
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: 103,
@@ -1198,6 +1204,7 @@ fn owned_effect_revision(compensated: bool) -> Arc<PreparedRevision> {
     use hex_lattice::conformance::owned_delay;
     let mut snapshot = audio_fixture_project(true, false, false).snapshot();
     snapshot.tracks[0].devices = vec![DeviceSnapshot {
+        parent: None,
         automation: Vec::new(),
         comparison: None,
         id: 31,
@@ -1206,6 +1213,7 @@ fn owned_effect_revision(compensated: bool) -> Arc<PreparedRevision> {
     }];
     if compensated {
         snapshot.tracks[1].devices = vec![DeviceSnapshot {
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: 32,
@@ -1214,6 +1222,7 @@ fn owned_effect_revision(compensated: bool) -> Arc<PreparedRevision> {
         }];
     }
     snapshot.return_tracks[0].devices = vec![DeviceSnapshot {
+        parent: None,
         automation: Vec::new(),
         comparison: None,
         id: 21,

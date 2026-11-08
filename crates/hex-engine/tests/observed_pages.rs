@@ -156,6 +156,7 @@ fn fixture_with_options(feeds: bool, automation: bool) -> Fixture {
     let id = snapshot.next_id;
     snapshot.next_id += 1;
     snapshot.tracks[0].devices.push(DeviceSnapshot {
+        parent: None,
         automation: Vec::new(),
         comparison: None,
         id,

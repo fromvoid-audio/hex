@@ -3,13 +3,16 @@
 //! # Serial host-unit extension contract
 //!
 //! This is the selected extension boundary, not a claim that nested devices are
-//! implemented. `Device` and `DeviceSnapshot` are currently flat; the engine's
+//! processed. `Device` and `DeviceSnapshot` retain bounded serial membership;
+//! the engine's
 //! `compile::prepare_source_instruments` also refuses multi-device sources.
 //! Parallel Audio Rack branches and reusable modulation remain separate owners.
 //!
-//! A serial unit is one existing `Device` followed by an owned, ordered list of
-//! child `Device` units. Keep that suffix in the canonical model, not in opaque
-//! provider payloads, a UI tree, or a second Rack registry. Signal order is
+//! A serial unit is one existing `Device` followed by its contiguous child units
+//! in the canonical owner chain. Each node stores its stable parent identity;
+//! bounded preorder validation avoids a second registry and preserves existing
+//! identity, automation, capacity and provider-state codecs. Keep the suffix in
+//! the canonical model, not in opaque provider payloads, a UI tree, or a second Rack registry. Signal order is
 //! processor then children in preorder, followed by the next sibling. This does
 //! not introduce parallel branches, another instrument position or MIDI routing.
 //! Session/engine provider admission permits compatible effects as children;
@@ -78,6 +81,13 @@
 use crate::{Command, DeviceId, Invalid, Project, TrackId};
 use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
 
+#[cfg(test)]
+#[path = "device_unit_order_tests.rs"]
+mod unit_order_tests;
+#[cfg(test)]
+#[path = "device_unit_removal_tests.rs"]
+mod unit_removal_tests;
+
 pub const MAX_DEVICES_PER_TRACK: usize = 64;
 pub const MAX_DEVICES: usize = crate::MAX_TRACKS * (MAX_DEVICES_PER_TRACK + 1)
     + crate::MAX_RETURN_TRACKS * MAX_DEVICES_PER_TRACK;
@@ -93,6 +103,7 @@ pub fn default_instrument_state() -> Result<NativeDeviceState, Invalid> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Device {
+    pub(crate) parent: Option<DeviceId>,
     pub(crate) automation: Vec<crate::DeviceAutomation>,
     pub(crate) id: DeviceId,
     pub(crate) state: NativeDeviceState,
@@ -100,6 +111,10 @@ pub struct Device {
     pub(crate) comparison: Option<crate::DeviceComparison>,
 }
 impl Device {
+    /// Serial-unit parent in this canonical chain; `None` identifies a root.
+    pub fn parent(&self) -> Option<DeviceId> {
+        self.parent
+    }
     pub fn id(&self) -> DeviceId {
         self.id
     }
@@ -157,14 +172,19 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
         }
         Command::RemoveDevice(id) => {
             if let Ok((track, index)) = locate_device(project, id) {
-                project.tracks[track].devices.remove(index);
+                let span = crate::device_inventory::serial_unit_span(
+                    &project.tracks[track].devices,
+                    index,
+                )?;
+                let removed = span.len();
+                drop(project.tracks[track].devices.drain(span));
                 if project.tracks[track]
                     .instrument_position
                     .is_some_and(|position| index < position)
                 {
                     project.tracks[track].instrument_position = project.tracks[track]
                         .instrument_position
-                        .and_then(|position| position.checked_sub(1));
+                        .and_then(|position| position.checked_sub(removed));
                 }
             } else if let Some((track, index)) =
                 project
@@ -178,13 +198,18 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
                             .map(|index| (track, index))
                     })
             {
-                project.returns[track].devices.remove(index);
+                let span = crate::device_inventory::serial_unit_span(
+                    &project.returns[track].devices,
+                    index,
+                )?;
+                drop(project.returns[track].devices.drain(span));
             } else if let Some(index) = project
                 .main_devices
                 .iter()
                 .position(|device| device.id == id)
             {
-                project.main_devices.remove(index);
+                let span = crate::device_inventory::serial_unit_span(&project.main_devices, index)?;
+                drop(project.main_devices.drain(span));
             } else {
                 return Err(Invalid("device no longer exists"));
             }
@@ -307,6 +332,7 @@ fn insert_instrument(
     let binding = project.register_instrument(
         name,
         Device {
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id,
@@ -360,6 +386,7 @@ fn insert(
     target.devices.insert(
         index,
         Device {
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id,
@@ -405,6 +432,36 @@ fn anchor_index(devices: &[Device], before: Option<DeviceId>) -> Result<usize, I
         None => Ok(devices.len()),
     }
 }
+
+/// Reorder one complete serial unit without allocating or cloning authored state.
+/// Both positions refer to the original validated owning chain.
+pub(crate) fn move_serial_unit(
+    devices: &mut [Device],
+    source: usize,
+    destination: usize,
+) -> Result<(), Invalid> {
+    if destination > devices.len() {
+        return Err(Invalid("device destination is out of bounds"));
+    }
+    let span = crate::device_inventory::serial_unit_span(devices, source)?;
+    if (span.start..=span.end).contains(&destination) {
+        return Ok(());
+    }
+    let count = span.len();
+    if destination < span.start {
+        devices
+            .get_mut(destination..span.end)
+            .ok_or(Invalid("device move range is invalid"))?
+            .rotate_right(count);
+    } else {
+        devices
+            .get_mut(span.start..destination)
+            .ok_or(Invalid("device move range is invalid"))?
+            .rotate_left(count);
+    }
+    Ok(())
+}
+
 fn move_device(
     project: &mut Project,
     id: DeviceId,
