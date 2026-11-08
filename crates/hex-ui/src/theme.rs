@@ -475,6 +475,37 @@ pub(crate) enum ClipWaveformBackground {
     Source,
 }
 
+/// Shared fade-handle feedback; capture and receipt owners choose the state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FadeHandleState {
+    Idle,
+    Hover,
+    Active,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FadeHandleStyle {
+    pub fill: u32,
+    pub stroke: u32,
+}
+
+pub(crate) fn fade_handle_style(state: FadeHandleState) -> FadeHandleStyle {
+    let (color, opacity) = match state {
+        FadeHandleState::Idle => {
+            return FadeHandleStyle {
+                fill: 0x00000020,
+                stroke: 0x000000cc,
+            };
+        }
+        FadeHandleState::Hover => (color(PaletteRole::Secondary), 0x59),
+        FadeHandleState::Active => (color(PaletteRole::Primary), 0xbf),
+    };
+    FadeHandleStyle {
+        fill: (color << 8) | opacity,
+        stroke: (color << 8) | 0xff,
+    }
+}
+
 #[derive(Clone, Copy)]
 struct ClipWaveformInks {
     muted: [u32; 2],
@@ -661,6 +692,25 @@ mod tests {
         fn drop(&mut self) {
             apply_preferences(self.0);
         }
+    }
+
+    #[test]
+    fn fade_handle_feedback_stays_distinct_when_highlights_match() {
+        let _restore = RestoreTheme(preferences());
+        let defaults = preferences();
+        apply_preferences(hex_preferences::ThemePreferences {
+            secondary: defaults.primary,
+            ..defaults
+        });
+        let idle = fade_handle_style(FadeHandleState::Idle);
+        let hover = fade_handle_style(FadeHandleState::Hover);
+        let active = fade_handle_style(FadeHandleState::Active);
+        assert_ne!(idle, hover);
+        assert_ne!(hover, active);
+        assert_ne!(idle, active);
+        assert_eq!(hover.stroke >> 8, defaults.primary.packed());
+        assert_eq!(active.stroke >> 8, defaults.primary.packed());
+        assert!((hover.fill & 255) < (active.fill & 255));
     }
 
     #[test]
@@ -1010,7 +1060,7 @@ mod element_palette_tests {
             assert_ne!(colors.muted, colors.accent);
             assert!(contrast_ratio(colors.muted, colors.muted_text) >= 4.5);
             assert!(contrast_ratio(colors.accent, colors.accent_text) >= 4.5);
-            // Arrangement waveforms and note thumbnails use neutral black ink.
+            // Note thumbnails retain neutral black ink.
             assert!(contrast_ratio(colors.muted, 0x000000) >= 4.5);
             assert!(
                 contrast_ratio(resolve_element_colors(identity, 0x000000).muted, 0x000000) >= 4.5
