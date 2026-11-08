@@ -2864,8 +2864,10 @@ fn run_worker(
                     || pending_sampler_parameter.is_some()
                     || device_gesture.snapshot().is_some()
                     || tuning_gesture.snapshot().is_some()
-                    || native_automation_take.busy()
-                    || plugin_recording.pending()
+                    || !plugin_recording::generic_sealed_recovery_idle(
+                        &plugin_recording,
+                        &native_automation_take,
+                    )
                     || session.audio_mode() != DocumentAudioMode::Resident
                     || !events.resident_publication_enabled()
                 {

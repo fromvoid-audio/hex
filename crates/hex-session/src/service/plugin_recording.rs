@@ -76,6 +76,10 @@ pub(super) fn start_failed_copy(
     lane.copy_failed_plugin(scope, destination, max_events, observations)
 }
 
+pub(super) fn generic_sealed_recovery_idle(state: &State, lane: &Lane) -> bool {
+    !state.pending() && state.failed.is_none() && !lane.busy() && !lane.has_failed_custody()
+}
+
 fn snapshot(operation: PluginGesturePreparation) -> GestureSnapshot {
     match operation {
         PluginGesturePreparation::Begin { snapshot, .. }
