@@ -110,13 +110,11 @@ impl Plugins {
             .pending
             .as_ref()
             .is_some_and(|pending| pending.delivery.is_some())
+            && gesture.poll_point(control).is_err()
+            && let Some(live) = gesture.live.as_mut()
         {
-            if gesture.poll_point(control).is_err()
-                && let Some(live) = gesture.live.as_mut()
-            {
-                live.invalidated = true;
-                live.discard = true;
-            }
+            live.invalidated = true;
+            live.discard = true;
         }
         let Some(live) = gesture.live.as_mut() else {
             return;

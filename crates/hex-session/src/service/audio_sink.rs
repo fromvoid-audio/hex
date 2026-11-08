@@ -450,18 +450,18 @@ pub trait WorkerAudioSink: Send {
     ) -> Result<bool, String> {
         Ok(false)
     }
-    /// Use the existing actual source for one keyed plugin operation. Begin
-    /// revalidates observed metadata/context. Preview/Restore must apply the
-    /// real point before returning Applied; they never edit canonical state.
-    /// Commit captures/stages that same source and returns DATA only. A refusal
-    /// must preserve the last acknowledged preview or report source loss; it
-    /// must not fabricate application, restore or a canonical terminal.
     /// Drain bounded final-output observations after each confirmed preparation,
     /// including refusal and output loss. The requesting control owner retains
     /// every returned record until durable recording admission; never UI time.
     fn take_plugin_parameter_observation(&mut self) -> Option<PluginParameterObservation> {
         None
     }
+    /// Use the existing actual source for one keyed plugin operation. Begin
+    /// revalidates observed metadata/context. Preview/Restore must apply the
+    /// real point before returning Applied; they never edit canonical state.
+    /// Commit captures/stages that same source and returns DATA only. A refusal
+    /// must preserve the last acknowledged preview or report source loss; it
+    /// must not fabricate application, restore or a canonical terminal.
     fn prepare_plugin_parameter_gesture(
         &mut self,
         _input: PluginParameterGestureInput<'_>,
