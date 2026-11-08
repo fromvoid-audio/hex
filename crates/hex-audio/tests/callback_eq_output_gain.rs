@@ -91,8 +91,19 @@ fn flexible_eq_output_gain_publication_reading_history_and_storage_allocate_noth
     let revision = control
         .publish(Playback::try_from_prepared_with_session(prepare(&loaded)?)?)
         .map_err(|_| "automation publish")?;
+    let before = control.status.position.load(Ordering::Acquire);
     measured_block(&mut callback, &mut out);
     measured_block(&mut old_callback, &mut old_out);
+    assert_eq!(
+        control.status.position.load(Ordering::Acquire),
+        before + BLOCK as u64
+    );
+    for c in 0..2 {
+        assert!(
+            (out[0][c] - old_out[0][c] * 0.9921875).abs() < 1e-6,
+            "first assignment preserves the live 1/64 gain ramp"
+        );
+    }
     assert_eq!(
         control.status.applied_revision.load(Ordering::Acquire),
         revision

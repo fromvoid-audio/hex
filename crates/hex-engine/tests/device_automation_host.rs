@@ -717,8 +717,9 @@ fn flexible_eq_output_gain_reaches_all_owners_both_renderers_and_read_selections
                     .project()
                     .device(actual.device)
                     .unwrap()
-                    .automation(),
-                saved
+                    .automation()[0]
+                    .points,
+                saved[0].points,
             );
         }
         let revision = Arc::new(
