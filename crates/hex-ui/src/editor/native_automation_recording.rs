@@ -831,4 +831,113 @@ mod tests {
             matches!(touch.next_submission(), Some((Submission::Terminal, Action::Finish(value))) if value == restored)
         );
     }
+
+    #[cfg(feature = "ui-test-support")]
+    #[gpui::test]
+    fn refused_and_lost_submissions_keep_delivered_receipts_until_recovery(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::{AnyWindowHandle, AppContext, Empty};
+        use hex_session::service::{DeviceAutomationTakeCompletion, Service};
+        use std::time::Instant;
+
+        let service = Service::new(48_000, 32, 8_000_000).unwrap();
+        let deadline = crate::test_wait::hang_deadline();
+        let mut event = loop {
+            if let Ok(event) = service.try_event() {
+                break event;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        };
+        event.device_automation_take_complete = Some(DeviceAutomationTakeCompletion {
+            request_id: 2,
+            progress: Progress::Refused,
+        });
+        let visual = cx.add_window(|_, _| Empty);
+        let handle: AnyWindowHandle = *visual;
+        cx.update_window(handle, |_, window, cx| {
+            let editor = window.replace_root(cx, |window, cx| {
+                EditorView::new(window, cx, service, Err("offline fixture".into()))
+            });
+            editor.update(cx, |view, _| {
+                let mut capture = touch();
+                let application = NativeParameterApplication {
+                    identity: capture.audio.input.identity(),
+                    operation: NativeTransientOperation::Set(NativeTransientValue::HostOutputGain(
+                        HostGain::ZERO,
+                    )),
+                    arrangement_frame: 19,
+                    performance_frame: 23,
+                    loop_pass: 0,
+                    remaining_latency_frames: 4,
+                };
+                capture.phase = Phase::Delivering;
+                capture.in_flight = Some((2, Submission::Append));
+                capture.receipt(Receipt::Applied {
+                    target: capture.audio,
+                    sequence: 1,
+                    application,
+                });
+                view.native_automation_recorder.touch = Some(capture);
+                view.native_automation_take_completion(&event);
+                let capture = view.native_automation_recorder.touch.as_mut().unwrap();
+                assert_eq!(capture.batch, [(1, application)]);
+                capture.in_flight = Some((3, Submission::Append));
+                let request = Request::DeviceAutomationTake {
+                    request_id: 3,
+                    scope: capture.scope,
+                    action: Action::Append(Arc::from(capture.batch.as_slice())),
+                };
+                view.native_automation_request_not_submitted(&request);
+                let capture = view.native_automation_recorder.touch.as_mut().unwrap();
+                assert_eq!(capture.batch, [(1, application)]);
+                assert!(capture.end == Some(End::Cancel));
+                let late = NativeParameterApplication {
+                    arrangement_frame: 27,
+                    performance_frame: 31,
+                    ..application
+                };
+                capture.receipt(Receipt::Applied {
+                    target: capture.audio,
+                    sequence: 2,
+                    application: late,
+                });
+                assert_eq!(capture.batch, [(1, application), (2, late)]);
+                capture.receipt(Receipt::Aborted {
+                    target: capture.audio,
+                    reason: AbortReason::Cancelled,
+                });
+            });
+            editor.update(cx, |view, cx| {
+                view.tick_native_automation_recording();
+                assert!(view.native_automation_recorder.busy());
+                let capture = view.native_automation_recorder.touch.as_ref().unwrap();
+                assert_eq!(capture.batch.len(), 2);
+                assert!(capture.terminal.is_some());
+                assert!(capture.next_submission().is_none());
+                let (gesture, latest) = (capture.gesture, capture.latest);
+                assert!(view.begin_native_automation_touch(gesture, latest).is_err());
+                view.request_window_close(window, cx);
+                assert!(view.error.as_ref().unwrap().contains("recover"));
+            });
+            editor.update(cx, |view, _| {
+                let mut capture = touch();
+                let terminal = Action::Abort(
+                    hex_session::service::automation_draft::DraftAbortReason::Cancelled,
+                );
+                capture.phase = Phase::Delivering;
+                capture.in_flight = Some((2, Submission::Terminal));
+                capture.terminal = Some(terminal);
+                view.native_automation_recorder.touch = Some(capture);
+                view.native_automation_take_completion(&event);
+                assert!(view.native_automation_recorder.busy());
+                let capture = view.native_automation_recorder.touch.as_ref().unwrap();
+                assert!(matches!(capture.terminal, Some(Action::Abort(_))));
+                assert!(capture.next_submission().is_none());
+            });
+            window.remove_window();
+        })
+        .unwrap();
+    }
 }
