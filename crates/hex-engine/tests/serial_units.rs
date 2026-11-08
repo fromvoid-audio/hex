@@ -3,7 +3,7 @@ use hex_project::{Command, Created, Editor, Project};
 use std::{collections::BTreeMap, sync::Arc};
 
 #[test]
-fn offline_units_compile_while_live_admission_preserves_the_previous_revision() {
+fn supported_units_prepare_in_arrangement_and_session_without_mutating_authored_state() {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     for _ in 0..2 {
         editor
@@ -70,7 +70,7 @@ fn offline_units_compile_while_live_admission_preserves_the_previous_revision() 
             Arc::new(hex_engine::SineTable::new()),
             None,
         )
-        .is_err()
+        .is_ok()
     );
     assert!(
         hex_engine::PreparedSessionInventory::prepare(
@@ -78,7 +78,7 @@ fn offline_units_compile_while_live_admission_preserves_the_previous_revision() 
             Arc::new(hex_engine::SineTable::new()),
             None,
         )
-        .is_err()
+        .is_ok()
     );
     assert_eq!(editor.project().snapshot(), before);
     let mut playback = hex_engine::SessionPlayback::new(previous).unwrap();
@@ -90,8 +90,9 @@ fn offline_units_compile_while_live_admission_preserves_the_previous_revision() 
     assert_eq!(output, [[0.25, -0.5]; 16]);
 }
 
-fn offline_unit(
+fn unit_fixture(
     location: usize,
+    frames: u64,
 ) -> (
     Editor,
     hex_project::AssetId,
@@ -104,7 +105,7 @@ fn offline_unit(
         .execute(Command::AddAsset {
             path: "memory/unit.wav".into(),
             sample_rate: 48_000,
-            frames: 1,
+            frames,
         })
         .unwrap()
     else {
@@ -123,9 +124,9 @@ fn offline_unit(
             track,
             asset,
             start: 0,
-            duration: 1,
+            duration: frames,
             source_offset: 0,
-            source_length: 1,
+            source_length: frames,
             looping: false,
         })
         .unwrap();
@@ -198,6 +199,16 @@ fn offline_unit(
         ids[0],
         ids[1],
     )
+}
+fn offline_unit(
+    location: usize,
+) -> (
+    Editor,
+    hex_project::AssetId,
+    hex_project::DeviceId,
+    hex_project::DeviceId,
+) {
+    unit_fixture(location, 1)
 }
 fn offline_sample(project: &Project, asset: hex_project::AssetId) -> [f32; 2] {
     let media = BTreeMap::from([(
@@ -314,4 +325,192 @@ fn offline_unit_admission_refuses_unknown_and_instrument_children_even_when_pare
             assert_eq!(editor.project().snapshot(), before);
         }
     }
+}
+
+fn render_live(playback: &mut hex_engine::SessionPlayback, frames: usize) -> [f32; 2] {
+    let mut last = [0.0; 2];
+    for size in (0..frames)
+        .step_by(64)
+        .map(|offset| (frames - offset).min(64))
+    {
+        let mut block = [[0.0; 2]; 64];
+        playback.render(&mut block[..size]).unwrap();
+        last = block[size - 1];
+    }
+    last
+}
+#[test]
+fn live_units_preserve_arrangement_session_power_targets_and_history_across_handoffs() {
+    use hex_engine::{LaunchQuantization, SessionPlayback, SessionPlaybackCommand};
+    use hex_lattice_contract::ParameterValue;
+    for location in 0..3 {
+        for session in [false, true] {
+            let (mut editor, asset, root, child) = unit_fixture(location, 4096);
+            if session {
+                let Created::Scene(scene) = editor
+                    .execute(Command::AddScene {
+                        name: "scene".into(),
+                    })
+                    .unwrap()
+                else {
+                    panic!("scene")
+                };
+                let track = editor.project().tracks()[0].id();
+                editor
+                    .execute(Command::CreateSessionAudioClip {
+                        track,
+                        scene,
+                        name: "session".into(),
+                        asset,
+                        source_start: 0,
+                        source_end: 4096,
+                    })
+                    .unwrap();
+            }
+            let media = BTreeMap::from([(
+                asset,
+                hex_engine::Audio::new(48_000, vec![[0.25, -0.5]; 4096]).unwrap(),
+            )]);
+            let table = Arc::new(hex_engine::SineTable::new());
+            let prepare =
+                |project: &Project, previous: Option<&hex_engine::PreparedSessionInventory>| {
+                    Arc::new(
+                        hex_engine::PreparedRevision::prepare(
+                            project,
+                            &media,
+                            Arc::clone(&table),
+                            previous,
+                        )
+                        .unwrap(),
+                    )
+                };
+            let mut playback = SessionPlayback::new(prepare(editor.project(), None)).unwrap();
+            if session {
+                let clip = match editor.project().session_cells()[0].content() {
+                    hex_project::SessionCellContent::Audio(clip) => clip.id(),
+                    _ => panic!("audio"),
+                };
+                playback
+                    .apply(SessionPlaybackCommand::LaunchClip {
+                        clip,
+                        quantization: LaunchQuantization::Immediate,
+                    })
+                    .unwrap();
+            }
+            playback.apply(SessionPlaybackCommand::Play).unwrap();
+            let mix = |wet: [f32; 2]| {
+                if location == 1 {
+                    [0.25 + wet[0] * 0.5, -0.5 + wet[1] * 0.5]
+                } else {
+                    wet
+                }
+            };
+            assert_eq!(render_live(&mut playback, 32), mix([0.5, 0.25]));
+            for (parent_off, child_off, expected) in [
+                (true, false, [0.25, -0.5]),
+                (false, true, [0.25, 0.5]),
+                (true, true, [0.25, -0.5]),
+                (false, false, [0.5, 0.25]),
+            ] {
+                editor
+                    .execute(Command::SetDeviceBypass {
+                        device: root,
+                        bypassed: parent_off,
+                    })
+                    .unwrap();
+                editor
+                    .execute(Command::SetDeviceBypass {
+                        device: child,
+                        bypassed: child_off,
+                    })
+                    .unwrap();
+                let revision = prepare(
+                    editor.project(),
+                    Some(playback.prepared_revision().session()),
+                );
+                let mut next = SessionPlayback::new(revision).unwrap();
+                next.try_inherit_state_from(&mut playback).unwrap();
+                assert_eq!(
+                    render_live(&mut next, 512),
+                    mix(expected),
+                    "owner={location} session={session} parent={parent_off} child={child_off}"
+                );
+                assert_eq!(
+                    editor.project().device(child).unwrap().bypassed(),
+                    child_off
+                );
+                playback = next;
+            }
+            let definition = &hex_devices::utility::UTILITY_DEFINITION;
+            let state = definition
+                .patch_parameter(
+                    &definition.default_state().unwrap(),
+                    hex_devices::utility::parameter::INVERT_LEFT,
+                    ParameterValue::Bool(true),
+                )
+                .unwrap();
+            editor
+                .execute(Command::ReplaceDeviceState {
+                    device: child,
+                    state,
+                })
+                .unwrap();
+            for (step, expected) in [[-0.25, 0.5], [0.5, 0.25], [-0.25, 0.5]]
+                .into_iter()
+                .enumerate()
+            {
+                let mut next = SessionPlayback::new(prepare(
+                    editor.project(),
+                    Some(playback.prepared_revision().session()),
+                ))
+                .unwrap();
+                next.try_inherit_state_from(&mut playback).unwrap();
+                assert_eq!(render_live(&mut next, 512), mix(expected));
+                playback = next;
+                if step == 0 {
+                    assert!(editor.undo());
+                }
+                if step == 1 {
+                    assert!(editor.redo());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn refused_child_replacement_preserves_the_published_unit_and_history() {
+    let (mut editor, asset, _, child) = offline_unit(2);
+    let media = BTreeMap::from([(
+        asset,
+        hex_engine::Audio::new(48_000, vec![[0.25, -0.5]]).unwrap(),
+    )]);
+    let table = Arc::new(hex_engine::SineTable::new());
+    let previous = Arc::new(
+        hex_engine::PreparedRevision::prepare(editor.project(), &media, Arc::clone(&table), None)
+            .unwrap(),
+    );
+    let before = editor.project().snapshot();
+    let refused: Result<_, hex_engine::Invalid> = editor.execute_prepared(
+        Command::ReplaceDeviceState {
+            device: child,
+            state: hex_project::default_instrument_state().unwrap(),
+        },
+        |candidate| {
+            hex_engine::PreparedRevision::prepare(
+                candidate,
+                &media,
+                Arc::clone(&table),
+                Some(previous.session()),
+            )
+        },
+    );
+    assert!(refused.is_err());
+    assert_eq!(editor.project().snapshot(), before);
+    assert!(!editor.can_undo());
+    let mut playback = hex_engine::SessionPlayback::new(previous).unwrap();
+    playback
+        .apply(hex_engine::SessionPlaybackCommand::Play)
+        .unwrap();
+    assert_eq!(render_live(&mut playback, 1), [0.5, 0.25]);
 }

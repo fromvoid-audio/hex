@@ -168,8 +168,26 @@ pub(crate) fn paste(
             .parent_group
             .and_then(|parent| remap.get(&parent).copied())
             .or(destination.parent_group);
+        let mut device_ids = Vec::new();
+        device_ids
+            .try_reserve_exact(track.devices.len())
+            .map_err(|_| Invalid("could not reserve copied device identities"))?;
         for device in &mut track.devices {
-            device.id = DeviceId(project.allocate_id()?);
+            // Canonical preorder puts each parent before its descendants. Keep
+            // those relationships inside this independent copy, never its source.
+            let parent = device
+                .parent
+                .map(|parent| {
+                    device_ids
+                        .iter()
+                        .find_map(|(old, new)| (*old == parent).then_some(*new))
+                        .ok_or(Invalid("copied device parent is missing"))
+                })
+                .transpose()?;
+            let id = DeviceId(project.allocate_id()?);
+            device_ids.push((device.id, id));
+            device.id = id;
+            device.parent = parent;
         }
         if let Some(binding) = &track.instrument {
             // Duplicating a track is an explicit independent-copy operation;
