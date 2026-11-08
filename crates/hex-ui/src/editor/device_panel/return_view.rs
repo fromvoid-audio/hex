@@ -60,6 +60,7 @@ pub(super) fn render(
         | GestureTarget::TrackGain { .. }
         | GestureTarget::TrackGains { .. }
         | GestureTarget::TrackBalance { .. }
+        | GestureTarget::MainGain
         | GestureTarget::ReturnGain { .. } => false,
     }) || stale_keys.iter().any(|key| {
         matches!(

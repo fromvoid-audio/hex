@@ -60,6 +60,9 @@ pub(crate) fn command_for_snapshot(
             track,
             gain: track_gain_value(snapshot.value)?,
         }),
+        GestureTarget::MainGain => Ok(Command::MasterGain {
+            gain: mix_value(snapshot.value, 0.0, 2.0)?,
+        }),
         GestureTarget::TrackBalance { track } => Ok(Command::Balance {
             track,
             balance: mix_value(snapshot.value, -1.0, 1.0)?,
