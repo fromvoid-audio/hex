@@ -294,7 +294,7 @@ pub struct Event {
     pub sampler_edit_complete: Option<u64>,
     /// At most two exact terminals: a refused new request and an invalidated pending one.
     pub plugin_effect_complete: Vec<PluginEffectCompletion>,
-    /// This response consumed a read-only parameter query or continuation.
+    /// This response consumed a read-only parameter or failed-take query.
     /// Its request completion never acknowledges an editor mutation. Canonical
     /// state and unrelated completions still follow the normal ordered contract.
     pub plugin_parameter_observation: bool,
@@ -2744,7 +2744,9 @@ fn run_worker(
         let mut plugin_effect_complete = Vec::new();
         let plugin_parameter_observation = matches!(
             &request,
-            Request::QueryPluginParameters(_) | Request::ContinuePluginParameters
+            Request::QueryPluginParameters(_)
+                | Request::ContinuePluginParameters
+                | Request::QueryFailedPluginAutomation { .. }
         );
         let mut plugin_parameters = None;
         let mut sampler_edit_complete = None;

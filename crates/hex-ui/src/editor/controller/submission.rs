@@ -73,7 +73,10 @@ impl EditorView {
     pub(super) fn classify_submission(&self, request: &Request) -> Submission {
         Submission {
             kinds: PendingKinds {
-                parameter_observation: matches!(request, Request::QueryPluginParameters(_)),
+                parameter_observation: matches!(
+                    request,
+                    Request::QueryPluginParameters(_) | Request::QueryFailedPluginAutomation { .. }
+                ),
                 trim: self.pending_trim_matches(request),
                 loop_region: self.pending_loop_matches(request),
                 group_copy: self.pending_group_copy_matches(request),
