@@ -496,6 +496,7 @@ impl ChainCustody {
                 handles,
             });
             prepared.push(PreparedRuntimeInstance {
+                modulation: None,
                 automation,
                 meter,
                 owner,
@@ -521,7 +522,8 @@ impl ChainCustody {
             return Err(AudioStorageError::SourceMismatch);
         }
         for (value, pair) in chain.iter().zip(&self.entries) {
-            if value.automation.storage_bytes() != Some(pair.automation_bytes)
+            if value.modulation.is_some()
+                || value.automation.storage_bytes() != Some(pair.automation_bytes)
                 || value.device_id != pair.device_id
                 || value.owner != pair.owner
                 || value.device_type != pair.device_type

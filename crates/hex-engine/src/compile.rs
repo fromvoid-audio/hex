@@ -210,6 +210,7 @@ fn prepare_foreign_instrument(
         hex_lattice::PreparedParameterAutomation::for_foreign,
     );
     Ok(Some(hex_lattice::PreparedRuntimeInstance {
+        modulation: None,
         automation,
         meter: Default::default(),
         owner,
@@ -1290,6 +1291,7 @@ fn compile_effect_devices(
                 .map_err(|error| Invalid(error.0))?;
         }
         devices.push(hex_lattice::PreparedRuntimeInstance {
+            modulation: None,
             automation,
             meter: Default::default(),
             owner,

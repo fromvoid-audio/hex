@@ -92,3 +92,83 @@ fn chunk_transactions_do_not_allocate_or_free() {
         (0, 0, 0, 0)
     );
 }
+
+#[test]
+fn utility_graph_modulation_transactions_do_not_allocate_or_free() {
+    use hex_devices::utility::{UTILITY_DEFINITION, UTILITY_TYPE_ID, UtilityDefinition, parameter};
+    use hex_lattice::{
+        NativeRuntimeChain, PreparedModulationState, PreparedProcessorFactory,
+        PreparedRuntimeInstance, ProcessorChainOwner, StereoMatrix,
+    };
+    use hex_lattice_contract::NativeDeviceMetadata;
+    use std::sync::Arc;
+    let build = || {
+        let state = UTILITY_DEFINITION.default_state().unwrap();
+        let id = parameter::GAIN;
+        let target = ModulationTarget {
+            descriptor: *UTILITY_DEFINITION
+                .descriptors()
+                .iter()
+                .find(|d| d.id == id)
+                .unwrap(),
+            semantics: UTILITY_DEFINITION
+                .parameter_semantics_for_state(&state, id)
+                .unwrap()
+                .unwrap(),
+            base: UTILITY_DEFINITION.read_parameter(&state, id).unwrap(),
+        };
+        let program = PreparedModulation::new(
+            &[target],
+            &[ModulationRoute {
+                source: 0,
+                target: id,
+                amount: 0.01,
+            }],
+            1,
+        )
+        .unwrap();
+        let source =
+            PreparedLfoSource::free(ModulationSourceId::new(1).unwrap(), 48_000.0, 7.0, 0.0)
+                .unwrap();
+        let definition = UtilityDefinition::prepare_owned_automated_filter(&state, 48_000).unwrap();
+        NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+            modulation: Some(PreparedModulationState::new(vec![source], program, 17).unwrap()),
+            automation: Default::default(),
+            meter: Default::default(),
+            owner: ProcessorChainOwner::Track(1),
+            device_id: 1,
+            device_type: UTILITY_TYPE_ID,
+            matrix: StereoMatrix::identity(),
+            bypassed: false,
+            sample_rate: 48_000,
+            configuration: Some(Arc::new(state)),
+            definition: Some(PreparedProcessorFactory::Legacy(Arc::new(definition))),
+        }])
+        .unwrap()
+    };
+    let mut first = build();
+    let mut second = build();
+    let mut frames = [[0.1, -0.1]; 128];
+    let counts = allocation_counter::measure(|| {
+        for _ in 0..8 {
+            first.begin_block();
+            first.process_block(black_box(&mut frames)).unwrap();
+            first.rollback_block();
+            first.begin_block();
+            first.process_block(black_box(&mut frames)).unwrap();
+            first.commit_block();
+            second.inherit_from(&first);
+            second.transfer_history_from(&mut first);
+            second.reset();
+        }
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+}

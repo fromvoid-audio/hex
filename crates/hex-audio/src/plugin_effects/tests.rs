@@ -323,6 +323,7 @@ fn changed_state_matching_requires_the_original_private_processing_approval() {
         let chain = |program| {
             hex_lattice::NativeRuntimeChain::new_prepared(vec![
                 hex_lattice::PreparedRuntimeInstance {
+                    modulation: None,
                     owner: identity.owner(),
                     device_id: identity.device_id(),
                     device_type: hex_plugin_state::TYPE_ID,

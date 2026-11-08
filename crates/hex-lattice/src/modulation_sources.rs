@@ -52,6 +52,7 @@ impl PreparedLfoSource {
 
 struct Source {
     id: ModulationSourceId,
+    initial: ModulationLfo,
     committed: ModulationLfo,
     scratch: ModulationLfo,
     samples: Vec<f32>,
@@ -65,6 +66,15 @@ pub struct ModulationLfoBank {
     active: bool,
 }
 impl ModulationLfoBank {
+    pub(crate) fn quoted_heap_bytes(sources: usize, frames: usize) -> Option<usize> {
+        sources
+            .checked_mul(std::mem::size_of::<Source>())?
+            .checked_add(
+                sources
+                    .checked_mul(frames)?
+                    .checked_mul(std::mem::size_of::<f32>())?,
+            )
+    }
     /// IDs must be unique and strictly increasing. The host accounts this
     /// storage alongside its existing paired-runtime budget before publication.
     pub fn new(sources: &[PreparedLfoSource], chunk_frames: usize) -> Result<Self, Error> {
@@ -103,6 +113,7 @@ impl ModulationLfoBank {
             samples.resize(chunk_frames, 0.0);
             prepared.push(Source {
                 id: source.id,
+                initial: source.lfo,
                 committed: source.lfo,
                 scratch: source.lfo,
                 samples,
@@ -238,25 +249,34 @@ impl ModulationLfoBank {
         self.last_frames = 0;
     }
 
+    pub(crate) fn reset_all(&mut self) {
+        for source in &mut self.sources {
+            source.committed = source.initial;
+            source.scratch = source.initial;
+        }
+        self.active = false;
+        self.last_frames = 0;
+    }
+
     /// Copy committed phase by identity while retaining each candidate's rate.
     /// Called only by the existing graph owner after its replacement preflight.
     pub fn inherit_committed(&mut self, previous: &Self) -> Result<(), Error> {
         if self.active || previous.active {
             return Err(Error::InvalidParameterValue);
         }
+        self.inherit_graph_committed(previous);
+        Ok(())
+    }
+
+    pub(crate) fn inherit_graph_committed(&mut self, previous: &Self) {
         for source in &mut self.sources {
-            if let Ok(index) = previous
-                .sources
-                .binary_search_by_key(&source.id, |old| old.id)
-            {
-                let Some(old) = previous.sources.get(index) else {
-                    return Err(Error::InvalidId);
-                };
+            if let Some(old) = previous.sources.iter().find(|old| old.id == source.id) {
                 source.committed.inherit_phase(&old.committed);
                 source.scratch = source.committed;
             }
         }
-        Ok(())
+        self.active = false;
+        self.last_frames = 0;
     }
 
     /// Explicit discontinuity or retrigger; never acts on a speculative block.

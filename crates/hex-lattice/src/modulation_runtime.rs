@@ -31,8 +31,13 @@ impl ModulationRuntime {
 
     /// Physical inline and reserved owned storage, excluding allocator metadata.
     pub fn storage_bytes(&self) -> Option<usize> {
-        std::mem::size_of::<Self>()
-            .checked_add(self.bank.storage_bytes().ok()?)?
+        std::mem::size_of::<Self>().checked_add(self.heap_storage_bytes()?)
+    }
+
+    pub fn heap_storage_bytes(&self) -> Option<usize> {
+        self.bank
+            .storage_bytes()
+            .ok()?
             .checked_add(self.program.storage_bytes()?)
     }
 
@@ -107,6 +112,10 @@ impl ModulationRuntime {
         self.bank.rollback();
     }
 
+    pub(crate) fn reset_all(&mut self) {
+        self.bank.reset_all();
+    }
+
     /// Retarget an active transaction without resetting its speculative phase.
     pub fn retarget(&mut self, source: PreparedLfoSource) -> Result<(), Error> {
         self.bank.retarget(source)
@@ -115,6 +124,10 @@ impl ModulationRuntime {
     /// Explicitly reset a source outside a transaction.
     pub fn reset(&mut self, id: ModulationSourceId, phase: f64) -> Result<(), Error> {
         self.bank.reset(id, phase)
+    }
+
+    pub(crate) fn inherit_graph_committed(&mut self, previous: &Self) {
+        self.bank.inherit_graph_committed(&previous.bank);
     }
 
     /// The host establishes matching device ownership before calling this.

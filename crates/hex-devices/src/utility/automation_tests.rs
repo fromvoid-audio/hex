@@ -310,6 +310,7 @@ fn scoped_gain_only_filters_skip_safely_and_enableable_lanes_keep_dormant_histor
     )
     .unwrap();
     let scoped = hex_lattice::PreparedRuntimeInstance {
+        modulation: None,
         automation: unadmitted_program,
         meter: Default::default(),
         owner: hex_lattice::ProcessorChainOwner::Track(1),
@@ -607,8 +608,8 @@ fn bypass_advances_the_same_filter_and_automated_control_history() {
 #[test]
 fn shared_lfo_drives_two_utility_controls_on_each_sample() {
     use hex_lattice::{
-        ModulationLfoBank, ModulationRoute, ModulationRuntime, ModulationSourceId,
-        ModulationTarget, PreparedLfoSource, PreparedModulation,
+        ModulationRoute, ModulationSourceId, ModulationTarget, PreparedLfoSource,
+        PreparedModulation,
     };
     let base = UTILITY_DEFINITION.default_state().unwrap();
     let ids = [parameter::GAIN, parameter::BALANCE];
@@ -639,23 +640,28 @@ fn shared_lfo_drives_two_utility_controls_on_each_sample() {
     .unwrap();
     let source_id = ModulationSourceId::new(1).unwrap();
     let source = PreparedLfoSource::free(source_id, 48_000.0, 12_000.0, 0.0).unwrap();
-    let bank = ModulationLfoBank::new(&[source], 5).unwrap();
-    let mut modulation = ModulationRuntime::new(bank, program).unwrap();
-    modulation.begin();
     let factory = UtilityDefinition::prepare_owned_automated_filter(&base, 48_000).unwrap();
-    let mut runtime = factory.create_runtime();
+    let declaration = hex_lattice::PreparedModulationState::new(vec![source], program, 2).unwrap();
+    let instance = hex_lattice::PreparedRuntimeInstance {
+        modulation: Some(declaration),
+        automation: Default::default(),
+        meter: Default::default(),
+        owner: hex_lattice::ProcessorChainOwner::Track(1),
+        device_id: 2,
+        device_type: UTILITY_TYPE_ID,
+        matrix: StereoMatrix::identity(),
+        bypassed: false,
+        sample_rate: 48_000,
+        configuration: Some(std::sync::Arc::new(base.clone())),
+        definition: Some(hex_lattice::PreparedProcessorFactory::Legacy(
+            std::sync::Arc::new(factory),
+        )),
+    };
+    let mut chain = hex_lattice::NativeRuntimeChain::new_prepared(vec![instance.clone()]).unwrap();
+    chain.begin_block();
     let input = [[0.25, -0.1]; 5];
     let mut output = input;
-    modulation
-        .render_chunk(5, None, |block| {
-            runtime.process_block_with_automation(
-                &mut output,
-                None,
-                block,
-                &hex_lattice::EMPTY_DEVICE_RESOURCES,
-            )
-        })
-        .unwrap();
+    chain.process_block(&mut output).unwrap();
     for (index, lfo) in [0.0, 1.0, 0.0, -1.0, 0.0].into_iter().enumerate() {
         let gain = (1.0 + lfo * 0.01 * MAX_UTILITY_GAIN).clamp(0.0, MAX_UTILITY_GAIN);
         let balance = lfo * 0.4;
@@ -670,21 +676,27 @@ fn shared_lfo_drives_two_utility_controls_on_each_sample() {
             assert!((output[index][channel] - expected[channel]).abs() < 1e-5);
         }
     }
-    modulation.rollback();
-    modulation.begin();
+    chain.rollback_block();
+    chain.begin_block();
     let mut retry = input;
-    let mut retry_runtime = factory.create_runtime();
-    modulation
-        .render_chunk(5, None, |block| {
-            retry_runtime.process_block_with_automation(
-                &mut retry,
-                None,
-                block,
-                &hex_lattice::EMPTY_DEVICE_RESOURCES,
-            )
-        })
-        .unwrap();
+    chain.process_block(&mut retry).unwrap();
     assert_eq!(retry, output);
-    modulation.commit().unwrap();
+    chain.commit_block();
+    let mut replacement = hex_lattice::NativeRuntimeChain::new_prepared(vec![instance]).unwrap();
+    replacement.inherit_from(&chain);
+    chain.begin_block();
+    replacement.begin_block();
+    let mut continued = input;
+    let mut inherited = input;
+    chain.process_block(&mut continued).unwrap();
+    replacement.process_block(&mut inherited).unwrap();
+    assert_eq!(continued, inherited);
+    assert_ne!(continued, output);
+    replacement.commit_block();
+    replacement.reset();
+    replacement.begin_block();
+    let mut reset = input;
+    replacement.process_block(&mut reset).unwrap();
+    assert_eq!(reset, output);
     assert_eq!(UTILITY_DEFINITION.default_state().unwrap(), base);
 }

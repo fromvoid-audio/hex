@@ -334,6 +334,7 @@ impl PreparedProcessorFactory {
 /// and convert once on control; there is no positional factory sidecar.
 #[derive(Clone)]
 pub struct PreparedRuntimeInstance {
+    pub modulation: Option<crate::PreparedModulationState>,
     pub automation: crate::PreparedParameterAutomation,
     pub meter: Arc<DeviceMeter>,
     pub owner: ProcessorChainOwner,
@@ -365,6 +366,7 @@ impl PreparedRuntimeInstance {
 impl From<PreparedProcessorInstance> for PreparedRuntimeInstance {
     fn from(value: PreparedProcessorInstance) -> Self {
         Self {
+            modulation: None,
             automation: Default::default(),
             meter: value.meter,
             owner: value.owner,
@@ -512,6 +514,7 @@ mod tests {
         let make = |frames: u32, bypassed| {
             let kind = DeviceTypeId::from_static("test.reserved.bypass");
             crate::NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+                modulation: None,
                 automation: Default::default(),
                 meter: Default::default(),
                 owner: ProcessorChainOwner::Track(1),

@@ -53,6 +53,13 @@ impl PreparedModulationState {
         &self.program
     }
 
+    /// Requested runtime capacity before allocation; graph admission must also
+    /// verify the actual capacities after construction.
+    pub fn quoted_runtime_heap_bytes(&self) -> Option<usize> {
+        ModulationLfoBank::quoted_heap_bytes(self.sources.len(), self.chunk_frames)?
+            .checked_add(self.program.storage_bytes()?)
+    }
+
     /// Owned declaration storage, including the inline header. Runtime buffers
     /// are a separate owner and must be charged using their actual capacities.
     pub fn storage_bytes(&self) -> Option<usize> {

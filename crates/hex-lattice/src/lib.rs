@@ -699,7 +699,37 @@ impl ExternalParameterAutomation for ExternalSegment<'_> {
     }
 }
 
+struct OffsetParameterValues<'a> {
+    values: &'a dyn NativeParameterAutomation,
+    offset: usize,
+}
+impl NativeParameterAutomation for OffsetParameterValues<'_> {
+    fn parameter_ids(&self) -> &[hex_lattice_contract::ParameterId] {
+        self.values.parameter_ids()
+    }
+    fn value_at(
+        &self,
+        id: hex_lattice_contract::ParameterId,
+        offset: usize,
+    ) -> Option<hex_lattice_contract::ParameterValue> {
+        self.values.value_at(id, self.offset.checked_add(offset)?)
+    }
+    fn values_at(
+        &self,
+        offset: usize,
+        output: &mut [Option<hex_lattice_contract::ParameterValue>],
+    ) -> Result<(), DeviceContractError> {
+        self.values.values_at(
+            self.offset
+                .checked_add(offset)
+                .ok_or(DeviceContractError::InvalidParameterValue)?,
+            output,
+        )
+    }
+}
+
 struct RuntimeEntry {
+    modulation: Option<ModulationRuntime>,
     automation: PreparedParameterAutomation,
     automation_frozen: bool,
     // Host effective trims are transactional too: a late render refusal cannot
@@ -867,6 +897,7 @@ impl<'a> NativeRuntimeStorage<'a> {
 impl<'a> NativeRuntimeEntryStorage<'a> {
     fn new(entry: &RuntimeEntry) -> NativeRuntimeEntryStorage<'_> {
         let RuntimeEntry {
+            modulation: _,
             automation: _,
             automation_frozen: _,
             committed_host_gains: _,
@@ -904,6 +935,12 @@ impl<'a> NativeRuntimeEntryStorage<'a> {
     /// receipts; equal bytes or addresses alone never establish provenance.
     pub fn automation(&self) -> &'a PreparedParameterAutomation {
         &self.entry.automation
+    }
+    pub fn modulation_storage_bytes(&self) -> Option<usize> {
+        self.entry
+            .modulation
+            .as_ref()
+            .map_or(Some(0), ModulationRuntime::heap_storage_bytes)
     }
     pub fn runtime_box_identities(&self) -> (Option<usize>, Option<usize>) {
         self.entry
@@ -958,7 +995,11 @@ impl<'a> NativeRuntimeEntryStorage<'a> {
             .is_some_and(|(a, b)| a.as_any().is::<T>() && b.as_any().is::<T>())
     }
     pub fn matches_prepared_runtime_storage(&self, prepared: &PreparedRuntimeInstance) -> bool {
-        self.entry.automation == prepared.automation
+        // The engine's closed custody constructor currently admits no authored
+        // modulation. Refuse until its prepared/runtime ledger is extended.
+        prepared.modulation.is_none()
+            && self.entry.modulation.is_none()
+            && self.entry.automation == prepared.automation
             && self.entry.owner == prepared.owner
             && self.entry.device_id == prepared.device_id
             && self.entry.device_type == prepared.device_type
@@ -973,7 +1014,8 @@ impl<'a> NativeRuntimeEntryStorage<'a> {
     /// Compare against an already borrowed prepared owner. The view never
     /// returns or clones either shared owning field.
     pub fn matches_prepared_storage(&self, prepared: &PreparedProcessorInstance) -> bool {
-        self.entry.owner == prepared.owner
+        self.entry.modulation.is_none()
+            && self.entry.owner == prepared.owner
             && self.entry.device_id == prepared.device_id
             && self.entry.device_type == prepared.device_type
             && self.entry.sample_rate == prepared.sample_rate
@@ -1160,6 +1202,50 @@ impl NativeRuntimeChain {
                 (None, None)
             };
             let runtime = RuntimeOwnership::prepare(instance.definition.as_ref())?;
+            let modulation = instance
+                .modulation
+                .as_ref()
+                .map(PreparedModulationState::prepare)
+                .transpose()?;
+            if let Some(modulation) = &modulation {
+                if !instance.matrix.is_identity()
+                    || matches!(
+                        instance.definition,
+                        Some(PreparedProcessorFactory::Foreign(_))
+                    )
+                {
+                    return Err(DeviceContractError::UnsupportedProcessingClass);
+                }
+                for &parameter in modulation.program().parameter_ids() {
+                    if instance.definition.as_ref().is_none_or(|factory| {
+                        !factory.supports_parameter_automation(parameter)
+                            || factory.parameter_automation_descriptor(parameter)
+                                != modulation.program().descriptor(parameter)
+                    }) || !runtime.supports_parameter_automation(parameter)
+                    {
+                        return Err(DeviceContractError::UnsupportedProcessingClass);
+                    }
+                }
+                if instance.automation.parameter_ids().iter().any(|id| {
+                    modulation
+                        .program()
+                        .parameter_ids()
+                        .binary_search(id)
+                        .is_err()
+                }) {
+                    return Err(DeviceContractError::UnknownParameter);
+                }
+                automation_bytes = automation_bytes
+                    .checked_add(
+                        modulation
+                            .heap_storage_bytes()
+                            .ok_or(DeviceContractError::RuntimeBudgetExceeded)?,
+                    )
+                    .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
+                if automation_bytes > MAX_PROCESSOR_BANK_RUNTIME_BYTES * 2 {
+                    return Err(DeviceContractError::RuntimeBudgetExceeded);
+                }
+            }
             for &parameter in instance.automation.parameter_ids() {
                 if instance.definition.as_ref().is_none_or(|factory| {
                     !factory.supports_parameter_automation(parameter)
@@ -1171,6 +1257,7 @@ impl NativeRuntimeChain {
                 }
             }
             entries.push(RuntimeEntry {
+                modulation,
                 automation: instance.automation,
                 automation_frozen: false,
                 committed_host_gains: instance.configuration.as_ref().map_or([1.0; 2], |state| {
@@ -1266,7 +1353,13 @@ impl NativeRuntimeChain {
             )?
             .checked_add(self.declared_pair_bytes)?
             .checked_add(self.entries.iter().try_fold(0usize, |sum, entry| {
-                sum.checked_add(entry.automation.storage_bytes()?)
+                sum.checked_add(entry.automation.storage_bytes()?)?
+                    .checked_add(
+                        entry
+                            .modulation
+                            .as_ref()
+                            .map_or(Some(0), ModulationRuntime::heap_storage_bytes)?,
+                    )
             })?)
     }
 
@@ -1300,7 +1393,13 @@ impl NativeRuntimeChain {
             )
         })?;
         let programs = instances.iter().try_fold(0usize, |sum, instance| {
-            sum.checked_add(instance.automation.storage_bytes()?)
+            sum.checked_add(instance.automation.storage_bytes()?)?
+                .checked_add(
+                    instance
+                        .modulation
+                        .as_ref()
+                        .map_or(Some(0), PreparedModulationState::quoted_runtime_heap_bytes)?,
+                )
         })?;
         Self::preflight_bytes(instances.len(), payloads)?.checked_add(programs)
     }
@@ -1918,6 +2017,7 @@ impl NativeRuntimeChain {
     ) {
         self.inherit_host_stage_ramps(previous, &excluded_old_range);
         self.inherit_bypass_ramps(previous, &excluded_old_range);
+        self.inherit_modulation(previous, &excluded_old_range);
         for entry in &mut self.entries {
             if let Some((index, old)) = previous.entries.iter().enumerate().find(|(_, old)| {
                 Self::same_runtime_identity(entry, old) && old.runtime.is_stateful()
@@ -1956,12 +2056,28 @@ impl NativeRuntimeChain {
     ) {
         self.inherit_host_stage_ramps(previous, &excluded);
         self.inherit_bypass_ramps(previous, &excluded);
+        self.inherit_modulation(previous, &excluded);
         for entry in &mut self.entries {
             if let Some((index, old)) = previous.entries.iter_mut().enumerate().find(|(_, old)| {
                 Self::same_runtime_identity(entry, old) && old.runtime.is_stateful()
             }) && !excluded.contains(&index)
             {
                 entry.runtime.transfer_history_from(&mut old.runtime);
+            }
+        }
+    }
+
+    fn inherit_modulation(&mut self, previous: &Self, excluded: &std::ops::Range<usize>) {
+        for entry in &mut self.entries {
+            if let Some((index, old)) = previous
+                .entries
+                .iter()
+                .enumerate()
+                .find(|(_, old)| Self::same_runtime_identity(entry, old))
+                && !excluded.contains(&index)
+                && let (Some(current), Some(old)) = (&mut entry.modulation, &old.modulation)
+            {
+                current.inherit_graph_committed(old);
             }
         }
     }
@@ -2080,6 +2196,9 @@ impl NativeRuntimeChain {
     /// Start a transactional block by copying committed histories into twins.
     pub fn begin_block(&mut self) {
         for entry in &mut self.entries {
+            if let Some(modulation) = &mut entry.modulation {
+                modulation.begin();
+            }
             entry.scratch_host_gains = entry.committed_host_gains;
             entry.scratch_output_gain_ramp = entry.committed_output_gain_ramp;
             entry.scratch_transient_output_gain = entry.committed_transient_output_gain;
@@ -2996,24 +3115,7 @@ impl NativeRuntimeChain {
             if !entry.bypassed {
                 entry.scratch_matrix_ramp.apply_block(entry.matrix, frames);
             }
-            let values = (!entry.automation.parameter_ids().is_empty() && !entry.automation_frozen)
-                .then(|| {
-                    entry.automation.block_with_optional_external(
-                        clock,
-                        frames.len(),
-                        input,
-                        external,
-                    )
-                })
-                .transpose()?;
-            entry.runtime.process_auxiliary(
-                StereoAuxiliaryBlock::paired(frames, key),
-                clock,
-                values
-                    .as_ref()
-                    .map(|value| value as &dyn NativeParameterAutomation),
-                entry.bypassed,
-            )?;
+            Self::process_native_provider(entry, frames, Some(key), clock, input, external)?;
         } else if let RuntimeOwnership::Foreign(runtime) = &mut entry.runtime {
             let configuration = entry
                 .configuration
@@ -3056,19 +3158,7 @@ impl NativeRuntimeChain {
         } else if entry.bypassed {
             if entry.runtime.is_stateful() {
                 if entry.matrix.is_identity() {
-                    if !entry.automation.parameter_ids().is_empty() && !entry.automation_frozen {
-                        let values = entry.automation.block_with_optional_external(
-                            clock,
-                            frames.len(),
-                            input,
-                            external,
-                        )?;
-                        entry
-                            .runtime
-                            .process_automation(frames, clock, &values, true)?;
-                    } else {
-                        entry.runtime.process_bypassed_with_clock(frames, clock)?;
-                    }
+                    Self::process_native_provider(entry, frames, None, clock, input, external)?;
                 } else {
                     for (frame_index, frame) in frames.iter_mut().enumerate() {
                         let audible = *frame;
@@ -3091,19 +3181,7 @@ impl NativeRuntimeChain {
             }
         } else {
             entry.scratch_matrix_ramp.apply_block(entry.matrix, frames);
-            if !entry.automation.parameter_ids().is_empty() && !entry.automation_frozen {
-                let values = entry.automation.block_with_optional_external(
-                    clock,
-                    frames.len(),
-                    input,
-                    external,
-                )?;
-                entry
-                    .runtime
-                    .process_automation(frames, clock, &values, false)?;
-            } else {
-                entry.runtime.process_with_clock(frames, clock)?;
-            }
+            Self::process_native_provider(entry, frames, None, clock, input, external)?;
         }
         if !entry.bypassed && !foreign_applies_output_gain {
             Self::apply_host_gain(entry, frames, output_clock, false, input, external)?;
@@ -3118,6 +3196,81 @@ impl NativeRuntimeChain {
             entry.meter.observe_output(frames);
         }
         Ok(())
+    }
+
+    fn process_native_provider(
+        entry: &mut RuntimeEntry,
+        frames: &mut [StereoFrame],
+        key: Option<&[StereoFrame]>,
+        clock: Option<&dyn NativeInstrumentClock>,
+        input: Option<NativeTransientValue>,
+        external: Option<&dyn ExternalParameterAutomation>,
+    ) -> Result<(), DeviceContractError> {
+        let values = (!entry.automation.parameter_ids().is_empty() && !entry.automation_frozen)
+            .then(|| {
+                entry
+                    .automation
+                    .block_with_optional_external(clock, frames.len(), input, external)
+            })
+            .transpose()?;
+        let upstream = values
+            .as_ref()
+            .map(|value| value as &dyn NativeParameterAutomation);
+        let runtime = &mut entry.runtime;
+        if let Some(modulation) = entry
+            .modulation
+            .as_mut()
+            .filter(|_| !entry.automation_frozen)
+        {
+            let mut offset = 0usize;
+            for chunk in frames.chunks_mut(modulation.chunk_frames()) {
+                let end = offset
+                    .checked_add(chunk.len())
+                    .ok_or(DeviceContractError::InvalidDescriptor)?;
+                let shifted = clock.map(|clock| OffsetClock { clock, offset });
+                let chunk_clock = shifted
+                    .as_ref()
+                    .map(|clock| clock as &dyn NativeInstrumentClock);
+                let shifted_values =
+                    upstream.map(|values| OffsetParameterValues { values, offset });
+                let chunk_values = shifted_values
+                    .as_ref()
+                    .map(|values| values as &dyn NativeParameterAutomation);
+                let chunk_key = key
+                    .map(|key| {
+                        key.get(offset..end)
+                            .ok_or(DeviceContractError::InvalidDescriptor)
+                    })
+                    .transpose()?;
+                modulation.render_chunk(chunk.len(), chunk_values, |values| {
+                    if let Some(key) = chunk_key {
+                        runtime.process_auxiliary(
+                            StereoAuxiliaryBlock::paired(chunk, key),
+                            chunk_clock,
+                            Some(values),
+                            entry.bypassed,
+                        )
+                    } else {
+                        runtime.process_automation(chunk, chunk_clock, values, entry.bypassed)
+                    }
+                })?;
+                offset = end;
+            }
+            Ok(())
+        } else if let Some(key) = key {
+            runtime.process_auxiliary(
+                StereoAuxiliaryBlock::paired(frames, key),
+                clock,
+                upstream,
+                entry.bypassed,
+            )
+        } else if let Some(values) = upstream {
+            runtime.process_automation(frames, clock, values, entry.bypassed)
+        } else if entry.bypassed {
+            runtime.process_bypassed_with_clock(frames, clock)
+        } else {
+            runtime.process_with_clock(frames, clock)
+        }
     }
 
     fn apply_host_gain(
@@ -3211,6 +3364,11 @@ impl NativeRuntimeChain {
     /// Commit histories after all render chunks and source reads succeeded.
     pub fn commit_block(&mut self) {
         for entry in &mut self.entries {
+            if let Some(modulation) = &mut entry.modulation {
+                // Commit follows successful rendering of every provider; a
+                // refused render aborts the enclosing transaction instead.
+                let _ = modulation.commit();
+            }
             entry.committed_host_gains = entry.scratch_host_gains;
             entry.committed_output_gain_ramp = entry.scratch_output_gain_ramp;
             entry.committed_transient_output_gain = entry.scratch_transient_output_gain;
@@ -3227,6 +3385,9 @@ impl NativeRuntimeChain {
     /// Restore every speculative effect after a later host render stage refuses.
     pub fn rollback_block(&mut self) {
         for entry in &mut self.entries {
+            if let Some(modulation) = &mut entry.modulation {
+                modulation.rollback();
+            }
             entry.scratch_host_gains = entry.committed_host_gains;
             entry.scratch_output_gain_ramp = entry.committed_output_gain_ramp;
             entry.scratch_transient_output_gain = entry.committed_transient_output_gain;
@@ -3240,6 +3401,9 @@ impl NativeRuntimeChain {
     /// Reset both committed and speculative state at a hard discontinuity.
     pub fn reset(&mut self) {
         for entry in &mut self.entries {
+            if let Some(modulation) = &mut entry.modulation {
+                modulation.reset_all();
+            }
             entry.committed_host_gains = [entry.input_gain, entry.output_gain];
             entry.scratch_host_gains = entry.committed_host_gains;
             entry.committed_output_gain_ramp = host_output_gain_ramp::OutputGainRamp::INACTIVE;
