@@ -140,6 +140,24 @@ impl PreparedModulation {
         })
     }
 
+    /// Reserved vector capacities, excluding inline state and allocator bookkeeping.
+    /// The owning graph must include this quote in its own admission budget.
+    pub fn storage_bytes(&self) -> Option<usize> {
+        self.ids
+            .capacity()
+            .checked_mul(std::mem::size_of::<ParameterId>())?
+            .checked_add(
+                self.targets
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<Target>())?,
+            )?
+            .checked_add(
+                self.routes
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<Route>())?,
+            )
+    }
+
     /// Borrow a block. Every input is checked before it is exposed to a provider.
     /// Upstream IDs must be sorted, unique and contained in this program.
     pub fn block<'a>(
@@ -326,6 +344,7 @@ mod tests {
             },
         ];
         let program = PreparedModulation::new(&targets, &routes, 2).unwrap();
+        assert!(program.storage_bytes().unwrap() > 0);
         let a = [0.0, 1.0, -1.0];
         let b = [0.0, -1.0, 1.0];
         let samples = [&a[..], &b[..]];
