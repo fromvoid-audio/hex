@@ -5,6 +5,50 @@
 use super::*;
 use hex_storage::automation_draft::DraftTarget;
 
+/// Prepare a canonical edit from the verified source without publishing it or
+/// releasing original custody. Call on control, never the audio callback.
+pub fn prepare_verified_vst3_recovery_on_control(
+    session: &Session,
+    document_base: Option<&Path>,
+    scope: DeviceAutomationTakeScope,
+    path: &Path,
+    receipt: RecoveryCopyReceipt,
+    max_events: u64,
+) -> Result<hex_project::Command, String> {
+    let result = (|| {
+        let DeviceCaptureTarget::Vst3(target) = scope.target else {
+            return Err("verified plugin recovery requires a vst3 target".into());
+        };
+        if max_events > hex_project::MAX_DEVICE_AUTOMATION_POINTS as u64 {
+            return Err("device automation recovery exceeds the event budget".into());
+        }
+        let mut take = receipt.open_completed_on_control(
+            path,
+            DraftReadLimits {
+                max_source_bytes: hex_storage::MAX_PROJECT_DOCUMENT_BYTES as u64,
+            },
+            max_events,
+        )?;
+        let expected = DraftTarget::Device {
+            device: target.device,
+            target: hex_project::DeviceAutomationTarget::Vst3 {
+                parameter: target.parameter,
+            },
+        };
+        if take.target() != expected
+            || take
+                .target()
+                .vst3_class_in_source(take.source())
+                .map_err(|error| error.to_string())?
+                != Some(target.class)
+        {
+            return Err("verified recovery belongs to another device, parameter or class".into());
+        }
+        prepare_device_take_adoption_on_control(session, document_base, &mut take, scope.stamp)
+    })();
+    result.map_err(|reason: String| retained_error(path, &reason))
+}
+
 pub(in crate::service) fn recover_sealed(
     session: &Session,
     document_base: Option<&Path>,

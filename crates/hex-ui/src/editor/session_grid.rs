@@ -23,7 +23,7 @@ const SCENE_ROW_HEIGHT: f32 = 31.0;
 pub(super) const TRACK_HEADER_HEIGHT: f32 = 28.0;
 // Eight nested ancestors fit while preserving a usable header label.
 const GROUP_BAND_HEIGHT: f32 = 1.0;
-const SCENE_HEADER_WIDTH: f32 = 150.0;
+const SCENE_HEADER_WIDTH: f32 = 110.0;
 
 /// Paint occupies an inset surface; the cell keeps its original IDs, layout,
 /// rename/launch controls and drop targets. Console clips are one caption row,
@@ -1581,7 +1581,7 @@ impl EditorView {
             .px_2()
             .flex()
             .items_center()
-            .justify_between()
+            .gap(px(4.0))
             .bg(rgb(if selected {
                 theme::color(theme::PaletteRole::Raised)
             } else {
@@ -1589,6 +1589,25 @@ impl EditorView {
             }))
             .text_xs()
             .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+            .child(
+                self.session_icon(
+                    "▶",
+                    "launch scene",
+                    ("session-launch-scene", scene_id.value()),
+                    cx.listener(move |view, _, window, cx| {
+                        if view.session_callback_current(revision, generation)
+                            && view.focus_empty_details(window, cx)
+                        {
+                            view.focus.focus(window);
+                            view.advance_selection_intent();
+                            view.select_session_scene(scene_id);
+                            view.launch_scene(scene_id, revision, view.session_quantization);
+                        }
+                        cx.notify();
+                    }),
+                )
+                .debug_selector(move || format!("console-launch-scene-{}", scene_id.value())),
+            )
             .child(
                 div()
                     .id(("session-scene-select", scene_id.value()))
@@ -1607,23 +1626,7 @@ impl EditorView {
                         }
                         cx.notify();
                     })),
-            )
-            .child(self.session_icon(
-                "▶",
-                "launch scene",
-                ("session-launch-scene", scene_id.value()),
-                cx.listener(move |view, _, window, cx| {
-                    if view.session_callback_current(revision, generation)
-                        && view.focus_empty_details(window, cx)
-                    {
-                        view.focus.focus(window);
-                        view.advance_selection_intent();
-                        view.select_session_scene(scene_id);
-                        view.launch_scene(scene_id, revision, view.session_quantization);
-                    }
-                    cx.notify();
-                }),
-            ));
+            );
         #[cfg(feature = "ui-test-support")]
         let scene_column = scene_column.debug_selector(|| "session-scene-column".into());
         let tail = self.console_column_surface(
