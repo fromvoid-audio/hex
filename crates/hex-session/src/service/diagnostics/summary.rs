@@ -370,6 +370,13 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("move_arrangement_section_beyond_end"; ["section" => section.value(), "start_beats_q32" => start.raw(), "gap_name_redacted_bytes" => gap_name.len()]; omitted="gap_color")
         }
+        Command::ReplaceArrangementSection {
+            source,
+            target,
+            copy,
+        } => {
+            describe!("replace_arrangement_section"; ["source" => source.value(), "target" => target.value(), "copy" => copy]; omitted="")
+        }
         Command::SplitArrangementSection { section, at } => {
             describe!("split_arrangement_section"; ["section" => section.value(), "at_beats_q32" => at.raw()]; omitted="")
         }

@@ -25,6 +25,7 @@ pub(super) fn is_command(command: &Command) -> bool {
             | Command::DuplicateArrangementSectionAt { .. }
             | Command::AppendArrangementSectionCopy { .. }
             | Command::MoveArrangementSectionBeyondEnd { .. }
+            | Command::ReplaceArrangementSection { .. }
             | Command::SplitArrangementSection { .. }
             | Command::MergeArrangementSections(_)
     )
@@ -391,6 +392,74 @@ mod append_tests {
                 );
             }
             let after = copied.state.project.snapshot();
+            service.submit(Request::Undo).unwrap();
+            let mut restored = next(&service).state.project.snapshot();
+            assert!(restored.next_id >= after.next_id);
+            restored.next_id = before.next_id;
+            assert_eq!(restored, before);
+            service.submit(Request::Redo).unwrap();
+            assert_eq!(next(&service).state.project.snapshot(), after);
+        }
+    }
+}
+
+#[cfg(test)]
+mod replace_tests {
+    use super::*;
+    fn next(service: &Service) -> Event {
+        service
+            .events
+            .recv_timeout(crate::test_wait::HANG_BOUND)
+            .unwrap()
+    }
+    #[test]
+    fn stamped_replacement_uses_one_structural_publication_and_history_edge() {
+        for copy in [false, true] {
+            let service = Service::new(48_000, 8, 0).unwrap();
+            let mut event = next(&service);
+            let mut ids = Vec::new();
+            for (name, start, end) in [("source", 0, 4), ("target", 8, 10)] {
+                service
+                    .submit(Request::EditArrangementSection {
+                        project_generation: 0,
+                        revision: event.state.revision,
+                        command: Command::AddArrangementSection {
+                            name: name.into(),
+                            color: hex_project::ElementColor::Blue,
+                            start: hex_project::BeatTime::from_quarters(start).unwrap(),
+                            end: hex_project::BeatTime::from_quarters(end).unwrap(),
+                        },
+                    })
+                    .unwrap();
+                event = next(&service);
+                let Some(Created::ArrangementSection(id)) = event.created else {
+                    panic!("marker")
+                };
+                ids.push(id);
+            }
+            let before = event.state.project.snapshot();
+            let command = Command::ReplaceArrangementSection {
+                source: ids[0],
+                target: ids[1],
+                copy,
+            };
+            assert!(is_command(&command));
+            assert!(command.requires_section_publication());
+            service
+                .submit(Request::EditArrangementSection {
+                    project_generation: 0,
+                    revision: event.state.revision,
+                    command,
+                })
+                .unwrap();
+            let replaced = next(&service);
+            assert!(replaced.error.is_none(), "{:?}", replaced.error);
+            assert_eq!(
+                replaced.state.project.arrangement_sections().len(),
+                if copy { 2 } else { 1 }
+            );
+            assert!(replaced.state.project.arrangement_section(ids[1]).is_none());
+            let after = replaced.state.project.snapshot();
             service.submit(Request::Undo).unwrap();
             let mut restored = next(&service).state.project.snapshot();
             assert!(restored.next_id >= after.next_id);
