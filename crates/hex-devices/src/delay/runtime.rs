@@ -86,6 +86,7 @@ struct Scalar {
     next: usize,
     valid: usize,
     nonzero: usize,
+    timing: automation::TimingControls,
     times: [f64; 2],
     old_times: [f64; 2],
     fade_left: u32,
@@ -104,7 +105,8 @@ struct Scalar {
 }
 impl Scalar {
     fn new(s: Settings, rate: u32, admitted: [bool; automation::COUNT]) -> Self {
-        let times = times(s, rate, 120_000_000);
+        let timing = automation::TimingControls::new(s);
+        let times = timing_times(timing, rate, 120_000_000);
         let mix = f64::from(s.value(DRY_WET));
         let (dry_gain, wet_gain) = mix_gains(mix, s.flag(EQUAL_LOUDNESS));
         let mut filters = [BandPass::default(); 2];
@@ -123,6 +125,7 @@ impl Scalar {
             next: 0,
             valid: 0,
             nonzero: 0,
+            timing,
             times,
             old_times: times,
             fade_left: 0,
@@ -152,19 +155,14 @@ fn mix_gains(mix: f64, equal_loudness: bool) -> (f64, f64) {
         (1.0 - mix, mix)
     }
 }
-pub(super) fn times(s: Settings, rate: u32, tempo: u32) -> [f64; 2] {
+fn timing_times(s: automation::TimingControls, rate: u32, tempo: u32) -> [f64; 2] {
     let divisions = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 16.0];
     std::array::from_fn(|i| {
-        let (time, sync, division, offset) = if i == 0 {
-            (TIME, LEFT_SYNC, LEFT_DIVISION, LEFT_OFFSET)
+        let seconds = if s.sync[i] {
+            60_000_000.0 / f64::from(tempo.max(1)) * divisions[s.division[i] as usize] / 4.0
+                * (1.0 + f64::from(s.offset[i]) / 100.0)
         } else {
-            (RIGHT_TIME, RIGHT_SYNC, RIGHT_DIVISION, RIGHT_OFFSET)
-        };
-        let seconds = if s.flag(sync) {
-            60_000_000.0 / f64::from(tempo.max(1)) * divisions[s.choice(division) as usize] / 4.0
-                * (1.0 + f64::from(s.value(offset)) / 100.0)
-        } else {
-            f64::from(s.value(time)) / 1000.0
+            f64::from(s.time[i]) / 1000.0
         };
         (seconds * f64::from(rate)).clamp(
             f64::from(rate) / 1000.0,
@@ -280,9 +278,13 @@ impl Runtime {
         }
     }
     fn restore_controls(&mut self) {
-        let old = self.speculative.controls.effective();
+        let old = self.speculative.controls.effective().other_targets();
+        let old_timing = self.speculative.timing;
         self.speculative.controls.reset();
-        if old != self.speculative.controls.effective() {
+        self.speculative.timing = automation::timing(&self.speculative.controls);
+        if old != self.speculative.controls.effective().other_targets()
+            || old_timing != self.speculative.timing
+        {
             self.speculative.ramp_left = self.rate.div_ceil(100);
         }
     }
@@ -330,10 +332,14 @@ impl Runtime {
                 values,
                 offset,
             )? {
-                if next.effective() != self.speculative.controls.effective() {
+                let changed = next.effective().other_targets()
+                    != self.speculative.controls.effective().other_targets();
+                self.speculative.controls.install(next);
+                let timing = automation::timing(&self.speculative.controls);
+                if changed || timing != self.speculative.timing {
                     self.speculative.ramp_left = self.rate.div_ceil(100);
                 }
-                self.speculative.controls.install(next);
+                self.speculative.timing = timing;
             }
             self.process_frame(
                 frame,
@@ -372,7 +378,7 @@ impl Runtime {
             f64::from(targets.lfo.morph),
             lfo_increment(targets.lfo, rate, s.tempo),
         );
-        let mut requested = times(settings, rate, s.tempo);
+        let mut requested = timing_times(s.timing, rate, s.tempo);
         for time in &mut requested {
             *time = (*time * (1.0 + oscillator * f64::from(targets.lfo.delay))).clamp(
                 f64::from(rate) / 1000.0,
