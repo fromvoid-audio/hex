@@ -403,24 +403,15 @@ impl EditorView {
             return self.sample_recorder_panel(height, cx);
         }
         let style = theme::device_style(theme::DeviceStyleRole::Display);
-        let available = self
-            .audio
-            .as_ref()
-            .is_some_and(|audio| audio.control.project_spectrum_available());
-        let summary = if available {
-            format!("master · {} tracks", self.selected_track_ids().len())
-        } else {
-            "unavailable".into()
-        };
         let compact = self.project_spectrum_compact(window);
         let mut header = div()
+            .debug_selector(|| "project-spectrum-controls".into())
             .h(px(22.0))
             .flex_shrink_0()
             .flex()
             .items_center()
-            .gap_2()
+            .gap(px(2.0))
             .px_1()
-            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
             .child(
                 div()
                     .id("project-spectrum-toggle")
@@ -445,13 +436,7 @@ impl EditorView {
                     })
                     .on_click(cx.listener(|view, _, _, cx| view.toggle_project_spectrum(cx))),
             )
-            .child(theme::text("spectrum"))
-            .child(self.sample_recorder_mode_button(cx))
-            .child(
-                div()
-                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                    .child(theme::text(summary)),
-            );
+            .child(self.sample_recorder_mode_button(cx));
         if compact {
             let plot = layered_spectrum_plot(
                 self.project_spectrum_layers(std::time::Instant::now()),
@@ -467,6 +452,7 @@ impl EditorView {
         let mut panel = div()
             .id("project-spectrum")
             .debug_selector(|| "project-spectrum".into())
+            .relative()
             .h(px(height))
             .flex_shrink_0()
             .min_h_0()
@@ -474,11 +460,13 @@ impl EditorView {
             .flex_col()
             .text_xs()
             .border_b_1()
-            .border_color(rgb(style.border))
-            .child(header);
+            .border_color(rgb(style.border));
         if expanded && !compact {
             let layers = self.project_spectrum_layers(std::time::Instant::now());
             let plot = layered_spectrum_plot(layers, style);
+            // Analyzer controls float over the quiet upper-right plot area;
+            // they do not reserve a permanent title row above the data.
+            let header = header.absolute().top_0().right_0();
             panel = panel
                 .child(
                     plot.id("project-spectrum-plot")
@@ -489,7 +477,10 @@ impl EditorView {
                 .child(self.project_spectrum_splitter_input(cx).handle(
                     "project-spectrum-resize".into(),
                     SplitterHandleConfig::thin(SplitterAxis::Vertical, style.border),
-                ));
+                ))
+                .child(header);
+        } else {
+            panel = panel.child(header);
         }
         panel
     }
