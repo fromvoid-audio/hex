@@ -18,7 +18,7 @@ fn event(service: &Service) -> Event {
     }
 }
 #[test]
-fn eq8_kind_lane_edits_preserve_base_value_history_and_refuse_stale_requests() {
+fn eq8_enable_lane_edits_preserve_base_value_history_and_refuse_stale_requests() {
     let service = Service::new(48000, 16, 0).unwrap();
     event(&service);
     service
@@ -41,10 +41,10 @@ fn eq8_kind_lane_edits_preserve_base_value_history_and_refuse_stale_requests() {
     let Created::Device(device) = added.created.unwrap() else {
         panic!("device")
     };
-    let parameter = ParameterId::new(7).unwrap();
+    let parameter = ParameterId::new(6).unwrap();
     let points = vec![AutomationPoint {
         beat: BeatTime::ZERO,
-        value: AutomationValue::new(4.0 / 7.0).unwrap(),
+        value: AutomationValue::new(0.0).unwrap(),
         outgoing: AutomationInterpolation::Step,
     }];
     let request = |revision, generation, points| Request::DeviceAutomation {

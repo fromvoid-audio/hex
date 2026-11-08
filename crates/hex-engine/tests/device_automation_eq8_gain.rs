@@ -140,6 +140,7 @@ fn eq8_gain_all_owners_follow_the_existing_smoother_and_seek_reset() {
         for bank in 0..5 {
             for band in 0..8 {
                 for parameter in [
+                    p::enabled(bank, band),
                     p::kind(bank, band),
                     p::frequency(bank, band),
                     p::gain(bank, band),
