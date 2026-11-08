@@ -2091,7 +2091,7 @@ impl EditorView {
                 }
                 continue;
             }
-            let (body, foreground) = self.clip_view(
+            let (body, foreground, notch) = self.clip_view(
                 state,
                 track_id,
                 clip,
@@ -2108,20 +2108,23 @@ impl EditorView {
                 let end = end.min(viewport_end);
                 let id = clip.id();
                 selected_edges.push(
-                    div()
-                        .debug_selector(move || format!("clip-selected-trailing-{}", id.value()))
-                        .absolute()
-                        .top_0()
-                        .bottom(px(if loop_handles::audio_repeats(clip) {
-                            loop_handles::BOTTOM_RADIUS
-                        } else {
-                            0.0
-                        }))
-                        .left(relative(
-                            (end - viewport.start) as f32 / viewport.length as f32,
-                        ))
-                        .w(px(1.0 / scale_factor.max(1.0)))
-                        .bg(rgb(theme::color(theme::PaletteRole::Primary))),
+                    super::clip_boundary::trailing_edge(
+                        notch,
+                        theme::color(theme::PaletteRole::Primary),
+                        theme::color(theme::PaletteRole::Primary),
+                    )
+                    .debug_selector(move || format!("clip-selected-trailing-{}", id.value()))
+                    .absolute()
+                    .top_0()
+                    .bottom(px(if loop_handles::audio_repeats(clip) {
+                        loop_handles::BOTTOM_RADIUS
+                    } else {
+                        0.0
+                    }))
+                    .left(relative(
+                        (end - viewport.start) as f32 / viewport.length as f32,
+                    ))
+                    .w(px(1.0 / scale_factor.max(1.0))),
                 );
             }
             if let Some(foreground) = foreground {
@@ -2240,6 +2243,7 @@ impl EditorView {
             let fill = theme::arrangement_clip_body_fill(header_fill, selected_clip);
             let stroke = 1.0 / scale_factor.max(1.0);
             let border = hex_widgets::rectangle_border_width(pixel_width) > 0.0;
+            let notch = super::clip_boundary::Notch::new(border && visible_end == end);
             let mut midi = hex_widgets::rectangle_surface(left as f32, width as f32, pixel_width)
                 .id(("midi-clip", clip.id().value()))
                 .debug_selector(|| format!("midi-clip-visual-{}", clip.id().value()))
@@ -2365,8 +2369,15 @@ impl EditorView {
                 ));
             }
             let header = if border {
-                self.clip_name_header_on_backdrop(track_id, clip.id(), clip.name(), header_fill, cx)
-                    .into_any_element()
+                self.clip_name_header_on_backdrop(
+                    track_id,
+                    clip.id(),
+                    clip.name(),
+                    header_fill,
+                    notch.enabled(),
+                    cx,
+                )
+                .into_any_element()
             } else {
                 self.clip_name_header(track_id, clip.id(), clip.name(), header_fill, cx)
                     .into_any_element()
@@ -2433,6 +2444,7 @@ impl EditorView {
                         stroke,
                         bottom_radius,
                         header_height: super::clip_name::CLIP_NAME_HEIGHT,
+                        notch: notch.clone(),
                     },
                     trim_preview.is_none(),
                     move || format!("midi-clip-trailing-{}", midi_clip_id.value()),
@@ -2455,22 +2467,23 @@ impl EditorView {
             if selected_clip && trim_preview.is_none() {
                 let id = clip.id();
                 selected_edges.push(
-                    div()
-                        .debug_selector(move || {
-                            format!("midi-clip-selected-trailing-{}", id.value())
-                        })
-                        .absolute()
-                        .top_0()
-                        .bottom(px(if clip.looping() {
-                            loop_handles::BOTTOM_RADIUS
-                        } else {
-                            0.0
-                        }))
-                        .left(relative(
-                            (visible_end - viewport.start) as f32 / viewport.length as f32,
-                        ))
-                        .w(px(stroke))
-                        .bg(rgb(theme::color(theme::PaletteRole::Primary))),
+                    super::clip_boundary::trailing_edge(
+                        notch,
+                        theme::color(theme::PaletteRole::Primary),
+                        theme::color(theme::PaletteRole::Primary),
+                    )
+                    .debug_selector(move || format!("midi-clip-selected-trailing-{}", id.value()))
+                    .absolute()
+                    .top_0()
+                    .bottom(px(if clip.looping() {
+                        loop_handles::BOTTOM_RADIUS
+                    } else {
+                        0.0
+                    }))
+                    .left(relative(
+                        (visible_end - viewport.start) as f32 / viewport.length as f32,
+                    ))
+                    .w(px(stroke)),
                 );
             }
         }
@@ -2643,7 +2656,7 @@ impl EditorView {
         selected: bool,
         timeline: ClipViewTimeline<'_>,
         cx: &mut Context<Self>,
-    ) -> (gpui::AnyElement, Option<Div>) {
+    ) -> (gpui::AnyElement, Option<Div>, super::clip_boundary::Notch) {
         let ClipViewTimeline {
             viewport,
             grid,
@@ -2657,7 +2670,11 @@ impl EditorView {
             .map(|(_, preview)| preview);
         let active_trim_preview = trim_preview_clip.is_some();
         let Some(viewport_end) = viewport.end() else {
-            return (div().id(("clip", clip_id.value())).into_any_element(), None);
+            return (
+                div().id(("clip", clip_id.value())).into_any_element(),
+                None,
+                Default::default(),
+            );
         };
         // Keep the interactive surface in the same place as the retained trim
         // preview while its canonical edit is still in flight.
@@ -2667,12 +2684,20 @@ impl EditorView {
             clip
         };
         let Some(clip_end) = display_clip.start().checked_add(display_clip.duration()) else {
-            return (div().id(("clip", clip_id.value())).into_any_element(), None);
+            return (
+                div().id(("clip", clip_id.value())).into_any_element(),
+                None,
+                Default::default(),
+            );
         };
         let visible_start = display_clip.start().max(viewport.start);
         let visible_end = clip_end.min(viewport_end);
         if visible_start >= visible_end || viewport.length == 0 {
-            return (div().id(("clip", clip_id.value())).into_any_element(), None);
+            return (
+                div().id(("clip", clip_id.value())).into_any_element(),
+                None,
+                Default::default(),
+            );
         }
         let visible_frames = visible_end - visible_start;
         let left = (visible_start - viewport.start) as f64 / viewport.length as f64;
@@ -2733,6 +2758,7 @@ impl EditorView {
         });
         let stroke = 1.0 / scale_factor.max(1.0);
         let border = hex_widgets::rectangle_border_width(clip_pixel_width) > 0.0;
+        let notch = super::clip_boundary::Notch::new(border && visible_end == clip_end);
         let mut content =
             hex_widgets::rectangle_surface(left as f32, width as f32, clip_pixel_width)
                 .cursor(gpui::CursorStyle::Arrow)
@@ -2840,8 +2866,15 @@ impl EditorView {
         );
         let hover_generation = self.project_generation;
         let header = if border {
-            self.clip_name_header_on_backdrop(track, clip.id(), clip.name(), header_fill, cx)
-                .into_any_element()
+            self.clip_name_header_on_backdrop(
+                track,
+                clip.id(),
+                clip.name(),
+                header_fill,
+                notch.enabled(),
+                cx,
+            )
+            .into_any_element()
         } else {
             self.clip_name_header(track, clip.id(), clip.name(), header_fill, cx)
                 .into_any_element()
@@ -2990,6 +3023,7 @@ impl EditorView {
                             0.0
                         },
                         header_height: super::clip_name::CLIP_NAME_HEIGHT,
+                        notch: notch.clone(),
                     },
                     !active_trim_preview,
                     move || format!("clip-trailing-{}", clip_id.value()),
@@ -3014,6 +3048,7 @@ impl EditorView {
             }
             .into_any_element(),
             foreground,
+            notch,
         )
     }
 

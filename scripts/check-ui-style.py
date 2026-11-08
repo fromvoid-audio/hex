@@ -218,7 +218,7 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             and suffix.startswith('framed_clip)')
         ) or (
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/clip_boundary.rs'
-            and suffix.startswith('paint)')
+            and suffix.startswith(('paint)', 'trailing_edge('))
         )
         # Track meters compose a text-free shared gauge and its rendered fixture.
         # Tooltip text still passes through MiniTooltip's theme::text boundary.
