@@ -28,6 +28,7 @@ mod bindings;
 mod bypass;
 mod delay_panel;
 mod overdrive_panel;
+mod rattle_panel;
 use bindings::{
     ControlPresentation, ControlText, ParameterControl, cancel_control,
     parameter_control_matches_identity,
@@ -172,6 +173,7 @@ pub(super) struct DevicePanelState {
     auto_pan_previews: HashMap<DeviceId, auto_pan_panel::PreviewCache>,
     reverb_previews: HashMap<DeviceId, reverb_panel::PreviewCache>,
     overdrive_previews: HashMap<DeviceId, overdrive_panel::PreviewCache>,
+    rattle_previews: HashMap<DeviceId, rattle_panel::PreviewCache>,
     eq8_graph_gestures: HashMap<DeviceId, eq8_panel::GraphGestureState>,
     eq8_audition_toggles: HashMap<DeviceId, Eq8AuditionToggle>,
     pub(super) spectrum_results: HashMap<
@@ -1329,6 +1331,9 @@ fn retire_transfer_previews(
     panel.overdrive_previews.retain(|device, _| {
         type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.overdrive"))
     });
+    panel.rattle_previews.retain(|device, _| {
+        type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.rattle"))
+    });
     panel.auto_pan_previews.retain(|device, _| {
         type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.auto-pan"))
     });
@@ -1355,6 +1360,7 @@ fn device_card_width(class: NativeDeviceClass, type_id: hex_lattice_contract::De
         (NativeDeviceClass::Effect, Some("hex.delay")) => delay_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.auto-pan")) => auto_pan_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.overdrive")) => overdrive_panel::FRAME_WIDTH,
+        (NativeDeviceClass::Effect, Some("hex.rattle")) => rattle_panel::FRAME_WIDTH,
         _ => DEVICE_FRAME_WIDTH,
     };
     frame_width + hex_widgets::DEVICE_FRAME_HEADER_WIDTH + device_meter::WIDTH
@@ -1974,6 +1980,8 @@ fn render_effect(
                 delay_panel::render_body(view, cx, device_id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.overdrive") {
                 overdrive_panel::render_body(view, cx, device_id, device.state(), device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.rattle") {
+                rattle_panel::render_body(view, cx, device, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.gate") {
                 gate_panel::render_body(view, cx, device_id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.auto-pan") {
