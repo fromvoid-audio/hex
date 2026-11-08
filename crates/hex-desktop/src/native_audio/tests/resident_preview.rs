@@ -802,6 +802,25 @@ impl ResidentHarness {
             None,
         )
     }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) fn with_plugins_at_rate_and_catalog_recovery(
+        host: hex_audio::plugin_effects::Hosting,
+        presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
+        rate: u32,
+        catalog: PathBuf,
+        recovery: PathBuf,
+    ) -> Self {
+        Self::with_plugin_fixture(
+            8192,
+            Arc::new(AtomicBool::new(true)),
+            4,
+            rate,
+            Some((host, presentation)),
+            None,
+            Some(catalog),
+            Some(recovery),
+        )
+    }
     #[allow(clippy::too_many_arguments)] // Test fixture covers independent native failure modes.
     fn with_plugin_fixture(
         frame_limit: u64,
@@ -2210,4 +2229,102 @@ fn midi_recording_wire_and_physical_input_deliver_then_commit_one_native_history
         committed.state.project.snapshot()
     );
     assert_eq!(notes.len(), 3);
+}
+
+#[test]
+fn sealed_native_take_recovery_uses_canonical_publication_and_one_undo() {
+    use hex_session::service::{
+        DeviceAutomationTakeProgress, DeviceAutomationTakeScope, DeviceCaptureTarget,
+    };
+    use hex_storage::automation_draft::{
+        AppliedEvent, CaptureClock, DraftClock, DraftProvenance, DraftTarget, DraftTerminal,
+        DraftWriter,
+    };
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(8192);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let inserted = h.run(Request::Edit(Command::InsertMainDevice {
+        before: None,
+        state: hex_engine::default_native_device_state(
+            hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+        )
+        .unwrap(),
+    }));
+    applied = h.applied(applied).0;
+    let device = inserted.state.project.main_devices()[0].id();
+    let target = hex_engine::native_parameter_input_target(
+        &inserted.state.project,
+        device,
+        hex_project::DeviceAutomationTarget::HostOutputGain,
+    )
+    .unwrap();
+    let context = h.submitted.unwrap().1.context;
+    let scope = DeviceAutomationTakeScope {
+        target: DeviceCaptureTarget::Native(target),
+        stamp: DraftProvenance {
+            sample_rate: 48_000,
+            output_identity: 1,
+            project_generation: context.project_generation,
+            editor_revision: context.editor_revision,
+            audio_revision: 1,
+            transport_epoch: 1,
+            gesture_serial: 1,
+        },
+    };
+    // Canonical sealed-file fixture; capture receipt provenance is tested by the
+    // recording owner. This test exercises the real native publication consumer.
+    let path = files.0.join("native-sealed.hex-automation-draft");
+    let mut writer = DraftWriter::create_with_clock(
+        &path,
+        &inserted.state.project,
+        DraftTarget::Device {
+            device,
+            target: target.target(),
+        },
+        scope.stamp,
+        CaptureClock {
+            sample_rate: 48_000,
+            loop_region: None,
+        },
+    )
+    .unwrap();
+    writer
+        .append(&[AppliedEvent {
+            sequence: 1,
+            performance_frame: 12,
+            content_frame: 4,
+            loop_pass: 0,
+            value: hex_project::AutomationValue::new(0.75).unwrap(),
+        }])
+        .unwrap();
+    writer
+        .finish(DraftTerminal::Finished(DraftClock {
+            performance_frame: 24,
+            content_frame: 16,
+            loop_pass: 0,
+        }))
+        .unwrap();
+    drop(writer);
+    let bytes = std::fs::read(&path).unwrap();
+    let recovered = h.run(Request::RecoverDeviceAutomationTake {
+        request_id: 41,
+        target: DraftTarget::Device {
+            device,
+            target: target.target(),
+        },
+        expected: scope.stamp,
+        path: path.clone(),
+        context,
+    });
+    assert_eq!(
+        recovered.device_automation_take_complete.unwrap().progress,
+        DeviceAutomationTakeProgress::Committed
+    );
+    assert_ne!(recovered.state.project, inserted.state.project);
+    h.applied(applied);
+    let undone = h.run(Request::Undo);
+    assert_eq!(undone.state.project, inserted.state.project);
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
 }

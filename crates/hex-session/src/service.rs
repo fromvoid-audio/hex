@@ -662,6 +662,16 @@ pub enum Request {
         scope: DeviceAutomationTakeScope,
         action: DeviceAutomationTakeAction,
     },
+    /// Recover one completed device take without reconstructing its old worker.
+    /// Current context fences publication; expected target/provenance bind only
+    /// the immutable file. Every path echoes request_id through take completion.
+    RecoverDeviceAutomationTake {
+        request_id: u64,
+        context: hex_engine::AudioSourceContext,
+        target: hex_storage::automation_draft::DraftTarget,
+        expected: automation_draft::DraftProvenance,
+        path: PathBuf,
+    },
     ArmNativeParameterRecording {
         project_generation: u64,
         revision: u64,
@@ -2805,6 +2815,48 @@ fn run_worker(
         let mut device_automation_take_complete = None;
         let mut adopted_device_draft = None;
         let resolved_edit = match &request {
+            Request::RecoverDeviceAutomationTake {
+                request_id,
+                context,
+                target,
+                expected,
+                path,
+            } => {
+                let current = hex_engine::AudioSourceContext {
+                    project_generation,
+                    editor_revision: revision,
+                };
+                let result = if *context != current
+                    || pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                    || native_automation_take.busy()
+                    || plugin_recording.pending()
+                    || session.audio_mode() != DocumentAudioMode::Resident
+                    || !events.resident_publication_enabled()
+                {
+                    Err("sealed recovery requires the idle current resident source".into())
+                } else {
+                    native_automation_recording::recover_sealed(
+                        &session,
+                        media_base.as_deref(),
+                        *target,
+                        *expected,
+                        path,
+                    )
+                };
+                device_automation_take_complete = Some(DeviceAutomationTakeCompletion {
+                    request_id: *request_id,
+                    progress: DeviceAutomationTakeProgress::Refused,
+                });
+                Some(match result {
+                    Ok((command, publication)) => {
+                        adopted_device_draft = Some((path.clone(), publication));
+                        Ok(*command)
+                    }
+                    Err(reason) => Err(reason),
+                })
+            }
             Request::DeviceAutomationTake {
                 request_id,
                 scope,
@@ -2864,7 +2916,7 @@ fn run_worker(
                         None
                     }
                     Ok(Step::Commit(command, path)) => {
-                        adopted_device_draft = Some((path, scope.target));
+                        adopted_device_draft = Some((path, scope.target.into()));
                         Some(Ok(*command))
                     }
                     Err(reason) => Some(Err(reason)),
@@ -3670,6 +3722,7 @@ fn run_worker(
                     | Request::SamplerEdit(_)
                     | Request::ContinueSamplerEdit
                     | Request::DeviceAutomationTake { .. }
+                    | Request::RecoverDeviceAutomationTake { .. }
                     | Request::InsertPluginEffect(_)
                     | Request::ContinuePluginEffect
                     | Request::TogglePluginEditor { .. }
@@ -6246,7 +6299,8 @@ fn run_worker(
                         }
                     }
                 }
-                Request::DeviceAutomationTake { .. } => {}
+                Request::DeviceAutomationTake { .. }
+                | Request::RecoverDeviceAutomationTake { .. } => {}
                 Request::ArmNativeParameterRecording {
                     project_generation: expected_generation,
                     revision: expected_revision,
