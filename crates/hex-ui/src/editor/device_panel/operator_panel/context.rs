@@ -49,6 +49,24 @@ impl Owner {
             && view.focused_return.is_none()
             && view.device_panel.owner == Some(DevicePanelOwner::Track(self.track))
     }
+
+    /// Immutable canonical state for this currently selected instrument owner.
+    pub(super) fn state(
+        self,
+        view: &EditorView,
+    ) -> Option<&hex_lattice_contract::NativeDeviceState> {
+        if !self.is_current(view) {
+            return None;
+        }
+        Some(
+            view.state
+                .as_ref()?
+                .project
+                .track(self.track)?
+                .instrument()?
+                .state(),
+        )
+    }
 }
 
 /// Context changes are explicit and cannot abandon a pending invalid draft.
