@@ -474,6 +474,32 @@ mod tests {
         visual.simulate_click(switch, Modifiers::default());
         visual.run_until_parked();
         assert!(visual.debug_bounds("project-spectrum").is_some());
+        // Main's Console arm is the same project-scoped intent, now in the
+        // pinned mixer column rather than the legacy footer.
+        editor.update(&mut visual, |view, cx| {
+            view.mode = crate::editor::EditorMode::Session;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let arm = visual.debug_bounds("sample-arm-main-0").unwrap();
+        let column = visual.debug_bounds("console-main-mixer-column").unwrap();
+        assert!(column.contains(&arm.center()));
+        assert_eq!(
+            visual.rendered_background("sample-arm-main-0"),
+            Some(rgb(theme::color(theme::PaletteRole::Recording)).into())
+        );
+        visual.simulate_click(arm.center(), Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert!(!view.sample_recorder.armed.contains(&Arm::Main));
+            assert!(
+                view.sample_recorder
+                    .armed
+                    .contains(&Arm::Output(OutputCaptureId::Track(track)))
+            );
+        });
+        visual.simulate_click(arm.center(), Modifiers::default());
+        visual.run_until_parked();
         editor.read_with(cx, |view, _| {
             assert!(!view.sample_recorder.visible);
             assert_eq!(view.sample_recorder.armed.len(), 2);
