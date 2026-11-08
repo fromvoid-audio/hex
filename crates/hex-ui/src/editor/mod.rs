@@ -642,6 +642,7 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("shift-down", MidiOctaveDown, Some("hex_midi")),
     ]);
     hex_widgets::bind_numeric_control_keys(cx);
+    hex_widgets::bind_selector_keys(cx);
     hex_widgets::bind_text_input_keys(cx);
     // Background clip shortcuts have no target while the foreground gain lanes
     // own Arrangement focus. Child text, MIDI and event contexts keep their keys.
