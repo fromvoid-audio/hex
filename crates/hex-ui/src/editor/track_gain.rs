@@ -60,16 +60,32 @@ impl MixerKey {
             Self::ReturnGain(return_track) => GestureTarget::ReturnGain { return_track },
         }
     }
-    fn current(self, view: &EditorView) -> bool {
-        view.state.as_ref().is_some_and(|state| match self {
-            Self::MainGain => true,
-            Self::Balance(track) => state.project.track(track).is_some(),
-            Self::ReturnGain(id) => state
-                .project
+    fn canonical_value(self, view: &EditorView) -> Option<f32> {
+        let project = &view.state.as_ref()?.project;
+        match self {
+            Self::MainGain => Some(project.master_gain()),
+            Self::Balance(id) => project.track(id).map(Track::balance),
+            Self::ReturnGain(id) => project
                 .return_tracks()
                 .iter()
-                .any(|track| track.id() == id),
-        })
+                .find(|track| track.id() == id)
+                .map(ReturnTrack::gain),
+        }
+    }
+    fn current(self, view: &EditorView) -> bool {
+        self.canonical_value(view).is_some()
+    }
+    fn supports_atomic_gain(self) -> bool {
+        matches!(self, Self::MainGain | Self::ReturnGain(_))
+    }
+    fn atomic_gain_command(self, gain: f32) -> Option<hex_project::Command> {
+        match self {
+            Self::MainGain => Some(hex_project::Command::MasterGain { gain }),
+            Self::ReturnGain(return_track) => {
+                Some(hex_project::Command::ReturnGain { return_track, gain })
+            }
+            Self::Balance(_) => None,
+        }
     }
 }
 
@@ -450,63 +466,56 @@ impl EditorView {
                     if event.phase == NumericEventPhase::Begin {
                         atomic_admitted.set(false);
                     }
-                    let explicit_main = key == MixerKey::MainGain && event.gesture.is_none();
+                    let explicit_gain = key.supports_atomic_gain() && event.gesture.is_none();
                     if event.phase == NumericEventPhase::Begin
                         && ((view.document_audio_mode != hex_session::DocumentAudioMode::Resident
-                            && !explicit_main)
+                            && !explicit_gain)
                             || view.gain_recorder.blocks_edits()
                             || view.midi_recorder.blocks_edits()
                             || view.edit_pending())
                     {
-                        view.error = Some(if explicit_main {
-                            "finish the current edit before changing main volume"
+                        view.error = Some(if explicit_gain {
+                            "finish the current edit before changing output volume"
                         } else {
                             "finish the current edit · held mixer controls require resident audio"
                         }.into());
-                        let rejected_main = (key == MixerKey::MainGain
+                        let rejected_gain = (key.supports_atomic_gain()
                             && view.document_audio_mode
                                 != hex_session::DocumentAudioMode::Resident)
-                            .then(|| {
-                                view.state
-                                    .as_ref()
-                                    .map_or(1.0, |state| state.project.master_gain())
-                            });
+                            .then(|| key.canonical_value(view).unwrap_or(canonical));
                         control.update(cx, |control, cx| {
                             control.cancel(cx);
-                            if let Some(gain) = rejected_main {
+                            if let Some(gain) = rejected_gain {
                                 let _ = control.set_external_value(f64::from(gain), cx);
                             }
                         });
                         cx.notify();
                         return;
                     }
-                    // Verified sources retain explicit atomic Main edits. Held
+                    // Verified sources retain explicit atomic output-gain edits. Held
                     // preview stays resident-only; the actor owns the sole edit.
-                    if key == MixerKey::MainGain
+                    if key.supports_atomic_gain()
                         && view.document_audio_mode != hex_session::DocumentAudioMode::Resident
                     {
                         match event.phase {
                             NumericEventPhase::Begin => atomic_admitted.set(true),
                             NumericEventPhase::Commit if atomic_admitted.replace(false) => {
+                                let Some(command) = key.atomic_gain_command(event.value as f32)
+                                else {
+                                    return;
+                                };
                                 if view.edit_pending()
                                     || view.gain_recorder.blocks_edits()
                                     || view.midi_recorder.blocks_edits()
                                     || !view.enqueue_device_barrier(
-                                        hex_session::service::Request::Edit(
-                                            hex_project::Command::MasterGain {
-                                                gain: event.value as f32,
-                                            },
-                                        ),
+                                        hex_session::service::Request::Edit(command),
                                     )
                                 {
                                     view.error = Some(
-                                        "finish the current edit before changing main volume"
+                                        "finish the current edit before changing output volume"
                                             .into(),
                                     );
-                                    let canonical = view
-                                        .state
-                                        .as_ref()
-                                        .map_or(1.0, |state| state.project.master_gain());
+                                    let canonical = key.canonical_value(view).unwrap_or(canonical);
                                     control.update(cx, |control, cx| {
                                         control.cancel(cx);
                                         let _ =
@@ -550,7 +559,7 @@ impl EditorView {
                 _ => None,
             });
         let enabled = (self.document_audio_mode == hex_session::DocumentAudioMode::Resident
-            || key == MixerKey::MainGain)
+            || key.supports_atomic_gain())
             && !self.gain_recorder.blocks_edits()
             && !self.midi_recorder.blocks_edits()
             && !self.opening_project
@@ -559,9 +568,9 @@ impl EditorView {
         binding.entity.update(cx, |control, cx| {
             control.set_enabled(enabled, cx);
             let _ = control.set_external_style(theme::control_style(), cx);
-            // The existing worker queue retains an explicit Main edit until its
+            // The existing worker queue retains an explicit output-gain edit until its
             // acknowledgement; do not flash the old value during that handoff.
-            if !(key == MixerKey::MainGain
+            if !(key.supports_atomic_gain()
                 && self.document_audio_mode != hex_session::DocumentAudioMode::Resident
                 && self.edit_pending())
             {

@@ -26,8 +26,8 @@ use hex_lattice::{
     PreparedOwnedProcessorRuntime, StereoFrame,
 };
 use hex_lattice_contract::{
-    DeviceContractError as Error, NativeDeviceState, ParameterDescriptor, ParameterId,
-    ParameterSemantics, ParameterSmoothing,
+    DeviceContractError as Error, NativeDeviceState, ParameterChangeImpact, ParameterDescriptor,
+    ParameterId, ParameterSemantics, ParameterSmoothing,
 };
 use std::{any::Any, mem::size_of};
 const COUNT: usize = 10;
@@ -54,6 +54,7 @@ const BINDINGS: [Binding<Settings>; COUNT] = {
             super::super::state::DESCRIPTORS[5],
             ParameterSemantics {
                 smoothing: ParameterSmoothing::DeviceManaged,
+                change_impact: ParameterChangeImpact::Structural,
                 ..CHOICE_ENVELOPE
             },
             |s| s.choice(LOOKAHEAD),
@@ -71,6 +72,9 @@ const BINDINGS: [Binding<Settings>; COUNT] = {
         ms_link,
     ]
 };
+pub(in crate::limiter) fn semantics() -> ParameterSemantics {
+    BINDINGS[5].semantics
+}
 fn slot(id: ParameterId) -> Option<usize> {
     BINDINGS.binary_search_by_key(&id, |b| b.descriptor.id).ok()
 }
