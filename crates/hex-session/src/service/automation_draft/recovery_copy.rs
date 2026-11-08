@@ -2,7 +2,8 @@
 use super::{DraftTerminal, DraftWorkerOutcome, EVENTS_PER_BATCH};
 use hex_project::Project;
 use hex_storage::automation_draft::{
-    CaptureClock, DraftProvenance, DraftReadLimits, DraftReader, DraftTarget, DraftWriter,
+    CaptureClock, DraftOutcome, DraftProvenance, DraftReadLimits, DraftReader, DraftTarget,
+    DraftWriter,
 };
 use std::path::Path;
 
@@ -18,6 +19,9 @@ pub struct RecoverySource<'a> {
 /// The original file and borrowed batches remain owned by the caller on every outcome.
 /// At most `max_events` records are scanned or copied, plus one record to detect overflow.
 /// This checkpoint is not an adoptable completed take and does not include later receipts.
+/// File operations and sync can block; the caller must keep them off the audio callback
+/// and arrange worker custody if its control loop must remain responsive. A failure after
+/// destination publication leaves that incomplete file in place for inspection.
 pub fn copy_failed_on_control(
     outcome: &DraftWorkerOutcome,
     expected: RecoverySource<'_>,
@@ -37,12 +41,19 @@ pub fn copy_failed_on_control(
         .ok_or("automation retained event count overflow")?;
     let acknowledged = outcome.progress.durable_events;
     if outcome.admitted_events > max_events
+        || outcome.durable_prefix.events() != acknowledged
         || acknowledged.checked_add(retained_count) != Some(outcome.admitted_events)
     {
         return Err("automation writer custody count is inconsistent or exceeds budget".into());
     }
     let mut reader = DraftReader::open_bounded(&outcome.path, limits, max_events)
         .map_err(|error| error.to_string())?;
+    if !reader
+        .matches_prefix(outcome.durable_prefix)
+        .map_err(|error| error.to_string())?
+    {
+        return Err("automation draft acknowledged prefix no longer matches writer custody".into());
+    }
     if reader.target() != expected.target
         || reader.provenance() != expected.provenance
         || reader.capture_clock() != expected.clock
@@ -106,5 +117,18 @@ pub fn copy_failed_on_control(
     writer
         .finish(DraftTerminal::Interrupted)
         .map_err(|error| error.to_string())?;
+    let copied = writer.durable_prefix_identity();
+    drop(writer);
+    let mut verified = DraftReader::open_bounded(destination, limits, max_events)
+        .map_err(|error| error.to_string())?;
+    if verified.outcome() != DraftOutcome::Interrupted
+        || verified.progress().durable_terminal != Some(DraftTerminal::Interrupted)
+        || copied.events() != outcome.admitted_events
+        || !verified
+            .matches_prefix(copied)
+            .map_err(|error| error.to_string())?
+    {
+        return Err("automation recovery copy did not verify; preserve both drafts".into());
+    }
     Ok(())
 }
