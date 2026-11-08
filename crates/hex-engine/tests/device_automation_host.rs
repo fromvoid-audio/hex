@@ -544,3 +544,106 @@ fn limiter_values(parameters: &[(hex_lattice_contract::ParameterId, f32)]) {
         }
     }
 }
+
+#[test]
+fn limiter_lookahead_retains_maximum_pdc_across_owners_reading_and_seek() {
+    use hex_devices::limiter::{DEFINITION as D, parameter as p};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    use hex_project::AutomationReadSelection as Read;
+    let latency = |f: &Fixture| {
+        PreparedRevision::prepare(f.e.project(), &f.media, Arc::new(SineTable::new()), None)
+            .unwrap()
+            .arrangement()
+            .main_latency_frames() as usize
+    };
+    for owner in 0..3 {
+        let mut base = fixture_owner(DeviceTypeId::from_static("hex.limiter"), 1024, owner);
+        let settings = D
+            .patch_parameter(
+                &D.default_state().unwrap(),
+                p::CEILING,
+                ParameterValue::Float(-18.0),
+            )
+            .unwrap();
+        state(&mut base, settings.clone());
+        let base_pcm = render(&base, true, 1024, 31);
+        let base_latency = latency(&base);
+        for look in 0..3 {
+            let mut canonical =
+                fixture_owner(DeviceTypeId::from_static("hex.limiter"), 1024, owner);
+            state(
+                &mut canonical,
+                D.patch_parameter(&settings, p::LOOKAHEAD, ParameterValue::Choice(look))
+                    .unwrap(),
+            );
+            let static_latency = latency(&canonical);
+            let static_pcm = render(&canonical, true, 1024, 31);
+            let mut f = fixture_owner(DeviceTypeId::from_static("hex.limiter"), 1024, owner);
+            state(&mut f, settings.clone());
+            lane(
+                &mut f,
+                Target::Parameter(p::LOOKAHEAD),
+                vec![AutomationPoint {
+                    beat: BeatTime::ZERO,
+                    value: AutomationValue::new(look as f32 / 2.0).unwrap(),
+                    outgoing: Curve::Step,
+                }],
+            );
+            let maximum = latency(&f);
+            assert_eq!(maximum, 48);
+            let expected: Vec<_> = (0usize..1024)
+                .map(|i| {
+                    i.checked_sub(maximum - static_latency)
+                        .map_or([0.0; 2], |j| static_pcm[j])
+                })
+                .collect();
+            let whole = render(&f, true, 1024, 127);
+            close(&whole, &expected);
+            close(&whole, &render(&f, false, 1024, 17));
+            let saved =
+                f.e.project()
+                    .device(f.device)
+                    .unwrap()
+                    .automation()
+                    .to_vec();
+            f.e.execute(Command::SetDeviceAutomationReadSelection {
+                device: f.device,
+                target: Target::Parameter(p::LOOKAHEAD),
+                selection: Read::Base,
+            })
+            .unwrap();
+            assert_eq!(latency(&f), maximum);
+            let expected_base: Vec<_> = (0usize..1024)
+                .map(|i| {
+                    i.checked_sub(maximum - base_latency)
+                        .map_or([0.0; 2], |j| base_pcm[j])
+                })
+                .collect();
+            close(&render(&f, true, 1024, 19), &expected_base);
+            f.e.execute(Command::SetDeviceAutomationReadSelection {
+                device: f.device,
+                target: Target::Parameter(p::LOOKAHEAD),
+                selection: Read::Authored,
+            })
+            .unwrap();
+            assert_eq!(latency(&f), maximum);
+            assert_eq!(f.e.project().device(f.device).unwrap().automation(), saved);
+            let revision = Arc::new(
+                PreparedRevision::prepare(
+                    f.e.project(),
+                    &f.media,
+                    Arc::new(SineTable::new()),
+                    None,
+                )
+                .unwrap(),
+            );
+            let mut playback = SessionPlayback::new(revision).unwrap();
+            playback.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut output = vec![[0.0; 2]; 1024];
+            playback.render(&mut output).unwrap();
+            playback.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+            playback.render(&mut output).unwrap();
+            close(&output, &whole);
+        }
+    }
+}
