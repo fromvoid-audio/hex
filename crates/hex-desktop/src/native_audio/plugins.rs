@@ -140,7 +140,7 @@ pub(super) struct Plugins {
     pending: Option<Pending>,
     editor: Option<editor::EditorOperation>,
     parameters: Option<parameters::Inventory>,
-    observed_parameters: Option<parameters::ObservedInventory>,
+    observed_parameters: Vec<parameters::ObservedInventory>,
     parameter_gesture: Option<parameter_gesture::Gesture>,
     // At most two control records: a late prior point and the current point.
     confirmed_parameters:
@@ -235,7 +235,7 @@ impl Plugins {
             parameters.output_closed();
         }
         self.configured = false;
-        self.observed_parameters = None;
+        self.observed_parameters.clear();
         self.collect_parameter_observations();
         if !self
             .parameter_gesture

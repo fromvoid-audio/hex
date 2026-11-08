@@ -197,6 +197,7 @@ impl EditorView {
     }
 
     fn poll_tick(&mut self, window: &Window, cx: &mut Context<Self>) -> Duration {
+        super::device_panel::vst3_parameters::tick(self, cx);
         let changed = self.tick(cx);
         if changed {
             cx.notify();

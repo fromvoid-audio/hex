@@ -86,6 +86,7 @@ mod plugin_parameters;
 mod plugin_state_save;
 pub use plugin_parameters::{
     PluginParameterQuery, PluginParameterResult, PluginParameterRow, vst3_automation_class,
+    vst3_parameter_cache_key,
 };
 pub use plugin_state_save::{PluginStateCapture, PluginStateSaveInput};
 pub mod diagnostics;
@@ -4208,6 +4209,9 @@ fn run_worker(
                     if let Err(reason) = result {
                         plugin_parameters = Some(PluginParameterResult {
                             query,
+                            source: None,
+                            total: 0,
+                            descriptor_signature: None,
                             rows: Err(reason),
                         });
                     }
