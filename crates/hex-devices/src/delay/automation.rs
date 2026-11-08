@@ -1,4 +1,4 @@
-//! Shared timing, feedback, mix, filter and LFO targets live in the owned committed/speculative scalar.
+//! All27 shared targets live in the owned committed/speculative scalar.
 //! Admission/base stay with the incoming factory; cached targets follow history.
 //! Rollback restores both DSP and control caches. Missing views use canonical
 //! targets; detached tails keep their last targets and existing Freeze release.
@@ -9,7 +9,7 @@ use hex_lattice_contract::{
     ParameterDescriptor, ParameterId, ParameterSemantics, ParameterSmoothing,
 };
 
-pub(super) const COUNT: usize = 21;
+pub(super) const COUNT: usize = 27;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct ControlValues {
     pub feedback: f32,
@@ -18,6 +18,28 @@ pub(super) struct ControlValues {
     pub width: f32,
     pub lfo: LfoControls,
     pub timing: TimingControls,
+    pub flags: Flags,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Flags {
+    pub smoothing: u32,
+    pub ping_pong: bool,
+    pub freeze: bool,
+    pub filter: bool,
+    pub high_quality: bool,
+    pub equal_loudness: bool,
+}
+impl Flags {
+    fn new(s: Settings) -> Self {
+        Self {
+            smoothing: s.choice(SMOOTHING),
+            ping_pong: s.flag(PING_PONG),
+            freeze: s.flag(FREEZE),
+            filter: s.flag(FILTER),
+            high_quality: s.flag(HIGH_QUALITY),
+            equal_loudness: s.flag(EQUAL_LOUDNESS),
+        }
+    }
 }
 /// Raw authored values stay independent. Link only projects the DSP targets;
 /// removing a lane or unlinking never erases another lane's cached value.
@@ -90,12 +112,14 @@ impl ControlValues {
             width,
             lfo,
             timing: _,
+            flags,
         } = self;
         *feedback != other.feedback
             || *mix != other.mix
             || *frequency != other.frequency
             || *width != other.width
             || lfo != &other.lfo
+            || flags != &other.flags
     }
     pub(super) fn new(settings: Settings) -> Self {
         Self {
@@ -105,6 +129,7 @@ impl ControlValues {
             width: settings.value(WIDTH),
             lfo: LfoControls::new(settings),
             timing: TimingControls::new(settings),
+            flags: Flags::new(settings),
         }
     }
 }
@@ -206,6 +231,36 @@ pub(super) const BINDINGS: [Binding<ControlValues>; COUNT] = [
         |s| s.timing.link,
         |s, v| s.timing.link = v,
     ),
+    Binding::choice(
+        state::DESCRIPTORS[11],
+        crate::parameter_binding::CHOICE_ENVELOPE,
+        |s| s.flags.smoothing,
+        |s, v| {
+            s.flags.smoothing = v;
+            Ok(())
+        },
+    ),
+    Binding::boolean(
+        state::DESCRIPTORS[12],
+        crate::parameter_binding::BOOLEAN_ENVELOPE,
+        |s| s.flags.ping_pong,
+        |s, v| s.flags.ping_pong = v,
+    ),
+    Binding::boolean(
+        state::DESCRIPTORS[13],
+        crate::parameter_binding::BOOLEAN_ENVELOPE,
+        |s| s.flags.freeze,
+        |s, v| s.flags.freeze = v,
+    ),
+    Binding::boolean(
+        state::DESCRIPTORS[14],
+        ParameterSemantics {
+            smoothing: ParameterSmoothing::DeviceManaged,
+            ..crate::parameter_binding::BOOLEAN_ENVELOPE
+        },
+        |s| s.flags.filter,
+        |s, v| s.flags.filter = v,
+    ),
     Binding::float(
         state::DESCRIPTORS[15],
         ParameterSemantics {
@@ -283,6 +338,18 @@ pub(super) const BINDINGS: [Binding<ControlValues>; COUNT] = [
         SCALAR_ENVELOPE,
         |s| s.lfo.morph,
         |s, v| s.lfo.morph = v,
+    ),
+    Binding::boolean(
+        state::DESCRIPTORS[25],
+        crate::parameter_binding::BOOLEAN_ENVELOPE,
+        |s| s.flags.high_quality,
+        |s, v| s.flags.high_quality = v,
+    ),
+    Binding::boolean(
+        state::DESCRIPTORS[26],
+        crate::parameter_binding::BOOLEAN_ENVELOPE,
+        |s| s.flags.equal_loudness,
+        |s, v| s.flags.equal_loudness = v,
     ),
 ];
 pub(super) fn slot(id: ParameterId) -> Option<usize> {

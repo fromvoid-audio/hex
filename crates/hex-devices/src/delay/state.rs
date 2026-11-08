@@ -3,8 +3,8 @@
 //! feedback and mix. Migration preserves its free stereo timing and dry/wet,
 //! disables the new filter and modulation, and retains its repitch transition.
 //! Version 2 adds the independently authored Live-style control inventory.
-//! Feedback, dry/wet, filter frequency/width all eight LFO controls and linked timing expose shared owned-transaction automation; other
-//! parameters retain their explicit unsupported declaration.
+//! All27 controls expose shared owned-transaction automation. Authored targets
+//! remain separate from this canonical saved state.
 use super::DelayDefinition;
 use hex_lattice_contract::*;
 pub const TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.delay");
