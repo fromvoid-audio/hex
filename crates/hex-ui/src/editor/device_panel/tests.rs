@@ -35,6 +35,7 @@ mod operator_envelope_reference_ui_tests;
 mod operator_fine_ui_tests;
 #[path = "operator_harmonic_ui_tests.rs"]
 mod operator_harmonic_ui_tests;
+mod operator_keytrack_ui_tests;
 mod operator_navigation_tests;
 mod operator_preview_navigation_tests;
 mod operator_selector_keys_ui_tests;
@@ -3019,9 +3020,9 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
                 ))
                 .expect("compact oscillator badge");
             assert_eq!(badge.size, gpui::size(px(6.0), px(36.0)));
-            let fixed_id = 62 + operator * 3;
+            let ratio_id = 1 + operator * 3;
             let level_id = operator * 3 + 2;
-            for parameter in [fixed_id + 1, level_id, 609 + operator] {
+            for parameter in [ratio_id, level_id, 609 + operator] {
                 let field = Box::leak(
                     format!("device-{}-parameter-{parameter}", instrument_id.value())
                         .into_boxed_str(),
@@ -3064,7 +3065,7 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
                     ))
                     .unwrap()
             };
-            let coarse = field_bounds(&mut visual, fixed_id + 1);
+            let coarse = field_bounds(&mut visual, ratio_id);
             let fine = field_bounds(&mut visual, 609 + operator);
             let level = field_bounds(&mut visual, level_id);
             let wave = field_bounds(&mut visual, 57 + operator);
@@ -3076,14 +3077,9 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
                 assert!(field.top() >= row_bounds.top() && field.bottom() <= row_bounds.bottom());
                 assert!(field.right() <= row_bounds.right());
             }
-            let toggle = Box::leak(
-                format!("device-{}-parameter-{fixed_id}", instrument_id.value()).into_boxed_str(),
-            );
-            let toggle_bounds = visual.debug_bounds(toggle).expect("fixed mode toggle");
-            assert!(
-                toggle_bounds.origin.x + toggle_bounds.size.width
-                    <= row_bounds.origin.x + row_bounds.size.width
-            );
+            let keytrack = field_bounds(&mut visual, 613 + operator);
+            assert!(keytrack.left() >= level.right());
+            assert!(keytrack.right() <= row_bounds.right() - px(4.0));
         }
         let lfo = visual
             .debug_bounds(Box::leak(
@@ -3164,9 +3160,12 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
     }
     // Fixed frequency and multiplier have distinct IDs from ratio controls.
     // A keyboard edit must follow the focused fixed-frequency field too.
+    let at = operator_context_selection_tests::row_background(&mut visual, instrument_id, 1);
+    visual.simulate_click(at, Modifiers::default());
+    visual.run_until_parked();
     let frequency = visual
         .debug_bounds(Box::leak(
-            format!("device-{}-parameter-66-slider", instrument_id.value()).into_boxed_str(),
+            format!("device-{}-parameter-66-value", instrument_id.value()).into_boxed_str(),
         ))
         .expect("operator b fixed frequency");
     visual.simulate_click(frequency.center(), Modifiers::default());
