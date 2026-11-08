@@ -252,7 +252,10 @@ press **q** or use the section focus toggle to restore all tracks.
 through it; **command-shift-click** adds or removes a single section. both work in a
 section's lower body too. ordinary lower-body dragging still selects time.
 drag a section header to move its musical content; hold **option** to insert a copy
-before or after another section, or beside the source. changing option during the drag
+before or after another section, or beside the source. past the last section,
+move or copy to the snapped pointer beat; a new section marks the intervening gap.
+a move closes the old interval and preserves music in the gap. move/copy and the
+gap marker share one undo step. command toggles snapping for this placement. changing option during the drag
 switches between moving and copying. the source stays in place when copying, and
 one undo restores the entire operation.
 

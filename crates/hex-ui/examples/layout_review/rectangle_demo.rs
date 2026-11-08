@@ -65,6 +65,7 @@ pub(super) struct RectangleDemo {
     section_command: Option<Command>,
     section_error: Option<&'static str>,
     section_marker_latched: bool,
+    section_gap_appearance: Option<(String, hex_project::ElementColor)>,
     section_focus: bool,
     section_anchor_beat: Option<BeatTime>,
     section_last_pointer: Option<(f32, f32)>,
@@ -115,6 +116,7 @@ impl RectangleDemo {
             section_command: None,
             section_error: None,
             section_marker_latched: false,
+            section_gap_appearance: None,
             section_focus: false,
             section_anchor_beat: None,
             section_last_pointer: None,
@@ -151,6 +153,7 @@ impl RectangleDemo {
             self.section_command = None;
             self.section_error = None;
             self.section_marker_latched = false;
+            self.section_gap_appearance = None;
             self.section_anchor_beat = None;
             self.section_last_pointer = None;
             self.section_released_hover = crate::section_surface::Hover::default();
@@ -407,6 +410,7 @@ impl RectangleDemo {
         };
         self.capture = RectangleCapture::begin(Target::Rectangle(index), part, x, true);
         self.section_marker_latched = self.kind == Kind::Section && edit.marker_only;
+        self.section_gap_appearance = None;
         self.section_last_pointer = (self.kind == Kind::Section).then_some((x, y));
         self.preview = self.canonical.clone();
         if let Some(fixture) = self.section_fixture.as_ref() {
@@ -544,13 +548,19 @@ impl RectangleDemo {
                     } else if intent.part == RectanglePart::Body {
                         fixture
                             .snapped_beat(intent.pointer_x, left, width, true)
-                            .and_then(|beat| {
-                                fixture.plan_at_beat(
+                            .and_then(|raw| {
+                                let snapped = fixture.snapped_beat(
+                                    intent.pointer_x,
+                                    left,
+                                    width,
+                                    edit.invert_snap,
+                                )?;
+                                fixture.plan_drag(
                                     section.id(),
-                                    intent.part,
-                                    beat,
+                                    raw,
+                                    snapped,
                                     edit.copy_content,
-                                    self.section_marker_latched,
+                                    &mut self.section_gap_appearance,
                                 )
                             })
                     } else {
@@ -653,6 +663,7 @@ impl RectangleDemo {
         self.section_anchor_beat = None;
         self.section_paint = None;
         self.section_marker_latched = false;
+        self.section_gap_appearance = None;
         if self
             .capture
             .is_some_and(|capture| capture.key == Target::SectionRange)
@@ -810,7 +821,7 @@ impl RectangleDemo {
                 if fixture.project() != source {
                     commit_error = Some("section project changed");
                 } else {
-                    let select_copy = matches!(command, Command::DuplicateArrangementSectionAt { section, .. } if Some(section) == primary_id);
+                    let select_copy = matches!(command, Command::DuplicateArrangementSectionAt { section, .. } | Command::AppendArrangementSectionCopy { section, .. } if Some(section) == primary_id);
                     match fixture.commit(command) {
                         Ok(hex_project::Created::ArrangementSection(id)) if select_copy => {
                             created_copy = Some(id)
@@ -884,12 +895,13 @@ impl RectangleDemo {
             _ => self.section_command.as_ref(),
         };
         project.is_some_and(|project| {
-            if let Some(Command::DuplicateArrangementSectionAt { section, .. }) = command {
+            if let Some(Command::DuplicateArrangementSectionAt { section, .. } | Command::AppendArrangementSectionCopy { section, .. }) = command {
                 return self
                     .selection_primary
                     .and_then(|index| project.arrangement_sections().get(index))
                     .is_some_and(|selected| selected.id() == *section)
-                    && project.arrangement_section(painted.id()).is_none();
+                    && project.arrangement_section(painted.id()).is_none()
+                    && !matches!(command, Some(Command::AppendArrangementSectionCopy { start, .. }) if painted.start() != *start);
             }
             self.selected.iter().any(|index| {
                 project
