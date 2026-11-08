@@ -3237,9 +3237,9 @@ impl OriginProbe {
     }
 }
 
-#[gpui::test]
-fn audio_origin_capture_is_frame_exact_at_two_zooms(cx: &mut TestAppContext) {
-    for viewport_length in [192_000, 384_000] {
+fn assert_audio_origin_window(cx: &mut TestAppContext, viewport_length: u64) {
+    // A fixed frame radius cannot satisfy both zooms' near/far pixel pairs.
+    for dx in [7.0, 9.0] {
         assert_drag_handoff_at_grab(
             cx,
             &[false],
@@ -3248,11 +3248,20 @@ fn audio_origin_capture_is_frame_exact_at_two_zooms(cx: &mut TestAppContext) {
             false,
             Some(1.0 / 3.0),
             Some(OriginProbe {
+                dx,
                 viewport_length,
                 ..Default::default()
             }),
         );
     }
+}
+#[gpui::test]
+fn audio_origin_capture_uses_window_distance_at_close_zoom(cx: &mut TestAppContext) {
+    assert_audio_origin_window(cx, 192_000);
+}
+#[gpui::test]
+fn audio_origin_capture_uses_window_distance_at_wide_zoom(cx: &mut TestAppContext) {
+    assert_audio_origin_window(cx, 384_000);
 }
 #[gpui::test]
 fn midi_origin_capture_is_beat_exact_at_both_edges(cx: &mut TestAppContext) {
