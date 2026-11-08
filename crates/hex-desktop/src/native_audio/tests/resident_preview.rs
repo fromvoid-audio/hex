@@ -2245,11 +2245,11 @@ fn sealed_native_take_recovery_uses_canonical_publication_and_one_undo() {
     let mut h = ResidentHarness::with_frame_limit(8192);
     assert!(h.next().error.is_none());
     let (mut applied, _) = h.applied(0);
-    let inserted = h.run(Request::Edit(Command::InsertMainDevice {
+    let inserted = h.run(Request::Edit(hex_project::Command::InsertMainDevice {
         before: None,
-        state: hex_engine::default_native_device_state(
-            hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
-        )
+        state: hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(
+            "hex.utility",
+        ))
         .unwrap(),
     }));
     applied = h.applied(applied).0;
