@@ -424,7 +424,7 @@ fn constructor_exact_union_and_fixed_layout_admission_are_explicit() {
         .unwrap();
     assert!(!a.can_inherit_from(different.as_ref()));
     assert!(
-        !crate::limiter::DEFINITION
+        crate::limiter::DEFINITION
             .supports_parameter_automation(&s, LOOKAHEAD)
             .unwrap()
     );

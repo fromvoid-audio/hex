@@ -21,8 +21,8 @@ pub static DEFINITION: LimiterDefinition = LimiterDefinition;
 impl LimiterDefinition {
     /// Prepare exact owned lookahead eligibility with fixed maximum latency.
     /// Requires lookahead plus an optional subset of the nine value controls.
-    /// This typed provider constructor does not advertise host support; host
-    /// metadata/admission and actual publication are separately qualified.
+    /// Native lookahead automation selects this factory for the exact retained
+    /// target union; host admission and resource custody remain separate.
     pub fn prepare_owned_lookahead_for_parameters(
         state: &NativeDeviceState,
         rate: u32,
@@ -38,7 +38,7 @@ impl NativeDeviceDefinition for LimiterDefinition {
         id: hex_lattice_contract::ParameterId,
     ) -> Result<bool, DeviceContractError> {
         decode(state)?;
-        Ok(automation::slot(id).is_some())
+        Ok(id == parameter::LOOKAHEAD || automation::slot(id).is_some())
     }
     fn prepare_automated_runtime_instance(
         &self,

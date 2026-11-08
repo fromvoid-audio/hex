@@ -171,14 +171,27 @@ fn limiter_output_gain_uses_delayed_content_clock_without_callback_allocations()
 #[test]
 fn limiter_native_targets_publish_audibly_without_callback_allocations()
 -> Result<(), Box<dyn Error>> {
-    limiter_publication_case(true)
+    limiter_publication_case(LimiterPublication::Original)
 }
 #[test]
 fn limiter_additional_value_targets_publish_audibly_without_callback_allocations()
 -> Result<(), Box<dyn Error>> {
-    limiter_publication_case(false)
+    limiter_publication_case(LimiterPublication::Additional)
 }
-fn limiter_publication_case(original: bool) -> Result<(), Box<dyn Error>> {
+#[test]
+fn limiter_lookahead_publishes_queued_audio_at_fixed_latency_without_callback_allocations()
+-> Result<(), Box<dyn Error>> {
+    limiter_publication_case(LimiterPublication::Lookahead)
+}
+#[derive(Clone, Copy)]
+enum LimiterPublication {
+    Original,
+    Additional,
+    Lookahead,
+}
+fn limiter_publication_case(case: LimiterPublication) -> Result<(), Box<dyn Error>> {
+    let original = matches!(case, LimiterPublication::Original);
+    let lookahead = matches!(case, LimiterPublication::Lookahead);
     const BLOCK: usize = 1024;
     use hex_devices::limiter::{DEFINITION as D, parameter as p};
     use hex_lattice_contract::NativeDeviceMetadata;
@@ -198,20 +211,53 @@ fn limiter_publication_case(original: bool) -> Result<(), Box<dyn Error>> {
     let Created::Device(device) = editor.execute(Command::InsertDevice {
         track,
         before: None,
-        state: D.default_state()?,
+        state: if lookahead {
+            D.patch_parameter(&D.default_state()?, p::RELEASE, ParameterValue::Float(1.0))?
+        } else {
+            D.default_state()?
+        },
     })?
     else {
         return Err("limiter".into());
     };
-    let media = BTreeMap::from([(asset, Audio::new(RATE, vec![[0.1, -0.05]; BLOCK * 12])?)]);
+    if lookahead {
+        editor.execute(Command::ReplaceDeviceAutomation {
+            device,
+            parameter: p::LOOKAHEAD,
+            points: vec![AutomationPoint {
+                beat: BeatTime::ZERO,
+                value: AutomationValue::new(0.0)?,
+                outgoing: AutomationInterpolation::Step,
+            }],
+        })?;
+    }
+    let media = BTreeMap::from([(
+        asset,
+        Audio::new(
+            RATE,
+            (0..BLOCK * 12)
+                .map(|i| {
+                    if lookahead && i % 400 < 5 {
+                        [2.0, -1.0]
+                    } else {
+                        [0.1, -0.05]
+                    }
+                })
+                .collect(),
+        )?,
+    )]);
     let table = Arc::new(SineTable::new());
     let prepare = |project: &Project| -> Result<_, Box<dyn Error>> {
-        Ok(Arc::new(PreparedRevision::prepare(
+        let revision = Arc::new(PreparedRevision::prepare(
             project,
             &media,
             Arc::clone(&table),
             None,
-        )?))
+        )?);
+        if lookahead && project.device(device).is_some() {
+            assert_eq!(revision.arrangement().main_latency_frames(), 288);
+        }
+        Ok(revision)
     };
     let (mut control, mut callback) = prepared::channel(RATE)?;
     let (mut old_control, mut old_callback) = prepared::channel(RATE)?;
@@ -228,7 +274,9 @@ fn limiter_publication_case(original: bool) -> Result<(), Box<dyn Error>> {
     measured_block(&mut callback, &mut out);
     measured_block(&mut old_callback, &mut old_out);
     assert_eq!(out, old_out);
-    let original_lanes: &[_] = if original {
+    let original_lanes: &[_] = if lookahead {
+        &[(p::LOOKAHEAD, 1.0, 1.0)]
+    } else if original {
         &[
             (p::GAIN, 0.5, 0.75),
             (p::CEILING, 1.0, 0.875),
@@ -237,7 +285,7 @@ fn limiter_publication_case(original: bool) -> Result<(), Box<dyn Error>> {
     } else {
         &[]
     };
-    let extra_lanes: &[_] = if original {
+    let extra_lanes: &[_] = if original || lookahead {
         &[]
     } else {
         &[
@@ -275,7 +323,7 @@ fn limiter_publication_case(original: bool) -> Result<(), Box<dyn Error>> {
     assert!(editor.redo());
     assert_eq!(editor.project().snapshot(), authored);
     let path = std::env::temp_dir().join(format!(
-        "hex-limiter-automation-{}-{original}.hex",
+        "hex-limiter-automation-{}-{original}-{lookahead}.hex",
         std::process::id()
     ));
     hex_storage::save_new(&path, editor.project())?;
@@ -283,12 +331,23 @@ fn limiter_publication_case(original: bool) -> Result<(), Box<dyn Error>> {
     std::fs::remove_file(path)?;
     let loaded = loaded?;
     assert_eq!(&loaded, editor.project());
-    control
+    let revision = control
         .publish(Playback::try_from_prepared_with_session(prepare(&loaded)?)?)
         .map_err(|_| "automation publication")?;
     measured_block(&mut callback, &mut out);
     measured_block(&mut old_callback, &mut old_out);
-    if !original {
+    assert_eq!(
+        control.status.applied_revision.load(Ordering::Acquire),
+        revision
+    );
+    if lookahead {
+        assert_eq!(
+            &out[..288],
+            &old_out[..288],
+            "queued old output survives warm-up"
+        );
+    }
+    if !original && !lookahead {
         // Boolean lanes step at their authored endpoint. Cross that content
         // point before judging whether the maximize controls became audible.
         measured_block(&mut callback, &mut out);
@@ -320,7 +379,7 @@ fn limiter_publication_case(original: bool) -> Result<(), Box<dyn Error>> {
                 selection,
             })?;
         }
-        control
+        let revision = control
             .publish(Playback::try_from_prepared_with_session(prepare(
                 editor.project(),
             )?)?)
@@ -330,10 +389,19 @@ fn limiter_publication_case(original: bool) -> Result<(), Box<dyn Error>> {
             measured_block(&mut callback, &mut out);
             measured_block(&mut old_callback, &mut old_out);
         }
+        assert_eq!(
+            control.status.applied_revision.load(Ordering::Acquire),
+            revision
+        );
         let actual = out.last().ok_or("missing output")?[0];
         let base = old_out.last().ok_or("missing base output")?[0];
         match selection {
             AutomationReadSelection::Base => assert!((actual - base).abs() < 2e-4),
+            AutomationReadSelection::Authored if lookahead => assert!(
+                out.iter()
+                    .zip(&old_out)
+                    .any(|(a, b)| (a[0] - b[0]).abs() > 1e-3)
+            ),
             AutomationReadSelection::Authored => assert!(actual > base + 1e-3),
         }
         assert!(out.iter().flatten().all(|v| v.is_finite()));

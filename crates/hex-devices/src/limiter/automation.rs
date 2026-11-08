@@ -1,5 +1,5 @@
-//! Nine scalar and boolean controls use the existing owned history and fixed latency.
-//! Targets derive only scalar laws; reconstruction and queue layout stay fixed.
+//! Nine value controls use their existing owned history and latency. Lookahead
+//! eligibility selects the bounded ten-control factory at fixed maximum latency.
 use super::{
     decode,
     runtime::Factory,
@@ -90,7 +90,11 @@ pub(super) fn descriptor(id: ParameterId) -> Option<ParameterDescriptor> {
     slot(id).map(|i| BINDINGS[i].descriptor)
 }
 pub(super) fn semantics(id: ParameterId) -> Option<ParameterSemantics> {
-    slot(id).map(|i| BINDINGS[i].semantics)
+    if id == LOOKAHEAD {
+        Some(super::runtime::lookahead::semantics())
+    } else {
+        slot(id).map(|i| BINDINGS[i].semantics)
+    }
 }
 pub(super) fn prepare(
     state: &NativeDeviceState,
@@ -103,6 +107,18 @@ pub(super) fn prepare(
     }
     if ids.is_empty() || ids.windows(2).any(|w| w[0] >= w[1]) {
         return Err(DeviceContractError::UnsupportedProcessingClass);
+    }
+    if ids.binary_search(&LOOKAHEAD).is_ok() {
+        return Ok(PreparedRuntimeDevice {
+            matrix: StereoMatrix::identity(),
+            processor: Some(PreparedProcessorFactory::Owned(Arc::new(
+                super::LimiterDefinition::prepare_owned_lookahead_for_parameters(
+                    state,
+                    context.sample_rate,
+                    ids,
+                )?,
+            ))),
+        });
     }
     let mut admitted = [false; COUNT];
     for &id in ids {
@@ -227,7 +243,7 @@ mod tests {
             tuning: &tuning,
             resources: &R,
         };
-        for ids in [&[][..], &[GAIN, GAIN], &[CEILING, GAIN], &[LOOKAHEAD]] {
+        for ids in [&[][..], &[GAIN, GAIN], &[CEILING, GAIN], &[ROUTING]] {
             assert!(prepare(&base, &context, ids).is_err());
         }
         for id in [
@@ -236,6 +252,7 @@ mod tests {
             RELEASE,
             AUTO_RELEASE,
             LINK,
+            LOOKAHEAD,
             MAXIMIZE,
             THRESHOLD,
             OUTPUT,
@@ -261,9 +278,18 @@ mod tests {
             let id = ParameterId::new(raw).unwrap();
             assert_eq!(
                 DEFINITION.supports_parameter_automation(&base, id).unwrap(),
-                ![6, 7, 8].contains(&raw)
+                ![7, 8].contains(&raw)
             );
         }
+        let look = DEFINITION
+            .parameter_semantics_for_state(&base, LOOKAHEAD)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            look.change_impact,
+            hex_lattice_contract::ParameterChangeImpact::Structural
+        );
+        assert_eq!(look.smoothing, ParameterSmoothing::DeviceManaged);
     }
     #[test]
     fn held_scalar_targets_match_canonical_edits_in_all_modes_and_routes() {
