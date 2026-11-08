@@ -2932,6 +2932,19 @@ fn run_worker(
                             &directory,
                         )
                     })()
+                } else if let DeviceAutomationTakeAction::CopyFailedPlugin {
+                    destination,
+                    max_events,
+                } = action
+                {
+                    plugin_recording::start_failed_copy(
+                        &plugin_recording,
+                        &mut native_automation_take,
+                        *scope,
+                        destination,
+                        *max_events,
+                        gesture_active,
+                    )
                 } else if gesture_active && matches!(action, DeviceAutomationTakeAction::Poll) {
                     // A take must never finalize somebody else's active edit.
                     Ok(Step::Progress(DeviceAutomationTakeProgress::Pending))
