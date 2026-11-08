@@ -387,7 +387,7 @@ fn project_spectrum_keeps_workspace_with_populated_details_and_returns(cx: &mut 
 }
 
 #[gpui::test]
-fn reclaimed_top_chrome_keeps_full_spectrum_and_device_details_at_minimum_size(
+fn framed_workspace_keeps_compact_spectrum_and_complete_devices_at_minimum_size(
     cx: &mut TestAppContext,
 ) {
     let (project, _, _, _) = audio_project();
@@ -401,10 +401,10 @@ fn reclaimed_top_chrome_keeps_full_spectrum_and_device_details_at_minimum_size(
     visual.simulate_resize(size(px(880.0), px(540.0)));
     visual.run_until_parked();
     let spectrum = visual.debug_bounds("project-spectrum").unwrap();
-    assert!(spectrum.size.height >= px(72.0) && spectrum.size.height <= px(120.0));
+    assert_eq!(spectrum.size.height, px(30.0));
     assert!(
         visual.debug_bounds("project-spectrum-plot").is_some(),
-        "full expanded mode retains live master and every selected layer"
+        "compact mode retains live master and every selected layer"
     );
     assert!(
         visual.debug_bounds("clip-detail-viewport").is_none(),
@@ -528,9 +528,21 @@ fn browser_and_spectrum_share_columns_in_both_workspaces(cx: &mut TestAppContext
             let status = visual.debug_bounds("editor-status-bar").unwrap();
             assert_eq!(browser.top(), toolbar.bottom());
             assert_eq!(spectrum.top(), browser.top());
-            assert_eq!(spectrum.left(), browser.right());
+            assert_eq!(spectrum.left(), browser.right() + px(3.0));
             assert_eq!(browser.bottom(), status.top());
             assert_eq!(spectrum.right(), status.right());
+            let main = visual.debug_bounds("workspace-main-panel").unwrap();
+            assert_eq!(main.top(), spectrum.bottom() + px(3.0));
+            assert_eq!(main.left(), spectrum.left());
+            assert_eq!(main.right(), spectrum.right());
+            let body_width =
+                visual.update(|window, cx| editor.read(cx).workspace_body_width(window));
+            assert_eq!(main.size.width, px(body_width + 8.0));
+            let (corners, _) = visual
+                .rendered_surface_geometry("workspace-main-panel")
+                .unwrap();
+            assert_eq!(corners.top_left, px(4.0).scale(scale));
+            assert_eq!(corners.bottom_right, px(4.0).scale(scale));
             let toggle = visual
                 .debug_bounds("toggle browser · cmd+alt+b")
                 .unwrap()
