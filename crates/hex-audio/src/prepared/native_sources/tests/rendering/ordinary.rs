@@ -369,6 +369,59 @@ fn dispose(f: OrdinaryFixture) -> crate::NativeSourcePreparationReturn {
     returned
 }
 
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn native_fixture_retries_the_original_endpoint_return_after_work_contention() {
+    let _serial = serial();
+    let mut f = fixture("processing");
+    let playback = compile(&f, true);
+    publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
+    f.control.command(PlaybackCommand::Play).unwrap();
+    block(&mut f);
+    replacement::wait_for_blocks(&f.control.native_candidate_root(), f.binding, 1);
+    let OrdinaryFixture {
+        mut control,
+        data,
+        errors,
+        mut retirement,
+        binding,
+        ..
+    } = f;
+    let root = control.native_candidate_root();
+    drop(data);
+    drop(errors);
+    assert!(!retirement.advance().unwrap());
+    root.with_native_source_work_held_on_control(|| {
+        let mut backend = Some(());
+        let mut pending = false;
+        let mut disposed = false;
+        assert!(
+            !crate::lifecycle::test_dispose_backend(
+                &mut backend,
+                &mut pending,
+                &mut disposed,
+                &mut retirement,
+                |_| Ok(())
+            )
+            .unwrap()
+        );
+        assert!(disposed && backend.is_none());
+        assert!(!retirement.test_native_source_carriers_returned());
+        assert_eq!(retirement.test_native_source_carriers_pending(), 1);
+    })
+    .unwrap();
+    finish_source_carrier_return(&mut retirement);
+    let returned = recover(&mut control, binding);
+    assert_eq!(returned.binding, binding);
+    assert!(returned.error.is_none() && returned.cleanup_error.is_none());
+    assert!(
+        matches!(returned.disposal, native::PreparationDisposal::Reaped(retired)
+        if retired.status.success() && retired.terminal.is_some())
+    );
+    drop(control);
+    finish(&mut retirement);
+}
+
 fn renew_cohort(f: &mut OrdinaryFixture) {
     let next = epoch::renew_after_returns(&mut f.control, f.binding);
     epoch::on_control(|| {
