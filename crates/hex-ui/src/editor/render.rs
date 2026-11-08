@@ -593,7 +593,7 @@ impl Render for EditorView {
             .reconcile(self.project_generation, self.state.as_ref(), cx);
         self.drag_layout_generation = self.drag_layout_generation.wrapping_add(1);
         let clip_view = self.clip_detail_view(window, cx);
-        self.reconcile_device_comparison_menu(window, cx);
+        self.reconcile_device_action_menu(window, cx);
         let workspace = self.render_workspace(window, cx, clip_view);
         self.restore_clip_control_focus(window, cx);
         let modifier_entity = cx.entity();

@@ -93,6 +93,7 @@ pub(super) enum EditorContextAction {
     },
     UtilityMode(UtilityModeAction),
     DeviceComparison(super::device_comparison::Intent),
+    DevicePreset(super::device_preset::Intent),
     RenameTrackName {
         generation: u64,
         revision: u64,
@@ -699,6 +700,9 @@ impl EditorView {
             EditorContextAction::DeviceComparison(target) => {
                 self.perform_device_comparison(target, cx)
             }
+            EditorContextAction::DevicePreset(target) => {
+                self.perform_device_preset_action(target, cx)
+            }
             EditorContextAction::BounceTrack {
                 generation,
                 revision,
@@ -931,6 +935,9 @@ impl EditorView {
                 }
                 EditorContextAction::DeviceComparison(target) => {
                     !super::device_comparison::current(self, target)
+                }
+                EditorContextAction::DevicePreset(target) => {
+                    !super::device_preset::current(self, target)
                 }
                 EditorContextAction::PlaceIcon { path, .. } => {
                     !self.browser_place_icon_assignable(path)

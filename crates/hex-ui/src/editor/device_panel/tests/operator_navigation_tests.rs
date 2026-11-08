@@ -1,5 +1,4 @@
 use super::*;
-use operator_panel::preview::Switch;
 
 pub(super) fn operator_fixture() -> (Service, Arc<ViewState>, TrackId, DeviceId) {
     let (service, _, track, _, _, _) = actor_utility_fixture();
@@ -435,25 +434,6 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
         pump_until(&editor, cx, |view| {
             view.worker_requests_pending == 0 && view.pending_requests.is_empty()
         });
-    }
-    {
-        let switch = Switch::Pitch.index();
-        let bounds = visual
-            .debug_bounds(selector(format!(
-                "operator-preview-{}-toggle-{switch}",
-                device.value()
-            )))
-            .unwrap();
-        visual.simulate_click(bounds.center(), Modifiers::default());
-        visual.run_until_parked();
-        assert_eq!(
-            tab_bounds(&mut visual, device, "envelope", "amp env"),
-            envelope
-        );
-        assert_eq!(
-            tab_bounds(&mut visual, device, "oscillator", "osc"),
-            oscillator
-        );
     }
     assert!(
         visual

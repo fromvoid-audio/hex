@@ -243,6 +243,7 @@ pub(super) fn render_return_effect(
     if device_view.is_ok() {
         actions = actions
             .child(super::super::device_preset::actions(
+                view,
                 id,
                 NativeDeviceClass::Effect,
                 selected,
@@ -310,6 +311,8 @@ pub(super) fn render_return_effect(
                 super::delay_panel::render_body(view, cx, id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.overdrive") {
                 super::overdrive_panel::render_body(view, cx, id, device.state(), device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.rattle") {
+                super::rattle_panel::render_body(view, cx, device, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.gate") {
                 super::gate_panel::render_body(view, cx, id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.auto-pan") {

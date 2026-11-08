@@ -188,8 +188,7 @@ fn header_power_toggle_hover_feedback_and_cancelled_press_keep_canonical_state(
 fn assert_order(visual: &mut VisualTestContext, device: DeviceId, remove_prefix: &str) {
     let title = bounds(visual, "device-drag-title", device);
     let bypass = bounds(visual, "device-bypass", device);
-    let save = bounds(visual, "device-preset-save", device);
-    let load = bounds(visual, "device-preset-load", device);
+    let menu = bounds(visual, "device-preset-menu", device);
     let remove = bounds(visual, remove_prefix, device);
     let frame = bounds(
         visual,
@@ -203,8 +202,8 @@ fn assert_order(visual: &mut VisualTestContext, device: DeviceId, remove_prefix:
     let inset =
         px(hex_widgets::DEVICE_FRAME_HEADER_PADDING + hex_widgets::DEVICE_FRAME_BORDER_WIDTH);
     assert!(
-        load.bottom() <= save.top(),
-        "load precedes save without overlap"
+        bypass.bottom() <= menu.top(),
+        "menu follows power without overlap"
     );
 
     assert!(
@@ -216,11 +215,8 @@ fn assert_order(visual: &mut VisualTestContext, device: DeviceId, remove_prefix:
         "compact name retains useful space"
     );
     assert!(remove.bottom() <= title.top());
-    assert!(
-        save.bottom() <= remove.top() && load.bottom() <= remove.top(),
-        "X is last"
-    );
-    for action in [bypass, save, load, remove] {
+    assert!(menu.bottom() <= remove.top(), "X is last");
+    for action in [bypass, menu, remove] {
         assert!(action.size.width >= px(12.0));
         assert_eq!(action.size.height, px(12.0));
         assert!(action.left() >= frame.left() + inset);
@@ -245,7 +241,7 @@ fn assert_order(visual: &mut VisualTestContext, device: DeviceId, remove_prefix:
 
 fn assert_action_rounding(visual: &mut VisualTestContext, device: DeviceId, remove_prefix: &str) {
     let scale = visual.update(|window, _| window.scale_factor());
-    for prefix in ["device-preset-save", "device-preset-load", remove_prefix] {
+    for prefix in ["device-preset-menu", remove_prefix] {
         let selector = Box::leak(format!("{prefix}-{}", device.value()).into_boxed_str());
         assert_eq!(
             visual

@@ -199,6 +199,8 @@ pub enum PaletteRole {
     Waveform,
     WaveBackground,
     Secondary,
+    /// Warm ornamental feedback on native displays, drawn from the orange identity.
+    WarmAccent,
 }
 
 #[derive(Clone, Copy)]
@@ -291,6 +293,9 @@ impl ThemeTokens {
             PaletteRole::PrimaryDark => self.primary_dark,
             PaletteRole::Waveform => self.waveform,
             PaletteRole::Secondary => self.colors.secondary.packed(),
+            PaletteRole::WarmAccent => {
+                self.elements[hex_project::ElementColor::Orange as usize].accent
+            }
         }
     }
 }

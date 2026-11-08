@@ -15,6 +15,8 @@ pub enum TrackDeviceSlot {
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    /// Initialize active and A/B state as one edit through existing constructors.
+    InitializeDevice(Box<crate::DeviceInitialization>),
     /// Copy Arrangement placements while retaining explicit shared content.
     DuplicateAliasClips(Vec<ClipId>),
     /// Duplicate a selected Arrangement group as aliases at one destination.
@@ -2172,6 +2174,7 @@ impl Project {
                 parameter,
                 points,
             } => self.replace_device_automation(device, parameter, points),
+            Command::InitializeDevice(initialization) => initialization.apply(self),
             main_command @ (Command::InsertMainDevice { .. } | Command::MoveMainDevice { .. }) => {
                 crate::main_devices::apply(self, main_command)
             }

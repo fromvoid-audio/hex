@@ -260,6 +260,14 @@ while option-copying, since option-command edits only markers. changing option
 during the drag switches between moving and copying. the source stays in place when copying, and
 one undo restores the entire operation.
 
+while dragging a section, the cyan bar marks insertion at an edge or in a gap.
+a highlighted section body marks replacement: the target's music is removed and
+the source content takes its place. later music ripples by the length difference;
+a move also closes the source's old interval. the result carries the source name
+and color. option preserves the source and gives the replacement a new identity.
+dropping on the source body does nothing. option-command marker edits do not
+replace content. the indicator stays with a pending edit until its result arrives.
+
 with the section lane focused, select one section and press **command+c**, then click
 the lane to place the edit cursor and press **command+v**. paste inserts at the nearest
 section boundary before or within the song. after the last marker, it lands at the
@@ -864,7 +872,9 @@ distortion, **tone** adjusts its brightness, and **dynamics** restores more of t
 input's level changes as it increases. **dry/wet** blends the original signal with
 the processed sound. the effect is available on track, return and main chains.
 
-rattle is a one-knob drive. at **drive** 0 it passes audio unchanged; raising
+rattle is a one-knob drive. its compact panel pairs a percent drive dial with
+eleven orange diamonds. the diamonds tighten as drive rises and follow its
+automation while the lane reads. at **drive** 0 it passes audio unchanged; raising
 **drive** blends in a progressively harder, grittier and noisier saturation whose
 level is compensated for typical programme, so it gets dirtier rather than much
 louder. rattle processes at twice the sample rate and reports 11 samples of
@@ -881,11 +891,15 @@ undoable edit. vertical movement changes q for a cut or notch, or the gain of a
 bell. existing nodes keep their own selection and drag targets. press
 **escape** to cancel.
 
-drag across empty space in the eq graph to select every node inside the
-rectangle; **shift** adds to the selection and **command** toggles nodes.
+hold **shift** and drag across empty space in the eq graph to select every node
+inside the rectangle; **shift-command** toggles those nodes against the selection.
 dragging a selected node moves the whole selection, keeping each node's
 spacing, and **backspace** or **remove** deletes every selected node with its
 automation. one undo restores either edit.
+
+the fixed eight-band eq uses the same marquee selection. dragging a selected
+band moves the group in one undoable edit. **backspace** disables the selected
+bands; their fixed slots remain available. one undo restores their on flags.
 
 each visible eq has its own live spectrum, including eqs on return and main
 tracks. selecting another device keeps these spectra running. use **spectrum**

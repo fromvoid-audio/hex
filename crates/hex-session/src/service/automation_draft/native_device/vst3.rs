@@ -44,7 +44,7 @@ impl Vst3CaptureTarget {
         }
         Ok(())
     }
-    fn value(
+    pub(in crate::service) fn value(
         self,
         application: Vst3ParameterApplication,
     ) -> Result<Option<AutomationValue>, &'static str> {

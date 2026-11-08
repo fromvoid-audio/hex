@@ -7,9 +7,9 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 static NEXT: AtomicU64 = AtomicU64::new(0);
-struct Directory(PathBuf);
+pub(super) struct Directory(pub(super) PathBuf);
 impl Directory {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
             "hex-preset-service-{}-{}",
             std::process::id(),
@@ -24,14 +24,14 @@ impl Drop for Directory {
         let _ = fs::remove_dir_all(&self.0);
     }
 }
-fn event(service: &Service) -> Event {
+pub(super) fn event(service: &Service) -> Event {
     // Blocks on the event channel; bounded only against hangs.
     match service.events.recv_timeout(crate::test_wait::HANG_BOUND) {
         Ok(event) => event,
         Err(error) => panic!("event: worker event absent: {error}"),
     }
 }
-fn owner(event: &Event, device: DeviceId, class: NativeDeviceClass) -> Owner {
+pub(super) fn owner(event: &Event, device: DeviceId, class: NativeDeviceClass) -> Owner {
     Owner {
         project_generation: 0,
         revision: event.state.revision,
@@ -46,7 +46,10 @@ fn owner(event: &Event, device: DeviceId, class: NativeDeviceClass) -> Owner {
             .type_id(),
     }
 }
-fn fixture(class: NativeDeviceClass, type_name: &'static str) -> (Service, Event, DeviceId) {
+pub(super) fn fixture(
+    class: NativeDeviceClass,
+    type_name: &'static str,
+) -> (Service, Event, DeviceId) {
     let service = Service::new(48_000, 32, 0).unwrap();
     event(&service);
     service
@@ -175,16 +178,8 @@ fn device_preset_complete_state_one_undo_redo_preserves_identity_and_neighbors()
         let mut state = original.device(device).unwrap().state().clone();
         let mut edits = vec![(1, ParameterValue::Float(0.37))];
         if class == NativeDeviceClass::Instrument {
-            assert_eq!(
-                state.state_version(),
-                15,
-                "current canonical harmonic, filter and enable-state history is required"
-            );
-            assert_eq!(
-                state.payload().len(),
-                1_728,
-                "complete current payload retained"
-            );
+            // Provider codec/version layout belongs to hex-devices; this
+            // boundary compares the complete authored state after roundtrip.
             // Non-default values span level, tuning, envelope, signed routing
             // and supported LFO/harmonic/global/controller fields, including a hidden partial.
             // Compare complete opaque state below.

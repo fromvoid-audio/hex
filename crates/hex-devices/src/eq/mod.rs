@@ -65,7 +65,12 @@ impl NativeDeviceMetadata for EqDefinition {
         };
         let settings = EqState::decode(state)?;
         let (normalization, stepping, automation, smoothing) = if id == MODE {
-            (N::Discrete, T::Choice, E::Unsupported, S::None)
+            (
+                N::Discrete,
+                T::Choice,
+                E::DeviceArrangementEnvelope,
+                S::DeviceManaged,
+            )
         } else if id == OUTPUT_GAIN {
             (
                 N::Linear,
@@ -184,7 +189,8 @@ impl EqDefinition {
     /// Control-only exact-grant component preparation. The returned processor
     /// uses the existing native checkpoint/runtime custody; no resource ownership
     /// transfers. Standard registry admission uses the same exact-grant component.
-    /// Known node fields and output gain are accepted; mode and legacy-shelf
+    /// Known node fields, mode and output gain are accepted. Mode uses one
+    /// preallocated outgoing fade with latest-target coalescence; legacy-shelf
     /// kind/gain/q remain unsupported. Grants are sorted, unique and bounded by
     /// the neutral descriptor limit. No authored state or curves are rewritten.
     pub fn prepare_automation_component(
@@ -207,7 +213,7 @@ impl NativeDeviceDefinition for EqDefinition {
         parameter: ParameterId,
     ) -> Result<bool, DeviceContractError> {
         let settings = EqState::decode(state)?;
-        if parameter == OUTPUT_GAIN {
+        if parameter == MODE || parameter == OUTPUT_GAIN {
             return Ok(true);
         }
         let Ok((id, field)) = NodeId::from_parameter(parameter) else {

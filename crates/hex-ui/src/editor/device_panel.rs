@@ -28,6 +28,7 @@ mod bindings;
 mod bypass;
 mod delay_panel;
 mod overdrive_panel;
+mod rattle_panel;
 use bindings::{
     ControlPresentation, ControlText, ParameterControl, cancel_control,
     parameter_control_matches_identity,
@@ -172,6 +173,7 @@ pub(super) struct DevicePanelState {
     auto_pan_previews: HashMap<DeviceId, auto_pan_panel::PreviewCache>,
     reverb_previews: HashMap<DeviceId, reverb_panel::PreviewCache>,
     overdrive_previews: HashMap<DeviceId, overdrive_panel::PreviewCache>,
+    rattle_previews: HashMap<DeviceId, rattle_panel::PreviewCache>,
     eq8_graph_gestures: HashMap<DeviceId, eq8_panel::GraphGestureState>,
     eq8_audition_toggles: HashMap<DeviceId, Eq8AuditionToggle>,
     pub(super) spectrum_results: HashMap<
@@ -344,6 +346,11 @@ impl DevicePanelState {
             && self
                 .owner
                 .is_some_and(|owner| state.is_some_and(|state| owner_exists(state, owner)))
+    }
+
+    /// A sidebar pointer action leaves descendant editors on its owning card.
+    pub(super) fn focus_action_card(&mut self, device: DeviceId, window: &mut Window, cx: &App) {
+        self.chain_window.focus(device, cx).focus(window);
     }
 
     /// A menu selecting another card restores that card only when a card owned
@@ -1226,7 +1233,9 @@ fn render_track(
         )
         .track_focus(&focus);
         let card = keyboard::card(view, cx, device.id(), focus.clone(), card);
-        let card = super::device_comparison::card(view, cx, device.id(), class, focus, card);
+        let card =
+            super::device_comparison::card(view, cx, device.id(), class, focus.clone(), card);
+        let card = super::device_preset::card(view, cx, device.id(), class, focus, card);
         chain = chain.child(card);
     }
     chain = chain.child(render_device_end_target(
@@ -1329,6 +1338,9 @@ fn retire_transfer_previews(
     panel.overdrive_previews.retain(|device, _| {
         type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.overdrive"))
     });
+    panel.rattle_previews.retain(|device, _| {
+        type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.rattle"))
+    });
     panel.auto_pan_previews.retain(|device, _| {
         type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.auto-pan"))
     });
@@ -1355,6 +1367,7 @@ fn device_card_width(class: NativeDeviceClass, type_id: hex_lattice_contract::De
         (NativeDeviceClass::Effect, Some("hex.delay")) => delay_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.auto-pan")) => auto_pan_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.overdrive")) => overdrive_panel::FRAME_WIDTH,
+        (NativeDeviceClass::Effect, Some("hex.rattle")) => rattle_panel::FRAME_WIDTH,
         _ => DEVICE_FRAME_WIDTH,
     };
     frame_width + hex_widgets::DEVICE_FRAME_HEADER_WIDTH + device_meter::WIDTH
@@ -1974,6 +1987,8 @@ fn render_effect(
                 delay_panel::render_body(view, cx, device_id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.overdrive") {
                 overdrive_panel::render_body(view, cx, device_id, device.state(), device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.rattle") {
+                rattle_panel::render_body(view, cx, device, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.gate") {
                 gate_panel::render_body(view, cx, device_id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.auto-pan") {
@@ -2831,6 +2846,13 @@ fn instrument_actions(
 ) -> Div {
     let id = device.id();
     let actions = div().flex().flex_col().items_center().gap(px(2.0));
+    let actions = if presets_available {
+        let content =
+            super::device_preset::actions(view, id, NativeDeviceClass::Instrument, selected, cx);
+        actions.child(content)
+    } else {
+        actions
+    };
     let actions = if device.state().type_id().as_str() == Ok("hex.vst3")
         && !view.degraded_plugins.contains(id.value())
     {
@@ -2852,20 +2874,13 @@ fn instrument_actions(
         })),
     );
     let actions = if presets_available {
-        actions
-            .child(super::device_preset::actions(
-                id,
-                NativeDeviceClass::Instrument,
-                selected,
-                cx,
-            ))
-            .child(super::device_comparison::actions(
-                view,
-                device,
-                NativeDeviceClass::Instrument,
-                selected,
-                cx,
-            ))
+        actions.child(super::device_comparison::actions(
+            view,
+            device,
+            NativeDeviceClass::Instrument,
+            selected,
+            cx,
+        ))
     } else {
         actions
     };
@@ -2932,26 +2947,24 @@ fn device_actions(
 ) -> Div {
     let id = device.id();
     let mut actions = div().flex().flex_col().items_center().gap(px(2.0));
+    if presets_available {
+        let content =
+            super::device_preset::actions(view, id, NativeDeviceClass::Effect, selected, cx);
+        actions = actions.child(content);
+    }
     if device.state().type_id().as_str() == Ok("hex.vst3")
         && !view.degraded_plugins.contains(id.value())
     {
         actions = actions.child(vst3_editor_button(id, selected, cx));
     }
     if presets_available {
-        actions = actions
-            .child(super::device_preset::actions(
-                id,
-                NativeDeviceClass::Effect,
-                selected,
-                cx,
-            ))
-            .child(super::device_comparison::actions(
-                view,
-                device,
-                NativeDeviceClass::Effect,
-                selected,
-                cx,
-            ));
+        actions = actions.child(super::device_comparison::actions(
+            view,
+            device,
+            NativeDeviceClass::Effect,
+            selected,
+            cx,
+        ));
     }
     actions.child(
         action_button(
