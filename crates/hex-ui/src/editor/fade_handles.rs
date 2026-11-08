@@ -4,11 +4,14 @@ use super::{EditorView, ViewState, drag::LaneBounds, viewport::Viewport};
 use crate::theme;
 use gpui::{
     Context, Div, MouseButton, PathBuilder, Pixels, Point, Window, canvas, div, point, prelude::*,
-    px, relative, rgb, rgba,
+    px, relative, rgba,
 };
 use hex_project::{Clip, ClipFade, ClipId, Command, TrackId, TrimEdge};
 use hex_session::service::Request;
 use std::rc::Rc;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+pub(in crate::editor) mod paint_probe;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Handle {
@@ -49,8 +52,22 @@ struct FadeControls {
     positions: Vec<(Handle, Point<f32>)>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct Hover {
+    generation: u64,
+    track: TrackId,
+    clip: ClipId,
+    handle: Handle,
+}
+impl Hover {
+    pub(super) fn in_track(self, generation: u64, track: TrackId) -> Option<(ClipId, Handle)> {
+        (self.generation == generation && self.track == track).then_some((self.clip, self.handle))
+    }
+}
+
 // The hit target stays square; the painted curve control is a diamond.
-pub(super) fn handle_shape(curve: bool, active: bool) -> impl gpui::IntoElement {
+pub(super) fn handle_shape(curve: bool, state: theme::FadeHandleState) -> impl gpui::IntoElement {
+    let style = theme::fade_handle_style(state);
     canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
@@ -68,11 +85,6 @@ pub(super) fn handle_shape(curve: bool, active: bool) -> impl gpui::IntoElement 
             } else {
                 [(left, top), (right, top), (right, bottom), (left, bottom)]
             };
-            let color: gpui::Hsla = if active {
-                rgb(theme::color(theme::PaletteRole::Secondary)).into()
-            } else {
-                rgba(0x000000cc).into()
-            };
             for fill in [true, false] {
                 let mut path = if fill {
                     PathBuilder::fill()
@@ -88,16 +100,9 @@ pub(super) fn handle_shape(curve: bool, active: bool) -> impl gpui::IntoElement 
                 }
                 path.close();
                 if let Ok(path) = path.build() {
-                    let paint = if fill {
-                        if active {
-                            gpui::Hsla { a: 0.45, ..color }
-                        } else {
-                            rgba(0x00000020).into()
-                        }
-                    } else {
-                        color
-                    };
-                    window.paint_path(path, paint);
+                    #[cfg(all(test, feature = "ui-test-support"))]
+                    paint_probe::record(bounds, style);
+                    window.paint_path(path, rgba(if fill { style.fill } else { style.stroke }));
                 }
             }
         },
@@ -411,6 +416,16 @@ impl EditorView {
     }
 
     pub(super) fn reconcile_fade_gesture(&mut self) {
+        if self.hovered_fade_handle.is_some_and(|hover| {
+            hover.generation != self.project_generation
+                || self.mode != super::EditorMode::Arrangement
+                || self
+                    .state
+                    .as_ref()
+                    .is_none_or(|s| s.project.clip(hover.clip).is_none())
+        }) {
+            self.hovered_fade_handle = None;
+        }
         if self.hovered_fade_clip.is_some_and(|(generation, clip)| {
             generation != self.project_generation
                 || self.mode != super::EditorMode::Arrangement
@@ -733,7 +748,7 @@ impl EditorView {
         viewport: Viewport,
         cx: &mut Context<Self>,
     ) -> Vec<gpui::Stateful<Div>> {
-        let Some(controls) = self.fade_controls(track, clip, visible, viewport) else {
+        let Some(mut controls) = self.fade_controls(track, clip, visible, viewport) else {
             return Vec::new();
         };
         let lane = controls.lane;
@@ -741,12 +756,37 @@ impl EditorView {
         let reanchors = controls.reanchors;
         let original_clip = Rc::new(clip.clone());
         let mut handles = Vec::new();
+        // Pushed ramps can share one painted top knot. Keep the captured handle
+        // above its idle peer through the same pending receipt, without moving
+        // either hit target or changing their stable element identities.
+        if let Some(drag) = self
+            .displayed_fade_drag()
+            .filter(|drag| drag.clip.id() == clip.id())
+            && let Some(index) = controls
+                .positions
+                .iter()
+                .position(|(handle, _)| *handle == drag.handle)
+        {
+            let captured = controls.positions.remove(index);
+            controls.positions.push(captured);
+        }
         for (handle, position) in controls.positions {
             let clip_id = clip.id();
-            let active = self
-                .active_fade_drag
-                .as_ref()
-                .is_some_and(|drag| drag.clip.id() == clip_id && drag.handle == handle);
+            let hover = Hover {
+                generation: self.project_generation,
+                track,
+                clip: clip_id,
+                handle,
+            };
+            let display = self.displayed_fade_drag();
+            let paint_state =
+                if display.is_some_and(|drag| drag.clip.id() == clip_id && drag.handle == handle) {
+                    theme::FadeHandleState::Active
+                } else if display.is_none() && self.hovered_fade_handle == Some(hover) {
+                    theme::FadeHandleState::Hover
+                } else {
+                    theme::FadeHandleState::Idle
+                };
             let selector = format!("{}-{}", handle.name(), clip_id.value());
             let drag = FadeDrag {
                 generation: self.project_generation,
@@ -777,13 +817,23 @@ impl EditorView {
                     .mt(px(-4.0))
                     .children([handle_shape(
                         matches!(handle, Handle::InCurve | Handle::OutCurve),
-                        active,
+                        paint_state,
                     )])
-                    .cursor(if matches!(handle, Handle::InCurve | Handle::OutCurve) {
-                        gpui::CursorStyle::Crosshair
-                    } else {
-                        gpui::CursorStyle::ResizeLeftRight
-                    })
+                    .cursor(gpui::CursorStyle::Arrow)
+                    .on_hover(cx.listener(move |view, hovered: &bool, _, cx| {
+                        if hover.generation != view.project_generation {
+                            return;
+                        }
+                        let next = if *hovered {
+                            Some(hover)
+                        } else {
+                            view.hovered_fade_handle.filter(|current| *current != hover)
+                        };
+                        if next != view.hovered_fade_handle {
+                            view.hovered_fade_handle = next;
+                            cx.notify();
+                        }
+                    }))
                     .tooltip(move |_, cx| {
                         cx.new(|_| super::waveform::ClipTooltip {
                             kind: crate::tooltips::Kind::control(handle.name().replace('-', " ")),

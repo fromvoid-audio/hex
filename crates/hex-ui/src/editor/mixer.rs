@@ -134,66 +134,17 @@ impl EditorView {
                 cx.notify();
             })),
         );
-        if show_main {
-            strip = strip
-                .child(div().flex_1())
-                .child(
-                    div()
-                        .id("console-main-header")
-                        .debug_selector(|| "console-main-header".into())
-                        .on_click(cx.listener(|view, _, window, cx| {
-                            super::device_panel::select_main(view, window, cx)
-                        }))
-                        .child(theme::text("main")),
-                )
-                .child(self.sample_arm_button(super::sample_recorder::Arm::Main, cx))
-                .children([self.main_track_controls(cx)]);
-        }
         strip
     }
 
-    pub(super) fn main_track_controls(&self, cx: &mut Context<Self>) -> Div {
-        let Some(state) = self.state.as_ref() else {
-            return div();
-        };
+    pub(super) fn main_track_controls(&mut self, cx: &mut Context<Self>) -> Div {
         div()
-            .debug_selector(|| "main-track-controls".to_owned())
+            .debug_selector(|| "main-track-controls".into())
+            .w(px(110.0))
+            .h(px(18.0))
             .flex()
             .items_center()
-            .gap_1()
-            .child(
-                button("−", "decrease main gain", ("master-down", 0)).on_click(cx.listener(
-                    |view, _, _, cx| {
-                        view.enqueue(Request::Edit(Command::MasterGainBy { amount: -0.1 }));
-                        cx.notify();
-                    },
-                )),
-            )
-            .child(
-                button("•", "reset main gain to unity", ("master-reset", 0)).on_click(cx.listener(
-                    |view, _, _, cx| {
-                        view.enqueue(Request::Edit(Command::MasterGain { gain: 1.0 }));
-                        cx.notify();
-                    },
-                )),
-            )
-            .child(
-                button("+", "increase main gain", ("master-up", 0))
-                    .debug_selector(|| "main-gain-up".to_owned())
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        view.enqueue(Request::Edit(Command::MasterGainBy { amount: 0.1 }));
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .w(px(42.0))
-                    .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                    .child(theme::text(format!(
-                        "{:.0}%",
-                        state.project.master_gain() * 100.0
-                    ))),
-            )
+            .child(self.main_volume(cx))
     }
 }
 

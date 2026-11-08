@@ -1318,11 +1318,33 @@ fn event_fade_drag_keeps_pending_paint_then_one_undo_and_reset(cx: &mut TestAppC
         .debug_bounds("audio-event-fade-in-top-1")
         .unwrap()
         .center();
+    visual.simulate_mouse_move(down, None, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        visual.rendered_cursor_style(),
+        Some(gpui::CursorStyle::Arrow)
+    );
+    crate::editor::fade_handles::paint_probe::assert_style(
+        &mut visual,
+        "audio-event-fade-in-top-1",
+        crate::theme::FadeHandleState::Hover,
+    );
     let target = point(down.x + px(64.0), down.y);
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     let held = visual.debug_bounds("audio-event-fade-in-top-1").unwrap();
+    use crate::{editor::fade_handles::paint_probe, theme::FadeHandleState};
+    paint_probe::assert_style(
+        &mut visual,
+        "audio-event-fade-in-top-1",
+        FadeHandleState::Active,
+    );
+    paint_probe::assert_style(
+        &mut visual,
+        "audio-event-fade-out-top-1",
+        FadeHandleState::Idle,
+    );
     assert!(held.center().x > down.x + px(20.0));
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
@@ -1343,6 +1365,14 @@ fn event_fade_drag_keeps_pending_paint_then_one_undo_and_reset(cx: &mut TestAppC
         assert!(v.audio_event_editor.pending.is_some());
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
+    for _ in 0..3 {
+        repaint(&mut visual, &editor);
+        paint_probe::assert_style(
+            &mut visual,
+            "audio-event-fade-in-top-1",
+            FadeHandleState::Active,
+        );
+    }
     visual.simulate_keystrokes("escape");
     repaint(&mut visual, &editor);
     assert_eq!(
@@ -1352,6 +1382,7 @@ fn event_fade_drag_keeps_pending_paint_then_one_undo_and_reset(cx: &mut TestAppC
     );
     pump(&editor, &mut visual);
     repaint(&mut visual, &editor);
+    paint_probe::assert_not_active(&mut visual, "audio-event-fade-in-top-1");
     let accepted = editor.read_with(&visual, |v, _| {
         assert!(v.error.is_none(), "{:?}", v.error);
         assert!(v.audio_event_editor.pending.is_none());

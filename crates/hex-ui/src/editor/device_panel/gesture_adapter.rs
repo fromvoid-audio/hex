@@ -74,6 +74,8 @@ pub fn commit_owned_numeric_edit(
     let active = view.device_gesture.snapshot();
     if active.is_some_and(|snapshot| snapshot.target != target)
         || view.device_gesture.has_pending_terminal()
+        || (target == GestureTarget::MainGain
+            && view.document_audio_mode != hex_session::DocumentAudioMode::Resident)
     {
         let command = match target {
             GestureTarget::MainGain => Request::Edit(Command::MasterGain {

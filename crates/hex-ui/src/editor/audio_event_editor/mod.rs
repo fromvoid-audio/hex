@@ -108,6 +108,7 @@ pub(super) struct State {
     grid: SnapGrid,
     pub(super) fade_key_held: bool,
     fade_hover: Option<u64>,
+    fade_handle_hover: Option<(u64, super::fade_handles::Handle)>,
     bounds: Option<Bounds<Pixels>>,
     pub(super) gesture: Option<Gesture>,
     clipboard: Option<Clipboard>,
