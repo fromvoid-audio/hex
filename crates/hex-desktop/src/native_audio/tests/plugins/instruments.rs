@@ -1984,7 +1984,113 @@ fn verify_instrument_takeover(
             "{:?}",
             saved.error
         );
-        assert_eq!(hex_storage::load(path).unwrap(), *saved.state.project);
+        assert_eq!(hex_storage::load(&path).unwrap(), *saved.state.project);
+        // Build an ordinary Step programme from the original SDK delivery
+        // observations, independently of the draft/adoption/touch evaluator.
+        // Reopening both projects exercises actual new SDK instances, their
+        // MIDI scheduling and foreign PCM path with identical transport input.
+        use hex_session::service::{
+            PluginParameterObservation as Observation, automation_draft::Vst3ApplicationValue,
+        };
+        let originals =
+            crate::native_audio::tests::resident_preview::SESSION_RECORDING_OBSERVATIONS
+                .lock()
+                .unwrap()
+                .clone();
+        let mut values =
+            std::collections::BTreeMap::from([(BeatTime::ZERO, origin.initial.normalized())]);
+        let mut end_frame = None;
+        for observation in originals {
+            let (point, value) = match observation {
+                Observation::Delivered(point) => {
+                    let Vst3ApplicationValue::Value(value) = point.application.value else {
+                        panic!("point value");
+                    };
+                    (point, value)
+                }
+                Observation::Restored(point) => {
+                    assert!(
+                        end_frame
+                            .replace(point.application.origin.content_frame)
+                            .is_none()
+                    );
+                    (point, origin.initial.normalized())
+                }
+                Observation::Ready { .. } => continue,
+                _ => panic!("normal recording must not abort"),
+            };
+            values.insert(
+                before
+                    .tempo_map()
+                    .frame_to_beat(point.application.origin.content_frame)
+                    .unwrap(),
+                value,
+            );
+        }
+        let mut reference = hex_project::Editor::new(before.clone(), 8).unwrap();
+        reference
+            .execute(Command::ReplaceDeviceAutomationTarget {
+                device,
+                target,
+                points: values
+                    .into_iter()
+                    .map(|(beat, value)| AutomationPoint {
+                        beat,
+                        value: AutomationValue::new(value).unwrap(),
+                        outgoing: AutomationInterpolation::Step,
+                    })
+                    .collect(),
+            })
+            .unwrap();
+        let reference_path = files.0.join("independent-delivered-steps.hex");
+        hex_storage::save_new(&reference_path, reference.project()).unwrap();
+        let blocks = usize::try_from(end_frame.unwrap() / 256 + 8).unwrap();
+        assert!(blocks < 512, "bounded signed replay fixture");
+        let replay = |h: &mut ResidentHarness, path: &Path| {
+            let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+            let opened = h.run(Request::Open(path.to_owned()));
+            super::super::resident_lifecycle::finish_replacement(h, &opened, old_output);
+            let restored = h.next();
+            assert!(restored.error.is_none(), "{:?}", restored.error);
+            assert_eq!(
+                restored.state.project.as_ref(),
+                &hex_storage::load(path).unwrap()
+            );
+            h.audio
+                .as_mut()
+                .unwrap()
+                .control
+                .command(PlaybackCommand::Play)
+                .unwrap();
+            let mut pcm = Vec::with_capacity(blocks * 256);
+            for _ in 0..blocks {
+                pcm.extend(render_completed_block(h));
+            }
+            pcm
+        };
+        let expected = replay(h, &reference_path);
+        let actual = replay(h, &path);
+        assert_eq!(expected.len(), actual.len());
+        let error = expected
+            .iter()
+            .flatten()
+            .zip(actual.iter().flatten())
+            .map(|(left, right)| (left - right).abs())
+            .fold(0.0, f32::max);
+        let peak = actual
+            .iter()
+            .flatten()
+            .copied()
+            .map(f32::abs)
+            .fold(0.0, f32::max);
+        assert!(
+            peak > baseline * 2.9,
+            "reopened touch must actually sound above its base: {peak}"
+        );
+        assert!(
+            error < 1.0e-6,
+            "reopened recorded PCM differs from original delivered Step oracle: {error}"
+        );
         return;
     }
     let touches = if case == "touch_stress" { 100 } else { 2 };

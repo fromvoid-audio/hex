@@ -111,12 +111,12 @@ pub(in crate::service) fn operation_using(
             }
             restored?;
         }
-        if records && let Some(recording) = recording.as_mut() {
-            if let Some(result) =
+        if records
+            && let Some(recording) = recording.as_mut()
+            && let Some(result) =
                 recording.before(session, operation, context, sink, current, admission)
-            {
-                return result;
-            }
+        {
+            return result;
         }
         let source = session
             .project()
