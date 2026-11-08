@@ -607,14 +607,12 @@ impl BlockStats {
         }
     }
     fn finish(self, history: &mut History) {
-        let stats = self;
-        history.meter.post_input_peak = history
-            .meter
-            .post_input_peak
-            .max(stats.post_input_peak as f32);
-        for (lane, attenuation) in stats.min_attenuation.into_iter().enumerate() {
-            history.meter.reduction_db[lane] =
-                history.meter.reduction_db[lane].max(reduction(attenuation));
+        self.finish_meter(&mut history.meter);
+    }
+    fn finish_meter(self, meter: &mut DynamicsMeter) {
+        meter.post_input_peak = meter.post_input_peak.max(self.post_input_peak as f32);
+        for (lane, attenuation) in self.min_attenuation.into_iter().enumerate() {
+            meter.reduction_db[lane] = meter.reduction_db[lane].max(reduction(attenuation));
         }
     }
 }
@@ -687,6 +685,19 @@ impl Runtime {
         frame: &mut StereoFrame,
         stats: &mut BlockStats,
     ) {
+        let signal = Self::prepare_input(config, history, *frame, stats);
+        Self::process_signal(config, history, signal, frame, stats);
+    }
+    /// Advance gain ramps once per device input frame and preserve the gained
+    /// signal in f64. A buffered consumer may queue it before limiting while
+    /// keeping the current ceiling/output controls at the output stage.
+    #[inline(always)]
+    fn prepare_input(
+        config: &Config,
+        history: &mut History,
+        frame: StereoFrame,
+        stats: &mut BlockStats,
+    ) -> [f64; 2] {
         let parameters = &history.parameters;
         // Compatible edits ramp input/output gain over 5 ms. A falling ceiling
         // is immediate, preserving its safety invariant on the first sample.
@@ -694,7 +705,7 @@ impl Runtime {
         history.output += (parameters.output - history.output) / (0.005 * f64::from(config.rate));
         // Output gain is never above the authored target after a downward edit.
         history.output = history.output.min(parameters.output);
-        let mut signal = frame.map(|v| {
+        let signal = frame.map(|v| {
             if v.is_finite() {
                 f64::from(v) * history.gain
             } else {
@@ -705,6 +716,20 @@ impl Runtime {
             .post_input_peak
             .max(signal[0].abs())
             .max(signal[1].abs());
+        signal
+    }
+    /// Limit already-gained input without advancing input/output gain ramps.
+    /// The caller owns ramp timing and supplies the current output gain through
+    /// history; this function preserves the existing limiting and meter laws.
+    #[inline(always)]
+    fn process_signal(
+        config: &Config,
+        history: &mut History,
+        mut signal: [f64; 2],
+        frame: &mut StereoFrame,
+        stats: &mut BlockStats,
+    ) {
+        let parameters = &history.parameters;
         if config.mid_side {
             signal = [(signal[0] + signal[1]) * 0.5, (signal[0] - signal[1]) * 0.5];
         }
