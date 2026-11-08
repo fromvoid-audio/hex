@@ -159,6 +159,11 @@ pub(super) static CONFIRMED_TEST_POINTS: AtomicU64 = AtomicU64::new(0);
 pub(super) static CONFIRMED_TEST_READY: AtomicU64 = AtomicU64::new(0);
 pub(super) static CONFIRMED_TEST_ENDS: AtomicU64 = AtomicU64::new(0);
 pub(super) static CONFIRMED_TEST_NOOPS: AtomicU64 = AtomicU64::new(0);
+/// Copied original SDK receipts for the independent recorded-versus-authored
+/// replay oracle. This is test/control-side custody, never callback work.
+pub(super) static SESSION_RECORDING_OBSERVATIONS: Mutex<
+    Vec<hex_session::service::PluginParameterObservation>,
+> = Mutex::new(Vec::new());
 struct ResidentSink {
     inner: NativeAudioSink,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -353,6 +358,20 @@ impl WorkerAudioSink for ResidentSink {
             }
         }
         result
+    }
+    fn take_plugin_parameter_observation(
+        &mut self,
+    ) -> Option<hex_session::service::PluginParameterObservation> {
+        let observation = self.inner.take_plugin_parameter_observation();
+        if std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE")
+            .is_ok_and(|case| case.starts_with("session_record"))
+            && let Some(observation) = observation
+        {
+            let mut originals = SESSION_RECORDING_OBSERVATIONS.lock().unwrap();
+            assert!(originals.len() < 8, "one bounded recording oracle");
+            originals.push(observation);
+        }
+        observation
     }
     fn confirm_plugin_parameter_publication(
         &mut self,

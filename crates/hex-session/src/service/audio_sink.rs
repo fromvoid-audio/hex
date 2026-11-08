@@ -974,6 +974,13 @@ pub(super) struct WorkerEvents {
     // Consecutive request-wait iterations with no pending work (#4574).
     idle_polls: u32,
 }
+/// One bounded control poll may make a previously admitted gesture ready.
+/// The queued user FIFO retains priority over this copied continuation.
+pub(super) struct ControlPoll {
+    pub pending: bool,
+    pub gesture: Option<GestureRequest>,
+}
+
 impl WorkerEvents {
     pub(super) fn legacy_reader_limit(&self) -> usize {
         self.diagnostics.legacy_reader_limit()
@@ -1381,7 +1388,7 @@ impl WorkerEvents {
         plugin_effect: Option<&PluginEffectInsertion>,
         stopped_restore: Option<hex_engine::AudioSourceContext>,
         context: hex_engine::AudioSourceContext,
-        mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>) -> bool,
+        mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>) -> ControlPoll,
     ) -> Option<QueuedRequest> {
         if self.stopped_fence.active()
             && let Some(request) = self.next_request_while_fenced(requests, document_intent)
@@ -1441,6 +1448,12 @@ impl WorkerEvents {
                 Ok(request) => return Some(request),
                 Err(mpsc::TryRecvError::Disconnected) => return None,
                 Err(mpsc::TryRecvError::Empty) => {}
+            }
+            if let Some(gesture) = control_pending.gesture {
+                return Some(QueuedRequest::continuation(
+                    Request::DeviceGesture(gesture),
+                    document_intent,
+                ));
             }
             if self
                 .audio
@@ -1509,7 +1522,7 @@ impl WorkerEvents {
             }
             // Idle only when no worker continuation, control lane or sink work
             // is pending; any of them restores the busy cadence at once.
-            let idle = !control_pending
+            let idle = !control_pending.pending
                 && plugin_effect.is_none()
                 && stopped_restore.is_none()
                 && !self.stopped_fence.active()

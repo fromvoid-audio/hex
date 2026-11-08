@@ -73,8 +73,9 @@ pub enum SessionError {
     NativeAudio(String),
     /// Exact hosted source loss, never a retained preview or restoration ACK.
     PluginSourceLost(String),
-    /// A recorded terminal failed after its original SDK/final-output release.
-    /// The caller must observe that release before returning this error. The
+    /// A recorded terminal failed after its original SDK/final-output release
+    /// or its confirmed unchanged terminal (no point was admitted). The caller
+    /// must observe that exact terminal before returning this error. The
     /// source remains available; the completed preview cannot be retained.
     PluginRecordingReleased(String),
     NativeResource(hex_engine::native_device_resources::ResourcePreparationError),

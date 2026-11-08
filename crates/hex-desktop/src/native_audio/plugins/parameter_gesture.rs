@@ -425,6 +425,11 @@ impl Plugins {
                 } else {
                     self.parameter_gesture = None;
                 }
+            } else if gesture.recording && gesture.recorded_release {
+                // An actual recorded restoration already ended the hold.
+                // Failed take publication must not retain a dead controller
+                // gesture or prevent the next Begin on this live source.
+                self.parameter_gesture = None;
             } else {
                 // A retained refusal still owns its acknowledged preview.
                 // Cancel/source loss releases it; rejected publication does not.

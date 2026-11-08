@@ -326,7 +326,8 @@ impl Gesture {
             Err(lost())
         }
     }
-    /// Output closure is a terminal without an invented application clock.
+    /// Output closure or invalidation of the original source/epoch is a
+    /// terminal without an invented application clock.
     /// Preserve the original pending point first; a point interruption already
     /// terminates the take. The queue holds at most that point plus this end.
     pub(in crate::native_audio::plugins) fn recording_output_closed(&mut self) {

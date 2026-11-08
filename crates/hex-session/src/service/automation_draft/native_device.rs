@@ -36,6 +36,11 @@ pub struct DeviceDraftInput {
 }
 
 impl DeviceDraftInput {
+    /// Borrow recovery identity without transferring draft or worker custody.
+    pub(in crate::service) fn path(&self) -> &Path {
+        self.input.path()
+    }
+
     /// Capture clock and provenance are from the live output that owns the
     /// armed gesture. Creating a draft confers no native input authority.
     pub fn start_on_control(

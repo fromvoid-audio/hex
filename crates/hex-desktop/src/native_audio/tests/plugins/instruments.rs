@@ -779,6 +779,26 @@ fn recorded_touch_admission_and_exclusive_restoration_use_actual_output() {
     }
 }
 
+#[test]
+#[ignore = "explicit source-bound signed SDK receipts required"]
+fn recorded_session_gesture_commits_one_take_and_reopens() {
+    std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE")
+        .map(|case| {
+            assert!(matches!(
+                case.as_str(),
+                "session_record"
+                    | "session_record_changed"
+                    | "session_barriers"
+                    | "session_stop"
+                    | "session_refused"
+                    | "session_cancel"
+                    | "session_empty"
+            ))
+        })
+        .expect("run explicitly with HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE=session_record");
+    instrument_entrypoint(InstrumentWorkflow::Takeover);
+}
+
 #[derive(Clone, Copy)]
 enum InstrumentWorkflow {
     Playback,
@@ -839,8 +859,28 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         output_frames: 512,
     });
     let automation_parameter = std::env::var("HEX_TEST_VST3_INSTRUMENT_AUTOMATION_PARAMETER").ok();
-    let mut harness = if automation_parameter.is_some() || (shared_authoring && installed.is_some())
-    {
+    let recording_catalog = std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE")
+        .ok()
+        .filter(|case| case.starts_with("session_"))
+        .map(|_| {
+            let files = Files::new();
+            let mut selected = selection();
+            let module = files.0.canonicalize().unwrap().join("original.vst3");
+            super::ui::copy_original_module(&selected.module, &module);
+            selected.module = module;
+            hex_ui::write_plugin_effect_test_catalog(&files.0, &selected, "Instrument|Synth", 0)
+                .unwrap();
+            files
+        });
+    let mut harness = if let Some(files) = recording_catalog.as_ref() {
+        ResidentHarness::with_plugins_at_rate_and_catalog(
+            host(),
+            presentation,
+            rate,
+            files.0.canonicalize().unwrap().join("plugin-catalog.json"),
+            8192,
+        )
+    } else if automation_parameter.is_some() || (shared_authoring && installed.is_some()) {
         let catalog = PathBuf::from(std::env::var_os("HEX_TEST_VST3_INSTRUMENT_CATALOG").unwrap());
         ResidentHarness::with_plugins_at_rate_and_catalog(host(), presentation, rate, catalog, 8192)
     } else {
@@ -1847,7 +1887,10 @@ fn verify_instrument_takeover(
                     status.native_parameter_source(playing),
                     status.render_fault_snapshot()
                 );
-                assert!(!ack.source_lost, "{case}: {ack:?}");
+                assert!(
+                    !ack.source_lost || case == "session_stop",
+                    "{case}: {ack:?}"
+                );
                 assert!(client.acknowledge_with_snapshot(ack, event.active_device_gesture));
                 return event;
             }
@@ -1858,7 +1901,10 @@ fn verify_instrument_takeover(
             render_takeover_partial(
                 h,
                 [3, 5, 117, 1, 130][fragment % 5],
-                playing && case != "delivery_retire" && !case.starts_with("touch_close_"),
+                playing
+                    && case != "delivery_retire"
+                    && case != "session_stop"
+                    && !case.starts_with("touch_close_"),
                 &case,
                 Some(&request),
             );
@@ -1881,6 +1927,320 @@ fn verify_instrument_takeover(
         }
     };
     let mut client = GestureClient::default();
+    if case.starts_with("session_") {
+        let origin = query(h, 12);
+        let binding = h.plugin_progress.lock().unwrap().binding;
+        client.begin_plugin_recording(origin).unwrap();
+        assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
+        if case == "session_empty" {
+            client.finish_plugin(origin.initial).unwrap();
+            let empty = send(h, &mut client, true);
+            assert_eq!(empty.state.project.as_ref(), &before);
+            return;
+        }
+        for value in [0.75, 0.375] {
+            client
+                .change_plugin(PluginParameterValue::new(value).unwrap())
+                .unwrap();
+            assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
+            assert!((peak(h) - baseline * value as f32 / 0.25).abs() < 0.0001);
+        }
+        if case == "session_stop" {
+            let before_stop = h
+                .audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .applied_revision
+                .load(Acquire);
+            h.audio.as_ref().unwrap().control.stop();
+            h.render_plugin_block();
+            client.cancel().unwrap();
+            let lost = send(h, &mut client, false);
+            assert!(lost.gesture_ack.unwrap().source_lost);
+            assert_eq!(lost.state.project.as_ref(), &before);
+            let mut restored = h.run(Request::RestoreStoppedPlayback);
+            if !restored.stopped_playback_restore_complete {
+                restored = restored_terminal(h);
+            }
+            assert!(restored.error.is_none(), "{:?}", restored.error);
+            h.applied(before_stop);
+            wait(|| {
+                h.pump();
+                h.audio
+                    .as_mut()
+                    .unwrap()
+                    .control
+                    .command(PlaybackCommand::Play)
+                    .is_ok()
+            });
+            assert!((peak(h) - baseline).abs() < 0.0001);
+            client.begin_plugin_recording(query(h, 24)).unwrap();
+            send(h, &mut client, true);
+            client.cancel().unwrap();
+            send(h, &mut client, true);
+            return;
+        }
+        if case == "session_barriers" {
+            let files = Files::new();
+            let path = files.0.join("after-recording.hex");
+            for request in [
+                Request::SaveNew(path.clone()),
+                Request::Undo,
+                Request::Redo,
+                Request::Export(files.0.join("blocked.wav")),
+            ] {
+                let refused = super::automation::edit_with_running_callback(h, request);
+                assert!(
+                    refused.error.as_ref().is_some_and(
+                        |reason| reason.contains("finish or cancel the vst3 recording")
+                    ),
+                    "{:?}",
+                    refused.error
+                );
+                assert!(refused.gesture_ack.is_none());
+                assert!(refused.active_device_gesture.is_some());
+                assert_eq!(refused.state.project.as_ref(), &before);
+                assert!(!path.exists());
+                assert!(
+                    (peak(h) - baseline * 1.5).abs() < 0.0001,
+                    "barrier refusal must preserve the accepted SDK preview"
+                );
+            }
+            client.cancel().unwrap();
+            send(h, &mut client, true);
+            let saved = h.run(Request::SaveNew(path.clone()));
+            assert!(saved.save_complete && saved.error.is_none());
+            assert_eq!(hex_storage::load(path).unwrap(), before);
+            return;
+        }
+        if case == "session_cancel" {
+            client.cancel().unwrap();
+            let cancelled = send(h, &mut client, true);
+            assert_eq!(cancelled.state.project.as_ref(), &before);
+            assert!((peak(h) - baseline).abs() < 0.0001);
+            return;
+        }
+        let final_value = if case == "session_record_changed" {
+            PluginParameterValue::new(0.75).unwrap()
+        } else {
+            origin.initial
+        };
+        client.finish_plugin(final_value).unwrap();
+        if case == "session_refused" {
+            h.refuse.store(true, std::sync::atomic::Ordering::Release);
+            let refused = send(h, &mut client, false);
+            h.refuse.store(false, std::sync::atomic::Ordering::Release);
+            assert_eq!(refused.state.project.as_ref(), &before);
+            assert!(!refused.gesture_ack.unwrap().preview_retained);
+            assert!((peak(h) - baseline).abs() < 0.0001);
+            client.begin_plugin_recording(query(h, 13)).unwrap();
+            send(h, &mut client, true);
+            client.cancel().unwrap();
+            send(h, &mut client, true);
+            return;
+        }
+        let committed = send(h, &mut client, true);
+        assert_ne!(committed.state.project.as_ref(), &before);
+        applied = h.applied(applied).0;
+        assert_eq!(h.plugin_progress.lock().unwrap().binding, binding);
+        let result = committed.state.project.device(device).unwrap();
+        let prior = before.device(device).unwrap();
+        assert_eq!(
+            result.state(),
+            prior.state(),
+            "recording must preserve the canonical plugin base"
+        );
+        let target = DeviceAutomationTarget::Vst3 { parameter: 7 };
+        let lane = result.automation_target(target).unwrap();
+        assert!(lane.is_reading());
+        assert_eq!(lane.points, prior.automation_target(target).unwrap().points);
+        assert_eq!(lane.touch.len(), 1);
+        assert_eq!(
+            lane.touch[0]
+                .steps
+                .iter()
+                .map(|step| step.value.get())
+                .collect::<Vec<_>>(),
+            [0.75, 0.375, final_value.normalized() as f32]
+        );
+        assert_eq!(
+            result.automation_target(DeviceAutomationTarget::Vst3 { parameter: 11 }),
+            prior.automation_target(DeviceAutomationTarget::Vst3 { parameter: 11 })
+        );
+        assert!(
+            (peak(h) - baseline).abs() < 0.0001,
+            "release resumes reading with the held MIDI gate"
+        );
+        let undone = super::automation::edit_with_running_callback(h, Request::Undo);
+        assert!(undone.error.is_none(), "{:?}", undone.error);
+        assert_eq!(undone.state.project.as_ref(), &before);
+        applied = h.applied(applied).0;
+        assert!((peak(h) - baseline).abs() < 0.0001);
+        let redone = super::automation::edit_with_running_callback(h, Request::Redo);
+        assert!(redone.error.is_none(), "{:?}", redone.error);
+        assert_eq!(redone.state.project, committed.state.project);
+        h.applied(applied);
+        assert!((peak(h) - baseline).abs() < 0.0001);
+        let files = Files::new();
+        let path = files.0.join("recorded-instrument.hex");
+        let saved = h.run(Request::SaveNew(path.clone()));
+        assert!(
+            saved.save_complete && saved.error.is_none(),
+            "{:?}",
+            saved.error
+        );
+        assert_eq!(hex_storage::load(&path).unwrap(), *saved.state.project);
+        // Build an ordinary Step programme from the original SDK delivery
+        // observations, independently of the draft/adoption/touch evaluator.
+        // Reopening both projects exercises actual new SDK instances, their
+        // MIDI scheduling and foreign PCM path with identical transport input.
+        use hex_session::service::{
+            PluginParameterObservation as Observation, automation_draft::Vst3ApplicationValue,
+        };
+        let originals =
+            crate::native_audio::tests::resident_preview::SESSION_RECORDING_OBSERVATIONS
+                .lock()
+                .unwrap()
+                .clone();
+        let mut values =
+            std::collections::BTreeMap::from([(BeatTime::ZERO, origin.initial.normalized())]);
+        let mut end_frame = None;
+        for observation in originals {
+            let (point, value) = match observation {
+                Observation::Delivered(point) => {
+                    let Vst3ApplicationValue::Value(value) = point.application.value else {
+                        panic!("point value");
+                    };
+                    (point, value)
+                }
+                Observation::Restored(point) => {
+                    assert!(
+                        end_frame
+                            .replace(point.application.origin.content_frame)
+                            .is_none()
+                    );
+                    (point, origin.initial.normalized())
+                }
+                Observation::Ready { .. } => continue,
+                _ => panic!("normal recording must not abort"),
+            };
+            values.insert(
+                before
+                    .tempo_map()
+                    .frame_to_beat(point.application.origin.content_frame)
+                    .unwrap(),
+                value,
+            );
+        }
+        let mut reference = hex_project::Editor::new(before.clone(), 8).unwrap();
+        reference
+            .execute(Command::ReplaceDeviceAutomationTarget {
+                device,
+                target,
+                points: values
+                    .into_iter()
+                    .map(|(beat, value)| AutomationPoint {
+                        beat,
+                        value: AutomationValue::new(value as f32).unwrap(),
+                        outgoing: AutomationInterpolation::Step,
+                    })
+                    .collect(),
+            })
+            .unwrap();
+        let reference_path = files.0.join("independent-delivered-steps.hex");
+        hex_storage::save_new(&reference_path, reference.project()).unwrap();
+        let blocks = usize::try_from(end_frame.unwrap() / 256 + 8).unwrap();
+        assert!(blocks < 512, "bounded signed replay fixture");
+        let replay = |h: &mut ResidentHarness, path: &std::path::Path| -> Vec<[f32; 2]> {
+            let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+            h.service.submit(Request::Open(path.to_owned())).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let opened = loop {
+                h.pump();
+                h.render_worker_step();
+                if let Ok(event) = h.service.try_event() {
+                    assert!(event.error.is_none(), "{:?}", event.error);
+                    if event.project_replaced {
+                        break event;
+                    }
+                }
+                assert!(Instant::now() < deadline, "replay open did not complete");
+            };
+            let first_applied =
+                super::super::resident_lifecycle::finish_replacement(h, &opened, old_output);
+            let foreign_ready = |h: &ResidentHarness| {
+                h.submitted_observation().unwrap().foreign_processor(
+                    device.value(),
+                    before.device(device).unwrap().state().type_id(),
+                ) == Some(true)
+            };
+            if !foreign_ready(h) {
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while !foreign_ready(h) {
+                    h.pump();
+                    h.render_worker_step();
+                    if let Ok(event) = h.service.try_event() {
+                        assert!(event.error.is_none(), "{:?}", event.error);
+                    }
+                    assert!(
+                        Instant::now() < deadline,
+                        "restored SDK source unavailable: {:?}; {:?}",
+                        h.unavailable,
+                        h.plugin_progress.lock().unwrap()
+                    );
+                }
+                h.applied(first_applied);
+            }
+            assert_eq!(
+                opened.state.project.as_ref(),
+                &hex_storage::load(path).unwrap()
+            );
+            assert_eq!(
+                h.submitted_observation().unwrap().foreign_processor(
+                    device.value(),
+                    before.device(device).unwrap().state().type_id()
+                ),
+                Some(true)
+            );
+            h.audio
+                .as_mut()
+                .unwrap()
+                .control
+                .command(PlaybackCommand::Play)
+                .unwrap();
+            let mut pcm = Vec::with_capacity(blocks * 256);
+            for _ in 0..blocks {
+                pcm.extend(render_completed_block(h));
+            }
+            pcm
+        };
+        let expected = replay(h, &reference_path);
+        let actual = replay(h, &path);
+        assert_eq!(expected.len(), actual.len());
+        let error = expected
+            .iter()
+            .flatten()
+            .zip(actual.iter().flatten())
+            .map(|(left, right)| (left - right).abs())
+            .fold(0.0, f32::max);
+        let peak = actual
+            .iter()
+            .flatten()
+            .copied()
+            .map(f32::abs)
+            .fold(0.0, f32::max);
+        assert!(
+            peak > baseline * 2.9,
+            "reopened touch must actually sound above its base: {peak}"
+        );
+        assert!(
+            error < 1.0e-6,
+            "reopened recorded PCM differs from original delivered Step oracle: {error}"
+        );
+        return;
+    }
     let touches = if case == "touch_stress" { 100 } else { 2 };
     for request_id in 12..12 + touches {
         client.begin_plugin(query(h, request_id)).unwrap();
@@ -1926,8 +2286,9 @@ fn verify_instrument_takeover(
             client
                 .finish_plugin(PluginParameterValue::new(0.75).unwrap())
                 .unwrap();
-            // The ordinary Session path deliberately refuses opaque commit:
-            // canonical take adoption is the next consumer increment.
+            // This producer-only fixture injects recording below an ordinary
+            // Session gesture, without a durable take owner. Opaque Commit must
+            // refuse; the opt-in Session regression covers canonical adoption.
             let ended = send(h, &mut client, false);
             assert_eq!(ended.state.project.as_ref(), &before);
             if case == "touch_commit" {
