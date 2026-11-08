@@ -251,7 +251,8 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/session_grid.rs'
             and suffix.startswith(('self.console_column_edge(',
                                    'self.console_column_surface(', 'self.console_reorder_layer(',
-                                   'self.track_reorder_events(', 'tail)'))
+                                   'self.track_reorder_events(', 'tail)', 'session_clip_backdrop(',
+                                   'super::clip_boundary::backdrop_shell('))
         )
         # Reverb's grouped panel passes bound controls and provider plot data;
         # titles and numeric/toggle labels normalize through theme::text.
