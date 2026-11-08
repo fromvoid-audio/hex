@@ -31,6 +31,13 @@ impl<'a> SourceAutomation<'a> {
             .tracks()
             .get(index)
             .ok_or(SessionPlaybackError::UnknownTrack)?;
+        if revision.session().instrument_automation_storage_bytes() == 0 {
+            return Ok(Self {
+                program: None,
+                clock: None,
+                frames,
+            });
+        }
         let program = track
             .instrument_id
             .and_then(|device| revision.session().instrument_automation_at(index, device));
@@ -49,15 +56,18 @@ impl<'a> SourceAutomation<'a> {
     ) -> Self {
         Self {
             program,
-            clock: origin.arrangement.map(|arrangement| {
-                ArrangementEffectClock::session(
-                    timing,
-                    arrangement,
-                    origin.performance,
-                    origin.pass,
-                    origin.running,
-                )
-            }),
+            clock: origin
+                .arrangement
+                .filter(|_| program.is_some())
+                .map(|arrangement| {
+                    ArrangementEffectClock::session(
+                        timing,
+                        arrangement,
+                        origin.performance,
+                        origin.pass,
+                        origin.running,
+                    )
+                }),
             frames,
         }
     }
