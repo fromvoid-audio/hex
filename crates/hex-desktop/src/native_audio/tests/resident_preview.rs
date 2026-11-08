@@ -354,6 +354,11 @@ impl WorkerAudioSink for ResidentSink {
         }
         result
     }
+    fn take_plugin_parameter_observation(
+        &mut self,
+    ) -> Option<hex_session::service::PluginParameterObservation> {
+        self.inner.take_plugin_parameter_observation()
+    }
     fn confirm_plugin_parameter_publication(
         &mut self,
         context: AudioSourceContext,

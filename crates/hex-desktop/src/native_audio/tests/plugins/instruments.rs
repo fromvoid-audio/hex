@@ -779,6 +779,15 @@ fn recorded_touch_admission_and_exclusive_restoration_use_actual_output() {
     }
 }
 
+#[test]
+#[ignore = "explicit source-bound signed SDK receipts required"]
+fn recorded_session_gesture_commits_one_take_and_reopens() {
+    std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE")
+        .map(|case| assert_eq!(case, "session_record"))
+        .expect("run explicitly with HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE=session_record");
+    instrument_entrypoint(InstrumentWorkflow::Takeover);
+}
+
 #[derive(Clone, Copy)]
 enum InstrumentWorkflow {
     Playback,
@@ -1881,6 +1890,72 @@ fn verify_instrument_takeover(
         }
     };
     let mut client = GestureClient::default();
+    if case == "session_record" {
+        let origin = query(h, 12);
+        let binding = h.plugin_progress.lock().unwrap().binding;
+        client.begin_plugin_recording(origin).unwrap();
+        assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
+        for value in [0.75, 0.375] {
+            client
+                .change_plugin(PluginParameterValue::new(value).unwrap())
+                .unwrap();
+            assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
+            assert!((peak(h) - baseline * value as f32 / 0.25).abs() < 0.0001);
+        }
+        client.finish_plugin(origin.initial).unwrap();
+        let committed = send(h, &mut client, true);
+        assert_ne!(committed.state.project.as_ref(), &before);
+        applied = h.applied(applied).0;
+        assert_eq!(h.plugin_progress.lock().unwrap().binding, binding);
+        let result = committed.state.project.device(device).unwrap();
+        let prior = before.device(device).unwrap();
+        assert_eq!(
+            result.state(),
+            prior.state(),
+            "recording must preserve the canonical plugin base"
+        );
+        let target = DeviceAutomationTarget::Vst3 { parameter: 7 };
+        let lane = result.automation_target(target).unwrap();
+        assert!(lane.is_reading());
+        assert_eq!(lane.points, prior.automation_target(target).unwrap().points);
+        assert_eq!(lane.touch.len(), 1);
+        assert_eq!(
+            lane.touch[0]
+                .steps
+                .iter()
+                .map(|step| step.value.get())
+                .collect::<Vec<_>>(),
+            [0.75, 0.375, 0.25]
+        );
+        assert_eq!(
+            result.automation_target(DeviceAutomationTarget::Vst3 { parameter: 11 }),
+            prior.automation_target(DeviceAutomationTarget::Vst3 { parameter: 11 })
+        );
+        assert!(
+            (peak(h) - baseline).abs() < 0.0001,
+            "release resumes reading with the held MIDI gate"
+        );
+        let undone = super::automation::edit_with_running_callback(h, Request::Undo);
+        assert!(undone.error.is_none(), "{:?}", undone.error);
+        assert_eq!(undone.state.project.as_ref(), &before);
+        applied = h.applied(applied).0;
+        assert!((peak(h) - baseline).abs() < 0.0001);
+        let redone = super::automation::edit_with_running_callback(h, Request::Redo);
+        assert!(redone.error.is_none(), "{:?}", redone.error);
+        assert_eq!(redone.state.project, committed.state.project);
+        h.applied(applied);
+        assert!((peak(h) - baseline).abs() < 0.0001);
+        let files = Files::new();
+        let path = files.0.join("recorded-instrument.hex");
+        let saved = h.run(Request::SaveNew(path.clone()));
+        assert!(
+            saved.save_complete && saved.error.is_none(),
+            "{:?}",
+            saved.error
+        );
+        assert_eq!(hex_storage::load(path).unwrap(), *saved.state.project);
+        return;
+    }
     let touches = if case == "touch_stress" { 100 } else { 2 };
     for request_id in 12..12 + touches {
         client.begin_plugin(query(h, request_id)).unwrap();

@@ -3,7 +3,7 @@
 use super::*;
 use crate::device_gesture::{GesturePreparation, command_for_snapshot};
 use hex_engine::native_device_resources::DeviceResourceAdmission;
-mod plugin_parameter;
+pub(super) mod plugin_parameter;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Identity {
