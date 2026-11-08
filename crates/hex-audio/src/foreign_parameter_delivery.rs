@@ -74,6 +74,51 @@ pub(crate) struct Control {
     target: Option<Target>,
     serial: u64,
 }
+/// Once-only outcome from the original detached receipt channel. Interruption
+/// means the producer is gone with no matching witness; it never invents PCM
+/// delivery, a musical clock, or a successful restoration.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RetiredOutcome {
+    Observed(Receipt),
+    Interrupted { target: Target },
+}
+/// Control-owned observer of the original one-operation channel. No replacement
+/// ring, polling thread, Root reference or output lease is created by detaching.
+pub struct Retired {
+    control: Option<Control>,
+    status: Arc<Status>,
+    target: Target,
+}
+impl Retired {
+    pub fn target(&self) -> Target {
+        self.target
+    }
+    pub fn try_take_on_control(&mut self) -> Option<RetiredOutcome> {
+        let control = self.control.as_mut()?;
+        let mut receipt = control.try_receipt(&self.status);
+        if receipt.is_none() {
+            if !control.receipts.is_abandoned() {
+                return None;
+            }
+            // rtrb's abandonment observation is relaxed. Synchronize before a
+            // final read so a producer's last successful push cannot be missed.
+            std::sync::atomic::fence(Acquire);
+            receipt = control.try_receipt(&self.status);
+            if receipt.is_none() {
+                control.target = None;
+                self.status.native_parameter_input_end();
+            }
+        }
+        let outcome = receipt.map_or(
+            RetiredOutcome::Interrupted {
+                target: self.target,
+            },
+            RetiredOutcome::Observed,
+        );
+        self.control = None;
+        Some(outcome)
+    }
+}
 pub(crate) struct Callback {
     commands: Consumer<Target>,
     receipts: Producer<Receipt>,
@@ -110,6 +155,17 @@ pub(crate) fn constructor_storage_quote() -> Option<usize> {
         .checked_add(std::mem::size_of::<AtomicU64>())
 }
 impl Control {
+    pub(crate) fn target(&self) -> Option<Target> {
+        self.target
+    }
+    pub(crate) fn retire(self, status: Arc<Status>) -> Option<Retired> {
+        let target = self.target?;
+        Some(Retired {
+            control: Some(self),
+            status,
+            target,
+        })
+    }
     pub(crate) fn begin(
         &mut self,
         status: &Status,
@@ -289,13 +345,13 @@ impl Callback {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use hex_engine::AudioSourceContext;
     use hex_plugin_host::transport::{ManualParameterAction, ManualParameterInput, ParameterPoint};
     use std::num::NonZeroU64;
 
-    fn fixture() -> (Control, Callback, Target, AcceptedManualParameter) {
+    pub(crate) fn fixture() -> (Control, Callback, Target, AcceptedManualParameter) {
         let (mut control, mut callback) = channel();
         let source = AppliedAudioSource {
             context: AudioSourceContext {
