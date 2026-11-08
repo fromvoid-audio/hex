@@ -214,6 +214,7 @@ pub(super) fn pinned(view: &EditorView, key: ParameterKey, window: &Window, cx: 
                 | GestureTarget::TrackGain { .. }
                 | GestureTarget::TrackGains { .. }
                 | GestureTarget::TrackBalance { .. }
+                | GestureTarget::MainGain
                 | GestureTarget::ReturnGain { .. } => false,
             })
         || view
