@@ -47,11 +47,20 @@ const CARRIERS: [ParameterDescriptor; 4] = [
 /// Control-only component preparation through FM4's existing validated state
 /// and tuning contract. This does not advertise native host automation support.
 impl Fm4Definition {
+    /// Prepare the same fixed factory used by registered native FM4 playback.
     pub fn prepare_carrier_runtime(
         &self,
         state: &NativeDeviceState,
         context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn PreparedMutableInstrumentRuntime>, DeviceContractError> {
+        Ok(Box::new(Factory::prepare(state, context)?))
+    }
+}
+impl Factory {
+    pub(super) fn prepare(
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+    ) -> Result<Self, DeviceContractError> {
         let settings = Fm4Settings::from_state(state)?;
         let (oscillators, routing, envelope) = settings.kernel_parts()?;
         let sample_rate = context.sample_rate;
@@ -78,7 +87,7 @@ impl Fm4Definition {
         let frames = |seconds: f64| (seconds * f64::from(sample_rate)).round() as u64;
         let mut identity = [0; PAYLOAD_BYTES];
         identity.copy_from_slice(state.payload());
-        Ok(Box::new(Factory {
+        Ok(Self {
             config: Config {
                 identity,
                 tuning: *context.tuning,
@@ -95,7 +104,7 @@ impl Fm4Definition {
                 table: crate::shared_sine_table(),
                 smoothing: ((u64::from(sample_rate) * 5 + 500) / 1000) as u32,
             },
-        }))
+        })
     }
 }
 #[derive(Clone, Copy)]
@@ -129,7 +138,8 @@ impl PreparedInstrumentHistoryRetarget for Retarget {
         self
     }
 }
-struct Factory {
+#[derive(Clone, Copy)]
+pub(super) struct Factory {
     config: Config,
 }
 #[derive(Clone, Copy, Default)]

@@ -373,6 +373,10 @@ impl NativeDeviceMetadata for Fm4Definition {
 }
 
 impl NativeInstrumentDefinition for Fm4Definition {
+    fn resource_factory_inline_bound(&self) -> Option<usize> {
+        Some(std::mem::size_of::<runtime::Factory>())
+    }
+
     fn prepare_instrument(
         &self,
         state: &NativeDeviceState,
@@ -386,17 +390,23 @@ impl NativeInstrumentDefinition for Fm4Definition {
         let settings = Fm4Settings::from_state(state)?;
         let (oscillators, routing, envelope) = settings.kernel_parts()?;
         let _ = crate::shared_sine_table();
+        let runtime = runtime::Factory::prepare(state, context)?;
         Ok(Box::new(PreparedFm4Instrument {
             tuning: *tuning,
             sample_rate,
             oscillators,
             routing,
             envelope,
+            runtime,
         }))
     }
 }
 
+/// Inline note preparation remains available; registered hosts use the same
+/// bounded mutable factory for Arrangement, Session and live input. The existing
+/// graph transaction owns voice history and prepared retarget proofs.
 struct PreparedFm4Instrument {
+    runtime: runtime::Factory,
     tuning: hex_lattice::TuningTable,
     sample_rate: u32,
     oscillators: [Oscillator; OPERATORS],
@@ -405,6 +415,13 @@ struct PreparedFm4Instrument {
 }
 
 impl PreparedNativeInstrument for PreparedFm4Instrument {
+    fn prepare_mutable_runtime(
+        &self,
+    ) -> Result<Option<Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>>, DeviceContractError>
+    {
+        Ok(Some(Box::new(self.runtime)))
+    }
+
     fn algorithmic_latency_frames(&self) -> Option<u32> {
         Some(0)
     }

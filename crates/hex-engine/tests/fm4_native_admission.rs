@@ -204,3 +204,55 @@ fn built_in_fm4_renders_arrangement_and_session_with_independent_carrier_law() {
         .expect("render second FM4 occurrence");
     assert_independent_carrier_law(&looped, 96);
 }
+
+#[test]
+fn ordinary_fm4_oscillator_edit_keeps_active_old_law_notes_in_both_hosts() {
+    for session in [false, true] {
+        let (project, clip, track) = fixture();
+        let table = Arc::new(SineTable::new());
+        let first = Arc::new(
+            PreparedRevision::prepare(&project, &BTreeMap::new(), Arc::clone(&table), None)
+                .unwrap(),
+        );
+        let mut previous = SessionPlayback::new(Arc::clone(&first)).unwrap();
+        previous.apply(SessionPlaybackCommand::Play).unwrap();
+        if session {
+            previous
+                .apply(SessionPlaybackCommand::LaunchClip {
+                    clip,
+                    quantization: LaunchQuantization::Immediate,
+                })
+                .unwrap();
+        }
+        previous.render(&mut [[0.0; 2]; 128]).unwrap();
+        let device = project.track(track).unwrap().instrument().unwrap();
+        let state = hex_engine::patch_native_device_parameter_for_class(
+            hex_engine::NativeDeviceClass::Instrument,
+            device.state(),
+            hex_devices::fm4::device::parameter::oscillator_ratio(1),
+            hex_lattice_contract::ParameterValue::Float(1.5),
+        )
+        .unwrap();
+        let device = device.id();
+        let mut editor = Editor::new(project, 8).unwrap();
+        editor
+            .execute(Command::ReplaceDeviceState { device, state })
+            .unwrap();
+        let next = Arc::new(
+            PreparedRevision::prepare(
+                editor.project(),
+                &BTreeMap::new(),
+                Arc::clone(&table),
+                Some(first.session()),
+            )
+            .unwrap(),
+        );
+        let mut candidate = SessionPlayback::new(next).unwrap();
+        candidate
+            .try_inherit_state_from(&mut previous)
+            .expect("ordinary FM4 state edits retain the old-law notes");
+        let mut output = [[0.0; 2]; 64];
+        candidate.render(&mut output).unwrap();
+        assert_independent_carrier_law(&output, 128);
+    }
+}
