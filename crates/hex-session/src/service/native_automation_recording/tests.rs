@@ -175,6 +175,16 @@ fn failed_lane_retains_original_custody_through_copy_refusal_and_retry() {
         outcome: Arc::new(outcome),
     });
     let current = scope.context();
+    assert!(
+        lane.receive(
+            &session,
+            None,
+            current,
+            scope,
+            &DeviceAutomationTakeAction::PollFailedCopy
+        )
+        .is_err()
+    );
     let mut wrong_scope = scope;
     wrong_scope.stamp.gesture_serial += 1;
     let destination = files.0.join("copy.hex-automation-draft");
@@ -240,6 +250,16 @@ fn failed_lane_retains_original_custody_through_copy_refusal_and_retry() {
         .unwrap();
     assert!(
         matches!(wait(&mut lane).unwrap(), Step::Progress(DeviceAutomationTakeProgress::Retained(path)) if path == retry)
+    );
+    assert!(
+        lane.receive(
+            &session,
+            None,
+            current,
+            scope,
+            &DeviceAutomationTakeAction::PollFailedCopy
+        )
+        .is_err()
     );
     assert_eq!(std::fs::read(&path).unwrap(), original);
     assert_eq!(
