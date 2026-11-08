@@ -1,20 +1,47 @@
-//! Shared feedback, mix and filter targets live in the owned committed/speculative scalar.
+//! Shared feedback, mix, filter and LFO targets live in the owned committed/speculative scalar.
 //! Admission/base stay with the incoming factory; cached targets follow history.
 //! Rollback restores both DSP and control caches. Missing views use canonical
 //! targets; detached tails keep their last targets and existing Freeze release.
+//! LFO targets take effect immediately without resetting phase or random history.
 use super::*;
 use crate::parameter_binding::{Binding, SCALAR_ENVELOPE};
 use hex_lattice_contract::{
     ParameterDescriptor, ParameterId, ParameterSemantics, ParameterSmoothing,
 };
 
-pub(super) const COUNT: usize = 4;
+pub(super) const COUNT: usize = 12;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct ControlValues {
     pub feedback: f32,
     pub mix: f32,
     pub frequency: f32,
     pub width: f32,
+    pub lfo: LfoControls,
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct LfoControls {
+    pub delay: f32,
+    pub filter: f32,
+    pub mode: u32,
+    pub rate: f32,
+    pub time: f32,
+    pub division: u32,
+    pub wave: u32,
+    pub morph: f32,
+}
+impl LfoControls {
+    fn new(s: Settings) -> Self {
+        Self {
+            delay: s.value(LFO_DELAY),
+            filter: s.value(LFO_FILTER),
+            mode: s.choice(LFO_MODE),
+            rate: s.value(LFO_RATE),
+            time: s.value(LFO_TIME),
+            division: s.choice(LFO_DIVISION),
+            wave: s.choice(LFO_WAVE),
+            morph: s.value(LFO_MORPH),
+        }
+    }
 }
 impl ControlValues {
     pub(super) fn new(settings: Settings) -> Self {
@@ -23,6 +50,7 @@ impl ControlValues {
             mix: settings.value(DRY_WET),
             frequency: settings.value(FREQUENCY),
             width: settings.value(WIDTH),
+            lfo: LfoControls::new(settings),
         }
     }
 }
@@ -57,6 +85,69 @@ pub(super) const BINDINGS: [Binding<ControlValues>; COUNT] = [
         SEMANTICS,
         |s| s.width,
         |s, v| s.width = v,
+    ),
+    Binding::float(
+        state::DESCRIPTORS[17],
+        SCALAR_ENVELOPE,
+        |s| s.lfo.delay,
+        |s, v| s.lfo.delay = v,
+    ),
+    Binding::float(
+        state::DESCRIPTORS[18],
+        SCALAR_ENVELOPE,
+        |s| s.lfo.filter,
+        |s, v| s.lfo.filter = v,
+    ),
+    Binding::choice(
+        state::DESCRIPTORS[19],
+        crate::parameter_binding::CHOICE_ENVELOPE,
+        |s| s.lfo.mode,
+        |s, v| {
+            s.lfo.mode = v;
+            Ok(())
+        },
+    ),
+    Binding::float(
+        state::DESCRIPTORS[20],
+        ParameterSemantics {
+            normalization: hex_lattice_contract::ParameterNormalization::PositiveLogarithmic,
+            ..SCALAR_ENVELOPE
+        },
+        |s| s.lfo.rate,
+        |s, v| s.lfo.rate = v,
+    ),
+    Binding::float(
+        state::DESCRIPTORS[21],
+        ParameterSemantics {
+            normalization: hex_lattice_contract::ParameterNormalization::PositiveLogarithmic,
+            ..SCALAR_ENVELOPE
+        },
+        |s| s.lfo.time,
+        |s, v| s.lfo.time = v,
+    ),
+    Binding::choice(
+        state::DESCRIPTORS[22],
+        crate::parameter_binding::CHOICE_ENVELOPE,
+        |s| s.lfo.division,
+        |s, v| {
+            s.lfo.division = v;
+            Ok(())
+        },
+    ),
+    Binding::choice(
+        state::DESCRIPTORS[23],
+        crate::parameter_binding::CHOICE_ENVELOPE,
+        |s| s.lfo.wave,
+        |s, v| {
+            s.lfo.wave = v;
+            Ok(())
+        },
+    ),
+    Binding::float(
+        state::DESCRIPTORS[24],
+        SCALAR_ENVELOPE,
+        |s| s.lfo.morph,
+        |s, v| s.lfo.morph = v,
     ),
 ];
 pub(super) fn slot(id: ParameterId) -> Option<usize> {
@@ -573,6 +664,236 @@ mod tests {
                 &mut filter_values(Some([300.0, 2.0])),
                 13
             )
+        );
+    }
+    const LFO_IDS: [ParameterId; 8] = [
+        LFO_DELAY,
+        LFO_FILTER,
+        LFO_MODE,
+        LFO_RATE,
+        LFO_TIME,
+        LFO_DIVISION,
+        LFO_WAVE,
+        LFO_MORPH,
+    ];
+    struct LfoValues {
+        start: usize,
+        ids: &'static [ParameterId],
+        held: bool,
+        bad: bool,
+    }
+    impl NativeParameterAutomation for LfoValues {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            self.ids
+        }
+        fn value_at(&self, id: ParameterId, offset: usize) -> Option<ParameterValue> {
+            let i = self.start + offset;
+            if self.bad && i == 17 && id == LFO_MODE {
+                return Some(ParameterValue::Choice(99));
+            }
+            Some(match id {
+                LFO_DELAY => ParameterValue::Float(if self.held {
+                    0.8
+                } else {
+                    (i % 19) as f32 / 20.0
+                }),
+                LFO_FILTER => ParameterValue::Float(if self.held {
+                    0.8
+                } else {
+                    (i % 23) as f32 / 24.0
+                }),
+                LFO_MODE => {
+                    ParameterValue::Choice(if self.held { 2 } else { ((i / 37) % 6) as u32 })
+                }
+                LFO_RATE => ParameterValue::Float(if self.held {
+                    30.0
+                } else {
+                    0.1 + (i % 17) as f32 * 2.0
+                }),
+                LFO_TIME => ParameterValue::Float(if self.held {
+                    10.0
+                } else {
+                    10.0 + (i % 23) as f32 * 20.0
+                }),
+                LFO_DIVISION => {
+                    ParameterValue::Choice(if self.held { 8 } else { ((i / 31) % 11) as u32 })
+                }
+                LFO_WAVE => {
+                    ParameterValue::Choice(if self.held { 6 } else { ((i / 29) % 7) as u32 })
+                }
+                _ => ParameterValue::Float(if self.held {
+                    0.9
+                } else {
+                    0.1 + (i % 13) as f32 / 16.0
+                }),
+            })
+        }
+    }
+    fn lfo_values(ids: &'static [ParameterId], held: bool) -> LfoValues {
+        LfoValues {
+            start: 0,
+            ids,
+            held,
+            bad: false,
+        }
+    }
+    fn lfo_state(mode: u32) -> NativeDeviceState {
+        let mut s = decode(&filtered(500.0, 4.0)).unwrap();
+        for (id, v) in [
+            (LFO_DELAY, 0.4),
+            (LFO_FILTER, 0.4),
+            (LFO_RATE, 5.0),
+            (LFO_TIME, 200.0),
+            (LFO_DIVISION, 0.0),
+            (LFO_MODE, mode as f32),
+        ] {
+            s.set(id, v);
+        }
+        state::encode(s).unwrap()
+    }
+    fn apply_lfo(s: &NativeDeviceState, v: &LfoValues) -> NativeDeviceState {
+        let mut s = decode(s).unwrap();
+        for &id in v.ids {
+            let scalar = match v.value_at(id, 0).unwrap() {
+                ParameterValue::Float(v) => v,
+                ParameterValue::Choice(v) => v as f32,
+                _ => panic!("lfo value"),
+            };
+            s.set(id, scalar);
+        }
+        state::encode(s).unwrap()
+    }
+    fn lfo_render(
+        rt: &mut dyn OwnedProcessorRuntime,
+        input: &[StereoFrame],
+        v: &mut LfoValues,
+        width: usize,
+    ) -> Vec<StereoFrame> {
+        let mut out = input.to_vec();
+        for (i, b) in out.chunks_mut(width).enumerate() {
+            v.start = i * width;
+            rt.begin_block();
+            rt.process_block_with_automation(b, None, v, &R).unwrap();
+            rt.commit_block();
+        }
+        out
+    }
+    #[test]
+    fn every_lfo_target_matches_canonical_pcm_in_an_active_mode() {
+        for rate in [8000, 96000] {
+            for &id in &LFO_IDS {
+                let mode = if id == LFO_TIME {
+                    1
+                } else if id == LFO_DIVISION {
+                    2
+                } else {
+                    0
+                };
+                let base = lfo_state(mode);
+                let ids: &'static [ParameterId] = match id {
+                    LFO_DELAY => &[LFO_DELAY],
+                    LFO_FILTER => &[LFO_FILTER],
+                    LFO_MODE => &[LFO_MODE],
+                    LFO_RATE => &[LFO_RATE],
+                    LFO_TIME => &[LFO_TIME],
+                    LFO_DIVISION => &[LFO_DIVISION],
+                    LFO_WAVE => &[LFO_WAVE],
+                    _ => &[LFO_MORPH],
+                };
+                let values = lfo_values(ids, true);
+                let target = apply_lfo(&base, &values);
+                let mut old = runtime(&base, rate, None);
+                plain(old.as_mut(), &signal(257));
+                let mut actual = runtime(&base, rate, Some(ids));
+                actual.inherit_from(old.as_ref());
+                let mut expected = runtime(&target, rate, None);
+                expected.inherit_from(old.as_ref());
+                let input = signal(4096);
+                let out = lfo_render(actual.as_mut(), &input, &mut lfo_values(ids, true), 13);
+                assert_eq!(
+                    out,
+                    plain(expected.as_mut(), &input),
+                    "rate{rate} parameter{id:?}"
+                );
+                let unchanged = plain(old.as_mut(), &input);
+                assert!(
+                    out.iter()
+                        .zip(unchanged)
+                        .any(|(a, b)| (a[0] - b[0]).abs() > 1e-7),
+                    "inaudible{id:?} rate{rate}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn dense_lfo_choices_preserve_partitioning_rollback_fallback_and_history() {
+        let base = lfo_state(0);
+        let ids = &LFO_IDS;
+        let rate = 8000;
+        let input = signal(4096);
+        let mut a = runtime(&base, rate, Some(ids));
+        let mut b = runtime(&base, rate, Some(ids));
+        assert_eq!(
+            lfo_render(a.as_mut(), &input, &mut lfo_values(ids, false), 4096),
+            lfo_render(b.as_mut(), &input, &mut lfo_values(ids, false), 13)
+        );
+        let mut bad = lfo_values(ids, false);
+        bad.bad = true;
+        a.begin_block();
+        assert!(
+            a.process_block_with_automation(&mut signal(31), None, &bad, &R)
+                .is_err()
+        );
+        a.rollback_block();
+        assert_eq!(
+            lfo_render(a.as_mut(), &input, &mut lfo_values(ids, false), 4096),
+            lfo_render(b.as_mut(), &input, &mut lfo_values(ids, false), 13)
+        );
+        // A held lane must shadow newly installed canonical LFO controls.
+        let held = apply_lfo(&base, &lfo_values(ids, true));
+        let mut changed = runtime(&held, rate, Some(ids));
+        changed.inherit_from(a.as_ref());
+        let mut stable = runtime(&base, rate, Some(ids));
+        stable.inherit_from(a.as_ref());
+        assert_eq!(
+            lfo_render(changed.as_mut(), &input, &mut lfo_values(ids, false), 4096),
+            lfo_render(stable.as_mut(), &input, &mut lfo_values(ids, false), 13)
+        );
+        let mut fallback = runtime(&held, rate, None);
+        fallback.inherit_from(changed.as_ref());
+        assert_eq!(
+            plain(changed.as_mut(), &input),
+            plain(fallback.as_mut(), &input)
+        );
+        let mut donated = runtime(&held, rate, Some(ids));
+        donated.transfer_history_from(changed.as_mut());
+        assert!(changed.committed_is_quiescent());
+        let mut live = runtime(&held, rate, Some(ids));
+        live.inherit_from(donated.as_ref());
+        let dry = input[..31].to_vec();
+        let mut bypass = dry.clone();
+        donated.begin_block();
+        donated
+            .process_bypassed_block_with_automation(&mut bypass, None, &lfo_values(ids, true), &R)
+            .unwrap();
+        donated.commit_block();
+        assert_eq!(bypass, dry);
+        lfo_render(live.as_mut(), &dry, &mut lfo_values(ids, true), 31);
+        donated.begin_output_tail();
+        assert_eq!(
+            plain(donated.as_mut(), &[[0.0; 2]; 1024]),
+            lfo_render(
+                live.as_mut(),
+                &[[0.0; 2]; 1024],
+                &mut lfo_values(ids, true),
+                13
+            )
+        );
+        donated.reset();
+        let mut fresh = runtime(&held, rate, Some(ids));
+        assert_eq!(
+            lfo_render(donated.as_mut(), &input, &mut lfo_values(ids, false), 4096),
+            lfo_render(fresh.as_mut(), &input, &mut lfo_values(ids, false), 13)
         );
     }
     #[test]
