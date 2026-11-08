@@ -16,6 +16,28 @@ use gpui::{
 };
 use hex_project::{BeatTime, Clip, MidiClip, Track};
 
+/// Observe the actual pixel-rounded resting clip rectangle. A clip's move hit
+/// strip excludes handles and cannot define its horizontal thirds. The canvas
+/// includes the parent's leading stroke; the trailing stroke belongs to the
+/// separate boundary shell, so there is no trailing layout border to expand.
+fn clip_drag_span(payload: &ClipDrag, leading_border: f32) -> impl IntoElement + use<> {
+    let span = std::rc::Rc::clone(&payload.source_span);
+    canvas(
+        move |bounds, _, _| {
+            span.set(Some((
+                f32::from(bounds.left()),
+                f32::from(bounds.size.width),
+            )));
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .left(px(-leading_border))
+    .right_0()
+    .top_0()
+    .bottom_0()
+}
+
 /// Keep the time interval's layout and input bounds unchanged while painting
 /// its trailing stroke on the same physical column as the next interval.
 #[allow(clippy::too_many_arguments)]
@@ -2440,6 +2462,7 @@ impl EditorView {
             if let Some((payload, lane)) = midi_drag_payload {
                 let border = hex_widgets::rectangle_border_width(pixel_width);
                 let left_border = if border > 0.0 { stroke } else { 0.0 };
+                midi = midi.child(clip_drag_span(&payload, left_border));
                 let move_surface = self
                     .clip_drag_surface(
                         payload,
@@ -2728,6 +2751,8 @@ impl EditorView {
                             duration: clip.duration(),
                         },
                         grab_offset: std::rc::Rc::new(std::cell::Cell::new(None)),
+                        snap_edge: std::rc::Rc::new(std::cell::Cell::new(None)),
+                        source_span: Default::default(),
                         capture: std::rc::Rc::new(std::cell::Cell::new(None)),
                         viewport_start: viewport.start,
                         viewport_length: viewport.length,
@@ -2901,6 +2926,7 @@ impl EditorView {
         if let Some((payload, lane)) = drag_payload {
             let border = hex_widgets::rectangle_border_width(clip_pixel_width);
             let left_border = if border > 0.0 { stroke } else { 0.0 };
+            content = content.child(clip_drag_span(&payload, left_border));
             let move_surface = self
                 .clip_drag_surface(
                     payload,
@@ -3218,6 +3244,8 @@ impl EditorView {
                 clip: clip.id(),
                 position: ClipPosition::Midi { start, length },
                 grab_offset: std::rc::Rc::new(std::cell::Cell::new(None)),
+                snap_edge: std::rc::Rc::new(std::cell::Cell::new(None)),
+                source_span: Default::default(),
                 capture: std::rc::Rc::new(std::cell::Cell::new(None)),
                 viewport_start: viewport.start,
                 viewport_length: viewport.length,
@@ -3288,6 +3316,26 @@ impl EditorView {
                             None,
                             f32::from(event.position.x),
                         );
+                        let edge = (|| {
+                            let (left, width) = mouse_down_payload.source_span.get()?;
+                            let bounds = drag::preview_for(
+                                &view.state.as_ref()?.project,
+                                mouse_down_payload.source_track,
+                                mouse_down_payload.position,
+                            )?;
+                            drag::clip_snap_edge(
+                                f32::from(event.position.x),
+                                left,
+                                width,
+                                visible_start,
+                                visible_end,
+                                bounds.start_frame,
+                                bounds.end_frame,
+                            )
+                        })();
+                        if let Some(press) = view.pointer_down.as_mut() {
+                            press.snap_edge = edge;
+                        }
                     } else {
                         view.clear_pointer_down(
                             mouse_down_payload.project_generation,
@@ -3326,7 +3374,10 @@ impl EditorView {
                     }
                 });
                 payload.capture.set(capture);
-                let original_down_x = capture.map(|capture| capture.origin_x);
+                payload
+                    .snap_edge
+                    .set(capture.and_then(|press| press.snap_edge));
+                let original_down_x = capture.map(drag::PointerDown::origin_x);
                 let frame_offset = original_down_x.and_then(|x| {
                     drag::grab_offset_from_pointer(
                         x,

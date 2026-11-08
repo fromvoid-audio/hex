@@ -2250,6 +2250,8 @@ fn clip_and_sample_drags_clear_unavailable_targets_and_recover_from_invalid_poin
                 length: clip.length(),
             },
             grab_offset: Rc::new(Cell::new(Some(0))),
+            snap_edge: Rc::new(Cell::new(Some(super::drag::ClipSnapEdge::Leading))),
+            source_span: Default::default(),
             capture: Rc::new(Cell::new(None)),
             viewport_start: viewport.start,
             viewport_length: viewport.length,
@@ -2345,7 +2347,7 @@ fn clip_and_sample_drags_clear_unavailable_targets_and_recover_from_invalid_poin
                     assert!(clip_drag.insertion_line_y.get().is_some());
                 }
                 clip_drag.capture.set(origin.and_then(|x| {
-                    hex_widgets::RectangleCapture::begin(
+                    super::drag::PointerDown::begin(
                         super::drag::ClipPointerKey {
                             generation: clip_drag.project_generation,
                             clip: clip_drag.clip,
