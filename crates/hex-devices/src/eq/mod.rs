@@ -67,7 +67,12 @@ impl NativeDeviceMetadata for EqDefinition {
         let (normalization, stepping, automation, smoothing) = if id == MODE {
             (N::Discrete, T::Choice, E::Unsupported, S::None)
         } else if id == OUTPUT_GAIN {
-            (N::Linear, T::Continuous, E::Unsupported, S::DeviceManaged)
+            (
+                N::Linear,
+                T::Continuous,
+                E::DeviceArrangementEnvelope,
+                S::DeviceManaged,
+            )
         } else {
             let (node, field) = NodeId::from_parameter(id)?;
             let node = settings.node(node)?;
@@ -176,6 +181,33 @@ impl NativeDeviceMetadata for EqDefinition {
     }
 }
 impl NativeDeviceDefinition for EqDefinition {
+    fn supports_parameter_automation(
+        &self,
+        state: &NativeDeviceState,
+        parameter: ParameterId,
+    ) -> Result<bool, DeviceContractError> {
+        EqState::decode(state)?;
+        Ok(parameter == OUTPUT_GAIN)
+    }
+    fn prepare_automated_runtime_instance(
+        &self,
+        _identity: hex_lattice::ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+        parameters: &[ParameterId],
+    ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
+        state.require_asset_free_processing()?;
+        Ok(hex_lattice::PreparedRuntimeDevice {
+            matrix: StereoMatrix::identity(),
+            processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(Arc::new(
+                runtime::PreparedEq::automated(
+                    EqState::decode(state)?,
+                    context.sample_rate,
+                    parameters,
+                )?,
+            ))),
+        })
+    }
     fn prepare_matrix(&self, _: &NativeDeviceState) -> Result<StereoMatrix, DeviceContractError> {
         Err(DeviceContractError::UnsupportedProcessingClass)
     }
@@ -268,5 +300,9 @@ pub fn descriptor(
     })
 }
 
+#[cfg(test)]
+mod mode_fade_tests;
+#[cfg(test)]
+mod steady_state_digest_tests;
 #[cfg(test)]
 mod tests;

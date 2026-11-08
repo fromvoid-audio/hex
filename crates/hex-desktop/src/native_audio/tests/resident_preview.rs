@@ -12,8 +12,163 @@ use hex_session::service::{
 };
 use std::sync::atomic::AtomicU8;
 
+// Native fixture parameters are uninhabited on targets without the host; the
+// portable harness can still use its ordinary constructor with None.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+type PluginFixture = (
+    hex_audio::plugin_effects::Hosting,
+    Option<hex_audio::plugin_effects::EffectPresentation>,
+);
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+enum PluginFixture {}
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+type PluginFacts = crate::native_audio::plugins::FactsGate;
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+enum PluginFacts {}
+
+#[test]
+fn track_gain_gesture_reaches_callback_without_a_pcm_step() {
+    use hex_session::device_gesture::{GestureKey, GestureRequest, GestureTarget, ParameterValue};
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(131_072);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 131_072)));
+    (applied, _) = h.applied(applied);
+    let track = imported.state.project.tracks()[0].id();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for _ in 0..12 {
+        h.render();
+    }
+    let mut last = h.render()[63];
+    assert!((last[0] - 0.25).abs() < 1e-5);
+    let key = GestureKey {
+        generation: 0,
+        token: 1,
+    };
+    let began = h.run(Request::DeviceGesture(GestureRequest::Begin {
+        key,
+        target: GestureTarget::TrackGain { track },
+    }));
+    assert!(began.gesture_ack.as_ref().is_some_and(|ack| ack.accepted));
+    for (sequence, gain) in [(1, 0.0_f32), (2, 1.5_f32)] {
+        h.service
+            .submit(Request::DeviceGesture(GestureRequest::Change {
+                key,
+                sequence,
+                value: ParameterValue::Float(gain),
+            }))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut event = None;
+        let mut max_step = 0.0_f32;
+        let mut largest = (0.0, 0.0);
+        let mut blocks = 0;
+        loop {
+            h.pump();
+            for frame in h.render() {
+                for lane in 0..2 {
+                    let step = (frame[lane] - last[lane]).abs();
+                    if step > max_step {
+                        max_step = step;
+                        largest = (last[lane], frame[lane]);
+                    }
+                }
+                last = frame;
+            }
+            blocks += 1;
+            if event.is_none() {
+                event = h.service.try_event().ok();
+            }
+            let active = h
+                .audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .applied_revision
+                .load(Acquire);
+            if let (Some(event), Some((revision, metadata))) = (&event, h.submitted)
+                && event.gesture_ack.as_ref().is_some_and(|ack| ack.accepted)
+                && metadata
+                    .device_preview
+                    .is_some_and(|preview| preview.sequence == sequence)
+                && active == revision
+                && revision > applied
+            {
+                applied = revision;
+                break;
+            }
+            assert!(
+                blocks < 450,
+                "track gain preview did not apply: {:?}",
+                h.submitted
+            );
+            assert!(Instant::now() < deadline, "track gain preview timed out");
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        for _ in 0..12 {
+            for frame in h.render() {
+                for lane in 0..2 {
+                    let step = (frame[lane] - last[lane]).abs();
+                    if step > max_step {
+                        max_step = step;
+                        largest = (last[lane], frame[lane]);
+                    }
+                }
+                last = frame;
+            }
+        }
+        assert!(
+            (last[0] - 0.25 * gain).abs() < 1e-5,
+            "gain {gain}: {last:?}"
+        );
+        assert!(
+            max_step < 0.003,
+            "gain {gain}: PCM step {max_step}, {largest:?}"
+        );
+    }
+    let committed = h.run(Request::DeviceGesture(GestureRequest::Commit {
+        manual_edit: true,
+        key,
+        sequence: 3,
+        value: ParameterValue::Float(1.5),
+    }));
+    assert_eq!(committed.state.project.track(track).unwrap().gain(), 1.5);
+    (applied, _) = h.applied(applied);
+    for (request, expected) in [(Request::Undo, 1.0), (Request::Redo, 1.5)] {
+        let event = h.run(request);
+        assert_eq!(event.state.project.track(track).unwrap().gain(), expected);
+        (applied, _) = h.applied(applied);
+        for _ in 0..12 {
+            last = h.render()[63];
+        }
+        assert!((last[0] - 0.25 * expected).abs() < 1e-5);
+    }
+}
+
+pub(super) static CONFIRMED_TEST_INTERRUPTS: AtomicU64 = AtomicU64::new(0);
+pub(super) static CONFIRMED_TEST_POINTS: AtomicU64 = AtomicU64::new(0);
+pub(super) static CONFIRMED_TEST_READY: AtomicU64 = AtomicU64::new(0);
+pub(super) static CONFIRMED_TEST_ENDS: AtomicU64 = AtomicU64::new(0);
+pub(super) static CONFIRMED_TEST_NOOPS: AtomicU64 = AtomicU64::new(0);
+/// Copied original SDK receipts for the independent recorded-versus-authored
+/// replay oracle. This is test/control-side custody, never callback work.
+pub(super) static SESSION_RECORDING_OBSERVATIONS: Mutex<
+    Vec<hex_session::service::PluginParameterObservation>,
+> = Mutex::new(Vec::new());
 struct ResidentSink {
     inner: NativeAudioSink,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    control_polls: Arc<AtomicU64>,
+    initial_rate: u32,
     refuse: Arc<AtomicBool>,
     budget_refuse: Arc<AtomicBool>,
     loop_witness_fault: Arc<AtomicU8>,
@@ -40,11 +195,22 @@ impl WorkerAudioSink for ResidentSink {
     fn finish_resident_effect_edit(&mut self, context: AudioSourceContext, accepted: bool) {
         self.inner.finish_resident_effect_edit(context, accepted);
     }
+    fn plugin_state_restore_pending(&self, context: AudioSourceContext) -> bool {
+        self.inner.plugin_state_restore_pending(context)
+    }
     fn plugin_state_restore_ready(&self) -> Option<AudioSourceContext> {
         self.inner.plugin_state_restore_ready()
     }
     fn finish_plugin_state_restore(&mut self, context: AudioSourceContext, accepted: bool) {
         self.inner.finish_plugin_state_restore(context, accepted);
+    }
+    fn plugin_parameter_requires_stopped_restore(
+        &mut self,
+        context: AudioSourceContext,
+        origin: hex_session::device_gesture::PluginParameterOrigin,
+    ) -> Result<bool, String> {
+        self.inner
+            .plugin_parameter_requires_stopped_restore(context, origin)
     }
     fn prepare_stopped_playback_restore(
         &mut self,
@@ -67,6 +233,182 @@ impl WorkerAudioSink for ResidentSink {
     fn plugin_effect_ready(&self) -> bool {
         self.inner.plugin_effect_ready()
     }
+    fn toggle_plugin_editor(&mut self, generation: u64, device: u64) -> Result<(), String> {
+        self.inner.toggle_plugin_editor(generation, device)
+    }
+    fn prepare_plugin_parameter_gesture(
+        &mut self,
+        input: hex_session::service::PluginParameterGestureInput<'_>,
+    ) -> Result<
+        hex_session::service::PluginParameterGestureResult,
+        hex_session::service::PluginParameterGestureError,
+    > {
+        use hex_session::device_gesture::PluginGesturePreparation;
+        let case = std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").unwrap_or_default();
+        let retire = matches!(
+            case.as_str(),
+            "delivery_retire" | "touch_close_pending" | "touch_close_queued"
+        );
+        let touch = case.starts_with("touch");
+        let close = case == "touch_close_begin"
+            && matches!(input.operation(), PluginGesturePreparation::Begin { .. })
+            || case == "touch_close_point"
+                && matches!(input.operation(), PluginGesturePreparation::Preview(_))
+            || case == "touch_close_restored"
+                && matches!(input.operation(), PluginGesturePreparation::Commit(_));
+        let preview = matches!(input.operation(), PluginGesturePreparation::Preview(_));
+        let confirm = touch || (retire || case == "delivery") && preview;
+        let expected = match input.operation() {
+            PluginGesturePreparation::Begin { snapshot, .. }
+            | PluginGesturePreparation::Preview(snapshot)
+            | PluginGesturePreparation::Commit(snapshot)
+            | PluginGesturePreparation::Restore { snapshot, .. } => snapshot,
+        };
+        let result = self.inner.prepare_plugin_parameter_gesture(if touch {
+            input.with_touch_recording()
+        } else if confirm {
+            input.with_delivery_confirmation()
+        } else {
+            input
+        });
+        if confirm {
+            if close {
+                assert!(result.is_ok());
+                self.inner.relinquish_output();
+            }
+            if retire && preview {
+                assert!(result.is_err());
+                self.inner.relinquish_output();
+            }
+            while let Some(observation) = self.inner.take_plugin_parameter_observation() {
+                use hex_session::service::PluginParameterObservation as Observation;
+                match observation {
+                    Observation::Ready {
+                        key,
+                        context,
+                        target,
+                        source,
+                    } => {
+                        assert_eq!(key, expected.key);
+                        assert_eq!(context.project_generation, key.generation);
+                        assert_eq!(
+                            source.target,
+                            hex_session::service::DeviceCaptureTarget::Vst3(target)
+                        );
+                        assert_eq!(source.sample_rate, self.initial_rate);
+                        assert_eq!(
+                            CONFIRMED_TEST_POINTS.load(std::sync::atomic::Ordering::Relaxed),
+                            CONFIRMED_TEST_ENDS.load(std::sync::atomic::Ordering::Relaxed)
+                        );
+                        CONFIRMED_TEST_READY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Observation::Delivered(point) | Observation::Restored(point) => {
+                        assert_eq!(point.key, expected.key);
+                        assert!(point.sequence <= expected.sequence);
+                        assert_eq!(point.source.sample_rate, self.initial_rate);
+                        assert_eq!(
+                            point.source.target,
+                            hex_session::service::DeviceCaptureTarget::Vst3(point.target)
+                        );
+                        assert_eq!(point.application.parameter, point.target.parameter);
+                        assert_eq!(point.application.binding, point.target.binding);
+                        assert!(
+                            point.delivery_performance_frame
+                                >= point.application.origin.performance_frame
+                        );
+                        match point.application.value {
+                            hex_session::service::automation_draft::Vst3ApplicationValue::Value(
+                                value,
+                            ) => {
+                                assert_eq!(value, expected.plugin_value.unwrap().normalized());
+                                CONFIRMED_TEST_POINTS
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            hex_session::service::automation_draft::Vst3ApplicationValue::Restored => {
+                                CONFIRMED_TEST_ENDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+                    }
+                    Observation::Unchanged { key } => {
+                        assert_eq!(key, expected.key);
+                        CONFIRMED_TEST_NOOPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Observation::Interrupted {
+                        key,
+                        context,
+                        target,
+                        source,
+                        ..
+                    } => {
+                        assert!(case.starts_with("touch_close_"));
+                        assert_eq!(key, expected.key);
+                        assert_eq!(context.project_generation, key.generation);
+                        assert_eq!(
+                            source.target,
+                            hex_session::service::DeviceCaptureTarget::Vst3(target)
+                        );
+                        assert_eq!(
+                            CONFIRMED_TEST_POINTS.load(std::sync::atomic::Ordering::Relaxed),
+                            u64::from(case != "touch_close_begin")
+                        );
+                        CONFIRMED_TEST_INTERRUPTS
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+        result
+    }
+    fn take_plugin_parameter_observation(
+        &mut self,
+    ) -> Option<hex_session::service::PluginParameterObservation> {
+        let observation = self.inner.take_plugin_parameter_observation();
+        if std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE")
+            .is_ok_and(|case| case.starts_with("session_record") || case == "session_recover")
+            && let Some(observation) = observation
+        {
+            let mut originals = SESSION_RECORDING_OBSERVATIONS.lock().unwrap();
+            assert!(originals.len() < 8, "one bounded recording oracle");
+            originals.push(observation);
+        }
+        observation
+    }
+    fn confirm_plugin_parameter_publication(
+        &mut self,
+        context: AudioSourceContext,
+        acceptance: hex_session::service::ResidentPublicationAcceptance,
+    ) -> Result<(), hex_session::service::PluginParameterGestureError> {
+        self.inner
+            .confirm_plugin_parameter_publication(context, acceptance)
+    }
+    fn finish_plugin_parameter_commit(
+        &mut self,
+        context: AudioSourceContext,
+        key: hex_session::device_gesture::GestureKey,
+        sequence: u64,
+        accepted: bool,
+    ) {
+        self.inner
+            .finish_plugin_parameter_commit(context, key, sequence, accepted);
+    }
+    fn query_plugin_parameters(
+        &mut self,
+        query: hex_session::service::PluginParameterQuery,
+    ) -> Result<(), String> {
+        self.inner.query_plugin_parameters(query)
+    }
+    fn plugin_parameters_ready(&self) -> bool {
+        self.inner.plugin_parameters_ready()
+    }
+    fn take_plugin_parameters(&mut self) -> Option<hex_session::service::PluginParameterResult> {
+        self.inner.take_plugin_parameters()
+    }
+    fn plugin_editor_ready(&self) -> bool {
+        self.inner.plugin_editor_ready()
+    }
+    fn take_plugin_editor_result(&mut self, generation: u64) -> Option<Result<bool, String>> {
+        self.inner.take_plugin_editor_result(generation)
+    }
     fn finish_plugin_effect(
         &mut self,
         control: &Arc<hex_session::service::PluginEffectControl>,
@@ -83,6 +425,18 @@ impl WorkerAudioSink for ResidentSink {
             -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
     ) -> Result<Option<hex_engine::PreparedRevision>, String> {
         self.inner.prepare_resident_effects(input, prepare)
+    }
+    fn received_foreign_program_on_control(
+        &mut self,
+        binding: hex_audio::plugin_effects::EffectBinding,
+    ) -> hex_engine::ForeignProgramFrontier {
+        self.inner.received_foreign_program_on_control(binding)
+    }
+    fn prepare_offline_bounce(
+        &mut self,
+        input: hex_session::service::ResidentEffectPreparation<'_>,
+    ) -> Result<Option<Box<dyn hex_session::service::OfflineBounceSource>>, String> {
+        self.inner.prepare_offline_bounce(input)
     }
     fn ordinary_source_reservation(&self) -> Option<hex_session::SourcePlanReservation> {
         self.inner.ordinary_source_reservation()
@@ -138,6 +492,9 @@ impl WorkerAudioSink for ResidentSink {
     fn streamed_exporter(&self) -> Option<hex_session::service::StreamedExporter> {
         self.inner.streamed_exporter()
     }
+    fn streamed_bouncer(&self) -> Option<hex_session::StreamedBouncer> {
+        self.inner.streamed_bouncer()
+    }
     fn resident_file_seek_preparer(
         &self,
     ) -> Option<hex_session::service::ResidentFileSeekPreparer> {
@@ -189,6 +546,11 @@ impl WorkerAudioSink for ResidentSink {
     }
     fn resident_publication_enabled(&self) -> bool {
         self.inner.resident_publication_enabled()
+    }
+    fn resident_publication_readiness(
+        &mut self,
+    ) -> hex_session::service::ResidentPublicationReadiness {
+        self.inner.resident_publication_readiness()
     }
     fn resident_admission(&self) -> [DeviceResourceAdmission<'_>; 3] {
         self.inner.resident_admission()
@@ -255,7 +617,10 @@ impl WorkerAudioSink for ResidentSink {
         self.inner.restart_audio(generation, request_id)
     }
     fn initialize(&mut self, shutdown: &AtomicBool) -> Result<u32, String> {
-        self.inner.initialize(shutdown)
+        self.inner.initialize(shutdown)?;
+        // The fixture selects its canonical rate before device completion.
+        self.inner.requested_rate = Some(self.initial_rate);
+        Ok(self.initial_rate)
     }
     fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>) {
         self.inner.canonical_changed(source);
@@ -283,6 +648,9 @@ impl WorkerAudioSink for ResidentSink {
             self.inner.resident.pending.is_some(),
             std::sync::atomic::Ordering::Release,
         );
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        self.control_polls
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
     }
     fn close(&mut self) {
         self.inner.close();
@@ -291,6 +659,9 @@ impl WorkerAudioSink for ResidentSink {
 
 pub(super) struct ResidentHarness {
     pub(super) service: Service,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) control_polls: Arc<AtomicU64>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     event_sender: mpsc::SyncSender<EditorAudioEvent>,
     events: mpsc::Receiver<EditorAudioEvent>,
     pub(super) callback: Arc<Mutex<Option<HeadlessBackend>>>,
@@ -308,10 +679,19 @@ pub(super) struct ResidentHarness {
     pub(super) unavailable: Vec<String>,
     pub(super) publication_refusals: Vec<String>,
     constructor_submitted: Option<(u64, AudioSourceContext)>,
+    /// `OutputReleased` events in delivery order: (generation, old output).
+    pub(super) released: Vec<(u64, u64)>,
+    pub(super) rebound: Option<(u64, u64)>,
     native_plugins: bool,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) plugin_completed: Arc<AtomicU64>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) latency_restart: Option<hex_audio::prepared::AppliedAudioSource>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) plugin_queued: Arc<AtomicBool>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) plugin_records: Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) plugin_progress: Arc<Mutex<crate::native_audio::plugins::PreparationObservation>>,
 }
 impl ResidentHarness {
@@ -340,22 +720,45 @@ impl ResidentHarness {
         capacity: usize,
         rate: u32,
     ) -> Self {
-        Self::with_plugin_fixture(frame_limit, gate, capacity, rate, None, None, None)
+        Self::with_plugin_fixture(frame_limit, gate, capacity, rate, None, None, None, None)
     }
+    pub(super) fn with_recovery(frame_limit: u64, recovery: PathBuf) -> Self {
+        Self::with_plugin_fixture(
+            frame_limit,
+            Arc::new(AtomicBool::new(true)),
+            4,
+            48_000,
+            None,
+            None,
+            None,
+            Some(recovery),
+        )
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) fn with_plugins(
         host: hex_audio::plugin_effects::Hosting,
         presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
+    ) -> Self {
+        Self::with_plugins_at_rate(host, presentation, 48_000)
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) fn with_plugins_at_rate(
+        host: hex_audio::plugin_effects::Hosting,
+        presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
+        rate: u32,
     ) -> Self {
         Self::with_plugin_fixture(
             8192,
             Arc::new(AtomicBool::new(true)),
             4,
-            48_000,
+            rate,
             Some((host, presentation)),
+            None,
             None,
             None,
         )
     }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) fn with_plugins_paused_at_facts(
         host: hex_audio::plugin_effects::Hosting,
         presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
@@ -369,53 +772,97 @@ impl ResidentHarness {
             Some((host, presentation)),
             Some(facts),
             None,
+            None,
         )
     }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) fn with_plugins_and_catalog(
         host: hex_audio::plugin_effects::Hosting,
         presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
         catalog: PathBuf,
     ) -> Self {
+        Self::with_plugins_at_rate_and_catalog(host, presentation, 48_000, catalog, 8192)
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) fn with_plugins_at_rate_and_catalog(
+        host: hex_audio::plugin_effects::Hosting,
+        presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
+        rate: u32,
+        catalog: PathBuf,
+        frame_limit: u64,
+    ) -> Self {
+        Self::with_plugin_fixture(
+            frame_limit,
+            Arc::new(AtomicBool::new(true)),
+            4,
+            rate,
+            Some((host, presentation)),
+            None,
+            Some(catalog),
+            None,
+        )
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) fn with_plugins_at_rate_and_catalog_recovery(
+        host: hex_audio::plugin_effects::Hosting,
+        presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
+        rate: u32,
+        catalog: PathBuf,
+        recovery: PathBuf,
+    ) -> Self {
         Self::with_plugin_fixture(
             8192,
             Arc::new(AtomicBool::new(true)),
             4,
-            48_000,
+            rate,
             Some((host, presentation)),
             None,
             Some(catalog),
+            Some(recovery),
         )
     }
+    #[allow(clippy::too_many_arguments)] // Test fixture covers independent native failure modes.
     fn with_plugin_fixture(
         frame_limit: u64,
         gate: Arc<AtomicBool>,
         capacity: usize,
         rate: u32,
-        plugin: Option<(
-            hex_audio::plugin_effects::Hosting,
-            Option<hex_audio::plugin_effects::EffectPresentation>,
-        )>,
-        facts_gate: Option<crate::native_audio::plugins::FactsGate>,
+        plugin: Option<PluginFixture>,
+        facts_gate: Option<PluginFacts>,
         catalog: Option<PathBuf>,
+        recovery: Option<PathBuf>,
     ) -> Self {
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        assert!(plugin.is_none() && facts_gate.is_none() && catalog.is_none());
         let native_plugins = plugin.is_some();
         let allow_unavailable = !gate.load(Acquire);
         let (sender, events) = mpsc::sync_channel(capacity);
         let callback = Arc::new(Mutex::new(None));
         let target = Arc::clone(&callback);
         let mut inner = NativeAudioSink::new(sender.clone());
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let plugin_completed = Arc::new(AtomicU64::new(0));
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let plugin_queued = Arc::new(AtomicBool::new(false));
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let plugin_records = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let plugin_progress = Arc::new(Mutex::new(
             crate::native_audio::plugins::PreparationObservation::default(),
         ));
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         if let Some((host, presentation)) = plugin {
             inner.plugins = crate::native_audio::plugins::Plugins::with_fixture(host, presentation);
             inner.plugins.catalog = catalog;
             inner.plugins.facts_gate = facts_gate;
             inner.plugins.progress = Some(Arc::clone(&plugin_progress));
-            inner.plugins.completed = Some(Arc::clone(&plugin_completed));
+            // This optional Session-poll diagnostic can lag actual DSP replies.
+            // The continuity driver must work without it as a processing clock.
+            if std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").as_deref()
+                != Ok("touch_control_lag")
+            {
+                inner.plugins.completed = Some(Arc::clone(&plugin_completed));
+            }
             inner.plugins.queued = Some(Arc::clone(&plugin_queued));
             inner.plugins.records = Some(Arc::clone(&plugin_records));
         }
@@ -437,7 +884,7 @@ impl ResidentHarness {
                     Err(error) if error == "audio output is open or still shutting down" => {
                         return Ok(None);
                     }
-                    Err(error) => return Err(error),
+                    Err(error) => return Err(error.into()),
                 };
             *target.lock().unwrap() = Some(backend);
             Ok(Some(output))
@@ -449,12 +896,17 @@ impl ResidentHarness {
         let file_publication_waiting = Arc::new(AtomicBool::new(false));
         let pending_observation_generation = Arc::new(AtomicU64::new(0));
         let publication_probe = Arc::new(Mutex::new(None));
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let control_polls = Arc::new(AtomicU64::new(0));
         let service = Service::with_audio_sink_and_native_reservation(
             16,
             frame_limit,
-            None,
+            recovery,
             Box::new(ResidentSink {
                 inner,
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                control_polls: Arc::clone(&control_polls),
+                initial_rate: rate,
                 refuse: Arc::clone(&refuse),
                 budget_refuse: Arc::clone(&budget_refuse),
                 loop_witness_fault: Arc::clone(&loop_witness_fault),
@@ -468,6 +920,9 @@ impl ResidentHarness {
         .unwrap();
         Self {
             service,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            control_polls,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             event_sender: sender,
             events,
             callback,
@@ -485,16 +940,25 @@ impl ResidentHarness {
             unavailable: Vec::new(),
             publication_refusals: Vec::new(),
             constructor_submitted: None,
+            released: Vec::new(),
+            rebound: None,
             native_plugins,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             plugin_completed,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            latency_restart: None,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             plugin_queued,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             plugin_records,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             plugin_progress,
         }
     }
     /// Attach the actual already-open output and latest submission observation
     /// to a rendered view. These are original events, never manufactured ACKs;
     /// the simulated callback and publication owner stay in their usual custody.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) fn into_plugin_ui_backend(mut self) -> EditorBackend {
         let audio = self.audio.take().expect("actual opened output");
         let output_identity = audio.control.output_identity().unwrap();
@@ -528,6 +992,7 @@ impl ResidentHarness {
         }
     }
 
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) fn submitted_observation(&self) -> Option<&PreparedPlaybackObservation> {
         self.submitted_observation.as_deref()
     }
@@ -535,6 +1000,19 @@ impl ResidentHarness {
         while let Ok(event) = self.events.try_recv() {
             match event {
                 EditorAudioEvent::Opened { audio, .. } => self.audio = Some(audio),
+                EditorAudioEvent::OutputRebound {
+                    project_generation,
+                    output_identity,
+                } => {
+                    let audio = self.audio.as_mut().unwrap();
+                    assert_eq!(audio.control.output_identity(), Some(output_identity));
+                    audio.control.bind_resident_transport(project_generation);
+                    self.rebound = Some((project_generation, output_identity));
+                }
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                EditorAudioEvent::NativeLatencyRestart { source } => {
+                    self.latency_restart = Some(source)
+                }
                 EditorAudioEvent::Publication {
                     state:
                         EditorPublicationState::ResidentSubmitted {
@@ -549,7 +1027,7 @@ impl ResidentHarness {
                 }
                 EditorAudioEvent::Unavailable { error, .. } => {
                     assert!(self.allow_unavailable, "{error}");
-                    self.unavailable.push(error);
+                    self.unavailable.push(error.to_string());
                 }
                 EditorAudioEvent::Publication {
                     context,
@@ -560,10 +1038,20 @@ impl ResidentHarness {
                     state: EditorPublicationState::Refused(error),
                     ..
                 } => self.publication_refusals.push(error),
+                EditorAudioEvent::OutputReleased {
+                    project_generation,
+                    old_output_identity,
+                } => {
+                    // Tests close the held endpoint with the headless carrier
+                    // in `release_relinquished_output`; record the outcome.
+                    self.released
+                        .push((project_generation, old_output_identity));
+                }
                 _ => {}
             }
         }
     }
+    #[track_caller]
     pub(super) fn next(&mut self) -> Event {
         let end = Instant::now() + Duration::from_secs(10);
         loop {
@@ -662,6 +1150,7 @@ impl ResidentHarness {
         );
         pcm
     }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) fn render_plugin_block(&self) -> [hex_engine::Frame; 256] {
         let mut pcm = [[0.0; 2]; 256];
         let mut host = [0.0; 512];
@@ -685,8 +1174,9 @@ impl ResidentHarness {
     /// Advance the simulated callback, then observe each exact original
     /// endpoint's committed requests on control. The Session worker may be
     /// waiting for page/callback progress and is not the DSP completion clock.
-    fn render_worker_step(&self) {
+    pub(super) fn render_worker_step(&self) {
         self.render();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         if self.native_plugins
             && self
                 .audio
@@ -716,6 +1206,7 @@ impl ResidentHarness {
             }
         }
     }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) fn hold_native_work_on_control(
         &self,
         held: SyncSender<()>,
@@ -766,11 +1257,12 @@ impl ResidentHarness {
             // Stop advancing once the callback has installed the successor. Scalar UI delivery
             // may lag independently; spinning extra audio blocks here can exhaust short media
             // before its literal PCM oracle, without indicating a renderer failure.
-            if self
-                .audio
-                .as_ref()
-                .and_then(EditorAudio::status)
-                .is_none_or(|status| status.applied_revision.load(Acquire) <= after)
+            if self.callback.lock().unwrap().is_some()
+                && self
+                    .audio
+                    .as_ref()
+                    .and_then(EditorAudio::status)
+                    .is_none_or(|status| status.applied_revision.load(Acquire) <= after)
             {
                 self.render_worker_step();
             }
@@ -810,7 +1302,7 @@ impl ResidentHarness {
 
 #[test]
 fn default_audio_policy_admits_the_actual_stream_workspace_on_startup() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let mut h = ResidentHarness::new();
     assert!(h.next().error.is_none());
     let (revision, _) = h.applied(0);
@@ -822,7 +1314,7 @@ fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonica
     use hex_project::{Command, Created};
     use hex_session::device_gesture::ParameterValue;
     use hex_session::device_gesture::{GestureKey, GestureRequest, GestureTarget};
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::new();
     let initial = h.next();
@@ -906,6 +1398,11 @@ fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonica
             .id(),
         device
     );
+    // The active preview approaches its target over 5 ms. Compare settled
+    // blocks so this test isolates refusal rather than ramp progress.
+    for _ in 0..4 {
+        h.render();
+    }
     let preview_pcm = h.render();
     assert!(preview_pcm.iter().flatten().any(|sample| *sample != 0.0));
     h.refuse.store(true, std::sync::atomic::Ordering::Release);
@@ -960,6 +1457,9 @@ fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonica
     assert!(cancelled.device_preview.is_none());
     assert_eq!(cancelled.state.project, loaded.state.project);
     assert_eq!(cancelled.state.revision, loaded.state.revision);
+    for _ in 0..4 {
+        h.render();
+    }
     assert_eq!(
         h.render(),
         preview_pcm.map(|frame| frame.map(|sample| sample * 2.0))
@@ -1014,6 +1514,7 @@ impl ResidentHarness {
         let control = &self.audio.as_ref().unwrap().control;
         let fence = control.capture_fresh_runtime_fence().unwrap();
         hex_session::service::ResidentArrangementSeekIntent {
+            history: hex_session::service::ResidentSeekHistory::Fresh,
             request_id,
             project_generation: 0,
             project_revision: revision,
@@ -1051,7 +1552,7 @@ impl ResidentHarness {
 
 #[test]
 fn resident_seek_refuses_fault_epoch_changed_after_capture() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let mut h = ResidentHarness::new();
     let initial = h.next();
     assert!(initial.error.is_none());
@@ -1084,7 +1585,7 @@ fn loaded_resident_tuning_and_preview_seek_use_actual_sources_and_keep_refused_o
     use hex_project::{BeatTime, Command, Created};
     use hex_session::device_gesture::{GestureKey, GestureRequest, GestureTarget, ParameterValue};
     use hex_session::tuning_gesture::{TuningGestureKey, TuningGestureRequest};
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::new();
     assert!(h.next().error.is_none());
@@ -1154,6 +1655,10 @@ fn loaded_resident_tuning_and_preview_seek_use_actual_sources_and_keep_refused_o
     assert_eq!(metadata.device_preview, Some(identity));
     assert_eq!(metadata.computer_keyboard_request, Some(9));
     assert_eq!(keyboard.device_preview.as_ref().unwrap().identity, identity);
+    // The preview was published while stopped; monitoring advances its ramp.
+    for _ in 0..4 {
+        h.render();
+    }
     assert_eq!(
         h.render(),
         [[0.125; 2]; 64],
@@ -1221,6 +1726,10 @@ fn loaded_resident_tuning_and_preview_seek_use_actual_sources_and_keep_refused_o
         "seek attaches the same live monitor only after historical preroll"
     );
     input.set_key(0, None).unwrap();
+    // Drain the released monitor voice's declick tail (the prepared ~2 ms
+    // floor, 96 frames at 48 kHz) so the refusals below compare the settled
+    // authored overlay alone.
+    h.render();
     h.render();
 
     let mut stale = identity;
@@ -1433,7 +1942,7 @@ fn midi_recording_wire_and_physical_input_deliver_then_commit_one_native_history
     use hex_engine::midi_capture::MidiCaptureBinding;
     use hex_project::{BeatTime, Command};
     use hex_session::midi_recording::{MidiTake, MidiTakeBinding};
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let mut h = ResidentHarness::new();
     assert!(h.next().error.is_none());
     let (mut applied, _) = h.applied(0);
@@ -1720,4 +2229,127 @@ fn midi_recording_wire_and_physical_input_deliver_then_commit_one_native_history
         committed.state.project.snapshot()
     );
     assert_eq!(notes.len(), 3);
+}
+
+#[test]
+fn sealed_native_take_recovery_uses_canonical_publication_and_one_undo() {
+    use hex_session::service::{
+        DeviceAutomationTakeProgress, DeviceAutomationTakeScope, DeviceCaptureTarget,
+    };
+    use hex_storage::automation_draft::{
+        AppliedEvent, CaptureClock, DraftClock, DraftProvenance, DraftTarget, DraftTerminal,
+        DraftWriter,
+    };
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(8192);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let inserted = h.run(Request::Edit(hex_project::Command::InsertMainDevice {
+        before: None,
+        state: hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(
+            "hex.utility",
+        ))
+        .unwrap(),
+    }));
+    applied = h.applied(applied).0;
+    let device = inserted.state.project.main_devices()[0].id();
+    let target = hex_engine::native_parameter_input_target(
+        &inserted.state.project,
+        device,
+        hex_project::DeviceAutomationTarget::HostOutputGain,
+    )
+    .unwrap();
+    let context = h.submitted.unwrap().1.context;
+    let scope = DeviceAutomationTakeScope {
+        target: DeviceCaptureTarget::Native(target),
+        stamp: DraftProvenance {
+            sample_rate: 48_000,
+            output_identity: 1,
+            project_generation: context.project_generation,
+            editor_revision: context.editor_revision,
+            audio_revision: 1,
+            transport_epoch: 1,
+            gesture_serial: 1,
+        },
+    };
+    // Canonical sealed-file fixture; capture receipt provenance is tested by the
+    // recording owner. This test exercises the real native publication consumer.
+    let path = files.0.join("native-sealed.hex-automation-draft");
+    let mut writer = DraftWriter::create_with_clock(
+        &path,
+        &inserted.state.project,
+        DraftTarget::Device {
+            device,
+            target: target.target(),
+        },
+        scope.stamp,
+        CaptureClock {
+            sample_rate: 48_000,
+            loop_region: None,
+        },
+    )
+    .unwrap();
+    writer
+        .append(&[AppliedEvent {
+            sequence: 1,
+            performance_frame: 12,
+            content_frame: 4,
+            loop_pass: 0,
+            value: hex_project::AutomationValue::new(0.75).unwrap(),
+        }])
+        .unwrap();
+    writer
+        .finish(DraftTerminal::Finished(DraftClock {
+            performance_frame: 24,
+            content_frame: 16,
+            loop_pass: 0,
+        }))
+        .unwrap();
+    drop(writer);
+    let bytes = std::fs::read(&path).unwrap();
+    let recovered = h.run(Request::RecoverDeviceAutomationTake {
+        request_id: 41,
+        target: DraftTarget::Device {
+            device,
+            target: target.target(),
+        },
+        expected: scope.stamp,
+        path: path.clone(),
+        context,
+    });
+    assert_eq!(
+        recovered.device_automation_take_complete.unwrap().progress,
+        DeviceAutomationTakeProgress::Committed
+    );
+    assert_ne!(recovered.state.project, inserted.state.project);
+    h.applied(applied);
+    #[cfg(all(
+        feature = "allocation-probe",
+        target_os = "macos",
+        target_arch = "aarch64"
+    ))]
+    {
+        let mut output = [[0.0; 2]; 64];
+        let mut host = [0.0; 128];
+        let mut slot = h.callback.lock().unwrap();
+        let callback = slot.as_mut().unwrap();
+        let measured = allocation_counter::measure(|| {
+            callback
+                .render_native_direct(&mut output, &mut host)
+                .unwrap()
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+    let undone = h.run(Request::Undo);
+    assert_eq!(undone.state.project, inserted.state.project);
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
 }

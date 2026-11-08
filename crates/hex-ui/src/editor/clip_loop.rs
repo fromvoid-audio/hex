@@ -332,19 +332,17 @@ impl EditorView {
                     event.request_complete,
                 )
             });
-        if disposition != Disposition::Waiting {
-            if let Some(pending) = self.clip_loop.pending.take() {
-                if disposition == Disposition::Terminal {
-                    if let Some(camera) = pending.start_camera {
-                        self.install_audio_play_start_camera(
-                            pending.clip,
-                            pending.generation,
-                            camera,
-                            &event.state.project,
-                        );
-                    }
-                }
-            }
+        if disposition != Disposition::Waiting
+            && let Some(pending) = self.clip_loop.pending.take()
+            && disposition == Disposition::Terminal
+            && let Some(camera) = pending.start_camera
+        {
+            self.install_audio_play_start_camera(
+                pending.clip,
+                pending.generation,
+                camera,
+                &event.state.project,
+            );
         }
     }
 }

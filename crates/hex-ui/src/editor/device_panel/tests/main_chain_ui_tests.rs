@@ -700,7 +700,7 @@ fn console_main_parameter_banks_presets_and_project_roundtrip(cx: &mut TestAppCo
         })))
     });
     pump(&editor, &mut visual);
-    let mode = visual.debug_bounds("show console view · tab").unwrap();
+    let mode = visual.debug_bounds("workspace-view-toggle").unwrap();
     visual.simulate_click(mode.center(), Modifiers::default());
     visual.run_until_parked();
     let main = visual.debug_bounds("console-main-header").unwrap();

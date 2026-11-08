@@ -11,6 +11,9 @@ pub use hex_storage::automation_draft::{
     ProjectedAutomationSpan, ProjectedSpanCursor, SpanReadProgress, SpanReadState,
 };
 
+mod adoption;
+pub use adoption::prepare_device_take_adoption_on_control;
+
 #[cfg(test)]
 use hex_project::{LoopRegion, Project};
 #[cfg(test)]

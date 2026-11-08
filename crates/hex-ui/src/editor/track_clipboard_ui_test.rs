@@ -19,6 +19,346 @@ fn snapshot(v: &VisualTestContext, e: &Entity<EditorView>) -> hex_project::Snaps
     e.read_with(v, |e, _| e.state.as_ref().unwrap().project.snapshot())
 }
 
+#[gpui::test]
+fn nested_group_plates_and_poles_join_follow_selection_and_close_at_visible_ends(
+    cx: &mut TestAppContext,
+) {
+    use gpui::{px, size};
+    use hex_project::{Command, ElementColor, TrackSelectionIds};
+    use hex_session::service::Request;
+    fn selector(prefix: &str, id: TrackId) -> &'static str {
+        Box::leak(format!("{prefix}-{}", id.value()).into_boxed_str())
+    }
+    fn rail(track: TrackId, group: TrackId) -> &'static str {
+        Box::leak(format!("track-group-rail-{}-{}", track.value(), group.value()).into_boxed_str())
+    }
+    let (mut visual, editor, ids) = live_tracks(cx, 3, false);
+    visual.simulate_resize(size(px(1440.0), px(1100.0)));
+    let edit = |visual: &mut VisualTestContext, command| {
+        editor.update(visual, |view, _| {
+            assert!(view.enqueue(Request::Edit(command)))
+        });
+        receive(visual, &editor);
+    };
+    edit(
+        &mut visual,
+        Command::GroupTracks {
+            tracks: TrackSelectionIds::new(&ids[..2]).unwrap(),
+            name: "inner".into(),
+        },
+    );
+    let inner = editor.read_with(&visual, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .tracks()
+            .iter()
+            .find(|track| track.name() == "inner")
+            .unwrap()
+            .id()
+    });
+    edit(
+        &mut visual,
+        Command::GroupTracks {
+            tracks: TrackSelectionIds::new(&[inner, ids[2]]).unwrap(),
+            name: "outer".into(),
+        },
+    );
+    let outer = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.tracks()[0].id()
+    });
+    edit(
+        &mut visual,
+        Command::SetTrackColor {
+            track: outer,
+            color: ElementColor::Red,
+        },
+    );
+    edit(
+        &mut visual,
+        Command::SetTrackColor {
+            track: inner,
+            color: ElementColor::Violet,
+        },
+    );
+    visual.run_until_parked();
+    select(&mut visual, outer, false);
+    let before = snapshot(&visual, &editor);
+    let scale = visual.update(|window, _| window.scale_factor());
+    let check_rail =
+        |visual: &mut VisualTestContext, track: TrackId, group: TrackId, last: bool| {
+            let key = rail(track, group);
+            let b = visual.debug_bounds(key).unwrap();
+            let header = visual
+                .debug_bounds(selector("arrangement-track-header", track))
+                .unwrap();
+            assert_eq!(b.top(), header.top());
+            assert_eq!(b.bottom(), header.bottom());
+            assert_eq!(b.size.width, px(4.0));
+            let (corners, _) = visual.rendered_surface_geometry(key).unwrap();
+            assert_eq!(
+                f64::from(corners.bottom_left),
+                if last { 2.0 * f64::from(scale) } else { 0.0 }
+            );
+            assert_eq!(
+                visual.rendered_background(key),
+                visual.rendered_background(selector("track-name-area", group)),
+                "the group plate and its entire pole use the same selected/unselected fill"
+            );
+        };
+    for track in [outer, inner] {
+        let plate = visual
+            .debug_bounds(selector("track-name-area", track))
+            .unwrap();
+        let header = visual
+            .debug_bounds(selector("arrangement-track-header", track))
+            .unwrap();
+        assert_eq!(plate.top(), header.top());
+        assert_eq!(plate.bottom(), header.bottom());
+        let (corners, _) = visual
+            .rendered_surface_geometry(selector("track-name-area", track))
+            .unwrap();
+        assert_eq!(f64::from(corners.top_right), 6.0 * f64::from(scale));
+        assert_eq!(f64::from(corners.bottom_right), 6.0 * f64::from(scale));
+    }
+    // Resizing a group grows only its plate, keeping the working controls
+    // in the compact top slot instead of following the middle of the row.
+    let original_height = visual
+        .debug_bounds(selector("arrangement-track-header", outer))
+        .unwrap()
+        .size
+        .height;
+    let edge = visual
+        .debug_bounds(selector("track-height-resize", outer))
+        .unwrap()
+        .center();
+    let to = gpui::point(edge.x, edge.y + px(80.0));
+    visual.simulate_mouse_down(edge, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let grown = visual
+        .debug_bounds(selector("arrangement-track-header", outer))
+        .unwrap();
+    assert_eq!(grown.size.height, original_height + px(80.0));
+    let name = visual.debug_bounds(selector("track-name", outer)).unwrap();
+    assert!(
+        name.top() - grown.top() <= px(4.0),
+        "group controls stay in their top slot"
+    );
+    assert_eq!(
+        visual
+            .debug_bounds(selector("track-name-area", outer))
+            .unwrap()
+            .size
+            .height,
+        grown.size.height
+    );
+    visual.update(|window, cx| editor.read(cx).focus.focus(window));
+    visual.simulate_keystrokes("cmd-h");
+    visual.run_until_parked();
+    assert_eq!(
+        visual
+            .debug_bounds(selector("arrangement-track-header", outer))
+            .unwrap()
+            .size
+            .height,
+        original_height
+    );
+    for (track, group, last) in [
+        (inner, outer, false),
+        (ids[0], outer, false),
+        (ids[1], outer, false),
+        (ids[2], outer, true),
+        (ids[0], inner, false),
+        (ids[1], inner, true),
+    ] {
+        check_rail(&mut visual, track, group, last);
+    }
+    for pair in [outer, inner, ids[0], ids[1], ids[2]].windows(2) {
+        assert_eq!(
+            visual
+                .debug_bounds(selector("arrangement-track-header", pair[0]))
+                .unwrap()
+                .bottom(),
+            visual
+                .debug_bounds(selector("arrangement-track-header", pair[1]))
+                .unwrap()
+                .top()
+        );
+    }
+    select(&mut visual, ids[2], false);
+    check_rail(&mut visual, inner, outer, false);
+    check_rail(&mut visual, ids[2], outer, true);
+    let fold = |visual: &mut VisualTestContext, group| {
+        let at = visual
+            .debug_bounds(selector("group-fold", group))
+            .unwrap()
+            .center();
+        visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+    };
+    fold(&mut visual, inner);
+    assert!(
+        visual
+            .debug_bounds(selector("arrangement-track-header", ids[0]))
+            .is_none()
+    );
+    let (corners, _) = visual
+        .rendered_surface_geometry(selector("track-color-strip", inner))
+        .unwrap();
+    assert_eq!(f64::from(corners.bottom_left), 2.0 * f64::from(scale));
+    check_rail(&mut visual, inner, outer, false);
+    check_rail(&mut visual, ids[2], outer, true);
+    fold(&mut visual, outer);
+    assert!(
+        visual
+            .debug_bounds(selector("arrangement-track-header", inner))
+            .is_none()
+    );
+    let (corners, _) = visual
+        .rendered_surface_geometry(selector("track-color-strip", outer))
+        .unwrap();
+    assert_eq!(f64::from(corners.bottom_left), 2.0 * f64::from(scale));
+    fold(&mut visual, outer);
+    assert!(
+        visual
+            .debug_bounds(selector("arrangement-track-header", inner))
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds(selector("arrangement-track-header", ids[0]))
+            .is_none(),
+        "inner fold survives reopening its parent"
+    );
+    assert_eq!(snapshot(&visual, &editor), before);
+}
+
+#[gpui::test]
+fn g_groups_focused_track_headers_with_undo_and_redo(cx: &mut TestAppContext) {
+    let (mut visual, editor, ids) = live_tracks(cx, 2, false);
+    select(&mut visual, ids[0], false);
+    select(&mut visual, ids[1], true);
+    let before = snapshot(&visual, &editor);
+    visual.simulate_keystrokes("g");
+    editor.read_with(&visual, |view, _| {
+        assert!(matches!(
+            view.last_enqueued_edit,
+            Some(hex_project::Command::GroupTracks { .. })
+        ));
+    });
+    receive(&mut visual, &editor);
+    let after = snapshot(&visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        let group = project
+            .tracks()
+            .iter()
+            .find(|track| track.is_group())
+            .unwrap();
+        for id in &ids {
+            assert_eq!(project.track(*id).unwrap().parent_group(), Some(group.id()));
+        }
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::Undo))
+    });
+    receive(&mut visual, &editor);
+    let mut restored = snapshot(&visual, &editor);
+    restored.next_id = before.next_id;
+    assert_eq!(restored, before);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::Redo))
+    });
+    receive(&mut visual, &editor);
+    assert_eq!(snapshot(&visual, &editor), after);
+}
+
+#[gpui::test]
+fn g_groups_session_track_headers(cx: &mut TestAppContext) {
+    let (mut visual, editor, ids) = live_tracks(cx, 2, false);
+    select(&mut visual, ids[0], false);
+    select(&mut visual, ids[1], true);
+    editor.update(&mut visual, |view, cx| {
+        view.mode = super::EditorMode::Session;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let selector = Box::leak(format!("session-track-{}", ids[1].value()).into_boxed_str());
+    let at = visual.debug_bounds(selector).unwrap().center();
+    visual.simulate_click(
+        at,
+        Modifiers {
+            platform: true,
+            ..Default::default()
+        },
+    );
+    visual.simulate_click(
+        at,
+        Modifiers {
+            platform: true,
+            ..Default::default()
+        },
+    );
+    visual.simulate_keystrokes("g");
+    editor.read_with(&visual, |view, _| {
+        assert!(matches!(
+            view.last_enqueued_edit,
+            Some(hex_project::Command::GroupTracks { .. })
+        ));
+    });
+    receive(&mut visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        assert!(view.state.as_ref().unwrap().project.has_group_tracks());
+    });
+}
+
+#[gpui::test]
+fn g_does_not_group_a_single_track_or_track_name_edit(cx: &mut TestAppContext) {
+    let (mut visual, editor, ids) = live_tracks(cx, 2, false);
+    select(&mut visual, ids[0], false);
+    let before = snapshot(&visual, &editor);
+    visual.simulate_keystrokes("g");
+    assert_eq!(snapshot(&visual, &editor), before);
+    select(&mut visual, ids[1], true);
+    visual.simulate_keystrokes("cmd-r g");
+    editor.read_with(&visual, |view, _| {
+        assert!(view.track_name.is_editing());
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+        assert!(!matches!(
+            view.last_enqueued_edit,
+            Some(hex_project::Command::GroupTracks { .. })
+        ));
+    });
+}
+
+#[gpui::test]
+fn g_refuses_tracks_with_different_parents_without_partial_group(cx: &mut TestAppContext) {
+    let (mut visual, editor, ids) = live_tracks(cx, 3, false);
+    select(&mut visual, ids[0], false);
+    select(&mut visual, ids[1], true);
+    visual.simulate_keystrokes("g");
+    receive(&mut visual, &editor);
+    select(&mut visual, ids[0], false);
+    select(&mut visual, ids[2], true);
+    let before = snapshot(&visual, &editor);
+    visual.simulate_keystrokes("g");
+    editor.read_with(&visual, |view, _| {
+        assert!(view.worker_requests_pending > 0);
+    });
+    editor.update(&mut visual, |view, cx| {
+        let event = super::track_reorder_ui_test::next(&view.service);
+        assert!(event.error.is_some());
+        view.receive(event);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_eq!(snapshot(&visual, &editor), before);
+}
+
 fn group_track_header_menu(cx: &mut TestAppContext, mode: super::EditorMode) {
     let (mut visual, editor, ids) = live_tracks(cx, 2, false);
     select(&mut visual, ids[0], false);
@@ -80,6 +420,29 @@ fn group_track_header_menu(cx: &mut TestAppContext, mode: super::EditorMode) {
         );
     }
     if mode == super::EditorMode::Arrangement {
+        for id in &ids {
+            let rail = Box::leak(
+                format!("track-group-rail-{}-{}", id.value(), group.value()).into_boxed_str(),
+            );
+            let header =
+                Box::leak(format!("arrangement-track-header-{}", id.value()).into_boxed_str());
+            let rail = visual
+                .debug_bounds(rail)
+                .expect("member has its group rail");
+            let header = visual.debug_bounds(header).unwrap();
+            assert_eq!(f32::from(rail.size.width), 4.0);
+            assert!(f32::from(rail.size.height) >= f32::from(header.size.height) - 2.0);
+            let lane_rail = Box::leak(
+                format!("lane-group-rail-{}-{}", id.value(), group.value()).into_boxed_str(),
+            );
+            let lane = Box::leak(format!("arrangement-lane-{}", id.value()).into_boxed_str());
+            let lane_rail = visual
+                .debug_bounds(lane_rail)
+                .expect("member lane has its group cue");
+            let lane = visual.debug_bounds(lane).unwrap();
+            assert_eq!(f32::from(lane_rail.size.width), 2.0);
+            assert!(f32::from(lane_rail.size.height) >= f32::from(lane.size.height) - 2.0);
+        }
         let fold = Box::leak(format!("group-fold-{}", group.value()).into_boxed_str());
         let click_fold = |visual: &mut VisualTestContext| {
             let point = visual.debug_bounds(fold).unwrap().center();
@@ -104,6 +467,14 @@ fn group_track_header_menu(cx: &mut TestAppContext, mode: super::EditorMode) {
             let selector =
                 Box::leak(format!("arrangement-track-header-{}", id.value()).into_boxed_str());
             assert!(visual.debug_bounds(selector).is_none());
+            let rail = Box::leak(
+                format!("track-group-rail-{}-{}", id.value(), group.value()).into_boxed_str(),
+            );
+            assert!(visual.debug_bounds(rail).is_none());
+            let lane_rail = Box::leak(
+                format!("lane-group-rail-{}-{}", id.value(), group.value()).into_boxed_str(),
+            );
+            assert!(visual.debug_bounds(lane_rail).is_none());
         }
         click_fold(&mut visual);
         editor.read_with(&visual, |view, _| {
@@ -159,6 +530,12 @@ fn group_track_header_menu(cx: &mut TestAppContext, mode: super::EditorMode) {
     for id in &ids {
         let selector = Box::leak(format!("track-hierarchy-indent-{}", id.value()).into_boxed_str());
         assert!(visual.debug_bounds(selector).is_none());
+        if mode == super::EditorMode::Arrangement {
+            let rail = Box::leak(
+                format!("track-group-rail-{}-{}", id.value(), group.value()).into_boxed_str(),
+            );
+            assert!(visual.debug_bounds(rail).is_none());
+        }
     }
     visual.simulate_keystrokes("cmd-z");
     receive(&mut visual, &editor);

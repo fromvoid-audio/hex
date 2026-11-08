@@ -54,10 +54,13 @@ pub(super) fn render(
         GestureTarget::DeviceParameter { device, .. } => !alive.contains(&device),
         GestureTarget::DeviceParameterPair { device, .. } => !alive.contains(&device),
         GestureTarget::DeviceParameterSnapshot { device }
+        | GestureTarget::PluginParameter { device, .. }
         | GestureTarget::EqNodeCreation { device } => !alive.contains(&device),
         GestureTarget::ReturnSend { .. }
         | GestureTarget::TrackGain { .. }
+        | GestureTarget::TrackGains { .. }
         | GestureTarget::TrackBalance { .. }
+        | GestureTarget::MainGain
         | GestureTarget::ReturnGain { .. } => false,
     }) || stale_keys.iter().any(|key| {
         matches!(
@@ -134,8 +137,9 @@ pub(super) fn render(
 
     if view.device_panel.effect_catalog.is_none() {
         view.device_panel.effect_catalog = Some(
-            hex_engine::native_device_catalog_for_class(NativeDeviceClass::Effect)
-                .map_err(|error| error.to_string().to_lowercase()),
+            hex_engine::native_device_catalog_for_class(NativeDeviceClass::Effect).map_err(
+                |error| hex_session::service::text::lowercase_outside_verbatim(&error.to_string()),
+            ),
         );
     }
     let catalog = view
@@ -173,8 +177,14 @@ pub(super) fn render(
             .into()
         })
         .child(theme::text(if add_open { "×" } else { "+" }))
-        .on_click(cx.listener(|view, _, _, cx| {
-            view.device_panel.add_menu_open = !view.device_panel.add_menu_open;
+        .on_click(cx.listener(|view, _, window, cx| {
+            view.device_panel.add_menu_target = None;
+            if view.device_panel.add_menu_open {
+                view.device_panel.add_menu_open = false;
+                view.focus.focus(window);
+            } else {
+                device_picker::open(view, window, cx);
+            }
             cx.notify();
         }));
     let title = view
@@ -199,8 +209,8 @@ pub(super) fn render(
     let chain = super::return_drag::render_chain(view, window, cx, owner, &devices);
     let chain = navigation::rail(view, chain);
     root = root.child(header).child(chain);
-    if catalog.is_err() || add_open {
-        root = root.child(render_return_add_menu(cx, owner, catalog));
+    if catalog.is_err() {
+        root = root.child(menu_message("device catalog unavailable"));
     }
     root
 }
@@ -224,10 +234,12 @@ pub(super) fn render_return_effect(
         .map(|(_, _, result)| result)
         .unwrap_or_else(|| {
             hex_engine::native_device_view_for_class(NativeDeviceClass::Effect, device.state())
-                .map_err(|error| error.to_string().to_lowercase())
+                .map_err(|error| {
+                    hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
+                })
         });
-    let leading = bypass_action(device, NativeDeviceClass::Effect, cx);
-    let mut actions = div().flex().items_center().gap(px(2.0));
+    let leading = bypass_action(view, device, NativeDeviceClass::Effect, cx);
+    let mut actions = div().flex().flex_col().items_center().gap(px(2.0));
     if device_view.is_ok() {
         actions = actions
             .child(super::super::device_preset::actions(
@@ -243,6 +255,11 @@ pub(super) fn render_return_effect(
                 selected,
                 cx,
             ));
+    }
+    if device.state().type_id().as_str() == Ok("hex.vst3")
+        && !view.degraded_plugins.contains(id.value())
+    {
+        actions = actions.child(vst3_editor_button(id, selected, cx));
     }
     actions = actions.child(
         action_button(
@@ -263,22 +280,20 @@ pub(super) fn render_return_effect(
     );
     let rendered = match &device_view {
         _ if device.state().type_id().as_str() == Ok("hex.vst3") => {
-            let body = vst3_status_body(view, device);
+            let body = vst3_status_body(view, device, cx);
             device_frame(
                 device_drag_title(
                     view,
                     cx,
                     device,
                     NativeDeviceClass::Effect,
-                    theme::text("vst3"),
+                    view.vst3_device_title(device),
                 ),
                 theme::device_frame_style(selected),
                 leading,
                 actions,
                 body,
             )
-            .debug_selector(move || format!("device-shell-{}", id.value()))
-            .into_any_element()
         }
         Ok(device_view) => {
             let body = if device_view.type_id.as_str() == Ok("hex.utility") {
@@ -351,8 +366,6 @@ pub(super) fn render_return_effect(
                 actions,
                 body,
             )
-            .debug_selector(move || format!("device-shell-{}", id.value()))
-            .into_any_element()
         }
         Err(error) => {
             let title = theme::text(
@@ -376,8 +389,6 @@ pub(super) fn render_return_effect(
                 actions,
                 body,
             )
-            .debug_selector(move || format!("device-shell-{}", id.value()))
-            .into_any_element()
         }
     };
     view.device_panel.views.insert(
@@ -388,26 +399,20 @@ pub(super) fn render_return_effect(
             device_view,
         ),
     );
-    let frame_width = match device.state().type_id().as_str() {
-        Ok("hex.utility") => UTILITY_FRAME_WIDTH,
-        Ok("hex.eq8" | "hex.eq") => super::eq8_panel::FRAME_WIDTH,
-        Ok("hex.saturator") => super::saturator_panel::FRAME_WIDTH,
-        Ok("hex.limiter") => super::limiter_panel::FRAME_WIDTH,
-        Ok("hex.compressor") => super::compressor_panel::FRAME_WIDTH,
-        Ok("hex.gate") => super::gate_panel::FRAME_WIDTH,
-        Ok("hex.reverb") => super::reverb_panel::FRAME_WIDTH,
-        Ok("hex.delay") => super::delay_panel::FRAME_WIDTH,
-        Ok("hex.auto-pan") => super::auto_pan_panel::FRAME_WIDTH,
-        Ok("hex.overdrive") => super::overdrive_panel::FRAME_WIDTH,
-        _ => DEVICE_FRAME_WIDTH,
-    };
-    let rendered = div().w(px(frame_width)).flex_shrink_0().child(rendered);
+    let card_width = device_card_width(NativeDeviceClass::Effect, device.state().type_id());
+    let rendered = rendered
+        .h_full()
+        .debug_selector(move || format!("device-shell-{}", id.value()));
+    let rendered = div()
+        .w(px(card_width - super::device_meter::WIDTH))
+        .flex_shrink_0()
+        .child(rendered);
     div()
         .id(ElementId::Name(
             format!("effect-device-{}", id.value()).into(),
         ))
         .debug_selector(move || format!("effect-device-{}", id.value()))
-        .w(px(frame_width + super::device_meter::WIDTH))
+        .w(px(card_width))
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex()
         .flex_shrink_0()
@@ -418,78 +423,5 @@ pub(super) fn render_return_effect(
             cx,
         ))
         .child(rendered)
-        .child(super::device_meter::render(view, device))
-}
-
-fn render_return_add_menu(
-    cx: &mut Context<EditorView>,
-    owner: EffectBusOwner,
-    effects: Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>,
-) -> impl IntoElement {
-    let mut menu = div()
-        .id("device-add-menu")
-        .debug_selector(|| "device-add-menu".into())
-        .absolute()
-        .top(px(DEVICE_PANEL_HEADER_HEIGHT))
-        .left(px(4.0))
-        .right(px(4.0))
-        .max_h(px(crate::device_composition::BODY_HEIGHT))
-        .overflow_y_scroll()
-        .occlude()
-        .flex()
-        .flex_wrap()
-        .items_center()
-        .gap(px(3.0))
-        .px(px(4.0))
-        .py(px(2.0))
-        .bg(rgb(theme::color(theme::PaletteRole::Raised)));
-    match effects {
-        Ok(entries) if !entries.is_empty() => {
-            for entry in entries {
-                let type_id = entry.type_id;
-                let label = format!("effect · {}", entry.name);
-                let id = format!(
-                    "add-{}-effect-{}",
-                    owner.prefix(),
-                    type_id.as_str().unwrap_or("unknown")
-                );
-                menu = menu.child(
-                    div()
-                        .id(ElementId::Name(id.clone().into()))
-                        .debug_selector(move || id.clone())
-                        .h(px(18.0))
-                        .flex_shrink_0()
-                        .whitespace_nowrap()
-                        .px(px(5.0))
-                        .flex()
-                        .items_center()
-                        .text_xs()
-                        .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                        .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
-                        .cursor(gpui::CursorStyle::PointingHand)
-                        .child(theme::text(label))
-                        .on_click(cx.listener(move |view, _, _, cx| {
-                            let Some(revision) = view.state.as_ref().map(|state| state.revision)
-                            else {
-                                return;
-                            };
-                            let request = owner.insert_request(
-                                view.project_generation,
-                                revision,
-                                None,
-                                type_id,
-                            );
-                            if finalize_controls(view, cx) && view.enqueue_device_barrier(request) {
-                                view.device_panel.add_menu_open = false;
-                                view.device_panel.message = None;
-                            }
-                            cx.notify();
-                        })),
-                );
-            }
-        }
-        Ok(_) => menu = menu.child(menu_message("no native effects available")),
-        Err(error) => menu = menu.child(menu_message(&format!("device catalog error · {error}"))),
-    }
-    menu
+        .child(super::device_meter::render(view, device, cx))
 }

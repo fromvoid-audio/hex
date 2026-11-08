@@ -352,6 +352,7 @@ impl ReturnAssembly {
                 project.sample_rate(),
                 effects,
                 native_input,
+                Some(project),
             )?);
             self.growth = self
                 .growth

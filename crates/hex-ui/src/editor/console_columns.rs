@@ -103,6 +103,9 @@ impl EditorView {
         let clip_owner = cx.entity();
         let device_owner = cx.entity();
         surface
+            .when(!header && self.sample_drop_target() == Some(super::drag::BrowserDropDestination::Console(target)), |surface| {
+                surface.bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+            })
             .drag_over::<BrowserAudioDrag>(move |style, drag, window, cx| {
                 let view = browser_owner.read(cx);
                 if !header && frame.current(view, window) && view.browser_audio_drag_is_current(drag) && view.console_target_exists(target) {
@@ -161,7 +164,11 @@ impl EditorView {
                 view.clear_native_device_drag(drag);
                 cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
                 if valid && let NativeDeviceDragSource::Browser {class, type_id} = drag.source {
-                    view.enqueue_device_barrier(Request::DropBrowserDeviceOnArrangement {project_generation: drag.project_generation, revision: drag.revision, class, type_id, destination: ArrangementDeviceDestination::NewTrack {before_track}});
+                    let destination = ArrangementDeviceDestination::NewTrack {before_track};
+                    match view.device_track_gain(destination) {
+                        Ok(new_track_gain) => { view.enqueue_device_barrier(Request::DropBrowserDeviceOnArrangement {project_generation: drag.project_generation, revision: drag.revision, class, type_id, destination, new_track_gain}); }
+                        Err(error) => view.error = Some(error.into()),
+                    }
                 } else { view.error = Some("device drop canceled · target changed, editing is busy, or source is not a browser device".into()); }
                 cx.notify();
             }))

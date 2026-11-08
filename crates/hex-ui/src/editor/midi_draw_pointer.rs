@@ -110,7 +110,7 @@ impl EditorView {
                 .as_ref()
                 .is_some_and(|s| s.revision == captured.revision)
             && self.detail_clip_id() == Some(captured.clip)
-            && self.piano_beat_start.raw() == captured.view_start
+            && self.piano_beat_start == captured.view_start
             && self.piano_beat_span.raw() == captured.view_span
             && self.piano_pitch_low == captured.pitch_low
             && self.piano_pitch_rows == captured.pitch_rows

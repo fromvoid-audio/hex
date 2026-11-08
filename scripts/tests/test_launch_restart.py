@@ -17,9 +17,8 @@ from unittest.mock import Mock, patch
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import test_local_ci as fixtures
-import test_launch as launcher_tests
-launch = launcher_tests.launch
-restart, ci, delivery = launch.restart, launch.ci, launch.delivery
+import launch_restart_support as support
+restart, ci, delivery = support.restart, fixtures.local_ci, support.delivery
 
 
 class OwnedProcess:
@@ -786,7 +785,6 @@ class PreflightTests(ReleaseFixture):
         self.app=self.f.repo/'configured/Hex.app'
         raw=self.owner.read_bytes()
         with patch.dict(os.environ,{'HEX_DEV_APP_PATH':str(self.app)}):
-            self.assertEqual(launch.configured_app(self.f.repo),self.app)
             self.assertEqual(self.prepare(),hashlib.sha256(raw).hexdigest())
         self.factory.assert_called_once()
         self.controller.request.assert_not_called()
