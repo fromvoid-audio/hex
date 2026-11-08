@@ -4211,6 +4211,7 @@ fn run_worker(
                             query,
                             source: None,
                             total: 0,
+                            descriptor_signature: None,
                             rows: Err(reason),
                         });
                     }

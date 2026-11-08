@@ -13,7 +13,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-const VERSION: u64 = 1;
+const VERSION: u64 = 2;
 const MAX_BYTES: usize = 1024 * 1024;
 const MAX_ROWS: usize = 2_624;
 const NAME_UTF16_UNITS: usize = 127;
@@ -21,9 +21,15 @@ const PAGE_SIZE: usize = 4;
 const MAX_KEY_BYTES: usize = 256;
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Debug, PartialEq)]
+pub struct CachedInventory {
+    pub descriptor_signature: [u8; 32],
+    pub rows: Vec<PluginParameterRow>,
+}
+
 /// Load a display-only metadata cache. Missing, old-version, and different-key
 /// entries are misses; malformed or linked files return an error for fallback.
-pub fn load(path: &Path, key: &str) -> Result<Option<Vec<PluginParameterRow>>, String> {
+pub fn load(path: &Path, key: &str) -> Result<Option<CachedInventory>, String> {
     validate_key(key)?;
     plain_path(path)?;
     let metadata = match fs::symlink_metadata(path) {
@@ -60,22 +66,49 @@ pub fn load(path: &Path, key: &str) -> Result<Option<Vec<PluginParameterRow>>, S
     if stored_key != key {
         return Ok(None);
     }
-    if object.len() != 3 {
+    if object.len() != 4 {
         return Err("vst3 parameter cache fields are malformed".into());
     }
+    let digest = object
+        .get("descriptor_signature")
+        .and_then(Value::as_array)
+        .filter(|digest| digest.len() == 32)
+        .and_then(|digest| {
+            let mut bytes = [0_u8; 32];
+            for (index, byte) in digest.iter().enumerate() {
+                bytes[index] = u8::try_from(byte.as_u64()?).ok()?;
+            }
+            Some(bytes)
+        })
+        .ok_or_else(|| "vst3 parameter cache signature is malformed".to_owned())?;
     let entries = object
         .get("rows")
         .and_then(Value::as_array)
         .ok_or_else(|| "vst3 parameter cache rows are malformed".to_owned())?;
-    decode_rows(entries).map(Some)
+    decode_rows(entries).map(|rows| {
+        Some(CachedInventory {
+            descriptor_signature: digest,
+            rows,
+        })
+    })
 }
 
 /// Atomically replace the bounded cache with stable display metadata only.
-pub fn save(path: &Path, key: &str, rows: &[PluginParameterRow]) -> Result<(), String> {
+pub fn save(
+    path: &Path,
+    key: &str,
+    descriptor_signature: &[u8; 32],
+    rows: &[PluginParameterRow],
+) -> Result<(), String> {
     validate_key(key)?;
     let entries = encode_rows(rows)?;
-    let bytes = serde_json::to_vec(&json!({"version": VERSION, "key": key, "rows": entries}))
-        .map_err(|_| "vst3 parameter cache encoding failed".to_owned())?;
+    let bytes = serde_json::to_vec(&json!({
+        "version": VERSION,
+        "key": key,
+        "descriptor_signature": descriptor_signature,
+        "rows": entries,
+    }))
+    .map_err(|_| "vst3 parameter cache encoding failed".to_owned())?;
     if bytes.len() > MAX_BYTES {
         return Err("vst3 parameter cache exceeds its byte limit".into());
     }
@@ -301,29 +334,49 @@ mod tests {
     fn round_trip_restores_display_metadata_without_live_authority() {
         let directory = TestDir::new();
         let rows = vec![row(7, "gain", 0)];
-        save(&directory.file(), "binary-class-v1", &rows).unwrap();
+        save(&directory.file(), "binary-class-v1", &[4; 32], &rows).unwrap();
         let cached = load(&directory.file(), "binary-class-v1").unwrap().unwrap();
-        assert_eq!(cached[0].name, "gain");
-        assert_eq!(cached[0].default_normalized, 0.25);
-        assert_eq!(cached[0].normalized, 0.25);
-        assert!(cached[0].value.is_empty());
-        assert!(!cached[0].editable);
-        assert_eq!(cached[0].automation_class, None);
-        assert_eq!(cached[0].metadata_revision, 0);
+        assert_eq!(cached.descriptor_signature, [4; 32]);
+        assert_eq!(cached.rows[0].name, "gain");
+        assert_eq!(cached.rows[0].default_normalized, 0.25);
+        assert_eq!(cached.rows[0].normalized, 0.25);
+        assert!(cached.rows[0].value.is_empty());
+        assert!(!cached.rows[0].editable);
+        assert_eq!(cached.rows[0].automation_class, None);
+        assert_eq!(cached.rows[0].metadata_revision, 0);
     }
 
     #[test]
     fn missing_different_key_and_old_version_are_cache_misses() {
         let directory = TestDir::new();
         assert_eq!(load(&directory.file(), "key"), Ok(None));
-        save(&directory.file(), "one", &[row(1, "gain", 0)]).unwrap();
+        save(&directory.file(), "one", &[4; 32], &[row(1, "gain", 0)]).unwrap();
         assert_eq!(load(&directory.file(), "two"), Ok(None));
-        fs::write(
-            &directory.file(),
-            br#"{"version":99,"key":"one","rows":[]}"#,
-        )
-        .unwrap();
+        fs::write(&directory.file(), br#"{"version":1,"key":"one","rows":[]}"#).unwrap();
         assert_eq!(load(&directory.file(), "one"), Ok(None));
+    }
+
+    #[test]
+    fn malformed_descriptor_signature_fails_closed() {
+        let directory = TestDir::new();
+        for signature in [
+            json!(vec![7; 31]),
+            json!(
+                (0..32)
+                    .map(|index| if index == 0 { 256 } else { 7 })
+                    .collect::<Vec<_>>()
+            ),
+        ] {
+            let bytes = serde_json::to_vec(&json!({
+                "version": VERSION,
+                "key": "key",
+                "descriptor_signature": signature,
+                "rows": [],
+            }))
+            .unwrap();
+            fs::write(directory.file(), bytes).unwrap();
+            assert!(load(&directory.file(), "key").is_err());
+        }
     }
 
     #[test]
@@ -334,14 +387,23 @@ mod tests {
         assert!(load(&path, "key").is_err());
         fs::write(&path, vec![b' '; MAX_BYTES + 1]).unwrap();
         assert!(load(&path, "key").is_err());
-        assert!(save(&path, "key", &[row(1, "gain", 0), row(1, "gain again", 0)]).is_err());
-        assert!(save(&path, "key", &[row(1, "", 0)]).is_err());
-        assert!(save(&path, "key", &[row(1, &"n".repeat(128), 0)]).is_err());
-        assert!(save(&path, "key", &[row(1, "gain\0bad", 0)]).is_err());
         assert!(
             save(
                 &path,
                 "key",
+                &[4; 32],
+                &[row(1, "gain", 0), row(1, "gain again", 0)]
+            )
+            .is_err()
+        );
+        assert!(save(&path, "key", &[4; 32], &[row(1, "", 0)]).is_err());
+        assert!(save(&path, "key", &[4; 32], &[row(1, &"n".repeat(128), 0)]).is_err());
+        assert!(save(&path, "key", &[4; 32], &[row(1, "gain\0bad", 0)]).is_err());
+        assert!(
+            save(
+                &path,
+                "key",
+                &[4; 32],
                 &[PluginParameterRow {
                     steps: i32::MAX as u32 + 1,
                     ..row(1, "gain", 0)
@@ -349,7 +411,7 @@ mod tests {
             )
             .is_err()
         );
-        assert!(save(&path, "key", &[row(1, "gain", 4)]).is_err());
+        assert!(save(&path, "key", &[4; 32], &[row(1, "gain", 4)]).is_err());
     }
 
     #[cfg(unix)]
@@ -362,6 +424,6 @@ mod tests {
         let linked = directory.0.join("linked.json");
         symlink(&target, &linked).unwrap();
         assert!(load(&linked, "key").is_err());
-        assert!(save(&linked, "key", &[row(1, "gain", 0)]).is_err());
+        assert!(save(&linked, "key", &[4; 32], &[row(1, "gain", 0)]).is_err());
     }
 }

@@ -11,7 +11,7 @@ use hex_widgets::{
     NumericEventPhase, NumericGestureId, NumericScale, NumericSpec, TextInput,
 };
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{BTreeSet, HashMap},
     path::PathBuf,
     rc::Rc,
@@ -22,6 +22,7 @@ use std::{
 const PAGE_SIZE: usize = 4;
 const PAGE_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_AUTOMATIC_RETRIES: u8 = 3;
+const REFRESH_YIELDED_TO_CONTROL: &str = "vst3 parameter refresh yielded to control";
 
 mod cache;
 
@@ -42,8 +43,9 @@ struct Panel {
     cache_error: Option<String>,
     query: PluginParameterQuery,
     source: Option<hex_lattice_contract::ForeignProcessorBinding>,
+    descriptor_signature: Option<[u8; 32]>,
     total: Option<u16>,
-    result: Option<Result<Arc<Vec<PluginParameterRow>>, String>>,
+    result: Option<Arc<Vec<PluginParameterRow>>>,
     matched: Arc<Vec<usize>>,
     filter: String,
     search: Entity<TextInput>,
@@ -57,16 +59,13 @@ struct Panel {
 }
 struct Knob {
     control: Entity<NumericControl>,
+    origin: Rc<Cell<PluginParameterOrigin>>,
     _subscription: Subscription,
 }
 
 impl Panel {
     fn rows(&self) -> Option<&[PluginParameterRow]> {
-        self.result
-            .as_ref()?
-            .as_ref()
-            .ok()
-            .map(|rows| rows.as_slice())
+        self.result.as_ref().map(|rows| rows.as_slice())
     }
 
     fn refilter(&mut self, reset_scroll: bool) {
@@ -81,8 +80,8 @@ impl Panel {
 
     fn mark_values_stale(&mut self) {
         let total = self.rows().and_then(|rows| u16::try_from(rows.len()).ok());
-        if let Some(Ok(rows)) = &self.result {
-            self.result = Some(Ok(Arc::new(rows.iter().map(display_only).collect())));
+        if let Some(rows) = &self.result {
+            self.result = Some(Arc::new(rows.iter().map(display_only).collect()));
         }
         self.source = None;
         self.total = total;
@@ -113,15 +112,18 @@ fn matching_rows(rows: &[PluginParameterRow], filter: &str) -> Vec<usize> {
 
 fn merge_page(
     cached: &[PluginParameterRow],
+    cached_signature: Option<[u8; 32]>,
     cached_total: Option<u16>,
     total: u16,
     first: u16,
+    live_signature: [u8; 32],
     rows: &[PluginParameterRow],
 ) -> Option<Vec<PluginParameterRow>> {
     let first = usize::from(first);
     let total_usize = usize::from(total);
     let page_len = total_usize.saturating_sub(first).min(PAGE_SIZE);
-    if first % PAGE_SIZE != 0
+    if cached_signature != Some(live_signature)
+        || first % PAGE_SIZE != 0
         || total_usize != cached.len()
         || cached_total != Some(total)
         || rows.len() != page_len
@@ -138,10 +140,52 @@ fn merge_page(
     Some(merged)
 }
 
+fn refresh_page(
+    has_rows: bool,
+    source_validated: bool,
+    visible_pages: &BTreeSet<u16>,
+    next_page: u16,
+    rows_empty: bool,
+) -> Option<Option<u16>> {
+    if !has_rows {
+        return Some(None);
+    }
+    if !source_validated {
+        return Some(Some(0));
+    }
+    if visible_pages.is_empty() {
+        return rows_empty.then_some(Some(0));
+    }
+    visible_pages
+        .range(next_page..)
+        .next()
+        .or_else(|| visible_pages.first())
+        .copied()
+        .map(Some)
+}
+
+fn is_refresh_yield(error: &str) -> bool {
+    error == REFRESH_YIELDED_TO_CONTROL
+}
+
 fn current_context(view: &EditorView) -> Option<AudioSourceContext> {
     Some(AudioSourceContext {
         project_generation: view.project_generation,
         editor_revision: view.state.as_ref()?.revision,
+    })
+}
+
+fn parameter_origin(
+    query: PluginParameterQuery,
+    row: &PluginParameterRow,
+) -> Option<PluginParameterOrigin> {
+    Some(PluginParameterOrigin {
+        context: query.context,
+        device: query.device,
+        parameter: row.id,
+        page_first: row.page_first,
+        metadata_revision: row.metadata_revision,
+        initial: PluginParameterValue::new(row.normalized).ok()?,
     })
 }
 
@@ -235,6 +279,7 @@ fn ensure_panel(view: &mut EditorView, device: DeviceId, cx: &mut Context<Editor
             cache_error: None,
             query,
             source: None,
+            descriptor_signature: None,
             total: None,
             result: None,
             matched: Arc::default(),
@@ -278,9 +323,10 @@ fn ensure_panel(view: &mut EditorView, device: DeviceId, cx: &mut Context<Editor
             };
             panel.cache_loading = false;
             match cache {
-                Ok(Some(rows)) => {
-                    panel.total = u16::try_from(rows.len()).ok();
-                    panel.result = Some(Ok(Arc::new(rows)));
+                Ok(Some(cached)) => {
+                    panel.total = u16::try_from(cached.rows.len()).ok();
+                    panel.descriptor_signature = Some(cached.descriptor_signature);
+                    panel.result = Some(Arc::new(cached.rows));
                     panel.refilter(false);
                 }
                 Ok(None) => {}
@@ -348,6 +394,12 @@ fn apply_result(
     panel.next_query_at = Instant::now() + PAGE_REFRESH_INTERVAL;
     let rows = match result.rows {
         Ok(rows) => rows,
+        Err(error) if is_refresh_yield(&error) => {
+            panel.cache_error = None;
+            panel.retry_count = 0;
+            panel.next_query_at = Instant::now();
+            return;
+        }
         Err(error) => {
             record_error(panel, error);
             return;
@@ -358,10 +410,23 @@ fn apply_result(
         panel.mark_values_stale();
         return;
     };
+    let Some(descriptor_signature) = result.descriptor_signature else {
+        panel.result = None;
+        panel.source = None;
+        panel.descriptor_signature = None;
+        panel.total = None;
+        panel.knobs.clear();
+        record_error(
+            panel,
+            "vst3 parameter descriptor signature unavailable".into(),
+        );
+        return;
+    };
     if panel.source.is_some_and(|current| current != source) {
         panel.cache_error = None;
         panel.result = None;
         panel.source = None;
+        panel.descriptor_signature = None;
         panel.total = None;
         panel.knobs.clear();
         panel.next_query_at = Instant::now();
@@ -371,17 +436,19 @@ fn apply_result(
         if usize::from(result.total) != rows.len() {
             panel.result = None;
             panel.source = None;
+            panel.descriptor_signature = None;
             panel.total = None;
             panel.knobs.clear();
             record_error(panel, "vst3 parameter inventory differs".into());
             return;
         }
         panel.source = Some(source);
+        panel.descriptor_signature = Some(descriptor_signature);
         panel.total = Some(result.total);
         panel.cache_error = None;
         panel.retry_count = 0;
         panel.knobs.clear();
-        panel.result = Some(Ok(Arc::new(rows)));
+        panel.result = Some(Arc::new(rows));
         panel.refilter(false);
         panel.cache_needs_save = true;
         return;
@@ -394,23 +461,41 @@ fn apply_result(
     let Some(first) = result.query.page_first else {
         return;
     };
-    let Some(merged) = merge_page(&cached, panel.total, result.total, first, &rows) else {
+    let Some(merged) = merge_page(
+        &cached,
+        panel.descriptor_signature,
+        panel.total,
+        result.total,
+        first,
+        descriptor_signature,
+        &rows,
+    ) else {
         panel.cache_error = None;
         panel.result = None;
         panel.source = None;
+        panel.descriptor_signature = None;
         panel.total = None;
         panel.knobs.clear();
         panel.next_query_at = Instant::now();
         return;
     };
-    for (offset, row) in rows.into_iter().enumerate() {
+    for (offset, row) in rows.iter().enumerate() {
         let index = usize::from(first) + offset;
-        if cached[index] != row {
-            panel.knobs.remove(&row.id);
+        if &cached[index] != row {
+            if let Some(knob) = panel.knobs.get(&row.id)
+                && let Some(origin) = parameter_origin(result.query, row)
+            {
+                knob.origin.set(origin);
+                let value = row.normalized;
+                let _ = knob.control.update(cx, |control, cx| {
+                    let _ = control.set_external_value(value, cx);
+                });
+            }
         }
     }
     panel.source = Some(source);
-    panel.result = Some(Ok(Arc::new(merged)));
+    panel.descriptor_signature = Some(descriptor_signature);
+    panel.result = Some(Arc::new(merged));
     panel.cache_error = None;
     panel.retry_count = 0;
     panel.refilter(false);
@@ -460,6 +545,7 @@ pub(in crate::editor) fn tick(view: &mut EditorView, cx: &mut Context<EditorView
     }
     if let Some((result, revision)) = view.device_panel.vst3_parameters.deferred_result.take() {
         apply_result(view, result, revision, cx);
+        cx.notify();
         return;
     }
     if view.device_panel.vst3_parameters.in_flight.is_some() {
@@ -481,22 +567,13 @@ pub(in crate::editor) fn tick(view: &mut EditorView, cx: &mut Context<EditorView
         if panel.retry_count > MAX_AUTOMATIC_RETRIES {
             return None;
         }
-        let page = if panel.rows().is_none() {
-            None
-        } else if panel.visible_pages.is_empty() {
-            if panel.rows().is_some_and(<[_]>::is_empty) {
-                Some(0)
-            } else {
-                return None;
-            }
-        } else {
-            panel
-                .visible_pages
-                .range(panel.next_page..)
-                .next()
-                .or_else(|| panel.visible_pages.first())
-                .copied()
-        };
+        let page = refresh_page(
+            panel.rows().is_some(),
+            panel.source.is_some(),
+            &panel.visible_pages,
+            panel.next_page,
+            panel.rows().is_some_and(<[_]>::is_empty),
+        )?;
         Some((device, page))
     });
     if let Some((device, page)) = next {
@@ -604,6 +681,9 @@ fn save_cache(panel: &mut Panel, device: DeviceId, generation: u64, cx: &mut Con
     let Some(rows) = panel.rows().map(|rows| rows.to_vec()) else {
         return;
     };
+    let Some(descriptor_signature) = panel.descriptor_signature else {
+        return;
+    };
     let key = panel.key.clone();
     let completion_key = key.clone();
     let path = panel.cache_path.clone();
@@ -612,7 +692,7 @@ fn save_cache(panel: &mut Panel, device: DeviceId, generation: u64, cx: &mut Con
     cx.spawn(async move |_, cx| {
         let result = cx
             .background_executor()
-            .spawn(async move { cache::save(&path, &key, &rows) })
+            .spawn(async move { cache::save(&path, &key, &descriptor_signature, &rows) })
             .await;
         let _ = weak.update(cx, |view, cx| {
             if view.project_generation == generation
@@ -651,12 +731,12 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
     };
     let mut body = body.child(panel.search.clone());
     if let Some(error) = &panel.cache_error {
-        body = body.child(theme::text(hex_session::service::text::verbatim(error)));
+        body = body.child(theme::text(error));
     }
     if panel.retry_count > MAX_AUTOMATIC_RETRIES {
         body = body.child(
             hex_widgets::action(theme::text("retry"), theme::action_style())
-                .id(format!("vst3-parameter-retry-{}", device.value()))
+                .id(("vst3-parameter-retry", device.value()))
                 .on_click(cx.listener(move |view, _, _, cx| {
                     if let Some(panel) = view.device_panel.vst3_parameters.panels.get_mut(&device) {
                         panel.retry_count = 0;
@@ -669,12 +749,9 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
     }
     match &panel.result {
         None => body.child(theme::text("reading vst3 parameters…")),
-        Some(Err(error)) => body.child(theme::text(error)),
-        Some(Ok(rows)) if rows.is_empty() => body.child(theme::text("no parameters reported")),
-        Some(Ok(_)) if panel.matched.is_empty() => {
-            body.child(theme::text("no matching parameters"))
-        }
-        Some(Ok(rows)) => {
+        Some(rows) if rows.is_empty() => body.child(theme::text("no parameters reported")),
+        Some(_) if panel.matched.is_empty() => body.child(theme::text("no matching parameters")),
+        Some(rows) => {
             let rows = Arc::clone(rows);
             let matched = Arc::clone(&panel.matched);
             let query = panel.query;
@@ -816,6 +893,26 @@ pub(in crate::editor) fn refresh(view: &mut EditorView) {
     }
 }
 
+#[cfg(feature = "ui-test-support")]
+pub(in crate::editor) fn test_state(view: &EditorView) -> (Vec<(u64, u32, gpui::EntityId)>, bool) {
+    let state = &view.device_panel.vst3_parameters;
+    let mut controls = state
+        .panels
+        .iter()
+        .flat_map(|(device, panel)| {
+            panel
+                .knobs
+                .iter()
+                .map(|(parameter, knob)| (device.value(), *parameter, knob.control.entity_id()))
+        })
+        .collect::<Vec<_>>();
+    controls.sort_by_key(|(device, parameter, _)| (*device, *parameter));
+    (
+        controls,
+        state.in_flight.is_some() || state.deferred_result.is_some(),
+    )
+}
+
 fn knob(
     view: &mut EditorView,
     device: DeviceId,
@@ -827,14 +924,8 @@ fn knob(
     if let Some(knob) = panel.knobs.get(&row.id) {
         return Some(knob.control.clone());
     }
-    let origin = PluginParameterOrigin {
-        context: query.context,
-        device: query.device,
-        parameter: row.id,
-        page_first: row.page_first,
-        metadata_revision: row.metadata_revision,
-        initial: PluginParameterValue::new(row.normalized).ok()?,
-    };
+    let source = panel.source?;
+    let origin = parameter_origin(query, row)?;
     let spec = NumericSpec::new(
         0.0,
         1.0,
@@ -854,18 +945,22 @@ fn knob(
     )
     .ok()?;
     let control = cx.new(|cx| NumericControl::from_config(cx, config));
+    let origin = Rc::new(Cell::new(origin));
+    let event_origin = Rc::clone(&origin);
     let drag = Rc::new(RefCell::new(None));
     let steps = row.steps;
     let subscription = cx.subscribe(
         &control,
         move |view, emitter, event: &NumericControlEvent, cx| {
+            let origin = event_origin.get();
             let current = view
                 .device_panel
                 .vst3_parameters
                 .panels
                 .get(&device)
                 .filter(|panel| {
-                    panel.query.context == origin.context
+                    panel.source == Some(source)
+                        && panel.query.context == origin.context
                         && panel.query.output_identity == query.output_identity
                 })
                 .and_then(Panel::rows)
@@ -895,6 +990,7 @@ fn knob(
         row.id,
         Knob {
             control: control.clone(),
+            origin,
             _subscription: subscription,
         },
     );
@@ -1035,12 +1131,62 @@ mod tests {
             .collect::<Vec<_>>();
         let mut second_page = rows[4..].to_vec();
         second_page[0].value = "live".into();
-        let merged = merge_page(&rows, Some(6), 6, 4, &second_page).unwrap();
+        let merged =
+            merge_page(&rows, Some([8; 32]), Some(6), 6, 4, [8; 32], &second_page).unwrap();
         assert_eq!(merged[4].value, "live");
-        assert!(merge_page(&rows, Some(5), 6, 4, &second_page).is_none());
-        assert!(merge_page(&rows, Some(6), 6, 1, &rows[1..5]).is_none());
+        assert!(merge_page(&rows, Some([8; 32]), Some(5), 6, 4, [8; 32], &second_page).is_none());
+        assert!(merge_page(&rows, Some([8; 32]), Some(6), 6, 1, [8; 32], &rows[1..5]).is_none());
         let mut reordered = second_page;
         reordered.swap(0, 1);
-        assert!(merge_page(&rows, Some(6), 6, 4, &reordered).is_none());
+        assert!(merge_page(&rows, Some([8; 32]), Some(6), 6, 4, [8; 32], &reordered).is_none());
+        let unchanged_ids_with_changed_signature = rows[4..].to_vec();
+        assert!(
+            merge_page(
+                &rows,
+                Some([8; 32]),
+                Some(6),
+                6,
+                4,
+                [9; 32],
+                &unchanged_ids_with_changed_signature,
+            )
+            .is_none()
+        );
+        let value_only_update = rows[4..]
+            .iter()
+            .cloned()
+            .map(|mut row| {
+                row.value = "changed value".into();
+                row
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            merge_page(
+                &rows,
+                Some([8; 32]),
+                Some(6),
+                6,
+                4,
+                [8; 32],
+                &value_only_update
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn unvalidated_cache_requests_page_zero_without_visible_matches() {
+        let no_visible_pages = BTreeSet::new();
+        assert_eq!(
+            refresh_page(true, false, &no_visible_pages, 0, false),
+            Some(Some(0))
+        );
+        assert_eq!(refresh_page(true, true, &no_visible_pages, 0, false), None);
+    }
+
+    #[test]
+    fn control_yield_is_a_quiet_refresh_retry() {
+        assert!(is_refresh_yield(REFRESH_YIELDED_TO_CONTROL));
+        assert!(!is_refresh_yield("vst3 parameter source changed"));
     }
 }

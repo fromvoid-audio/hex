@@ -34,6 +34,8 @@ pub struct PluginParameterResult {
     /// never acquire this stamp and cannot authorize a parameter gesture.
     pub source: Option<hex_lattice_contract::ForeignProcessorBinding>,
     pub total: u16,
+    /// Stable complete-descriptor digest; changes invalidate cached hidden rows too.
+    pub descriptor_signature: Option<[u8; 32]>,
     pub rows: Result<Vec<PluginParameterRow>, String>,
 }
 

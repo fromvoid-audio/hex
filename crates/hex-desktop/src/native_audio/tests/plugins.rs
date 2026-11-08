@@ -1209,6 +1209,9 @@ fn parameter_inventory_reaches_session_from_the_hosted_controller() {
         .expect("native controller inventory");
     assert_eq!(received.query, query);
     let source = received.source.expect("exact loaded controller source");
+    let signature = received
+        .descriptor_signature
+        .expect("complete descriptor signature");
     assert_eq!(received.total, 1);
     let rows = received.rows.expect("original controller reply");
     assert_eq!(rows.len(), 1);
@@ -1223,6 +1226,7 @@ fn parameter_inventory_reaches_session_from_the_hosted_controller() {
     let page = h.next().plugin_parameters.expect("single live page");
     assert_eq!(page.query, selected);
     assert_eq!(page.source, Some(source));
+    assert_eq!(page.descriptor_signature, Some(signature));
     assert_eq!(page.total, 1);
     assert_eq!(page.rows.unwrap(), rows);
     let stale = hex_session::service::PluginParameterQuery {
