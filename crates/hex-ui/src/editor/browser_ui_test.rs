@@ -3764,7 +3764,7 @@ fn browser_source_groups_have_exactly_one_persistent_selected_row(cx: &mut TestA
         "browser-place-0",
         "browser-collection-0",
     ];
-    let selected = gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Hover)).into();
+    let selected = gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Secondary)).into();
     let idle = gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Surface)).into();
     let minimum = f32::from(visual.debug_bounds("browser-control-⚙").unwrap().size.width) + 1.0;
     let places = editor.read_with(&visual, |view, _| view.browser.places.clone());
@@ -4029,7 +4029,7 @@ fn browser_picker_glyph_alignment_and_continuous_minimum_geometry(cx: &mut TestA
             assert!(row.contains(&glyph.origin));
             assert!(glyph.right() <= row.right());
             assert!(row.size.width >= control.size.width);
-            assert!(row.size.height >= control.size.height);
+            assert_eq!(row.size.height, px(18.0));
         }
     }
 }
