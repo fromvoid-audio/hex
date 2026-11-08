@@ -341,7 +341,7 @@ impl MutableInstrumentTrackRuntime {
                 events,
                 shifted.as_ref().map(|c| c as &dyn NativeInstrumentClock),
                 resources,
-                lookup.as_mut().map(|lookup| &mut **lookup),
+                lookup.as_deref_mut(),
                 shifted_values
                     .as_ref()
                     .map(|values| values as &dyn hex_lattice::NativeParameterAutomation),
