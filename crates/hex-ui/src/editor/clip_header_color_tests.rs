@@ -423,21 +423,22 @@ fn console_audio_midi_flavors_follow_shared_fill_and_history_without_geometry_ch
                 hex_project::SessionCellContent::Stop => panic!("copied clip cell"),
             }
         });
-        cells.push((scene, clip));
+        cells.push((scene, clip, audio));
     }
     f.editor.update(&mut visual, |v, cx| {
         v.mode = super::super::EditorMode::Session;
         cx.notify();
     });
     visual.run_until_parked();
-    for (scene, clip) in cells {
+    for (scene, clip, audio) in cells {
         let cell = Box::leak(
             format!("console-cell-{}-{}", f.track.value(), scene.value()).into_boxed_str(),
         );
         let bounds = visual.debug_bounds(cell).unwrap();
         let surface = selector("console-clip", clip);
         let painted = visual.debug_bounds(surface).unwrap();
-        assert_eq!(painted.size.height, bounds.size.height - gpui::px(4.0));
+        assert_eq!(bounds.size.height, gpui::px(31.0));
+        assert_eq!(painted.size.height, gpui::px(26.0));
         assert!(painted.left() > bounds.left() && painted.right() < bounds.right());
         super::super::clip_boundary::tests::assert_open_upper_right(
             &mut visual,
@@ -448,6 +449,19 @@ fn console_audio_midi_flavors_follow_shared_fill_and_history_without_geometry_ch
         let label = visual
             .debug_bounds(selector("clip-name-label", clip))
             .unwrap();
+        let launch = Box::leak(
+            format!(
+                "launch-{}-{}-{}",
+                if audio { "audio" } else { "midi" },
+                f.track.value(),
+                scene.value(),
+            )
+            .into_boxed_str(),
+        );
+        let launch = visual.debug_bounds(launch).unwrap();
+        assert_eq!(launch.size, gpui::size(gpui::px(19.0), gpui::px(19.0)));
+        assert!(launch.left() >= painted.left() && launch.right() < label.left());
+        assert!(launch.top() >= painted.top() && launch.bottom() <= painted.bottom());
         assert_eq!(label.size.height, gpui::px(14.0));
         assert!((f32::from(label.center().y - bounds.center().y)).abs() <= 0.5);
         for hue in [ElementColor::Cyan, ElementColor::Rose] {
