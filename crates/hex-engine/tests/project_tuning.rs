@@ -6,12 +6,17 @@ use hex_project::{BeatTime, Command, Created, Editor, Project};
 use hex_tuning::{Audition, ProjectTuning};
 use std::{collections::BTreeMap, sync::Arc};
 fn tuning(project: &Project, hz: f64) -> Project {
-    let mut snapshot = project.snapshot();
     let mut scale = project.tuning().scale();
     scale.set_reference(60, hz, 0).unwrap();
-    snapshot.tuning = ProjectTuning::new(true, scale, Audition::default()).unwrap();
-    Project::from_snapshot(snapshot).unwrap()
+    let mut editor = Editor::new(project.clone(), 8).unwrap();
+    editor
+        .execute(Command::SetTuning(
+            ProjectTuning::new(true, scale, Audition::default()).unwrap(),
+        ))
+        .unwrap();
+    editor.project().clone()
 }
+
 fn fixture(
     kind: hex_lattice_contract::DeviceTypeId,
     short: bool,
@@ -116,8 +121,28 @@ fn arrangement_session_and_reused_banks_follow_custom_pitch_and_carried_release_
                 let p1 = tuning(&p0, 333.0);
                 let p2 = tuning(&p1, 196.0);
                 let r0 = prepare(&p0, None);
-                let r1 = prepare(&p1, Some(&r0));
-                let r2 = prepare(&p2, Some(&r1));
+                // Mutable source continuity requires the same validated tuning
+                // family used by the live host, rather than an ordinary edit.
+                let r1 = Arc::new(
+                    PreparedRevision::prepare_tuning_from(
+                        &p1,
+                        &BTreeMap::new(),
+                        Arc::new(hex_devices::SineTable::new()),
+                        &p0,
+                        &r0,
+                    )
+                    .unwrap(),
+                );
+                let r2 = Arc::new(
+                    PreparedRevision::prepare_tuning_from(
+                        &p2,
+                        &BTreeMap::new(),
+                        Arc::new(hex_devices::SineTable::new()),
+                        &p1,
+                        &r1,
+                    )
+                    .unwrap(),
+                );
                 let mut old = Playback::from_prepared(Arc::clone(&r0));
                 if session {
                     old.try_apply_action(PlaybackAction::LaunchAndPlay(
