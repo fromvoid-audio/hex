@@ -1130,6 +1130,389 @@ fn dotted_top(visual: &mut VisualTestContext, device: DeviceId) -> Option<Pixels
         .map(|bounds| bounds.top())
 }
 
+fn vst3_dotted_top(
+    visual: &mut VisualTestContext,
+    device: DeviceId,
+    parameter: u32,
+) -> Option<Pixels> {
+    visual
+        .debug_bounds(Box::leak(
+            format!("automation-dotted-{}-vst3-{parameter}-true", device.value()).into_boxed_str(),
+        ))
+        .map(|bounds| bounds.top())
+}
+
+fn acknowledge_plugin(
+    view: &mut EditorView,
+    key: hex_session::device_gesture::GestureKey,
+    phase: hex_session::device_gesture::GesturePhase,
+    sequence: u64,
+) {
+    assert!(
+        view.acknowledge_device_gesture(&hex_session::device_gesture::GestureAck {
+            key,
+            phase,
+            sequence,
+            accepted: true,
+            preview_retained: false,
+            source_lost: false,
+            reason: None,
+        })
+    );
+}
+
+#[gpui::test]
+fn vst3_dotted_guide_tracks_raw_zero_through_delayed_commit_ack(cx: &mut TestAppContext) {
+    use hex_session::device_gesture::{GesturePhase, PluginParameterOrigin, PluginParameterValue};
+
+    // This is a view/ACK contract fixture. Native publication is checked by
+    // the desktop SDK consumers, rather than fabricated by an offline service.
+    let mut model = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(track) = model
+        .execute(Command::AddMidiTrack {
+            name: "vst guide".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let mut payload = vec![0; 96];
+    payload[..4].copy_from_slice(b"HXVS");
+    payload[4] = 1;
+    payload[8..24].fill(2);
+    payload[24..88].fill(3);
+    let state = hex_lattice_contract::NativeDeviceState::new(
+        DeviceTypeId::from_static("hex.vst3"),
+        1,
+        payload,
+    )
+    .unwrap();
+    let Created::Device(device) = model
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state,
+        })
+        .unwrap()
+    else {
+        panic!("device")
+    };
+    let (handle, editor) = crate::editor::clip_drag_ui_test::editor_window(
+        cx,
+        model.project().clone(),
+        std::sync::Arc::default(),
+    );
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1100.0), px(800.0)));
+    let owner = Owner::Track(track);
+    let target = DeviceAutomationTarget::Vst3 { parameter: 0 };
+    let row = PluginParameterRow {
+        id: 0,
+        name: "raw zero".into(),
+        value: "0.20".into(),
+        normalized: 0.2,
+        default_normalized: 0.2,
+        steps: 0,
+        editable: true,
+        automation_class: Some([2; 16]),
+        page_first: 0,
+        metadata_revision: 1,
+    };
+    let (generation, revision) = editor.update(&mut visual, |view, cx| {
+        let state = view.state.as_ref().unwrap();
+        let generation = view.project_generation;
+        let revision = state.revision;
+        let has_no_authored_lane = state
+            .project
+            .device(device)
+            .unwrap()
+            .automation_target(target)
+            .is_none();
+        assert!(has_no_authored_lane);
+        assert!(view.remember_touched_vst3(owner, device, &row, cx));
+        (generation, revision)
+    });
+    visual.run_until_parked();
+    let plot = visual
+        .debug_bounds(Box::leak(
+            format!("automation-plot-{}-vst3-0-true", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let top_for = |value: f64| {
+        f32::from(plot.top()) + 4.0 + (1.0 - value as f32) * (f32::from(plot.size.height) - 8.0)
+    };
+    let base = vst3_dotted_top(&mut visual, device, 0).unwrap();
+    assert!((f32::from(base) - top_for(0.2)).abs() < 0.5);
+
+    // A same-generation gesture for another raw parameter cannot move this lane.
+    let wrong_target = editor.update(&mut visual, |view, _| {
+        let origin = PluginParameterOrigin {
+            context: hex_engine::AudioSourceContext {
+                project_generation: generation,
+                editor_revision: revision,
+            },
+            device,
+            parameter: 1,
+            page_first: 0,
+            metadata_revision: 1,
+            initial: PluginParameterValue::new(0.2).unwrap(),
+        };
+        view.device_gesture.begin_plugin(origin).unwrap()
+    });
+    editor.update(&mut visual, |view, _| {
+        let request = view.device_gesture.next_request().unwrap();
+        view.device_gesture.mark_submitted();
+        assert_eq!(request.phase(), GesturePhase::Begin);
+        acknowledge_plugin(view, wrong_target, GesturePhase::Begin, 0);
+        let sequence = view
+            .device_gesture
+            .change_plugin(PluginParameterValue::new(0.9).unwrap())
+            .unwrap();
+        view.device_gesture.next_request().unwrap();
+        view.device_gesture.mark_submitted();
+        acknowledge_plugin(view, wrong_target, GesturePhase::Change, sequence);
+        let entry = view
+            .automation_view
+            .devices
+            .main
+            .iter()
+            .find(|entry| entry.target.kind == (DeviceAutomationTarget::Vst3 { parameter: 0 }))
+            .unwrap()
+            .clone();
+        assert_eq!(view.live_device_automation_base(&entry), 0.2);
+        view.device_gesture.cancel().unwrap();
+        let request = view.device_gesture.next_request().unwrap();
+        view.device_gesture.mark_submitted();
+        acknowledge_plugin(view, wrong_target, GesturePhase::Cancel, request.sequence());
+    });
+    visual.run_until_parked();
+    assert_eq!(vst3_dotted_top(&mut visual, device, 0), Some(base));
+
+    // A matching raw ID from a different generation also has no display authority.
+    let wrong_generation = editor.update(&mut visual, |view, _| {
+        view.device_gesture
+            .begin_plugin(PluginParameterOrigin {
+                context: hex_engine::AudioSourceContext {
+                    project_generation: generation.saturating_add(1),
+                    editor_revision: revision,
+                },
+                device,
+                parameter: 0,
+                page_first: 0,
+                metadata_revision: 1,
+                initial: PluginParameterValue::new(0.2).unwrap(),
+            })
+            .unwrap()
+    });
+    editor.update(&mut visual, |view, _| {
+        let request = view.device_gesture.next_request().unwrap();
+        view.device_gesture.mark_submitted();
+        acknowledge_plugin(
+            view,
+            wrong_generation,
+            GesturePhase::Begin,
+            request.sequence(),
+        );
+        let sequence = view
+            .device_gesture
+            .change_plugin(PluginParameterValue::new(0.8).unwrap())
+            .unwrap();
+        view.device_gesture.next_request().unwrap();
+        view.device_gesture.mark_submitted();
+        acknowledge_plugin(view, wrong_generation, GesturePhase::Change, sequence);
+        let entry = view
+            .automation_view
+            .devices
+            .main
+            .iter()
+            .find(|entry| entry.target.kind == (DeviceAutomationTarget::Vst3 { parameter: 0 }))
+            .unwrap()
+            .clone();
+        assert_eq!(view.live_device_automation_base(&entry), 0.2);
+        view.device_gesture.cancel().unwrap();
+        let request = view.device_gesture.next_request().unwrap();
+        view.device_gesture.mark_submitted();
+        acknowledge_plugin(
+            view,
+            wrong_generation,
+            GesturePhase::Cancel,
+            request.sequence(),
+        );
+    });
+    visual.run_until_parked();
+    assert_eq!(vst3_dotted_top(&mut visual, device, 0), Some(base));
+
+    let key = editor.update(&mut visual, |view, cx| {
+        view.automation_view.enabled = true;
+        let key = view
+            .device_gesture
+            .begin_plugin(PluginParameterOrigin {
+                context: hex_engine::AudioSourceContext {
+                    project_generation: generation,
+                    editor_revision: revision,
+                },
+                device,
+                parameter: 0,
+                page_first: 0,
+                metadata_revision: 1,
+                initial: PluginParameterValue::new(0.2).unwrap(),
+            })
+            .unwrap();
+        let request = view.device_gesture.next_request().unwrap();
+        view.device_gesture.mark_submitted();
+        acknowledge_plugin(view, key, GesturePhase::Begin, request.sequence());
+        cx.notify();
+        key
+    });
+    for expected in [0.35, 0.65] {
+        editor.update(&mut visual, |view, cx| {
+            let sequence = view
+                .device_gesture
+                .change_plugin(PluginParameterValue::new(expected).unwrap())
+                .unwrap();
+            view.device_gesture.next_request().unwrap();
+            view.device_gesture.mark_submitted();
+            acknowledge_plugin(view, key, GesturePhase::Change, sequence);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let top = vst3_dotted_top(&mut visual, device, 0).unwrap();
+        assert!((f32::from(top) - top_for(expected)).abs() < 0.5);
+    }
+
+    let final_value = 0.8;
+    let terminal_sequence = editor.update(&mut visual, |view, cx| {
+        view.device_gesture
+            .finish_plugin(PluginParameterValue::new(final_value).unwrap())
+            .unwrap();
+        let request = view.device_gesture.next_request().unwrap();
+        view.device_gesture.mark_submitted();
+        assert_eq!(request.phase(), GesturePhase::Commit);
+        cx.notify();
+        request.sequence()
+    });
+    for _ in 0..3 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        assert_eq!(
+            editor.read_with(&visual, |view, _| view
+                .device_gesture
+                .snapshot()
+                .and_then(|snapshot| snapshot.plugin_value)
+                .map(PluginParameterValue::normalized)),
+            Some(final_value)
+        );
+        let top = vst3_dotted_top(&mut visual, device, 0).unwrap();
+        assert!((f32::from(top) - top_for(final_value)).abs() < 0.5);
+        assert!(editor.read_with(&visual, |view, _| {
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .unwrap()
+                .automation_target(target)
+                .is_none()
+        }));
+    }
+
+    // Install the canonical device state and exact terminal ACK in one receive.
+    let mut payload = vec![0; 96];
+    payload[..4].copy_from_slice(b"HXVS");
+    payload[4] = 1;
+    payload[8..24].fill(2);
+    payload[24..88].fill(4);
+    let installed_state = hex_lattice_contract::NativeDeviceState::new(
+        DeviceTypeId::from_static("hex.vst3"),
+        1,
+        payload,
+    )
+    .unwrap();
+    model
+        .execute(Command::ReplaceDeviceState {
+            device,
+            state: installed_state,
+        })
+        .unwrap();
+    editor.update(&mut visual, |view, cx| {
+        assert!(
+            !view.acknowledge_device_gesture(&hex_session::device_gesture::GestureAck {
+                key,
+                phase: GesturePhase::Commit,
+                sequence: terminal_sequence.saturating_add(1),
+                accepted: true,
+                preview_retained: false,
+                source_lost: false,
+                reason: None,
+            })
+        );
+        assert!(view.device_gesture.snapshot().is_some());
+        let committed_entry = view
+            .automation_view
+            .devices
+            .main
+            .iter()
+            .find(|entry| entry.target.kind == target)
+            .unwrap()
+            .clone();
+        view.automation_view.devices.extra.push(committed_entry);
+        let mut completion = crate::editor::arrangement_main_track_ui_test::completed_event(
+            view.state.as_ref().unwrap(),
+        );
+        std::sync::Arc::get_mut(&mut completion.state)
+            .unwrap()
+            .project = std::sync::Arc::new(model.project().clone());
+        completion.gesture_protocol_ack = true;
+        completion.gesture_ack = Some(hex_session::device_gesture::GestureAck {
+            key,
+            phase: GesturePhase::Commit,
+            sequence: terminal_sequence,
+            accepted: true,
+            preview_retained: false,
+            source_lost: false,
+            reason: None,
+        });
+        view.receive(completion);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let committed = vst3_dotted_top(&mut visual, device, 0).unwrap();
+    assert!((f32::from(committed) - top_for(final_value)).abs() < 0.5);
+    editor.read_with(&visual, |view, _| {
+        assert!(view.device_gesture.snapshot().is_none());
+        assert!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .unwrap()
+                .automation_target(target)
+                .is_none()
+        );
+        let lanes = &view.automation_view.devices;
+        let entry = lanes
+            .main
+            .iter()
+            .find(|entry| entry.target.kind == target)
+            .unwrap();
+        assert!((entry.base - final_value as f32).abs() < f32::EPSILON);
+        let committed_target = entry.target;
+        let known = lanes
+            .known
+            .iter()
+            .find(|entry| entry.target == committed_target)
+            .unwrap();
+        assert!((known.base - final_value as f32).abs() < f32::EPSILON);
+        let extra = lanes
+            .extra
+            .iter()
+            .find(|entry| entry.target == committed_target)
+            .unwrap();
+        assert!((extra.base - final_value as f32).abs() < f32::EPSILON);
+    });
+}
+
 #[gpui::test]
 fn last_touched_dotted_line_follows_gesture_preview_through_delayed_ack(cx: &mut TestAppContext) {
     let (mut visual, editor, owner, _, device) = window(cx, "hex.utility", Slot::Track);

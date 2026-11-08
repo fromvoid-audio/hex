@@ -586,7 +586,31 @@ impl EditorView {
             DeviceAutomationTarget::Parameter(parameter) => parameter,
             DeviceAutomationTarget::HostInputGain => hex_engine::DEVICE_INPUT_GAIN.id,
             DeviceAutomationTarget::HostOutputGain => hex_engine::DEVICE_OUTPUT_GAIN.id,
-            DeviceAutomationTarget::Vst3 { .. } => return entry.base,
+            DeviceAutomationTarget::Vst3 { parameter } => {
+                let Some(snapshot) = self.device_gesture.snapshot() else {
+                    return entry.base;
+                };
+                if !self.state.as_ref().is_some_and(|state| {
+                    entry
+                        .target
+                        .current(&state.project, self.project_generation)
+                        .is_some()
+                }) || snapshot.key.generation != entry.target.generation
+                    || entry.target.generation != self.project_generation
+                    || snapshot.target
+                        != (hex_session::device_gesture::GestureTarget::PluginParameter {
+                            device: entry.target.device,
+                            parameter,
+                        })
+                {
+                    return entry.base;
+                }
+                return snapshot
+                    .plugin_value
+                    .map(|value| value.normalized() as f32)
+                    .filter(|value| value.is_finite() && (0.0..=1.0).contains(value))
+                    .unwrap_or(entry.base);
+            }
         };
         let key = super::device_panel::ParameterKey {
             device: entry.target.device,
