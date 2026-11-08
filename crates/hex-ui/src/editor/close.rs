@@ -682,9 +682,11 @@ mod tests {
 
     #[test]
     fn update_readiness_belongs_to_one_update_and_cancellation_releases_it() {
-        let mut gate = AutomationClosePreflight::default();
-        gate.update = Some(7);
-        gate.state = PreflightState::Held { quit: false };
+        let mut gate = AutomationClosePreflight {
+            update: Some(7),
+            state: PreflightState::Held { quit: false },
+            ..Default::default()
+        };
         assert!(gate.update_safe(7));
         assert!(!gate.update_safe(8));
         gate.cancel_update(8);
