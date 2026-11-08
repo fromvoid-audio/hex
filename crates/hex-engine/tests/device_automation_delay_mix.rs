@@ -146,6 +146,36 @@ fn delay_mix_all_owners_follow_the_native_ramp_and_seek_reset() {
             assert_eq!(next, render(editor.project(), FRAMES));
             previous = next;
         }
+        let before_lfo = previous;
+        for (parameter, value) in [
+            (p::LFO_DELAY, 0.8),
+            (p::LFO_FILTER, 0.8),
+            (p::LFO_MODE, 0.0),
+            (p::LFO_RATE, (3000.0_f32).ln() / (4000.0_f32).ln()),
+            (p::LFO_TIME, 0.0),
+            (p::LFO_DIVISION, 0.8),
+            (p::LFO_WAVE, 1.0),
+            (p::LFO_MORPH, 0.9),
+        ] {
+            editor
+                .execute(Command::ReplaceDeviceAutomation {
+                    device,
+                    parameter,
+                    points: vec![AutomationPoint {
+                        beat: BeatTime::ZERO,
+                        value: AutomationValue::new(value).unwrap(),
+                        outgoing: AutomationInterpolation::Step,
+                    }],
+                })
+                .unwrap();
+        }
+        let lfo = render(editor.project(), 13);
+        assert_eq!(lfo, render(editor.project(), FRAMES));
+        assert!(
+            lfo.iter()
+                .zip(&before_lfo)
+                .any(|(a, b)| (a[0] - b[0]).abs() > 1e-7)
+        );
         let mut playback = SessionPlayback::new(prepare(editor.project())).unwrap();
         playback.apply(SessionPlaybackCommand::Play).unwrap();
         let mut first = vec![[0.0; 2]; FRAMES];
