@@ -134,6 +134,13 @@ fn successive_native_takes_keep_the_arm_and_refusals_keep_the_recovery_file() {
     };
     let draft_directory = scratch.0.join("automation-drafts");
     let initial_scope = scope();
+    let (no_output, no_output_progress) = send(
+        initial_scope,
+        Action::AdoptFailedPluginCopy { max_events: 2 },
+    );
+    assert_eq!(no_output_progress, Progress::Refused);
+    assert!(no_output.error.is_some());
+    assert_eq!(no_output.state.revision, revision);
     let missing_copy = scratch.0.join("missing-plugin-copy");
     let (missing_event, missing_progress) = send(
         initial_scope,

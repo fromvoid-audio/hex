@@ -2848,6 +2848,8 @@ fn run_worker(
         };
         let mut device_automation_take_complete = None;
         let mut adopted_device_draft = None;
+        let mut failed_plugin_adoption = None;
+        let mut failed_plugin_publication_confirmed = false;
         let resolved_edit = match &request {
             Request::RecoverDeviceAutomationTake {
                 request_id,
@@ -2956,6 +2958,36 @@ fn run_worker(
                         *scope,
                         gesture_active,
                     )
+                } else if let DeviceAutomationTakeAction::AdoptFailedPluginCopy { max_events } =
+                    action
+                {
+                    (|| {
+                        if scope.context() != current
+                            || gesture_active
+                            || session.audio_mode() != DocumentAudioMode::Resident
+                            || !events.resident_publication_enabled()
+                        {
+                            return Err(
+                                "vst3 recovery requires the current idle resident source".into()
+                            );
+                        }
+                        let source = events
+                            .resident_audio()
+                            .ok_or("vst3 recovery output unavailable")?
+                            .device_automation_source(current, scope.target)?;
+                        let (command, adoption) = plugin_recording::prepare_failed_adoption(
+                            &plugin_recording,
+                            &native_automation_take,
+                            &session,
+                            document_base,
+                            *scope,
+                            source,
+                            *max_events,
+                        )?;
+                        let path = adoption.path.clone();
+                        failed_plugin_adoption = Some(adoption);
+                        Ok(Step::Commit(command, path))
+                    })()
                 } else if gesture_active && matches!(action, DeviceAutomationTakeAction::Poll) {
                     // A take must never finalize somebody else's active edit.
                     Ok(Step::Progress(DeviceAutomationTakeProgress::Pending))
@@ -5060,6 +5092,13 @@ fn run_worker(
                         Err(reason) => error = Some(reason.to_string()),
                     }
                 }
+                Request::Edit(_)
+                    if failed_plugin_adoption.is_some()
+                        && (!events.resident_publication_enabled()
+                            || session.audio_mode() != DocumentAudioMode::Resident) =>
+                {
+                    error = Some("vst3 recovery lost its resident publication path".into());
+                }
                 Request::Edit(command)
                     if events.resident_publication_enabled()
                         && session.audio_mode() == DocumentAudioMode::Resident =>
@@ -5103,6 +5142,11 @@ fn run_worker(
                         });
                     match result {
                         Ok((new, snapshot)) => {
+                            if failed_plugin_adoption.is_some() {
+                                // Device-take VST3 publication returns only after the exact
+                                // output/revision callback confirmation.
+                                failed_plugin_publication_confirmed = true;
+                            }
                             created = Some(new);
                             if session.project() != state.project.as_ref() {
                                 unsaved = true;
@@ -8402,9 +8446,51 @@ fn run_worker(
         }
         if let Some(completion) = device_automation_take_complete.as_mut() {
             if let Some((path, _)) = adopted_device_draft {
-                if error.is_none() && revision != revision_before_request {
-                    completion.progress = DeviceAutomationTakeProgress::Committed;
-                    status = Some("device automation take committed".into());
+                let recovery_finish = failed_plugin_adoption.as_ref().map(|adoption| {
+                    let publication = plugin_recording::classify_recovery_publication(
+                        error.is_some(),
+                        revision_before_request,
+                        revision,
+                        failed_plugin_publication_confirmed,
+                    );
+                    let result = plugin_recording::finish_failed_adoption(
+                        &mut plugin_recording,
+                        &mut native_automation_take,
+                        adoption,
+                        publication,
+                    );
+                    (publication, result)
+                });
+                if failed_plugin_adoption.is_some()
+                    && failed_plugin_publication_confirmed
+                    && revision != revision_before_request
+                    && error.is_some()
+                {
+                    let reason = error
+                        .as_deref()
+                        .unwrap_or("recovery acknowledgement failed");
+                    error = Some(format!(
+                        "device automation take committed · recovery custody retained · {reason}"
+                    ));
+                    completion.progress =
+                        DeviceAutomationTakeProgress::CommittedWithRetainedCustody(path);
+                } else if error.is_none() && revision != revision_before_request {
+                    if recovery_finish.as_ref().is_some_and(|(publication, _)| {
+                        *publication != plugin_recording::RecoveryPublication::Committed
+                    }) {
+                        error = Some("device automation take committed · recovery custody retained · publication identity changed".into());
+                        completion.progress =
+                            DeviceAutomationTakeProgress::CommittedWithRetainedCustody(path);
+                    } else if let Some((_, Err(reason))) = recovery_finish {
+                        error = Some(format!(
+                            "device automation take committed · recovery custody retained · {reason}"
+                        ));
+                        completion.progress =
+                            DeviceAutomationTakeProgress::CommittedWithRetainedCustody(path);
+                    } else {
+                        completion.progress = DeviceAutomationTakeProgress::Committed;
+                        status = Some("device automation take committed".into());
+                    }
                 } else {
                     let reason = error
                         .as_deref()
