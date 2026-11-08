@@ -738,3 +738,6 @@ mod result_tests;
 #[cfg(test)]
 #[path = "device_parameter_input_tests.rs"]
 mod input_tests;
+
+#[cfg(test)]
+mod fm4_source_tests;

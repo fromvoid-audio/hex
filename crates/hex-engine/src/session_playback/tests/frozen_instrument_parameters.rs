@@ -88,43 +88,6 @@ fn render(runtime: &mut SessionPlayback, count: usize, partition: usize) -> Vec<
     output
 }
 #[test]
-fn production_source_admission_allows_carriers_and_refuses_other_controls() {
-    let (mut editor, _, device) = fixture();
-    crate::device_automation::validate_project(editor.project()).unwrap();
-    for id in 29..=32 {
-        assert!(crate::project_device_automation_target_supported(
-            editor.project(),
-            device,
-            hex_lattice_contract::DeviceAutomationTarget::Parameter(ParameterId::from_static(id))
-        ));
-    }
-    for id in [1, 28, 33, 36] {
-        assert!(!crate::project_device_automation_target_supported(
-            editor.project(),
-            device,
-            hex_lattice_contract::DeviceAutomationTarget::Parameter(ParameterId::from_static(id))
-        ));
-    }
-    for target in [
-        hex_lattice_contract::DeviceAutomationTarget::HostInputGain,
-        hex_lattice_contract::DeviceAutomationTarget::HostOutputGain,
-    ] {
-        assert!(!crate::project_device_automation_target_supported(
-            editor.project(),
-            device,
-            target
-        ));
-    }
-    editor
-        .execute(Command::ReplaceDeviceAutomation {
-            device,
-            parameter: ParameterId::from_static(1),
-            points: vec![point(BeatTime::ZERO, 0.5)],
-        })
-        .unwrap();
-    assert!(crate::device_automation::validate_project(editor.project()).is_err());
-}
-#[test]
 fn detached_fm4_freezes_latest_target_across_pause_bypass_removal_and_revision() {
     std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
