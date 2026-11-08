@@ -11,7 +11,7 @@ use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, ElementInputHandler,
     Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId, LayoutId, MouseButton,
     MouseDownEvent, PaintQuad, Pixels, Point, ShapedLine, Style, TextRun, UTF16Selection,
-    UnderlineStyle, Window, div, fill, point, prelude::*, px, relative, rgba, size,
+    UnderlineStyle, Window, div, fill, point, prelude::*, px, relative, size,
 };
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
@@ -89,6 +89,7 @@ gpui::actions!(
 
 pub struct TextInput {
     content: String,
+    caret_activity: u64,
     config: TextInputConfig,
     enabled: bool,
     tab_navigation: bool,
@@ -113,6 +114,7 @@ impl TextInput {
     pub fn new(cx: &mut Context<Self>, config: TextInputConfig) -> Self {
         Self {
             content: String::new(),
+            caret_activity: 0,
             preserve_source: config.kind == TextInputKind::Value,
             config,
             enabled: true,
@@ -251,6 +253,9 @@ impl TextInput {
             .w(px(20.0))
             .h(px(20.0))
             .flex_shrink_0()
+            .flex()
+            .items_center()
+            .justify_center()
             .children(active.then(|| {
                 let button = action(self.config.clear_glyph.clone(), self.config.action_style)
                     .id(gpui::SharedString::from(format!(
@@ -261,7 +266,7 @@ impl TextInput {
                         let id = format!("{}-clear", self.config.id);
                         move || id.clone()
                     })
-                    .size(px(20.0))
+                    .size(px(14.0))
                     .tooltip({
                         let label = self.config.clear_name.clone();
                         let style = self.config.style;
@@ -353,6 +358,7 @@ impl TextInput {
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.caret_activity = self.caret_activity.wrapping_add(1);
         self.mouse_selection = None;
         self.text_click.clear();
         let offset = offset.min(self.content.len());
@@ -369,6 +375,7 @@ impl TextInput {
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.caret_activity = self.caret_activity.wrapping_add(1);
         self.mouse_selection = None;
         self.text_click.clear();
         let offset = offset.min(self.content.len());
@@ -480,10 +487,10 @@ impl TextInput {
         if !self.enabled {
             return;
         }
-        if let Some(text) = self.content.get(self.selected.clone()) {
-            if !text.is_empty() {
-                cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
-            }
+        if let Some(text) = self.content.get(self.selected.clone())
+            && !text.is_empty()
+        {
+            cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
         }
     }
 
@@ -491,11 +498,11 @@ impl TextInput {
         if !self.enabled {
             return;
         }
-        if let Some(text) = self.content.get(self.selected.clone()) {
-            if !text.is_empty() {
-                cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
-                self.replace("", window, cx);
-            }
+        if let Some(text) = self.content.get(self.selected.clone())
+            && !text.is_empty()
+        {
+            cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
+            self.replace("", window, cx);
         }
     }
 
@@ -707,7 +714,9 @@ impl EntityInputHandler for TextInput {
         self.marked.as_ref().map(|range| self.range_to_utf16(range))
     }
 
-    fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
+    fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        self.caret_activity = self.caret_activity.wrapping_add(1);
+        cx.notify();
         self.marked = None;
         self.text_click.clear();
     }
@@ -719,7 +728,12 @@ impl EntityInputHandler for TextInput {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.enabled || text.len() > self.config.max_bytes {
+        if !self.enabled {
+            return;
+        }
+        self.caret_activity = self.caret_activity.wrapping_add(1);
+        cx.notify();
+        if text.len() > self.config.max_bytes {
             return;
         }
         if range.as_ref().is_some_and(|r| r.start > r.end) {
@@ -759,7 +773,12 @@ impl EntityInputHandler for TextInput {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.enabled || text.len() > self.config.max_bytes {
+        if !self.enabled {
+            return;
+        }
+        self.caret_activity = self.caret_activity.wrapping_add(1);
+        cx.notify();
+        if text.len() > self.config.max_bytes {
             return;
         }
         if range.as_ref().is_some_and(|r| r.start > r.end) {
@@ -910,7 +929,7 @@ impl gpui::Render for TextInput {
             .flex()
             .min_w_0()
             .overflow_hidden()
-            .h(px(if self.preserve_source { 16.0 } else { 24.0 }))
+            .h(px(if self.preserve_source { 16.0 } else { 20.0 }))
             .px_1()
             .items_center()
             .bg(gpui::rgb(self.config.style.raised))
@@ -920,6 +939,9 @@ impl gpui::Render for TextInput {
             .key_context("hex_text_input")
             .border_1()
             .border_color(gpui::rgb(self.config.style.border))
+            .when(self.config.kind == TextInputKind::Search, |input| {
+                input.border_0().rounded(px(crate::CONTROL_CORNER_RADIUS))
+            })
             .track_focus(&self.focus)
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))
@@ -1140,7 +1162,7 @@ impl Element for TextInputElement {
                         bounds.bottom(),
                     ),
                 ),
-                rgba(0x3350a0ff),
+                gpui::rgb(input.config.style.selection),
             ))
         };
         PrepaintState {
@@ -1181,7 +1203,8 @@ impl Element for TextInputElement {
             && self.input.read(cx).enabled
             && let Some(cursor) = state.cursor.take()
         {
-            crate::text_caret::paint(cursor, self.input.entity_id(), window, cx);
+            let activity = self.input.read(cx).caret_activity;
+            crate::text_caret::paint(cursor, self.input.entity_id(), activity, window, cx);
         }
         if let Some(line) = state.line.take() {
             let _ = line.paint(

@@ -2,6 +2,61 @@
 //! from the same private State/runtime; it cannot be submitted independently.
 use super::*;
 use hex_stream::{ProtectionRole, ReadinessProgress, ReadinessStamp};
+
+/// Observe only a demanded audio read/decode failure. Capacity is retryable,
+/// source identity has its own report, and unrelated/scalar failures do not
+/// describe the audio window that is about to render.
+fn current_read_failure(failure: hex_stream::StreamFailure, demanded: bool) -> bool {
+    demanded
+        && failure.kind == hex_stream::StreamFailureKind::DecodeFailed
+        && matches!(failure.key, hex_engine::StreamResourceKey::Audio(_))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::current_read_failure;
+    use hex_engine::{ScalarSourceKey, StreamSourceKey};
+    use hex_stream::{StreamFailure, StreamFailureKind};
+
+    #[test]
+    fn only_current_audio_decode_failures_notify() {
+        let mut model =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 1).unwrap();
+        let hex_project::Created::Asset(asset) = model
+            .execute(hex_project::Command::AddAsset {
+                path: "read-policy.wav".into(),
+                sample_rate: 48_000,
+                frames: 1,
+            })
+            .unwrap()
+        else {
+            panic!("asset")
+        };
+        let audio = StreamSourceKey::new(1, asset).into();
+        let scalar = ScalarSourceKey::new(1, 2, 3).unwrap().into();
+        for (key, kind, demanded, expected) in [
+            (audio, StreamFailureKind::DecodeFailed, true, true),
+            (audio, StreamFailureKind::DecodeFailed, false, false),
+            (scalar, StreamFailureKind::DecodeFailed, true, false),
+            (audio, StreamFailureKind::SourceChanged, true, false),
+            (audio, StreamFailureKind::CapacityExhausted, true, false),
+            (audio, StreamFailureKind::Cancelled, true, false),
+            (audio, StreamFailureKind::UnknownSource, true, false),
+        ] {
+            assert_eq!(
+                current_read_failure(
+                    StreamFailure {
+                        key,
+                        page_index: 0,
+                        kind
+                    },
+                    demanded
+                ),
+                expected
+            );
+        }
+    }
+}
 pub(crate) struct StreamInstall<'a> {
     pub(crate) domains: &'a mut [Option<DomainEnvelope>; 2],
     pub(crate) pending_play: bool,
@@ -87,6 +142,7 @@ impl StateView<'_> {
             .ok_or(hex_engine::Invalid("stream demand workspace unavailable"))?;
         workspace.handoff_diagnostic = None;
         workspace.source_changed = false;
+        workspace.read_failed = false;
         workspace.capacity_conflict = false;
         let runtime = self
             .runtime
@@ -246,6 +302,7 @@ impl StateView<'_> {
                 workspace.source_changed |= demanded
                     && failure.kind == hex_stream::StreamFailureKind::SourceChanged
                     && matches!(failure.key, hex_engine::StreamResourceKey::Audio(_));
+                workspace.read_failed |= current_read_failure(failure, demanded);
                 pages.inner.last_failure = Some(failure);
             }
             if failed_window {
@@ -422,6 +479,15 @@ impl hex_engine::MediaPages for PagePair<'_> {
     }
     fn request_scalar_page(&mut self, _key: hex_engine::ScalarSourceKey, _index: u64) {}
     fn request_page(&mut self, _key: hex_engine::StreamSourceKey, _index: u64) {}
+    fn prefetch_page(&mut self, key: hex_engine::StreamSourceKey, index: u64) {
+        // Each endpoint ignores sources outside its catalog.
+        for pages in [self.left.as_mut(), self.right.as_mut()]
+            .into_iter()
+            .flatten()
+        {
+            pages.prefetch_page(key, index);
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StreamProgress {
@@ -433,6 +499,7 @@ pub(crate) struct StreamOutcome {
     pub(crate) play_applied: bool,
     pub(crate) readiness_refused: bool,
     pub(crate) source_changed: bool,
+    pub(crate) read_failed: bool,
     pub(crate) fault: Option<hex_engine::Invalid>,
     pub(crate) action_rejection: Option<(u64, hex_engine::PlaybackActionRejection)>,
     pub(crate) action_applied: Option<u64>,
@@ -498,6 +565,7 @@ impl ActiveView<'_> {
                     play_applied: false,
                     readiness_refused: false,
                     source_changed: false,
+                    read_failed: false,
                     fault: None,
                     action_rejection: None,
                     action_applied: None,
@@ -506,6 +574,7 @@ impl ActiveView<'_> {
             }
         };
         let mut committed = 0;
+        let mut read_failed = false;
         let mut play_applied = false;
         let mut activated = None;
         self.service_launch_prewarm(domains, command_prefix, output.len());
@@ -524,6 +593,11 @@ impl ActiveView<'_> {
                 .streaming
                 .as_mut()
                 .is_some_and(|workspace| std::mem::take(&mut workspace.source_changed));
+            read_failed |= self
+                .state
+                .streaming
+                .as_mut()
+                .is_some_and(|workspace| std::mem::take(&mut workspace.read_failed));
             if !matches!(planned, Ok(Some(_))) && self.revoke_launch_prewarm(request.domains) {
                 if let Some(scheduled) = self
                     .state
@@ -547,6 +621,11 @@ impl ActiveView<'_> {
                     .streaming
                     .as_mut()
                     .is_some_and(|workspace| std::mem::take(&mut workspace.source_changed));
+                read_failed |= self
+                    .state
+                    .streaming
+                    .as_mut()
+                    .is_some_and(|workspace| std::mem::take(&mut workspace.read_failed));
             }
             let window = match planned {
                 Ok(Some(window)) => window,
@@ -567,6 +646,7 @@ impl ActiveView<'_> {
                         play_applied,
                         readiness_refused: refused,
                         source_changed,
+                        read_failed,
                         fault: None,
                         action_rejection,
                         action_applied,
@@ -585,6 +665,7 @@ impl ActiveView<'_> {
                         play_applied,
                         readiness_refused: true,
                         source_changed: false,
+                        read_failed,
                         fault: None,
                         action_rejection,
                         action_applied,
@@ -600,7 +681,7 @@ impl ActiveView<'_> {
                     .ok_or(hex_engine::Invalid("stream current owner missing"))
                     .and_then(|runtime| {
                         runtime
-                            .apply_action(hex_engine::PlaybackAction::Transport(
+                            .apply_declicked_action(hex_engine::PlaybackAction::Transport(
                                 hex_engine::PlaybackCommand::Play,
                             ))
                             .map_err(|_| hex_engine::Invalid("ready stream Play refused"))
@@ -614,6 +695,7 @@ impl ActiveView<'_> {
                         play_applied,
                         readiness_refused: false,
                         source_changed: false,
+                        read_failed,
                         fault: Some(error),
                         action_rejection,
                         action_applied,
@@ -649,26 +731,19 @@ impl ActiveView<'_> {
                 };
                 let observer: Option<&mut hex_engine::NodeSignalObserver<'_>> =
                     if observed { Some(&mut observe) } else { None };
-                let mut project_ids = [0; hex_engine::MAX_SESSION_ROUTE_TRACKS];
-                let project_count = project.as_ref().map_or(0, |tap| {
-                    let count = tap.tracks().len();
-                    project_ids[..count].copy_from_slice(tap.tracks());
-                    count
-                });
-                let project_observed = project.is_some();
+                let project_selection = project.as_ref().map(|tap| (tap.tracks(), tap.returns()));
                 let mut observe_project = |signal, offset, frames: &[hex_engine::Frame]| {
                     if let Some(project) = project.as_mut() {
                         project.observe(signal, committed + offset, frames);
                     }
                 };
-                let mut project_tap = if project_observed {
-                    hex_engine::ProjectOutputTap::new(
-                        &project_ids[..project_count],
+                let mut project_tap = project_selection.and_then(|(tracks, returns)| {
+                    hex_engine::ProjectOutputTap::with_returns(
+                        tracks,
+                        returns,
                         &mut observe_project,
                     )
-                } else {
-                    None
-                };
+                });
                 let rendered = self
                     .state
                     .runtime
@@ -703,6 +778,7 @@ impl ActiveView<'_> {
                         play_applied,
                         readiness_refused: false,
                         source_changed: false,
+                        read_failed,
                         fault: Some(error),
                         action_rejection,
                         action_applied,
@@ -735,6 +811,7 @@ impl ActiveView<'_> {
             play_applied,
             readiness_refused: false,
             source_changed: false,
+            read_failed,
             fault: None,
             action_rejection,
             action_applied,

@@ -511,6 +511,22 @@ impl Project {
         Ok(Created::None)
     }
     fn remove_track_rows(&mut self, ids: &[TrackId]) -> Result<(), Invalid> {
+        for receiver in self
+            .tracks()
+            .iter()
+            .filter(|track| ids.contains(&track.id()) && track.retained_source_path())
+        {
+            if let Some(source) = receiver.source_id()
+                && self
+                    .tracks()
+                    .iter()
+                    .any(|track| track.source_id() == Some(source) && !ids.contains(&track.id()))
+            {
+                return Err(Invalid(
+                    "cannot delete the retained source path while linked tracks remain",
+                ));
+            }
+        }
         let receivers = self
             .native_sources()
             .iter()

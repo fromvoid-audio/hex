@@ -3,7 +3,7 @@
 //! waits for UI delivery, and priority Stop remains on the native command path.
 use super::diagnostics::SectionPhases;
 use super::*;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub(super) fn is_command(command: &Command) -> bool {
     matches!(
@@ -61,6 +61,26 @@ pub(super) fn command(
     if !structural {
         // Marker-only edits take no callback lease; fence stays zero.
         let mut phases = SectionPhases::default();
+        if session.audio_mode() == DocumentAudioMode::Resident
+            && let Some(sink) = events.resident_audio()
+            && let Some(current) = resident.as_mut()
+        {
+            let result = session
+                .section_marker_transition(
+                    Some(command),
+                    false,
+                    context,
+                    sink,
+                    admission,
+                    current,
+                    &mut phases,
+                )
+                .and_then(|result| {
+                    result.ok_or(SessionError::Invalid("section edit produced no candidate"))
+                });
+            events.record_section_phases(phases);
+            return result;
+        }
         let result = resident_audio::execute_command_timed(
             session,
             command,
@@ -119,6 +139,34 @@ pub(super) fn history(
             .map(|(_, prepared)| prepared),
     )
 }
+/// Undo/Redo of a marker-only section step: republish without preparation.
+pub(super) fn marker_history(
+    session: &mut Session,
+    redo: bool,
+    context: hex_engine::AudioSourceContext,
+    events: &mut WorkerEvents,
+    resident: &mut Option<resident_audio::Snapshot>,
+    admission: sampler_export::Admission<'_>,
+) -> Result<Option<Arc<PreparedRevision>>, SessionError> {
+    let sink = events
+        .resident_audio()
+        .ok_or(SessionError::Invalid("native worker unavailable"))?;
+    let current = resident
+        .as_mut()
+        .ok_or(SessionError::Invalid("resident audio unavailable"))?;
+    let mut phases = SectionPhases::default();
+    let result = session.section_marker_transition(
+        None,
+        redo,
+        context,
+        sink,
+        admission,
+        current,
+        &mut phases,
+    );
+    events.record_section_phases(phases);
+    Ok(result?.map(|(_, prepared)| prepared))
+}
 /// One callback-fenced resident transition for an edit or its history step.
 /// The lease is cancelled unless a candidate commits; worker phases are
 /// recorded for the request's diagnostic outcome, including failures.
@@ -133,18 +181,30 @@ fn fenced_transition(
     admission: sampler_export::Admission<'_>,
 ) -> Result<Option<(Created, Arc<PreparedRevision>)>, SessionError> {
     let shutdown = Arc::clone(&session.shutdown);
-    let sink = events
-        .resident_audio()
-        .ok_or(SessionError::Invalid("native worker unavailable"))?;
     let source_context = hex_engine::AudioSourceContext {
         editor_revision: context.editor_revision.saturating_sub(1),
         ..context
     };
+    // A lease the worker resolved before dispatch, including its parked time.
+    let prefence = events.take_stopped_fence(source_context);
+    let parked = prefence
+        .as_ref()
+        .map_or(Duration::ZERO, super::stopped_arrangement::Prefence::waited);
+    let sink = events
+        .resident_audio()
+        .ok_or(SessionError::Invalid("native worker unavailable"))?;
     let mut phases = SectionPhases::default();
     let fence = Instant::now();
-    let position =
-        super::stopped_arrangement::acquire_position(sink, source_context, &shutdown, None, true);
+    let position = super::stopped_arrangement::acquire_position(
+        sink,
+        source_context,
+        &shutdown,
+        None,
+        true,
+        prefence,
+    );
     phases.fence = fence.elapsed();
+    phases.parked = parked;
     // A refused or timed-out lease is already cancelled by `acquire_position`.
     let committed = position.and_then(|position| {
         match session.section_snapshot(
@@ -179,15 +239,11 @@ fn fenced_transition(
 #[cfg(test)]
 mod split_tests {
     use super::*;
-    use std::time::{Duration, Instant};
     fn next(service: &Service) -> Event {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            if let Ok(event) = service.try_event() {
-                return event;
-            }
-            assert!(Instant::now() < deadline, "section split worker completion");
-            thread::sleep(Duration::from_millis(2));
+        // Blocks on the event channel; bounded only against hangs.
+        match service.events.recv_timeout(crate::test_wait::HANG_BOUND) {
+            Ok(event) => event,
+            Err(error) => panic!("next: worker event absent: {error}"),
         }
     }
     #[test]

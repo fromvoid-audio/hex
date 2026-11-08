@@ -1,6 +1,6 @@
 //! Correlated saves refuse stale document ownership before touching files.
 use super::*;
-use std::{fs, sync::atomic::AtomicU64, time::Duration};
+use std::{fs, sync::atomic::AtomicU64};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Files(PathBuf);
@@ -23,7 +23,7 @@ impl Drop for Files {
 fn next(service: &Service) -> Event {
     service
         .events
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(crate::test_wait::HANG_BOUND)
         .unwrap()
 }
 
@@ -155,7 +155,10 @@ fn invalid_correlation_does_not_admit_non_save_requests() {
     };
     assert!(matches!(
         service.submit_correlated_save(Request::SaveCurrent, identity),
-        Err(SubmitError::Busy(Request::SaveCurrent))
+        Err(SubmitError::Busy(
+            Request::SaveCurrent,
+            BusyReason::InvalidSaveCorrelation
+        ))
     ));
     assert!(matches!(
         service.submit_correlated_save(
@@ -165,6 +168,9 @@ fn invalid_correlation_does_not_admit_non_save_requests() {
                 ..identity
             }
         ),
-        Err(SubmitError::Busy(Request::Undo))
+        Err(SubmitError::Busy(
+            Request::Undo,
+            BusyReason::InvalidSaveCorrelation
+        ))
     ));
 }

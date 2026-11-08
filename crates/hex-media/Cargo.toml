@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+# Deterministic control/worker read-error qualification; absent from default builds.
+test-support = []
+
 [lints]
 workspace = true
 

@@ -19,6 +19,8 @@
 //! beat interval. Authored tempo/meter points remain present even when their
 //! values match neighbors. Synthetic meter anchors are added only where the
 //! effective signature changes; equal-meter section seams do not restart bars.
+//! Copies draw a semantic color with reuse allowed. Preview and publication agree
+//! for the same candidate identity; history and storage retain the chosen color.
 //! Destination copies compose the adjacent-copy and stable-ID reorder laws in
 //! one private candidate; display previews compose only markers and tempo.
 //! The session/transport owner fences structural publication. Reorders/copies
@@ -192,6 +194,56 @@ impl Project {
         self.arrangement_sections
             .iter()
             .find(|section| section.id == id)
+    }
+    /// True when `other` differs from `self` only in section markers and the
+    /// ID allocator they advance. No playback input reads either, so a prepared
+    /// audio graph for `self` also renders `other`. Every other field is compared
+    /// by an exhaustive destructure: adding a project field must decide here.
+    pub fn differs_only_in_arrangement_sections(&self, other: &Project) -> bool {
+        let Project {
+            aliases,
+            native_sources,
+            arrangement_sections: _,
+            tuning,
+            routing,
+            audio_feeds,
+            midi_routes,
+            sidechains,
+            import_provenance,
+            sample_rate,
+            sample_rate_mode,
+            next_id: _,
+            assets,
+            offline_assets,
+            tracks,
+            returns,
+            session,
+            loop_region,
+            master_gain,
+            main_devices,
+            tempo_map,
+            meter_map,
+        } = self;
+        *sample_rate == other.sample_rate
+            && *sample_rate_mode == other.sample_rate_mode
+            && master_gain.to_bits() == other.master_gain.to_bits()
+            && *loop_region == other.loop_region
+            && *tempo_map == other.tempo_map
+            && *meter_map == other.meter_map
+            && *tuning == other.tuning
+            && *aliases == other.aliases
+            && *native_sources == other.native_sources
+            && *routing == other.routing
+            && *audio_feeds == other.audio_feeds
+            && *midi_routes == other.midi_routes
+            && *sidechains == other.sidechains
+            && *import_provenance == other.import_provenance
+            && *assets == other.assets
+            && *offline_assets == other.offline_assets
+            && *returns == other.returns
+            && *session == other.session
+            && *main_devices == other.main_devices
+            && *tracks == other.tracks
     }
     pub fn preview_section_reorder(
         &self,
@@ -389,6 +441,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
         }
     }
 }
+mod color;
 mod meter;
 mod reorder;
 use reorder::{reorder, reorder_after};

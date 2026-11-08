@@ -7,6 +7,7 @@ use std::path::PathBuf;
 fn valid_snapshot() -> Snapshot {
     Snapshot {
         automatic_track_names: Vec::new(),
+        retained_source_paths: Vec::new(),
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
@@ -15,8 +16,10 @@ fn valid_snapshot() -> Snapshot {
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
+        sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,
+        sample_rate_mode: Default::default(),
         next_id: 100,
         assets: vec![AssetSnapshot {
             original_source: None,
@@ -38,6 +41,8 @@ fn valid_snapshot() -> Snapshot {
             hex_project::Meter::COMMON_TIME,
         )],
         tracks: vec![TrackSnapshot {
+            group_output_mutes: Vec::new(),
+            tags: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),
@@ -205,6 +210,8 @@ fn rejects_track_asset_and_clip_limit_overruns() {
     let mut tracks = valid_snapshot();
     tracks.tracks = (0..=MAX_TRACKS)
         .map(|index| TrackSnapshot {
+            group_output_mutes: Vec::new(),
+            tags: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),

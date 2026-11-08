@@ -136,14 +136,19 @@ impl EditorView {
                         }
                         match picked {
                             Ok(Ok(Some(mut paths))) if !paths.is_empty() => {
-                                if let Some(path) = paths.pop() {
-                                    if super::device_panel::finalize_controls(view, cx) {
-                                        view.choose_project(path, mode);
-                                    }
+                                if let Some(path) = paths.pop()
+                                    && super::device_panel::finalize_controls(view, cx)
+                                {
+                                    view.choose_project(path, mode);
                                 }
                             }
                             Ok(Err(error)) => {
-                                view.error = Some(error.to_string().to_lowercase().into())
+                                view.error = Some(
+                                    hex_session::service::text::lowercase_outside_verbatim(
+                                        &error.to_string(),
+                                    )
+                                    .into(),
+                                )
                             }
                             _ => view.status = "open cancelled".into(),
                         }
@@ -333,7 +338,14 @@ impl EditorView {
                             }
                         }
                     }
-                    Ok(Err(error)) => view.error = Some(error.to_string().to_lowercase().into()),
+                    Ok(Err(error)) => {
+                        view.error = Some(
+                            hex_session::service::text::lowercase_outside_verbatim(
+                                &error.to_string(),
+                            )
+                            .into(),
+                        )
+                    }
                     _ => {}
                 }
                 cx.notify();
@@ -380,7 +392,14 @@ impl EditorView {
                             }
                         }
                     }
-                    Ok(Err(error)) => view.error = Some(error.to_string().to_lowercase().into()),
+                    Ok(Err(error)) => {
+                        view.error = Some(
+                            hex_session::service::text::lowercase_outside_verbatim(
+                                &error.to_string(),
+                            )
+                            .into(),
+                        )
+                    }
                     _ => {}
                 }
                 cx.notify();

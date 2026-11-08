@@ -85,9 +85,15 @@ fn audio_event_lower_body_paints_and_repaints_while_upper_rail_moves_range(
     drag(&mut visual, at(0.5, 0.1), at(0.6, 0.1));
     editor.read_with(cx, |view, _| {
         assert!(
-            matches!(view.last_enqueued_edit, Some(Command::EditAudioEvents {
-            clip: id, operation: hex_project::AudioEventEdit::MoveRange { start, end, destination },
-        }) if id == clip && start < end && destination > start)
+            matches!(
+                view.last_enqueued_edit,
+                Some(Command::EditAudioEvents {
+                    clip: id,
+                    operation: hex_project::AudioEventEdit::PlaceRange { start, end, destination },
+                }) if id == clip && start < end && i128::from(destination) > i128::from(start)
+            ),
+            "the upper rail must move the selected range right, got {:?}",
+            view.last_enqueued_edit
         );
         assert_eq!(view.snap_grid, super::musical_time::SnapGrid::Adaptive);
     });
@@ -161,7 +167,7 @@ fn midi_clip_view_toggle_preserves_selection_and_moves_focus_out_of_hidden_roll(
                             generation: view.project_generation,
                             revision: view.state.as_ref().unwrap().revision,
                             clip,
-                            beat_start: view.piano_beat_start.raw(),
+                            beat_start: view.piano_beat_start,
                             beat_span: view.piano_beat_span.raw(),
                             pitch_low: view.piano_pitch_low,
                             pitch_rows: view.piano_pitch_rows,
@@ -520,7 +526,7 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
     visual.simulate_mouse_up(tab_point, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     let panel = visual.debug_bounds("device-panel").expect("device panel");
-    assert_eq!(panel.size.height, px(213.0));
+    assert_eq!(panel.size.height, px(229.0));
     assert!(visual.debug_bounds("device-panel-header").is_some());
     assert!(visual.debug_bounds("device-add-toggle").is_some());
     let chain = visual
@@ -539,8 +545,14 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
     assert_eq!(instrument_card.size.height, chain.size.height - px(6.0));
     assert_eq!(effect_card.size.height, instrument_card.size.height);
     // Each card ends in the 11px passive stereo output meter.
-    assert_eq!(instrument_card.size.width, px(286.0 + 11.0));
-    assert_eq!(effect_card.size.width, px(144.0 + 11.0));
+    assert_eq!(
+        instrument_card.size.width,
+        px(286.0 + hex_widgets::DEVICE_FRAME_HEADER_WIDTH + 11.0)
+    );
+    assert_eq!(
+        effect_card.size.width,
+        px(144.0 + hex_widgets::DEVICE_FRAME_HEADER_WIDTH + 11.0)
+    );
     assert!(
         instrument_card.origin.x < effect_card.origin.x,
         "instrument is first"
@@ -750,10 +762,7 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
     editor.read_with(cx, |view, _| {
         assert!(matches!(
             view.last_enqueued_edit,
-            Some(Command::SetDeviceBypass {
-                device,
-                bypassed: true
-            }) if device == device_id
+            Some(Command::ToggleDeviceBypass { device }) if device == device_id
         ));
     });
 

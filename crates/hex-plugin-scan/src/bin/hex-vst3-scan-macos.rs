@@ -5,13 +5,22 @@ mod owner;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn run() -> i32 {
-    use hex_plugin_scan::macos::{build_identity::Build, identity::Bundle, protocol::Attempt};
+    use hex_plugin_scan::macos::{
+        build_identity::Build,
+        identity::Bundle,
+        protocol::{Attempt, WAIT_FOR_PLUGIN_ARG},
+    };
     use std::{io::Write, path::PathBuf, time::Duration};
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
-    if !matches!(arguments.len(), 3 | 4) || arguments[1] != "--trust-user-code" {
+    let wait_for_plugin = arguments
+        .get(4)
+        .is_some_and(|value| value == WAIT_FOR_PLUGIN_ARG);
+    if !(matches!(arguments.len(), 3 | 4) || arguments.len() == 5 && wait_for_plugin)
+        || arguments[1] != "--trust-user-code"
+    {
         let _ = writeln!(
             std::io::stderr(),
-            "usage: hex-vst3-scan-macos <controlled-macos.json|--bundled> --trust-user-code <one.vst3> [deadline-ms]; selected module executes as your user"
+            "usage: hex-vst3-scan-macos <controlled-macos.json|--bundled> --trust-user-code <one.vst3> [deadline-ms [--wait-for-plugin]]; selected module executes as your user"
         );
         return 2;
     }
@@ -45,7 +54,8 @@ fn run() -> i32 {
                 generation: 1,
             },
             Duration::from_millis(deadline),
-            owner::stdin_cancelled,
+            wait_for_plugin,
+            || owner::stdin_cancelled(wait_for_plugin),
         )
     });
     let (mut report, mut pending) = match result {

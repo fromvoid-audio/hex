@@ -37,6 +37,8 @@ pub use native_custody::{
 mod pending;
 pub use pending::{PendingStreamDomain, StreamPreparationAllowance, StreamPreparationBound};
 mod disposal;
+#[cfg(test)]
+mod read_outcome_tests;
 pub use disposal::{PreparedStreamDisposal, StreamDisposalError, StreamDisposalPhase};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -890,6 +892,10 @@ impl MediaPages for StreamCallbackPages {
     fn request_page(&mut self, key: StreamSourceKey, page_index: u64) {
         self.endpoint.request_page(key, page_index);
     }
+
+    fn prefetch_page(&mut self, key: StreamSourceKey, page_index: u64) {
+        self.endpoint.prefetch_page(key, page_index);
+    }
     fn scalar_page(
         &mut self,
         key: hex_engine::ScalarSourceKey,
@@ -914,6 +920,12 @@ impl MediaPages for StreamRuntime {
     fn request_page(&mut self, key: StreamSourceKey, page_index: u64) {
         if let Some(pages) = self.pages.as_mut() {
             pages.request_page(key, page_index);
+        }
+    }
+
+    fn prefetch_page(&mut self, key: StreamSourceKey, page_index: u64) {
+        if let Some(pages) = self.pages.as_mut() {
+            pages.prefetch_page(key, page_index);
         }
     }
     fn scalar_page(
@@ -977,6 +989,7 @@ mod tests {
         let (release_tx, release_rx) = mpsc::sync_channel(1);
         let (publication_tx, publication_rx) = mpsc::sync_channel(2);
         let hooks = crate::worker::TestWorkerHooks {
+            read_gate: None,
             scalar_steps: None,
             entered: entered_tx,
             release: release_rx,
@@ -1071,6 +1084,7 @@ mod tests {
         let (release_tx, release_rx) = mpsc::sync_channel(1);
         let (publication_tx, publication_rx) = mpsc::sync_channel(3);
         let hooks = crate::worker::TestWorkerHooks {
+            read_gate: None,
             entered: entered_tx,
             release: release_rx,
             publications: publication_tx,
@@ -1233,6 +1247,7 @@ mod tests {
         let (release_tx, release_rx) = mpsc::sync_channel(1);
         let (publication_tx, publication_rx) = mpsc::sync_channel(3);
         let hooks = crate::worker::TestWorkerHooks {
+            read_gate: None,
             entered: entered_tx,
             release: release_rx,
             publications: publication_tx,

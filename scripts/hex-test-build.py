@@ -154,6 +154,25 @@ def validate_discovery_input(path: Path, candidate: str, *, packaged=False, prov
     return data
 
 
+def prepare_discovery_input(args, output_dir: Path) -> Path | None:
+    """Resolve or build the exact native input before staging the app."""
+    receipt = args.vst3_discovery_receipt
+    if args.without_vst3_discovery:
+        return None
+    if receipt is None:
+        sdk = args.vst3_sdk or os.environ.get("HEX_VST3_SDK")
+        if not sdk:
+            raise DeliveryError(
+                "set HEX_VST3_SDK or --vst3-sdk to the pinned clean VST3 SDK checkout, "
+                "supply --vst3-discovery-receipt, or explicitly use --without-vst3-discovery"
+            )
+        receipt = discovery_builder().build(
+            Path(sdk), output_dir / "vst3-discovery", discovery_only=True
+        )
+    validate_discovery_input(receipt, args.candidate)
+    return receipt
+
+
 def sign_discovery(path: Path, identifier: str, signing: dict) -> None:
     run(["codesign", "--force", "--sign", signing["certificate_sha1"], "--identifier", identifier,
          "--timestamp=none", str(path)])
@@ -1094,9 +1113,7 @@ def build(args) -> dict:
         instance_receipt = getattr(args, "vst3_instance_receipt", None)
         if instance_receipt is not None:
             validate_instance_input(instance_receipt, args.candidate)
-        discovery_receipt = getattr(args, "vst3_discovery_receipt", None)
-        if discovery_receipt is not None:
-            validate_discovery_input(discovery_receipt, args.candidate)
+        discovery_receipt = prepare_discovery_input(args, runner.output_dir)
         with optimized_artifact(runner, **({"discovery": True} if discovery_receipt else {}), adopt=getattr(args, "adopt_release_target", False),
                                 expected_owner_sha256=getattr(args, "expected_release_owner_sha256", None),
                                 verification_check=revalidate,
@@ -1196,8 +1213,13 @@ def main() -> int:
                         help="explicitly recover unknown/pending release ownership; selectively clean workspace release artifacts")
     parser.add_argument("--vst3-instance-receipt", type=Path,
                         help="include exact-source minimal native instance helper")
-    parser.add_argument("--vst3-discovery-receipt", type=Path,
-                        help="include exact-source minimal native discovery helper and optimized scanner")
+    discovery = parser.add_mutually_exclusive_group()
+    discovery.add_argument("--vst3-discovery-receipt", type=Path,
+                           help="use a prebuilt exact-source discovery helper instead of building with HEX_VST3_SDK")
+    discovery.add_argument("--vst3-sdk", type=Path,
+                           help="use this pinned clean SDK checkout to build the default discovery helper")
+    discovery.add_argument("--without-vst3-discovery", action="store_true",
+                           help="explicitly build a development app without VST3 discovery")
     parser.add_argument("--expected-release-owner-sha256",
                         help="require this exact previously inspected owner under the release mutation lock")
     parser.add_argument("--expected-recreated-target-device", type=int,

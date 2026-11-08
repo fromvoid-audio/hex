@@ -38,8 +38,9 @@ pub(super) fn drag_title(
         .expect("draggable title");
     let target = visual.debug_bounds(target_selector).expect("target card");
     assert!(
-        title.size.width > px(20.0),
-        "title offers a useful grab area"
+        title.size.width.min(title.size.height) >= px(16.0)
+            && title.size.width.max(title.size.height) > px(20.0),
+        "the horizontal title or vertical sidebar offers a useful grab area: {title:?}"
     );
     visual.simulate_mouse_down(title.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(

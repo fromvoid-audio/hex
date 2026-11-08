@@ -174,15 +174,15 @@ impl Track {
             .checked_add(count as u64)
             .ok_or(Invalid("stream demand clock overflow"))?;
         let mut result = Ok(());
-        for clip in &self.clips {
+        crate::clip_index::visit(&self.clip_index, &self.clips, start, end, |clip| {
             if result.is_err() {
-                break;
+                return;
             }
             clip.visit_streamed_spans(start, end, |source, span| {
                 result = visit_page_range(source, span.source_frame, span.count, visit);
                 if result.is_ok() { span.count } else { 0 }
             });
-        }
+        });
         result
     }
 }

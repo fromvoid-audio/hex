@@ -303,3 +303,66 @@ fn return_feed_mutation_checks_feedback_through_track_input_and_send() {
     assert_eq!(editor.project(), &before);
     assert!(before.snapshot().with_return_feed(x, y, 1.0).is_err());
 }
+
+#[test]
+fn compressor_sidechain_uses_combined_cycle_checks_and_history() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let source = track(&mut editor);
+    let receiver = track(&mut editor);
+    let state = hex_lattice_contract::NativeDeviceState::new(
+        hex_lattice_contract::DeviceTypeId::from_static("hex.compressor"),
+        3,
+        vec![0; 32],
+    )
+    .unwrap();
+    let Created::Device(device) = editor
+        .execute(Command::InsertDevice {
+            track: receiver,
+            before: None,
+            state,
+        })
+        .unwrap()
+    else {
+        panic!("compressor")
+    };
+    let original = editor.project().clone();
+    let connect = Command::SetSidechain {
+        device,
+        source: Some(source),
+    };
+    editor.execute(connect.clone()).unwrap();
+    let connected = editor.project().clone();
+    assert_eq!(
+        connected.sidechains(),
+        &[hex_project::SidechainRoute { source, device }]
+    );
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &original);
+    assert!(editor.redo());
+    assert_eq!(editor.project(), &connected);
+
+    for command in [
+        Command::SetSidechain {
+            device,
+            source: Some(receiver),
+        },
+        Command::SetAudioFeed {
+            source: RoutingOwner::Track(receiver),
+            destination: source,
+            gain: 1.0,
+        },
+    ] {
+        assert!(editor.execute(command).is_err());
+        assert_eq!(editor.project(), &connected);
+    }
+
+    editor.execute(Command::RemoveTrack(source)).unwrap();
+    assert!(editor.project().sidechains().is_empty());
+    assert!(editor.execute(connect).is_err());
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &connected);
+    editor.execute(Command::RemoveDevice(device)).unwrap();
+    assert!(editor.project().sidechains().is_empty());
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &connected);
+}
