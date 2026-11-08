@@ -6,13 +6,13 @@ use crate::service::automation_draft::{
 use hex_project::{Command, Created};
 use hex_storage::automation_draft::{DraftClock, DraftOutcome, DraftReader};
 use std::time::{Duration, Instant};
-pub(super) struct Files(pub(super) PathBuf);
+pub(in crate::service) struct Files(pub(in crate::service) PathBuf);
 impl Drop for Files {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
-pub(super) fn fixture() -> (
+pub(in crate::service) fn fixture() -> (
     Files,
     Session,
     DeviceAutomationTakeScope,
@@ -91,7 +91,7 @@ pub(super) fn fixture() -> (
     };
     (files, session, scope, source)
 }
-pub(super) fn application(
+pub(in crate::service) fn application(
     scope: DeviceAutomationTakeScope,
     frame: u64,
     value: Vst3ApplicationValue,

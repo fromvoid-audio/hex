@@ -133,6 +133,10 @@ pub(super) enum Step {
 }
 
 impl Lane {
+    pub(super) fn path(&self) -> Option<&Path> {
+        self.active.as_ref().map(|active| active.input.path())
+    }
+
     pub(super) fn busy(&self) -> bool {
         self.active.is_some()
     }
@@ -386,4 +390,4 @@ fn draft_path(directory: &Path) -> Result<PathBuf, String> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

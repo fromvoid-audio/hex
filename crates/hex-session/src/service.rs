@@ -85,6 +85,7 @@ mod device_comparison;
 mod effect_bus;
 mod plugin_effect;
 mod plugin_parameters;
+mod plugin_recording;
 mod plugin_state_save;
 pub use plugin_parameters::{
     PluginParameterQuery, PluginParameterResult, PluginParameterRow, vst3_automation_class,
@@ -2496,6 +2497,7 @@ fn run_worker(
     let mut pending_plugin_effect: Option<plugin_effect::Pending> = None;
     let mut pending_stopped_restore = None;
     let mut native_automation_take = native_automation_recording::Lane::default();
+    let mut plugin_recording = plugin_recording::State::default();
     while let Some(queued) = events.next_request_with_control_poll(
         &requests,
         &document_intent,
@@ -2550,6 +2552,24 @@ fn run_worker(
                     resident_preview.as_ref(),
                 ),
             );
+            if let Some(sink) = audio.as_deref_mut() {
+                plugin_recording::Preparation {
+                    state: &mut plugin_recording,
+                    lane: &mut native_automation_take,
+                    document_base: media_base.as_deref(),
+                    recovery: recovery.as_deref(),
+                    may_defer: false,
+                    deferred: false,
+                }
+                .drive(
+                    &session,
+                    hex_engine::AudioSourceContext {
+                        project_generation,
+                        editor_revision: revision,
+                    },
+                    sink,
+                );
+            }
             audio_sink::native_sampler::drive(
                 audio,
                 &session,
@@ -2565,7 +2585,11 @@ fn run_worker(
                     }
                 }),
             );
-            control_lanes_pending(resident_seek.as_ref(), &export_lane)
+            audio_sink::ControlPoll {
+                pending: control_lanes_pending(resident_seek.as_ref(), &export_lane)
+                    || plugin_recording.pending(),
+                gesture: plugin_recording.ready(),
+            }
         },
     ) {
         let queued = if events.resident_publication_enabled()
@@ -3391,6 +3415,12 @@ fn run_worker(
         }) {
             barrier_failure = Some("save target changed · save cancelled".to_owned());
         }
+        if barrier && barrier_failure.is_none() && plugin_recording.owns(device_gesture.snapshot())
+        {
+            // A recorded terminal has its own asynchronous durable transaction.
+            // Do not send it through ordinary opaque/manual gesture finalization.
+            barrier_failure = Some("finish or cancel the vst3 recording before this action".into());
+        }
         if barrier && barrier_failure.is_none() {
             let device_finished = if events.resident_publication_enabled()
                 && session.audio_mode() == DocumentAudioMode::Resident
@@ -3892,6 +3922,7 @@ fn run_worker(
                 Request::DeviceGesture(gesture) => {
                     gesture_request = true;
                     gesture_protocol_ack = true;
+                    let mut deferred = false;
                     let outcome = if tuning_gesture.snapshot().is_some()
                         && matches!(
                             gesture,
@@ -3937,6 +3968,39 @@ fn run_worker(
                                 let sink = events.resident_audio().ok_or(SessionError::Invalid(
                                     "native preview output unavailable",
                                 ))?;
+                                let mut recording = plugin_recording::Preparation {
+                                    state: &mut plugin_recording,
+                                    lane: &mut native_automation_take,
+                                    document_base: media_base.as_deref(),
+                                    recovery: recovery.as_deref(),
+                                    may_defer: matches!(
+                                        gesture.phase(),
+                                        crate::device_gesture::GesturePhase::Commit
+                                            | crate::device_gesture::GesturePhase::Cancel
+                                    ),
+                                    deferred: false,
+                                };
+                                if let crate::device_gesture::GesturePreparation::Plugin(
+                                    operation,
+                                ) = operation
+                                {
+                                    let result =
+                                        resident_preview::plugin_parameter::operation_using(
+                                            session,
+                                            operation,
+                                            hex_engine::AudioSourceContext {
+                                                project_generation,
+                                                editor_revision: revision,
+                                            },
+                                            &mut resident_snapshot,
+                                            &mut resident_preview,
+                                            sink,
+                                            admission,
+                                            Some(&mut recording),
+                                        );
+                                    deferred |= recording.deferred;
+                                    return result;
+                                }
                                 resident_preview::device_operation(
                                     session,
                                     operation,
@@ -3976,7 +4040,14 @@ fn run_worker(
                             crate::device_gesture::GesturePhase::Commit
                                 | crate::device_gesture::GesturePhase::Cancel
                         );
-                    gesture_ack = Some(outcome.ack);
+                    if deferred {
+                        plugin_recording.defer(gesture);
+                        gesture_protocol_ack = false;
+                        gesture_request = false;
+                    } else {
+                        plugin_recording.attempt(gesture);
+                        gesture_ack = Some(outcome.ack);
+                    }
                     if let Some(prepared) = outcome.playback {
                         if native_terminal_accepted && !outcome.canonical_changed {
                             compiled = Some((revision, Arc::clone(&prepared)));
@@ -7794,6 +7865,31 @@ fn run_worker(
                             let sink = events.resident_audio().ok_or(SessionError::Invalid(
                                 "native preview output unavailable",
                             ))?;
+                            if let crate::device_gesture::GesturePreparation::Plugin(operation) =
+                                operation
+                            {
+                                let mut recording = plugin_recording::Preparation {
+                                    state: &mut plugin_recording,
+                                    lane: &mut native_automation_take,
+                                    document_base: media_base.as_deref(),
+                                    recovery: recovery.as_deref(),
+                                    may_defer: false,
+                                    deferred: false,
+                                };
+                                return resident_preview::plugin_parameter::operation_using(
+                                    session,
+                                    operation,
+                                    hex_engine::AudioSourceContext {
+                                        project_generation,
+                                        editor_revision: revision,
+                                    },
+                                    &mut resident_snapshot,
+                                    &mut resident_preview,
+                                    sink,
+                                    admission,
+                                    Some(&mut recording),
+                                );
+                            }
                             resident_preview::device_operation(
                                 session,
                                 operation,
@@ -8131,10 +8227,14 @@ fn run_worker(
             }
             stopped_playback_restore_complete = true;
         }
-        native_automation_take.interrupt_if_source_changed(hex_engine::AudioSourceContext {
-            project_generation,
-            editor_revision: revision,
-        });
+        if !plugin_recording.pending() {
+            // Recorded SDK input retains its original writer until the actual
+            // source observation has drained its last point and interruption.
+            native_automation_take.interrupt_if_source_changed(hex_engine::AudioSourceContext {
+                project_generation,
+                editor_revision: revision,
+            });
+        }
         if let Some(completion) = device_automation_take_complete.as_mut() {
             if let Some((path, _)) = adopted_device_draft {
                 if error.is_none() && revision != revision_before_request {
@@ -8256,6 +8356,24 @@ fn run_worker(
                         resident_preview.as_ref(),
                     ),
                 );
+                if let Some(sink) = audio.as_deref_mut() {
+                    plugin_recording::Preparation {
+                        state: &mut plugin_recording,
+                        lane: &mut native_automation_take,
+                        document_base: media_base.as_deref(),
+                        recovery: recovery.as_deref(),
+                        may_defer: false,
+                        deferred: false,
+                    }
+                    .drive(
+                        &session,
+                        hex_engine::AudioSourceContext {
+                            project_generation,
+                            editor_revision: revision,
+                        },
+                        sink,
+                    );
+                }
                 audio_sink::native_sampler::drive(
                     audio,
                     &session,
