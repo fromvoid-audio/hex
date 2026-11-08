@@ -1,6 +1,8 @@
 use super::*;
 use hex_lattice::{NativeInstrumentClock, NativeProcessorAudition};
 
+mod automation;
+
 const CADENCE: u64 = 64;
 #[derive(Clone, Copy)]
 struct CompiledLane {
@@ -16,6 +18,7 @@ struct Configuration {
     points: Vec<AutomationPoint>,
     mode: u8,
     gain: f64,
+    output_gain_automation: bool,
 }
 impl Configuration {
     fn heap_bytes(&self) -> usize {
@@ -82,6 +85,13 @@ pub(super) struct PreparedEq {
 }
 impl PreparedEq {
     pub(super) fn new(settings: EqState, sample_rate: u32) -> Result<Self, DeviceContractError> {
+        Self::prepare(settings, sample_rate, false)
+    }
+    fn prepare(
+        settings: EqState,
+        sample_rate: u32,
+        output_gain_automation: bool,
+    ) -> Result<Self, DeviceContractError> {
         settings.validate()?;
         if !(MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&sample_rate) {
             return Err(DeviceContractError::InvalidParameterValue);
@@ -131,17 +141,25 @@ impl PreparedEq {
                 points,
                 mode: settings.mode,
                 gain: f64::from(settings.output_gain),
+                output_gain_automation,
             }),
             stages,
         })
     }
 }
 impl PreparedNativeProcessor for PreparedEq {
+    fn supports_parameter_automation(&self, id: ParameterId) -> bool {
+        self.configuration.output_gain_automation && id == OUTPUT_GAIN
+    }
+    fn parameter_automation_descriptor(&self, id: ParameterId) -> Option<ParameterDescriptor> {
+        self.supports_parameter_automation(id)
+            .then_some(DESCRIPTORS[201])
+    }
     fn supports_smoothed_bypass(&self) -> bool {
         true
     }
     fn runtime_version(&self) -> u32 {
-        1
+        2
     }
     fn declared_runtime_bytes(&self) -> usize {
         EQ_RUNTIME_BYTES
@@ -172,6 +190,7 @@ impl PreparedNativeProcessor for PreparedEq {
             audition_mix: 0.0,
             audition_history: [[[0.0; 2]; 4]; 2],
             gain: self.configuration.gain,
+            gain_pristine: true,
             effective_banks: std::array::from_fn(|i| {
                 self.configuration.nodes.get(i).map_or(0, |n| n.bank)
             }),
@@ -450,6 +469,7 @@ struct EqRuntime {
     audition_mix: f64,
     audition_history: [[[f64; 2]; 4]; 2],
     gain: f64,
+    gain_pristine: bool,
     effective_banks: [u8; MAX_NODES],
     mode_fade: ModeFade,
 }
@@ -460,8 +480,21 @@ impl EqRuntime {
         clock: Option<&dyn NativeInstrumentClock>,
         bypassed: bool,
     ) {
+        self.process_at(frames, clock, bypassed, 0, self.configuration.gain);
+    }
+    // Callers pass either a whole block at offset zero or one frame at its
+    // original block offset; clock and legacy lane positions stay unchanged.
+    fn process_at(
+        &mut self,
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn NativeInstrumentClock>,
+        bypassed: bool,
+        first_offset: usize,
+        gain_target: f64,
+    ) {
         let automated = !self.configuration.lanes.is_empty();
         for (offset, frame) in frames.iter_mut().enumerate() {
+            let offset = first_offset + offset;
             let running = clock.is_some_and(|c| c.transport_is_running() == Some(true));
             // A stopped monitoring clock may repeat its arrangement origin.
             // Only running content positions define a transport discontinuity.
@@ -583,7 +616,7 @@ impl EqRuntime {
                     working[channel] += (isolated - working[channel]) * self.audition_mix;
                 }
             }
-            self.gain += (self.configuration.gain - self.gain) * 0.015625;
+            self.gain += (gain_target - self.gain) * 0.015625;
             if self.configuration.mode == 2 {
                 working = [working[0] + working[1], working[0] - working[1]];
             }
@@ -597,6 +630,7 @@ impl EqRuntime {
             };
             self.last_frame = origin;
             self.fallback_frame = self.fallback_frame.wrapping_add(1);
+            self.gain_pristine = false;
         }
     }
 }
@@ -627,6 +661,27 @@ fn bank(mode: u8, channel: usize) -> u8 {
     }
 }
 impl NativeProcessorRuntime for EqRuntime {
+    fn supports_parameter_automation(&self, id: ParameterId) -> bool {
+        self.configuration.output_gain_automation && id == OUTPUT_GAIN
+    }
+    fn process_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn NativeInstrumentClock>,
+        values: &dyn hex_lattice::NativeParameterAutomation,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        self.process_automation(frames, clock, values, false)
+    }
+    fn process_bypassed_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn NativeInstrumentClock>,
+        values: &dyn hex_lattice::NativeParameterAutomation,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        self.process_automation(frames, clock, values, true)
+    }
     fn process_block(
         &mut self,
         frames: &mut [StereoFrame],
@@ -666,6 +721,7 @@ impl NativeProcessorRuntime for EqRuntime {
         }
         self.last_frame = None;
         self.fallback_frame = 0;
+        self.gain_pristine = true;
         self.audition = None;
         self.audition_request = None;
         self.audition_mix = 0.0;
@@ -717,6 +773,7 @@ impl NativeProcessorRuntime for EqRuntime {
             self.fallback_frame = old.fallback_frame;
             self.refresh_target = true;
             self.gain = old.gain;
+            self.gain_pristine = old.gain_pristine;
             return;
         }
         self.mode_fade.copy_from(&old.mode_fade);
@@ -731,6 +788,7 @@ impl NativeProcessorRuntime for EqRuntime {
             self.audition_mix = old.audition_mix;
             self.audition_history = old.audition_history;
             self.gain = old.gain;
+            self.gain_pristine = old.gain_pristine;
             return;
         }
         for (index, node) in self.configuration.nodes.iter().enumerate() {
@@ -767,6 +825,7 @@ impl NativeProcessorRuntime for EqRuntime {
         self.fallback_frame = old.fallback_frame;
         self.refresh_target = true;
         self.gain = old.gain;
+        self.gain_pristine = old.gain_pristine;
     }
     /// The single `ModeFade` branch is full: a further channel-mode change
     /// waits until the previous switch has finished fading (Pulse #4122).
