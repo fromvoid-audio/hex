@@ -17,7 +17,6 @@ pub use aux_input::{AuxiliaryBlockError, StereoAuxiliaryBlock};
 mod foreign_processor;
 mod host_output_gain_ramp;
 mod matrix_ramp;
-mod modulation_sources;
 mod meter;
 mod modulation_sources;
 mod owned_processor;
