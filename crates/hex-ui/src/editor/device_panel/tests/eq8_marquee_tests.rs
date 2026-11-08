@@ -153,7 +153,43 @@ fn eq8_marquee_group_move_and_disable_each_commit_one_undo(cx: &mut TestAppConte
         assert_eq!(snapshot.parameters.unwrap().entries().len(), 4);
         assert_eq!(mask(v, device), 6);
     });
+    let frozen = geometry(&editor, cx, device).1;
     visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    // Hold the actual Service terminal. No virtual clock advancement or
+    // fabricated acknowledgement may conceal release-to-commit repaint flicker.
+    let mut terminal = None;
+    for _ in 0..4 {
+        editor.update(cx, |v, _| assert!(v.pump_device_gesture()));
+        let event = editor.read_with(cx, |v, _| receive_service_event(&v.service));
+        assert!(event.error.is_none());
+        let ack = event.gesture_ack.as_ref().unwrap();
+        assert!(ack.accepted);
+        if ack.phase == hex_session::device_gesture::GesturePhase::Commit {
+            terminal = Some(event);
+            break;
+        }
+        editor.update(cx, |v, _| v.receive(event));
+    }
+    let terminal = terminal.expect("actual group commit acknowledgement");
+    for _ in 0..3 {
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        assert_eq!(geometry(&editor, cx, device).1, frozen);
+        editor.read_with(cx, |v, _| {
+            assert!(v.device_gesture.has_pending_terminal());
+            assert_eq!(
+                v.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .device(device)
+                    .unwrap()
+                    .state(),
+                &before
+            );
+        });
+    }
+    editor.update(cx, |v, _| v.receive(terminal));
     idle(&editor, cx);
     visual.run_until_parked();
     editor.read_with(cx, |v, _| {
