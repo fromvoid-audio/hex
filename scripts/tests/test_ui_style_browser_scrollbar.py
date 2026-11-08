@@ -25,6 +25,7 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                 "crates/hex-ui/src/editor/track_performance/tests.rs": '.child(super::super::render(&self.state, self.owner, self.now))',
                 "crates/hex-ui/src/editor/browser.rs": '.child(self.browser_results(rows, count, cx))',
                 "crates/hex-ui/src/editor/browser/scrollbar.rs": '.child(list) .child(self.browser_scrollbar(cx))',
+                "crates/hex-ui/src/editor/track_meters.rs": '.child(bar) .child(bars.id(id))',
             }
             for name, text in files.items():
                 path = root / name
@@ -40,6 +41,10 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                 ("other.rs", '.child(self.browser_results(rows, count, cx))'),
                 ("other.rs", '.child(self.browser_scrollbar(cx))'),
                 ("other.rs", '.child(list)'),
+                ("other.rs", '.child(bar)'),
+                ("other.rs", '.child(bars.id(id))'),
+                ("editor/track_meters.rs", '.child("Unnormalized")'),
+                ("editor/track_meters.rs", '.child(self.unregistered_component(cx))'),
                 ("editor/browser.rs", '.child("Unnormalized")'),
                 ("editor/browser.rs", '.child(self.unregistered_component(cx))'),
                 ("editor/browser/scrollbar.rs", '.child("Unnormalized")'),

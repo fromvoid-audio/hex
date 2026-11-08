@@ -131,7 +131,7 @@ mod level_meter;
 mod meter_clip;
 pub use level_meter::{
     LevelMeterStyle, METER_NEAR_PEAK_AMPLITUDE, METER_NEAR_PEAK_DBFS, MeterColors, MeterLevel,
-    level_meter, reduction_meter,
+    level_meter, reduction_meter, signal_meter,
 };
 
 mod meter_indicator;

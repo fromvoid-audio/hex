@@ -57,7 +57,7 @@ fn track_meter_uses_own_peak_and_stays_inside_compact_header(cx: &mut TestAppCon
     let (mut visual, editor, tracks) = fixture(cx, 2);
     visual.update(|_, cx| {
         editor.update(cx, |view, cx| {
-            view.track_meters.set_test_level(tracks[0], 0.5);
+            view.track_meters.set_test_level(tracks[0], [0.5, 0.125]);
             cx.notify();
         })
     });
@@ -66,12 +66,12 @@ fn track_meter_uses_own_peak_and_stays_inside_compact_header(cx: &mut TestAppCon
     let meter = bounds(&mut visual, "track-output-meter", tracks[0]);
     let first_fill = visual
         .debug_bounds(Box::leak(
-            format!("track-output-meter-{}-fill", tracks[0].value()).into_boxed_str(),
+            format!("track-output-meter-{}-left-fill", tracks[0].value()).into_boxed_str(),
         ))
         .unwrap();
     let other_fill = visual
         .debug_bounds(Box::leak(
-            format!("track-output-meter-{}-fill", tracks[1].value()).into_boxed_str(),
+            format!("track-output-meter-{}-left-fill", tracks[1].value()).into_boxed_str(),
         ))
         .unwrap();
     assert!(meter.left() >= header.left() && meter.right() <= header.right());
