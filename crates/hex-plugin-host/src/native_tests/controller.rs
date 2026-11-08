@@ -620,6 +620,7 @@ fn authored_pcm_rechecks_processing_capability_after_controller_refresh() {
             .unwrap()
         };
         let mut instance = prepare(&case);
+        let signature = page(&mut instance, ParameterPageQuery::default()).descriptor_signature;
         let class = instance.configuration().identity.class;
         let metadata = instance
             .read_authored_parameter_metadata_on_control(class, &[7])
@@ -675,6 +676,10 @@ fn authored_pcm_rechecks_processing_capability_after_controller_refresh() {
             }
             let current = page(&mut instance, ParameterPageQuery::default());
             assert!(current.revision > metadata.revision());
+            assert_eq!(
+                current.descriptor_signature, signature,
+                "feedback is not a descriptor change"
+            );
         }
 
         fs::write(case.release(), b"change authored parameter capability").unwrap();
@@ -683,6 +688,10 @@ fn authored_pcm_rechecks_processing_capability_after_controller_refresh() {
             let current = page(&mut instance, ParameterPageQuery::default());
             let gain = &current.as_slice()[0];
             if gain.step_count != 0 || !gain.supports_authored_automation() {
+                assert_ne!(
+                    current.descriptor_signature, signature,
+                    "descriptor change invalidates display caches"
+                );
                 break;
             }
             assert!(Instant::now() < until, "SDK metadata did not refresh");
