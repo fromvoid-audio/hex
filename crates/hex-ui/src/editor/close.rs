@@ -341,16 +341,15 @@ impl EditorView {
             }
             return true;
         }
-        if let PreflightState::Draining { quit, deadline } = self.automation_close_preflight.state {
-            if self.pending_requests.is_empty()
-                && self.worker_requests_pending == 0
-                && !self.device_gesture_pending()
-                && !self.native_automation_recorder.busy()
-                && self.tuning.client.snapshot().is_none()
-            {
-                self.submit_automation_close_query(quit, deadline, cx);
-                return true;
-            }
+        if let PreflightState::Draining { quit, deadline } = self.automation_close_preflight.state
+            && self.pending_requests.is_empty()
+            && self.worker_requests_pending == 0
+            && !self.device_gesture_pending()
+            && !self.native_automation_recorder.busy()
+            && self.tuning.client.snapshot().is_none()
+        {
+            self.submit_automation_close_query(quit, deadline, cx);
+            return true;
         }
         if let PreflightState::Ready {
             request,
