@@ -20,10 +20,16 @@ fn event(service: &Service) -> Event {
 #[test]
 fn delay_feedback_lane_edits_preserve_base_value_history_and_refuse_stale_requests() {
     for parameter in 1..=27 {
-        lane_case(parameter);
+        lane_case("hex.delay", parameter);
     }
 }
-fn lane_case(raw_parameter: u32) {
+#[test]
+fn limiter_scalar_lane_edits_preserve_history_and_refuse_stale_requests() {
+    for parameter in 1..=3 {
+        lane_case("hex.limiter", parameter);
+    }
+}
+fn lane_case(type_id: &'static str, raw_parameter: u32) {
     let service = Service::new(48000, 16, 0).unwrap();
     event(&service);
     service
@@ -38,7 +44,7 @@ fn lane_case(raw_parameter: u32) {
         .submit(Request::Edit(Command::InsertDevice {
             track,
             before: None,
-            state: hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.delay"))
+            state: hex_engine::default_native_device_state(DeviceTypeId::from_static(type_id))
                 .unwrap(),
         }))
         .unwrap();
