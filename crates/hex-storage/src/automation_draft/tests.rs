@@ -361,6 +361,12 @@ fn acknowledged_identity_rejects_replacement_with_same_source() {
     let mut changed = open(&second.path());
     assert!(!changed.matches_prefix(identity).unwrap());
     assert!(!changed.matches_prefix(later).unwrap());
+    let mut damaged = fs::read(first.path()).unwrap();
+    damaged.pop();
+    fs::write(first.path(), &damaged).unwrap();
+    let mut truncated = open(&first.path());
+    assert!(truncated.matches_prefix(identity).unwrap());
+    assert!(!truncated.matches_prefix(later).unwrap());
 }
 
 #[test]
