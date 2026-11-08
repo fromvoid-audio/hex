@@ -23,7 +23,10 @@
 //! for the same candidate identity; history and storage retain the chosen color.
 //! Appended copies use an absolute final beat beyond the last marker; one
 //! nonempty gap marker and the musical copy share a single candidate/history edge.
-//! Metadata-only previews use zero IDs for both unpublished new markers.
+//! Metadata-only previews use zero IDs for unpublished new markers.
+//! Beyond-end moves preserve the source identity and close its original interval.
+//! The gap starts at the remaining final marker (or zero for a sole section);
+//! it may cover unmarked music, which is retained by the same ripple law.
 //! Destination copies compose the adjacent-copy and stable-ID reorder laws in
 //! one private candidate; display previews compose only markers and tempo.
 //! The session/transport owner fences structural publication. Reorders/copies
@@ -400,6 +403,12 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             gap_name,
             gap_color,
         } => append::apply(project, section, start, gap_name, gap_color),
+        Command::MoveArrangementSectionBeyondEnd {
+            section,
+            start,
+            gap_name,
+            gap_color,
+        } => move_beyond_end::apply(project, section, start, gap_name, gap_color),
         Command::SplitArrangementSection { section, at } => {
             let (right, mut sections) = project.preview_section_split(section, at)?;
             let id = SectionId(project.allocate_id()?);
@@ -453,7 +462,10 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
 mod append;
 mod color;
 mod meter;
+mod move_beyond_end;
 mod reorder;
+#[cfg(test)]
+mod test_support;
 use reorder::{reorder, reorder_after};
 
 mod marker_move;
@@ -507,6 +519,12 @@ impl Project {
                 gap_name,
                 gap_color,
             } => append::preview(self, *section, *start, gap_name, *gap_color),
+            Command::MoveArrangementSectionBeyondEnd {
+                section,
+                start,
+                gap_name,
+                gap_color,
+            } => move_beyond_end::preview(self, *section, *start, gap_name, *gap_color),
             Command::SplitArrangementSection { section, at } => {
                 let (_, sections) = self.preview_section_split(*section, *at)?;
                 Ok(SectionSplicePreview {
