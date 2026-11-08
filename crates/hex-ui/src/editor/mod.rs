@@ -1350,7 +1350,7 @@ impl EditorView {
     fn new_with_browser_paths(
         window: &mut Window,
         cx: &mut Context<Self>,
-        service: Service,
+        mut service: Service,
         output: Result<crate::EditorAudio, String>,
         paths: (
             std::path::PathBuf,
@@ -1378,6 +1378,12 @@ impl EditorView {
             theme_preferences_path,
             project_directory_path,
         ) = paths;
+        let device_defaults_error = preferences_path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .ok_or_else(|| "device default data folder is unavailable".to_owned())
+            .and_then(|root| service.set_device_defaults_directory(root.to_path_buf()))
+            .err();
         let (audio, status) = match output {
             Ok(audio) => (Some(audio), "loading project · audio ready".into()),
             Err(error) => (
@@ -1737,7 +1743,7 @@ impl EditorView {
             format_upgrade_prompt: None,
             preset_dialog_open: false,
             status,
-            error: None,
+            error: device_defaults_error.map(Into::into),
             stream_source_warning: false,
             recovery_failure: None,
             recovery_prompt_open: false,

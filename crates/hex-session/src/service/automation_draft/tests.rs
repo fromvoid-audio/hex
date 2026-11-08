@@ -75,7 +75,7 @@ fn reader(path: &Path) -> DraftReader {
     .unwrap()
 }
 
-fn failed_outcome(
+pub(in crate::service) fn failed_outcome(
     path: PathBuf,
     acknowledged: u64,
     durable_prefix: DraftPrefixIdentity,
