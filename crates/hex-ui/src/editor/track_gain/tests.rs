@@ -1499,14 +1499,14 @@ fn console_selected_group_uses_shared_gain_gesture_and_meter(cx: &mut TestAppCon
             .is_some()
     );
     editor.update(cx, |view, cx| {
-        view.track_meters.set_test_level(group, 0.8);
+        view.track_meters.set_test_level(group, [0.8, 0.2]);
         cx.notify();
     });
     visual.run_until_parked();
     assert!(
         visual
             .debug_bounds(Box::leak(
-                format!("track-output-meter-{}-fill", group.value()).into_boxed_str()
+                format!("track-output-meter-{}-left-fill", group.value()).into_boxed_str()
             ))
             .unwrap()
             .size
