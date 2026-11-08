@@ -68,6 +68,16 @@ pub(super) fn record_outcome(
         fault: outcome.fault,
     }
 }
+impl Status {
+    /// Take the current-demand audio read-error notification on control/UI.
+    /// Exactly one notification observer may consume it. Repeated failures
+    /// coalesce until taken; a later failure remains observable. No readiness,
+    /// identity change, persistent fault or successful recovery is implied.
+    pub fn take_stream_read_failure(&self) -> bool {
+        self.stream_read_failed
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+    }
+}
 impl Callback {
     pub(super) fn resolve_recovery_seek(
         &mut self,

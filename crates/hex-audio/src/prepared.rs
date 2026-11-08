@@ -607,6 +607,10 @@ pub struct Status {
     /// until a replacement graph is installed or the output is replaced;
     /// cached audio alone does not reverify the file.
     pub stream_source_changed: AtomicBool,
+    /// Coalescing notification of a demanded audio-page decode/read failure.
+    /// The sole control notification observer takes it through
+    /// `take_stream_read_failure`; it is not persistent unavailability state.
+    pub stream_read_failed: AtomicBool,
     /// Frames committed before the latest BUFFERING gap; zero when complete.
     pub stream_committed_frames: AtomicU64,
     /// Latest rejected command is read through `rejected_action` for a coherent pair.
@@ -829,6 +833,7 @@ impl Status {
             stream_invalidated_schedule: AtomicU64::new(0),
             stream_readiness_refused: AtomicBool::new(false),
             stream_source_changed: AtomicBool::new(false),
+            stream_read_failed: AtomicBool::new(false),
             stream_committed_frames: AtomicU64::new(0),
             rejected_action_ticket: AtomicU64::new(0),
             rejected_action_reason: AtomicU32::new(0),
