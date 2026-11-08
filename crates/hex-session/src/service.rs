@@ -603,6 +603,12 @@ pub enum Request {
         owner: preset::Owner,
         path: PathBuf,
     },
+    /// Save provider settings on the control worker, without changing the project.
+    /// Root is the configured app data directory, never an external preset path.
+    SaveDeviceDefault {
+        owner: preset::Owner,
+        root: PathBuf,
+    },
     /// Browser Enter: worker-owned default construction and created-track selection.
     InsertBrowserInstrumentTrack {
         project_generation: u64,
@@ -1002,6 +1008,7 @@ impl Request {
                 | Request::SaveCurrent
                 | Request::SaveCurrentWithFormatUpgrade { .. }
                 | Request::SaveDevicePreset { .. }
+                | Request::SaveDeviceDefault { .. }
                 | Request::LoadDevicePreset { .. }
                 | Request::CompareDevice { .. }
                 | Request::Export(_)
@@ -6496,6 +6503,13 @@ fn run_worker(
                 Request::SaveDevicePreset { owner, path } => {
                     match preset::save(&session, project_generation, revision, owner, &path) {
                         Ok(()) => status = Some("device preset saved".into()),
+                        Err(reason) => error = Some(reason),
+                    }
+                }
+                Request::SaveDeviceDefault { owner, root } => {
+                    match preset::save_default(&session, project_generation, revision, owner, &root)
+                    {
+                        Ok(()) => status = Some("device default saved".into()),
                         Err(reason) => error = Some(reason),
                     }
                 }
