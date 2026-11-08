@@ -325,12 +325,7 @@ impl Parameters {
             amplitude(settings.value(CEILING))
         };
         Self {
-            ceiling: output_ceiling
-                * if settings.choice(MODE) == 1 {
-                    1.15
-                } else {
-                    1.0
-                },
+            ceiling: output_ceiling,
             output_ceiling,
             gain: amplitude(
                 settings.value(if maximize { THRESHOLD } else { GAIN })
@@ -344,12 +339,24 @@ impl Parameters {
             release_coefficient: 1.0
                 - (-1000.0 / (f64::from(settings.value(RELEASE)) * f64::from(rate))).exp(),
             auto_release: settings.flag(AUTO_RELEASE),
-            link: f64::from(settings.value(if settings.choice(ROUTING) == 1 {
-                LINK_MID_SIDE
-            } else {
-                LINK
-            })),
+            link: 0.0,
         }
+        .for_layout(settings)
+    }
+    /// Project branch-local selectors onto rate/value coefficients already derived.
+    fn for_layout(mut self, settings: Settings) -> Self {
+        self.ceiling = self.output_ceiling
+            * if settings.choice(MODE) == 1 {
+                1.15
+            } else {
+                1.0
+            };
+        self.link = f64::from(settings.value(if settings.choice(ROUTING) == 1 {
+            LINK_MID_SIDE
+        } else {
+            LINK
+        }));
+        self
     }
 }
 /// Fixed program data, independent of rate, state and layout. Config preparation

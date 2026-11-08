@@ -406,7 +406,7 @@ fn constructor_exact_union_and_fixed_layout_admission_are_explicit() {
         &[GAIN],
         &[LOOKAHEAD, GAIN],
         &[LOOKAHEAD, LOOKAHEAD],
-        &[LOOKAHEAD, MODE],
+        &[LOOKAHEAD, ParameterId::from_static(13)],
     ] {
         assert!(PreparedStructuralLimiter::new(&s, 8000, ids).is_err());
     }
@@ -627,4 +627,214 @@ fn routing_base_handoff_preserves_queued_output_and_candidate_eligibility() {
         .create_runtime()
         .unwrap();
     assert!(!mode_changed.can_inherit_from(candidate.as_ref()));
+}
+
+#[test]
+fn held_mode_matches_canonical_with_exact_reserved_layout_storage() {
+    struct Mode(u32);
+    impl NativeParameterAutomation for Mode {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            &[MODE]
+        }
+        fn value_at(&self, _: ParameterId, _: usize) -> Option<ParameterValue> {
+            Some(ParameterValue::Choice(self.0))
+        }
+    }
+    for rate in [8000, 192000] {
+        for route in 0..2 {
+            let s = state(0, route, 0);
+            let f = PreparedStructuralLimiter::new(&s, rate, &[MODE]).unwrap();
+            let latency = f.algorithmic_latency_frames().unwrap() as usize;
+            for mode in 0..3 {
+                let canonical =
+                    super::super::Factory::new(decode(&state(mode, route, 0)).unwrap(), rate);
+                let extra = latency - canonical.algorithmic_latency_frames().unwrap() as usize;
+                let input: Vec<_> = (0..latency + 193)
+                    .map(|i| [(i as f32 * 0.17).sin() * 2.0, (i as f32 * 0.31).sin() * 0.5])
+                    .collect();
+                let expected = plain(canonical.create_runtime().unwrap().as_mut(), &input);
+                let mut actual = input.clone();
+                let mut runtime = f.create_runtime().unwrap();
+                assert_eq!(
+                    runtime.fixed_storage_pair_bytes(),
+                    Some(f.declared_pair_bytes())
+                );
+                for block in actual.chunks_mut(17) {
+                    runtime.begin_block();
+                    runtime
+                        .process_block_with_automation(block, None, &Mode(mode), &R)
+                        .unwrap();
+                    runtime.commit_block();
+                }
+                for (i, &frame) in actual.iter().enumerate() {
+                    assert_eq!(
+                        frame,
+                        i.checked_sub(extra).map_or([0.0; 2], |j| expected[j]),
+                        "{rate} {mode} {route} {i}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn mode_fade_matches_independent_branches_with_falling_ceiling_and_live_links() {
+    struct Modes {
+        start: usize,
+        old: u32,
+        new: u32,
+        scalar_only: bool,
+    }
+    impl NativeParameterAutomation for Modes {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            if self.scalar_only {
+                &[CEILING, LINK, LINK_MID_SIDE]
+            } else {
+                &[CEILING, LINK, MODE, LINK_MID_SIDE]
+            }
+        }
+        fn value_at(&self, id: ParameterId, offset: usize) -> Option<ParameterValue> {
+            let i = self.start + offset;
+            Some(match id {
+                MODE => ParameterValue::Choice(if i < 96 { self.old } else { self.new }),
+                CEILING => ParameterValue::Float(if i < 120 { -0.3 } else { -18.0 }),
+                LINK => ParameterValue::Float(0.2 + (i % 31) as f32 / 40.0),
+                LINK_MID_SIDE => ParameterValue::Float(0.8 - (i % 17) as f32 / 25.0),
+                _ => return None,
+            })
+        }
+    }
+    for (old_mode, new_mode) in [(0, 1), (1, 2), (2, 0)] {
+        let rate = 8000;
+        let f = PreparedStructuralLimiter::new(
+            &state(old_mode, 1, 0),
+            rate,
+            &[CEILING, LINK, MODE, LINK_MID_SIDE],
+        )
+        .unwrap();
+        let latency = f.latency as usize;
+        let input: Vec<_> = (0..96 + latency + 256 + 64)
+            .map(|i| [(i as f32 * 0.17).sin() * 2.0, (i as f32 * 0.31).sin() * 0.7])
+            .collect();
+        let mut admitted = [false; scalar::COUNT];
+        admitted[1] = true;
+        admitted[4] = true;
+        admitted[8] = true;
+        let old_factory = super::super::Factory::automated(
+            decode(&state(old_mode, 1, 0)).unwrap(),
+            rate,
+            admitted,
+        );
+        let new_factory = super::super::Factory::automated(
+            decode(&state(new_mode, 1, 0)).unwrap(),
+            rate,
+            admitted,
+        );
+        let old_extra = latency - old_factory.algorithmic_latency_frames().unwrap() as usize;
+        let new_extra = latency - new_factory.algorithmic_latency_frames().unwrap() as usize;
+        let mut old = old_factory.create_runtime().unwrap();
+        let mut new = new_factory.create_runtime().unwrap();
+        let mut expected = Vec::new();
+        for i in 0..input.len() {
+            let values = Modes {
+                start: i,
+                old: old_mode,
+                new: new_mode,
+                scalar_only: true,
+            };
+            let mut a = [i.checked_sub(old_extra).map_or([0.0; 2], |j| input[j])];
+            old.begin_block();
+            old.process_block_with_automation(&mut a, None, &values, &R)
+                .unwrap();
+            old.commit_block();
+            let mut b = [i
+                .checked_sub(new_extra)
+                .filter(|&j| j >= 96)
+                .map_or([0.0; 2], |j| input[j])];
+            if i >= 96 {
+                new.begin_block();
+                new.process_block_with_automation(&mut b, None, &values, &R)
+                    .unwrap();
+                new.commit_block();
+            }
+            let weight = if i < 96 + latency {
+                0.0
+            } else {
+                ((i - 96 - latency + 1) as f32 / 256.0).min(1.0)
+            };
+            expected.push(std::array::from_fn(|c| {
+                a[0][c] * (1.0 - weight) + b[0][c] * weight
+            }));
+        }
+        let mut actual = input.clone();
+        let mut runtime = f.create_runtime().unwrap();
+        for (i, block) in actual.chunks_mut(17).enumerate() {
+            runtime.begin_block();
+            runtime
+                .process_block_with_automation(
+                    block,
+                    None,
+                    &Modes {
+                        start: i * 17,
+                        old: old_mode,
+                        new: new_mode,
+                        scalar_only: false,
+                    },
+                    &R,
+                )
+                .unwrap();
+            runtime.commit_block();
+        }
+        assert_eq!(actual, expected, "{old_mode} to {new_mode}");
+        runtime.begin_output_tail();
+        let mut tail = vec![[0.0; 2]; latency + 256];
+        runtime.begin_block();
+        runtime.process_block(&mut tail, &R);
+        runtime.commit_block();
+        assert!(runtime.committed_is_quiescent());
+    }
+}
+
+#[test]
+fn mode_base_handoff_preserves_queued_output_and_refuses_different_axes() {
+    struct ModeValue(Option<u32>);
+    impl NativeParameterAutomation for ModeValue {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            &[MODE]
+        }
+        fn value_at(&self, _: ParameterId, _: usize) -> Option<ParameterValue> {
+            self.0.map(ParameterValue::Choice)
+        }
+    }
+    let old_factory = PreparedStructuralLimiter::new(&state(0, 1, 0), 8000, &[MODE]).unwrap();
+    let new_factory = PreparedStructuralLimiter::new(&state(1, 1, 0), 8000, &[GAIN, MODE]).unwrap();
+    let mut old = old_factory.create_runtime().unwrap();
+    let mut warm = [[2.0, -0.4]; 128];
+    old.begin_block();
+    old.process_block_with_automation(&mut warm, None, &ModeValue(Some(0)), &R)
+        .unwrap();
+    old.commit_block();
+    let mut candidate = new_factory.create_runtime().unwrap();
+    assert!(candidate.can_inherit_from(old.as_ref()));
+    candidate.inherit_from(old.as_ref());
+    assert!(candidate.supports_parameter_automation(GAIN));
+    let mut expected = [[2.0, -0.4]; 128];
+    old.begin_block();
+    old.process_block_with_automation(&mut expected, None, &ModeValue(Some(0)), &R)
+        .unwrap();
+    old.commit_block();
+    let mut actual = [[2.0, -0.4]; 128];
+    candidate.begin_block();
+    candidate
+        .process_block_with_automation(&mut actual, None, &ModeValue(None), &R)
+        .unwrap();
+    candidate.commit_block();
+    let latency = new_factory.latency as usize;
+    assert_eq!(&actual[..latency], &expected[..latency]);
+    let different = PreparedStructuralLimiter::new(&state(1, 1, 0), 8000, &[ROUTING, MODE])
+        .unwrap()
+        .create_runtime()
+        .unwrap();
+    assert!(!candidate.can_inherit_from(different.as_ref()));
 }

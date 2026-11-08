@@ -19,7 +19,7 @@ mod tests;
 pub struct LimiterDefinition;
 pub static DEFINITION: LimiterDefinition = LimiterDefinition;
 impl LimiterDefinition {
-    /// Prepare an exact owned lookahead/routing union at fixed maximum latency.
+    /// Prepare an exact owned lookahead/routing/mode union at fixed maximum latency.
     /// Requires at least one structural target plus optional value controls.
     /// Native metadata grants lookahead/routing; preparation transfers no
     /// source lease or resource custody.
