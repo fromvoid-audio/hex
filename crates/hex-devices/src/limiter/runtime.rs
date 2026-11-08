@@ -715,8 +715,8 @@ impl Runtime {
             }
         }
         *frame = sample.signal.map(|v| (v * history.output) as f32);
-        for lane in 0..2 {
-            stats.min_attenuation[lane] = stats.min_attenuation[lane].min(attenuation[lane]);
+        for (lane, attenuation) in attenuation.into_iter().enumerate() {
+            stats.min_attenuation[lane] = stats.min_attenuation[lane].min(attenuation);
         }
     }
 }
