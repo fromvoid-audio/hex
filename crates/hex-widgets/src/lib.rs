@@ -103,8 +103,8 @@ pub use numeric_control::{
 pub use response_graph::{
     ResponseGraph, ResponseGraphAnalyzerStyle, ResponseGraphAxes, ResponseGraphCreationHint,
     ResponseGraphEvent, ResponseGraphMarqueeEvent, ResponseGraphMarqueePhase, ResponseGraphModel,
-    ResponseGraphNode, ResponseGraphPhase, ResponseGraphScrollEvent, ResponseGraphScrollPhase,
-    bind_response_graph_keys,
+    ResponseGraphNode, ResponseGraphPhase, ResponseGraphReference, ResponseGraphScrollEvent,
+    ResponseGraphScrollPhase, bind_response_graph_keys,
 };
 pub use style::{
     ActionStyle, CONTROL_CORNER_RADIUS, ControlAvailability, ControlStyle, DEVICE_CORNER_RADIUS,
