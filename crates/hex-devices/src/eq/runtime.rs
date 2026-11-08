@@ -171,7 +171,7 @@ impl PreparedNativeProcessor for PreparedEq {
         true
     }
     fn runtime_version(&self) -> u32 {
-        3
+        4
     }
     fn declared_runtime_bytes(&self) -> usize {
         EQ_RUNTIME_BYTES
@@ -202,6 +202,13 @@ impl PreparedNativeProcessor for PreparedEq {
             audition_mix: 0.0,
             audition_history: [[[0.0; 2]; 4]; 2],
             gain: self.configuration.gain,
+            mode: self.configuration.mode,
+            effective_enabled: std::array::from_fn(|i| {
+                self.configuration
+                    .nodes
+                    .get(i)
+                    .is_some_and(|node| node.enabled)
+            }),
             pristine: true,
             effective_banks: std::array::from_fn(|i| {
                 self.configuration.nodes.get(i).map_or(0, |n| n.bank)
@@ -312,6 +319,32 @@ struct OutgoingAudition {
     bank: u8,
     mix: f64,
 }
+/// Borrowed effective routing only; capture copies into the existing outgoing
+/// owner and retains no borrow or resource custody.
+struct Routing<'a> {
+    mode: u8,
+    nodes: &'a [Node],
+    bands: &'a [RuntimeBand],
+    banks: &'a [u8; MAX_NODES],
+    audition: Option<ProcessorAuditionSelection>,
+    audition_mix: f64,
+    audition_history: &'a [[[f64; 2]; 4]; 2],
+    gain: f64,
+}
+impl<'a> From<&'a EqRuntime> for Routing<'a> {
+    fn from(source: &'a EqRuntime) -> Self {
+        Self {
+            mode: source.mode,
+            nodes: &source.configuration.nodes,
+            bands: &source.bands,
+            banks: &source.effective_banks,
+            audition: source.audition,
+            audition_mix: source.audition_mix,
+            audition_history: &source.audition_history,
+            gain: source.gain,
+        }
+    }
+}
 /// The outgoing routing after a stereo/left-right/mid-side switch (Pulse
 /// #4122, the same law as EQ8's #4106). Band histories cannot be reinterpreted
 /// under a new routing, so the previous routing keeps filtering with its
@@ -329,7 +362,8 @@ struct OutgoingAudition {
 /// still fading is refused as transiently busy (`transition_busy_from`), so
 /// the host defers it for at most one fade (256 frames at 48 kHz, 16/3 ms)
 /// instead of dropping the older routing. A transport discontinuity or reset
-/// ends the crossfade.
+/// ends the crossfade. Shared mode readings instead coalesce to the latest
+/// target at the first frame after this branch finishes.
 struct ModeFade {
     bands: Box<[OutgoingBand]>,
     len: usize,
@@ -364,14 +398,14 @@ impl ModeFade {
         self.total = 0;
     }
     /// Starts a crossfade out of `previous`'s routing.
-    fn capture(&mut self, previous: &EqRuntime, sample_rate: u32) {
+    fn capture(&mut self, previous: Routing<'_>, sample_rate: u32) {
         self.clear();
-        let mode = previous.configuration.mode;
+        let mode = previous.mode;
         let active = |bank_id: u8| bank_id == bank(mode, 0) || bank_id == bank(mode, 1);
         let outgoing = previous
             .bands
             .iter()
-            .zip(&previous.effective_banks)
+            .zip(previous.banks)
             .filter(|(_, bank_id)| active(**bank_id));
         // `previous.bands` holds at most `MAX_NODES` bands, so every outgoing
         // band has a slot.
@@ -388,7 +422,6 @@ impl ModeFade {
             .filter(|_| previous.audition_mix > 0.0)
             .and_then(|selection| {
                 previous
-                    .configuration
                     .nodes
                     .iter()
                     .position(|node| node.id.value() == selection.index)
@@ -396,8 +429,8 @@ impl ModeFade {
             .and_then(|index| {
                 Some(OutgoingAudition {
                     stages: previous.bands.get(index)?.current,
-                    history: previous.audition_history,
-                    bank: *previous.effective_banks.get(index)?,
+                    history: *previous.audition_history,
+                    bank: *previous.banks.get(index)?,
                     mix: previous.audition_mix,
                 })
             });
@@ -481,18 +514,73 @@ struct EqRuntime {
     audition_mix: f64,
     audition_history: [[[f64; 2]; 4]; 2],
     gain: f64,
+    mode: u8,
+    effective_enabled: [bool; MAX_NODES],
     pristine: bool,
     effective_banks: [u8; MAX_NODES],
     mode_fade: ModeFade,
 }
 impl EqRuntime {
+    fn mode_is_automated(&self) -> bool {
+        self.configuration
+            .parameters
+            .first()
+            .is_some_and(|grant| grant.descriptor.id == MODE)
+    }
+    fn select_routing(&mut self, target: u8, discontinuity: bool) {
+        if discontinuity || (self.pristine && self.mode_is_automated()) {
+            if self.mode != target {
+                self.cancel_immediately();
+                self.refresh_target = true;
+            }
+            self.mode = target;
+            if self.pristine && self.mode_is_automated() {
+                self.mode_fade.clear();
+            }
+            return;
+        }
+        // One frozen outgoing branch. New readings coalesce while occupied;
+        // the first frame after its fade samples the latest current target.
+        if self.mode == target || self.mode_fade.is_active() {
+            return;
+        }
+        self.mode_fade.capture(
+            Routing {
+                mode: self.mode,
+                nodes: &self.configuration.nodes,
+                bands: &self.bands,
+                banks: &self.effective_banks,
+                audition: self.audition,
+                audition_mix: self.audition_mix,
+                audition_history: &self.audition_history,
+                gain: self.gain,
+            },
+            self.sample_rate,
+        );
+        self.mode = target;
+        for band in &mut self.bands {
+            band.history = [[[0.0; 2]; 4]; 2];
+        }
+        self.cancel_immediately();
+        self.refresh_target = true;
+    }
     fn process(
         &mut self,
         frames: &mut [StereoFrame],
         clock: Option<&dyn NativeInstrumentClock>,
         bypassed: bool,
     ) {
-        self.process_at(frames, clock, bypassed, 0, self.configuration.gain, None);
+        self.process_at(
+            frames,
+            clock,
+            bypassed,
+            0,
+            automation::Targets {
+                gain: self.configuration.gain,
+                mode: self.configuration.mode,
+            },
+            None,
+        );
     }
     // Callers pass either a whole block at offset zero or one frame at its
     // original block offset; clock and legacy lane positions stay unchanged.
@@ -502,7 +590,7 @@ impl EqRuntime {
         clock: Option<&dyn NativeInstrumentClock>,
         bypassed: bool,
         first_offset: usize,
-        gain_target: f64,
+        targets: automation::Targets,
         node_overrides: Option<&automation::Nodes>,
     ) {
         let automated = !self.configuration.lanes.is_empty() || node_overrides.is_some();
@@ -521,6 +609,7 @@ impl EqRuntime {
                 self.last_frame
                     .is_none_or(|last| last.checked_add(1) != Some(position))
             });
+            self.select_routing(targets.mode, discontinuity);
             if discontinuity {
                 for band in &mut self.bands {
                     band.history = [[[0.0; 2]; 4]; 2];
@@ -542,6 +631,7 @@ impl EqRuntime {
                     }
                     let bank_changed = self.effective_banks[index] != node.bank;
                     self.effective_banks[index] = node.bank;
+                    self.effective_enabled[index] = node.enabled;
                     let target = if node.enabled {
                         design(node, self.sample_rate)
                     } else {
@@ -570,7 +660,7 @@ impl EqRuntime {
             }
             let input = *frame;
             let mut working = [f64::from(frame[0]), f64::from(frame[1])];
-            if self.configuration.mode == 2 {
+            if self.mode == 2 {
                 working = [
                     (working[0] + working[1]) * 0.5,
                     (working[0] - working[1]) * 0.5,
@@ -598,7 +688,7 @@ impl EqRuntime {
                     }
                 }
                 for (channel, value) in working.iter_mut().enumerate() {
-                    if self.effective_banks[index] == bank(self.configuration.mode, channel) {
+                    if self.effective_banks[index] == bank(self.mode, channel) {
                         *value = band.filter_channel(channel, *value);
                     }
                 }
@@ -619,21 +709,20 @@ impl EqRuntime {
                     .position(|node| node.id.value() == selection.index)
             }) {
                 for channel in 0..2 {
-                    let isolated =
-                        if self.effective_banks[index] == bank(self.configuration.mode, channel) {
-                            filter(
-                                audition_input[channel],
-                                &self.bands[index].current,
-                                &mut self.audition_history[channel],
-                            )
-                        } else {
-                            0.0
-                        };
+                    let isolated = if self.effective_banks[index] == bank(self.mode, channel) {
+                        filter(
+                            audition_input[channel],
+                            &self.bands[index].current,
+                            &mut self.audition_history[channel],
+                        )
+                    } else {
+                        0.0
+                    };
                     working[channel] += (isolated - working[channel]) * self.audition_mix;
                 }
             }
-            self.gain += (gain_target - self.gain) * 0.015625;
-            if self.configuration.mode == 2 {
+            self.gain += (targets.gain - self.gain) * 0.015625;
+            if self.mode == 2 {
                 working = [working[0] + working[1], working[0] - working[1]];
             }
             let output = self
@@ -740,6 +829,7 @@ impl NativeProcessorRuntime for EqRuntime {
         }
         self.last_frame = None;
         self.fallback_frame = 0;
+        self.mode = self.configuration.mode;
         self.pristine = true;
         self.audition = None;
         self.audition_request = None;
@@ -784,10 +874,10 @@ impl NativeProcessorRuntime for EqRuntime {
         else {
             return;
         };
-        if old.configuration.mode != self.configuration.mode {
+        if !self.mode_is_automated() && old.mode != self.configuration.mode {
             // The new routing starts from empty history; the old one fades out.
             self.reset();
-            self.mode_fade.capture(old, self.sample_rate);
+            self.mode_fade.capture(Routing::from(old), self.sample_rate);
             self.last_frame = old.last_frame;
             self.fallback_frame = old.fallback_frame;
             self.refresh_target = true;
@@ -795,10 +885,12 @@ impl NativeProcessorRuntime for EqRuntime {
             self.pristine = old.pristine;
             return;
         }
+        self.mode = old.mode;
         self.mode_fade.copy_from(&old.mode_fade);
         if Arc::ptr_eq(&self.configuration, &old.configuration) {
             self.bands.copy_from_slice(&old.bands);
             self.effective_banks = old.effective_banks;
+            self.effective_enabled = old.effective_enabled;
             self.last_frame = old.last_frame;
             self.fallback_frame = old.fallback_frame;
             self.refresh_target = old.refresh_target;
@@ -817,6 +909,7 @@ impl NativeProcessorRuntime for EqRuntime {
             if let Some(prior) = old.configuration.nodes.iter().position(|n| n.id == node.id) {
                 self.bands[index] = old.bands[prior];
                 self.effective_banks[index] = old.effective_banks[prior];
+                self.effective_enabled[index] = old.effective_enabled[prior];
             }
         }
         if old
@@ -842,7 +935,8 @@ impl NativeProcessorRuntime for EqRuntime {
     fn transition_busy_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
         previous.as_any().downcast_ref::<Self>().is_some_and(|old| {
             old.sample_rate == self.sample_rate
-                && old.configuration.mode != self.configuration.mode
+                && !self.mode_is_automated()
+                && old.mode != self.configuration.mode
                 && old.mode_fade.is_active()
         })
     }
@@ -859,11 +953,16 @@ impl NativeProcessorRuntime for EqRuntime {
 impl NativeProcessorAudition for EqRuntime {
     fn can_select(&self, s: ProcessorAuditionSelection) -> bool {
         s.lane < 2
-            && self.configuration.nodes.iter().any(|node| {
-                node.id.value() == s.index
-                    && node.enabled
-                    && node.bank == bank(self.configuration.mode, usize::from(s.lane))
-            })
+            && self
+                .configuration
+                .nodes
+                .iter()
+                .enumerate()
+                .any(|(index, node)| {
+                    node.id.value() == s.index
+                        && self.effective_enabled[index]
+                        && self.effective_banks[index] == bank(self.mode, usize::from(s.lane))
+                })
     }
     fn requested_selection(&self) -> Option<ProcessorAuditionSelection> {
         self.audition_request
