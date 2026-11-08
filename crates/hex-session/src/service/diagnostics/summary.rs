@@ -1410,6 +1410,9 @@ pub(super) fn request(value: &Request) -> Description {
         Request::SaveDevicePreset { path, .. } => {
             describe!("save_device_preset"; ["path_redacted_bytes" => path.as_os_str().len()]; omitted="owner")
         }
+        Request::SaveDeviceDefault { root, .. } => {
+            describe!("save_device_default"; ["root_redacted_bytes" => root.as_os_str().len()]; omitted="owner")
+        }
         Request::LoadDevicePreset { path, .. } => {
             describe!("load_device_preset"; ["path_redacted_bytes" => path.as_os_str().len()]; omitted="owner")
         }
@@ -1921,6 +1924,54 @@ pub(super) fn gesture_target(value: &crate::device_gesture::GestureTarget) -> De
         } => {
             describe!("return_send"; ["track" => track.value(), "return_track" => return_track.value()]; omitted="")
         }
+    }
+}
+
+#[cfg(test)]
+mod default_tests {
+    use super::*;
+
+    #[test]
+    fn device_default_projection_redacts_the_configured_data_folder() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 1).unwrap();
+        let hex_project::Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "fixture".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        let class = hex_engine::NativeDeviceClass::Effect;
+        let type_id = hex_lattice_contract::DeviceTypeId::from_static("hex.utility");
+        let state = hex_engine::default_native_device_state_for_class(class, type_id).unwrap();
+        let hex_project::Created::Device(device) = editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state,
+            })
+            .unwrap()
+        else {
+            panic!("device");
+        };
+        let root = std::path::PathBuf::from("/private/秘密の既定🎵");
+        let description = request(&Request::SaveDeviceDefault {
+            owner: crate::service::preset::Owner {
+                project_generation: 3,
+                revision: 7,
+                device,
+                class,
+                type_id,
+            },
+            root: root.clone(),
+        });
+        assert_eq!(description.name, "save_device_default");
+        let details = description.details.text;
+        assert!(details.contains(&format!("root_redacted_bytes={}", root.as_os_str().len())));
+        assert!(!details.contains("秘密"));
+        assert!(!details.contains("/private/"));
     }
 }
 
