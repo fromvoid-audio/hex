@@ -42,11 +42,7 @@ pub fn copy_failed_plugin_on_control(
             };
             if reader.provenance() != scope.stamp
                 || reader.target() != expected
-                || reader.capture_clock()
-                    != Some(CaptureClock {
-                        sample_rate: source.sample_rate,
-                        loop_region: source.section_loop,
-                    })
+                || reader.capture_clock() != Some(source.capture_clock(reader.source()))
                 || reader
                     .target()
                     .vst3_class_in_source(reader.source())
