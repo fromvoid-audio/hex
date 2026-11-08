@@ -10,6 +10,10 @@ fn native_choice_popup_keys_own_input_before_editor_transport_and_launch_actions
 ) {
     cx.update(crate::editor::bind_editor_keys);
     let (service, state, track, device) = operator_navigation_tests::operator_fixture();
+    assert_eq!(
+        operator_parameter_value(&state, track, device, 601),
+        ParameterValue::Choice(7)
+    );
     let original = state.project.clone();
     let revision = state.revision;
     let (handle, editor) = actor_editor_window(cx, service, state, track);
@@ -69,7 +73,7 @@ fn native_choice_popup_keys_own_input_before_editor_transport_and_launch_actions
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
             && view.state.as_ref().is_some_and(|state| {
-                operator_parameter_value(state, track, device, 601) == ParameterValue::Choice(13)
+                operator_parameter_value(state, track, device, 601) == ParameterValue::Choice(6)
             })
     });
     editor.read_with(cx, |view, _| {

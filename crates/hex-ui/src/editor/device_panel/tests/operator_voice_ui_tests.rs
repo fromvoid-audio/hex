@@ -176,7 +176,7 @@ fn primary_voice_popup_cancels_outside_and_refuses_invalid_working_drafts(cx: &m
     visual.run_until_parked();
     let option = visual
         .debug_bounds(selector(format!(
-            "device-{}-parameter-601-option-7",
+            "device-{}-parameter-601-option-11",
             device.value()
         )))
         .unwrap();
@@ -193,7 +193,7 @@ fn primary_voice_popup_cancels_outside_and_refuses_invalid_working_drafts(cx: &m
         };
         assert_eq!(
             entity.read(cx).selected(),
-            14,
+            7,
             "refused value returns to canonical count"
         );
     });
