@@ -27,7 +27,17 @@ fn sidebar_menu_keyboard_saves_default_to_configured_disk_and_retires_when_hidde
     cx: &mut TestAppContext,
 ) {
     let directory = Directory::new();
-    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let (service, _, track, device, _, _) = actor_utility_fixture();
+    service
+        .submit(Request::SetDeviceParameter {
+            device,
+            parameter: hex_lattice_contract::ParameterId::from_static(1),
+            value: ParameterValue::Float(0.42),
+        })
+        .unwrap();
+    let event = receive_service_event(&service);
+    assert!(event.error.is_none());
+    let state = event.state;
     let original = state.project.clone();
     let revision = state.revision;
     let expected = state
@@ -99,6 +109,49 @@ fn sidebar_menu_keyboard_saves_default_to_configured_disk_and_retires_when_hidde
     });
     visual.run_until_parked();
     editor.read_with(cx, |view, _| assert!(view.context_menu.is_none()));
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::AddNativeDevice {
+            track,
+            class: NativeDeviceClass::Effect,
+            type_id: Box::new(hex_lattice_contract::DeviceTypeId::from_static(
+                "hex.utility"
+            )),
+            before: None,
+        }));
+    });
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+    });
+    editor.read_with(cx, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        let devices = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(track)
+            .unwrap()
+            .devices();
+        assert_eq!(
+            devices.len(),
+            original.track(track).unwrap().devices().len() + 1
+        );
+        let added = devices.last().unwrap();
+        assert_ne!(added.id(), device);
+        assert_eq!(added.state().payload(), expected);
+    });
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::Undo));
+    });
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.state.as_ref().unwrap().project.tracks(),
+            original.tracks()
+        )
+    });
 }
 
 #[gpui::test]

@@ -108,6 +108,7 @@ pub use request_cancellation::RequestCancellation;
 mod conversion_selection_tests;
 #[cfg(test)]
 mod correlated_save_tests;
+mod device_defaults;
 #[cfg(test)]
 mod effect_bus_tests;
 #[cfg(test)]
@@ -1214,6 +1215,17 @@ enum ExportWork {
 }
 
 impl Service {
+    /// Configure fresh catalog creation without filesystem work. Accepted FIFO
+    /// requests retain their captured directory; explicit saved/copied state
+    /// never receives it. Unconfigured services use provider factory settings.
+    pub fn set_device_defaults_directory(&mut self, root: PathBuf) -> Result<(), String> {
+        preset::validate_default_root(&root)?;
+        self.requests
+            .as_mut()
+            .ok_or("session worker is closed")?
+            .set_device_defaults_directory(root);
+        Ok(())
+    }
     pub fn new(
         sample_rate: u32,
         history_capacity: usize,
@@ -2701,6 +2713,8 @@ fn run_worker(
             queued.publication_waited,
         );
         let save_correlation = queued.save_correlation;
+        let defaults_directory = queued.native_device_defaults;
+        let defaults_root = defaults_directory.as_deref().map(PathBuf::as_path);
         let recording_barrier_completion = queued.recording_barrier;
         let (request, mut import_decode) = truncated_import::admit(queued.request);
         let solo_request = matches!(
@@ -3178,13 +3192,17 @@ fn run_worker(
                             hex_storage::text::lowercase_outside_verbatim(&reason.to_string())
                         })
                         .and_then(|state| {
-                            Ok(device_track_command(
-                                None,
-                                hex_project::TrackDeviceSlot::Instrument,
-                                state,
-                                native_device_name(*class, *type_id)?,
-                                *new_track_gain,
-                            ))
+                            device_defaults::initialize(
+                                device_track_command(
+                                    None,
+                                    hex_project::TrackDeviceSlot::Instrument,
+                                    state,
+                                    native_device_name(*class, *type_id)?,
+                                    *new_track_gain,
+                                ),
+                                *class,
+                                defaults_root,
+                            )
                         })
                 },
             ),
@@ -3209,6 +3227,7 @@ fn run_worker(
                         *type_id,
                         *before,
                     )
+                    .and_then(|command| device_defaults::initialize(command, *class, defaults_root))
                 },
             ),
             Request::PaintMidiClip(intent) => Some(intent.resolve(
@@ -4539,6 +4558,9 @@ fn run_worker(
                             destination,
                             new_track_gain,
                         )
+                        .and_then(|command| {
+                            device_defaults::initialize(command, class, defaults_root)
+                        })
                     };
                     match command.and_then(|command| {
                         resident_audio::execute_command(
@@ -4652,7 +4674,7 @@ fn run_worker(
                                             device_name: native_device_name(class, type_id)?,
                                         })
                                     }),
-                            },
+                            }.and_then(|command| device_defaults::initialize(command, class, defaults_root)),
                             NativeDeviceDropSource::Existing {
                                 device,
                                 class,
@@ -5908,6 +5930,11 @@ fn run_worker(
                                     })
                             }),
                     };
+                    let command = command
+                        .map_err(|error| error.to_string())
+                        .and_then(|command| {
+                            device_defaults::initialize(command, class, defaults_root)
+                        });
                     match command {
                         Ok(command) => {
                             let before_project = session.project().clone();
@@ -5965,13 +5992,20 @@ fn run_worker(
                                         &reason.to_string(),
                                     )
                                 })
+                        })
+                        .and_then(|state| {
+                            device_defaults::initialize(
+                                Command::ReplaceDeviceState { device, state },
+                                class,
+                                defaults_root,
+                            )
                         });
                     match replacement {
-                        Ok(state) => {
+                        Ok(command) => {
                             let before_project = session.project().clone();
                             match resident_audio::execute_command(
                                 &mut session,
-                                Command::ReplaceDeviceState { device, state },
+                                command,
                                 compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
                                 hex_engine::AudioSourceContext {
                                     project_generation,

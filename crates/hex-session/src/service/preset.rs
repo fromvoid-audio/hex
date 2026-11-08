@@ -128,7 +128,7 @@ pub(super) fn save_default(
     .map_err(|error| error.to_string())
 }
 
-fn validate_default_root(root: &Path) -> Result<(), String> {
+pub(super) fn validate_default_root(root: &Path) -> Result<(), String> {
     if root.as_os_str().is_empty() || root.as_os_str().len() > 4096 {
         return Err("device default data folder must contain 1–4096 bytes".into());
     }
