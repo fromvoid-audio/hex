@@ -535,6 +535,9 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("move_track_device"; ["device" => device.value(), "track" => track.value(), "before" => before.map(|id| id.value())]; omitted="")
         }
+        Command::InsertNestedDevice { parent, state } => {
+            describe!("insert_nested_device"; ["parent" => parent.value(), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="")
+        }
         Command::ReparentDevice { device, parent } => {
             describe!("reparent_device"; ["device" => device.value(), "parent" => parent.map(|id| id.value())]; omitted="")
         }
@@ -1501,6 +1504,9 @@ pub(super) fn request(value: &Request) -> Description {
         }
         Request::QueryFailedPluginAutomation { request_id } => {
             describe!("query_failed_plugin_automation"; ["request_id" => request_id]; omitted="none")
+        }
+        Request::QueryDeviceAutomationCloseSafety { request_id } => {
+            describe!("query_device_automation_close_safety"; ["request_id" => request_id]; omitted="none")
         }
         Request::RecoverDeviceAutomationTake {
             request_id,
