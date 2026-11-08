@@ -415,6 +415,7 @@ impl RectangleDemo {
         self.capture = RectangleCapture::begin(Target::Rectangle(index), part, x, true);
         self.section_marker_latched = self.kind == Kind::Section && edit.marker_only;
         self.section_gap_appearance = None;
+        self.section_feedback = None;
         self.section_last_pointer = (self.kind == Kind::Section).then_some((x, y));
         self.preview = self.canonical.clone();
         if let Some(fixture) = self.section_fixture.as_ref() {
@@ -2092,7 +2093,7 @@ mod tests {
         let area = visual.debug_bounds("section-copy-area").unwrap();
         let first = visual.debug_bounds("section-copy-rectangle-0").unwrap();
         let down = point(first.center().x, first.top() + px(5.0));
-        let dest = point(area.left() + area.size.width * 0.88, down.y);
+        let dest = point(area.left() + area.size.width * 0.9 - px(1.0), down.y);
         let alt = Modifiers {
             alt: true,
             ..Modifiers::default()
@@ -2510,7 +2511,11 @@ mod tests {
             view.section_fixture.as_ref().unwrap().project().snapshot()
         });
         visual.simulate_mouse_down(at(0.3), MouseButton::Left, Modifiers::default());
-        visual.simulate_mouse_move(at(0.88), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            point(at(0.9).x - px(1.0), at(0.9).y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
         visual.simulate_mouse_move(outside, MouseButton::Left, alt);
         visual.simulate_keystrokes("escape");
         view.read_with(cx, |view, _| {
@@ -2523,14 +2528,19 @@ mod tests {
         });
         for accept in [false, true] {
             visual.simulate_mouse_down(at(0.3), MouseButton::Left, Modifiers::default());
-            visual.simulate_mouse_move(at(0.88), MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(
+                point(at(0.9).x - px(1.0), at(0.9).y),
+                MouseButton::Left,
+                Modifiers::default(),
+            );
             visual.simulate_mouse_move(outside, MouseButton::Left, Modifiers::default());
             visual.simulate_modifiers_change(alt);
             let expected = view.read_with(cx, |view, _| {
                 let fixture = view.section_fixture.as_ref().unwrap();
                 let id = fixture.project().arrangement_sections()[0].id();
                 let bounds = view.bounds.unwrap();
-                let position = (f32::from(at(0.88).x) - f32::from(bounds.left()))
+                let position = (f32::from(point(at(0.9).x - px(1.0), at(0.9).y).x)
+                    - f32::from(bounds.left()))
                     / f32::from(bounds.size.width);
                 fixture
                     .plan(id, RectanglePart::Body, position, true, false)
@@ -3214,6 +3224,66 @@ mod tests {
                     project.arrangement_sections()[selected].name(),
                     appearance.0
                 );
+            });
+        }
+    }
+    #[gpui::test]
+    fn section_body_replacement_retains_one_highlight_and_copied_selection(
+        cx: &mut TestAppContext,
+    ) {
+        for copy in [false, true] {
+            let handle = cx.add_window(|_, cx| {
+                RectangleDemo::new(Kind::Section, "section-replace".into(), cx)
+            });
+            let view = handle.root(cx).unwrap();
+            let mut visual = VisualTestContext::from_window(*handle, cx);
+            visual.update(|w, _| w.activate_window());
+            visual.run_until_parked();
+            let first = visual.debug_bounds("section-replace-rectangle-0").unwrap();
+            let second = visual.debug_bounds("section-replace-rectangle-1").unwrap();
+            let from = point(first.center().x, first.top() + px(5.0));
+            let to = point(second.center().x, from.y);
+            let modifiers = Modifiers {
+                alt: copy,
+                ..Modifiers::default()
+            };
+            visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(to, MouseButton::Left, modifiers);
+            visual.run_until_parked();
+            assert!(
+                visual
+                    .debug_bounds("sandbox-section-drop-replace")
+                    .is_some()
+            );
+            assert!(
+                visual
+                    .debug_bounds("sandbox-section-drop-insertion")
+                    .is_none()
+            );
+            visual.simulate_mouse_up(to, MouseButton::Left, modifiers);
+            visual.run_until_parked();
+            let frozen = visual.debug_bounds("sandbox-section-drop-replace").unwrap();
+            for _ in 0..3 {
+                visual.update(|w, _| w.refresh());
+                visual.run_until_parked();
+                assert_eq!(
+                    visual.debug_bounds("sandbox-section-drop-replace").unwrap(),
+                    frozen
+                );
+            }
+            view.update(cx, |v, cx| v.settle(true, cx));
+            visual.run_until_parked();
+            assert!(
+                visual
+                    .debug_bounds("sandbox-section-drop-replace")
+                    .is_none()
+            );
+            view.read_with(cx, |v, _| {
+                let p = v.section_fixture.as_ref().unwrap().project();
+                assert_eq!(p.arrangement_sections().len(), if copy { 2 } else { 1 });
+                let selected = v.selection_primary.unwrap();
+                assert_eq!(v.selected, [selected]);
+                assert_eq!(p.arrangement_sections()[selected].name(), "section 1");
             });
         }
     }

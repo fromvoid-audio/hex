@@ -2343,6 +2343,9 @@ fn copied_section_source(command: &Command) -> Option<SectionId> {
     match command {
         Command::DuplicateArrangementSectionAt { section, .. }
         | Command::AppendArrangementSectionCopy { section, .. } => Some(*section),
+        Command::ReplaceArrangementSection {
+            source, copy: true, ..
+        } => Some(*source),
         _ => None,
     }
 }
@@ -4208,7 +4211,7 @@ pub(super) mod tests {
                 .unwrap();
         });
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        let end = editor.read_with(cx, |view, _| position(view, 11));
+        let end = editor.read_with(cx, |view, _| position(view, 12));
         visual.simulate_mouse_down(clicked, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
@@ -4397,7 +4400,7 @@ pub(super) mod tests {
         let (handle, editor, ids) = fixture(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
-        let (down, to) = editor.read_with(cx, |v, _| (position(v, 10), position(v, 2)));
+        let (down, to) = editor.read_with(cx, |v, _| (position(v, 10), position(v, 0)));
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
@@ -4772,7 +4775,7 @@ pub(super) mod tests {
         // geometry through the canonical installation in the same receive.
         assert_eq!(bounds(&mut visual, 1), preview);
         let before = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.clone());
-        let (source, target) = editor.read_with(cx, |v, _| (position(v, 10), position(v, 2)));
+        let (source, target) = editor.read_with(cx, |v, _| (position(v, 10), position(v, 0)));
         visual.simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
