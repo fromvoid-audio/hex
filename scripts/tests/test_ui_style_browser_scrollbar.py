@@ -10,7 +10,13 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class BrowserScrollbarStyleGuardTests(unittest.TestCase):
-    def test_only_registered_native_views_are_exempt(self):
+    def test_wrapper_names_do_not_escape_their_owners(self):
+        self.check_registered_views(outside_owner=True)
+
+    def test_registered_owners_reject_raw_and_unknown_children(self):
+        self.check_registered_views(outside_owner=False)
+
+    def check_registered_views(self, *, outside_owner):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "scripts").mkdir()
@@ -30,6 +36,7 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                 "crates/hex-ui/src/editor/clip_boundary.rs": '.child(paint)',
                 "crates/hex-ui/src/editor/clip_border_ui_test.rs": '.child(super::pixel_backdrop_shell(body, bounds, style, true, selector))',
                 "crates/hex-ui/src/editor/time_move_preview.rs": '.child(super::clip_name::passive_name_header(name, fill, true))',
+                "crates/hex-ui/src/editor/session_grid.rs": '.child(session_clip_backdrop(clip, fill, stroke)) .child(super::clip_boundary::backdrop_shell(body, left, width, style, true, selector))',
                 "crates/hex-ui/src/editor/return_tracks.rs": '.child(super::waveform::toggle_button_with_style(label, tooltip, id, style))',
             }
             for name, text in files.items():
@@ -49,6 +56,9 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                 ("other.rs", '.child(bar)'),
                 ("other.rs", '.child(framed_clip)'),
                 ("other.rs", '.child(paint)'),
+                ("other.rs", '.child(session_clip_backdrop(clip, fill, stroke))'),
+                ("editor/session_grid.rs", '.child("Unnormalized")'),
+                ("editor/session_grid.rs", '.child(self.unregistered_component(cx))'),
                 ("editor/time_move_preview.rs", '.child("Unnormalized")'),
                 ("editor/time_move_preview.rs", '.child(self.unregistered_component(cx))'),
                 ("other.rs", '.child(super::pixel_backdrop_shell(body, bounds, style, true, selector))'),
@@ -73,6 +83,8 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                 ("editor/browser/scrollbar.rs", '.child("Unnormalized")'),
                 ("editor/browser/scrollbar.rs", '.child(self.unregistered_component(cx))'),
             ]:
+                if (name == "other.rs") != outside_owner:
+                    continue
                 path = root / "crates/hex-ui/src" / name
                 original = path.read_text() if path.exists() else None
                 path.write_text(content)

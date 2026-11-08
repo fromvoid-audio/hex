@@ -21,7 +21,13 @@ fn open(cx: &mut TestAppContext) -> (VisualTestContext, Entity<EditorView>, Fixt
     let (handle, editor) = editor_window(cx, f.model.project().clone(), Arc::new(preview));
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(1280.0), px(800.0)));
-    visual.update(|window, cx| editor.update(cx, |v, _| v.focus.focus(window)));
+    visual.update(|window, cx| {
+        editor.update(cx, |v, _| {
+            // This fixture tests section selection; autoplay is a separate interaction.
+            v.section_autoplay = false;
+            v.focus.focus(window);
+        })
+    });
     visual.run_until_parked();
     (visual, editor, f)
 }
@@ -57,8 +63,10 @@ fn select_section(visual: &mut VisualTestContext, index: u64, toggle_membership:
     let bounds = visual
         .debug_bounds(selector("arrangement-section-header", index))
         .unwrap();
+    // Avoid the separate launch triangle at the left of a narrow header.
+    let at = point(bounds.left() + bounds.size.width * 0.75, bounds.center().y);
     visual.simulate_mouse_down(
-        bounds.center(),
+        at,
         MouseButton::Left,
         Modifiers {
             shift: toggle_membership,
@@ -68,7 +76,7 @@ fn select_section(visual: &mut VisualTestContext, index: u64, toggle_membership:
     );
     visual.run_until_parked();
     visual.simulate_mouse_up(
-        bounds.center(),
+        at,
         MouseButton::Left,
         Modifiers {
             shift: toggle_membership,
@@ -483,4 +491,85 @@ fn q_respects_text_repeat_modifiers_and_filtered_drag_geometry(cx: &mut TestAppC
     visual.run_until_parked();
     assert!(visual.debug_bounds("track-insertion-line").is_none());
     editor.read_with(&visual, |v, _| assert!(v.last_enqueued_edit.is_none()));
+}
+
+#[gpui::test]
+fn focused_hidden_runs_are_marked_without_adding_row_space(cx: &mut TestAppContext) {
+    let (mut visual, editor, f) = open(cx);
+    let lane = |id| selector("arrangement-lane", id);
+    let before = |id| selector("section-hidden-before", id);
+    let after = |id| selector("section-hidden-after", id);
+    let height = visual
+        .debug_bounds(lane(f.tracks[1].value()))
+        .unwrap()
+        .size
+        .height;
+    visual.update(|window, cx| editor.update(cx, |view, _| view.focus.focus(window)));
+    visual.simulate_keystrokes("q");
+    visual.run_until_parked();
+    select_section(&mut visual, 0, false);
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.arrangement_track_indices(),
+            &[1, 3],
+            "enabled {}, selected {:?}, status {}, error {:?}",
+            view.arrangement_focus.projection.enabled,
+            view.sections.selected_ids(),
+            view.status,
+            view.error.as_ref().map(|e| e.to_string())
+        )
+    });
+    let pixel = visual.update(|window, _| px(1.0 / window.scale_factor().max(1.0)));
+    for (name, track, bottom) in [
+        (before(f.tracks[1].value()), f.tracks[1], false),
+        (before(f.tracks[3].value()), f.tracks[3], false),
+        (after(f.tracks[3].value()), f.tracks[3], true),
+    ] {
+        let mark = visual.debug_bounds(name).expect("hidden track gap marker");
+        let row = visual.debug_bounds(lane(track.value())).unwrap();
+        assert_eq!(mark.size.height, pixel);
+        assert_eq!(row.size.height, height, "markers never add row height");
+        if bottom {
+            assert_eq!(mark.bottom(), row.bottom());
+        } else {
+            assert_eq!(mark.top(), row.top());
+        }
+        assert!(
+            mark.size.width > row.size.width,
+            "marker includes header and lane"
+        );
+        assert_eq!(
+            visual.rendered_background(name),
+            Some(gpui::rgb(theme::color(theme::PaletteRole::Secondary)).into())
+        );
+    }
+    assert!(
+        visual.debug_bounds(after(f.tracks[1].value())).is_none(),
+        "interior run has one marker, above the next visible row"
+    );
+    select_section(&mut visual, 1, false);
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(view.arrangement_track_indices().is_empty())
+    });
+    let empty = visual
+        .debug_bounds("section-hidden-all")
+        .expect("one all-hidden run");
+    assert_eq!(empty.size.height, pixel);
+    visual.simulate_keystrokes("q");
+    visual.run_until_parked();
+    for track in &f.tracks {
+        assert!(visual.debug_bounds(before(track.value())).is_none());
+        assert!(visual.debug_bounds(after(track.value())).is_none());
+    }
+    assert!(visual.debug_bounds("section-hidden-all").is_none());
+    assert_eq!(
+        visual
+            .debug_bounds(lane(f.tracks[1].value()))
+            .unwrap()
+            .size
+            .height,
+        height
+    );
 }

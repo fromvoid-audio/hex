@@ -39,6 +39,34 @@ fn session_scenes_header() -> Div {
     header
 }
 
+/// Paint occupies an inset surface; the cell keeps its original IDs, layout,
+/// rename/launch controls and drop targets. Console clips are one caption row,
+/// so their entire surface uses the header fill without an arrangement divider.
+fn session_clip_backdrop(clip: ClipId, fill: u32, stroke: f32) -> Div {
+    let outline = theme::color(theme::PaletteRole::ClipOutline);
+    div()
+        .debug_selector(move || format!("console-clip-{}", clip.value()))
+        .absolute()
+        .inset(px(2.0))
+        .child(super::clip_boundary::backdrop_shell(
+            div(),
+            0.0,
+            1.0,
+            super::clip_boundary::Backdrop {
+                body: fill,
+                header: fill,
+                outline,
+                hover_outline: outline,
+                stroke,
+                bottom_radius: 0.0,
+                header_height: SCENE_ROW_HEIGHT,
+                notch: super::clip_boundary::Notch::new(true),
+            },
+            true,
+            move || format!("console-clip-trailing-{}", clip.value()),
+        ))
+}
+
 #[derive(Clone)]
 struct SessionRowContext {
     frame: ColumnFrame,
@@ -48,6 +76,7 @@ struct SessionRowContext {
     route_snapshot: Option<SessionRouteSnapshot>,
     routes_ready: bool,
     transport_playing: bool,
+    stroke: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -435,6 +464,7 @@ impl EditorView {
             route_snapshot,
             routes_ready,
             transport_playing,
+            stroke: 1.0 / window.scale_factor().max(1.0),
         };
         let header = div()
             .relative()
@@ -1108,6 +1138,7 @@ impl EditorView {
             route_snapshot,
             routes_ready,
             transport_playing,
+            stroke,
         } = context;
         let Some(state) = self.state.as_ref() else {
             return div().id(("session-scene-row-empty", index));
@@ -1172,12 +1203,16 @@ impl EditorView {
                     let route_markers =
                         cell_route_markers(route, clip_id.value(), transport_playing);
                     cell = cell
-                        .bg(rgb(theme::clip_activity_fill(
-                            track.color(),
-                            clip.flavor(),
-                            selected_cell,
-                            clip.active(),
-                        )))
+                        .child(session_clip_backdrop(
+                            clip_id,
+                            theme::clip_activity_fill(
+                                track.color(),
+                                clip.flavor(),
+                                selected_cell,
+                                clip.active(),
+                            ),
+                            stroke,
+                        ))
                         .text_color(rgb(if !clip.active() {
                             theme::readable_text(
                                 theme::clip_activity_fill(
@@ -1212,15 +1247,18 @@ impl EditorView {
                             }),
                         )
                         .when(self.clip_has_alias(clip_id), |cell| cell.pr(px(15.0)))
-                        .children(self.clip_alias_indicator(
-                            clip_id,
-                            theme::clip_activity_fill(
-                                track.color(),
-                                clip.flavor(),
-                                selected_cell,
-                                clip.active(),
-                            ),
-                        ))
+                        .children(
+                            self.clip_alias_indicator(
+                                clip_id,
+                                theme::clip_activity_fill(
+                                    track.color(),
+                                    clip.flavor(),
+                                    selected_cell,
+                                    clip.active(),
+                                ),
+                            )
+                            .map(|badge| badge.right(px(8.0))),
+                        )
                         .child(self.clip_name_label(clip_id, &title))
                         .child(
                             self.session_icon(
@@ -1291,12 +1329,16 @@ impl EditorView {
                     let route_markers =
                         cell_route_markers(route, clip_id.value(), transport_playing);
                     cell = cell
-                        .bg(rgb(theme::clip_activity_fill(
-                            track.color(),
-                            clip.flavor(),
-                            selected_cell,
-                            clip.active(),
-                        )))
+                        .child(session_clip_backdrop(
+                            clip_id,
+                            theme::clip_activity_fill(
+                                track.color(),
+                                clip.flavor(),
+                                selected_cell,
+                                clip.active(),
+                            ),
+                            stroke,
+                        ))
                         .text_color(rgb(if !clip.active() {
                             theme::readable_text(
                                 theme::clip_activity_fill(
@@ -1331,15 +1373,18 @@ impl EditorView {
                             }),
                         )
                         .when(self.clip_has_alias(clip_id), |cell| cell.pr(px(15.0)))
-                        .children(self.clip_alias_indicator(
-                            clip_id,
-                            theme::clip_activity_fill(
-                                track.color(),
-                                clip.flavor(),
-                                selected_cell,
-                                clip.active(),
-                            ),
-                        ))
+                        .children(
+                            self.clip_alias_indicator(
+                                clip_id,
+                                theme::clip_activity_fill(
+                                    track.color(),
+                                    clip.flavor(),
+                                    selected_cell,
+                                    clip.active(),
+                                ),
+                            )
+                            .map(|badge| badge.right(px(8.0))),
+                        )
                         .child(self.clip_name_label(clip_id, clip.name()))
                         .child(
                             self.session_icon(
