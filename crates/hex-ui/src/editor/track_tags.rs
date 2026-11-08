@@ -10,6 +10,16 @@ use gpui::{Context, Div, MouseButton, Pixels, Point, Window, div, prelude::*, px
 use hex_project::{Track, TrackId, TrackTag};
 use std::collections::BTreeSet;
 const PAGE: usize = 24;
+// Tags have normalized text identities, not persisted palette assignments.
+// A fixed byte hash keeps this display cue stable across sessions/platforms.
+fn tag_element_color(tag: &TrackTag) -> hex_project::ElementColor {
+    let hash = tag.as_str().bytes().fold(2_166_136_261_u32, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(16_777_619)
+    });
+    let colors = hex_project::ElementColor::TRACK_CHOICES;
+    colors[hash as usize % colors.len()]
+}
+
 #[derive(Default)]
 pub(super) struct State {
     stamp: Option<(u64, u64)>,
@@ -280,19 +290,17 @@ impl EditorView {
             .map(|tag| tag.as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        let more = match track.tags().len() {
-            1 => "⋯".into(),
-            count => format!("+{}", count - 1),
-        };
         let label = div()
             .id(("track-tag", id.value()))
             .debug_selector(move || format!("track-tag-first-{}", id.value()))
             .cursor_pointer()
-            .max_w(px(54.))
-            .truncate()
-            .px(px(2.))
-            .rounded(px(2.))
-            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
+            .size(px(16.0))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .bg(rgb(theme::color(theme::PaletteRole::Background)))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(
                 cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
@@ -307,40 +315,33 @@ impl EditorView {
                     view.open_track_tag_choices(id, event.position, window, cx);
                 }),
             )
-            .child(theme::text(first.as_str()));
-        let overflow = div()
-            .id(("track-tag-more", id.value()))
-            .debug_selector(move || format!("track-tag-more-{}", id.value()))
-            .cursor_pointer()
-            .px(px(2.))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
-                    cx.stop_propagation();
-                    view.open_track_tag_choices(id, event.position, window, cx);
-                }),
-            )
-            .child(theme::text(more));
+            .child(
+                div()
+                    .debug_selector(move || format!("track-tag-dot-{}", id.value()))
+                    .size(px(10.0))
+                    .rounded_full()
+                    .bg(rgb(theme::element_colors(tag_element_color(&first)).accent)),
+            );
         Some(
             div()
                 .id(("track-tags-row", id.value()))
                 .flex()
                 .items_center()
                 .flex_shrink_0()
-                .max_w(px(76.))
+                .size(px(16.0))
                 .text_xs()
                 .debug_selector(move || format!("track-tags-{}", id.value()))
                 .tooltip(move |_, cx| {
                     cx.new(|_| super::transport::MiniTooltip {
                         kind: crate::tooltips::Kind::control("track tags"),
                         description: format!(
-                            "{all} · click selects matches · shift adds · cmd/ctrl toggles · right click filters"
+                            "{all} · click selects matches · shift adds · cmd/ctrl toggles · right click edits or filters tags"
                         )
                         .into(),
                     })
                     .into()
                 })
-                .children([label, overflow]),
+                .children([label]),
         )
     }
     pub(super) fn track_tag_filter_control(
