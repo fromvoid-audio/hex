@@ -130,7 +130,7 @@ fn utility_graph_modulation_transactions_do_not_allocate_or_free() {
             PreparedLfoSource::free(ModulationSourceId::new(1).unwrap(), 48_000.0, 7.0, 0.0)
                 .unwrap();
 
-        NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+        let prepared = PreparedRuntimeInstance {
             modulation: Some(PreparedModulationState::new(vec![source], program, 17).unwrap()),
             automation: Default::default(),
             meter: Default::default(),
@@ -142,14 +142,21 @@ fn utility_graph_modulation_transactions_do_not_allocate_or_free() {
             sample_rate: 48_000,
             configuration: Some(Arc::new(state)),
             definition: Some(PreparedProcessorFactory::Legacy(Arc::new(definition))),
-        }])
-        .unwrap()
+        };
+        let chain = NativeRuntimeChain::new_prepared(vec![prepared.clone()]).unwrap();
+        (prepared, chain)
     };
-    let mut first = build();
-    let mut second = build();
+    let (prepared, mut first) = build();
+    let (_, mut second) = build();
     let mut frames = [[0.1, -0.1]; 128];
     let counts = allocation_counter::measure(|| {
         for _ in 0..8 {
+            assert!(
+                first
+                    .storage_view()
+                    .entries()
+                    .all(|entry| entry.matches_prepared_runtime_storage(&prepared))
+            );
             first.begin_block();
             first.process_block(black_box(&mut frames)).unwrap();
             first.rollback_block();

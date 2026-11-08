@@ -29,6 +29,15 @@ impl ModulationRuntime {
         Ok(Self { bank, program })
     }
 
+    pub(crate) fn matches_prepared(
+        &self,
+        sources: &[PreparedLfoSource],
+        program: &PreparedModulation,
+        chunk_frames: usize,
+    ) -> bool {
+        self.program == *program && self.bank.matches_prepared(sources, chunk_frames)
+    }
+
     /// Physical inline and reserved owned storage, excluding allocator metadata.
     pub fn storage_bytes(&self) -> Option<usize> {
         std::mem::size_of::<Self>().checked_add(self.heap_storage_bytes()?)

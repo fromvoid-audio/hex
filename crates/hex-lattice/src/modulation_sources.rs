@@ -89,6 +89,20 @@ impl ModulationLfoBank {
                     .checked_mul(std::mem::size_of::<f32>())?,
             )
     }
+    pub(crate) fn matches_prepared(
+        &self,
+        sources: &[PreparedLfoSource],
+        chunk_frames: usize,
+    ) -> bool {
+        self.chunk_frames == chunk_frames
+            && self.sources.len() == sources.len()
+            && self.sources.iter().zip(sources).all(|(runtime, prepared)| {
+                runtime.id == prepared.id
+                    && runtime.sample_rate == prepared.sample_rate
+                    && runtime.initial == prepared.lfo
+            })
+    }
+
     /// IDs must be unique and strictly increasing. The host accounts this
     /// storage alongside its existing paired-runtime budget before publication.
     pub fn new(sources: &[PreparedLfoSource], chunk_frames: usize) -> Result<Self, Error> {

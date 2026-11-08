@@ -72,15 +72,21 @@ impl PreparedModulationState {
             .checked_add(self.program.storage_bytes()?)
     }
 
+    pub(crate) fn matches_runtime(&self, runtime: &ModulationRuntime) -> bool {
+        runtime.matches_prepared(&self.sources, &self.program, self.chunk_frames)
+    }
+
+    /// Actual reserved declaration backing, excluding its inline header.
+    pub fn heap_storage_bytes(&self) -> Option<usize> {
+        self.sources
+            .capacity()
+            .checked_mul(std::mem::size_of::<PreparedLfoSource>())?
+            .checked_add(self.program.storage_bytes()?)
+    }
+
     /// Owned declaration storage, including the inline header. Runtime buffers
     /// are a separate owner and must be charged using their actual capacities.
     pub fn storage_bytes(&self) -> Option<usize> {
-        std::mem::size_of::<Self>()
-            .checked_add(
-                self.sources
-                    .capacity()
-                    .checked_mul(std::mem::size_of::<PreparedLfoSource>())?,
-            )?
-            .checked_add(self.program.storage_bytes()?)
+        std::mem::size_of::<Self>().checked_add(self.heap_storage_bytes()?)
     }
 }

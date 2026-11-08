@@ -19,7 +19,7 @@ pub const MAX_MODULATION_ROUTES: usize = 512;
 pub const MAX_MODULATION_BLOCK_FRAMES: usize = 8192;
 
 /// One real provider target and its immutable authored base value.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModulationTarget {
     pub descriptor: ParameterDescriptor,
     pub semantics: ParameterSemantics,
@@ -29,14 +29,14 @@ pub struct ModulationTarget {
 /// A bipolar source contributes `sample * amount` in normalized target units.
 /// The source index is local to this prepared program; it is not a persistent
 /// identity and must be resolved from the canonical route by the host.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModulationRoute {
     pub source: usize,
     pub target: ParameterId,
     pub amount: f32,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Target {
     authored: ModulationTarget,
     normalized_base: f32,
@@ -44,7 +44,7 @@ struct Target {
     route_start: usize,
     route_end: usize,
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Route {
     source: usize,
     target_index: usize,
@@ -53,7 +53,7 @@ struct Route {
 }
 
 /// Control-prepared target and route inventory. IDs are stable and sorted.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PreparedModulation {
     ids: Vec<ParameterId>,
     targets: Vec<Target>,

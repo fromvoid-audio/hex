@@ -637,6 +637,15 @@ impl ChainCustody {
             l.vec(lanes)?;
             l.vec(points)?;
             l.vec(value.automation.touch_storage())?;
+            if let Some(modulation) = &value.modulation {
+                l.bytes(
+                    Owner::exclusive(value),
+                    Location("prepared-modulation-backing", 0),
+                    modulation
+                        .heap_storage_bytes()
+                        .ok_or(AudioStorageError::Overflow)?,
+                )?;
+            }
             if let Some(program) = value.automation.foreign() {
                 crate::foreign_automation::storage::declare(program, l)?;
             }

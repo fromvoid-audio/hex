@@ -1009,11 +1009,11 @@ impl<'a> NativeRuntimeEntryStorage<'a> {
             .is_some_and(|(a, b)| a.as_any().is::<T>() && b.as_any().is::<T>())
     }
     pub fn matches_prepared_runtime_storage(&self, prepared: &PreparedRuntimeInstance) -> bool {
-        // The engine's closed custody constructor currently admits no authored
-        // modulation. Refuse until its prepared/runtime ledger is extended.
-        prepared.modulation.is_none()
-            && self.entry.modulation.is_none()
-            && self.entry.automation == prepared.automation
+        (match (&self.entry.modulation, &prepared.modulation) {
+            (Some(runtime), Some(declaration)) => declaration.matches_runtime(runtime),
+            (None, None) => true,
+            _ => false,
+        }) && self.entry.automation == prepared.automation
             && self.entry.owner == prepared.owner
             && self.entry.device_id == prepared.device_id
             && self.entry.device_type == prepared.device_type
