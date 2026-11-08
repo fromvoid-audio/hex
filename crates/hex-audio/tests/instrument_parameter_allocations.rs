@@ -31,7 +31,7 @@ impl NativeParameterAutomation for Values {
         &[ID]
     }
     fn value_at(&self, _: ParameterId, offset: usize) -> Option<ParameterValue> {
-        if offset % 2 == 0 {
+        if offset.is_multiple_of(2) {
             Some(ParameterValue::Float(0.5))
         } else {
             None
