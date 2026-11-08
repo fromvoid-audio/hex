@@ -20,7 +20,10 @@ pub use controller::{
     NativeWorkerAuthoredParameterProgress, NativeWorkerControllerProgress,
     NativeWorkerControllerQuery,
 };
-pub use hex_plugin_host::protocol::{ControllerRequest, ParameterPageQuery, PluginEditorState};
+pub use hex_plugin_host::protocol::{
+    ControllerRequest, ParameterEdit, ParameterEditKind, ParameterPageQuery, PluginEditorState,
+    RecoveryEdits,
+};
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod edits;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

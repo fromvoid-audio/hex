@@ -102,6 +102,9 @@ const TUID restore_controller_id={0x48,0x45,0x58,0x43,1,2,3,4,5,6,7,8,9,10,11,12
 // Distinct variants exercise actual metadata and processing, not host guesses.
 static ParamID parameter_id(int variant) { return variant==80 || variant==89 || variant==92?0u:7u; }
 constexpr int authored_instrument_variant=145, held_instrument_variant=146;
+// Original GUI callback + automatable controller fixture for desktop follow/lane
+// integration. It permits live-worker zero-frame flushes while transport is idle.
+constexpr int touched_automation_variant=147;
 static bool held_parameter_input(int variant) { return variant==144 || variant==held_instrument_variant; }
 constexpr ParamID drag_axis_id=11;
 constexpr int mixed_input_fixture=143;
@@ -226,7 +229,7 @@ public:
         if (!control() || !context || (value && handler)) return kResultFalse;
         if(value)value->addRef();if(handler)handler->release();handler=value;
         if(fault==104 || fault==105 || fault==118 || fault==119) latency_handler=handler;
-        if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116 || (fault>=131 && fault<=135) || fault==141 || fault==142)) {
+        if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116 || (fault>=131 && fault<=135) || fault==141 || fault==142 || fault==touched_automation_variant)) {
             CFRunLoopTimerContext timer_context{};timer_context.info=this;
             edit_timer=CFRunLoopTimerCreate(nullptr,CFAbsoluteTimeGetCurrent(),0.001,0,0,edit_tick,&timer_context);
             if(!edit_timer) return kResultFalse;
@@ -316,7 +319,7 @@ public:
             std::memcpy(info.title,name,sizeof(name));std::memcpy(info.shortTitle,name,sizeof(name));
             return kResultOk;
         }
-        if(fault==80 || fault==81 || fault==82 || fault==91 || fault==92 || mixed_parameter_input(fault) || (fault==authored_instrument_variant || fault==held_instrument_variant)) info.flags=ParameterInfo::kCanAutomate;
+        if(fault==80 || fault==81 || fault==82 || fault==91 || fault==92 || fault==touched_automation_variant || mixed_parameter_input(fault) || (fault==authored_instrument_variant || fault==held_instrument_variant)) info.flags=ParameterInfo::kCanAutomate;
         if(fault==91 || fault==92) {const char16_t unit[]=u"ratio";std::memcpy(info.units,unit,sizeof(unit));}
         if(fault==81) info.stepCount=3;
         if(fault==141 || (fault==142 && !edits_sent)) info.flags=ParameterInfo::kCanAutomate;
@@ -744,7 +747,7 @@ public:
                 ++observed.flushes;
                 return kResultOk;
             }
-            if ((processing && fault!=37 && fault!=86 && fault!=92 && fault!=116 && fault!=132) ||
+            if ((processing && fault!=37 && fault!=86 && fault!=92 && fault!=116 && fault!=132 && fault!=touched_automation_variant) ||
                 !data.inputParameterChanges || data.inputParameterChanges->getParameterCount()!=1)
                 return kInvalidArgument;
             auto* queue=data.inputParameterChanges->getParameterData(0);
@@ -1022,7 +1025,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>held_instrument_variant) return false;next_fault=value;
+        if (value>touched_automation_variant) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

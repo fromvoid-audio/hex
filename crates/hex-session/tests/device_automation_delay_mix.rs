@@ -19,9 +19,7 @@ fn event(service: &Service) -> Event {
 }
 #[test]
 fn delay_feedback_lane_edits_preserve_base_value_history_and_refuse_stale_requests() {
-    for parameter in [
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
-    ] {
+    for parameter in 1..=27 {
         lane_case(parameter);
     }
 }

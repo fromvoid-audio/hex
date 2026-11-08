@@ -738,6 +738,7 @@ impl EditorView {
         let mut pending = PendingSeek::from_intent(request_id, &intent, fence);
         pending.native_output_identity = Some(output_identity);
         let request = hex_session::service::ResidentArrangementSeekIntent {
+            history: hex_session::service::ResidentSeekHistory::Fresh,
             request_id,
             project_generation: intent.project_generation,
             project_revision: intent.project_revision,

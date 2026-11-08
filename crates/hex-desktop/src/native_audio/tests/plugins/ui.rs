@@ -1451,3 +1451,159 @@ fn live_vst3_pointer_drag_reaches_native_device_during_playback(cx: &mut gpui::T
         })
     });
 }
+
+#[gpui::test]
+#[ignore = "explicit original SDK helper/source receipts required"]
+fn native_editor_touch_updates_host_follow_knob_and_arranger(cx: &mut gpui::TestAppContext) {
+    const CHILD: &str = "HEX_DESKTOP_TEST_NATIVE_TOUCH";
+    if std::env::var_os(CHILD).is_none() {
+        let files = Files::new();
+        let name = std::thread::current().name().unwrap().to_owned();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--ignored", "--nocapture"])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "147")
+            .env("HEX_ORIGINAL_INSTANCE_RELEASE", files.0.join("release"))
+            .env("HOME", files.0.join("home"))
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let _native = native_fixture();
+    let mut fixture = open_browser(
+        cx,
+        2,
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+    );
+    fixture.activate_to_facts(cx, false);
+    fixture.resume.send(()).unwrap();
+    let revision = fixture.state.revision + 1;
+    until("original VST3 inserted and applied", || {
+        fixture.step(cx);
+        let view = fixture.view(cx);
+        !view.pending
+            && view
+                .applied
+                .is_some_and(|source| source.context.editor_revision == revision)
+    });
+    let initial = fixture.view(cx).state.unwrap().project.clone();
+    let device = initial.main_devices()[0].id().value();
+    click(&mut fixture.visual, "main-track-header");
+    until("automatic host parameter control", || {
+        fixture.step(cx);
+        fixture
+            .view(cx)
+            .parameter_controls
+            .iter()
+            .any(|&(id, parameter, _)| id == device && parameter == 7)
+    });
+    assert!(fixture.view(cx).parameter_touches.is_empty());
+    let release = std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap();
+    fs::write(release, b"emit original SDK begin/perform/end callbacks").unwrap();
+    until(
+        "native receipt refreshes the follow control and arranger lane while stopped",
+        || {
+            fixture.step(cx);
+            let view = fixture.view(cx);
+            assert!(view.error.is_none(), "{:?}", view.error);
+            view.parameter_touches
+                .iter()
+                .any(|&(id, parameter, value, control, lane)| {
+                    id == device
+                        && parameter == 7
+                        && (value - 0.75).abs() < 1e-8
+                        && control.is_some()
+                        && lane
+                })
+        },
+    );
+    // The release file represents one GUI action, not a command for every
+    // controller recreated during the subsequent canonical source publication.
+    fs::remove_file(std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap()).unwrap();
+    let view = fixture.view(cx);
+    let follow = view.parameter_touches[0].3.unwrap();
+    let row = view
+        .parameter_controls
+        .iter()
+        .find(|&&(id, parameter, _)| id == device && parameter == 7)
+        .unwrap()
+        .2;
+    assert_ne!(row, follow, "one control entity cannot be painted twice");
+    assert_eq!(
+        view.state.unwrap().project,
+        initial,
+        "observation must not author automation or canonical state"
+    );
+    let selector = Box::leak(format!("vst3-follow-knob-{device}-7-knob").into_boxed_str());
+    let start = fixture
+        .visual
+        .debug_bounds(selector)
+        .expect("painted follow knob")
+        .center();
+    let end = gpui::point(start.x, start.y + gpui::px(30.0));
+    let modifiers = Modifiers::default();
+    fixture
+        .visual
+        .simulate_mouse_down(start, MouseButton::Left, modifiers);
+    repaint(cx, &mut fixture.visual);
+    fixture
+        .visual
+        .simulate_mouse_move(end, MouseButton::Left, modifiers);
+    repaint(cx, &mut fixture.visual);
+    assert_eq!(
+        fixture.view(cx).parameter_gesture,
+        Some(0.5),
+        "the follow dial must dispatch its changed normalized value before release"
+    );
+    fixture
+        .visual
+        .simulate_mouse_up(end, MouseButton::Left, modifiers);
+    until(
+        "follow knob uses the existing canonical gesture contract",
+        || {
+            fixture.step(cx);
+            let view = fixture.view(cx);
+            assert!(view.error.is_none(), "{:?}", view.error);
+            view.state
+                .as_ref()
+                .is_some_and(|state| state.revision == revision + 1 && state.project != initial)
+        },
+    );
+    let committed = fixture.view(cx).state.unwrap();
+    let envelope = hex_plugin_state::decode(committed.project.main_devices()[0].state()).unwrap();
+    let component = envelope.component.unwrap();
+    assert_eq!(
+        f32::from_le_bytes(component[8..12].try_into().unwrap()),
+        2.0,
+        "the original processor capture must retain the follow edit, normalized 0.5"
+    );
+    let refresh_deadline = Instant::now() + Duration::from_secs(3);
+    until("last touched display survives its canonical commit", || {
+        fixture.step(cx);
+        let view = fixture.view(cx);
+        assert!(
+            Instant::now() < refresh_deadline,
+            "follow projection after commit: {:?}; query pending={}; status={}; error={:?}",
+            view.parameter_touches,
+            view.parameter_query_pending,
+            view.status,
+            view.error
+        );
+        view.parameter_touches
+            .iter()
+            .any(|&(id, parameter, value, control, lane)| {
+                id == device && parameter == 7 && value < 0.74 && control.is_some() && lane
+            })
+    });
+    fixture.visual.update(|window, _| window.remove_window());
+    fixture.visual.run_until_parked();
+}
