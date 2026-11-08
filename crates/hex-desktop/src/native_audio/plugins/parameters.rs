@@ -1,8 +1,11 @@
 //! Read-only inventory of the exact retained VST3 controller. One page can
 //! be in flight, and a retired binding never supplies rows for its successor.
+//! Each page is a fresh value observation: PCM feedback may advance its revision
+//! between pages. Contiguous offsets, a fixed count and unique IDs bound the list;
+//! these rows never promise a simultaneous snapshot or authorize a later edit.
 use super::*;
 use hex_audio::plugin_worker::{
-    NativeWorkerControllerProgress, NativeWorkerControllerQuery, ParameterPageQuery,
+    ControllerRequest, NativeWorkerControllerProgress, NativeWorkerControllerQuery,
 };
 use hex_session::service::{PluginParameterQuery, PluginParameterResult, PluginParameterRow};
 use std::time::{Duration, Instant};
@@ -51,6 +54,30 @@ impl Inventory {
                 false
             }
         }
+    }
+
+    fn accept_page(
+        &mut self,
+        first: u16,
+        total: u16,
+        revision: u64,
+        rows: Vec<PluginParameterRow>,
+    ) -> Result<(), &'static str> {
+        let count = usize::from(total);
+        if usize::from(first) != self.rows.len()
+            || self.rows.len().saturating_add(rows.len()) > count
+            || self.total.is_some_and(|expected| expected != total)
+            || (rows.is_empty() && self.rows.len() < count)
+            || rows
+                .iter()
+                .any(|row| self.rows.iter().any(|prior| prior.id == row.id))
+        {
+            return Err("vst3 parameter page differs");
+        }
+        self.rows.extend(rows);
+        self.total = Some(total);
+        self.revision = revision;
+        Ok(())
     }
 }
 
@@ -160,13 +187,10 @@ impl Plugins {
                 inventory.terminal = Some(Err("vst3 parameter inventory exceeds its limit".into()));
                 return;
             };
-            let query = ParameterPageQuery {
-                first,
-                revision: inventory.revision,
-                conversion: None,
-            };
-            match control.begin_native_source_controller_query_on_control(inventory.binding, query)
-            {
+            match control.begin_native_source_controller_query_on_control(
+                inventory.binding,
+                ControllerRequest::SelectedParameters { first },
+            ) {
                 Ok(token) => {
                     inventory.token = Some(token);
                     return;
@@ -184,23 +208,10 @@ impl Plugins {
                 if inventory.token.is_some() => {}
             Ok(NativeWorkerControllerProgress::Page(page)) if current => {
                 inventory.token = None;
-                let total = usize::from(page.total);
-                if usize::from(page.first) != inventory.rows.len()
-                    || inventory.rows.len() + page.as_slice().len() > total
-                    || (inventory.revision != 0 && inventory.revision != page.revision)
-                    || inventory
-                        .total
-                        .is_some_and(|expected| expected != page.total)
-                    || (page.as_slice().is_empty() && inventory.rows.len() < total)
-                {
-                    inventory.terminal = Some(Err("vst3 parameter page differs".into()));
-                    return;
-                }
-                inventory.revision = page.revision;
-                inventory.total = Some(page.total);
-                inventory
-                    .rows
-                    .extend(page.as_slice().iter().map(|parameter| {
+                let rows = page
+                    .as_slice()
+                    .iter()
+                    .map(|parameter| {
                         let title = parameter.title.as_utf16();
                         let name = if title.is_empty() {
                             let short = parameter.short_title.as_utf16();
@@ -231,8 +242,15 @@ impl Plugins {
                             page_first: page.first,
                             metadata_revision: page.revision,
                         }
-                    }));
-                if inventory.rows.len() == total {
+                    })
+                    .collect();
+                if let Err(error) =
+                    inventory.accept_page(page.first, page.total, page.revision, rows)
+                {
+                    inventory.terminal = Some(Err(error.into()));
+                    return;
+                }
+                if inventory.rows.len() == usize::from(page.total) {
                     inventory.terminal = Some(Ok(()));
                 } else {
                     inventory.deadline = Instant::now() + Duration::from_millis(250);
@@ -321,5 +339,69 @@ mod tests {
             assert!(query.class.is_none());
             assert!(query.rows.is_empty());
         }
+    }
+
+    fn row(id: u32, revision: u64) -> PluginParameterRow {
+        PluginParameterRow {
+            id,
+            name: format!("parameter {id}"),
+            value: "0%".into(),
+            normalized: 0.0,
+            default_normalized: 0.0,
+            steps: 0,
+            editable: true,
+            automation_class: None,
+            page_first: 0,
+            metadata_revision: revision,
+        }
+    }
+
+    #[test]
+    fn selected_pages_survive_feedback_revision_changes() {
+        let now = Instant::now();
+        let mut inventory = inventory(now);
+        inventory
+            .accept_page(0, 6, 3, (0..4).map(|id| row(id, 3)).collect())
+            .unwrap();
+        // PCM feedback may advance the observation revision between fresh
+        // page reads. The inventory stays ordered and is complete at rev 4.
+        inventory
+            .accept_page(4, 6, 4, (4..6).map(|id| row(id, 4)).collect())
+            .unwrap();
+        assert_eq!(inventory.revision, 4);
+        assert_eq!(
+            inventory.rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3, 4, 5]
+        );
+    }
+
+    #[test]
+    fn selected_pages_refuse_gaps_count_changes_and_duplicate_ids() {
+        let now = Instant::now();
+        let mut gap = inventory(now);
+        gap.accept_page(0, 3, 1, vec![row(1, 1)]).unwrap();
+        assert_eq!(
+            gap.accept_page(2, 3, 2, vec![row(3, 2)]),
+            Err("vst3 parameter page differs")
+        );
+
+        let mut count = inventory(now);
+        count.accept_page(0, 3, 1, vec![row(1, 1)]).unwrap();
+        assert_eq!(
+            count.accept_page(1, 4, 2, vec![row(2, 2)]),
+            Err("vst3 parameter page differs")
+        );
+
+        let mut duplicate = inventory(now);
+        duplicate.accept_page(0, 3, 1, vec![row(7, 1)]).unwrap();
+        assert_eq!(
+            duplicate.accept_page(1, 3, 2, vec![row(7, 2)]),
+            Err("vst3 parameter page differs")
+        );
+        assert_eq!(
+            duplicate.rows.len(),
+            1,
+            "failed page must not append partial data"
+        );
     }
 }
