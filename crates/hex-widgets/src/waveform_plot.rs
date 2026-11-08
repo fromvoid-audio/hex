@@ -134,6 +134,7 @@ impl WaveformChannel {
             gpui::size(px((right - left) / scale), px(1.0 / scale)),
         );
         (valid_point(bounds.origin)
+            && valid_point(bounds.bottom_right())
             && valid_width(bounds.size.width)
             && valid_width(bounds.size.height))
         .then_some(bounds)
