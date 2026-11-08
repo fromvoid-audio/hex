@@ -1576,12 +1576,19 @@ fn verify_paced_instrument_authoring(
             pending = true;
         }
         while let Ok(event) = harness.service.try_event() {
-            assert!(
-                event.error.is_none(),
-                "live automation failed at block {block}, edits={sent}/{completed}, query={query_pending:?}, observation={}: {:?}",
-                event.plugin_parameter_observation,
-                event.error,
-            );
+            if let Some(error) = &event.error {
+                harness.pump();
+                let progress = *harness.plugin_progress.lock().unwrap();
+                let status = harness.audio.as_ref().unwrap().status().unwrap();
+                let fault = status.render_fault_snapshot();
+                let source = status.native_effect_source();
+                let blocks = harness.plugin_completed.load(Acquire);
+                let worker_failure = harness.plugin_failure.lock().unwrap().clone();
+                panic!(
+                    "live automation failed at block {block}, edits={sent}/{completed}, query={query_pending:?}, observation={}, progress={progress:?}, source={source:?}, blocks={blocks}, degraded={:?}, max_late={max_lateness:?}, render_fault={fault:?}, worker_failure={worker_failure:?}: {error}",
+                    event.plugin_parameter_observation, harness.degraded_devices
+                );
+            }
             if let Some(result) = event.plugin_parameters {
                 assert_eq!(query_pending, Some(result.query.request_id));
                 match result.rows {
