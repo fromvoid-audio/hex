@@ -236,6 +236,9 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             move_track_device(project, device, track, before)?;
             Ok(crate::Created::None)
         }
+        Command::InsertNestedDevice { parent, state } => {
+            unit_parent::insert(project, parent, state)
+        }
         Command::ReparentDevice { device, parent } => {
             unit_parent::apply(project, device, parent)?;
             Ok(crate::Created::None)
