@@ -17,6 +17,7 @@ pub(super) mod filter_response;
 mod global;
 pub(super) mod harmonics;
 pub(super) mod preview;
+pub(super) mod routing_picker;
 
 pub(super) const OPERATOR_FRAME_WIDTH: f32 = crate::device_composition::VECTOR_WIDTH;
 // Two compact control columns with a narrow power/identity column.
@@ -27,7 +28,15 @@ const SHOW_HARMONIC_TOOLS: bool = false;
 
 gpui::actions!(
     hex_operator,
-    [ActivateRouting, ActivateSection, ActivatePower]
+    [
+        ActivateRouting,
+        RoutingSettings,
+        CloseRouting,
+        NextRouting,
+        PreviousRouting,
+        ActivateSection,
+        ActivatePower
+    ]
 );
 
 pub(in crate::editor) fn bind_keys(cx: &mut gpui::App) {
@@ -35,6 +44,13 @@ pub(in crate::editor) fn bind_keys(cx: &mut gpui::App) {
         gpui::KeyBinding::new("enter", ActivateSection, Some("hex_operator_section")),
         gpui::KeyBinding::new("enter", ActivatePower, Some("hex_operator_power")),
         gpui::KeyBinding::new("enter", ActivateRouting, Some("hex_operator_routing")),
+        gpui::KeyBinding::new("space", ActivateRouting, Some("hex_operator_routing")),
+        gpui::KeyBinding::new("alt-enter", RoutingSettings, Some("hex_operator_routing")),
+        gpui::KeyBinding::new("escape", CloseRouting, Some("hex_operator_routing_open")),
+        gpui::KeyBinding::new("down", NextRouting, Some("hex_operator_routing_open")),
+        gpui::KeyBinding::new("right", NextRouting, Some("hex_operator_routing_open")),
+        gpui::KeyBinding::new("up", PreviousRouting, Some("hex_operator_routing_open")),
+        gpui::KeyBinding::new("left", PreviousRouting, Some("hex_operator_routing_open")),
     ]);
 }
 
