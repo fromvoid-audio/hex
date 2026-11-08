@@ -25,6 +25,13 @@ fn ruler_touches_spectrum_and_only_the_bottom_map_remains(cx: &mut TestAppContex
                 })
                 .unwrap();
         }
+        if populated {
+            for name in ["space", "echo"] {
+                model
+                    .execute(Command::AddReturnTrack { name: name.into() })
+                    .unwrap();
+            }
+        }
         let original = model.project().snapshot();
         let (handle, editor) = editor_window(cx, model.project().clone(), Arc::default());
         let mut visual = VisualTestContext::from_window(handle, cx);
@@ -45,6 +52,25 @@ fn ruler_touches_spectrum_and_only_the_bottom_map_remains(cx: &mut TestAppContex
             assert_eq!(map.left(), ruler.left());
             assert_eq!(map.size.width, ruler.size.width);
             assert!(map.top() > ruler.bottom());
+            let body = visual.debug_bounds("arrangement-content").unwrap();
+            let scale = gpui::ScaledPixels::from(visual.update(|window, _| window.scale_factor()));
+            let color: gpui::Background =
+                gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Text)).into();
+            let lines: Vec<_> = visual
+                .rendered_filled_quads("arrangement-playback-layer")
+                .into_iter()
+                .filter(|(bounds, fill)| {
+                    fill == &color
+                        && (bounds.size.width / scale - 1.0).abs() < 0.05
+                        && (bounds.top() / scale - f32::from(body.top())).abs() < 0.05
+                        && (bounds.bottom() / scale - f32::from(main.top())).abs() < 0.05
+                })
+                .collect();
+            assert_eq!(
+                lines.len(),
+                1,
+                "playback line reaches Main across Return rows at {dimensions:?}"
+            );
             editor.read_with(&visual, |view, _| {
                 assert_eq!(view.state.as_ref().unwrap().project.snapshot(), original);
             });
