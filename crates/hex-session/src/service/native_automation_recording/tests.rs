@@ -169,11 +169,13 @@ fn failed_lane_retains_original_custody_through_copy_refusal_and_retry() {
     let outcome = injected_failed_writer(writer, event);
     assert!(outcome.failure.is_some());
     let original = std::fs::read(&path).unwrap();
-    let mut lane = Lane::default();
-    lane.failed = Some(Failed {
-        scope,
-        outcome: Arc::new(outcome),
-    });
+    let mut lane = Lane {
+        failed: Some(Failed {
+            scope,
+            outcome: Arc::new(outcome),
+        }),
+        ..Lane::default()
+    };
     let current = scope.context();
     assert!(
         lane.receive(
