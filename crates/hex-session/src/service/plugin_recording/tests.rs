@@ -462,6 +462,31 @@ fn source_loss_drains_original_then_interruption_and_releases_the_completed_writ
     assert!(!lane.busy());
     assert!(state.failed.is_none());
     assert!(path.is_file());
+    // SDK/output custody ended before a terminal was dispatched. The actor's
+    // later barrier must never fall back to ordinary opaque parameter commit.
+    let terminal = state.terminal_for(Some(snapshot)).unwrap();
+    let mut preparation = Preparation {
+        state: &mut state,
+        lane: &mut lane,
+        document_base: None,
+        recovery: None,
+        may_defer: true,
+        deferred: false,
+    };
+    let operation = PluginGesturePreparation::Commit(snapshot);
+    assert!(preparation.handles(operation));
+    assert_eq!(terminal.key(), snapshot.key);
+    assert!(matches!(
+        preparation.before(
+            &mut session,
+            operation,
+            scope.context(),
+            &mut sink,
+            &mut None,
+            sampler_export::Admission::default(),
+        ),
+        Some(Err(SessionError::PluginSourceLost(_)))
+    ));
     let reader = hex_storage::automation_draft::DraftReader::open(
         &path,
         hex_storage::automation_draft::DraftReadLimits {

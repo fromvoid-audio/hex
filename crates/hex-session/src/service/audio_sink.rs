@@ -1384,12 +1384,38 @@ impl WorkerEvents {
         &mut self,
         requests: &Receiver<QueuedRequest>,
         document_intent: &Arc<std::sync::atomic::AtomicU64>,
+        recording_barrier: &mut super::recording_barrier::State,
         bounded: bool,
         plugin_effect: Option<&PluginEffectInsertion>,
         stopped_restore: Option<hex_engine::AudioSourceContext>,
         context: hex_engine::AudioSourceContext,
         mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>) -> ControlPoll,
     ) -> Option<QueuedRequest> {
+        // The original barrier retains its FIFO place. Continue polling SDK/disk
+        // work without consuming a later request; accepted New/Open intent and
+        // shutdown are observable independently of the bounded channel.
+        while recording_barrier.active() {
+            if self.shutdown.load(Ordering::Acquire) {
+                return None;
+            }
+            self.poll();
+            let control = control_poll(
+                self.audio
+                    .as_mut()
+                    .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+            );
+            if let Some(request) =
+                recording_barrier.poll(context, document_intent.load(Ordering::Acquire))
+            {
+                return Some(request);
+            }
+            if let Some(gesture) = control.gesture
+                && let Some(request) = recording_barrier.continuation(gesture)
+            {
+                return Some(request);
+            }
+            thread::sleep(super::recording_barrier::POLL);
+        }
         if self.stopped_fence.active()
             && let Some(request) = self.next_request_while_fenced(requests, document_intent)
         {

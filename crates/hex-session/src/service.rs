@@ -87,6 +87,7 @@ mod plugin_effect;
 mod plugin_parameters;
 mod plugin_recording;
 mod plugin_state_save;
+mod recording_barrier;
 pub use plugin_parameters::{
     PluginParameterQuery, PluginParameterResult, PluginParameterRow, vst3_automation_class,
     vst3_parameter_cache_key,
@@ -261,6 +262,8 @@ pub struct SamplerHistoryEdit {
 /// Identifies one requested save against the exact canonical document revision.
 /// The caller supplies a unique nonzero request ID for its in-flight saves.
 /// The worker returns this identity for both successful and refused saves.
+/// Finishing that request's admitted recorded gesture may advance the revision
+/// before saving; a private exact transition receipt preserves the original identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SaveCorrelation {
     pub request_id: u64,
@@ -2498,9 +2501,11 @@ fn run_worker(
     let mut pending_stopped_restore = None;
     let mut native_automation_take = native_automation_recording::Lane::default();
     let mut plugin_recording = plugin_recording::State::default();
+    let mut recording_barrier = recording_barrier::State::default();
     while let Some(queued) = events.next_request_with_control_poll(
         &requests,
         &document_intent,
+        &mut recording_barrier,
         session.native_reservation.is_some(),
         pending_plugin_effect
             .as_ref()
@@ -2592,6 +2597,15 @@ fn run_worker(
             }
         },
     ) {
+        let queued = recording_barrier.admit(
+            queued,
+            plugin_recording.terminal_for(device_gesture.snapshot()),
+            hex_engine::AudioSourceContext {
+                project_generation,
+                editor_revision: revision,
+            },
+            document_intent.load(Ordering::Acquire),
+        );
         let queued = if events.resident_publication_enabled()
             && session.audio_mode() == DocumentAudioMode::Resident
             && matches!(
@@ -2663,6 +2677,7 @@ fn run_worker(
             queued.publication_waited,
         );
         let save_correlation = queued.save_correlation;
+        let recording_barrier_completion = queued.recording_barrier;
         let (request, mut import_decode) = truncated_import::admit(queued.request);
         let solo_request = matches!(
             &request,
@@ -2673,7 +2688,7 @@ fn run_worker(
             _ => None,
         };
         let mut seek_submitted = false;
-        let request_complete = !matches!(
+        let mut request_complete = !matches!(
             &request,
             Request::ContinueSamplerEdit
                 | Request::ContinuePluginEffect
@@ -3408,11 +3423,18 @@ fn run_worker(
             _ => None,
         });
         if barrier_failure.is_none() {
-            barrier_failure = publication_wait_failure.map(str::to_owned);
+            barrier_failure = publication_wait_failure
+                .or_else(|| recording_barrier::failure(recording_barrier_completion))
+                .map(str::to_owned);
         }
-        if save_correlation.is_some_and(|identity| {
-            identity.project_generation != project_generation || identity.revision != revision
-        }) {
+        if !recording_barrier::save_matches(
+            save_correlation,
+            recording_barrier_completion,
+            hex_engine::AudioSourceContext {
+                project_generation,
+                editor_revision: revision,
+            },
+        ) {
             barrier_failure = Some("save target changed · save cancelled".to_owned());
         }
         if barrier && barrier_failure.is_none() && plugin_recording.owns(device_gesture.snapshot())
@@ -3677,9 +3699,14 @@ fn run_worker(
                     | Request::OpenWith { .. }
                     | Request::OpenWithAudioMode { .. }
             );
-        if save_correlation.is_some_and(|identity| {
-            identity.project_generation != project_generation || identity.revision != revision
-        }) {
+        if !recording_barrier::save_matches(
+            save_correlation,
+            recording_barrier_completion,
+            hex_engine::AudioSourceContext {
+                project_generation,
+                editor_revision: revision,
+            },
+        ) {
             save_complete = true;
             error = Some("save target changed · save cancelled".into());
         } else if matches!(&request, Request::Edit(command) if arrangement_sections::is_command(command))
@@ -4041,6 +4068,7 @@ fn run_worker(
                                 | crate::device_gesture::GesturePhase::Cancel
                         );
                     if deferred {
+                        request_complete = false;
                         plugin_recording.defer(gesture);
                         gesture_protocol_ack = false;
                         gesture_request = false;
@@ -8265,6 +8293,15 @@ fn run_worker(
                 Some(status) => format!("{status} · {note}"),
                 None => note,
             });
+        }
+        if let Some(ack) = gesture_ack.as_ref() {
+            recording_barrier.complete(
+                ack,
+                hex_engine::AudioSourceContext {
+                    project_generation,
+                    editor_revision: revision,
+                },
+            );
         }
         if !events.send_with_control_poll(
             Event {

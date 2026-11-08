@@ -236,6 +236,14 @@ pub(in crate::service) fn operation_using(
         *preview = None;
         Ok(Some((Arc::new(session.project().clone()), prepared)))
     })();
+    if matches!(operation, PluginGesturePreparation::Begin { .. })
+        && result.is_ok()
+        && let Some(recording) = recording.as_mut()
+    {
+        // The actor admitted a new gesture; an older resource-free retirement
+        // marker must not classify a newly reused client key as recorded input.
+        recording.state.actor_began();
+    }
     if terminal && !records {
         sink.finish_plugin_parameter_commit(
             context,
