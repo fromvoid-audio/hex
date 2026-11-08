@@ -91,13 +91,21 @@ impl ModulationLfoBank {
         if sources.windows(2).any(|pair| pair[0].id >= pair[1].id) {
             return Err(Error::InvalidId);
         }
-        let mut prepared = Vec::with_capacity(sources.len());
+        let mut prepared = Vec::new();
+        prepared
+            .try_reserve_exact(sources.len())
+            .map_err(|_| Error::RuntimeAllocation)?;
         for source in sources {
+            let mut samples = Vec::new();
+            samples
+                .try_reserve_exact(chunk_frames)
+                .map_err(|_| Error::RuntimeAllocation)?;
+            samples.resize(chunk_frames, 0.0);
             prepared.push(Source {
                 id: source.id,
                 committed: source.lfo,
                 scratch: source.lfo,
-                samples: vec![0.0; chunk_frames],
+                samples,
             });
         }
         let bank = Self {
