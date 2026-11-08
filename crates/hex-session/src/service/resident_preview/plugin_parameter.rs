@@ -131,6 +131,7 @@ pub(super) fn operation(
                 canonical_state: state,
                 reading_class,
                 isolated_class,
+                confirm_delivery: false,
                 instrument: session
                     .project()
                     .native_sources()

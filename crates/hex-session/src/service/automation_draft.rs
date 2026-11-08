@@ -17,7 +17,8 @@ use super::{Session, recovery};
 use hex_storage::automation_draft::DraftWriter;
 mod native_device;
 pub use hex_storage::automation_draft::{
-    AppliedEvent, DraftAbortReason, DraftProgress, DraftProvenance, DraftTarget, DraftTerminal,
+    AppliedEvent, DraftAbortReason, DraftClock, DraftProgress, DraftProvenance, DraftTarget,
+    DraftTerminal,
 };
 pub use native_device::{
     DeviceDraftInput, Vst3ApplicationValue, Vst3CaptureTarget, Vst3ParameterApplication,

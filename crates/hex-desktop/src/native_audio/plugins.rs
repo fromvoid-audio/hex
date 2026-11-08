@@ -142,6 +142,9 @@ pub(super) struct Plugins {
     parameters: Option<parameters::Inventory>,
     observed_parameters: Option<parameters::ObservedInventory>,
     parameter_gesture: Option<parameter_gesture::Gesture>,
+    // At most two control records: a late prior point and the current point.
+    confirmed_parameters:
+        std::collections::VecDeque<hex_session::service::PluginParameterObservation>,
     editor_checked: Option<AudioSourceContext>,
     restore: Option<Restore>,
     reopen: Option<Reopen>,
@@ -233,7 +236,14 @@ impl Plugins {
         }
         self.configured = false;
         self.observed_parameters = None;
-        self.parameter_gesture = None;
+        self.collect_parameter_observations();
+        if !self
+            .parameter_gesture
+            .as_ref()
+            .is_some_and(parameter_gesture::Gesture::has_retired_delivery)
+        {
+            self.parameter_gesture = None;
+        }
         for source in &mut self.sources {
             source.edit_backlog = false;
         }

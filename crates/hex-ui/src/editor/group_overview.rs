@@ -112,13 +112,20 @@ pub(super) fn view(view: &EditorView, state: &ViewState, track: &Track, viewport
                         .take_while(|block| block.start < limit)
                     {
                         if let Some((left, right)) = project_interval(block, viewport, width) {
-                            window.paint_quad(fill(
+                            crate::section_surface::paint(
                                 gpui::Bounds::new(
                                     point(bounds.left() + px(left), bounds.top()),
                                     size(px(right - left), bounds.size.height),
                                 ),
-                                rgb(color),
-                            ));
+                                if block.end <= limit {
+                                    crate::section_surface::CHAMFER
+                                } else {
+                                    0.0
+                                },
+                                color,
+                                None,
+                                window,
+                            );
                         }
                     }
                     if group.rows.is_empty() {
@@ -141,10 +148,35 @@ pub(super) fn view(view: &EditorView, state: &ViewState, track: &Track, viewport
                         let first = row.partition_point(|span| span.end <= viewport.start);
                         for &span in row[first..].iter().take_while(|span| span.start < limit) {
                             if let Some((left, right)) = project_interval(span, viewport, width) {
+                                // A compressed row stays inside its containing block's cut.
+                                let block = group.blocks.get(
+                                    group
+                                        .blocks
+                                        .partition_point(|block| block.end <= span.start),
+                                );
+                                let edge = block
+                                    .and_then(|block| {
+                                        project_interval(*block, viewport, width).map(|(l, r)| {
+                                            l + crate::section_surface::miniature_right(
+                                                r - l,
+                                                height,
+                                                if block.end <= limit {
+                                                    crate::section_surface::CHAMFER
+                                                } else {
+                                                    0.0
+                                                },
+                                                y + h,
+                                            )
+                                        })
+                                    })
+                                    .unwrap_or(right);
                                 let w = (right - left - pixel)
                                     .max(pixel)
                                     .min(right - left)
-                                    .min(width - left);
+                                    .min(edge - left);
+                                if w <= 0.0 {
+                                    continue;
+                                }
                                 window.paint_quad(fill(
                                     gpui::Bounds::new(
                                         point(bounds.left() + px(left), bounds.top() + px(y)),
@@ -389,6 +421,10 @@ mod tests {
                     start: 48_000,
                     length: 192_000,
                 },
+                Viewport {
+                    start: 0,
+                    length: 96_000,
+                },
             ] {
                 visual.simulate_resize(size(px(width), px(800.0)));
                 view.update(&mut visual, |v, cx| {
@@ -405,8 +441,15 @@ mod tests {
                     .into_iter()
                     .filter(|(_, c)| c == &fill_color)
                     .collect();
-                assert_eq!(blocks.len(), 1);
-                let expected_width = if viewport.start == 0 { 0.5 } else { 0.75 };
+                let clipped_end = viewport.length == 96_000;
+                assert_eq!(blocks.len(), if clipped_end { 1 } else { 2 });
+                let expected_width = if clipped_end {
+                    1.0
+                } else if viewport.start == 0 {
+                    0.5
+                } else {
+                    0.75
+                };
                 assert!((blocks[0].0.left() / scale - f32::from(bounds.left())).abs() < 0.05);
                 assert!(
                     (blocks[0].0.size.width / scale
@@ -415,7 +458,15 @@ mod tests {
                         < 0.1
                 );
                 assert!(
-                    (blocks[0].0.size.height / scale - f32::from(bounds.size.height)).abs() < 0.05
+                    (blocks[0].0.size.height / scale
+                        - (f32::from(bounds.size.height)
+                            - if clipped_end {
+                                0.0
+                            } else {
+                                crate::section_surface::CHAMFER
+                            }))
+                    .abs()
+                        < 0.05
                 );
                 let ink: gpui::Background =
                     rgb(theme::color(theme::PaletteRole::Background)).into();

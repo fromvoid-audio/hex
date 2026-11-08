@@ -256,6 +256,14 @@ impl NativeAudioSink {
         if let Some(identity) = self.output_identity {
             self.relinquished_output_identity = Some(identity);
         }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if let Some(control) = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+        {
+            self.plugins.retire_parameter_delivery(control);
+        }
         self.plugins.output_closed();
         // Publication/StreamOwner relinquish before any event can backpressure.
         // All accepted construction stays inside Root's terminal/lifecycle book.
@@ -1064,6 +1072,12 @@ impl WorkerAudioSink for NativeAudioSink {
             .parameter_requires_restore(control, context, origin.device.value())
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn take_plugin_parameter_observation(
+        &mut self,
+    ) -> Option<hex_session::service::PluginParameterObservation> {
+        self.plugins.take_parameter_observation()
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn prepare_plugin_parameter_gesture(
         &mut self,
         input: hex_session::service::PluginParameterGestureInput<'_>,
@@ -1071,6 +1085,17 @@ impl WorkerAudioSink for NativeAudioSink {
         hex_session::service::PluginParameterGestureResult,
         hex_session::service::PluginParameterGestureError,
     > {
+        let clock = if input.requires_delivery_confirmation() {
+            let actual = self
+                .current_runtime_loop(input.context())
+                .map_err(hex_session::service::PluginParameterGestureError::Refused)?
+                .filter(|actual| self.resident.current_submission == Some(*actual));
+            self.output
+                .as_ref()
+                .and_then(|output| actual.map(|actual| (output.sample_rate, actual)))
+        } else {
+            None
+        };
         let control = self
             .output
             .as_mut()
@@ -1081,7 +1106,7 @@ impl WorkerAudioSink for NativeAudioSink {
                 )
             })?;
         self.plugins
-            .parameter_gesture(control, input, self.request_cancellation.as_ref())
+            .parameter_gesture(control, input, self.request_cancellation.as_ref(), clock)
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn confirm_plugin_parameter_publication(
