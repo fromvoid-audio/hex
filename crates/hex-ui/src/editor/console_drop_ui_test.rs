@@ -1067,6 +1067,23 @@ fn console_column_paged_narrow_target_uses_painted_anchor_and_rejects_stale_sour
         }),
     );
     let changed = project(&editor, cx);
+    // AddScene reveals the new row. At this narrow window height the original
+    // row can leave the virtualized viewport; scroll it back into view so the
+    // stale payload is released on a real, current painted insertion surface.
+    editor.update(&mut visual, |view, cx| {
+        let index = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .scenes()
+            .iter()
+            .position(|candidate| candidate.id() == scene)
+            .expect("original scene retained");
+        view.session_scene_scroll
+            .scroll_to_item_strict(index, gpui::ScrollStrategy::Top);
+        cx.notify();
+    });
     visual.run_until_parked();
     let at = bounds(
         &mut visual,
