@@ -356,10 +356,26 @@ fn failed_lane_retains_original_custody_through_copy_refusal_and_retry() {
     assert!(wait(&mut lane).is_err());
     assert_eq!(std::fs::read(&destination).unwrap(), b"existing");
     let plugin_copy = files.0.join("plugin-retry.hex-automation-draft");
-    lane.copy_failed_plugin(scope, &plugin_copy, 2, observations)
+    lane.copy_failed_plugin(scope, &plugin_copy, 2, observations.clone())
         .unwrap();
+    let Step::Progress(DeviceAutomationTakeProgress::VerifiedCopy {
+        path: copy_path,
+        receipt,
+    }) = wait(&mut lane).unwrap()
+    else {
+        panic!("expected verified VST3 copy");
+    };
+    assert_eq!(copy_path, plugin_copy);
     assert!(
-        matches!(wait(&mut lane).unwrap(), Step::Progress(DeviceAutomationTakeProgress::Retained(path)) if path == plugin_copy)
+        matches!(lane.inspect_failed_plugin_copy(scope, &observations).unwrap(),
+        Step::Progress(DeviceAutomationTakeProgress::VerifiedCopy { path, receipt: retained }) if path == plugin_copy && retained == receipt)
+    );
+    lane.copy_failed_plugin(scope, &destination, 2, observations.clone())
+        .unwrap();
+    assert!(wait(&mut lane).is_err());
+    assert!(
+        matches!(lane.inspect_failed_plugin_copy(scope, &observations).unwrap(),
+        Step::Progress(DeviceAutomationTakeProgress::VerifiedCopy { path, receipt: retained }) if path == plugin_copy && retained == receipt)
     );
     let copied = DraftReader::open(
         &plugin_copy,
@@ -373,6 +389,15 @@ fn failed_lane_retains_original_custody_through_copy_refusal_and_retry() {
         copied.outcome(),
         DraftOutcome::Finished(restored.application.origin)
     );
+    drop(copied);
+    let limits = DraftReadLimits {
+        max_source_bytes: 65536,
+    };
+    receipt.verify_on_control(&plugin_copy, limits, 2).unwrap();
+    let mut damaged = std::fs::read(&plugin_copy).unwrap();
+    damaged.push(0);
+    std::fs::write(&plugin_copy, damaged).unwrap();
+    assert!(receipt.verify_on_control(&plugin_copy, limits, 2).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), original);
     assert_eq!(
         lane.failed.as_ref().unwrap().outcome.retained[0].events(),

@@ -9,14 +9,15 @@ pub use plugin_observation::{
 };
 mod recovery;
 use super::automation_draft::{
-    DeviceDraftInput, DraftProvenance, DraftWorker, DraftWorkerOutcome, RecoveryCopyWorker,
-    Vst3CaptureTarget, Vst3ParameterApplication,
+    DeviceDraftInput, DraftProvenance, DraftWorker, DraftWorkerOutcome, RecoveryCopyReceipt,
+    RecoveryCopyWorker, Vst3CaptureTarget, Vst3ParameterApplication,
 };
 use super::automation_take::{CompletedAutomationTake, prepare_device_take_adoption_on_control};
 use hex_engine::{AudioSourceContext, NativeParameterApplication, NativeParameterInputTarget};
 use hex_storage::automation_draft::{
     CaptureClock, DraftAbortReason, DraftReadLimits, DraftTerminal,
 };
+pub use recovery::prepare_verified_vst3_recovery_on_control;
 pub(super) use recovery::recover_sealed;
 use std::{
     path::{Path, PathBuf},
@@ -145,6 +146,8 @@ pub enum DeviceAutomationTakeAction {
     },
     /// Poll the one failed-writer copy without waiting for disk.
     PollFailedCopy,
+    /// Retrieve the last successful VST3 copy's identity without releasing custody.
+    InspectFailedPluginCopy,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -156,6 +159,10 @@ pub enum DeviceAutomationTakeProgress {
     Pending,
     Committed,
     Retained(PathBuf),
+    VerifiedCopy {
+        path: PathBuf,
+        receipt: RecoveryCopyReceipt,
+    },
     Refused,
 }
 
@@ -171,13 +178,50 @@ pub(super) struct Lane {
     // with their original source and refuse new takes until recovery.
     failed: Option<Failed>,
     failed_copy: RecoveryCopyWorker,
-    copy_destination: Option<PathBuf>,
+    copy_destination: Option<PendingCopy>,
+    verified_plugin_copy: Option<VerifiedPluginCopy>,
 }
 
 struct Failed {
     scope: DeviceAutomationTakeScope,
     source: DeviceAutomationSource,
     outcome: Arc<DraftWorkerOutcome>,
+}
+
+enum PendingCopy {
+    Checkpoint(PathBuf),
+    Plugin {
+        path: PathBuf,
+        observations: Vec<super::PluginParameterObservation>,
+    },
+}
+
+struct VerifiedPluginCopy {
+    path: PathBuf,
+    receipt: RecoveryCopyReceipt,
+    observations: Vec<super::PluginParameterObservation>,
+}
+
+fn same_plugin_observation(
+    left: &super::PluginParameterObservation,
+    right: &super::PluginParameterObservation,
+) -> bool {
+    use super::PluginParameterObservation::{Delivered, Restored};
+    if left != right {
+        return false;
+    }
+    match (left, right) {
+        (Delivered(a), Delivered(b)) | (Restored(a), Restored(b)) => {
+            match (a.application.value, b.application.value) {
+                (
+                    super::automation_draft::Vst3ApplicationValue::Value(a),
+                    super::automation_draft::Vst3ApplicationValue::Value(b),
+                ) => a.to_bits() == b.to_bits(),
+                _ => true,
+            }
+        }
+        _ => true,
+    }
 }
 
 struct Active {
@@ -227,9 +271,10 @@ impl Lane {
             .ok_or("no failed device automation custody is available")?;
         let destination = super::recovery::absolute_document_path(destination)?;
         let copy_path = destination.clone();
+        let copied_observations = observations.clone();
         self.failed_copy
-            .start_with(&failed.outcome, move |outcome| {
-                copy_failed_plugin_on_control(
+            .start_with_receipt(&failed.outcome, move |outcome| {
+                copy_failed_plugin_with_receipt_on_control(
                     outcome,
                     &copy_path,
                     DraftReadLimits {
@@ -238,12 +283,42 @@ impl Lane {
                     max_events,
                     scope,
                     source,
-                    &observations,
+                    &copied_observations,
                 )
-                .map(|_| ())
             })?;
-        self.copy_destination = Some(destination);
+        self.copy_destination = Some(PendingCopy::Plugin {
+            path: destination,
+            observations,
+        });
         Ok(Step::Progress(DeviceAutomationTakeProgress::Pending))
+    }
+
+    pub(super) fn inspect_failed_plugin_copy(
+        &self,
+        scope: DeviceAutomationTakeScope,
+        observations: &[super::PluginParameterObservation],
+    ) -> Result<Step, String> {
+        self.failed_source(scope)?;
+        if self.copy_destination.is_some() {
+            return Err("automation recovery copy is still pending".into());
+        }
+        let copy = self
+            .verified_plugin_copy
+            .as_ref()
+            .ok_or("no verified VST3 recovery copy is available")?;
+        if copy.observations.len() != observations.len()
+            || !copy
+                .observations
+                .iter()
+                .zip(observations)
+                .all(|(a, b)| same_plugin_observation(a, b))
+        {
+            return Err("retained VST3 observations changed after recovery copy".into());
+        }
+        Ok(Step::Progress(DeviceAutomationTakeProgress::VerifiedCopy {
+            path: copy.path.clone(),
+            receipt: copy.receipt,
+        }))
     }
 
     pub(super) fn path(&self) -> Option<&Path> {
@@ -252,6 +327,10 @@ impl Lane {
 
     pub(super) fn busy(&self) -> bool {
         self.active.is_some()
+    }
+
+    pub(super) fn has_failed_custody(&self) -> bool {
+        self.failed.is_some()
     }
 
     pub(super) fn begin(
@@ -341,7 +420,7 @@ impl Lane {
                         },
                         *max_events,
                     )?;
-                    self.copy_destination = Some(destination);
+                    self.copy_destination = Some(PendingCopy::Checkpoint(destination));
                     Ok(Step::Progress(Progress::Pending))
                 }
                 DeviceAutomationTakeAction::PollFailedCopy => {
@@ -351,7 +430,7 @@ impl Lane {
                     let Some(completion) = self.failed_copy.poll() else {
                         return Ok(Step::Progress(Progress::Pending));
                     };
-                    let destination = self
+                    let pending = self
                         .copy_destination
                         .take()
                         .ok_or("automation recovery destination is unavailable")?;
@@ -359,7 +438,29 @@ impl Lane {
                         return Err("automation recovery custody changed during copy".into());
                     }
                     completion.result?;
-                    Ok(Step::Progress(Progress::Retained(destination)))
+                    match (pending, completion.receipt) {
+                        (PendingCopy::Checkpoint(destination), None) => {
+                            Ok(Step::Progress(Progress::Retained(destination)))
+                        }
+                        (
+                            PendingCopy::Plugin {
+                                path: destination,
+                                observations,
+                            },
+                            Some(receipt),
+                        ) => {
+                            self.verified_plugin_copy = Some(VerifiedPluginCopy {
+                                path: destination.clone(),
+                                receipt,
+                                observations,
+                            });
+                            Ok(Step::Progress(Progress::VerifiedCopy {
+                                path: destination,
+                                receipt,
+                            }))
+                        }
+                        _ => Err("automation recovery copy receipt is inconsistent".into()),
+                    }
                 }
                 _ => Err("invalid automation recovery action".into()),
             };
@@ -382,7 +483,8 @@ impl Lane {
         let progress = match action {
             DeviceAutomationTakeAction::CopyFailed { .. }
             | DeviceAutomationTakeAction::CopyFailedPlugin { .. }
-            | DeviceAutomationTakeAction::PollFailedCopy => {
+            | DeviceAutomationTakeAction::PollFailedCopy
+            | DeviceAutomationTakeAction::InspectFailedPluginCopy => {
                 return Err("invalid active automation recovery action".into());
             }
             DeviceAutomationTakeAction::Begin => {

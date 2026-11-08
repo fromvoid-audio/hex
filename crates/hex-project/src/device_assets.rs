@@ -1,24 +1,7 @@
 //! Control-side catalog resolution for neutral device asset references.
-use crate::{AssetId, Device, Invalid, Project};
+use crate::{AssetId, Invalid, Project};
 
 impl Project {
-    fn asset_devices(&self) -> impl Iterator<Item = &Device> {
-        self.tracks()
-            .iter()
-            .flat_map(|track| track.devices().iter())
-            .chain(
-                self.return_tracks()
-                    .iter()
-                    .flat_map(|track| track.devices()),
-            )
-            .chain(self.main_devices())
-            .chain(
-                self.native_sources()
-                    .iter()
-                    .flat_map(|source| source.devices()),
-            )
-    }
-
     /// Resolve identities only; this performs no file access or PCM admission.
     pub fn validate_device_asset_references(&self) -> Result<(), Invalid> {
         for asset in self
@@ -44,7 +27,7 @@ impl Project {
                 ));
             }
         }
-        for device in self.asset_devices() {
+        for device in self.device_roots() {
             for reference in device
                 .authored_states()
                 .flat_map(|state| state.asset_references())
@@ -58,7 +41,7 @@ impl Project {
     }
 
     pub(crate) fn device_uses_asset(&self, asset: AssetId) -> bool {
-        self.asset_devices().any(|device| {
+        self.device_roots().any(|device| {
             device
                 .authored_states()
                 .flat_map(|state| state.asset_references())

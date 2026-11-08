@@ -39,6 +39,7 @@ pub use native_automation_recording::{
     DeviceAutomationTakeProgress, DeviceAutomationTakeScope, DeviceCaptureTarget,
     FailedPluginContinuation, copy_failed_plugin_on_control,
     copy_failed_plugin_with_receipt_on_control, prepare_failed_plugin_continuation,
+    prepare_verified_vst3_recovery_on_control,
 };
 #[cfg(test)]
 mod busy_reason_tests;
@@ -2863,8 +2864,10 @@ fn run_worker(
                     || pending_sampler_parameter.is_some()
                     || device_gesture.snapshot().is_some()
                     || tuning_gesture.snapshot().is_some()
-                    || native_automation_take.busy()
-                    || plugin_recording.pending()
+                    || !plugin_recording::generic_sealed_recovery_idle(
+                        &plugin_recording,
+                        &native_automation_take,
+                    )
                     || session.audio_mode() != DocumentAudioMode::Resident
                     || !events.resident_publication_enabled()
                 {
@@ -2944,6 +2947,13 @@ fn run_worker(
                         *scope,
                         destination,
                         *max_events,
+                        gesture_active,
+                    )
+                } else if matches!(action, DeviceAutomationTakeAction::InspectFailedPluginCopy) {
+                    plugin_recording::inspect_failed_copy(
+                        &plugin_recording,
+                        &native_automation_take,
+                        *scope,
                         gesture_active,
                     )
                 } else if gesture_active && matches!(action, DeviceAutomationTakeAction::Poll) {
