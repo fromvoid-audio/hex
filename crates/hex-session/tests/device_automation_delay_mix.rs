@@ -37,7 +37,7 @@ fn lane_case(type_id: &'static str, raw_parameter: u32) {
 fn lane_case_state(
     state: hex_lattice_contract::NativeDeviceState,
     raw_parameter: u32,
-) -> hex_project::Project {
+) -> std::sync::Arc<hex_project::Project> {
     let service = Service::new(48000, 16, 0).unwrap();
     event(&service);
     service
@@ -192,6 +192,6 @@ fn flexible_eq_node_lanes_preserve_typed_edits_history_stale_refusal_and_storage
         hex_storage::save_new(&path, &project).unwrap();
         let loaded = hex_storage::load(&path);
         std::fs::remove_file(path).unwrap();
-        assert_eq!(loaded.unwrap(), project);
+        assert_eq!(&loaded.unwrap(), project.as_ref());
     }
 }
