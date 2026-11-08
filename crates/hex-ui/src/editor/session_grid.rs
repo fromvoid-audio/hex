@@ -18,7 +18,8 @@ use hex_session::{import_batch::ConsoleDestination, service::Request};
 use std::sync::Arc;
 
 const TRACK_COLUMN_WIDTH: f32 = 148.0;
-const SCENE_ROW_HEIGHT: f32 = 34.0;
+const SCENE_ROW_HEIGHT: f32 = 31.0;
+const TRACK_HEADER_HEIGHT: f32 = 34.0;
 // Eight nested ancestors fit while preserving a usable header label.
 const GROUP_BAND_HEIGHT: f32 = 1.0;
 const SCENE_HEADER_WIDTH: f32 = 150.0;
@@ -48,6 +49,7 @@ fn session_clip_backdrop(clip: ClipId, fill: u32, stroke: f32) -> Div {
         .debug_selector(move || format!("console-clip-{}", clip.value()))
         .absolute()
         .inset(px(2.0))
+        .bottom(px(3.0))
         .child(super::clip_boundary::backdrop_shell(
             div(),
             0.0,
@@ -469,7 +471,7 @@ impl EditorView {
         let header = div()
             .relative()
             .w_full()
-            .h(px(SCENE_ROW_HEIGHT))
+            .h(px(TRACK_HEADER_HEIGHT))
             .flex_shrink_0()
             .flex()
             .border_b_1()
@@ -1203,6 +1205,8 @@ impl EditorView {
                     let route_markers =
                         cell_route_markers(route, clip_id.value(), transport_playing);
                     cell = cell
+                        .gap(px(4.0))
+                        .px(px(6.0))
                         .child(session_clip_backdrop(
                             clip_id,
                             theme::clip_activity_fill(
@@ -1259,7 +1263,6 @@ impl EditorView {
                             )
                             .map(|badge| badge.right(px(8.0))),
                         )
-                        .child(self.clip_name_label(clip_id, &title))
                         .child(
                             self.session_icon(
                                 "▶",
@@ -1296,10 +1299,12 @@ impl EditorView {
                                     cx.notify();
                                 }),
                             )
+                            .size(px(19.0))
                             .debug_selector(move || {
                                 format!("launch-midi-{}-{}", track_id.value(), scene_id.value())
                             }),
                         )
+                        .child(self.clip_name_label(clip_id, &title))
                         .children(route_markers.into_iter().flatten().map(|marker| {
                             self.route_marker(
                                 marker.glyph,
@@ -1329,6 +1334,8 @@ impl EditorView {
                     let route_markers =
                         cell_route_markers(route, clip_id.value(), transport_playing);
                     cell = cell
+                        .gap(px(4.0))
+                        .px(px(6.0))
                         .child(session_clip_backdrop(
                             clip_id,
                             theme::clip_activity_fill(
@@ -1385,7 +1392,6 @@ impl EditorView {
                             )
                             .map(|badge| badge.right(px(8.0))),
                         )
-                        .child(self.clip_name_label(clip_id, clip.name()))
                         .child(
                             self.session_icon(
                                 "▶",
@@ -1419,8 +1425,13 @@ impl EditorView {
                                     }
                                     cx.notify();
                                 }),
-                            ),
+                            )
+                            .size(px(19.0))
+                            .debug_selector(move || {
+                                format!("launch-audio-{}-{}", track_id.value(), scene_id.value())
+                            }),
                         )
+                        .child(self.clip_name_label(clip_id, clip.name()))
                         .children(route_markers.into_iter().flatten().map(|marker| {
                             self.route_marker(
                                 marker.glyph,
