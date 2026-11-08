@@ -3,6 +3,9 @@ use gpui::{App, AppContext, Context, Global, PromptButton, PromptLevel, Window};
 use std::cell::Cell;
 use std::time::Duration;
 
+/// One UI-owned close decision. Freeze gesture admission while draining the
+/// existing FIFO, awaiting Session's ordered custody read, and showing consent.
+/// The five-second drain/read bound refuses close; it never discards a take.
 #[derive(Default)]
 pub(super) struct AutomationClosePreflight {
     state: PreflightState,
