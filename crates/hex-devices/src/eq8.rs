@@ -590,7 +590,7 @@ fn mode_fade_frames(sample_rate: u32) -> u32 {
 ///
 /// Capacity is one outgoing branch, in fixed inline storage with no
 /// allocation. Same-mode handoffs carry an active branch unchanged. A further
-/// mode change while the branch is still fading is refused as transiently busy
+/// ordinary canonical mode change while the branch is still fading is refused as transiently busy
 /// (`transition_busy_from`), so the host defers it for at most one fade
 /// (256 frames at 48 kHz, 16/3 ms) instead of dropping the older routing.
 #[derive(Clone, Copy, Debug)]
@@ -1111,8 +1111,9 @@ impl NativeProcessorRuntime for Eq8Runtime {
             let _ = self.inherit_history_from(previous);
         }
     }
-    /// The single `ModeFade` branch is full: a further channel-mode change
-    /// waits until the previous switch has finished fading (Pulse #4106).
+    /// Ordinary canonical mode changes wait for the occupied fade (Pulse #4106).
+    /// Two admitted routing runtimes preserve that branch instead; their own
+    /// latest validated target waits in fixed storage beside it.
     fn transition_busy_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
         previous
             .as_any()

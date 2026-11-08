@@ -162,10 +162,19 @@ fn eq8_gain_automation_callback_publication_history_and_save_reopen() -> Result<
         )?)?)
         .map_err(|_| "tail publication")?;
     measured_block(&mut callback, &mut output);
-    // The source has ended on the next block; only the retained EQ rings.
+    // The removed EQ retains the active fade and pending final routing. Its
+    // ringing transition adds to this still-playing dry source. The final
+    // incoming routing starts from empty history after removal, then the old
+    // branches are cleared at the bounded fade endpoints.
+    assert!(
+        output
+            .iter()
+            .any(|v| (v[0] - 0.0001).abs() > 1e-10 || (v[1] + 0.0001).abs() > 1e-10)
+    );
+    // By this block both fades have ended and the source has ended too.
     measured_block(&mut callback, &mut output);
     assert!(output.iter().flatten().all(|v| v.is_finite()));
-    assert!(output.iter().flatten().any(|v| v.abs() > 1e-20));
+    assert!(output.iter().flatten().all(|v| *v == 0.0));
     control.request_shutdown();
     measured_shutdown(&mut callback, &mut output);
     control.reclaim();
