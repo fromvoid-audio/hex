@@ -12,23 +12,23 @@ mod state;
 use state::decode;
 pub use state::{STATE_VERSION, TYPE_ID, parameter};
 mod runtime;
-pub use runtime::lookahead::PreparedLookahead;
+pub use runtime::structural::PreparedStructuralLimiter;
 #[cfg(test)]
 mod tests;
 
 pub struct LimiterDefinition;
 pub static DEFINITION: LimiterDefinition = LimiterDefinition;
 impl LimiterDefinition {
-    /// Prepare exact owned lookahead eligibility with fixed maximum latency.
-    /// Requires lookahead plus an optional subset of the nine value controls.
-    /// Native lookahead automation selects this factory for the exact retained
-    /// target union; host admission and resource custody remain separate.
-    pub fn prepare_owned_lookahead_for_parameters(
+    /// Prepare an exact owned lookahead/routing union at fixed maximum latency.
+    /// Requires at least one structural target plus optional value controls.
+    /// Native metadata currently grants only lookahead; low-level routing
+    /// preparation transfers no host capability, source lease or custody.
+    pub fn prepare_owned_structural_for_parameters(
         state: &NativeDeviceState,
         rate: u32,
         parameters: &[hex_lattice_contract::ParameterId],
-    ) -> Result<PreparedLookahead, DeviceContractError> {
-        PreparedLookahead::new(state, rate, parameters)
+    ) -> Result<PreparedStructuralLimiter, DeviceContractError> {
+        PreparedStructuralLimiter::new(state, rate, parameters)
     }
 }
 impl NativeDeviceDefinition for LimiterDefinition {

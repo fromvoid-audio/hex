@@ -36,7 +36,7 @@ fn render(
 #[test]
 fn falling_ceiling_protects_already_queued_padding_on_the_first_frame() {
     let s = crate::limiter::DEFINITION.default_state().unwrap();
-    let f = PreparedLookahead::new(&s, 8000, &[CEILING, LOOKAHEAD]).unwrap();
+    let f = PreparedStructuralLimiter::new(&s, 8000, &[CEILING, LOOKAHEAD]).unwrap();
     let mut rt = f.create_runtime().unwrap();
     render(
         rt.as_mut(),
@@ -71,7 +71,7 @@ fn falling_output_scales_already_queued_padding_on_the_first_frame() {
             ParameterValue::Bool(true),
         )
         .unwrap();
-    let f = PreparedLookahead::new(&s, 8000, &[LOOKAHEAD, OUTPUT]).unwrap();
+    let f = PreparedStructuralLimiter::new(&s, 8000, &[LOOKAHEAD, OUTPUT]).unwrap();
     let mut rt = f.create_runtime().unwrap();
     render(
         rt.as_mut(),
@@ -209,7 +209,7 @@ fn held_first_choice_matches_canonical_plus_fixed_padding_at_rate_endpoints() {
         for mode in 0..3 {
             for route in 0..2 {
                 let s = state(mode, route, 0);
-                let f = PreparedLookahead::new(&s, rate, &[LOOKAHEAD]).unwrap();
+                let f = PreparedStructuralLimiter::new(&s, rate, &[LOOKAHEAD]).unwrap();
                 let latency = f.latency as usize;
                 assert_eq!(f.reserved_bypass_latency_frames(), Some(f.latency));
                 for look in 0..3 {
@@ -243,7 +243,7 @@ fn held_first_choice_matches_canonical_plus_fixed_padding_at_rate_endpoints() {
 #[test]
 fn queued_audio_matches_independent_dual_canonical_warmup_and_fade() {
     let s = state(0, 0, 0);
-    let f = PreparedLookahead::new(&s, 8000, &[LOOKAHEAD]).unwrap();
+    let f = PreparedStructuralLimiter::new(&s, 8000, &[LOOKAHEAD]).unwrap();
     let p = f.latency as usize;
     let at = 127;
     let input: Vec<_> = (0..at + p + FADE as usize + 193)
@@ -307,7 +307,7 @@ fn dense_ten_controls_at_maximum_lookahead_match_the_existing_nine_control_owner
         }
     }
     let s = state(0, 0, 0);
-    let f = PreparedLookahead::new(&s, 8000, &ALL).unwrap();
+    let f = PreparedStructuralLimiter::new(&s, 8000, &ALL).unwrap();
     let mut p = Program::held(2);
     p.all = true;
     let input = [[1.5, -0.3]; 512];
@@ -329,7 +329,7 @@ fn dense_ten_controls_at_maximum_lookahead_match_the_existing_nine_control_owner
 #[test]
 fn pending_choices_rollback_fallback_handoff_bypass_reset_and_tail_preserve_history() {
     let s = state(0, 0, 0);
-    let f = PreparedLookahead::new(&s, 8000, &[LOOKAHEAD]).unwrap();
+    let f = PreparedStructuralLimiter::new(&s, 8000, &[LOOKAHEAD]).unwrap();
     let mut a = f.create_runtime().unwrap();
     let mut b = f.create_runtime().unwrap();
     let mut p = Program::held(0);
@@ -369,7 +369,7 @@ fn pending_choices_rollback_fallback_handoff_bypass_reset_and_tail_preserve_hist
     );
     let ar = a.as_any().downcast_ref::<Runtime>().unwrap();
     assert!(ar.primary.phase == Phase::Stable);
-    assert_eq!(ar.primary.looks[ar.primary.active], f.base);
+    assert_eq!(ar.primary.layouts[ar.primary.active], f.base);
     let mut tail = f.create_runtime().unwrap();
     assert!(tail.can_inherit_from(a.as_ref()));
     tail.inherit_from(a.as_ref());
@@ -406,19 +406,19 @@ fn constructor_exact_union_and_fixed_layout_admission_are_explicit() {
         &[GAIN],
         &[LOOKAHEAD, GAIN],
         &[LOOKAHEAD, LOOKAHEAD],
-        &[LOOKAHEAD, ROUTING],
+        &[LOOKAHEAD, MODE],
     ] {
-        assert!(PreparedLookahead::new(&s, 8000, ids).is_err());
+        assert!(PreparedStructuralLimiter::new(&s, 8000, ids).is_err());
     }
     for rate in [7999, 192001] {
-        assert!(PreparedLookahead::new(&s, rate, &[LOOKAHEAD]).is_err());
+        assert!(PreparedStructuralLimiter::new(&s, rate, &[LOOKAHEAD]).is_err());
     }
-    let f = PreparedLookahead::new(&s, 8000, &[LOOKAHEAD]).unwrap();
+    let f = PreparedStructuralLimiter::new(&s, 8000, &[LOOKAHEAD]).unwrap();
     let a = f.create_runtime().unwrap();
     for id in ALL {
         assert_eq!(a.supports_parameter_automation(id), id == LOOKAHEAD);
     }
-    let different = PreparedLookahead::new(&state(0, 1, 0), 8000, &[LOOKAHEAD])
+    let different = PreparedStructuralLimiter::new(&state(0, 1, 0), 8000, &[LOOKAHEAD])
         .unwrap()
         .create_runtime()
         .unwrap();
@@ -428,4 +428,203 @@ fn constructor_exact_union_and_fixed_layout_admission_are_explicit() {
             .supports_parameter_automation(&s, LOOKAHEAD)
             .unwrap()
     );
+}
+
+#[test]
+fn held_routing_matches_canonical_with_exact_reserved_layout_storage() {
+    struct Route(u32);
+    impl NativeParameterAutomation for Route {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            &[ROUTING]
+        }
+        fn value_at(&self, _: ParameterId, _: usize) -> Option<ParameterValue> {
+            Some(ParameterValue::Choice(self.0))
+        }
+    }
+    for rate in [8000, 192000] {
+        for mode in 0..3 {
+            let s = state(mode, 0, 0);
+            let f = PreparedStructuralLimiter::new(&s, rate, &[ROUTING]).unwrap();
+            let latency = f.algorithmic_latency_frames().unwrap() as usize;
+            for route in 0..2 {
+                let canonical =
+                    super::super::Factory::new(decode(&state(mode, route, 0)).unwrap(), rate);
+                let extra = latency - canonical.algorithmic_latency_frames().unwrap() as usize;
+                let input: Vec<_> = (0..latency + 193)
+                    .map(|i| [(i as f32 * 0.17).sin() * 2.0, (i as f32 * 0.31).sin() * 0.5])
+                    .collect();
+                let expected = plain(canonical.create_runtime().unwrap().as_mut(), &input);
+                let mut actual = input.clone();
+                let mut runtime = f.create_runtime().unwrap();
+                assert_eq!(
+                    runtime.fixed_storage_pair_bytes(),
+                    Some(f.declared_pair_bytes())
+                );
+                for block in actual.chunks_mut(17) {
+                    runtime.begin_block();
+                    runtime
+                        .process_block_with_automation(block, None, &Route(route), &R)
+                        .unwrap();
+                    runtime.commit_block();
+                }
+                for (i, &frame) in actual.iter().enumerate() {
+                    assert_eq!(
+                        frame,
+                        i.checked_sub(extra).map_or([0.0; 2], |j| expected[j]),
+                        "{rate} {mode} {route} {i}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn routing_warm_fade_matches_independent_canonical_branches_with_live_links() {
+    struct Routes {
+        start: usize,
+        scalar_only: bool,
+    }
+    impl NativeParameterAutomation for Routes {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            if self.scalar_only {
+                &[LINK, LINK_MID_SIDE]
+            } else {
+                &[LINK, ROUTING, LINK_MID_SIDE]
+            }
+        }
+        fn value_at(&self, id: ParameterId, offset: usize) -> Option<ParameterValue> {
+            let i = self.start + offset;
+            Some(match id {
+                ROUTING => ParameterValue::Choice(u32::from(i >= 96)),
+                LINK => ParameterValue::Float(0.2 + (i % 31) as f32 / 40.0),
+                LINK_MID_SIDE => ParameterValue::Float(0.8 - (i % 17) as f32 / 25.0),
+                _ => return None,
+            })
+        }
+    }
+    let rate = 8000;
+    let s = state(0, 0, 0);
+    let f = PreparedStructuralLimiter::new(&s, rate, &[LINK, ROUTING, LINK_MID_SIDE]).unwrap();
+    let latency = f.latency as usize;
+    let input: Vec<_> = (0..96 + latency + 256 + 64)
+        .map(|i| [(i as f32 * 0.17).sin() * 2.0, (i as f32 * 0.31).sin() * 0.7])
+        .collect();
+    let mut admitted = [false; scalar::COUNT];
+    admitted[4] = true;
+    admitted[8] = true;
+    let old = super::super::Factory::automated(decode(&s).unwrap(), rate, admitted);
+    let extra = latency - old.algorithmic_latency_frames().unwrap() as usize;
+    let mut old = old.create_runtime().unwrap();
+    let mut new =
+        super::super::Factory::automated(decode(&state(0, 1, 0)).unwrap(), rate, admitted)
+            .create_runtime()
+            .unwrap();
+    let mut expected = Vec::new();
+    for i in 0..input.len() {
+        let values = Routes {
+            start: i,
+            scalar_only: true,
+        };
+        let mut a = [i.checked_sub(extra).map_or([0.0; 2], |j| input[j])];
+        old.begin_block();
+        old.process_block_with_automation(&mut a, None, &values, &R)
+            .unwrap();
+        old.commit_block();
+        let mut b = [input[i]];
+        if i >= 96 {
+            new.begin_block();
+            new.process_block_with_automation(&mut b, None, &values, &R)
+                .unwrap();
+            new.commit_block();
+        }
+        let weight = if i < 96 + latency {
+            0.0
+        } else {
+            ((i - 96 - latency + 1) as f32 / 256.0).min(1.0)
+        };
+        expected.push(std::array::from_fn(|c| {
+            a[0][c] * (1.0 - weight) + b[0][c] * weight
+        }));
+    }
+    let mut actual = input.clone();
+    let mut runtime = f.create_runtime().unwrap();
+    for (i, block) in actual.chunks_mut(17).enumerate() {
+        runtime.begin_block();
+        runtime
+            .process_block_with_automation(
+                block,
+                None,
+                &Routes {
+                    start: i * 17,
+                    scalar_only: false,
+                },
+                &R,
+            )
+            .unwrap();
+        runtime.commit_block();
+    }
+    assert_eq!(actual, expected);
+    runtime.begin_output_tail();
+    let mut tail = vec![[0.0; 2]; latency + 256];
+    runtime.begin_block();
+    runtime.process_block(&mut tail, &R);
+    runtime.commit_block();
+    assert!(runtime.committed_is_quiescent());
+    assert!(tail[latency..].iter().flatten().all(|&x| x == 0.0));
+    assert!(
+        !crate::limiter::DEFINITION
+            .supports_parameter_automation(&s, ROUTING)
+            .unwrap()
+    );
+    assert!(
+        !crate::limiter::DEFINITION
+            .supports_parameter_automation(&s, MODE)
+            .unwrap()
+    );
+}
+
+#[test]
+fn routing_base_handoff_preserves_queued_output_and_candidate_eligibility() {
+    struct Route(Option<u32>);
+    impl NativeParameterAutomation for Route {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            &[ROUTING]
+        }
+        fn value_at(&self, _: ParameterId, _: usize) -> Option<ParameterValue> {
+            self.0.map(ParameterValue::Choice)
+        }
+    }
+    let old_factory = PreparedStructuralLimiter::new(&state(0, 0, 0), 8000, &[ROUTING]).unwrap();
+    let new_factory =
+        PreparedStructuralLimiter::new(&state(0, 1, 0), 8000, &[GAIN, ROUTING]).unwrap();
+    let mut old = old_factory.create_runtime().unwrap();
+    let mut warm = [[2.0, -0.4]; 128];
+    old.begin_block();
+    old.process_block_with_automation(&mut warm, None, &Route(Some(0)), &R)
+        .unwrap();
+    old.commit_block();
+    let mut candidate = new_factory.create_runtime().unwrap();
+    assert!(candidate.can_inherit_from(old.as_ref()));
+    candidate.inherit_from(old.as_ref());
+    assert!(candidate.supports_parameter_automation(GAIN));
+    assert!(candidate.supports_parameter_automation(ROUTING));
+    let mut expected = [[2.0, -0.4]; 64];
+    old.begin_block();
+    old.process_block_with_automation(&mut expected, None, &Route(Some(0)), &R)
+        .unwrap();
+    old.commit_block();
+    let mut actual = [[2.0, -0.4]; 64];
+    candidate.begin_block();
+    candidate
+        .process_block_with_automation(&mut actual, None, &Route(None), &R)
+        .unwrap();
+    candidate.commit_block();
+    let latency = new_factory.latency as usize;
+    assert_eq!(&actual[..latency], &expected[..latency]);
+    let mode_changed = PreparedStructuralLimiter::new(&state(1, 1, 0), 8000, &[GAIN, ROUTING])
+        .unwrap()
+        .create_runtime()
+        .unwrap();
+    assert!(!mode_changed.can_inherit_from(candidate.as_ref()));
 }

@@ -91,7 +91,7 @@ pub(super) fn descriptor(id: ParameterId) -> Option<ParameterDescriptor> {
 }
 pub(super) fn semantics(id: ParameterId) -> Option<ParameterSemantics> {
     if id == LOOKAHEAD {
-        Some(super::runtime::lookahead::semantics())
+        super::runtime::structural::semantics(id)
     } else {
         slot(id).map(|i| BINDINGS[i].semantics)
     }
@@ -108,11 +108,14 @@ pub(super) fn prepare(
     if ids.is_empty() || ids.windows(2).any(|w| w[0] >= w[1]) {
         return Err(DeviceContractError::UnsupportedProcessingClass);
     }
+    if ids.iter().any(|&id| id != LOOKAHEAD && slot(id).is_none()) {
+        return Err(DeviceContractError::UnsupportedProcessingClass);
+    }
     if ids.binary_search(&LOOKAHEAD).is_ok() {
         return Ok(PreparedRuntimeDevice {
             matrix: StereoMatrix::identity(),
             processor: Some(PreparedProcessorFactory::Owned(Arc::new(
-                super::LimiterDefinition::prepare_owned_lookahead_for_parameters(
+                super::LimiterDefinition::prepare_owned_structural_for_parameters(
                     state,
                     context.sample_rate,
                     ids,
@@ -243,7 +246,13 @@ mod tests {
             tuning: &tuning,
             resources: &R,
         };
-        for ids in [&[][..], &[GAIN, GAIN], &[CEILING, GAIN], &[ROUTING]] {
+        for ids in [
+            &[][..],
+            &[GAIN, GAIN],
+            &[CEILING, GAIN],
+            &[ROUTING],
+            &[LOOKAHEAD, ROUTING],
+        ] {
             assert!(prepare(&base, &context, ids).is_err());
         }
         for id in [
