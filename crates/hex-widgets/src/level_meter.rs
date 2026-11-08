@@ -86,11 +86,13 @@ pub fn level_meter(id: SharedString, fraction: f32, above: bool, style: LevelMet
         held_clipping: false,
         color: style.above,
     };
-    meter_body(id, fraction, style).child(cap)
+    signal_meter(id, fraction, style).child(cap)
 }
 
-/// Shared signal well; device gain meters install their cap after the gain handle.
-pub(crate) fn meter_body(id: SharedString, fraction: f32, style: LevelMeterStyle) -> Div {
+/// Passive normalized signal well without a clipping cap or input behavior.
+/// Owners supply calibrated fractions and may overlay scale/peak marks. Device
+/// gain meters use this same well and install their cap after the gain handle.
+pub fn signal_meter(id: SharedString, fraction: f32, style: LevelMeterStyle) -> Div {
     meter_body_direction(id, fraction, style, false)
 }
 

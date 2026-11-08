@@ -12,8 +12,8 @@ use std::time::Instant;
 #[derive(Default)]
 pub(super) struct State {
     identity: Option<(u64, u64)>,
-    levels: BTreeMap<TrackId, f32>,
-    returns: BTreeMap<ReturnId, f32>,
+    levels: BTreeMap<TrackId, [f32; 2]>,
+    returns: BTreeMap<ReturnId, [f32; 2]>,
     updated: Option<Instant>,
     /// Per-tick staging buffers, retained across ticks and `clear`.
     scratch: Scratch,
@@ -23,8 +23,8 @@ pub(super) struct State {
 #[derive(Default)]
 struct Scratch {
     visible: Vec<TrackId>,
-    readings: Vec<(TrackId, f32)>,
-    returns: Vec<(ReturnId, f32)>,
+    readings: Vec<(TrackId, [f32; 2])>,
+    returns: Vec<(ReturnId, [f32; 2])>,
 }
 
 impl State {
@@ -50,7 +50,7 @@ impl State {
         let decay = self.decay(now);
         let mut changed = false;
         for entry in self.levels.values_mut().chain(self.returns.values_mut()) {
-            let next = decay_level(*entry, decay);
+            let next = entry.map(|level| decay_level(level, decay));
             changed |= next != *entry;
             *entry = next;
         }
@@ -73,14 +73,14 @@ impl State {
         self.updated = Some(now);
         10.0_f32.powf(-12.0 * elapsed / 20.0)
     }
-    pub(super) fn level(&self, track: TrackId) -> f32 {
-        self.levels.get(&track).copied().unwrap_or(0.0)
+    pub(super) fn level(&self, track: TrackId) -> [f32; 2] {
+        self.levels.get(&track).copied().unwrap_or([0.0; 2])
     }
-    pub(super) fn return_level(&self, id: ReturnId) -> f32 {
-        self.returns.get(&id).copied().unwrap_or(0.0)
+    pub(super) fn return_level(&self, id: ReturnId) -> [f32; 2] {
+        self.returns.get(&id).copied().unwrap_or([0.0; 2])
     }
     #[cfg(all(test, feature = "ui-test-support"))]
-    pub(super) fn set_test_level(&mut self, id: TrackId, peak: f32) {
+    pub(super) fn set_test_level(&mut self, id: TrackId, peak: [f32; 2]) {
         self.levels.insert(id, peak);
     }
 }
@@ -158,20 +158,26 @@ impl EditorView {
         }
         // Stage the readings until the applied revision is rechecked. A race
         // discards them without wiping the last valid display.
-        readings.extend(visible.iter().filter_map(|id| {
-            observation
-                .track_output_meter(*id)
-                .map(|meter| (*id, meter.take_track_output()))
+        readings.extend(visible.iter().map(|id| {
+            (
+                *id,
+                observation
+                    .track_output_meter(*id)
+                    .map_or([0.0; 2], |meter| meter.take_track_output_stereo()),
+            )
         }));
         return_readings.extend(
             project
                 .into_iter()
                 .flat_map(|project| project.return_tracks())
-                .filter_map(|track| {
+                .map(|track| {
                     let id = track.id();
-                    observation
-                        .return_output_meter(id)
-                        .map(|meter| (id, meter.take_track_output()))
+                    (
+                        id,
+                        observation
+                            .return_output_meter(id)
+                            .map_or([0.0; 2], |meter| meter.take_track_output_stereo()),
+                    )
                 }),
         );
         if status.device_fault.load(Acquire)
@@ -193,10 +199,12 @@ impl EditorView {
             let Some(entry) = self.track_meters.levels.get_mut(&id) else {
                 // Peaks retained while a row was offscreen have unknown age.
                 // Discard them before beginning this visible observation.
-                self.track_meters.levels.insert(id, 0.0);
+                self.track_meters.levels.insert(id, [0.0; 2]);
                 continue;
             };
-            let next = peak.max(decay_level(*entry, decay));
+            let next = std::array::from_fn(|channel| {
+                peak[channel].max(decay_level(entry[channel], decay))
+            });
             changed |= next != *entry;
             *entry = next;
         }
@@ -209,10 +217,12 @@ impl EditorView {
             });
             for &(id, peak) in return_readings.iter() {
                 let Some(entry) = self.track_meters.returns.get_mut(&id) else {
-                    self.track_meters.returns.insert(id, 0.0);
+                    self.track_meters.returns.insert(id, [0.0; 2]);
                     continue;
                 };
-                let next = peak.max(decay_level(*entry, decay));
+                let next = std::array::from_fn(|channel| {
+                    peak[channel].max(decay_level(entry[channel], decay))
+                });
                 changed |= next != *entry;
                 *entry = next;
             }
@@ -221,7 +231,7 @@ impl EditorView {
     }
 }
 
-pub(super) fn render(track: TrackId, peak: f32, height: f32) -> Div {
+pub(super) fn render(track: TrackId, peak: [f32; 2], height: f32) -> Div {
     render_meter(
         format!("track-output-meter-{}", track.value()),
         peak,
@@ -229,53 +239,75 @@ pub(super) fn render(track: TrackId, peak: f32, height: f32) -> Div {
     )
 }
 
-pub(super) fn render_return(id: ReturnId, peak: f32, height: f32) -> Div {
+pub(super) fn render_return(id: ReturnId, peak: [f32; 2], height: f32) -> Div {
     render_meter(format!("return-output-meter-{}", id.value()), peak, height)
 }
 
-fn render_meter(id: String, peak: f32, height: f32) -> Div {
-    let colors = theme::meter_colors();
-    let level = hex_widgets::MeterLevel::from_amplitude(peak, false);
-    let fraction = scale::fraction(peak);
+fn render_meter(id: String, peaks: [f32; 2], height: f32) -> Div {
+    let style = theme::track_meter_style();
     let description = format!(
-        "output peak {} · scale −70 to +6 dbfs · line at 0 dbfs",
-        scale::readout(peak)
+        "output peak l {} · r {} · scale −70 to +6 dbfs · marks at 0 and +3 dbfs",
+        scale::readout(peaks[0]),
+        scale::readout(peaks[1]),
     );
-    let unity_selector = format!("{id}-unity");
-    let meter = hex_widgets::level_meter(
-        id.clone().into(),
-        fraction,
-        peak > 1.0,
-        hex_widgets::LevelMeterStyle {
-            background: theme::color(theme::PaletteRole::WaveBackground),
-            fill: colors.color(level),
-            above: colors.clipping,
-        },
-    )
-    .child(
-        div()
-            .debug_selector(move || unity_selector.clone())
-            .absolute()
-            .top(gpui::relative(1.0 - scale::UNITY_FRACTION))
-            .w_full()
-            .h(px(1.0))
-            .bg(gpui::rgb(theme::color(theme::PaletteRole::Muted))),
-    )
-    .w(px(6.0))
-    .h(px((height - 8.0).clamp(10.0, 42.0)))
-    .id(gpui::SharedString::from(id))
-    .tooltip(move |_, cx| {
-        cx.new(|_| super::transport::MiniTooltip {
-            kind: crate::tooltips::Kind::Identification,
-            description: description.clone().into(),
+    let mut bars = div()
+        .debug_selector({
+            let id = id.clone();
+            move || id.clone()
         })
-        .into()
-    });
-    div()
-        .w(px(6.0))
+        .flex()
+        .gap(px(hex_widgets::STEREO_PEAK_BAR_GAP))
+        .w(px(
+            2.0 * hex_widgets::STEREO_PEAK_BAR_WIDTH + hex_widgets::STEREO_PEAK_BAR_GAP
+        ))
         .h(px((height - 8.0).clamp(10.0, 42.0)))
+        .flex_shrink_0();
+    for (side, peak) in ["left", "right"].into_iter().zip(peaks) {
+        let channel_id = format!("{id}-{side}");
+        let mut bar = hex_widgets::signal_meter(
+            channel_id.clone().into(),
+            scale::fraction(peak),
+            hex_widgets::LevelMeterStyle {
+                background: style.rail,
+                fill: style.accent,
+                above: style.accent,
+            },
+        )
+        .w(px(hex_widgets::STEREO_PEAK_BAR_WIDTH))
+        .h_full()
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .border_1()
+                .border_color(gpui::rgb(style.border)),
+        );
+        for (name, fraction) in [
+            ("unity", scale::UNITY_FRACTION),
+            ("headroom", scale::fraction(10_f32.powf(3.0 / 20.0))),
+        ] {
+            let selector = format!("{channel_id}-{name}");
+            bar = bar.child(
+                div()
+                    .debug_selector(move || selector.clone())
+                    .absolute()
+                    .top(gpui::relative(1.0 - fraction))
+                    .w_full()
+                    .h(px(1.0))
+                    .bg(gpui::rgb(style.text)),
+            );
+        }
+        bars = bars.child(bar);
+    }
+    div()
         .flex_shrink_0()
-        .child(meter)
+        .child(bars.id(gpui::SharedString::from(id)).tooltip(move |_, cx| {
+            cx.new(|_| super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::Identification,
+                description: theme::text(description.clone()),
+            })
+            .into()
+        }))
 }
 
 #[cfg(test)]
@@ -301,7 +333,7 @@ mod tests {
     ) {
         use gpui::{Context, IntoElement, Render, VisualTestContext, Window};
         struct Fixture {
-            peak: f32,
+            peak: [f32; 2],
             height: f32,
         }
         impl Render for Fixture {
@@ -312,7 +344,7 @@ mod tests {
             }
         }
         let handle = cx.add_window(|_, _| Fixture {
-            peak: 0.0,
+            peak: [0.0; 2],
             height: 18.0,
         });
         let view = handle.root(cx).unwrap();
@@ -327,16 +359,24 @@ mod tests {
                 (100.0, 1.0),
             ] {
                 view.update(&mut visual, |view, cx| {
-                    view.peak = peak;
+                    view.peak = [peak, 0.001];
                     view.height = height;
                     cx.notify();
                 });
                 visual.run_until_parked();
                 let well = visual.debug_bounds("scale-probe").unwrap();
-                assert_eq!(well.size.width, px(6.0));
+                assert_eq!(well.size.width, px(7.0));
+                let left = visual.debug_bounds("scale-probe-left").unwrap();
+                let right = visual.debug_bounds("scale-probe-right").unwrap();
+                assert_eq!(left.size.width, px(3.0));
+                assert_eq!(right.size.width, px(3.0));
+                assert_eq!(right.left() - left.right(), px(1.0));
+                assert_eq!(left.size.height, right.size.height);
+                assert!(visual.debug_bounds("scale-probe-left-above").is_none());
+                assert!(visual.debug_bounds("scale-probe-right-above").is_none());
                 assert_eq!(well.size.height, px((height - 8.0).clamp(10.0, 42.0)));
                 let fill = visual
-                    .debug_bounds("scale-probe-fill")
+                    .debug_bounds("scale-probe-left-fill")
                     .map_or(0.0, |b| f32::from(b.size.height));
                 let expected_height = f32::from(well.size.height) * expected;
                 if expected == 0.0 || expected == 1.0 {
@@ -348,7 +388,21 @@ mod tests {
                         "height={height}, peak={peak}, fill={fill}, expected={expected_height}"
                     );
                 }
-                let unity = visual.debug_bounds("scale-probe-unity").unwrap();
+                let right_fill = visual.debug_bounds("scale-probe-right-fill").unwrap();
+                let expected_right = f32::from(well.size.height) * scale::fraction(0.001);
+                assert!((f32::from(right_fill.size.height) - expected_right).abs() <= 1.0);
+                if peak >= 1.0 {
+                    assert!(fill > f32::from(right_fill.size.height));
+                }
+                if peak >= 1.0 {
+                    assert_eq!(
+                        visual.rendered_background("scale-probe-left-fill"),
+                        visual.rendered_background("scale-probe-right-fill")
+                    );
+                }
+                let unity = visual.debug_bounds("scale-probe-left-unity").unwrap();
+                let headroom = visual.debug_bounds("scale-probe-left-headroom").unwrap();
+                assert!(headroom.top() <= unity.top());
                 assert!(unity.top() >= well.top() && unity.bottom() <= well.bottom());
                 let expected_unity = f32::from(well.size.height) * (1.0 - 0.8972);
                 assert!((f32::from(unity.top() - well.top()) - expected_unity).abs() <= 1.0);
@@ -374,7 +428,7 @@ mod tests {
         else {
             panic!("track")
         };
-        state.levels.insert(track, 0.5);
+        state.levels.insert(track, [0.5, 0.25]);
         assert!(state.clear());
         assert!(state.levels.is_empty());
         assert!(state.scratch.visible.capacity() >= 64);
@@ -448,26 +502,26 @@ mod tests {
         let now = Instant::now();
         let mut state = State::default();
         state.adopt((1, 10), now);
-        state.levels.insert(track, 0.8);
-        state.returns.insert(bus, 0.6);
+        state.levels.insert(track, [0.8, 0.2]);
+        state.returns.insert(bus, [0.6, 0.1]);
         assert!(state.hold(1, now + Duration::from_millis(16)));
         let held = state.level(track);
         let returned = state.return_level(bus);
-        assert!(held > 0.7 && returned > 0.5);
+        assert!(held[0] > 0.7 && held[1] > 0.17 && returned[0] > 0.5 && returned[1] > 0.08);
         state.adopt((1, 11), now + Duration::from_millis(32));
         assert_eq!(state.level(track), held);
         assert_eq!(state.return_level(bus), returned);
         assert!(state.hold(1, now + Duration::from_millis(48)));
-        assert!(state.level(track) > 0.7);
+        assert!(state.level(track)[0] > 0.7);
         assert!(state.hold(1, now + Duration::from_secs(10)));
         assert_eq!(
             state.level(track),
-            0.0,
+            [0.0; 2],
             "a missing observation must not leave a frozen meter"
         );
         assert!(state.hold(2, now + Duration::from_secs(11)));
-        assert_eq!(state.level(track), 0.0);
-        assert_eq!(state.return_level(bus), 0.0);
+        assert_eq!(state.level(track), [0.0; 2]);
+        assert_eq!(state.return_level(bus), [0.0; 2]);
         assert!(state.identity.is_none());
     }
 
@@ -493,12 +547,12 @@ mod tests {
         let now = Instant::now();
         editor.update(cx, |view, cx| {
             view.track_meters.adopt((1, 10), now);
-            view.track_meters.levels.insert(track, 0.8);
+            view.track_meters.levels.insert(track, [0.8, 0.2]);
             cx.notify();
         });
         visual.run_until_parked();
         let id: &'static str =
-            Box::leak(format!("track-output-meter-{}-fill", track.value()).into_boxed_str());
+            Box::leak(format!("track-output-meter-{}-left-fill", track.value()).into_boxed_str());
         let first = visual.debug_bounds(id).unwrap().size.height;
         assert!(first > px(1.0));
         for (revision, millis) in [(None, 16), (Some(11), 32), (None, 48)] {
@@ -533,7 +587,16 @@ mod tests {
                 .execute(Command::AddTrack { name: name.into() })
                 .unwrap();
         }
+        let Created::ReturnTrack(bus) = model
+            .execute(Command::AddReturnTrack {
+                name: "return".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return fixture")
+        };
         let project = model.project().clone();
+        let track = project.tracks()[0].id();
         let prepared = Arc::new(
             hex_engine::PreparedRevision::prepare(
                 &project,
@@ -589,6 +652,24 @@ mod tests {
             for tick in 0..2 {
                 view.tick_track_meters(now + Duration::from_millis(16 * tick));
             }
+            let observation = view
+                .audible_playback
+                .as_ref()
+                .unwrap()
+                .observation
+                .as_ref()
+                .unwrap();
+            observation
+                .track_output_meter(track)
+                .unwrap()
+                .observe_track_output(&[[0.8, -0.1]]);
+            observation
+                .return_output_meter(bus)
+                .unwrap()
+                .observe_track_output(&[[0.2, -0.6]]);
+            view.tick_track_meters(now + Duration::from_millis(32));
+            assert_eq!(view.track_meters.level(track), [0.8, 0.1]);
+            assert_eq!(view.track_meters.return_level(bus), [0.2, 0.6]);
             let scratch = &view.track_meters.scratch;
             assert_eq!(scratch.visible.len(), 2, "both rows are observed");
             assert_eq!(scratch.readings.len(), 2, "both rows are read");
@@ -599,7 +680,7 @@ mod tests {
             )
         });
         editor.update(cx, |view, _| {
-            for tick in 2..10 {
+            for tick in 3..10 {
                 view.tick_track_meters(now + Duration::from_millis(16 * tick));
                 let scratch = &view.track_meters.scratch;
                 assert_eq!(scratch.readings.len(), 2);
