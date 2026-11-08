@@ -112,6 +112,20 @@ fn failed_plugin_continuation_preserves_points_and_equal_sequence_restoration() 
         full.terminal(),
         Some(DraftTerminal::Finished(later_end.application.origin))
     );
+    let last = point(scope, source, 24, Vst3ApplicationValue::Value(0.75));
+    let incomplete = prepare_failed_plugin_continuation(
+        scope,
+        source,
+        Some(previous),
+        &[
+            Observation::Delivered(delivered),
+            Observation::Delivered(later),
+            Observation::Delivered(last),
+        ],
+    )
+    .unwrap();
+    assert_eq!(incomplete.events().count(), 3);
+    assert_eq!(incomplete.terminal(), None);
     let interrupted = Observation::Interrupted {
         key: restored.key,
         context: restored.context,
@@ -231,6 +245,15 @@ fn failed_plugin_continuation_refuses_mismatched_or_unordered_receipts() {
     assert!(
         prepare_failed_plugin_continuation(scope, source, Some(previous), &[ready(scope, source)])
             .is_err()
+    );
+    assert!(
+        prepare_failed_plugin_continuation(
+            scope,
+            source,
+            Some(previous),
+            &[Observation::Unchanged { key: good.key }]
+        )
+        .is_err()
     );
 }
 #[test]
