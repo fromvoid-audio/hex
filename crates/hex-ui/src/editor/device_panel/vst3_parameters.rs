@@ -78,6 +78,7 @@ struct Panel {
     pending_touch_request: Option<u64>,
     next_page: u16,
     knobs: HashMap<u32, Knob>,
+    row_placeholders: HashMap<u32, RowPlaceholder>,
     next_query_at: Instant,
     retry_count: u8,
 }
@@ -85,6 +86,11 @@ struct Knob {
     control: Entity<NumericControl>,
     origin: Rc<Cell<PluginParameterOrigin>>,
     _subscription: Subscription,
+}
+struct RowPlaceholder {
+    name: String,
+    default: f64,
+    control: Entity<NumericControl>,
 }
 
 /// Metadata reads keep the control poll active without claiming edit custody.
@@ -128,6 +134,7 @@ impl Panel {
         self.source = None;
         self.total = total;
         self.knobs.clear();
+        self.row_placeholders.clear();
         self.follow_knob = None;
         self.priority_page = None;
         self.queued_touch = None;
@@ -613,6 +620,7 @@ fn ensure_panel(view: &mut EditorView, device: DeviceId, cx: &mut Context<Editor
             placeholder_knob,
             next_page: 0,
             knobs: HashMap::new(),
+            row_placeholders: HashMap::new(),
             next_query_at: Instant::now(),
             retry_count: 0,
         },
@@ -1558,12 +1566,25 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
                                         let knob = if row.editable {
                                             editor
                                                 .update(app, |view, cx| {
+                                                    if let Some(panel) = view
+                                                        .device_panel
+                                                        .vst3_parameters
+                                                        .panels
+                                                        .get_mut(&device)
+                                                    {
+                                                        panel.row_placeholders.remove(&row.id);
+                                                    }
                                                     knob(view, device, query, row, cx)
                                                 })
                                                 .ok()
                                                 .flatten()
                                         } else {
-                                            None
+                                            editor
+                                                .update(app, |view, cx| {
+                                                    row_placeholder(view, device, row, cx)
+                                                })
+                                                .ok()
+                                                .flatten()
                                         };
                                         let row_id = row.id;
                                         let row_editor = editor.clone();
@@ -1594,12 +1615,17 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
                                                         div()
                                                             .flex_1()
                                                             .min_w_0()
-                                                            .truncate()
-                                                            .child(theme::text(
-                                                            hex_session::service::text::verbatim(
-                                                                &row.name,
-                                                            ),
-                                                        )),
+                                                            .flex()
+                                                            .items_center()
+                                                            .gap_2()
+                                                            .child(div().flex_1().min_w_0().truncate().child(theme::text(
+                                                                hex_session::service::text::verbatim(&row.name),
+                                                            )))
+                                                            .when(!row.editable && !row.value.is_empty(), |item| item.child(
+                                                                div().max_w(px(72.0)).truncate().child(theme::text(
+                                                                    hex_session::service::text::verbatim(&row.value),
+                                                                )),
+                                                            )),
                                                     )
                                                     .children(knob)
                                                     .when(row.automation_class.is_some(), |item| {
@@ -1624,18 +1650,6 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
                                                                 );
                                                             },
                                                         )
-                                                    })
-                                                    .when(!row.editable, |item| {
-                                                        item.child(
-                                                        div()
-                                                            .max_w(px(92.0))
-                                                            .truncate()
-                                                            .child(theme::text(
-                                                            hex_session::service::text::verbatim(
-                                                                &row.value,
-                                                            ),
-                                                        )),
-                                                    )
                                                     }),
                                                 ),
                                         )
@@ -1830,6 +1844,61 @@ fn placeholder_knob(
     .ok()?;
     let control = cx.new(|cx| NumericControl::from_config(cx, config));
     control.update(cx, |control, cx| control.set_enabled(false, cx));
+    Some(control)
+}
+
+// A bounded set of display-only controls supports virtualization without giving
+// cached descriptors the authority to dispatch parameter gestures.
+fn row_placeholder(
+    view: &mut EditorView,
+    device: DeviceId,
+    row: &PluginParameterRow,
+    cx: &mut Context<EditorView>,
+) -> Option<Entity<NumericControl>> {
+    let panel = view.device_panel.vst3_parameters.panels.get_mut(&device)?;
+    if let Some(placeholder) = panel.row_placeholders.get(&row.id)
+        && placeholder.name == row.name
+        && placeholder.default == row.default_normalized
+    {
+        let control = placeholder.control.clone();
+        control.update(cx, |control, cx| {
+            let _ = control.set_external_value(row.normalized, cx);
+        });
+        return Some(control);
+    }
+    // The list also renders an item for measurement, so pruning by each
+    // requested range would evict controls that are still on screen.
+    if panel.row_placeholders.len() >= 128 {
+        panel.row_placeholders.clear();
+    }
+    let spec = NumericSpec::new(
+        0.0,
+        1.0,
+        row.default_normalized,
+        NumericScale::Linear,
+        3,
+        None::<&str>,
+    )
+    .ok()?;
+    let config = NumericControlConfig::new(
+        format!("vst3-placeholder-{}-{}", device.value(), row.id),
+        theme::text(hex_session::service::text::verbatim(&row.name)),
+        NumericControlPresentation::MicroDial,
+        spec,
+        row.normalized,
+        theme::control_style(),
+    )
+    .ok()?;
+    let control = cx.new(|cx| NumericControl::from_config(cx, config));
+    control.update(cx, |control, cx| control.set_enabled(false, cx));
+    panel.row_placeholders.insert(
+        row.id,
+        RowPlaceholder {
+            name: row.name.clone(),
+            default: row.default_normalized,
+            control: control.clone(),
+        },
+    );
     Some(control)
 }
 
@@ -2552,6 +2621,14 @@ mod tests {
         });
         visual.run_until_parked();
         assert_eq!(bounds(&mut visual), baseline);
+        assert!(
+            visual
+                .debug_bounds(Box::leak(
+                    format!("vst3-placeholder-{}-7-knob", device.value()).into_boxed_str(),
+                ))
+                .is_some(),
+            "a stale visible parameter retains a disabled dial"
+        );
         editor.read_with(&visual, |view, cx| {
             let panel = view
                 .device_panel
@@ -2569,6 +2646,119 @@ mod tests {
                 panel.follow_knob.is_none(),
                 "stale rows cannot retain editable controls"
             );
+            assert_eq!(panel.row_placeholders[&7].control.read(cx).value(), 0.8);
+            assert!(!panel.knobs.contains_key(&7));
+        });
+        editor.update(&mut visual, |view, cx| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap();
+            panel.result = Some(Arc::new(
+                (0..40)
+                    .map(|index| PluginParameterRow {
+                        id: 100 + index,
+                        page_first: ((index as usize / PAGE_SIZE) * PAGE_SIZE) as u16,
+                        ..layout_row(0.35, false, 0)
+                    })
+                    .collect(),
+            ));
+            panel.refilter(true);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        editor.update(&mut visual, |view, _| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap();
+            panel
+                .scroll
+                .0
+                .borrow()
+                .base_handle
+                .set_offset(gpui::point(px(0.0), px(-1164.0)));
+        });
+        visual.update(|window, cx| window.draw(cx).clear());
+        assert!(visual.debug_bounds("vst3-parameter-row-124").is_some());
+        assert!(
+            visual
+                .debug_bounds(Box::leak(
+                    format!("vst3-placeholder-{}-124-knob", device.value()).into_boxed_str()
+                ))
+                .is_some(),
+            "a newly visible row has its dial in the first frame"
+        );
+        editor.read_with(&visual, |view, _| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get(&device)
+                .unwrap();
+            assert!(panel.row_placeholders.len() <= 128);
+            assert!(!panel.knobs.contains_key(&124));
+        });
+        let dial =
+            Box::leak(format!("vst3-placeholder-{}-124-knob", device.value()).into_boxed_str());
+        let down = visual.debug_bounds(dial).unwrap().center();
+        visual.simulate_mouse_down(down, gpui::MouseButton::Left, modifiers);
+        visual.simulate_mouse_move(
+            gpui::point(down.x, down.y - px(20.0)),
+            gpui::MouseButton::Left,
+            modifiers,
+        );
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, cx| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get(&device)
+                .unwrap();
+            let control = panel.row_placeholders[&124].control.read(cx);
+            assert!(!control.is_interacting());
+            assert_eq!(control.value(), 0.35);
+            assert!(view.device_gesture.snapshot().is_none());
+        });
+        visual.simulate_mouse_up(down, gpui::MouseButton::Left, modifiers);
+        editor.update(&mut visual, |view, cx| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap();
+            panel.source = Some(binding);
+            let rows = Arc::make_mut(panel.result.as_mut().unwrap());
+            rows[24] = PluginParameterRow {
+                id: 124,
+                page_first: rows[24].page_first,
+                ..layout_row(0.35, true, 7)
+            };
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds(Box::leak(
+                    format!("vst3-knob-{}-124-knob", device.value()).into_boxed_str()
+                ))
+                .is_some()
+        );
+        editor.read_with(&visual, |view, _| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get(&device)
+                .unwrap();
+            assert!(!panel.row_placeholders.contains_key(&124));
+            assert!(panel.knobs.contains_key(&124));
         });
     }
 

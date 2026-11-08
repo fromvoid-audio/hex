@@ -1,16 +1,16 @@
 //! Canonical section reorder/copy preview shared by native section hosts.
 //!
 //! The host owns pointer capture, snapping, selection and receipt custody. This
-//! boundary chooses the nearest stable project edge and pairs the exact project
-//! preview with the command that can produce it.
+//! boundary chooses stable edges within the song and snapped absolute positions
+//! beyond it, pairing the exact project preview with its typed command.
 use hex_project::{
-    ArrangementSection, BeatTime, Command, Invalid, Project, SectionId, SectionReorderPreview,
-    SectionSplicePreview, TempoMap,
+    ArrangementSection, BeatTime, Command, ElementColor, Invalid, Project, SectionId,
+    SectionReorderPreview, SectionSplicePreview, TempoMap,
 };
 
 enum Geometry {
     Move(SectionReorderPreview),
-    Copy(SectionSplicePreview),
+    Splice(SectionSplicePreview),
 }
 
 pub(crate) struct Preview {
@@ -22,16 +22,57 @@ impl Preview {
     pub(crate) fn sections(&self) -> &[ArrangementSection] {
         match &self.geometry {
             Geometry::Move(preview) => preview.sections(),
-            Geometry::Copy(preview) => preview.sections(),
+            Geometry::Splice(preview) => preview.sections(),
         }
     }
 
     pub(crate) fn tempo_map(&self) -> &TempoMap {
         match &self.geometry {
             Geometry::Move(preview) => preview.tempo_map(),
-            Geometry::Copy(preview) => preview.tempo_map(),
+            Geometry::Splice(preview) => preview.tempo_map(),
         }
     }
+}
+
+/// Beyond the final edge, use the host's snapped pointer beat. The host retains
+/// `gap_appearance` for the entire capture, including live modifier changes.
+/// Interior/end-edge placements retain the original structural insertion law.
+pub(crate) fn drag_preview(
+    project: &Project,
+    source: SectionId,
+    raw: BeatTime,
+    snapped: BeatTime,
+    copy: bool,
+    gap_appearance: &mut Option<(String, ElementColor)>,
+) -> Result<Option<Preview>, Invalid> {
+    let end = project
+        .arrangement_sections()
+        .last()
+        .ok_or(Invalid("arrangement has no section to move"))?
+        .end();
+    if raw <= end || (!copy && snapped <= end) {
+        return preview(project, source, raw, copy);
+    }
+    let start = snapped.max(end);
+    let (name, color) =
+        gap_appearance.get_or_insert_with(|| crate::section_appearance::new_marker(project));
+    let command = if copy {
+        Command::AppendArrangementSectionCopy {
+            section: source,
+            start,
+            gap_name: name.clone(),
+            gap_color: *color,
+        }
+    } else {
+        Command::MoveArrangementSectionBeyondEnd {
+            section: source,
+            start,
+            gap_name: name.clone(),
+            gap_color: *color,
+        }
+    };
+    let geometry = Geometry::Splice(project.preview_arrangement_section_edit(&command)?);
+    Ok(Some(Preview { command, geometry }))
 }
 
 /// Resolve a raw pointer beat to the same insertion edge and project preview
@@ -51,7 +92,7 @@ pub(crate) fn preview(
             target,
             after,
         };
-        let geometry = Geometry::Copy(project.preview_arrangement_section_edit(&command)?);
+        let geometry = Geometry::Splice(project.preview_arrangement_section_edit(&command)?);
         return Ok(Some(Preview { command, geometry }));
     }
     let (command, geometry) = if after {
@@ -227,5 +268,104 @@ mod tests {
             .execute(Command::RemoveArrangementSection(ids[0]))
             .unwrap();
         assert!(preview(editor.project(), ids[0], beat(12), false).is_err());
+    }
+    #[test]
+    fn beyond_end_drag_uses_snapped_absolute_commands_and_retains_appearance() {
+        let (mut editor, ids) = fixture();
+        let before = editor.project().snapshot();
+        let mut appearance = None;
+        let copy = drag_preview(
+            editor.project(),
+            ids[2],
+            beat(25),
+            beat(24),
+            true,
+            &mut appearance,
+        )
+        .unwrap()
+        .unwrap();
+        let chosen = appearance.clone().unwrap();
+        assert!(
+            matches!(&copy.command, Command::AppendArrangementSectionCopy { start, gap_name, gap_color, .. }
+            if *start == beat(24) && (gap_name, gap_color) == (&chosen.0, &chosen.1))
+        );
+        let moved = drag_preview(
+            editor.project(),
+            ids[2],
+            beat(26),
+            beat(26),
+            false,
+            &mut appearance,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(appearance, Some(chosen.clone()));
+        assert!(
+            matches!(&moved.command, Command::MoveArrangementSectionBeyondEnd { start, gap_name, gap_color, .. }
+            if *start == beat(26) && (gap_name, gap_color) == (&chosen.0, &chosen.1))
+        );
+        assert_eq!(editor.project().snapshot(), before);
+        let expected = geometry(moved.sections());
+        editor.execute(moved.command).unwrap();
+        assert_eq!(geometry(editor.project().arrangement_sections()), expected);
+        let gap = editor
+            .project()
+            .arrangement_sections()
+            .iter()
+            .find(|m| m.name() == chosen.0)
+            .unwrap();
+        assert_eq!((gap.start(), gap.end()), (beat(12), beat(26)));
+    }
+
+    #[test]
+    fn interior_and_exact_end_drag_keep_edges_and_do_not_allocate_gap_appearance() {
+        let (editor, ids) = fixture();
+        for raw in [beat(0), beat(14), beat(20)] {
+            for copy in [false, true] {
+                let mut appearance = None;
+                let old = preview(editor.project(), ids[0], raw, copy).unwrap();
+                let new = drag_preview(
+                    editor.project(),
+                    ids[0],
+                    raw,
+                    beat(30),
+                    copy,
+                    &mut appearance,
+                )
+                .unwrap();
+                assert_eq!(
+                    old.as_ref().map(|p| geometry(p.sections())),
+                    new.as_ref().map(|p| geometry(p.sections()))
+                );
+                assert!(appearance.is_none());
+            }
+        }
+        let mut appearance = None;
+        let edge = drag_preview(
+            editor.project(),
+            ids[0],
+            beat(21),
+            beat(20),
+            false,
+            &mut appearance,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(matches!(edge.command, Command::ReorderSectionAfter { .. }));
+        assert!(
+            appearance.is_none(),
+            "snapping to the end keeps the edge law"
+        );
+        let edge_copy = drag_preview(
+            editor.project(),
+            ids[2],
+            beat(21),
+            beat(20),
+            true,
+            &mut appearance,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(edge_copy.sections().len(), 4, "equal-end copy has no gap");
     }
 }
