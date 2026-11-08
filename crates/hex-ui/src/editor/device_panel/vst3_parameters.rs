@@ -1672,8 +1672,7 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
                                                             .gap_2()
                                                             .child(div().flex_1().min_w_0().truncate().child(theme::text(
                                                                 hex_session::service::text::verbatim(&row.name),
-                                                            )))
-                                                            ,
+                                                            ))),
                                                     )
                                                     .children(knob)
                                                     .when(row.automation_class.is_some(), |item| {
