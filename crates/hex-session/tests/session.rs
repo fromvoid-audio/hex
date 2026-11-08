@@ -779,7 +779,8 @@ fn waveform_summary_caps_resolution_and_keeps_bucket_extrema() {
             .import(prepare(&directory, "waveform.wav", 48_000, &samples))
             .expect("import"),
     );
-    let bins = &session.waveform(asset).expect("waveform").bins();
+    let waveform = session.waveform(asset).expect("waveform");
+    let bins = waveform.bins();
     assert_eq!(bins.len(), 2_048);
     assert_eq!(bins[1][0].max, 0.5);
     assert_eq!(bins[1][1].min, -0.25);
