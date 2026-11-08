@@ -57,8 +57,8 @@ impl Plugins {
             }
             let hint = self
                 .observed_parameters
-                .as_ref()
-                .filter(|inventory| {
+                .iter()
+                .find(|inventory| {
                     inventory.binding == binding
                         && inventory.query.context.project_generation
                             == input.context().project_generation

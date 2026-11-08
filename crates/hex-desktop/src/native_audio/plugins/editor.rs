@@ -27,7 +27,6 @@ impl Plugins {
         device: u64,
     ) -> Result<(), String> {
         if self.editor.is_some()
-            || self.parameters.is_some()
             || self.restore.is_some()
             || self.reopen.is_some()
             || self.edit.is_some()
@@ -45,7 +44,11 @@ impl Plugins {
                     && source.project_generation == generation
             })
             .ok_or("vst3 editor needs an active hosted instance")?;
-        self.queue_editor(source.binding, generation, true);
+        let binding = source.binding;
+        if let Some(inventory) = self.parameters.as_mut() {
+            inventory.request_yield();
+        }
+        self.queue_editor(binding, generation, true);
         Ok(())
     }
 
@@ -89,14 +92,18 @@ impl Plugins {
                     *request = Some(token);
                     return;
                 }
-                Err("native preparation is busy" | "native controller mailbox is busy")
-                    if Instant::now() < *admission_deadline =>
-                {
+                Err(
+                    "native preparation is busy"
+                    | "native controller mailbox is busy"
+                    | "native controller query is already pending",
+                ) if Instant::now() < *admission_deadline => {
                     return;
                 }
-                Err("native preparation is busy" | "native controller mailbox is busy") => {
-                    Err("vst3 editor is busy")
-                }
+                Err(
+                    "native preparation is busy"
+                    | "native controller mailbox is busy"
+                    | "native controller query is already pending",
+                ) => Err("vst3 editor is busy"),
                 Err(error) => Err(error),
             }
         };

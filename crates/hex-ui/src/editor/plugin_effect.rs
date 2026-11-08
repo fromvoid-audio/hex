@@ -13,12 +13,16 @@ pub(crate) fn fixture_view(
     window
         .read(cx, |view: gpui::Entity<EditorView>, cx| {
             let view = view.read(cx);
+            let (parameter_controls, parameter_query_pending) =
+                device_panel::vst3_parameters::test_state(view);
             crate::PluginEffectTestView {
                 state: view.state.clone(),
                 pending: view.pending_plugin_effect.is_some(),
                 queued_requests: view.worker_requests_pending
                     + view.pending_requests.len()
                     + view.device_gesture_barriers.len(),
+                parameter_controls,
+                parameter_query_pending,
                 operation: view
                     .pending_plugin_effect
                     .as_ref()
