@@ -951,6 +951,14 @@ impl Render for EditorView {
                     cx.notify();
                 }),
             )
+            .on_action(
+                cx.trace(|view, _: &super::SelectPreviousReturn, window, cx| {
+                    view.select_adjacent_console_return(false, window, cx);
+                }),
+            )
+            .on_action(cx.trace(|view, _: &super::SelectNextReturn, window, cx| {
+                view.select_adjacent_console_return(true, window, cx);
+            }))
             .on_action(cx.trace(|view, _: &super::RenameTrack, window, cx| {
                 view.begin_track_name(window, cx);
             }))
