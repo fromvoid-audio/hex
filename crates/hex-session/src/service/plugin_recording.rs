@@ -51,6 +51,12 @@ fn snapshot(operation: PluginGesturePreparation) -> GestureSnapshot {
     }
 }
 impl State {
+    pub(super) fn owns(&self, snapshot: Option<GestureSnapshot>) -> bool {
+        self.active
+            .as_ref()
+            .zip(snapshot)
+            .is_some_and(|(active, snapshot)| active.key == snapshot.key)
+    }
     pub(super) fn attempt(&mut self, request: GestureRequest) {
         if self.terminal.is_some_and(|pending| {
             pending.key() == request.key()
@@ -453,7 +459,8 @@ impl Preparation<'_> {
 
     fn retire_detached(&mut self, context: hex_engine::AudioSourceContext) {
         if self.state.active.as_ref().is_some_and(|active| {
-            (active.source_lost || context != active.scope.context())
+            self.state.terminal.is_none()
+                && (active.source_lost || context != active.scope.context())
                 && active.ended
                 && active.outcome.is_some()
         }) && let Some(active) = self.state.active.take()
@@ -637,7 +644,7 @@ impl Preparation<'_> {
         })();
         if matches!(operation, PluginGesturePreparation::Commit(_)) {
             sink.finish_plugin_parameter_commit(
-                context,
+                active.scope.context(),
                 terminal.key,
                 terminal.sequence,
                 result.is_ok(),

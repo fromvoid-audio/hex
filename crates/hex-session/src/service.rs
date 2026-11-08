@@ -3415,6 +3415,12 @@ fn run_worker(
         }) {
             barrier_failure = Some("save target changed · save cancelled".to_owned());
         }
+        if barrier && barrier_failure.is_none() && plugin_recording.owns(device_gesture.snapshot())
+        {
+            // A recorded terminal has its own asynchronous durable transaction.
+            // Do not send it through ordinary opaque/manual gesture finalization.
+            barrier_failure = Some("finish or cancel the vst3 recording before this action".into());
+        }
         if barrier && barrier_failure.is_none() {
             let device_finished = if events.resident_publication_enabled()
                 && session.audio_mode() == DocumentAudioMode::Resident
@@ -3914,7 +3920,6 @@ fn run_worker(
                     }
                 }
                 Request::DeviceGesture(gesture) => {
-                    plugin_recording.attempt(gesture);
                     gesture_request = true;
                     gesture_protocol_ack = true;
                     let mut deferred = false;
@@ -4040,6 +4045,7 @@ fn run_worker(
                         gesture_protocol_ack = false;
                         gesture_request = false;
                     } else {
+                        plugin_recording.attempt(gesture);
                         gesture_ack = Some(outcome.ack);
                     }
                     if let Some(prepared) = outcome.playback {
@@ -7859,6 +7865,31 @@ fn run_worker(
                             let sink = events.resident_audio().ok_or(SessionError::Invalid(
                                 "native preview output unavailable",
                             ))?;
+                            if let crate::device_gesture::GesturePreparation::Plugin(operation) =
+                                operation
+                            {
+                                let mut recording = plugin_recording::Preparation {
+                                    state: &mut plugin_recording,
+                                    lane: &mut native_automation_take,
+                                    document_base: media_base.as_deref(),
+                                    recovery: recovery.as_deref(),
+                                    may_defer: false,
+                                    deferred: false,
+                                };
+                                return resident_preview::plugin_parameter::operation_using(
+                                    session,
+                                    operation,
+                                    hex_engine::AudioSourceContext {
+                                        project_generation,
+                                        editor_revision: revision,
+                                    },
+                                    &mut resident_snapshot,
+                                    &mut resident_preview,
+                                    sink,
+                                    admission,
+                                    Some(&mut recording),
+                                );
+                            }
                             resident_preview::device_operation(
                                 session,
                                 operation,

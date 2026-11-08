@@ -507,7 +507,6 @@ fn retiring_a_source_preserves_its_deferred_terminal_until_the_exact_attempt() {
         deferred: false,
     }
     .drive(&session, scope.context(), &mut sink);
-    assert!(!state.pending());
     assert_eq!(
         state
             .ready()
@@ -551,6 +550,16 @@ fn retiring_a_source_preserves_its_deferred_terminal_until_the_exact_attempt() {
     );
     state.attempt(request);
     assert!(state.ready().is_none());
+    Preparation {
+        state: &mut state,
+        lane: &mut lane,
+        document_base: None,
+        recovery: None,
+        may_defer: false,
+        deferred: false,
+    }
+    .drive(&session, scope.context(), &mut sink);
+    assert!(!state.pending());
     let mut prep = Preparation {
         state: &mut state,
         lane: &mut lane,

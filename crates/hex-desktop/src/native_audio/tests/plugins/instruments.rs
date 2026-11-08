@@ -788,6 +788,7 @@ fn recorded_session_gesture_commits_one_take_and_reopens() {
                 case.as_str(),
                 "session_record"
                     | "session_record_changed"
+                    | "session_barriers"
                     | "session_refused"
                     | "session_cancel"
                     | "session_empty"
@@ -1936,6 +1937,39 @@ fn verify_instrument_takeover(
                 .unwrap();
             assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
             assert!((peak(h) - baseline * value as f32 / 0.25).abs() < 0.0001);
+        }
+        if case == "session_barriers" {
+            let files = Files::new();
+            let path = files.0.join("after-recording.hex");
+            for request in [
+                Request::SaveNew(path.clone()),
+                Request::Undo,
+                Request::Redo,
+                Request::Export(files.0.join("blocked.wav")),
+            ] {
+                let refused = super::automation::edit_with_running_callback(h, request);
+                assert!(
+                    refused.error.as_ref().is_some_and(
+                        |reason| reason.contains("finish or cancel the vst3 recording")
+                    ),
+                    "{:?}",
+                    refused.error
+                );
+                assert!(refused.gesture_ack.is_none());
+                assert!(refused.active_device_gesture.is_some());
+                assert_eq!(refused.state.project.as_ref(), &before);
+                assert!(!path.exists());
+                assert!(
+                    (peak(h) - baseline * 1.5).abs() < 0.0001,
+                    "barrier refusal must preserve the accepted SDK preview"
+                );
+            }
+            client.cancel().unwrap();
+            send(h, &mut client, true);
+            let saved = h.run(Request::SaveNew(path.clone()));
+            assert!(saved.save_complete && saved.error.is_none());
+            assert_eq!(hex_storage::load(path).unwrap(), before);
+            return;
         }
         if case == "session_cancel" {
             client.cancel().unwrap();
