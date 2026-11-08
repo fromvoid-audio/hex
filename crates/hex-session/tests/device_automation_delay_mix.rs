@@ -157,3 +157,8 @@ fn lane_case(type_id: &'static str, raw_parameter: u32) {
         "refusal cannot add or consume history"
     );
 }
+
+#[test]
+fn flexible_eq_output_lane_preserves_history_and_refuses_stale_requests() {
+    lane_case("hex.eq", 202);
+}
