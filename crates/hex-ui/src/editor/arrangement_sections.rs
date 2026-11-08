@@ -2087,7 +2087,7 @@ impl EditorView {
                     element.children([hex_widgets::rectangle_edge(part, INNER_EDGE_WIDTH, 0.0)]);
             }
             elements.push(
-                super::tracks::clip_boundary_shell(
+                super::clip_boundary::clip_boundary_shell(
                     element,
                     (start - viewport.start) as f32 / viewport.length as f32,
                     (end - start) as f32 / viewport.length as f32,

@@ -27,8 +27,7 @@ mod bounce;
 mod browser;
 mod browser_input;
 mod clip_action_scope;
-#[cfg(all(test, feature = "ui-test-support"))]
-mod clip_border_ui_test;
+mod clip_boundary;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_clipboard_ui_test;
 mod clip_content_cache;
