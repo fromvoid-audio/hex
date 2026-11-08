@@ -204,7 +204,7 @@ mod tests {
         assert_eq!(editor.project().snapshot(), before);
         assert!(editor.redo());
         let authored = editor.project().snapshot();
-        // Removal owns the whole subtree; partial copying still refuses.
+        // Removal and capture both own the whole subtree.
         let root = editor.project().main_devices()[0].id();
         editor.execute(Command::RemoveDevice(root)).unwrap();
         assert_eq!(editor.project().main_devices().len(), 1);
@@ -217,7 +217,7 @@ mod tests {
                     crate::DeviceChainOwner::Main,
                     &crate::DeviceSelectionIds::new(&[root]).unwrap()
                 )
-                .is_err()
+                .is_ok()
         );
 
         let mut bad = snapshot.clone();
