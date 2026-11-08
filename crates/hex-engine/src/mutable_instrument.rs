@@ -9,6 +9,7 @@
 
 pub(crate) mod authored_gate;
 mod automation;
+pub(crate) mod frozen_parameters;
 mod live;
 #[cfg(test)]
 mod steal_tests;
@@ -238,6 +239,7 @@ impl MutableOccurrenceKey {
 /// buffers are reserved during control-side construction.
 pub(crate) struct MutableInstrumentTrackRuntime {
     pair: NativeInstrumentRuntimePair,
+    frozen_parameters: frozen_parameters::FrozenParameters,
     pub(crate) resources: Option<crate::native_device_resources::PreparedDeviceResourceLease>,
     pub(crate) expression_identity: Option<hex_project::DeviceId>,
     pub(crate) expression: Option<crate::live_expression::Snapshot>,
@@ -289,6 +291,7 @@ impl MutableInstrumentTrackRuntime {
     pub(crate) fn is_concrete_current_sampler(&self) -> bool {
         self.resources.is_none()
             && self.expression.is_none()
+            && self.frozen_parameters.empty()
             && self
                 .pair
                 .inline_storage_for_type::<hex_devices::sampler::SamplerRuntime>()
@@ -300,6 +303,7 @@ impl MutableInstrumentTrackRuntime {
     ) -> Result<(), crate::AudioStorageError> {
         let Self {
             pair,
+            frozen_parameters,
             resources,
             expression_identity: _,
             expression,
@@ -318,6 +322,7 @@ impl MutableInstrumentTrackRuntime {
         let (first, second) = pair
             .inline_storage_for_type::<hex_devices::sampler::SamplerRuntime>()
             .ok_or(crate::AudioStorageError::UnsupportedGraph)?;
+        frozen_parameters.visit_empty(ledger)?;
         ledger.vec(primary)?;
         ledger.vec(scratch)?;
         ledger.bytes(
@@ -354,7 +359,11 @@ impl MutableInstrumentTrackRuntime {
         let ledger_bytes = MAX_MUTABLE_OCCURRENCE_PROOFS
             .checked_mul(std::mem::size_of::<MutableOccurrence>())?
             .checked_mul(2)?;
-        pair_bytes.checked_add(ledger_bytes)
+        pair_bytes.checked_add(ledger_bytes)?.checked_add(
+            frozen_parameters::FrozenParameters::quote(
+                prepared.parameter_automation_descriptors().len(),
+            )?,
+        )
     }
 
     pub(crate) fn new(
@@ -363,6 +372,10 @@ impl MutableInstrumentTrackRuntime {
     ) -> Result<Self, MutableInstrumentRuntimeError> {
         let max_tail_frames =
             max_mutable_tail_frames(sample_rate).ok_or(MutableInstrumentRuntimeError::Budget)?;
+        frozen_parameters::FrozenParameters::quote(
+            prepared.parameter_automation_descriptors().len(),
+        )
+        .ok_or(MutableInstrumentRuntimeError::Budget)?;
         let pair = NativeInstrumentRuntimePair::new(
             prepared,
             NativeInstrumentRuntimeLimits {
@@ -379,6 +392,8 @@ impl MutableInstrumentTrackRuntime {
         if pair_bytes > pair.declared_pair_bytes() {
             return Err(MutableInstrumentRuntimeError::Budget);
         }
+        let frozen_parameters =
+            frozen_parameters::FrozenParameters::new(prepared.parameter_automation_descriptors())?;
         let mut primary = Vec::new();
         primary
             .try_reserve_exact(MAX_MUTABLE_OCCURRENCE_PROOFS)
@@ -394,6 +409,7 @@ impl MutableInstrumentTrackRuntime {
         }
         Ok(Self {
             pair,
+            frozen_parameters,
             resources: None,
             expression_identity: None,
             expression: None,
@@ -650,6 +666,7 @@ impl MutableInstrumentTrackRuntime {
                     .checked_mul(std::mem::size_of::<MutableOccurrence>())?,
             )?
             .checked_add(self.pair.fixed_storage_pair_bytes()?)?
+            .checked_add(self.frozen_parameters.storage_bytes()?)?
             .checked_add(
                 self.live
                     .as_ref()
@@ -804,6 +821,7 @@ impl MutableInstrumentTrackRuntime {
             events,
             clock,
             &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            None,
         )
     }
     #[allow(clippy::too_many_arguments)]
@@ -818,6 +836,7 @@ impl MutableInstrumentTrackRuntime {
         events: &mut Vec<NativeInstrumentEvent>,
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
         resources: &dyn hex_lattice::DeviceResources,
+        automation: Option<&dyn hex_lattice::NativeParameterAutomation>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
         self.process_segment_inner(
             Some(track),
@@ -830,7 +849,7 @@ impl MutableInstrumentTrackRuntime {
             clock,
             resources,
             None,
-            None,
+            automation,
         )
     }
 
@@ -1005,6 +1024,7 @@ impl MutableInstrumentTrackRuntime {
 
     pub(crate) fn reset(&mut self) {
         self.pair.reset();
+        self.frozen_parameters.reset();
         self.primary.clear();
         self.scratch.clear();
         self.next_id = 0;
@@ -1045,6 +1065,11 @@ pub(crate) fn host_storage_upper_bound(track_count: usize) -> Option<usize> {
         .checked_add(active_ledger_entries)?
         .checked_add(tail_owner_slots)?
         .checked_add(tail_ledger_entries)?
+        .checked_add(track_count.checked_add(tail_slots)?.checked_mul(
+            frozen_parameters::FrozenParameters::quote(
+                hex_lattice_contract::MAX_PARAMETERS_PER_DEVICE,
+            )?,
+        )?)?
         .checked_add(std::mem::size_of::<MutableOnsetBuffer>())?
         .checked_add(events)?
         .checked_add(vector_headers)?

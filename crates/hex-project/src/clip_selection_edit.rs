@@ -578,6 +578,8 @@ impl Command {
             | Self::RemoveDevice(..)
             | Self::MoveDevice { .. }
             | Self::MoveTrackDevice { .. }
+            | Self::ReparentDevice { .. }
+            | Self::InsertNestedDevice { .. }
             | Self::SpliceDeviceAutomationTouch { .. }
             | Self::ReplaceDeviceAutomationTarget { .. }
             | Self::ReplaceDeviceAutomation { .. }

@@ -167,12 +167,12 @@ pub struct PreparedParameterAutomationPoint {
 /// prepared by the canonical integer-millidB HostGain law exactly once for each
 /// authored held/constant point; interpolated host values use that same law.
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum CanonicalValue {
+pub(crate) enum CanonicalValue {
     Provider(ParameterValue),
     HostGainLinear(f32),
 }
 impl CanonicalValue {
-    fn provider(self) -> Option<ParameterValue> {
+    pub(crate) fn provider(self) -> Option<ParameterValue> {
         match self {
             Self::Provider(value) => Some(value),
             Self::HostGainLinear(_) => None,
@@ -186,7 +186,7 @@ impl CanonicalValue {
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Mapping {
+pub(crate) enum Mapping {
     HostGain,
     Float {
         min: f64,
@@ -200,7 +200,7 @@ enum Mapping {
     },
 }
 impl Mapping {
-    fn prepare(
+    pub(crate) fn prepare(
         descriptor: ParameterDescriptor,
         semantics: ParameterSemantics,
     ) -> Result<Self, Error> {
@@ -239,7 +239,7 @@ impl Mapping {
     fn discrete(self) -> bool {
         matches!(self, Self::Bool | Self::Choice { .. })
     }
-    fn value(self, normalized: f32) -> Result<CanonicalValue, Error> {
+    pub(crate) fn value(self, normalized: f32) -> Result<CanonicalValue, Error> {
         Ok(match self {
             Self::HostGain => {
                 CanonicalValue::HostGainLinear(HostGain::from_normalized(normalized)?.linear())

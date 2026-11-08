@@ -195,6 +195,77 @@ fn failed_recovery_snapshots_only_quiescent_original_observations() {
 }
 
 #[test]
+fn failed_custody_query_preserves_original_identity_and_rejects_mismatch() {
+    use crate::service::native_automation_recording::tests::failed_lane_for_test;
+    use DeviceAutomationTakeProgress as Progress;
+
+    let (files, session, scope, source) = fixture();
+    let path = files.0.join("discovery-original");
+    let lane = failed_lane_for_test(
+        &session,
+        scope,
+        source,
+        &path,
+        hex_storage::automation_draft::DraftTerminal::Interrupted,
+    );
+    let bytes = std::fs::read(&path).unwrap();
+    let mut state = active(scope, source);
+    assert!(!state.close_safe());
+    assert!(!lane.close_safe());
+    assert_eq!(
+        failed_custody(&state, &lane, false).unwrap(),
+        Progress::FailedPluginPending
+    );
+    let mut failed = state.active.take().unwrap();
+    failed.ended = true;
+    failed.path = path.clone();
+    state.failed = Some(failed);
+    for _ in 0..2 {
+        assert_eq!(
+            failed_custody(&state, &lane, false).unwrap(),
+            Progress::FailedPluginCustody {
+                scope: Box::new(scope),
+                path: path.clone()
+            }
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert!(state.failed.is_some());
+    }
+    assert_eq!(
+        failed_custody(&state, &lane, true).unwrap(),
+        Progress::FailedPluginPending
+    );
+    state.failed.as_mut().unwrap().source.transport_epoch += 1;
+    assert!(failed_custody(&state, &lane, false).is_err());
+    assert!(!state.close_safe());
+    assert!(!lane.close_safe());
+    state.failed.as_mut().unwrap().source = source;
+    state.failed.as_mut().unwrap().path = files.0.join("other");
+    assert!(failed_custody(&state, &lane, false).is_err());
+    let empty = Lane::default();
+    assert_eq!(
+        failed_custody(&state, &empty, false).unwrap(),
+        Progress::FailedPluginPending
+    );
+    state.failed = None;
+    assert!(state.close_safe());
+    assert!(empty.close_safe());
+    let pending = GestureRequest::CommitPlugin {
+        key: gesture(scope).key,
+        sequence: 1,
+        value: PluginParameterValue::new(0.25).unwrap(),
+    };
+    state.defer(pending);
+    assert!(!state.close_safe());
+    state.attempt(pending);
+    assert!(state.close_safe());
+    assert_eq!(
+        failed_custody(&state, &empty, false).unwrap(),
+        Progress::FailedPluginUnavailable
+    );
+}
+
+#[test]
 fn failed_recovery_dispatch_copies_receipts_without_releasing_custody() {
     use crate::service::native_automation_recording::tests::failed_lane_for_test;
     use hex_storage::automation_draft::{DraftOutcome, DraftReadLimits, DraftReader};
@@ -234,6 +305,8 @@ fn failed_recovery_dispatch_copies_receipts_without_releasing_custody() {
         start_failed_copy(&state, &mut lane, scope, &output, 3, false).unwrap(),
         Step::Progress(DeviceAutomationTakeProgress::Pending)
     ));
+    assert!(!lane.close_safe());
+    assert!(!state.close_safe());
     assert!(inspect_failed_copy(&state, &lane, scope, false).is_err());
     assert!(start_failed_copy(&state, &mut lane, scope, &output, 3, false).is_err());
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -388,6 +461,10 @@ fn failed_recovery_dispatch_copies_receipts_without_releasing_custody() {
     .unwrap();
     assert!(!lane.has_failed_custody());
     assert!(state.failed.is_none());
+    assert_eq!(
+        failed_custody(&state, &lane, false).unwrap(),
+        DeviceAutomationTakeProgress::FailedPluginUnavailable
+    );
     assert!(
         finish_failed_adoption(
             &mut state,

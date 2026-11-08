@@ -294,7 +294,7 @@ pub struct Event {
     pub sampler_edit_complete: Option<u64>,
     /// At most two exact terminals: a refused new request and an invalidated pending one.
     pub plugin_effect_complete: Vec<PluginEffectCompletion>,
-    /// This response consumed a read-only parameter query or continuation.
+    /// This response consumed a read-only parameter or failed-take query.
     /// Its request completion never acknowledges an editor mutation. Canonical
     /// state and unrelated completions still follow the normal ordered contract.
     pub plugin_parameter_observation: bool,
@@ -676,6 +676,15 @@ pub enum Request {
         scope: DeviceAutomationTakeScope,
         action: DeviceAutomationTakeAction,
     },
+    /// Read the retained VST3 take identity without changing its custody.
+    QueryFailedPluginAutomation {
+        request_id: u64,
+    },
+    /// Observe earlier device-automation custody in worker order. The caller
+    /// must prevent later admissions until it acts on this response.
+    QueryDeviceAutomationCloseSafety {
+        request_id: u64,
+    },
     /// Recover one completed device take without reconstructing its old worker.
     /// Current context fences publication; expected target/provenance bind only
     /// the immutable file. Every path echoes request_id through take completion.
@@ -961,6 +970,16 @@ impl ControlledExport {
 }
 
 impl Request {
+    /// Read responses do not acknowledge ordered editor mutations.
+    pub fn is_read_only_observation(&self) -> bool {
+        matches!(
+            self,
+            Self::QueryPluginParameters(_)
+                | Self::ContinuePluginParameters
+                | Self::QueryFailedPluginAutomation { .. }
+                | Self::QueryDeviceAutomationCloseSafety { .. }
+        )
+    }
     /// The canonical `ExportRange` parts of an export request; `Export` is its
     /// automatic whole-project Main spelling. Other requests return `None`.
     fn into_export_range(self) -> Option<ExportRangeParts> {
@@ -2738,10 +2757,7 @@ fn run_worker(
                 | Request::ContinueStoppedPlaybackRestore
         );
         let mut plugin_effect_complete = Vec::new();
-        let plugin_parameter_observation = matches!(
-            &request,
-            Request::QueryPluginParameters(_) | Request::ContinuePluginParameters
-        );
+        let plugin_parameter_observation = request.is_read_only_observation();
         let mut plugin_parameters = None;
         let mut sampler_edit_complete = None;
         if matches!(
@@ -2851,6 +2867,41 @@ fn run_worker(
         let mut failed_plugin_adoption = None;
         let mut failed_plugin_publication_confirmed = false;
         let resolved_edit = match &request {
+            Request::QueryDeviceAutomationCloseSafety { request_id } => {
+                let safe = native_automation_take.close_safe() && plugin_recording.close_safe();
+                device_automation_take_complete = Some(DeviceAutomationTakeCompletion {
+                    request_id: *request_id,
+                    progress: if safe {
+                        DeviceAutomationTakeProgress::CloseSafe
+                    } else {
+                        DeviceAutomationTakeProgress::CloseBlocked
+                    },
+                });
+                None
+            }
+            Request::QueryFailedPluginAutomation { request_id } => {
+                let gesture_active = pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some();
+                let result = plugin_recording::failed_custody(
+                    &plugin_recording,
+                    &native_automation_take,
+                    gesture_active,
+                );
+                let mut completion = DeviceAutomationTakeCompletion {
+                    request_id: *request_id,
+                    progress: DeviceAutomationTakeProgress::Refused,
+                };
+                let resolved = match result {
+                    Ok(progress) => {
+                        completion.progress = progress;
+                        None
+                    }
+                    Err(reason) => Some(Err(reason)),
+                };
+                device_automation_take_complete = Some(completion);
+                resolved
+            }
             Request::RecoverDeviceAutomationTake {
                 request_id,
                 context,
@@ -3815,6 +3866,8 @@ fn run_worker(
                     | Request::SamplerEdit(_)
                     | Request::ContinueSamplerEdit
                     | Request::DeviceAutomationTake { .. }
+                    | Request::QueryFailedPluginAutomation { .. }
+                    | Request::QueryDeviceAutomationCloseSafety { .. }
                     | Request::RecoverDeviceAutomationTake { .. }
                     | Request::InsertPluginEffect(_)
                     | Request::ContinuePluginEffect
@@ -6420,6 +6473,8 @@ fn run_worker(
                     }
                 }
                 Request::DeviceAutomationTake { .. }
+                | Request::QueryFailedPluginAutomation { .. }
+                | Request::QueryDeviceAutomationCloseSafety { .. }
                 | Request::RecoverDeviceAutomationTake { .. } => {}
                 Request::ArmNativeParameterRecording {
                     project_generation: expected_generation,
