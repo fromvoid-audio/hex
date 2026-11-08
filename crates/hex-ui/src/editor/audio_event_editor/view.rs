@@ -12,6 +12,7 @@ pub(in crate::editor) fn view(
     view: &mut EditorView,
     render_window: &gpui::Window,
     cx: &mut Context<EditorView>,
+    ink: u32,
 ) -> Option<gpui::Stateful<Div>> {
     let (clip_id, root, _) = view.event_context()?;
     view.sync_audio_navigation();
@@ -264,11 +265,12 @@ pub(in crate::editor) fn view(
                 waveform::waveform_source_segment_gain_view_cached(
                     std::sync::Arc::clone(&pasted.waveform),
                     0,
-                    visible_start.saturating_sub(pasted.frame_start),
-                    visible_end.saturating_sub(pasted.frame_start),
+                    visible_start.saturating_sub(pasted.frame_start)
+                        ..visible_end.saturating_sub(pasted.frame_start),
                     clip.gain(),
                     true,
                     std::rc::Rc::clone(&view.waveform_geometry_cache),
+                    ink,
                 )
                 .debug_selector(move || format!("audio-event-waveform-{event_id}")),
             );
@@ -278,6 +280,7 @@ pub(in crate::editor) fn view(
                 visible_start,
                 visible_end,
                 std::rc::Rc::clone(&view.waveform_geometry_cache),
+                ink,
             ) {
                 element = element.child(waveform);
             }
@@ -309,11 +312,11 @@ pub(in crate::editor) fn view(
                                 .map_or(&prepared.waveform, |root| &root.waveform),
                         ),
                         0,
-                        source_root + (visible_start - start),
-                        source_root + (visible_end - start),
+                        source_root + (visible_start - start)..source_root + (visible_end - start),
                         clip.gain(),
                         true,
                         std::rc::Rc::clone(&view.waveform_geometry_cache),
+                        ink,
                     )
                     .debug_selector(move || format!("audio-event-waveform-{event_id}")),
                 );
@@ -327,6 +330,7 @@ pub(in crate::editor) fn view(
                         source_frame,
                         end_frame,
                         std::rc::Rc::clone(&view.waveform_geometry_cache),
+                        ink,
                     )
                     .debug_selector(move || format!("audio-event-waveform-{event_id}")),
                 );

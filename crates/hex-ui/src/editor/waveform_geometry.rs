@@ -110,6 +110,7 @@ pub(super) struct RenderedWaveformSample {
 #[cfg(all(test, feature = "ui-test-support"))]
 #[derive(Clone, Copy, Debug)]
 pub(super) struct WaveformPaintSample {
+    pub(super) colors: hex_widgets::WaveformColors,
     pub(super) bounds: Bounds<Pixels>,
     pub(super) mask: Bounds<Pixels>,
     pub(super) ordinates: [(f32, f32); 2],
@@ -185,6 +186,7 @@ impl WaveformGeometryCache {
         bounds: Bounds<Pixels>,
         mask: Bounds<Pixels>,
         geometry: &WaveformGeometry,
+        colors: hex_widgets::WaveformColors,
     ) {
         let _navigation_timer = super::navigation_metrics::Timer::start(
             super::navigation_metrics::Stage::PaintObservation,
@@ -193,6 +195,7 @@ impl WaveformGeometryCache {
             self.painted.pop_front();
         }
         self.painted.push_back(WaveformPaintSample {
+            colors,
             bounds,
             mask,
             ordinates: std::array::from_fn(|channel| {

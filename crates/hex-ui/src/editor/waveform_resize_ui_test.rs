@@ -50,6 +50,7 @@ fn trim_preview_requires_matching_accepted_processing_root(_cx: &mut TestAppCont
         tempo: &tempo,
         asset: Some(&peaks),
         prepared: Some(&prepared),
+        ink: crate::theme::color(crate::theme::PaletteRole::Waveform),
     };
     let check = |request| {
         super::preview_waveform_view_cached(request, 4_103, 96_000, Default::default(), None)
@@ -619,6 +620,7 @@ fn prefix_waveform_accepts_only_the_canonical_source_and_matching_prepared_exten
         tempo,
         asset: None,
         prepared: Some(&accepted),
+        ink: crate::theme::color(crate::theme::PaletteRole::Waveform),
     };
     let check =
         |request| super::prefix_waveform_view(request, 24_000, 144_000, Default::default(), None);
@@ -727,7 +729,8 @@ fn plain_lower_fade_prefix_uses_the_same_raw_source_mapping(_cx: &mut TestAppCon
                 preview: &preview,
                 tempo,
                 asset: Some(&peaks),
-                prepared: None
+                prepared: None,
+                ink: crate::theme::color(crate::theme::PaletteRole::Waveform),
             },
             24_000,
             144_000,

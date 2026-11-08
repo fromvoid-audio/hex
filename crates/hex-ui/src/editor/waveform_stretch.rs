@@ -44,6 +44,7 @@ pub(super) fn stretch_waveform_view(
         tempo,
         asset,
         prepared,
+        ink,
     } = request;
     // Accept exactly the shared canonical stretch operation; changing pitch,
     // source, processing algorithm or arbitrary roots cannot borrow old peaks.
@@ -93,6 +94,7 @@ pub(super) fn stretch_waveform_view(
         visible_end,
         Some(cache),
         grid,
+        ink,
     ))
 }
 

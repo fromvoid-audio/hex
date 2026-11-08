@@ -215,6 +215,7 @@ impl Preview {
         first: u64,
         end: u64,
         cache: Rc<RefCell<WaveformGeometryCache>>,
+        ink: u32,
     ) -> Option<gpui::Div> {
         use gpui::prelude::*;
         if let Some(clock) = &self.musical {
@@ -239,6 +240,7 @@ impl Preview {
                     end,
                     Some(cache),
                     None,
+                    ink,
                 )
                 .debug_selector(move || format!("audio-event-waveform-{event}")),
             );
@@ -249,11 +251,11 @@ impl Preview {
             Source::Processed(waveform) => waveform::waveform_source_segment_gain_view_cached(
                 Arc::clone(waveform),
                 0,
-                a,
-                b,
+                a..b,
                 self.clip().gain(),
                 true,
                 cache,
+                ink,
             ),
             Source::Original {
                 waveform,
@@ -262,7 +264,7 @@ impl Preview {
             } => {
                 let a = clip.start().checked_add(a.checked_sub(*first)?)?;
                 let b = clip.start().checked_add(b.checked_sub(*first)?)?;
-                waveform::waveform_view_cached(waveform, clip, a, b, cache)
+                waveform::waveform_view_cached(waveform, clip, a, b, cache, ink)
             }
         };
         Some(element.debug_selector(move || format!("audio-event-waveform-{event}")))
