@@ -48,6 +48,7 @@ struct Target {
 struct Route {
     source: usize,
     target_index: usize,
+    order: usize,
     amount: f32,
 }
 
@@ -73,8 +74,13 @@ impl PreparedModulation {
         {
             return Err(Error::RuntimeBudgetExceeded);
         }
-        let mut ids = Vec::with_capacity(targets.len());
-        let mut prepared_targets = Vec::with_capacity(targets.len());
+        let mut ids = Vec::new();
+        ids.try_reserve_exact(targets.len())
+            .map_err(|_| Error::RuntimeAllocation)?;
+        let mut prepared_targets = Vec::new();
+        prepared_targets
+            .try_reserve_exact(targets.len())
+            .map_err(|_| Error::RuntimeAllocation)?;
         for &target in targets {
             let descriptor = target.descriptor;
             target.semantics.validate(descriptor)?;
@@ -101,8 +107,11 @@ impl PreparedModulation {
                 route_end: 0,
             });
         }
-        let mut prepared_routes = Vec::with_capacity(routes.len());
-        for route in routes {
+        let mut prepared_routes = Vec::new();
+        prepared_routes
+            .try_reserve_exact(routes.len())
+            .map_err(|_| Error::RuntimeAllocation)?;
+        for (order, route) in routes.iter().enumerate() {
             if route.source >= source_count
                 || !route.amount.is_finite()
                 || !(-1.0..=1.0).contains(&route.amount)
@@ -115,12 +124,13 @@ impl PreparedModulation {
             prepared_routes.push(Route {
                 source: route.source,
                 target_index,
+                order,
                 amount: route.amount,
             });
         }
-        // Control-side stable ordering retains the caller's summation order for
-        // routes of the same target while avoiding a full route scan per sample.
-        prepared_routes.sort_by_key(|route| route.target_index);
+        // Include original order in the key so sorting uses no scratch
+        // allocation and preserves the caller's summation order per target.
+        prepared_routes.sort_unstable_by_key(|route| (route.target_index, route.order));
         let mut next = 0;
         for (index, target) in prepared_targets.iter_mut().enumerate() {
             target.route_start = next;
