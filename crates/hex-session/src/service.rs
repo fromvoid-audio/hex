@@ -59,7 +59,9 @@ mod resident_preview;
 mod resident_seek;
 mod stopped_arrangement;
 mod truncated_import;
-pub use resident_seek::{ResidentArrangementSeekIntent, ResidentArrangementSeekResult};
+pub use resident_seek::{
+    ResidentArrangementSeekIntent, ResidentArrangementSeekResult, ResidentSeekHistory,
+};
 pub use truncated_import::{ImportTruncation, TruncatedImportRecovery};
 pub(crate) mod sampler_export;
 mod sampler_parameter;

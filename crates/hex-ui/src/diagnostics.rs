@@ -466,6 +466,7 @@ pub(crate) fn record_audio_backend_event(cx: &mut App, event: &crate::EditorAudi
         | E::Publication {
             state: P::Fault(_), ..
         } => Level::Error,
+        E::PluginParameterTouched { .. } => Level::Debug,
         E::DegradedPlugins { .. }
         | E::Publication {
             state: P::Refused(_) | P::Busy,
@@ -512,6 +513,17 @@ pub(crate) fn record_audio_backend_event(cx: &mut App, event: &crate::EditorAudi
         }
         E::NativeLatencyRestart { source } => {
             format!("stage=native_latency_restart source={source:?}")
+        }
+        E::PluginParameterTouched {
+            source,
+            binding,
+            device,
+            parameter,
+            sequence,
+        } => {
+            format!(
+                "stage=plugin_parameter_touched source={source:?} binding={binding:?} device={device} parameter={parameter} sequence={sequence}"
+            )
         }
         E::DegradedPlugins {
             project_generation,

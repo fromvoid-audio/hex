@@ -47,6 +47,7 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                 ("other.rs", '.child(bar)'),
                 ("other.rs", '.child(framed_clip)'),
                 ("other.rs", '.child(paint)'),
+                ("other.rs", '.child(trailing_edge(notch, color, hover))'),
                 ("editor/clip_boundary.rs", '.child("Unnormalized")'),
                 ("editor/clip_boundary.rs", '.child(self.unregistered_component(cx))'),
                 ("other.rs", '.child(toggle_button_with_style(label, tooltip, id, style))'),

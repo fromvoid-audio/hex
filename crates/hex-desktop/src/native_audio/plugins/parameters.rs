@@ -641,6 +641,8 @@ mod tests {
             observes_latency: false,
             editor_open: false,
             edit_backlog: false,
+            edit_recovery: None,
+            pending_touch: None,
             #[cfg(feature = "allocation-probe")]
             observed_latency_receipt: false,
             #[cfg(feature = "allocation-probe")]

@@ -250,36 +250,34 @@ impl EditorView {
         fill: u32,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        self.clip_name_strip(track, clip, name, fill, true, false, cx)
+        self.clip_name_strip(track, clip, name, fill, true, false, false, cx)
     }
     /// The canonical frame paints the same header fill under this content.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn clip_name_header_on_backdrop(
         &self,
         track: hex_project::TrackId,
         clip: ClipId,
         name: &str,
         fill: u32,
+        notched: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        self.clip_name_strip(track, clip, name, fill, true, true, cx)
+        self.clip_name_strip(track, clip, name, fill, true, true, notched, cx)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn clip_name_preview_header(
         &self,
         track: hex_project::TrackId,
         clip: ClipId,
         name: &str,
+        fill: u32,
+        on_backdrop: bool,
+        notched: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        self.clip_name_strip(
-            track,
-            clip,
-            name,
-            theme::color(theme::PaletteRole::Raised),
-            false,
-            false,
-            cx,
-        )
+        self.clip_name_strip(track, clip, name, fill, false, on_backdrop, notched, cx)
     }
     pub(super) fn clip_name_drag_header(
         &self,
@@ -302,6 +300,7 @@ impl EditorView {
         fill: u32,
         interactive: bool,
         on_backdrop: bool,
+        notched: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         clip_name_surface(fill)
@@ -329,9 +328,15 @@ impl EditorView {
                     },
                 ))
             })
-            .when(self.clip_has_alias(clip), |header| header.pr(px(15.0)))
+            .when(notched, |header| header.pr(px(6.0)))
+            .when(self.clip_has_alias(clip), |header| {
+                header.pr(px(if notched { 20.0 } else { 15.0 }))
+            })
             .child(self.clip_name_label(clip, name))
-            .children(self.clip_alias_indicator(clip, fill))
+            .children(
+                self.clip_alias_indicator(clip, fill)
+                    .map(|indicator| indicator.when(notched, |indicator| indicator.right(px(7.0)))),
+            )
     }
 }
 

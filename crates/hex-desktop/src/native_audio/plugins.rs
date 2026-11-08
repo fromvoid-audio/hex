@@ -20,6 +20,7 @@ mod restore;
 use restore::Restore;
 mod edits;
 mod offline_bounce;
+mod parameter_touches;
 mod reopen;
 mod save;
 use reopen::Reopen;
@@ -53,6 +54,8 @@ struct Source {
     observes_latency: bool,
     editor_open: bool,
     edit_backlog: bool,
+    edit_recovery: Option<bool>,
+    pending_touch: Option<parameter_touches::Touch>,
     #[cfg(all(test, feature = "allocation-probe"))]
     observed_latency_receipt: bool,
     #[cfg(all(test, feature = "allocation-probe"))]
@@ -246,6 +249,9 @@ impl Plugins {
         }
         for source in &mut self.sources {
             source.edit_backlog = false;
+            source.edit_recovery = None;
+            source.pending_touch = None;
+            source.editor_open = false;
         }
         self.editor_checked = None;
         if let Some(editor::EditorOperation::Pending {
@@ -326,7 +332,12 @@ impl Plugins {
             && self.edit.is_none()
             && self.degraded_changed.is_none()
             && !self.sources.iter().any(|source| {
-                source.retiring || source.edit_backlog || (source.queued && !source.accepted)
+                source.retiring
+                    || source.edit_backlog
+                    || source.edit_recovery.is_some()
+                    || source.pending_touch.is_some()
+                    || source.editor_open
+                    || (source.queued && !source.accepted)
             })
     }
     pub(super) fn can_retain_output_for_document(
@@ -484,6 +495,8 @@ impl Plugins {
                 observes_latency: false,
                 editor_open: false,
                 edit_backlog: false,
+                edit_recovery: None,
+                pending_touch: None,
                 #[cfg(all(test, feature = "allocation-probe"))]
                 observed_latency_receipt: false,
                 #[cfg(all(test, feature = "allocation-probe"))]
@@ -530,94 +543,6 @@ impl Plugins {
             source.retiring |= !source.accepted;
         }
     }
-    /// Sample one original worker per interval while the exact ordinary
-    /// resident graph is active. The helper retains intent across reads.
-    pub fn poll_latency_restart(
-        &mut self,
-        output: &mut WorkerPreparedOutput,
-        context: AudioSourceContext,
-    ) -> Option<hex_audio::prepared::AppliedAudioSource> {
-        let now = std::time::Instant::now();
-        if self.restore.is_some()
-            || self.edit.is_some()
-            || self.pending.is_some()
-            || self.reopen.is_some()
-            || self.sources.is_empty()
-            || self.latency_poll_at.is_some_and(|at| now < at)
-        {
-            return None;
-        }
-        let control = output.publication.control()?;
-        let active = control.status.native_effect_source();
-        if active.is_none() || control.status.applied_audio_source().is_some() {
-            for source in &mut self.sources {
-                source.edit_backlog = false;
-            }
-            return None;
-        }
-        let active = active.filter(|source| source.context == context)?;
-        self.latency_poll_at = now.checked_add(std::time::Duration::from_millis(10));
-        let len = self.sources.len();
-        for _ in 0..len {
-            let index = self.latency_poll % len;
-            self.latency_poll = (index + 1) % len;
-            let source = &mut self.sources[index];
-            if !source.accepted
-                || source.retiring
-                || source.project_generation != context.project_generation
-            {
-                continue;
-            }
-            source.observes_latency = true;
-            let batch = control
-                .poll_native_source_recovery_edits_on_control(source.binding)
-                .ok()?;
-            if let Some(batch) = batch {
-                source.edit_backlog = batch.edits.pending != 0;
-            }
-            if let Some(log) = &self.diagnostics
-                && let Some(batch) = batch
-                && let [first, ..] = batch.edits.as_slice()
-                && let Some(last) = batch.edits.as_slice().last()
-            {
-                let _ = log.record_typed(
-                    hex_diagnostics::Level::Debug,
-                    hex_diagnostics::Category::Audio,
-                    &format!(
-                        "vst3_editor v=1 stage=drain device={} binding={:?} transport_playing={} first_sequence={} last_sequence={} first_frame={} last_frame={} receipts={} pending={} ready={}",
-                        source.device,
-                        source.binding,
-                        control.status.playing.load(Acquire),
-                        first.sequence,
-                        last.sequence,
-                        first.first_frame,
-                        last.first_frame,
-                        batch.edits.as_slice().len(),
-                        batch.edits.pending,
-                        batch.edits.ready,
-                    ),
-                );
-            }
-            #[cfg(all(test, feature = "allocation-probe"))]
-            {
-                source.observed_latency_receipt |= batch.is_some();
-            }
-            if batch
-                .and_then(|batch| batch.pending_latency_restart)
-                .is_some()
-                && self.latency_notice.is_none_or(|(last, at)| {
-                    last != active
-                        || now.saturating_duration_since(at)
-                            >= std::time::Duration::from_millis(150)
-                })
-            {
-                self.latency_notice = Some((active, now));
-                return Some(active);
-            }
-            return None;
-        }
-        None
-    }
     pub fn poll(&mut self, output: &mut WorkerPreparedOutput, context: Option<AudioSourceContext>) {
         let Some(control) = output.publication.control() else {
             self.output_closed();
@@ -639,6 +564,8 @@ impl Plugins {
                     let status = control.native_source_endpoint_status(source.binding);
                     if status == Some((true, false)) {
                         source.edit_backlog = false;
+                        source.edit_recovery = None;
+                        source.pending_touch = None;
                     }
                     if status == Some((true, false))
                         && let Some(log) = &self.diagnostics
@@ -1092,6 +1019,8 @@ mod idle_tests {
             observes_latency: true,
             editor_open: false,
             edit_backlog: false,
+            edit_recovery: None,
+            pending_touch: None,
             #[cfg(feature = "allocation-probe")]
             observed_latency_receipt: false,
             #[cfg(feature = "allocation-probe")]
@@ -1143,11 +1072,15 @@ mod idle_tests {
             observes_latency: true,
             editor_open: true,
             edit_backlog: false,
+            edit_recovery: None,
+            pending_touch: None,
             #[cfg(feature = "allocation-probe")]
             observed_latency_receipt: false,
             #[cfg(feature = "allocation-probe")]
             attempts: 0,
         });
+        assert!(!plugins.idle());
+        plugins.sources[0].editor_open = false;
         assert!(plugins.idle());
         plugins.sources[0].edit_backlog = true;
         assert!(!plugins.idle());
