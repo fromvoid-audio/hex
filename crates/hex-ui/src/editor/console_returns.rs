@@ -585,7 +585,11 @@ mod ui_tests {
                 .is_none()
         );
         let main = visual.debug_bounds("console-main-header").unwrap();
-        assert!(main.right() <= px(640.0));
+        let panel = visual.debug_bounds("workspace-main-panel").unwrap();
+        assert!(
+            main.right() <= panel.right() - px(4.0),
+            "main={main:?}, panel={panel:?}"
+        );
         let field = visual
             .debug_bounds(selector("return-volume", ids[1], "-value"))
             .unwrap()

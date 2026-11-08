@@ -61,7 +61,7 @@ fn operator_focus_paints_sections_without_mouse_motion_and_keeps_detail_dark(
             background(device_layout_style().rail)
         );
     }
-    visual.simulate_keystrokes("enter");
+    visual.simulate_keystrokes("alt-enter");
     let algorithm = editor.read_with(cx, |view, _| {
         view.device_panel.operator_navigation_focus
             [&(device, operator_panel::NavigationTarget::Algorithm(1))]
@@ -595,11 +595,11 @@ fn operator_shell_controls_precede_selectors_and_sections_follow_child_focus(
                 )]
                     .clone(),
             );
-            order.push(focus(62 + operator as u32 * 3));
             order.push(focus(base));
             order.push(focus(609 + operator as u32));
             order.push(focus(base + 1));
             order.push(focus(57 + operator as u32));
+            order.push(focus(613 + operator as u32));
         }
         order
     });
@@ -617,7 +617,7 @@ fn operator_shell_controls_precede_selectors_and_sections_follow_child_focus(
         assert_eq!(
             &focused(&mut visual),
             expected,
-            "section, power, fixed, coarse, fine, level, waveform"
+            "section, power, coarse, fine, level, waveform, keytrack"
         );
         for operator in 0..4 {
             let row =
@@ -852,7 +852,8 @@ fn operator_lfo_and_routing_widgets_have_one_focus_group_and_release_previous_gr
             })
         });
     }
-    // The routing icon is a widget target, followed by detail's FM algorithm selector.
+    // Popup navigation preserves context; explicitly select the global background
+    // before inspecting the optional routing detail's focus group.
     let routing = editor.read_with(cx, |view, _| {
         view.device_panel.operator_previews[&device]
             .routing_focus
@@ -862,6 +863,22 @@ fn operator_lfo_and_routing_widgets_have_one_focus_group_and_release_previous_gr
     });
     visual.update(|window, _| routing.focus(window));
     visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    visual.simulate_keystrokes("escape");
+    let global = visual
+        .debug_bounds(Box::leak(
+            format!("operator-preview-row-{}-global", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let routing = visual
+        .debug_bounds(Box::leak(
+            format!("operator-preview-{}-route-link", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    visual.simulate_click(
+        point(routing.right() + px(2.0), global.center().y),
+        Modifiers::default(),
+    );
     visual.run_until_parked();
     let algorithm = editor.read_with(cx, |view, _| {
         view.device_panel.operator_navigation_focus

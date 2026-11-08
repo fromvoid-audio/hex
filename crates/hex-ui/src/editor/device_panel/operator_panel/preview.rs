@@ -1,7 +1,5 @@
-//! View-only Operator controls for sections without native DSP contracts yet.
+//! Vector working sections and owner-scoped transient view state.
 use super::super::{EditorView, control_style};
-use super::algorithms::diagram;
-use crate::diagnostics::ActionTraceContext as _;
 use crate::theme;
 use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px, rgb};
 use hex_lattice_contract::ParameterValue;
@@ -108,9 +106,12 @@ pub(in crate::editor::device_panel) struct TogglePreview {
 }
 
 pub(in crate::editor::device_panel) struct State {
+    pub(super) filter_response: Option<super::filter_response::Control>,
     pub(in crate::editor::device_panel) controls: HashMap<Field, NumericPreview>,
     pub(in crate::editor::device_panel) toggles: HashMap<Switch, TogglePreview>,
     pub(in crate::editor::device_panel) routing_focus: Option<gpui::FocusHandle>,
+    pub(in crate::editor::device_panel) routing_popup: Option<usize>,
+    pub(super) routing_blur: Option<gpui::Subscription>,
     pub(in crate::editor::device_panel) values: [f64; 6],
     pub(in crate::editor::device_panel) enabled: [bool; 1],
 }
@@ -118,11 +119,14 @@ pub(in crate::editor::device_panel) struct State {
 impl Default for State {
     fn default() -> Self {
         Self {
+            filter_response: None,
             controls: HashMap::new(),
             toggles: HashMap::new(),
             values: Field::ALL.map(|field| field.spec().default),
             enabled: [true; 1],
             routing_focus: None,
+            routing_popup: None,
+            routing_blur: None,
         }
     }
 }
@@ -218,7 +222,8 @@ fn row(
     if let Some(switch) = switch {
         left = left.child(toggle(view, cx, device, switch));
     } else {
-        left = left.child(routing_link(view, cx, device, routing));
+        let link = super::routing_picker::render(view, cx, device, routing);
+        left = left.child(link);
     }
     row = row.child(left);
     let mut dials = div()
@@ -232,97 +237,16 @@ fn row(
     }
     row = row.child(dials);
     if title == "global" {
-        row = row.capture_any_mouse_down(cx.listener(
-            move |view, event: &gpui::MouseDownEvent, _, cx| {
-                if event.button == gpui::MouseButton::Left
-                    && let Some(owner) = owner
-                {
+        row = row.on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(move |view, _, _, cx| {
+                if let Some(owner) = owner {
                     super::context::select_routing(view, cx, owner);
                 }
-            },
-        ));
+            }),
+        );
     }
     row
-}
-
-fn routing_link(
-    view: &mut EditorView,
-    cx: &mut Context<EditorView>,
-    device: hex_project::DeviceId,
-    canonical: Option<ParameterValue>,
-) -> Stateful<Div> {
-    let owner = super::context::Owner::capture(view, device);
-    let focus = view
-        .device_panel
-        .operator_previews
-        .entry(device)
-        .or_default()
-        .routing_focus
-        .get_or_insert_with(|| cx.focus_handle().tab_index(0).tab_stop(true))
-        .clone();
-    let choice = canonical.map(|value| {
-        super::effective_parameter_value(
-            view,
-            super::ParameterKey {
-                device,
-                parameter: super::id(600),
-            },
-            value,
-        )
-    });
-    let icon = div().relative().w(px(38.0)).h(px(34.0));
-    let icon = match choice {
-        Some(ParameterValue::Choice(choice @ 1..=11)) => icon
-            .debug_selector(move || format!("operator-routing-current-{}-{choice}", device.value()))
-            .child(diagram(choice as usize - 1, false)),
-        _ => icon
-            .debug_selector(move || format!("operator-routing-current-{}-custom", device.value()))
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_size(px(8.0))
-            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-            .child(theme::text("custom")),
-    };
-    hex_widgets::device_focus_target(super::super::device_layout_style())
-        .id(ElementId::Name(
-            format!("operator-preview-{}-route-link", device.value()).into(),
-        ))
-        .debug_selector(move || format!("operator-preview-{}-route-link", device.value()))
-        .track_focus(&focus)
-        .key_context("hex_operator_routing")
-        .tooltip(|_, cx| {
-            cx.new(|_| super::super::super::transport::MiniTooltip {
-                kind: crate::tooltips::Kind::control("routing and global context"),
-                description: theme::text("routing and global context · enter or space"),
-            })
-            .into()
-        })
-        .w(px(40.0))
-        .h(px(36.0))
-        .flex()
-        .items_center()
-        .cursor(gpui::CursorStyle::PointingHand)
-        .child(icon)
-        .on_click(cx.listener(move |view, _, window, cx| {
-            if owner.is_some_and(|owner| owner.is_current(view))
-                && super::finalize_controls(view, cx)
-            {
-                focus.focus(window);
-                view.device_panel
-                    .operator_pages
-                    .entry(device)
-                    .or_default()
-                    .page = super::OperatorPage::Routing;
-                cx.notify();
-            }
-        }))
-        .on_action(cx.trace(move |view, _: &super::ActivateRouting, _, cx| {
-            if let Some(owner) = owner {
-                super::context::select_routing(view, cx, owner);
-                cx.stop_propagation();
-            }
-        }))
 }
 
 /// Refuse Tab traversal before blur can leave an invalid view-only numeric draft.
@@ -583,6 +507,9 @@ pub(in crate::editor::device_panel) fn cancel_interactions(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
 ) {
+    for state in view.device_panel.operator_previews.values_mut() {
+        state.routing_popup = None;
+    }
     let controls: Vec<_> = view
         .device_panel
         .operator_previews

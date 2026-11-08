@@ -148,3 +148,5 @@ fn combined_eq_retarget_and_bypass_handoff_does_not_allocate_or_free() {
         (0, 0, 0, 0)
     );
 }
+
+mod node_automation;

@@ -107,7 +107,9 @@ impl EditorView {
         else {
             return false;
         };
-        if self.clip_handle_at_pointer(track, x, y, viewport, true) {
+        if self.visible_clip_at_pointer(track, x, y).is_some()
+            || self.clip_handle_at_pointer(track, x, y, viewport, true)
+        {
             return false;
         }
         // A stationary double press creates one cell (one beat with snapping off).

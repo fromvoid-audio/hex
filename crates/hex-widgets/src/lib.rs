@@ -45,9 +45,13 @@ mod dial;
 mod discrete;
 mod focus_marker;
 mod frame;
+mod panel;
 pub use device_meters::{
     DeviceMeterReadout, STEREO_PEAK_BAR_GAP, STEREO_PEAK_BAR_WIDTH, StereoPeakMeter,
     stereo_peak_meter,
+};
+pub use panel::{
+    PANEL_FRAME_BORDER_WIDTH, PANEL_FRAME_INSET, PANEL_FRAME_RADIUS, PanelStyle, panel_frame,
 };
 mod numeric;
 mod numeric_control;

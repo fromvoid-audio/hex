@@ -1,8 +1,24 @@
 //! Actual grid events, canonical worker ACKs and completed paint/cursor feedback.
 use super::creation_tests::{double_down, fixture, pump};
-use gpui::{CursorStyle, Modifiers, MouseButton, TestAppContext, point, px};
+use gpui::{
+    CursorStyle, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, MouseButton, TestAppContext,
+    VisualTestContext, point, px,
+};
 use hex_project::{BeatTime, Command};
 use hex_session::service::Request;
+
+fn time_key(visual: &mut VisualTestContext, down: bool) {
+    let keystroke = Keystroke::parse("2").unwrap();
+    if down {
+        visual.simulate_event(KeyDownEvent {
+            keystroke,
+            is_held: false,
+        });
+    } else {
+        visual.simulate_event(KeyUpEvent { keystroke });
+    }
+    visual.run_until_parked();
+}
 
 #[gpui::test]
 fn empty_grid_drag_selects_time_and_repeated_copy_retains_ack_destination(cx: &mut TestAppContext) {
@@ -27,6 +43,7 @@ fn empty_grid_drag_selects_time_and_repeated_copy_retains_ack_destination(cx: &m
         )
     };
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    time_key(&mut visual, true);
     visual.simulate_mouse_down(at(0.5), MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(at(0.125), Some(MouseButton::Left), Modifiers::default());
     visual.run_until_parked();
@@ -37,6 +54,7 @@ fn empty_grid_drag_selects_time_and_repeated_copy_retains_ack_destination(cx: &m
         assert!(!v.edit_pending());
     });
     visual.simulate_mouse_up(at(0.125), MouseButton::Left, Modifiers::default());
+    time_key(&mut visual, false);
     visual.run_until_parked();
     for n in 1..=2 {
         visual.simulate_keystrokes("cmd-d");
@@ -105,10 +123,13 @@ fn grid_time_capture_cancel_stale_and_stationary_click_keep_defined_owners(
     let at = |fraction| point(roll.origin.x + roll.size.width * fraction, roll.center().y);
     let beat = BeatTime::ONE.raw();
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    time_key(&mut visual, true);
     visual.simulate_mouse_down(at(0.25), MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(at(0.75), MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
+    time_key(&mut visual, false);
     for mode in 0..3 {
+        time_key(&mut visual, true);
         visual.simulate_mouse_down(at(0.125), MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(at(0.5), Some(MouseButton::Left), Modifiers::default());
         if mode == 0 {
@@ -121,6 +142,7 @@ fn grid_time_capture_cancel_stale_and_stationary_click_keep_defined_owners(
             });
         }
         visual.simulate_mouse_up(at(0.5), MouseButton::Left, Modifiers::default());
+        time_key(&mut visual, false);
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| {
             assert_eq!(v.midi_time_selection_bounds(), Some((beat, 3 * beat)));

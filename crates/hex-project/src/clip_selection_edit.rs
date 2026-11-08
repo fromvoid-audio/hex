@@ -546,6 +546,9 @@ impl Command {
             | Self::DeleteArrangementSection(_)
             | Self::DuplicateArrangementSection(_)
             | Self::DuplicateArrangementSectionAt { .. }
+            | Self::AppendArrangementSectionCopy { .. }
+            | Self::MoveArrangementSectionBeyondEnd { .. }
+            | Self::ReplaceArrangementSection { .. }
             | Self::SplitArrangementSection { .. }
             | Self::MergeArrangementSections(_)
             | Self::SetTuning(..)

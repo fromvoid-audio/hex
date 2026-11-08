@@ -573,10 +573,8 @@ impl EditorView {
                     .absolute()
                     .inset_0()
                     .debug_selector(move || format!("selected-track-lane-{}", track_id.value()))
-                    .bg(
-                        gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Secondary)))
-                            .alpha(theme::TRACK_SELECTION_OPACITY),
-                    ),
+                    .bg(gpui::Hsla::from(rgb(theme::track_selection_fill()))
+                        .alpha(theme::TRACK_SELECTION_OPACITY)),
             );
         }
         let lane_entity = cx.entity();
