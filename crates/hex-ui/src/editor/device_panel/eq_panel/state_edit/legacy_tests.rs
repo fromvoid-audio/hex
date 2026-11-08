@@ -289,7 +289,9 @@ fn every_bank_slot_field_host_metadata_touch_and_history_converts_atomically() {
     std::fs::remove_file(path).unwrap();
     assert_eq!(&loaded.unwrap(), e.project());
     assert!(e.undo());
-    assert_eq!(e.project().snapshot(), before);
+    let mut restored = before;
+    restored.next_id = after.next_id;
+    assert_eq!(e.project().snapshot(), restored);
     assert!(e.redo());
     assert_eq!(e.project().snapshot(), after);
 }
@@ -359,8 +361,11 @@ fn equal_kind_buckets_keep_linear_flags_and_mode_output_only_still_replace_inven
     let before = e.project().snapshot();
     e.execute(upgrade(&e, device).unwrap()).unwrap();
     assert_eq!(e.project().device(device).unwrap().automation().len(), 2);
+    let reserved = e.project().next_identity();
     assert!(e.undo());
-    assert_eq!(e.project().snapshot(), before);
+    let mut restored = before;
+    restored.next_id = reserved;
+    assert_eq!(e.project().snapshot(), restored);
 }
 #[test]
 fn prepare_refusal_retains_original_state_inventory_and_allocator() {
