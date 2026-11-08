@@ -46,6 +46,9 @@ pub(super) fn apply(
     device: DeviceId,
     parent: Option<DeviceId>,
 ) -> Result<(), Invalid> {
+    if let Some(source) = project.source_owning_device(device) {
+        return project.reparent_source_device(source, device, parent);
+    }
     let (owner, index) = locate(project, device)?;
     let chain = devices(project, owner);
     if chain[index].parent() == parent {
@@ -101,6 +104,9 @@ pub(super) fn insert(
     parent: DeviceId,
     state: hex_lattice_contract::NativeDeviceState,
 ) -> Result<crate::Created, Invalid> {
+    if let Some(source) = project.source_owning_device(parent) {
+        return project.insert_source_child(source, parent, state);
+    }
     let (owner, index) = locate(project, parent)?;
     let chain = devices(project, owner);
     let end = crate::device_inventory::serial_unit_span(chain, index)?.end;
