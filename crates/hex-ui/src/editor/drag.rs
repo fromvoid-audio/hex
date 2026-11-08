@@ -250,7 +250,7 @@ impl PointerDown {
     pub(super) fn origin_x(self) -> f32 {
         self.rectangle.origin_x
     }
-    #[cfg(test)]
+    #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn part(self) -> RectanglePart {
         self.rectangle.part
     }
