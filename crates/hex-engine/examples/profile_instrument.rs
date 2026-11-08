@@ -211,6 +211,7 @@ fn measure(
     block_size: usize,
     warmup_blocks: usize,
     measured_blocks: usize,
+    pcm_directory: Option<&std::path::Path>,
 ) -> Result<(), Box<dyn Error>> {
     let construction_started = Instant::now();
     let mut playback = match prepared {
@@ -267,11 +268,27 @@ fn measure(
         timings[timings.len() - 1] as f64 / 1_000.0,
         timings[timings.len() - 1] as f64 / (deadline_us * 1_000.0),
     );
+    if let Some(directory) = pcm_directory {
+        use std::io::Write;
+        std::fs::create_dir_all(directory)?;
+        let mut file = std::io::BufWriter::new(std::fs::File::create(
+            directory.join(format!("block-{block_size}.f32")),
+        )?);
+        for sample in complete_run.iter().flatten() {
+            file.write_all(&sample.to_le_bytes())?;
+        }
+        file.flush()?;
+    }
+
     Ok(())
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
     let arguments: Vec<_> = std::env::args().collect();
+    let pcm_directory = arguments
+        .iter()
+        .find_map(|argument| argument.strip_prefix("--pcm-directory="))
+        .map(std::path::Path::new);
     let prepared_runtime = arguments
         .iter()
         .any(|argument| argument == "--prepared-runtime");
@@ -434,6 +451,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             block_size,
             warmup_blocks,
             measured_blocks,
+            pcm_directory,
         )?;
     }
     Ok(())
