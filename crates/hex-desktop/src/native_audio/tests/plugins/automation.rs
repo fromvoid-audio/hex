@@ -212,6 +212,7 @@ fn signed_vst3_rows_admit_only_matching_arrangement_lane_edits() {
         device,
         output_identity: h.audio.as_ref().unwrap().control.output_identity().unwrap(),
         request_id: 1,
+        page_first: None,
     };
     assert_eq!(
         h.run(Request::QueryPluginParameters(query)).state.revision,
