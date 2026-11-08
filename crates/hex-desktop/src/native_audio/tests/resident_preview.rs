@@ -375,6 +375,13 @@ impl WorkerAudioSink for ResidentSink {
         }
         observation
     }
+    fn device_automation_source(
+        &mut self,
+        context: hex_engine::AudioSourceContext,
+        target: hex_session::service::DeviceCaptureTarget,
+    ) -> Result<Option<hex_session::service::DeviceAutomationSource>, String> {
+        self.inner.device_automation_source(context, target)
+    }
     fn confirm_plugin_parameter_publication(
         &mut self,
         context: AudioSourceContext,
