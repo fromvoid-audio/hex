@@ -763,6 +763,8 @@ impl Render for EditorView {
             }))
             .on_modifiers_changed(move |event, window, cx| {
                 modifier_entity.update(cx, |view, cx| {
+                    // Section hover paint follows modifiers even without pointer motion.
+                    cx.notify();
                     view.tuning.shift = event.modifiers.shift;
                     if view.option_held != event.modifiers.alt {
                         view.option_held = event.modifiers.alt;

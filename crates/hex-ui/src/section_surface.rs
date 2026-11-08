@@ -63,6 +63,29 @@ pub(crate) fn surface(
         )
 }
 
+/// A quiet marker body with an explicit stronger outline. Input/custody stay
+/// with the host; this layer is retained with its exact released preview.
+pub(crate) fn marker_only_overlay(color: ElementColor, chamfer: f32, selected: bool) -> Div {
+    gpui::div().absolute().inset_0().child(
+        canvas(
+            |_, _, _| (),
+            move |bounds, _, window, _| {
+                let (fill, outline) = theme::section_marker_only_colors(color, selected);
+                paint(bounds, chamfer, fill, None, window);
+                paint_outline(
+                    bounds,
+                    chamfer,
+                    outline,
+                    theme::SECTION_MARKER_ONLY_OUTLINE_DEVICE_PX,
+                    window,
+                );
+            },
+        )
+        .absolute()
+        .inset_0(),
+    )
+}
+
 /// Header height follows the host's lane minimum while sharing production paint.
 pub(crate) fn header(color: ElementColor, selected: bool, hovered: bool, minimum: f32) -> Div {
     let colors = theme::section_colors(color, selected, hovered);
