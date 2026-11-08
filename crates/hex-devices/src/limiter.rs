@@ -12,11 +12,25 @@ mod state;
 use state::decode;
 pub use state::{STATE_VERSION, TYPE_ID, parameter};
 mod runtime;
+pub use runtime::lookahead::PreparedLookahead;
 #[cfg(test)]
 mod tests;
 
 pub struct LimiterDefinition;
 pub static DEFINITION: LimiterDefinition = LimiterDefinition;
+impl LimiterDefinition {
+    /// Prepare exact owned lookahead eligibility with fixed maximum latency.
+    /// Requires lookahead plus an optional subset of the nine value controls.
+    /// This typed provider constructor does not advertise host support; host
+    /// metadata/admission and actual publication are separately qualified.
+    pub fn prepare_owned_lookahead_for_parameters(
+        state: &NativeDeviceState,
+        rate: u32,
+        parameters: &[hex_lattice_contract::ParameterId],
+    ) -> Result<PreparedLookahead, DeviceContractError> {
+        PreparedLookahead::new(state, rate, parameters)
+    }
+}
 impl NativeDeviceDefinition for LimiterDefinition {
     fn supports_parameter_automation(
         &self,

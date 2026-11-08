@@ -13,6 +13,7 @@ mod eq8_oversampling_study;
 mod fresh_publication_cancellation;
 mod limiter_allocations;
 mod limiter_bypass;
+mod limiter_lookahead_allocations;
 mod live_release_receiver;
 mod main_chain_allocations;
 mod manual_host_gain_allocations;
