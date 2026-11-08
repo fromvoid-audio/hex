@@ -39,7 +39,7 @@ impl RecoveryCopyWorker {
         })
     }
 
-    pub(super) fn start_with(
+    pub(in crate::service) fn start_with(
         &mut self,
         outcome: &Arc<DraftWorkerOutcome>,
         copy: impl FnOnce(&DraftWorkerOutcome) -> Result<(), String> + Send + 'static,

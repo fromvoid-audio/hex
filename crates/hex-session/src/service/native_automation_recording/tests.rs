@@ -110,6 +110,48 @@ pub(in crate::service) fn application(
         value,
     }
 }
+
+pub(in crate::service) fn failed_lane_for_test(
+    session: &Session,
+    scope: DeviceAutomationTakeScope,
+    source: DeviceAutomationSource,
+    path: &Path,
+    terminal: DraftTerminal,
+) -> Lane {
+    use crate::service::automation_draft::{
+        AppliedEvent, tests::injected_failed_writer_with_terminal,
+    };
+    let DeviceCaptureTarget::Vst3(target) = scope.target else {
+        panic!("foreign")
+    };
+    let writer = hex_storage::automation_draft::DraftWriter::create_with_clock(
+        path,
+        session.project(),
+        hex_storage::automation_draft::DraftTarget::Device {
+            device: target.device,
+            target: hex_project::DeviceAutomationTarget::Vst3 {
+                parameter: target.parameter,
+            },
+        },
+        scope.stamp,
+        source.capture_clock(session.project()),
+    )
+    .unwrap();
+    let event = AppliedEvent {
+        sequence: 1,
+        performance_frame: 8,
+        content_frame: 0,
+        loop_pass: 0,
+        value: hex_project::AutomationValue::new(0.25).unwrap(),
+    };
+    let outcome = injected_failed_writer_with_terminal(writer, event, terminal);
+    let mut lane = Lane::default();
+    assert!(
+        lane.resolve(session, None, scope.context(), scope, source, outcome)
+            .is_err()
+    );
+    lane
+}
 pub(super) fn poll(
     lane: &mut Lane,
     session: &Session,
@@ -286,6 +328,56 @@ fn failed_lane_retains_original_custody_through_copy_refusal_and_retry() {
     .unwrap();
     assert_eq!(reader.outcome(), DraftOutcome::Interrupted);
     assert_eq!(reader.progress().durable_events, 1);
+
+    let key = crate::device_gesture::GestureKey {
+        generation: scope.stamp.project_generation,
+        token: scope.stamp.gesture_serial,
+    };
+    let delivered = crate::service::PluginParameterDelivery {
+        key,
+        context: scope.context(),
+        target,
+        source,
+        sequence: 2,
+        application: application(scope, 16, Vst3ApplicationValue::Value(0.75)),
+        delivery_performance_frame: 124,
+    };
+    let mut restored = delivered;
+    restored.application = application(scope, 24, Vst3ApplicationValue::Restored);
+    let observations = vec![
+        crate::service::PluginParameterObservation::Delivered(delivered),
+        crate::service::PluginParameterObservation::Restored(restored),
+    ];
+    assert!(matches!(
+        lane.copy_failed_plugin(scope, &destination, 2, observations.clone())
+            .unwrap(),
+        Step::Progress(DeviceAutomationTakeProgress::Pending)
+    ));
+    assert!(wait(&mut lane).is_err());
+    assert_eq!(std::fs::read(&destination).unwrap(), b"existing");
+    let plugin_copy = files.0.join("plugin-retry.hex-automation-draft");
+    lane.copy_failed_plugin(scope, &plugin_copy, 2, observations)
+        .unwrap();
+    assert!(
+        matches!(wait(&mut lane).unwrap(), Step::Progress(DeviceAutomationTakeProgress::Retained(path)) if path == plugin_copy)
+    );
+    let copied = DraftReader::open(
+        &plugin_copy,
+        DraftReadLimits {
+            max_source_bytes: 65536,
+        },
+    )
+    .unwrap();
+    assert_eq!(copied.progress().durable_events, 2);
+    assert_eq!(
+        copied.outcome(),
+        DraftOutcome::Finished(restored.application.origin)
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert_eq!(
+        lane.failed.as_ref().unwrap().outcome.retained[0].events(),
+        &[event]
+    );
 }
 #[test]
 fn foreign_take_uses_one_worker_and_prepares_one_class_bound_history_edit() {
