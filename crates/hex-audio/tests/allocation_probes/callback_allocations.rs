@@ -2944,6 +2944,10 @@ fn builtin_fm4_render_state_handoff_and_retirement_are_callback_allocation_free(
     measured_block(&mut callback, &mut actual);
     compare_output(&actual, &expected);
     assert!(control.status.rejected_revision().is_none());
+    assert!(!control.status.publication_in_flight());
+    // The output has two retirement slots. Pump the existing control owner
+    // between edits so the later bypass can install at this callback boundary.
+    assert!(control.reclaim() > 0);
 
     let changed_state = hex_engine::patch_native_device_parameter_for_class(
         hex_engine::NativeDeviceClass::Instrument,
@@ -3004,6 +3008,11 @@ fn builtin_fm4_render_state_handoff_and_retirement_are_callback_allocation_free(
     for _ in 0..4 {
         tail_oracle.render(&mut expected)?;
         measured_block(&mut callback, &mut actual);
+        assert!(
+            !control.status.publication_in_flight(),
+            "bypass must be installed before comparing its release"
+        );
+        assert!(control.status.rejected_revision().is_none());
         compare_output(&actual, &expected);
     }
     assert!(control.status.rejected_revision().is_none());

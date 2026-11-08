@@ -87,6 +87,13 @@ fn render(runtime: &mut SessionPlayback, count: usize, partition: usize) -> Vec<
     }
     output
 }
+fn assert_signal_eq(actual: Vec<Frame>, expected: Vec<Frame>) {
+    assert!(
+        actual.iter().flatten().any(|sample| sample.abs() > 1e-6),
+        "PCM comparison must include audible nonzero samples"
+    );
+    assert_eq!(actual, expected);
+}
 #[test]
 fn detached_fm4_freezes_latest_target_across_pause_bypass_removal_and_revision() {
     std::thread::Builder::new()
@@ -252,12 +259,22 @@ fn profile_four_carrier_playing_and_detached_release_cost() {
                         let cases = if repeat % 2 == 0 { [false, true] } else { [true, false] };
                         for curves in cases {
                             let (mut editor, track, device) = fixture_at_rate(48000);
-                            let state = crate::patch_native_device_parameter_for_class(
+                            let mut state = crate::patch_native_device_parameter_for_class(
                                 crate::NativeDeviceClass::Instrument,
                                 editor.project().device(device).unwrap().state(),
                                 ParameterId::from_static(36),
                                 hex_lattice_contract::ParameterValue::Float(2.0),
                             ).unwrap();
+                            // Both cases render the same four active operators;
+                            // authored curves start from these exact Base values.
+                            for (index,id) in (29..=32).enumerate() {
+                                let normalized=0.55+index as f32*0.05;
+                                state=crate::patch_native_device_parameter_for_class(
+                                    crate::NativeDeviceClass::Instrument,&state,
+                                    ParameterId::from_static(id),
+                                    hex_lattice_contract::ParameterValue::Float(2.0*normalized-1.0),
+                                ).unwrap();
+                            }
                             editor.execute(Command::ReplaceDeviceState { device, state }).unwrap();
                             let clip = editor.project().track(track).unwrap().midi_clips()[0].id();
                             for index in 1..voices {
@@ -308,11 +325,11 @@ fn profile_four_carrier_playing_and_detached_release_cost() {
                                     assert!(!tail.runtime.committed_is_quiescent());
                                 }
                                 eprintln!(
-                                    "fm4-carriers rate=48000 tracks=1 voices={} block={} repeat={} streams={} phase={} release-seconds=2 \
+                                    "fm4-carriers rate=48000 tracks=1 voices={} block={} repeat={} authored-streams={} phase={} frozen-targets={} release-seconds=2 \
                                      warmup-playing-blocks=8 measured-blocks=64 total-ns={} ns-per-frame={:.3}; \
                                      excludes construction/handoff; no physical deadline claim",
                                     voices, block, repeat, if curves { 4 } else { 0 },
-                                    if detached { "detached" } else { "playing" },
+                                    if detached { "detached" } else { "playing" }, if detached {4}else{0},
                                     elapsed.as_nanos(), elapsed.as_nanos() as f64 / (block * 64) as f64,
                                 );
                             }
@@ -434,9 +451,9 @@ fn four_carrier_curves_match_base_oracle_with_shared_clip_gain_pause_and_seek() 
                 runtime.apply(SessionPlaybackCommand::Play).unwrap();
                 render(runtime, 256, 17);
             }
-            assert_eq!(
+            assert_signal_eq(
                 render(&mut actual, 4097, 31),
-                render(&mut expected, 4097, 4097)
+                render(&mut expected, 4097, 4097),
             );
             for id in 29..=32 {
                 editor
@@ -460,7 +477,7 @@ fn four_carrier_curves_match_base_oracle_with_shared_clip_gain_pause_and_seek() 
             };
             adopt(&editor, &mut actual);
             adopt(&oracle_editor, &mut expected);
-            assert_eq!(render(&mut actual, 257, 7), render(&mut expected, 257, 257));
+            assert_signal_eq(render(&mut actual, 257, 7), render(&mut expected, 257, 257));
             for _ in 0..4 {
                 assert!(editor.undo());
             }
@@ -469,13 +486,13 @@ fn four_carrier_curves_match_base_oracle_with_shared_clip_gain_pause_and_seek() 
                 .unwrap();
             adopt(&editor, &mut actual);
             adopt(&oracle_editor, &mut expected);
-            assert_eq!(render(&mut actual, 257, 7), render(&mut expected, 257, 257));
+            assert_signal_eq(render(&mut actual, 257, 7), render(&mut expected, 257, 257));
             for runtime in [&mut actual, &mut expected] {
                 runtime.apply(SessionPlaybackCommand::Pause).unwrap();
             }
-            assert_eq!(
+            assert_signal_eq(
                 render(&mut actual, 2500, 13),
-                render(&mut expected, 2500, 2500)
+                render(&mut expected, 2500, 2500),
             );
             // Supported interactive starts reset source history and use the current
             // content position; wait only for the deliberate five-ms carrier ramp.
@@ -483,7 +500,7 @@ fn four_carrier_curves_match_base_oracle_with_shared_clip_gain_pause_and_seek() 
                 runtime.play_from(4000).unwrap();
                 render(runtime, 256, 256);
             }
-            assert_eq!(render(&mut actual, 257, 7), render(&mut expected, 257, 257));
+            assert_signal_eq(render(&mut actual, 257, 7), render(&mut expected, 257, 257));
             for editor in [&mut editor, &mut oracle_editor] {
                 editor
                     .execute(Command::SetLoopRegion {
@@ -499,9 +516,9 @@ fn four_carrier_curves_match_base_oracle_with_shared_clip_gain_pause_and_seek() 
                 runtime.apply(SessionPlaybackCommand::Play).unwrap();
                 render(runtime, 256, 256);
             }
-            assert_eq!(
+            assert_signal_eq(
                 render(&mut actual, 9000, 31),
-                render(&mut expected, 9000, 512)
+                render(&mut expected, 9000, 512),
             );
 
             let mut session_ids = Vec::new();
@@ -535,9 +552,9 @@ fn four_carrier_curves_match_base_oracle_with_shared_clip_gain_pause_and_seek() 
                     .unwrap();
                 render(runtime, 256, 256);
             }
-            assert_eq!(
+            assert_signal_eq(
                 render(&mut actual, 9000, 31),
-                render(&mut expected, 9000, 512)
+                render(&mut expected, 9000, 512),
             );
         })
         .unwrap()
