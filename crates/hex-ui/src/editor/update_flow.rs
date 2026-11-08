@@ -466,54 +466,83 @@ mod tests {
     }
 
     #[gpui::test]
-    fn cancelling_update_releases_automation_freeze_without_approving(cx: &mut TestAppContext) {
-        let service = Service::new(48_000, 32, 8_000_000).unwrap();
-        let deadline = crate::test_wait::hang_deadline();
-        let event = loop {
-            if let Ok(event) = service.try_event() {
-                break event;
-            }
-            assert!(Instant::now() < deadline);
-            std::thread::yield_now();
-        };
-        let approved = Arc::new(AtomicBool::new(false));
-        let visual = cx.add_window(|_, _| Empty);
-        let handle: AnyWindowHandle = *visual;
-        let editor = cx
-            .update_window(handle, |_, window, cx| {
-                let editor = window.replace_root(cx, |window, cx| {
-                    EditorView::new(window, cx, service, Err("offline fixture".into()))
-                });
+    fn cancellation_and_blocked_custody_release_update_without_approving(cx: &mut TestAppContext) {
+        for blocked_custody in [false, true] {
+            let service = Service::new(48_000, 32, 8_000_000).unwrap();
+            let deadline = crate::test_wait::hang_deadline();
+            let event = loop {
+                if let Ok(event) = service.try_event() {
+                    break event;
+                }
+                assert!(Instant::now() < deadline);
+                std::thread::yield_now();
+            };
+            let approved = Arc::new(AtomicBool::new(false));
+            let visual = cx.add_window(|_, _| Empty);
+            let handle: AnyWindowHandle = *visual;
+            let editor = cx
+                .update_window(handle, |_, window, cx| {
+                    let editor = window.replace_root(cx, |window, cx| {
+                        EditorView::new(window, cx, service, Err("offline fixture".into()))
+                    });
+                    editor.update(cx, |view, cx| {
+                        view.receive(event);
+                        let revision = view.state.as_ref().unwrap().revision;
+                        view.update_flow.phase = Phase::Preparing {
+                            id: 7,
+                            saved: None,
+                            discard: true,
+                            generation: view.project_generation,
+                            revision,
+                        };
+                        view.update_flow.ready = Some(UpdateReady {
+                            id: 7,
+                            approval: Box::new(Approval(approved.clone())),
+                        });
+                        view.reconcile_update_ready(window, cx);
+                        cx.defer_in(window, move |view, _, cx| {
+                            assert!(view.automation_close_preflight.frozen());
+                            if blocked_custody {
+                                view.tick_automation_close(cx);
+                            } else {
+                                view.cancel_requested_update(cx);
+                                assert!(!view.automation_close_preflight.frozen());
+                            }
+                        });
+                    });
+                    editor
+                })
+                .unwrap();
+            cx.run_until_parked();
+            if blocked_custody {
+                let mut event = loop {
+                    if let Ok(event) = editor.read_with(cx, |view, _| view.service.try_event()) {
+                        break event;
+                    }
+                    assert!(Instant::now() < deadline);
+                    std::thread::yield_now();
+                };
+                // Use the real ordered response and its request/revision identity;
+                // the Session owner separately covers each blocked custody state.
+                event
+                    .device_automation_take_complete
+                    .as_mut()
+                    .unwrap()
+                    .progress = hex_session::service::DeviceAutomationTakeProgress::CloseBlocked;
                 editor.update(cx, |view, cx| {
                     view.receive(event);
-                    let revision = view.state.as_ref().unwrap().revision;
-                    view.update_flow.phase = Phase::Preparing {
-                        id: 7,
-                        saved: None,
-                        discard: true,
-                        generation: view.project_generation,
-                        revision,
-                    };
-                    view.update_flow.ready = Some(UpdateReady {
-                        id: 7,
-                        approval: Box::new(Approval(approved.clone())),
-                    });
-                    view.reconcile_update_ready(window, cx);
-                    cx.defer_in(window, |view, _, cx| {
-                        assert!(view.automation_close_preflight.frozen());
-                        view.cancel_requested_update(cx);
-                        assert!(!view.automation_close_preflight.frozen());
-                    });
+                    view.tick_automation_close(cx);
                 });
-                editor
-            })
-            .unwrap();
-        cx.run_until_parked();
-        assert!(!approved.load(Ordering::SeqCst));
-        assert!(editor.read_with(cx, |view, _| matches!(view.update_flow.phase, Phase::Idle)));
-        assert_eq!(cx.windows().len(), 1);
-        cx.update_window(handle, |_, window, _| window.remove_window())
-            .unwrap();
+                cx.run_until_parked();
+            }
+            assert!(!approved.load(Ordering::SeqCst));
+            assert!(editor.read_with(cx, |view, _| matches!(view.update_flow.phase, Phase::Idle)));
+            assert!(editor.read_with(cx, |view, _| !view.automation_close_preflight.frozen()));
+            assert!(editor.read_with(cx, |view, _| view.update_flow.ready.is_none()));
+            assert_eq!(cx.windows().len(), 1);
+            cx.update_window(handle, |_, window, _| window.remove_window())
+                .unwrap();
+        }
     }
 
     #[gpui::test]
