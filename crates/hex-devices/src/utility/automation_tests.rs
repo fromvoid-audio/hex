@@ -603,3 +603,69 @@ fn bypass_advances_the_same_filter_and_automated_control_history() {
         assert_eq!(after_bypass, after_active);
     }
 }
+
+#[test]
+fn shared_lfo_drives_two_utility_controls_on_each_sample() {
+    use hex_lattice::{ModulationRoute, ModulationTarget, PreparedModulation};
+    let base = UTILITY_DEFINITION.default_state().unwrap();
+    let ids = [parameter::GAIN, parameter::BALANCE];
+    let targets = ids.map(|id| ModulationTarget {
+        descriptor: *DESCRIPTORS.iter().find(|d| d.id == id).unwrap(),
+        semantics: UTILITY_DEFINITION
+            .parameter_semantics_for_state(&base, id)
+            .unwrap()
+            .unwrap(),
+        base: UTILITY_DEFINITION.read_parameter(&base, id).unwrap(),
+    });
+    let program = PreparedModulation::new(
+        &targets,
+        &[
+            ModulationRoute {
+                source: 0,
+                target: ids[0],
+                amount: 0.01,
+            },
+            ModulationRoute {
+                source: 0,
+                target: ids[1],
+                amount: 0.2,
+            },
+        ],
+        1,
+    )
+    .unwrap();
+    let mut source =
+        hex_dsp::ModulationLfo::new(hex_dsp::LfoRate::free(48_000.0, 12_000.0).unwrap(), 0.0)
+            .unwrap();
+    let mut values = [0.0; 5];
+    source.render(&mut values);
+    let sources = [&values[..]];
+    let block = program.block(None, &sources, values.len()).unwrap();
+    let factory = UtilityDefinition::prepare_owned_automated_filter(&base, 48_000).unwrap();
+    let mut runtime = factory.create_runtime();
+    let input = [[0.25, -0.1]; 5];
+    let mut output = input;
+    runtime
+        .process_block_with_automation(
+            &mut output,
+            None,
+            &block,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
+    for (index, lfo) in [0.0, 1.0, 0.0, -1.0, 0.0].into_iter().enumerate() {
+        let gain = (1.0 + lfo * 0.01 * MAX_UTILITY_GAIN).clamp(0.0, MAX_UTILITY_GAIN);
+        let balance = lfo * 0.4;
+        let state = UTILITY_DEFINITION
+            .patch_parameter(&base, ids[0], ParameterValue::Float(gain))
+            .unwrap();
+        let state = UTILITY_DEFINITION
+            .patch_parameter(&state, ids[1], ParameterValue::Float(balance))
+            .unwrap();
+        let expected = static_render(&state, &input[index..index + 1])[0];
+        for channel in 0..2 {
+            assert!((output[index][channel] - expected[channel]).abs() < 1e-5);
+        }
+    }
+    assert_eq!(UTILITY_DEFINITION.default_state().unwrap(), base);
+}
