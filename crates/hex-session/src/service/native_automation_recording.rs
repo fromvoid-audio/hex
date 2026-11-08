@@ -266,6 +266,10 @@ impl Lane {
         self.active.is_some()
     }
 
+    pub(super) fn has_failed_custody(&self) -> bool {
+        self.failed.is_some()
+    }
+
     pub(super) fn begin(
         &mut self,
         session: &Session,

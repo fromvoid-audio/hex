@@ -104,6 +104,34 @@ fn active(scope: DeviceAutomationTakeScope, source: DeviceAutomationSource) -> S
 }
 
 #[test]
+fn generic_sealed_recovery_refuses_each_original_custody_owner() {
+    use crate::service::native_automation_recording::tests::failed_lane_for_test;
+    use hex_storage::automation_draft::DraftTerminal;
+
+    let (files, session, scope, source) = fixture();
+    let before = session.project().clone();
+    let idle = Lane::default();
+    assert!(generic_sealed_recovery_idle(&State::default(), &idle));
+    let mut state = active(scope, source);
+    assert!(!generic_sealed_recovery_idle(&state, &idle));
+    let failed = state.active.take().unwrap();
+    state.failed = Some(failed);
+    assert!(!generic_sealed_recovery_idle(&state, &idle));
+    let original_path = files.0.join("sealed-guard-original");
+    let lane = failed_lane_for_test(
+        &session,
+        scope,
+        source,
+        &original_path,
+        DraftTerminal::Interrupted,
+    );
+    let original = std::fs::read(&original_path).unwrap();
+    assert!(!generic_sealed_recovery_idle(&State::default(), &lane));
+    assert_eq!(std::fs::read(&original_path).unwrap(), original);
+    assert_eq!(session.project(), &before);
+}
+
+#[test]
 fn failed_recovery_snapshots_only_quiescent_original_observations() {
     let (_files, _session, scope, source) = fixture();
     let mut state = active(scope, source);
