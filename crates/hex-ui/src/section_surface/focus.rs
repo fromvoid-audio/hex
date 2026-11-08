@@ -162,7 +162,7 @@ mod tests {
                 assert_eq!(count, lines.len());
                 for [from, to] in lines {
                     for [x, y] in [from, to] {
-                        assert!(x >= 13.0 && x <= 160.0 && y >= 5.0 && y <= 60.0);
+                        assert!((13.0..=160.0).contains(&x) && (5.0..=60.0).contains(&y));
                         assert!(x + y <= 214.0 + 0.0001, "chamfer stays transparent");
                     }
                     let slope = (from[1] - to[1]) / (to[0] - from[0]);
