@@ -7,7 +7,7 @@ use hex_project::{Command, Editor, TrackId};
 use std::sync::Arc;
 
 // One precreated path owner is retained by both the view and actual background jobs.
-struct BrowserDirectory(
+pub(in crate::editor) struct BrowserDirectory(
     std::path::PathBuf,
     Arc<super::super::test_environment::Environment>,
 );
@@ -27,7 +27,7 @@ impl BrowserDirectory {
     }
 }
 
-fn actor_fixture(
+pub(in crate::editor) fn actor_fixture(
     cx: &mut TestAppContext,
 ) -> (
     BrowserDirectory,
@@ -151,7 +151,11 @@ fn actor_fixture_in_mode(
     (browser, visual, editor, tracks.try_into().unwrap())
 }
 
-fn pump(editor: &Entity<EditorView>, cx: &mut TestAppContext, done: impl Fn(&EditorView) -> bool) {
+pub(in crate::editor) fn pump(
+    editor: &Entity<EditorView>,
+    cx: &mut TestAppContext,
+    done: impl Fn(&EditorView) -> bool,
+) {
     let deadline = crate::test_wait::hang_deadline();
     loop {
         editor.update(cx, |view, cx| {
