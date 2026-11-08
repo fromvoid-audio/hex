@@ -342,6 +342,29 @@ impl NativeDeviceMetadata for Fm4Definition {
         &PARAMETERS
     }
 
+    fn parameter_semantics_for_state(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+    ) -> Result<Option<hex_lattice_contract::ParameterSemantics>, DeviceContractError> {
+        Fm4Settings::from_state(state)?.read_parameter(id)?;
+        use hex_lattice_contract::{
+            ParameterAccess, ParameterAutomation, ParameterChangeImpact, ParameterModulation,
+            ParameterNormalization, ParameterSemantics, ParameterSmoothing, ParameterStepping,
+        };
+        Ok((29..=32)
+            .contains(&id.value())
+            .then_some(ParameterSemantics {
+                access: ParameterAccess::ReadWrite,
+                normalization: ParameterNormalization::Linear,
+                stepping: ParameterStepping::Continuous,
+                automation: ParameterAutomation::DeviceArrangementEnvelope,
+                modulation: ParameterModulation::Undeclared,
+                smoothing: ParameterSmoothing::DeviceManaged,
+                change_impact: ParameterChangeImpact::ValueOnly,
+            }))
+    }
+
     fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
         Fm4Settings::defaults().to_state()
     }

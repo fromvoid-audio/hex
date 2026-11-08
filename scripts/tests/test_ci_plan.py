@@ -544,10 +544,37 @@ class ScopeTests(unittest.TestCase):
         # The copied/native client no longer depends on musical audio rendering.
         # Changing a compressor must not select the independent client. Adding
         # an unreviewed reverse consumer still broadens to package coverage.
-        _, live_affected, _ = plan.classify([path], live_inventory)
+        live_scope, live_affected, _ = plan.classify([path], live_inventory)
         self.assertNotIn("hex-plugin-host", live_affected)
         live_boundary = plan.boundary_selection(root, [path], live_inventory, live_affected)
-        self.assertEqual(live_boundary["kind"], "compressor")
+        # Keep the narrow-case fixture independent of newly added features.
+        # An unreviewed live feature must widen the plan, not break this test
+        # or be silently added to the production allowlist.
+        reviewed = {"hex-engine": {"instrument-test-support"},
+                    "hex-export": {"instrument-test-support"},
+                    "hex-audio": {"allocation-probe", "stream-test-support"},
+                    "hex-desktop": {"allocation-probe"},
+                    "hex-ui": {"ui-test-support"},
+                    "hex-session": {"source-overview-test-support"},
+                    "hex-stream": {"allocation-probe", "test-support"},
+                    "hex-media": {"test-support"},
+                    "hex-sandbox": {"ui-test-support"}}
+        unreviewed = {p["name"]: set(p["features"]) - reviewed.get(p["name"], set())
+                      for p in live_inventory if p["name"] in live_affected}
+        if any(unreviewed.values()):
+            self.assertEqual(live_boundary["kind"], "packages")
+            self.assertEqual(live_boundary["lint_packages"], live_affected)
+            live_steps = ci.planned_steps({"scope": live_scope, "affected_packages": live_affected,
+                                           "boundary": live_boundary, "cargo_inventory": live_inventory})
+            lint_commands = [",".join(step.argv) for step in live_steps
+                             if step.argv[:2] == ("cargo", "clippy")]
+            for package, features in unreviewed.items():
+                for feature in features - {"default"}:
+                    self.assertTrue(any(f"{package}/{feature}" in command for command in lint_commands))
+        else:
+            # Other safe-widening causes, such as a new macro boundary, may
+            # also make the real workspace require package coverage.
+            self.assertIn(live_boundary["kind"], {"compressor", "packages"})
         reversed_inventory = [{**p, "dependencies": p["dependencies"] + [{"name": "hex-audio"}]}
                               if p["name"] == "hex-plugin-host" else p for p in live_inventory]
         _, reversed_affected, _ = plan.classify([path], reversed_inventory)
@@ -558,11 +585,20 @@ class ScopeTests(unittest.TestCase):
         # the owner and its reviewed runtime consumer run test suites.
         self.assertIn("hex-plugin-host", reversed_boundary["lint_packages"])
         self.assertEqual(reversed_boundary["test_packages"], ["hex-devices", "hex-storage"])
-        inventory = live_inventory
+        inventory = [{**p, "features": {name: value for name, value in p["features"].items()
+                                         if name in reviewed.get(p["name"], set())}}
+                     for p in live_inventory]
         scope, affected, _ = plan.classify([path], inventory)
         self.assertEqual(scope, "rust")
         self.assertIn("hex-storage", affected)  # opaque state, no Cargo edge
-        boundary = plan.boundary_selection(root, [path], inventory, affected)
+        fixture_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(fixture_dir.cleanup)
+        fixture = Path(fixture_dir.name)
+        for name in (path, "crates/hex-devices/src/compressor/tests.rs"):
+            source = fixture / name
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text("// reviewed fixture source\n")
+        boundary = plan.boundary_selection(fixture, [path], inventory, affected)
         self.assertEqual(boundary["kind"], "compressor")
         resolved = {"scope": scope, "affected_packages": affected,
                     "boundary": boundary, "cargo_inventory": inventory}
@@ -998,10 +1034,32 @@ class SingleRunFeatureTests(unittest.TestCase):
         return root, plan.cargo_inventory(metadata, root)
 
     def test_reviewed_additive_features_test_once_and_keep_doctests_and_lint(self):
-        root, inventory = self.live()
+        root, live_inventory = self.live()
         path = "crates/hex-session/src/lib.rs"
+        _, live_affected, _ = plan.classify([path], live_inventory)
+        live_boundary = plan.boundary_selection(root, [path], live_inventory, live_affected)
+        session = next(p for p in live_inventory if p["name"] == "hex-session")
+        extra = set(session["features"]) - {"default", "source-overview-test-support"}
+        if extra:
+            self.assertNotIn("hex-session", live_boundary["single_run"])
+            live_steps = ci.planned_steps({"scope": "rust", "affected_packages": live_affected,
+                                           "boundary": live_boundary, "cargo_inventory": live_inventory})
+            self.assertTrue(any(s.step_id == "affected-tests" for s in live_steps))
+            for feature in extra:
+                self.assertTrue(any(s.argv[1] == "test" and "hex-session" in s.argv
+                                    and feature in s.argv for s in live_steps))
+        # The reviewed one-feature case is a controlled fixture; live packages
+        # may acquire extra features that correctly require separate runs.
+        inventory = [{**p, "features": {name: value for name, value in p["features"].items()
+                                         if name in {"default", "source-overview-test-support"}}}
+                     if p["name"] == "hex-session" else p for p in live_inventory]
         _, affected, _ = plan.classify([path], inventory)
-        boundary = plan.boundary_selection(root, [path], inventory, affected)
+        fixture_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(fixture_dir.cleanup)
+        fixture = Path(fixture_dir.name)
+        (fixture / "crates/hex-session/src").mkdir(parents=True)
+        (fixture / path).write_text("// additive feature fixture\n")
+        boundary = plan.boundary_selection(fixture, [path], inventory, affected)
         # Only the owner tests; its additive feature still runs once.
         self.assertEqual(boundary["test_packages"], ["hex-session"])
         self.assertEqual(boundary["single_run"], {"hex-session": "source-overview-test-support"})
