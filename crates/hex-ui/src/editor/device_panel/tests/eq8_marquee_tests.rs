@@ -61,6 +61,7 @@ fn marquee(visual: &mut VisualTestContext, points: [gpui::Point<gpui::Pixels>; 2
     let right = points[0].x.max(points[1].x) + px(10.0);
     let top = points[0].y.min(points[1].y) - px(14.0);
     let bottom = points[0].y.max(points[1].y) + px(14.0);
+    eprintln!("marquee points={points:?} bounds=({left:?},{top:?},{right:?},{bottom:?})");
     let from = point(left, top);
     let to = point(right, bottom);
     visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
@@ -74,6 +75,20 @@ fn eq8_marquee_group_move_and_disable_each_commit_one_undo(cx: &mut TestAppConte
     let (handle, editor, track, device) = window(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
+    let graph = editor.read_with(cx, |v, _| v.device_panel.eq8_graphs[&device].entity.clone());
+    let _observe = cx.update(|cx| {
+        cx.subscribe(
+            &graph,
+            |_, event: &hex_widgets::ResponseGraphMarqueeEvent, _| {
+                eprintln!("marquee event {event:?}")
+            },
+        )
+    });
+    let _node = cx.update(|cx| {
+        cx.subscribe(&graph, |_, event: &hex_widgets::ResponseGraphEvent, _| {
+            eprintln!("node event {event:?}")
+        })
+    });
     let (plot, points) = geometry(&editor, cx, device);
     let before = editor.read_with(cx, |v, _| {
         v.state
