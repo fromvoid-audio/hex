@@ -110,7 +110,7 @@ impl Panel {
         let Some(matched) = self.rows().map(|rows| matching_rows(rows, &self.filter)) else {
             return;
         };
-        if *self.matched != matched {
+        if reset_scroll || *self.matched != matched {
             self.scrollbar.invalidate();
         }
         self.matched = Arc::new(matched);
