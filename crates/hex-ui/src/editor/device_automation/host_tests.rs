@@ -1229,6 +1229,30 @@ fn vst3_dotted_guide_tracks_raw_zero_through_delayed_commit_ack(cx: &mut TestApp
             .automation_target(target)
             .is_none();
         assert!(has_no_authored_lane);
+        assert!(!view.automation_view.enabled);
+        assert!(view.remember_touched_vst3(owner, device, &row, cx));
+        assert!(
+            !view.automation_view.enabled,
+            "touch must not enable automation view"
+        );
+        assert!(view.test_touched_vst3_lane(owner, device, row.id));
+        assert!(view.toggle_automation_view(cx));
+        assert!(view.automation_view.enabled);
+        assert!(view.remember_touched_vst3(owner, device, &row, cx));
+        assert!(view.toggle_automation_view(cx));
+        assert!(view.remember_touched_vst3(owner, device, &row, cx));
+        assert!(
+            !view.automation_view.enabled,
+            "refresh must not reopen automation view"
+        );
+        let mut unavailable = row.clone();
+        unavailable.automation_class = None;
+        assert!(!view.remember_touched_vst3(owner, device, &unavailable, cx));
+        assert!(
+            !view.automation_view.enabled,
+            "unavailable metadata must not enable automation view"
+        );
+        assert!(view.toggle_automation_view(cx));
         assert!(view.remember_touched_vst3(owner, device, &row, cx));
         (generation, revision)
     });
