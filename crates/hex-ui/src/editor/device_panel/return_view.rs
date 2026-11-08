@@ -243,6 +243,7 @@ pub(super) fn render_return_effect(
     if device_view.is_ok() {
         actions = actions
             .child(super::super::device_preset::actions(
+                view,
                 id,
                 NativeDeviceClass::Effect,
                 selected,

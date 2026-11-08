@@ -107,6 +107,7 @@ mod context_menu;
 mod controller;
 mod controller_input;
 mod detail_context;
+mod device_action_owner;
 mod device_comparison;
 mod device_gesture;
 mod device_panel;

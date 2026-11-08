@@ -358,6 +358,13 @@ impl BrowserState {
         }
     }
 
+    /// Pure configured application-data location; performs no filesystem work.
+    pub(super) fn data_directory(&self) -> Option<&std::path::Path> {
+        self.preferences_path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+    }
+
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn test_preferences_path(&self) -> &std::path::Path {
         &self.preferences_path
