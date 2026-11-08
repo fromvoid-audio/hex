@@ -188,8 +188,8 @@ fn limiter_publication_case(original: bool) -> Result<(), Box<dyn Error>> {
             name: "limiter automation".into(),
             path: "memory/limiter.wav".into(),
             source_sample_rate: RATE,
-            source_frames: (BLOCK * 8) as u64,
-            playback_frames: (BLOCK * 8) as u64,
+            source_frames: (BLOCK * 12) as u64,
+            playback_frames: (BLOCK * 12) as u64,
             conversion_version: hex_project::IDENTITY_CONVERSION,
         })?
     else {
@@ -203,7 +203,7 @@ fn limiter_publication_case(original: bool) -> Result<(), Box<dyn Error>> {
     else {
         return Err("limiter".into());
     };
-    let media = BTreeMap::from([(asset, Audio::new(RATE, vec![[0.1, -0.05]; BLOCK * 8])?)]);
+    let media = BTreeMap::from([(asset, Audio::new(RATE, vec![[0.1, -0.05]; BLOCK * 12])?)]);
     let table = Arc::new(SineTable::new());
     let prepare = |project: &Project| -> Result<_, Box<dyn Error>> {
         Ok(Arc::new(PreparedRevision::prepare(
@@ -301,6 +301,44 @@ fn limiter_publication_case(original: bool) -> Result<(), Box<dyn Error>> {
             .any(|(a, b)| (a[0] - b[0]).abs() > 1e-4)
     );
     control.reclaim();
+    let targets: Vec<_> = editor
+        .project()
+        .device(device)
+        .ok_or("limiter disappeared")?
+        .automation()
+        .iter()
+        .map(|lane| lane.target)
+        .collect();
+    for selection in [
+        AutomationReadSelection::Base,
+        AutomationReadSelection::Authored,
+    ] {
+        for &target in &targets {
+            editor.execute(Command::SetDeviceAutomationReadSelection {
+                device,
+                target,
+                selection,
+            })?;
+        }
+        control
+            .publish(Playback::try_from_prepared_with_session(prepare(
+                editor.project(),
+            )?)?)
+            .map_err(|_| "read selection publication")?;
+        // Advance beyond the native gain ramp before judging the new reading.
+        for _ in 0..2 {
+            measured_block(&mut callback, &mut out);
+            measured_block(&mut old_callback, &mut old_out);
+        }
+        let actual = out.last().ok_or("missing output")?[0];
+        let base = old_out.last().ok_or("missing base output")?[0];
+        match selection {
+            AutomationReadSelection::Base => assert!((actual - base).abs() < 2e-4),
+            AutomationReadSelection::Authored => assert!(actual > base + 1e-3),
+        }
+        assert!(out.iter().flatten().all(|v| v.is_finite()));
+        control.reclaim();
+    }
     for bypassed in [true, false] {
         editor.execute(Command::SetDeviceBypass { device, bypassed })?;
         control
