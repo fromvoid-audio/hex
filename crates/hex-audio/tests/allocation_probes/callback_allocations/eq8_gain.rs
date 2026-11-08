@@ -111,6 +111,33 @@ fn eq8_gain_automation_callback_publication_history_and_save_reopen() -> Result<
             }
         }
     }
+    editor.execute(Command::ReplaceDeviceAutomation {
+        device,
+        parameter: p::MODE,
+        points: vec![
+            AutomationPoint {
+                beat: BeatTime::ZERO,
+                value: AutomationValue::new(0.5)?,
+                outgoing: AutomationInterpolation::Step,
+            },
+            AutomationPoint {
+                beat: editor
+                    .project()
+                    .tempo_map()
+                    .frame_to_beat((BLOCK * 2 - 4) as u64)?,
+                value: AutomationValue::new(0.0)?,
+                outgoing: AutomationInterpolation::Step,
+            },
+            AutomationPoint {
+                beat: editor
+                    .project()
+                    .tempo_map()
+                    .frame_to_beat((BLOCK * 2 - 2) as u64)?,
+                value: AutomationValue::new(1.0)?,
+                outgoing: AutomationInterpolation::Step,
+            },
+        ],
+    })?;
     let path = std::env::temp_dir().join(format!(
         "hex-eq8_gain-automation-{}.hex",
         std::process::id()

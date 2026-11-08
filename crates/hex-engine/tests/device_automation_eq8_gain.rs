@@ -160,6 +160,28 @@ fn eq8_gain_all_owners_follow_the_existing_smoother_and_seek_reset() {
                 }
             }
         }
+        editor
+            .execute(Command::ReplaceDeviceAutomation {
+                device,
+                parameter: p::MODE,
+                points: vec![
+                    AutomationPoint {
+                        beat: BeatTime::ZERO,
+                        value: AutomationValue::new(0.5).unwrap(),
+                        outgoing: AutomationInterpolation::Step,
+                    },
+                    AutomationPoint {
+                        beat: editor
+                            .project()
+                            .tempo_map()
+                            .frame_to_beat((FRAMES / 2) as u64)
+                            .unwrap(),
+                        value: AutomationValue::new(1.0).unwrap(),
+                        outgoing: AutomationInterpolation::Step,
+                    },
+                ],
+            })
+            .unwrap();
         let automated = render(editor.project(), 13);
         assert!(
             automated

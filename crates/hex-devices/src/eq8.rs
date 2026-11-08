@@ -5,8 +5,9 @@
 //! transposed-direct-form-II histories. Shared gain, frequency, Q, enable and
 //! filter-type automation designs active-bank targets in fixed inline storage
 //! and reuses the rate-scaled coefficient/gain smoother. Routing automation
-//! remains unsupported. Compatible copies retain admitted trajectories; missing
-//! views restore canonical controls, and detached tails freeze their targets.
+//! uses one outgoing fade and one pending latest target (see automation::routing).
+//! Compatible copies retain admitted trajectories; missing views restore canonical
+//! controls, and detached tails freeze their targets.
 mod automation;
 use hex_lattice::{
     NativeDeviceDefinition, NativeProcessorAudition, NativeProcessorRuntime, OutputTail,
@@ -409,6 +410,7 @@ type BandStages = [Coefficients; 4];
 struct PreparedEq8 {
     admitted: [bool; automation::COUNT],
     control_values: automation::ControlValues,
+    canonical_banks: [[BandStages; BAND_COUNT]; 5],
     sample_rate: u32,
     mode: ChannelMode,
     output_gain: f64,
@@ -446,6 +448,7 @@ impl PreparedEq8 {
         Ok(Self {
             admitted: [false; automation::COUNT],
             control_values: automation::ControlValues::new(settings),
+            canonical_banks: banks,
             sample_rate,
             mode: settings.mode,
             output_gain: f64::from(settings.output_gain),
@@ -458,6 +461,8 @@ impl PreparedEq8 {
         Eq8Runtime {
             controls: crate::parameter_binding::Controls::new(self.control_values, self.admitted),
             tail_controls_frozen: false,
+            routing: self.admitted[automation::MODE_SLOT]
+                .then(|| automation::routing::RoutingAutomation::new(self.canonical_banks)),
             automated_target: None,
             band_automation_admitted: self.admitted[..automation::GAIN_SLOT].iter().any(|&v| v),
             band_targets_pending: self.admitted[..automation::GAIN_SLOT].iter().any(|&v| v),
@@ -535,6 +540,7 @@ impl PreparedNativeProcessor for PreparedEq8 {
 pub struct Eq8Runtime {
     controls: crate::parameter_binding::Controls<automation::ControlValues, { automation::COUNT }>,
     tail_controls_frozen: bool,
+    routing: Option<automation::routing::RoutingAutomation>,
     automated_target: Option<[[[Coefficients; 4]; BAND_COUNT]; 2]>,
     band_automation_admitted: bool,
     band_targets_pending: bool,
@@ -757,6 +763,7 @@ impl Eq8Runtime {
     }
 
     pub fn process_frame(&mut self, input: StereoFrame) -> StereoFrame {
+        self.advance_routing();
         let current = self.process_current_routing(input);
         self.mode_fade.blend(input, current)
     }
@@ -811,6 +818,8 @@ impl Eq8Runtime {
 
     pub fn reset(&mut self) {
         self.controls.reset();
+        self.mode = self.controls.base().mode;
+        self.reset_routing();
         self.target_gain = f64::from(self.controls.effective().gain);
         self.automated_target = None;
         self.band_targets_pending = self.band_automation_admitted;
@@ -829,6 +838,7 @@ impl Eq8Runtime {
     }
 
     pub fn inherit_history_from(&mut self, previous: &Self) -> bool {
+        self.inherit_routing(previous);
         if self.sample_rate == previous.sample_rate && self.mode == previous.mode {
             self.inherit_enabled_bands(previous);
             if (self.band_automation_admitted || self.controls.admitted(automation::GAIN_SLOT))
@@ -1088,7 +1098,12 @@ impl NativeProcessorRuntime for Eq8Runtime {
             .downcast_ref::<Self>()
             .is_some_and(|previous| {
                 self.sample_rate == previous.sample_rate
-                    && (self.mode != previous.mode || self.enabled_layout_compatible(previous))
+                    && if self.preserves_routing(previous) {
+                        self.enabled_layout_compatible(previous, previous.mode)
+                    } else {
+                        self.mode != previous.mode
+                            || self.enabled_layout_compatible(previous, self.mode)
+                    }
             })
     }
     fn copy_history_from(&mut self, previous: &dyn NativeProcessorRuntime) {
@@ -1104,6 +1119,7 @@ impl NativeProcessorRuntime for Eq8Runtime {
             .downcast_ref::<Self>()
             .is_some_and(|previous| {
                 self.sample_rate == previous.sample_rate
+                    && !self.preserves_routing(previous)
                     && self.mode != previous.mode
                     && previous.mode_fade.is_active()
             })
