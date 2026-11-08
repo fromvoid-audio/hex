@@ -183,7 +183,7 @@ impl NativeDeviceMetadata for EqDefinition {
 impl EqDefinition {
     /// Control-only exact-grant component preparation. The returned processor
     /// uses the existing native checkpoint/runtime custody; no resource ownership
-    /// transfers. Standard registry admission remains a separate capability check.
+    /// transfers. Standard registry admission uses the same exact-grant component.
     /// Known node fields and output gain are accepted; mode and legacy-shelf
     /// kind/gain/q remain unsupported. Grants are sorted, unique and bounded by
     /// the neutral descriptor limit. No authored state or curves are rewritten.
@@ -206,8 +206,21 @@ impl NativeDeviceDefinition for EqDefinition {
         state: &NativeDeviceState,
         parameter: ParameterId,
     ) -> Result<bool, DeviceContractError> {
-        EqState::decode(state)?;
-        Ok(parameter == OUTPUT_GAIN)
+        let settings = EqState::decode(state)?;
+        if parameter == OUTPUT_GAIN {
+            return Ok(true);
+        }
+        let Ok((id, field)) = NodeId::from_parameter(parameter) else {
+            return Ok(false);
+        };
+        let Ok(node) = settings.node(id) else {
+            return Ok(false);
+        };
+        Ok(!node.legacy_shelf
+            || !matches!(
+                field,
+                NodeParameter::Kind | NodeParameter::Gain | NodeParameter::Q
+            ))
     }
     fn prepare_automated_runtime_instance(
         &self,
@@ -216,9 +229,6 @@ impl NativeDeviceDefinition for EqDefinition {
         context: &hex_lattice::DevicePreparationContext<'_>,
         parameters: &[ParameterId],
     ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
-        if parameters != [OUTPUT_GAIN] {
-            return Err(DeviceContractError::UnsupportedProcessingClass);
-        }
         Ok(hex_lattice::PreparedRuntimeDevice {
             matrix: StereoMatrix::identity(),
             processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(
