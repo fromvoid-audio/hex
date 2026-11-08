@@ -50,6 +50,46 @@ pub(super) fn name() -> Div {
         .text_color(rgb(theme::color(theme::PaletteRole::Text)))
 }
 
+/// A single native fill owns the plate's shape. The open corners reveal the
+/// neutral header underneath rather than covering a colored rectangle.
+pub(super) fn name_plate(selector: String, color: u32, group: bool) -> Div {
+    div()
+        .absolute()
+        .inset_0()
+        .debug_selector(move || selector.clone())
+        .child(
+            canvas(
+                |_, _, _| (),
+                move |bounds, _, window, _| {
+                    let width = f32::from(bounds.size.width);
+                    let height = f32::from(bounds.size.height);
+                    let cut = 7.0_f32.min(width / 2.0).min(height / 2.0);
+                    let radius = if group {
+                        10.0_f32.min(width / 2.0).min(height / 2.0)
+                    } else {
+                        0.0
+                    };
+                    let at = |x, y| bounds.origin + point(px(x), px(y));
+                    let mut path = PathBuilder::fill();
+                    path.move_to(at(0.0, radius));
+                    if radius > 0.0 {
+                        let tangent = radius * (1.0 - 0.552_284_8);
+                        path.cubic_bezier_to(at(radius, 0.0), at(0.0, tangent), at(tangent, 0.0));
+                    }
+                    path.line_to(at(width, 0.0));
+                    path.line_to(at(width, height - cut));
+                    path.line_to(at(width - cut, height));
+                    path.line_to(at(0.0, height));
+                    path.close();
+                    if let Ok(path) = path.build() {
+                        window.paint_path(path, rgb(color));
+                    }
+                },
+            )
+            .size_full(),
+        )
+}
+
 /// Compact selection inset: its left edge is taller than its right edge.
 /// This paints within the name row; selection and input remain with the header.
 pub(super) fn selection_marker(selector: String) -> Div {
