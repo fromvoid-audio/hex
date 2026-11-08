@@ -42,6 +42,13 @@ fn oscillator_ratio_and_fixed_hz_sliders_edit_independently_with_canonical_histo
             ),
         ] {
             if parameter != ratio {
+                let at = operator_context_selection_tests::row_background(
+                    &mut visual,
+                    device,
+                    operator as usize,
+                );
+                visual.simulate_click(at, Modifiers::default());
+                visual.run_until_parked();
                 let toggle = visual
                     .debug_bounds(selector(format!(
                         "device-{}-parameter-{fixed}",
