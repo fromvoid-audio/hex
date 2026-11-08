@@ -76,11 +76,7 @@ pub(in crate::editor::device_panel) fn select_oscillator(
     owner: Owner,
     operator: usize,
 ) -> bool {
-    if operator >= 4
-        || !owner.is_current(view)
-        || !super::preview::finalize_controls(view, cx, owner.device)
-        || !super::super::finalize_controls(view, cx)
-    {
+    if operator >= 4 || !owner.is_current(view) || !super::super::finalize_controls(view, cx) {
         return false;
     }
     let current = view
@@ -112,10 +108,7 @@ pub(super) fn select_page(
     owner: Owner,
     page: OperatorPage,
 ) -> bool {
-    if !owner.is_current(view)
-        || !super::preview::finalize_controls(view, cx, owner.device)
-        || !super::super::finalize_controls(view, cx)
-    {
+    if !owner.is_current(view) || !super::super::finalize_controls(view, cx) {
         return false;
     }
     let state = view

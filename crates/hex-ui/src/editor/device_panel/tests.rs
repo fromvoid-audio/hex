@@ -1784,7 +1784,7 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         .expect("right side control column");
     assert!(shell.origin.x + shell.size.width <= detail.origin.x);
     assert!(detail.origin.x + detail.size.width <= preview.origin.x);
-    for section in ["lfo", "filter", "pitch env", "global"] {
+    for section in ["lfo", "filter", "global"] {
         let row = visual
             .debug_bounds(Box::leak(
                 format!("operator-preview-row-{}-{section}", instrument_id.value())
@@ -1795,31 +1795,23 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         assert!(row.origin.x >= preview.origin.x);
         assert!(row.origin.x + row.size.width <= preview.origin.x + preview.size.width);
     }
-    for field in operator_panel::preview::Field::ALL {
-        let field = field as usize;
-        let control = visual
-            .debug_bounds(Box::leak(
-                format!("operator-preview-{}-{field}", instrument_id.value()).into_boxed_str(),
-            ))
-            .expect("right-side shared micro dial");
-        assert_eq!(control.size.width, px(hex_widgets::MICRO_DIAL_WIDTH));
-        assert_eq!(control.size.height, px(40.0));
+    for field in 0..6 {
+        assert!(
+            visual
+                .debug_bounds(Box::leak(
+                    format!("operator-preview-{}-{field}", instrument_id.value()).into_boxed_str()
+                ))
+                .is_none(),
+            "native Vector omits unsupported preview dials"
+        );
     }
-    // Three-dial sections start beside the narrow switch/icon column,
-    // rather than inheriting the LFO/filter selector column.
-    for field in [
-        operator_panel::preview::Field::PitchEnvelope,
-        operator_panel::preview::Field::Time,
-    ] {
-        let field = field as usize;
-        let control = visual
+    assert!(
+        visual
             .debug_bounds(Box::leak(
-                format!("operator-preview-{}-{field}", instrument_id.value()).into_boxed_str(),
+                format!("operator-preview-{}-toggle-0", instrument_id.value()).into_boxed_str()
             ))
-            .expect("three-dial row starts next to its icon");
-        assert!(control.origin.x - preview.origin.x >= px(40.0));
-        assert!(control.origin.x - preview.origin.x < px(54.0));
-    }
+            .is_none()
+    );
     // Keep the narrow-window geometry checks above, then expose the right rail
     // before testing a mouse click on the wider companion inspector.
     visual.simulate_resize(size(px(1440.0), px(540.0)));
@@ -1860,20 +1852,6 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     let envelope_bounds = visual.debug_bounds(envelope_tab).expect("amp envelope tab");
     visual.simulate_click(envelope_bounds.center(), Modifiers::default());
     visual.run_until_parked();
-    let revision = editor.read_with(cx, |view, _| {
-        view.state.as_ref().expect("project state").revision
-    });
-    let pitch_toggle =
-        Box::leak(format!("operator-preview-{}-toggle-0", instrument_id.value()).into_boxed_str());
-    let bounds = visual
-        .debug_bounds(pitch_toggle)
-        .expect("local pitch toggle");
-    visual.simulate_click(bounds.center(), Modifiers::default());
-    visual.run_until_parked();
-    editor.read_with(cx, |view, _| {
-        assert!(!view.device_panel.operator_previews[&instrument_id].enabled[0]);
-        assert_eq!(view.state.as_ref().unwrap().revision, revision);
-    });
     visual.simulate_resize(size(px(1440.0), px(540.0)));
     visual.run_until_parked();
     editor.update(cx, |view, cx| {
