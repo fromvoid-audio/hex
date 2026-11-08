@@ -128,7 +128,9 @@ impl Config {
 }
 /// Exact immutable target authority; custody remains with the prepared graph.
 struct Retarget {
-    target: Config,
+    identity: [u8; PAYLOAD_BYTES],
+    tuning: hex_lattice::TuningTable,
+    sample_rate: u32,
 }
 impl PreparedInstrumentHistoryRetarget for Retarget {
     fn declared_fixed_storage_bytes(&self) -> usize {
@@ -361,7 +363,9 @@ impl PreparedMutableInstrumentRuntime for Factory {
     ) -> Result<InstrumentHistoryRetargetPreparation, DeviceContractError> {
         Ok(InstrumentHistoryRetargetPreparation::Prepared(Box::new(
             Retarget {
-                target: self.config,
+                identity: self.config.identity,
+                tuning: self.config.tuning,
+                sample_rate: self.config.sample_rate,
             },
         )))
     }
@@ -468,11 +472,7 @@ impl MutableInstrumentRuntime for Runtime {
         previous
             .as_any()
             .downcast_ref::<Self>()
-            .is_some_and(|previous| {
-                self.config.identity == previous.config.identity
-                    && self.config.tuning == previous.config.tuning
-                    && self.config.sample_rate == previous.config.sample_rate
-            })
+            .is_some_and(|previous| self.config.same_target(&previous.config))
     }
     fn copy_history_from(&mut self, previous: &dyn MutableInstrumentRuntime) {
         if let Some(previous) = previous.as_any().downcast_ref::<Self>() {
@@ -493,7 +493,9 @@ impl MutableInstrumentRuntime for Runtime {
         ) else {
             return false;
         };
-        self.config.same_target(&proof.target)
+        (self.config.identity == proof.identity
+            && self.config.tuning == proof.tuning
+            && self.config.sample_rate == proof.sample_rate)
             && self.config.sample_rate == previous.config.sample_rate
             && self.config.identity[..CARRIER_START] == previous.config.identity[..CARRIER_START]
             && self.config.identity[CARRIER_END..] == previous.config.identity[CARRIER_END..]
