@@ -5,7 +5,8 @@ use std::path::Path;
 
 /// Copy a failed writer's validated prefix and retained suffix to a new interrupted draft.
 /// The original file and borrowed batches remain owned by the caller on every outcome.
-/// At most `max_events` records are scanned or copied, plus one record to detect overflow.
+/// Each scan and the copy is capped at `max_events`; opening reads one extra record
+/// to detect overflow. Revalidation and output verification make multiple passes.
 /// This checkpoint is not an adoptable completed take and does not include later receipts.
 /// File operations and sync can block; the caller must keep them off the audio callback
 /// and arrange worker custody if its control loop must remain responsive. A failure after
