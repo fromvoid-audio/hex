@@ -198,6 +198,7 @@ pub(super) enum ControlPresentation {
     ChoiceDial,
     CompactButton,
     CompactSelector,
+    CompactConfirmSelector,
     CompactWideSelector,
     CompactSegments { columns: usize },
 }
@@ -491,6 +492,10 @@ pub(super) fn render_parameter(
                     }
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(tab_navigation, cx);
+                    control.set_confirm_on_enter(
+                        presentation == ControlPresentation::CompactConfirmSelector,
+                        cx,
+                    );
                     if let Some(index) = values.iter().position(|candidate| *candidate == value) {
                         let _ = control.set_selected(index, cx);
                     }
@@ -517,11 +522,16 @@ pub(super) fn render_parameter(
                     }
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(tab_navigation, cx);
+                    control.set_confirm_on_enter(
+                        presentation == ControlPresentation::CompactConfirmSelector,
+                        cx,
+                    );
                 });
             }
             let (width, height) = match presentation {
                 ControlPresentation::ChoiceDial => (64.0, 52.0),
-                ControlPresentation::CompactSelector => (64.0, 14.0),
+                ControlPresentation::CompactSelector
+                | ControlPresentation::CompactConfirmSelector => (64.0, 14.0),
                 ControlPresentation::CompactWideSelector => (120.0, 14.0),
                 ControlPresentation::CompactSegments { columns } => (
                     64.0,
@@ -810,7 +820,9 @@ fn create_parameter_control(
                 .map(|index| theme::text(labels[*index as usize]));
             let appearance = if matches!(
                 presentation,
-                ControlPresentation::CompactSelector | ControlPresentation::CompactWideSelector
+                ControlPresentation::CompactSelector
+                    | ControlPresentation::CompactConfirmSelector
+                    | ControlPresentation::CompactWideSelector
             ) {
                 SelectorAppearance::CompactSelector
             } else if presentation == ControlPresentation::ChoiceDial {

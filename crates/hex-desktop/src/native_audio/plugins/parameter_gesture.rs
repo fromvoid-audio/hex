@@ -104,6 +104,7 @@ fn admit<T>(
                 | "native controller query is already pending"
                 | "native source is busy",
             ) if Instant::now() < deadline => edits::poll_control(control),
+            Err(reason) if source_gone(reason) => return Err(lost()),
             result => return result.map_err(refused),
         }
     }

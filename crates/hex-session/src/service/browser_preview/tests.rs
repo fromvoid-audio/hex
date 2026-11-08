@@ -65,9 +65,11 @@ fn waveform_at_another_rate_is_the_unconverted_source_summary() {
     let expected = summarize_peaks(&source, BROWSER_PREVIEW_BINS).unwrap();
     let preview = waveform(&path, 48_000).unwrap();
     let converted = hex_project::converted_frame_count(10_000, 44_100, 48_000).unwrap();
-    assert_eq!(preview.waveform.bins, expected.bins);
+    assert!(expected.has_identical_channels());
+    assert!(preview.waveform.has_identical_channels());
+    assert_eq!(preview.waveform.bins(), expected.bins());
     assert_eq!(preview.playback_frames, converted);
-    assert_eq!(preview.waveform.source_frames as u64, converted);
+    assert_eq!(preview.waveform.source_frames() as u64, converted);
     assert_eq!(
         playback(&path, 48_000).unwrap().frames().len() as u64,
         converted
@@ -227,8 +229,8 @@ fn browser_preview_keeps_full_audio_above_old_byte_and_frame_limits() {
     let preview = waveform(&path, 48_000).unwrap();
     assert_eq!(preview.playback_frames, frames as u64);
     assert_eq!(preview.sample_rate, 48_000);
-    assert_eq!(preview.waveform.source_frames, frames);
-    assert!(preview.waveform.bins.len() <= BROWSER_PREVIEW_BINS);
+    assert_eq!(preview.waveform.source_frames(), frames);
+    assert!(preview.waveform.bins().len() <= BROWSER_PREVIEW_BINS);
     assert_eq!(
         preview
             .waveform
@@ -292,9 +294,9 @@ fn browser_audio_preview_reports_converted_bounded_waveform_metadata() {
         let preview = waveform(&path, 24_000).expect("prepare preview");
         assert_eq!(preview.playback_frames, 48);
         assert_eq!(preview.sample_rate, 24_000);
-        assert_eq!(preview.waveform.source_frames, 48);
-        assert!(preview.waveform.bins.len() <= BROWSER_PREVIEW_BINS);
-        assert!(!preview.waveform.bins.is_empty());
+        assert_eq!(preview.waveform.source_frames(), 48);
+        assert!(preview.waveform.bins().len() <= BROWSER_PREVIEW_BINS);
+        assert!(!preview.waveform.bins().is_empty());
         let pcm = playback(&path, 24_000).expect("prepare playback");
         assert_eq!(pcm.sample_rate(), 24_000);
         assert_eq!(pcm.frames().len(), 48);
@@ -316,8 +318,8 @@ fn browser_preview_has_detail_beyond_legacy_48_bars_and_keeps_edge_transients() 
     frames[8194] = -16_000;
     fs::write(&path, wav_mono(&frames)).unwrap();
     let preview = waveform(&path, 48_000).unwrap();
-    assert_eq!(preview.waveform.bins.len(), 4096);
-    assert_eq!(preview.waveform.source_frames, 8195);
+    assert_eq!(preview.waveform.bins().len(), 4096);
+    assert_eq!(preview.waveform.source_frames(), 8195);
     let first = preview.waveform.peaks_for_frames(0, 2).unwrap();
     assert_eq!(first, [hex_media::waveform::Peak { min: 0.0, max: 0.0 }; 2]);
     let middle = preview.waveform.peaks_for_frames(4097, 4098).unwrap();

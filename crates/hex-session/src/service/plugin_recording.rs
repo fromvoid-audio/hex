@@ -12,6 +12,9 @@ use std::time::{Duration, Instant};
 pub(super) struct State {
     active: Option<Active>,
     terminal: Option<GestureRequest>,
+    // A sealed interrupted source may retire before the actor's terminal is
+    // dispatched. Retain its resource-free identity until that actor retires.
+    retired: Option<crate::device_gesture::GestureKey>,
     // Keep any unadmitted original receipt after failure. New recording must
     // not reuse this custody; the Lane independently retains its writer input.
     failed: Option<Active>,
@@ -66,13 +69,36 @@ fn snapshot(operation: PluginGesturePreparation) -> GestureSnapshot {
     }
 }
 impl State {
+    pub(super) fn terminal_for(&self, snapshot: Option<GestureSnapshot>) -> Option<GestureRequest> {
+        let snapshot = snapshot
+            .filter(|snapshot| self.owns(Some(*snapshot)) || self.retired == Some(snapshot.key))?;
+        self.terminal.or_else(|| {
+            Some(GestureRequest::CommitPlugin {
+                key: snapshot.key,
+                sequence: snapshot.sequence.max(1),
+                value: snapshot.plugin_value?,
+            })
+        })
+    }
     pub(super) fn owns(&self, snapshot: Option<GestureSnapshot>) -> bool {
         self.active
             .as_ref()
             .zip(snapshot)
             .is_some_and(|(active, snapshot)| active.key == snapshot.key)
     }
+    pub(super) fn actor_began(&mut self) {
+        self.retired = None;
+    }
     pub(super) fn attempt(&mut self, request: GestureRequest) {
+        if self.retired == Some(request.key())
+            && matches!(
+                request.phase(),
+                crate::device_gesture::GesturePhase::Commit
+                    | crate::device_gesture::GesturePhase::Cancel
+            )
+        {
+            self.retired = None;
+        }
         if self.terminal.is_some_and(|pending| {
             pending.key() == request.key()
                 && pending.phase() == request.phase()
@@ -104,17 +130,14 @@ impl State {
 }
 impl Preparation<'_> {
     pub(super) fn handles(&self, operation: PluginGesturePreparation) -> bool {
-        matches!(
-            operation,
-            PluginGesturePreparation::Begin {
-                recording: true,
-                ..
-            }
-        ) || self
-            .state
+        if let PluginGesturePreparation::Begin { recording, .. } = operation {
+            return recording;
+        }
+        self.state
             .active
             .as_ref()
             .is_some_and(|active| active.key == snapshot(operation).key)
+            || self.state.retired == Some(snapshot(operation).key)
     }
     fn pending_result(&mut self) -> PreparedGesture {
         self.deferred = self.may_defer;
@@ -143,6 +166,11 @@ impl Preparation<'_> {
             });
         }
         self.drive(session, context, sink);
+        if self.state.retired == Some(snapshot(operation).key) {
+            return Some(Err(SessionError::PluginSourceLost(
+                "vst3 recording source ended · original take retained for recovery".into(),
+            )));
+        }
         if self
             .state
             .active
@@ -286,6 +314,7 @@ impl Preparation<'_> {
                     outcome: None,
                     deadline: None,
                 });
+                self.state.retired = None;
                 Ok::<_, String>(())
             })();
             if let Err(reason) = admitted {
@@ -484,6 +513,7 @@ impl Preparation<'_> {
                 && active.outcome.is_some()
         }) && let Some(active) = self.state.active.take()
         {
+            self.state.retired = Some(active.key);
             // The original terminal is still owed an exact acknowledgement.
             // Keep it until its synthetic attempt, even after source custody ends.
             if active.pending.is_some()

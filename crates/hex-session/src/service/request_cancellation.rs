@@ -6,6 +6,7 @@ use std::sync::atomic::AtomicU64;
 
 pub(super) struct QueuedRequest {
     pub request: Request,
+    pub recording_barrier: Option<super::recording_barrier::Completion>,
     pub(super) publication_wait_failure: Option<&'static str>,
     pub(super) publication_waited: bool,
     pub document_intent: u64,
@@ -17,6 +18,7 @@ impl QueuedRequest {
     pub(super) fn continuation(request: Request, intent: &AtomicU64) -> Self {
         Self {
             request,
+            recording_barrier: None,
             publication_wait_failure: None,
             publication_waited: false,
             document_intent: intent.load(Ordering::Acquire),
@@ -127,6 +129,7 @@ impl Sender {
         };
         match self.channel.try_send(QueuedRequest {
             request,
+            recording_barrier: None,
             publication_wait_failure: None,
             publication_waited: false,
             document_intent: intent,

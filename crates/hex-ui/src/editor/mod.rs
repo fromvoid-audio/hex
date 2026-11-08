@@ -580,8 +580,8 @@ fn bind_editor_keys(cx: &mut App) {
             DeleteClip,
             Some("hex_editor && !hex_text_editing && !hex_text_input && !hex_device_selection && !hex_response_graph_remove && !hex_track_header"),
         ),
-        KeyBinding::new("cmd-backspace", DeleteSectionMarker, Some("hex_editor")),
-        KeyBinding::new("cmd-delete", DeleteSectionMarker, Some("hex_editor")),
+        KeyBinding::new("alt-cmd-backspace", DeleteSectionMarker, Some("hex_editor")),
+        KeyBinding::new("alt-cmd-delete", DeleteSectionMarker, Some("hex_editor")),
         KeyBinding::new(
             "g",
             GroupSelection,
@@ -642,6 +642,7 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("shift-down", MidiOctaveDown, Some("hex_midi")),
     ]);
     hex_widgets::bind_numeric_control_keys(cx);
+    hex_widgets::bind_selector_keys(cx);
     hex_widgets::bind_text_input_keys(cx);
     // Background clip shortcuts have no target while the foreground gain lanes
     // own Arrangement focus. Child text, MIDI and event contexts keep their keys.

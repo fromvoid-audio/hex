@@ -82,7 +82,7 @@ pub use dial::{
 };
 pub use discrete::{
     Selector, SelectorAppearance, SelectorChanged, SelectorConfig, Toggle, ToggleAppearance,
-    ToggleChanged, ToggleConfig, panel_tab,
+    ToggleChanged, ToggleConfig, bind_selector_keys, panel_tab,
 };
 pub use frame::{
     DEVICE_BODY_INSET, DEVICE_FRAME_BORDER_WIDTH, DEVICE_FRAME_HEADER_GAP,

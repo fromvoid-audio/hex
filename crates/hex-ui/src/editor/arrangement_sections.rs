@@ -3,13 +3,14 @@
 //! Project owns section identity, validation and song-wide permutation. This
 //! module projects marker geometry and gesture-owned feedback. Release transfers immutable paint to
 //! an ordinary FIFO receipt; Escape/blur cancel held input, never admitted work.
-//! Command before or during capture latches marker-only intent independently of
-//! Control's live snapping. Option-drag copies song content at structural edges.
+//! Option-Command before or during capture latches marker-only intent. Command
+//! alone live-inverts snapping; Control remains a snap alias, including marker
+//! edits. Option alone copies song content at structural edges.
 //! Leaving the lane retains the last valid preview. Body moves/copies use the
 //! existing Window pointer lease; its painted cursor follows the held command,
 //! while released preview custody remains independent of input capture.
 //! Five-pixel inner edges resize one section; a touching seam resizes both, or
-//! the left marker's end under Command. Paint and input share native bracket cursors.
+//! the left marker's end under Option-Command. Paint and input share native bracket cursors.
 //! Shift-click selects the song-order range from the last plain-clicked anchor;
 //! Command+Shift-click toggles membership and moves the anchor. Header drags own
 //! section edits; ordinary lower-body drags use Main's all-track range owner,
@@ -778,8 +779,9 @@ impl EditorView {
     ) -> bool {
         let intent = RectangleSelectionPolicy::Section.intent(modifiers);
         let extend = intent != RectangleSelection::Replace;
-        let free = modifiers.control;
-        let marker_only = modifiers.platform;
+        let edit = section_input::EditModifiers::from(modifiers);
+        let free = edit.invert_snap;
+        let marker_only = edit.marker_only;
         let launch_eligible =
             self.section_autoplay && !double && !extend && !marker_only && !free && !modifiers.alt;
         // This capture also sees clicks on track headers and the focus toggle.
@@ -957,7 +959,7 @@ impl EditorView {
         });
         self.select_section_metadata(id);
         self.status = if matches!(mode, Mode::Reorder(_)) {
-            "section drag · reorder song content · option copies · command edits markers only"
+            "section drag · reorder song content · option copies · option-command edits markers only · command toggles snap"
         } else if matches!(
             mode,
             Mode::ContentStart(_)
@@ -967,7 +969,7 @@ impl EditorView {
                     ..
                 }
         ) {
-            "section resize · crossed time becomes empty · command preserves music"
+            "section resize · crossed time becomes empty · option-command preserves music"
         } else {
             "section marker edit · musical content stays in place"
         }
@@ -981,15 +983,16 @@ impl EditorView {
         y: f32,
         modifiers: gpui::Modifiers,
     ) -> bool {
-        let free = modifiers.control;
+        let edit = section_input::EditModifiers::from(modifiers);
+        let free = edit.invert_snap;
         let Some(mut g) = self.sections.gesture.take() else {
             return false;
         };
         if !self.section_current(&g) || self.section_layout().is_none() {
             return true;
         }
-        if modifiers.platform {
-            // One-way marker intent prevents releasing Command from unexpectedly
+        if edit.marker_only {
+            // One-way marker intent prevents releasing Option-Command from unexpectedly
             // turning a preview into a destructive song-content permutation.
             g.mode = match g.mode {
                 Mode::Reorder(id) => Mode::Move(id),
@@ -1000,7 +1003,7 @@ impl EditorView {
             };
             g.launch_eligible = false;
         }
-        if modifiers.alt || modifiers.control {
+        if edit.copy_content || edit.invert_snap {
             g.launch_eligible = false;
         }
         if g.capture.update(x).is_none() {
@@ -1041,7 +1044,8 @@ impl EditorView {
                     .section_pointer(g.last_pointer.0, g.last_pointer.1, true)
                     .unwrap_or(beat);
                 if g.capture.displaced(4.0) {
-                    match section_reorder::preview(&state.project, id, raw_beat, modifiers.alt) {
+                    match section_reorder::preview(&state.project, id, raw_beat, edit.copy_content)
+                    {
                         Ok(Some(preview)) => {
                             g.display.markers =
                                 preview.sections().iter().map(Marker::from).collect();
@@ -1844,7 +1848,7 @@ impl EditorView {
                 action: make(MenuKind::Rename),
             },
             MenuItem {
-                label: "remove marker only · command-delete",
+                label: "remove marker only · option-command-delete",
                 swatch: None,
                 checked: false,
                 action: make(MenuKind::Remove),
@@ -2031,7 +2035,7 @@ impl EditorView {
                 .w_full()
                 .tooltip(|_, cx| {
                     cx.new(|_| super::waveform::ClipTooltip { kind: crate::tooltips::Kind::Help,
-                        name: "header: select/reorder · body: time selection · inner edge: resize one · seam: resize both · option: copy · command: markers only · control: snap · shift-click: select range · cmd-shift-click: toggle · g: merge · cmd-d: duplicate · e: split"
+                        name: "header: select/reorder · body: time selection · inner edge: resize one · seam: resize both · option: copy · option-command: markers only · command: snap · shift-click: select range · cmd-shift-click: toggle · g: merge · cmd-d: duplicate · e: split"
                             .into(),
                     })
                     .into()
@@ -2527,7 +2531,7 @@ pub(super) mod tests {
                     if section == ids[0] && target == ids[1]));
                 assert_eq!(view.state.as_ref().unwrap().project, before);
             });
-            // Option is live copy intent, unlike latched marker-only Command.
+            // Option is live copy intent, unlike latched marker-only Option-Command.
             visual.simulate_modifiers_change(Modifiers::default());
             visual.run_until_parked();
             assert_eq!(
@@ -2691,7 +2695,7 @@ pub(super) mod tests {
         }
     }
     #[gpui::test]
-    fn command_drag_replaces_overlapped_markers_and_retains_preview_until_actual_ack(
+    fn option_command_drag_replaces_overlapped_markers_and_retains_preview_until_actual_ack(
         cx: &mut TestAppContext,
     ) {
         let (handle, editor, ids) = fixture(cx);
@@ -2703,10 +2707,11 @@ pub(super) mod tests {
         let (from, to) = editor.read_with(cx, |view, _| (position(view, 2), position(view, 9)));
         let marker_modifier = Modifiers {
             platform: true,
+            alt: true,
             ..Modifiers::default()
         };
         // Start a structural copy, then switch to marker adjustment without
-        // moving the pointer. Command must replace the insertion-edge preview.
+        // moving the pointer. Option-Command replaces the insertion-edge preview.
         let copy = Modifiers {
             alt: true,
             ..Modifiers::default()
@@ -2789,7 +2794,7 @@ pub(super) mod tests {
     }
 
     #[gpui::test]
-    fn command_resize_live_modifier_carves_both_edges_and_commits_outside_lane(
+    fn option_command_resize_live_modifier_carves_both_edges_and_commits_outside_lane(
         cx: &mut TestAppContext,
     ) {
         for (left, late) in [(false, false), (false, true), (true, false), (true, true)] {
@@ -2811,6 +2816,7 @@ pub(super) mod tests {
             });
             let marker_modifier = Modifiers {
                 platform: true,
+                alt: true,
                 ..Modifiers::default()
             };
             visual.simulate_mouse_down(
@@ -2894,7 +2900,7 @@ pub(super) mod tests {
     }
 
     #[gpui::test]
-    fn command_move_latches_marker_mode_and_preserves_control_snap_inversion(
+    fn option_command_move_latches_marker_mode_and_preserves_control_snap_inversion(
         cx: &mut TestAppContext,
     ) {
         let (handle, editor, ids) = fixture(cx);
@@ -2914,10 +2920,11 @@ pub(super) mod tests {
                 MouseButton::Left,
                 Modifiers {
                     platform: true,
+                    alt: true,
                     ..Modifiers::default()
                 },
             );
-            // Releasing Command during capture must not turn this into a music edit.
+            // Releasing Option-Command must not turn this into a music edit.
             visual.simulate_mouse_move(
                 to,
                 MouseButton::Left,
@@ -3082,6 +3089,7 @@ pub(super) mod tests {
             MouseButton::Left,
             Modifiers {
                 platform: true,
+                alt: true,
                 ..Modifiers::default()
             },
         );
@@ -3091,6 +3099,7 @@ pub(super) mod tests {
             MouseButton::Left,
             Modifiers {
                 platform: true,
+                alt: true,
                 ..Modifiers::default()
             },
         );
@@ -3117,6 +3126,7 @@ pub(super) mod tests {
         let (anchor, destination) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 3)));
         let alt = Modifiers {
             platform: true,
+            alt: true,
             ..Modifiers::default()
         };
         visual.simulate_mouse_down(anchor, MouseButton::Left, alt);
@@ -4051,7 +4061,7 @@ pub(super) mod tests {
         });
     }
     #[gpui::test]
-    fn command_move_changes_canonical_marker_without_moving_music(cx: &mut TestAppContext) {
+    fn option_command_move_changes_canonical_marker_without_moving_music(cx: &mut TestAppContext) {
         let (handle, editor, ids) = fixture(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
@@ -4061,6 +4071,7 @@ pub(super) mod tests {
         let (down, to) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 3)));
         let modifiers = Modifiers {
             platform: true,
+            alt: true,
             ..Modifiers::default()
         };
         visual.simulate_mouse_down(down, MouseButton::Left, modifiers);
@@ -4377,7 +4388,7 @@ pub(super) mod tests {
         let tracks = editor.read_with(cx, |v, _| {
             v.state.as_ref().unwrap().project.tracks().to_vec()
         });
-        visual.simulate_keystrokes("cmd-backspace");
+        visual.simulate_keystrokes("alt-cmd-backspace");
         let terminal = editor.update(cx, |v, _| next(&v.service));
         assert!(terminal.error.is_none(), "{:?}", terminal.error);
         editor.update(cx, |v, cx| {
@@ -4710,7 +4721,46 @@ pub(super) mod tests {
         }
     }
     #[gpui::test]
-    fn control_only_inverts_snap_and_command_independently_selects_marker_resize(
+    fn command_snap_changes_live_without_entering_marker_mode(cx: &mut TestAppContext) {
+        let (handle, editor, ids) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let edge = bounds(&mut visual, 0);
+        let down = point(edge.right() - px(1.0), edge.center().y);
+        let to = editor.read_with(cx, |v, _| {
+            let a = position(v, 6);
+            let b = position(v, 7);
+            point(a.x + (b.x - a.x) * 0.37, a.y)
+        });
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+        for free in [false, true, false, true] {
+            visual.simulate_modifiers_change(Modifiers {
+                platform: free,
+                ..Modifiers::default()
+            });
+            editor.read_with(cx, |v, _| {
+                let Some(Command::ResizeArrangementSectionEdge {
+                    section, boundary, ..
+                }) = &v.sections.gesture.as_ref().unwrap().command
+                else {
+                    panic!("command must invert snapping without selecting marker editing");
+                };
+                assert_eq!(*section, ids[0]);
+                if free {
+                    assert!(*boundary > BeatTime::from_quarters(6).unwrap());
+                    assert!(*boundary < BeatTime::from_quarters(7).unwrap());
+                } else {
+                    assert_eq!(*boundary, BeatTime::from_quarters(6).unwrap());
+                }
+            });
+        }
+        visual.simulate_keystrokes("escape");
+        editor.read_with(cx, |v, _| assert!(v.sections.gesture.is_none()));
+    }
+
+    #[gpui::test]
+    fn control_alias_inverts_snap_and_option_command_selects_marker_resize(
         cx: &mut TestAppContext,
     ) {
         let (handle, editor, ids) = fixture(cx);
@@ -4727,6 +4777,7 @@ pub(super) mod tests {
                 });
                 let modifiers = Modifiers {
                     platform: marker_only,
+                    alt: marker_only,
                     control: free,
                     ..Modifiers::default()
                 };
@@ -4768,7 +4819,7 @@ pub(super) mod tests {
     }
 
     #[gpui::test]
-    fn shared_seam_drags_publish_both_edges_atomically_and_command_preserves_music(
+    fn shared_seam_drags_publish_both_edges_atomically_and_option_command_preserves_music(
         cx: &mut TestAppContext,
     ) {
         for marker_only in [false, true] {
@@ -4781,6 +4832,7 @@ pub(super) mod tests {
             let to = editor.read_with(cx, |v, _| position(v, 5));
             let modifiers = Modifiers {
                 platform: marker_only,
+                alt: marker_only,
                 ..Modifiers::default()
             };
             visual.simulate_mouse_down(down, MouseButton::Left, modifiers);
@@ -4865,7 +4917,9 @@ pub(super) mod tests {
         }
     }
     #[gpui::test]
-    fn command_after_shared_seam_capture_can_resize_past_the_neighbor(cx: &mut TestAppContext) {
+    fn option_command_after_shared_seam_capture_can_resize_past_the_neighbor(
+        cx: &mut TestAppContext,
+    ) {
         let (handle, editor, ids) = touching_fixture(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
@@ -4875,6 +4929,7 @@ pub(super) mod tests {
         let to = editor.read_with(cx, |v, _| position(v, 10));
         let marker_modifier = Modifiers {
             platform: true,
+            alt: true,
             ..Modifiers::default()
         };
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
@@ -4922,6 +4977,7 @@ pub(super) mod tests {
                 let to = editor.read_with(cx, |v, _| position(v, target));
                 let modifiers = Modifiers {
                     platform: marker_only,
+                    alt: marker_only,
                     ..Modifiers::default()
                 };
                 visual.simulate_mouse_down(down, MouseButton::Left, modifiers);
@@ -5089,7 +5145,7 @@ pub(super) mod tests {
                     point(a.x + (b.x - a.x) * 0.37, a.y)
                 });
                 let modifiers = Modifiers {
-                    control: free,
+                    platform: free,
                     ..Modifiers::default()
                 };
                 visual.simulate_mouse_down(at, MouseButton::Left, modifiers);
@@ -5109,7 +5165,7 @@ pub(super) mod tests {
         );
         assert_ne!(
             beats[3], beats[2],
-            "Control with snap off enables adaptive snapping"
+            "Command with snap off enables adaptive snapping"
         );
         editor.update(cx, |v, cx| {
             let track = v.state.as_ref().unwrap().project.tracks()[0].id();
@@ -5718,6 +5774,7 @@ pub(super) mod tests {
     fn resize_keeps_one_selected_surface_every_frame_through_delayed_ack(cx: &mut TestAppContext) {
         let platform = Modifiers {
             platform: true,
+            alt: true,
             ..Modifiers::default()
         };
         let alt = Modifiers {
