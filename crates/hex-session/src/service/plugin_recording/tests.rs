@@ -478,3 +478,97 @@ fn source_loss_drains_original_then_interruption_and_releases_the_completed_writ
     );
     assert_eq!(session.project(), &before);
 }
+
+#[test]
+fn retiring_a_source_preserves_its_deferred_terminal_until_the_exact_attempt() {
+    let (_files, mut session, scope, source) = fixture();
+    let mut state = active(scope, source);
+    let snapshot = gesture(scope);
+    let request = GestureRequest::CommitPlugin {
+        key: snapshot.key,
+        sequence: 7,
+        value: PluginParameterValue::new(0.75).unwrap(),
+    };
+    state.defer(request);
+    let active = state.active.as_mut().unwrap();
+    active.source_lost = true;
+    active.ended = true;
+    active.outcome = Some(Ok(Step::Progress(DeviceAutomationTakeProgress::Retained(
+        active.path.clone(),
+    ))));
+    let mut lane = Lane::default();
+    let mut sink = Sink::default();
+    Preparation {
+        state: &mut state,
+        lane: &mut lane,
+        document_base: None,
+        recovery: None,
+        may_defer: false,
+        deferred: false,
+    }
+    .drive(&session, scope.context(), &mut sink);
+    assert!(!state.pending());
+    assert_eq!(
+        state
+            .ready()
+            .map(|pending| (pending.key(), pending.phase(), pending.sequence())),
+        Some((request.key(), request.phase(), request.sequence()))
+    );
+    let DeviceCaptureTarget::Vst3(target) = scope.target else {
+        panic!("foreign fixture");
+    };
+    let begin = PluginGesturePreparation::Begin {
+        snapshot,
+        recording: true,
+        origin: crate::device_gesture::PluginParameterOrigin {
+            context: scope.context(),
+            device: target.device,
+            parameter: target.parameter,
+            page_first: 0,
+            metadata_revision: 1,
+            initial: snapshot.plugin_value.unwrap(),
+        },
+    };
+    let mut prep = Preparation {
+        state: &mut state,
+        lane: &mut lane,
+        document_base: None,
+        recovery: None,
+        may_defer: false,
+        deferred: false,
+    };
+    assert!(
+        prep.before(
+            &mut session,
+            begin,
+            scope.context(),
+            &mut sink,
+            &mut None,
+            sampler_export::Admission::default()
+        )
+        .is_some(),
+        "a new Begin must not overwrite an admitted terminal still awaiting its attempt"
+    );
+    state.attempt(request);
+    assert!(state.ready().is_none());
+    let mut prep = Preparation {
+        state: &mut state,
+        lane: &mut lane,
+        document_base: None,
+        recovery: None,
+        may_defer: false,
+        deferred: false,
+    };
+    assert!(
+        prep.before(
+            &mut session,
+            begin,
+            scope.context(),
+            &mut sink,
+            &mut None,
+            sampler_export::Admission::default()
+        )
+        .is_none()
+    );
+    assert_eq!(sink.restorations, 0);
+}
