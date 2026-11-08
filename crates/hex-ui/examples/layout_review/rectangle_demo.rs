@@ -65,6 +65,7 @@ pub(super) struct RectangleDemo {
     section_command: Option<Command>,
     section_error: Option<&'static str>,
     section_marker_latched: bool,
+    section_focus: bool,
     section_anchor_beat: Option<BeatTime>,
     section_last_pointer: Option<(f32, f32)>,
     section_released_hover: crate::section_surface::Hover,
@@ -114,6 +115,7 @@ impl RectangleDemo {
             section_command: None,
             section_error: None,
             section_marker_latched: false,
+            section_focus: false,
             section_anchor_beat: None,
             section_last_pointer: None,
             section_released_hover: crate::section_surface::Hover::default(),
@@ -986,6 +988,16 @@ impl Render for RectangleDemo {
                     hovered,
                 )
                 .cursor(RectanglePart::Body.cursor())
+                .children((self.section_focus && selected).then(|| {
+                    crate::section_surface::focus::overlay(
+                        identity,
+                        crate::section_surface::CHAMFER,
+                    )
+                    .debug_selector({
+                        let id = self.id.clone();
+                        move || format!("{id}-section-focus-{index}")
+                    })
+                }))
                 .child(
                     crate::section_surface::header(identity, selected, hovered, 14.0)
                         .debug_selector({
@@ -994,13 +1006,7 @@ impl Render for RectangleDemo {
                         })
                         .child(theme::text(section_paint.get(index).map_or_else(
                             || "section".to_owned(),
-                            |section| {
-                                if selected {
-                                    format!("✓ {}", section.name())
-                                } else {
-                                    section.name().to_owned()
-                                }
-                            },
+                            |section| section.name().to_owned(),
                         ))),
                 )
             } else {
@@ -1171,6 +1177,12 @@ impl Render for RectangleDemo {
             ))
             .on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, _, cx| {
                 match event.keystroke.key.as_str() {
+                    "q" if view.kind == Kind::Section && !event.keystroke.modifiers.modified() => {
+                        if !event.is_held {
+                            view.section_focus = !view.section_focus;
+                            cx.notify();
+                        }
+                    }
                     "escape" => view.cancel(cx),
                     "enter" => view.settle(true, cx),
                     "backspace" => view.settle(false, cx),
@@ -1180,6 +1192,9 @@ impl Render for RectangleDemo {
             }))
             .child(area)
             .child(theme::text(self.status))
+            .children(
+                (self.kind == Kind::Section).then(|| theme::text("q toggles section focus paint")),
+            )
             .child(
                 div()
                     .flex()
@@ -1210,6 +1225,55 @@ impl Render for RectangleDemo {
 mod tests {
     use super::*;
     use gpui::{TestAppContext, VisualTestContext, point};
+    #[gpui::test]
+    fn q_previews_shared_section_focus_without_editing_the_project(cx: &mut TestAppContext) {
+        let handle =
+            cx.add_window(|_, cx| RectangleDemo::new(Kind::Section, "focus-fixture".into(), cx));
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.update(|window, cx| {
+            view.update(cx, |v, cx| {
+                v.selected = vec![0];
+                v.focus.focus(window);
+                cx.notify();
+            })
+        });
+        visual.run_until_parked();
+        let before = view.read_with(cx, |v, _| {
+            v.section_fixture.as_ref().unwrap().project().snapshot()
+        });
+        assert!(
+            visual
+                .debug_bounds("focus-fixture-section-focus-0")
+                .is_none()
+        );
+        visual.simulate_keystrokes("q");
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("focus-fixture-section-focus-0")
+                .is_some()
+        );
+        assert!(
+            visual
+                .debug_bounds("focus-fixture-section-focus-1")
+                .is_none()
+        );
+        visual.simulate_keystrokes("q");
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("focus-fixture-section-focus-0")
+                .is_none()
+        );
+        view.read_with(cx, |v, _| {
+            assert_eq!(
+                v.section_fixture.as_ref().unwrap().project().snapshot(),
+                before
+            )
+        });
+    }
+
     #[gpui::test]
     fn time_range_body_repaints_while_upper_rail_moves_and_pending_survives_cancel(
         cx: &mut TestAppContext,

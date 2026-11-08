@@ -652,8 +652,29 @@ pub fn clip_activity_fill(
     }
 }
 
-/// Restrained Main section surfaces; selection changes the whole fill and is also
-/// marked with a check in the lane. Hover remains distinct in both states.
+#[derive(Clone, Copy)]
+pub(crate) struct SectionFocusHatch {
+    pub angle_degrees: f32,
+    pub spacing: f32,
+    pub alpha: u8,
+    pub stroke_device_px: f32,
+    pub outline_device_px: f32,
+}
+
+pub(crate) const SECTION_FOCUS_HATCH: SectionFocusHatch = SectionFocusHatch {
+    angle_degrees: 45.0,
+    spacing: 8.0,
+    alpha: 0x59,
+    stroke_device_px: 1.0,
+    outline_device_px: 2.0,
+};
+
+pub(crate) fn section_focus_ink(identity: hex_project::ElementColor) -> u32 {
+    (element_colors(identity).accent << 8) | u32::from(SECTION_FOCUS_HATCH.alpha)
+}
+
+/// Restrained Main section surfaces share the clip body selection lift and
+/// primary outline. Unselected identity and hover remain unchanged.
 pub(crate) fn section_colors(
     identity: hex_project::ElementColor,
     selected: bool,
@@ -661,19 +682,11 @@ pub(crate) fn section_colors(
 ) -> (u32, u32, u32) {
     let surface = color(PaletteRole::Surface);
     let hue = element_colors(identity).muted;
-    let fill = mix(
-        surface,
-        hue,
-        match (selected, hovered) {
-            (false, false) => 0.30,
-            (false, true) => 0.44,
-            (true, false) => 0.70,
-            (true, true) => 0.82,
-        },
-    );
+    let base = mix(surface, hue, if hovered { 0.44 } else { 0.30 });
+    let fill = arrangement_clip_body_fill(base, selected);
     let text = contrast_text(fill, color(PaletteRole::Text));
     let border = if selected {
-        text
+        color(PaletteRole::Primary)
     } else if hovered {
         mix(hue, text, 0.4)
     } else {
@@ -691,6 +704,23 @@ mod tests {
     impl Drop for RestoreTheme {
         fn drop(&mut self) {
             apply_preferences(self.0);
+        }
+    }
+
+    #[test]
+    fn sections_share_clip_selection_lift_outline_and_legible_labels() {
+        for identity in hex_project::ElementColor::ALL {
+            for hovered in [false, true] {
+                let normal = section_colors(identity, false, hovered);
+                let selected = section_colors(identity, true, hovered);
+                assert_eq!(selected.0, arrangement_clip_body_fill(normal.0, true));
+                assert_eq!(selected.2, color(PaletteRole::Primary));
+                assert!(contrast_ratio(selected.0, selected.1) >= 4.5);
+                assert_eq!(
+                    section_focus_ink(identity) >> 8,
+                    element_colors(identity).accent
+                );
+            }
         }
     }
 

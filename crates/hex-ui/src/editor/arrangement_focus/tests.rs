@@ -573,3 +573,86 @@ fn focused_hidden_runs_are_marked_without_adding_row_space(cx: &mut TestAppConte
         height
     );
 }
+
+#[gpui::test]
+fn only_selected_sections_in_q_focus_receive_the_pattern(cx: &mut TestAppContext) {
+    let (mut visual, editor, f) = open(cx);
+    editor.update(&mut visual, |view, cx| {
+        view.viewport = Some(super::super::viewport::Viewport {
+            start: 0,
+            length: 192_000,
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("q");
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("arrangement-section-focus-hatch-0")
+            .is_none()
+    );
+    visual.simulate_keystrokes("q");
+    visual.run_until_parked();
+    select_section(&mut visual, 0, false);
+    assert_eq!(
+        editor.read_with(&visual, |view, _| view.sections.selected),
+        Some(f.sections[0])
+    );
+    assert!(
+        visual
+            .debug_bounds("arrangement-section-focus-hatch-0")
+            .is_none()
+    );
+    visual.simulate_keystrokes("q");
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("arrangement-section-focus-hatch-0")
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds("arrangement-section-focus-hatch-1")
+            .is_none()
+    );
+    select_section(&mut visual, 1, true);
+    assert!(
+        visual
+            .debug_bounds("arrangement-section-focus-hatch-0")
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds("arrangement-section-focus-hatch-1")
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds("arrangement-section-focus-hatch-2")
+            .is_none()
+    );
+    select_section(&mut visual, 1, false);
+    assert!(
+        visual
+            .debug_bounds("arrangement-section-focus-hatch-0")
+            .is_none()
+    );
+    assert!(
+        visual
+            .debug_bounds("arrangement-section-focus-hatch-1")
+            .is_some()
+    );
+    visual.simulate_keystrokes("q");
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("arrangement-section-focus-hatch-0")
+            .is_none()
+    );
+    assert!(
+        visual
+            .debug_bounds("arrangement-section-focus-hatch-1")
+            .is_none()
+    );
+}
