@@ -279,6 +279,13 @@ fn abort_reason(reason: AbortReason) -> hex_session::service::automation_draft::
 }
 
 impl Recorder {
+    pub(super) fn reserve_request(&mut self) -> Result<u64, &'static str> {
+        self.request = self
+            .request
+            .checked_add(1)
+            .ok_or("automation request limit reached")?;
+        Ok(self.request)
+    }
     pub(super) fn busy(&self) -> bool {
         self.touch.is_some()
     }
@@ -364,6 +371,9 @@ impl EditorView {
         gesture: GestureTarget,
         value: ParameterValue,
     ) -> Result<Option<GestureKey>, &'static str> {
+        if self.automation_close_preflight.frozen() {
+            return Err("close is pending · automation recording is unavailable");
+        }
         if self.native_automation_recorder.busy() {
             return Err("finish the current automation touch first");
         }
