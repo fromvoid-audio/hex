@@ -25,6 +25,19 @@ pub(crate) fn control_style() -> hex_widgets::ControlStyle {
     device_style(DeviceStyleRole::Control)
 }
 
+/// Workspace outlines stay visible above graphite surfaces without changing the
+/// darker borders used by meters and controls. Custom palette roles still apply.
+pub(crate) fn workspace_panel_style() -> hex_widgets::PanelStyle {
+    hex_widgets::PanelStyle {
+        surface: color(PaletteRole::Surface),
+        border: mix(
+            color(PaletteRole::Background),
+            color(PaletteRole::Text),
+            0.15,
+        ),
+    }
+}
+
 /// Shared product colors for all sample-level meters; widgets own no palette.
 pub(crate) fn meter_colors() -> hex_widgets::MeterColors {
     hex_widgets::MeterColors {
@@ -866,6 +879,8 @@ mod tests {
         assert_eq!(color(PaletteRole::Primary), defaults.primary.packed());
         assert_eq!(color(PaletteRole::Secondary), defaults.secondary.packed());
         assert_eq!(track_selection_fill(), 0xa4ccd7);
+        assert_eq!(workspace_panel_style().surface, 0x202020);
+        assert_eq!(workspace_panel_style().border, 0x363636);
         assert_eq!(color(PaletteRole::ClipOutline), 0x000000);
         assert!(colors_are_legible(defaults));
         assert!(contrast_ratio(color(PaletteRole::ClipFill), color(PaletteRole::ClipText)) >= 4.5);
