@@ -28,14 +28,14 @@ impl State {
         self.geometry.set(None);
     }
 
-    #[cfg(feature = "ui-test-support")]
+    #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn test_geometry(&self) -> Option<(Bounds<Pixels>, Bounds<Pixels>, f32)> {
         self.geometry
             .get()
             .map(|geometry| (geometry.track, geometry.thumb, geometry.maximum))
     }
 
-    #[cfg(feature = "ui-test-support")]
+    #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn test_dragging(&self) -> bool {
         self.drag.is_some()
     }
@@ -289,4 +289,21 @@ fn move_scroll(
             .set_offset(point(current.x, px(-position)));
     }
     cx.notify();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thumb_clamps_extents_and_rejects_invalid_geometry() {
+        let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(12.0), px(204.0)));
+        assert!(Geometry::new(bounds, 200.0, f32::NAN, 0.0, 10, 1).is_none());
+        assert!(Geometry::new(bounds, 200.0, 0.0, 0.0, 0, 1).is_none());
+        let geometry = Geometry::new(bounds, 200.0, 2_000_000.0, -2_000_000.0, 100_000, 1).unwrap();
+        assert_eq!(geometry.thumb.bottom(), geometry.track.bottom());
+        assert_eq!(geometry.position(-1000.0, 0.5), Some(0.0));
+        assert_eq!(geometry.position(1000.0, 0.5), Some(geometry.maximum));
+        assert!(geometry.position(f32::NAN, 0.5).is_none());
+    }
 }
