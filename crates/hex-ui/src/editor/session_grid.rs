@@ -24,22 +24,6 @@ const TRACK_HEADER_HEIGHT: f32 = 34.0;
 const GROUP_BAND_HEIGHT: f32 = 1.0;
 const SCENE_HEADER_WIDTH: f32 = 150.0;
 
-fn session_scenes_header() -> Div {
-    let header = div()
-        .w(px(SCENE_HEADER_WIDTH))
-        .flex_shrink_0()
-        .px_2()
-        .flex()
-        .items_center()
-        .justify_end()
-        .text_xs()
-        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-        .child(theme::text("scenes"));
-    #[cfg(feature = "ui-test-support")]
-    let header = header.debug_selector(|| "session-scenes-header".into());
-    header
-}
-
 /// Paint occupies an inset surface; the cell keeps its original IDs, layout,
 /// rename/launch controls and drop targets. Console clips are one caption row,
 /// so their entire surface uses the header fill without an arrangement divider.
@@ -726,7 +710,7 @@ impl EditorView {
                     cx,
                 ),
             )
-            .child(session_scenes_header())
+            .child(self.console_main_header(SCENE_HEADER_WIDTH, cx))
             .child(self.console_reorder_layer(
                 page.clone(),
                 frame,
