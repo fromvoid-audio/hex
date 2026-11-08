@@ -164,6 +164,7 @@ pub(crate) use midi_recording::pressure_fixture::exercise as midi_pressure_fixtu
 mod arrangement_chrome_ui_test;
 mod arrangement_map;
 mod console_mixer;
+mod console_returns;
 mod group_overview;
 mod midi_loop_notes;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -848,6 +849,7 @@ pub(super) struct EditorView {
     pub(in crate::editor) selected_cell: Option<(TrackId, SceneId)>,
     pub(in crate::editor) session_copy_source: Option<ClipId>,
     pub(in crate::editor) session_track_start: usize,
+    console_returns: console_returns::State,
     pub(in crate::editor) session_visible_columns: usize,
     pub(in crate::editor) session_quantization: hex_engine::LaunchQuantization,
     pub(in crate::editor) midi_selection: midi_selection::MidiSelection,
@@ -1624,6 +1626,7 @@ impl EditorView {
             selected_cell: None,
             session_copy_source: None,
             session_track_start: 0,
+            console_returns: console_returns::State::default(),
             session_visible_columns: 1,
             session_quantization: hex_engine::LaunchQuantization::Immediate,
             midi_selection: midi_selection::MidiSelection::default(),

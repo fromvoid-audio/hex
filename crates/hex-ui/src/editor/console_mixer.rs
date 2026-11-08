@@ -10,7 +10,13 @@ use gpui::{Context, Div, div, prelude::*, px, rgb};
 use hex_project::TrackId;
 
 impl EditorView {
-    pub(super) fn console_main_header(&self, width: f32, cx: &mut Context<Self>) -> Div {
+    pub(super) fn console_main_header(
+        &self,
+        width: f32,
+        returns: &super::console_returns::Page,
+        frame: super::console_columns::ColumnFrame,
+        cx: &mut Context<Self>,
+    ) -> Div {
         div()
             .debug_selector(|| "session-scenes-header".into())
             .w(px(width))
@@ -29,7 +35,8 @@ impl EditorView {
                     .on_click(cx.listener(|view, _, window, cx| {
                         super::device_panel::select_main(view, window, cx)
                     }))
-                    .child(theme::text("main")),
+                    .child(div().flex_1().child(theme::text("main")))
+                    .children(self.console_return_paging(returns, frame, cx)),
             )
     }
 
@@ -67,6 +74,7 @@ impl EditorView {
         page: &TrackPage,
         column_width: f32,
         scene_width: f32,
+        return_width: f32,
         cx: &mut Context<Self>,
     ) -> Div {
         super::track_gain::retire_stale(self, cx);
@@ -182,22 +190,24 @@ impl EditorView {
                 );
             row = row.child(column);
         }
-        row.child(div().flex_1().min_w(px(12.0))).child(
-            div()
-                .debug_selector(|| "console-main-mixer-column".into())
-                .w(px(scene_width))
-                .h_full()
-                .flex_shrink_0()
-                .flex()
-                .flex_col()
-                .justify_center()
-                .gap(px(4.0))
-                .px(px(6.0))
-                .border_l_1()
-                .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-                .child(self.main_track_controls(cx))
-                .child(self.sample_arm_button(super::sample_recorder::Arm::Main, cx)),
-        )
+        row.child(div().flex_1().min_w(px(12.0)))
+            .child(div().w(px(return_width)).flex_shrink_0())
+            .child(
+                div()
+                    .debug_selector(|| "console-main-mixer-column".into())
+                    .w(px(scene_width))
+                    .h_full()
+                    .flex_shrink_0()
+                    .flex()
+                    .flex_col()
+                    .justify_center()
+                    .gap(px(4.0))
+                    .px(px(6.0))
+                    .border_l_1()
+                    .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+                    .child(self.main_track_controls(cx))
+                    .child(self.sample_arm_button(super::sample_recorder::Arm::Main, cx)),
+            )
     }
 }
 

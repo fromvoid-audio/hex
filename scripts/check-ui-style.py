@@ -251,12 +251,18 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/session_grid.rs'
             and suffix.startswith(('self.console_column_edge(',
                                    'self.console_column_surface(', 'self.console_reorder_layer(',
-                                   'self.track_reorder_events(', 'self.console_mixer_row(', 'self.console_main_header(', 'tail)', 'session_clip_backdrop(',
+                                   'self.track_reorder_events(', 'self.console_mixer_row(', 'self.console_main_header(', 'body)', 'tail)', 'session_clip_backdrop(',
                                    'super::clip_boundary::backdrop_shell('))
         )
         console_column_component = console_column_component or (
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/console_mixer.rs'
-            and suffix.startswith(('activator)', 'solo)', 'self.sample_arm_button(', 'gain)', 'pan)', 'toggles)', 'controls)', 'column)', 'self.main_track_controls(', 'super::track_meters::render('))
+            and suffix.startswith(('activator)', 'solo)', 'self.sample_arm_button(', 'gain)', 'pan)', 'toggles)', 'controls)', 'column)', 'self.main_track_controls(', 'self.console_return_paging(', 'super::track_meters::render('))
+        )
+        console_column_component = console_column_component or (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/console_returns.rs'
+            and suffix.startswith(('button(', 'self.track_name_label(', 'gain)', 'mute)',
+                                   'controls)', 'header)', 'mixer)', 'self.sample_arm_button(',
+                                   'super::track_meters::render_return('))
         )
         # Reverb's grouped panel passes bound controls and provider plot data;
         # titles and numeric/toggle labels normalize through theme::text.
