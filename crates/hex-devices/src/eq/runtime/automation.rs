@@ -214,8 +214,10 @@ mod tests {
                 )
             );
         }
-        let mut settings = EqState::default();
-        settings.output_gain = 0.5;
+        let settings = EqState {
+            output_gain: 0.5,
+            ..Default::default()
+        };
         let mut candidate = PreparedEq::automated(settings, 48000, &[OUTPUT_GAIN])
             .unwrap()
             .create_runtime();

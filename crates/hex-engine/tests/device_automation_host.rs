@@ -671,8 +671,10 @@ fn flexible_eq_output_gain_reaches_all_owners_both_renderers_and_read_selections
         let base = fixture_owner(EQ_TYPE_ID, 1024, owner);
         let base_pcm = render(&base, true, 1024, 17);
         let mut canonical = fixture_owner(EQ_TYPE_ID, 1024, owner);
-        let mut settings = hex_devices::eq::EqState::default();
-        settings.output_gain = 0.5;
+        let settings = hex_devices::eq::EqState {
+            output_gain: 0.5,
+            ..Default::default()
+        };
         state(&mut canonical, settings.encode().unwrap());
         let expected = render(&canonical, true, 1024, 31);
         let mut actual = fixture_owner(EQ_TYPE_ID, 1024, owner);
