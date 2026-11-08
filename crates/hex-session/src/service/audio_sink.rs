@@ -40,7 +40,9 @@ impl<'a> PluginParameterGestureInput<'a> {
         self.confirm_delivery = true;
         self
     }
-    pub fn requires_delivery_confirmation(&self) -> bool { self.confirm_delivery }
+    pub fn requires_delivery_confirmation(&self) -> bool {
+        self.confirm_delivery
+    }
 
     pub fn context(&self) -> hex_engine::AudioSourceContext {
         self.context
@@ -68,17 +70,29 @@ impl<'a> PluginParameterGestureInput<'a> {
 /// Control-side observation copied only after matching the complete private
 /// final-output receipt. Persist `application.origin`, not the later delivery
 /// processing frame. A caller requesting these records owns their retention.
+#[derive(Clone, Copy)]
 pub struct PluginParameterDelivery {
+    pub key: crate::device_gesture::GestureKey,
+    pub context: hex_engine::AudioSourceContext,
     pub target: super::automation_draft::Vst3CaptureTarget,
     pub source: super::DeviceAutomationSource,
     pub sequence: u64,
     pub application: super::automation_draft::Vst3ParameterApplication,
     pub delivery_performance_frame: u64,
 }
+/// A confirmed point or a conservative interruption with no invented clock.
+#[derive(Clone, Copy)]
+pub enum PluginParameterObservation {
+    Delivered(PluginParameterDelivery),
+    Interrupted {
+        key: crate::device_gesture::GestureKey,
+        context: hex_engine::AudioSourceContext,
+        target: super::automation_draft::Vst3CaptureTarget,
+        source: super::DeviceAutomationSource,
+        sequence: u64,
+    },
+}
 pub enum PluginParameterGestureResult {
-    /// At most two points: a previously pending point and this request's point.
-    /// SDK acknowledgements alone never produce these observations.
-    Delivered(Box<[PluginParameterDelivery]>),
     /// Validated Begin or completed Preview/Restore, not physical delivery or
     /// an assertion that a plugin returned the exact requested normalized value.
     /// SDK readback remains separate from the client's lossless intent.
@@ -442,6 +456,12 @@ pub trait WorkerAudioSink: Send {
     /// Commit captures/stages that same source and returns DATA only. A refusal
     /// must preserve the last acknowledged preview or report source loss; it
     /// must not fabricate application, restore or a canonical terminal.
+    /// Drain bounded final-output observations after each confirmed preparation,
+    /// including refusal and output loss. The requesting control owner retains
+    /// every returned record until durable recording admission; never UI time.
+    fn take_plugin_parameter_observation(&mut self) -> Option<PluginParameterObservation> {
+        None
+    }
     fn prepare_plugin_parameter_gesture(
         &mut self,
         _input: PluginParameterGestureInput<'_>,

@@ -171,9 +171,6 @@ pub(super) fn operation(
                 ));
             }
             (_, PluginParameterGestureResult::Applied) => return Ok(None),
-            (_, PluginParameterGestureResult::Delivered(_)) => {
-                return Err(SessionError::Invalid("delivery-confirmed gesture requires a recording consumer"));
-            }
             (_, _) => {
                 return Err(SessionError::Invalid(
                     "plugin preview cannot replace canonical state",

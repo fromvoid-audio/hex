@@ -626,6 +626,38 @@ fn instrument_takeover_preserves_other_base_and_held_midi() {
     instrument_entrypoint(InstrumentWorkflow::Takeover);
 }
 
+#[test]
+#[ignore = "explicit source-bound signed SDK receipts required"]
+fn instrument_gesture_points_are_confirmed_at_final_output() {
+    const CASE: &str = "HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE";
+    if std::env::var_os(CASE).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(CASE, "delivery")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
+    instrument_entrypoint(InstrumentWorkflow::Takeover);
+    if std::env::var_os("HEX_DESKTOP_TEST_INSTRUMENT_CHILD").is_some() {
+        assert!(
+            crate::native_audio::tests::resident_preview::CONFIRMED_TEST_POINTS.load(Acquire) > 0
+        );
+    }
+}
+
 #[derive(Clone, Copy)]
 enum InstrumentWorkflow {
     Playback,

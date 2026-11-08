@@ -154,6 +154,7 @@ fn track_gain_gesture_reaches_callback_without_a_pcm_step() {
     }
 }
 
+pub(super) static CONFIRMED_TEST_POINTS: AtomicU64 = AtomicU64::new(0);
 struct ResidentSink {
     inner: NativeAudioSink,
     initial_rate: u32,
@@ -231,7 +232,50 @@ impl WorkerAudioSink for ResidentSink {
         hex_session::service::PluginParameterGestureResult,
         hex_session::service::PluginParameterGestureError,
     > {
-        self.inner.prepare_plugin_parameter_gesture(input)
+        use hex_session::device_gesture::PluginGesturePreparation;
+        let confirm = std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").as_deref()
+            == Ok("delivery")
+            && matches!(input.operation(), PluginGesturePreparation::Preview(_));
+        let expected = match input.operation() {
+            PluginGesturePreparation::Preview(snapshot) => Some(snapshot),
+            _ => None,
+        };
+        let result = self.inner.prepare_plugin_parameter_gesture(if confirm {
+            input.with_delivery_confirmation()
+        } else {
+            input
+        });
+        if confirm {
+            let snapshot = expected.unwrap();
+            while let Some(observation) = self.inner.take_plugin_parameter_observation() {
+                let hex_session::service::PluginParameterObservation::Delivered(point) =
+                    observation
+                else {
+                    panic!("confirmed fixture point was interrupted")
+                };
+                assert_eq!(point.key, snapshot.key);
+                assert_eq!(point.sequence, snapshot.sequence);
+                assert_eq!(point.source.sample_rate, self.initial_rate);
+                assert_eq!(
+                    point.source.target,
+                    hex_session::service::DeviceCaptureTarget::Vst3(point.target)
+                );
+                assert_eq!(point.application.parameter, point.target.parameter);
+                assert_eq!(point.application.binding, point.target.binding);
+                assert_eq!(point.context.project_generation, snapshot.key.generation);
+                assert!(
+                    point.delivery_performance_frame >= point.application.origin.performance_frame
+                );
+                let hex_session::service::automation_draft::Vst3ApplicationValue::Value(value) =
+                    point.application.value
+                else {
+                    panic!("point")
+                };
+                assert_eq!(value, snapshot.plugin_value.unwrap().normalized());
+                CONFIRMED_TEST_POINTS.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        result
     }
     fn confirm_plugin_parameter_publication(
         &mut self,

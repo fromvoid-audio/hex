@@ -32,7 +32,7 @@ struct PendingPoint {
     value: PluginParameterValue,
     sequence: u64,
     opening_hold: bool,
-    delivery: Option<hex_audio::foreign_parameter_delivery::Target>,
+    delivery: Option<delivery::PendingDelivery>,
     processed: bool,
 }
 
@@ -51,8 +51,9 @@ pub(super) struct Gesture {
     pub(super) commit: Option<(AudioSourceContext, u64)>,
     pub(super) next_program: Option<std::num::NonZeroU64>,
     commit_accepted: bool,
-    capture_class: Option<[u8;16]>,
-    deliveries: Vec<hex_session::service::PluginParameterDelivery>,
+    capture_class: Option<[u8; 16]>,
+    deliveries: Vec<hex_session::service::PluginParameterObservation>,
+    retired_delivery: Option<hex_audio::foreign_parameter_delivery::Retired>,
 }
 
 fn refused(reason: impl Into<String>) -> Error {
@@ -151,7 +152,13 @@ impl Plugins {
         control: &mut PublicationControl,
         input: PluginParameterGestureInput<'_>,
         cancellation: Option<&RequestCancellation>,
+        clock: Option<(u32, hex_session::service::ResidentRuntimeLoop)>,
     ) -> Result<Prepared, Error> {
+        if !self.confirmed_parameters.is_empty()
+            && !matches!(input.operation(), PluginGesturePreparation::Restore { .. })
+        {
+            return Err(refused("retain confirmed vst3 points before another input"));
+        }
         if let PluginGesturePreparation::Begin { origin, snapshot } = input.operation() {
             let restored_revision = self
                 .restore
@@ -327,7 +334,8 @@ impl Plugins {
                 next_program: None,
                 commit_accepted: false,
                 capture_class: automation_class,
-                deliveries: Vec::new(),
+                deliveries: Vec::with_capacity(2),
+                retired_delivery: None,
             };
             if !gesture.current(self, control, input.context()) {
                 return Err(lost());
@@ -339,8 +347,10 @@ impl Plugins {
         let result = if !gesture.current(self, control, input.context()) {
             Err(lost())
         } else {
-            gesture.apply(control, self.host.as_ref(), &input, cancellation)
+            gesture.apply(control, self.host.as_ref(), &input, cancellation, clock)
         };
+        self.confirmed_parameters
+            .extend(gesture.deliveries.drain(..));
         let source_lost = matches!(&result, Err(Error::SourceLost(_)));
         let restored =
             result.is_ok() && matches!(input.operation(), PluginGesturePreparation::Restore { .. });
@@ -417,6 +427,7 @@ impl Gesture {
         host: Option<&Hosting>,
         input: &PluginParameterGestureInput<'_>,
         cancellation: Option<&RequestCancellation>,
+        clock: Option<(u32, hex_session::service::ResidentRuntimeLoop)>,
     ) -> Result<Prepared, Error> {
         let context = input.context();
         let (snapshot, value, restore, commit) = match input.operation() {
@@ -485,13 +496,10 @@ impl Gesture {
             }
             let actual = self.sdk_value(value);
             let source = if input.requires_delivery_confirmation() {
-                if self.capture_class.is_none() { return Err(refused("vst3 parameter is not automatable")); }
-                if self.deliveries.len() >= 2 { return Err(refused("vst3 delivery records must be retained before another point")); }
-                Some(control.status.native_parameter_source(true)
-                    .filter(|(source,_)| source.context == context)
-                    .map(|(source,_)| source)
-                    .ok_or_else(lost)?)
-            } else { None };
+                Some(delivery::Context::new(self, control, context, clock)?)
+            } else {
+                None
+            };
             let (token, opening_hold, delivery) = if let Some(live) = self
                 .live
                 .as_ref()
@@ -509,21 +517,60 @@ impl Gesture {
                 );
                 let (token, delivery) = if let Some(source) = source {
                     let (token, delivery) = admit(control, |control| {
-                        control.native_source_parameter_hold_with_delivery_on_control(source,self.binding,command)
+                        control.native_source_parameter_hold_with_delivery_on_control(
+                            source.applied,
+                            self.binding,
+                            command,
+                        )
                     })?;
-                    (token,Some(delivery))
+                    (
+                        token,
+                        Some(delivery::PendingDelivery {
+                            target: delivery,
+                            context: source,
+                        }),
+                    )
                 } else {
-                    (admit(control, |control| control.native_source_parameter_hold_on_control(live.source,self.binding,command))?, None)
+                    (
+                        admit(control, |control| {
+                            control.native_source_parameter_hold_on_control(
+                                live.source,
+                                self.binding,
+                                command,
+                            )
+                        })?,
+                        None,
+                    )
                 };
                 (token, live.hold.is_none(), delivery)
             } else {
                 let (token, delivery) = if let Some(source) = source {
                     let (token, delivery) = admit(control, |control| {
-                        control.begin_native_source_parameter_change_with_delivery_on_control(source,self.binding,self.origin.parameter,actual)
+                        control.begin_native_source_parameter_change_with_delivery_on_control(
+                            source.applied,
+                            self.binding,
+                            self.origin.parameter,
+                            actual,
+                        )
                     })?;
-                    (token,Some(delivery))
+                    (
+                        token,
+                        Some(delivery::PendingDelivery {
+                            target: delivery,
+                            context: source,
+                        }),
+                    )
                 } else {
-                    (admit(control, |control| control.begin_native_source_parameter_change_on_control(self.binding,self.origin.parameter,actual))?,None)
+                    (
+                        admit(control, |control| {
+                            control.begin_native_source_parameter_change_on_control(
+                                self.binding,
+                                self.origin.parameter,
+                                actual,
+                            )
+                        })?,
+                        None,
+                    )
                 };
                 (token, false, delivery)
             };
@@ -538,9 +585,7 @@ impl Gesture {
             self.drain_point(control)?;
         }
         self.sequence = snapshot.sequence;
-        if self.deliveries.is_empty() { Ok(Prepared::Applied) } else {
-            Ok(Prepared::Delivered(std::mem::take(&mut self.deliveries).into_boxed_slice()))
-        }
+        Ok(Prepared::Applied)
     }
 
     fn matches(&self, snapshot: GestureSnapshot) -> bool {
@@ -562,7 +607,11 @@ impl Gesture {
     }
 
     fn poll_point(&mut self, control: &mut PublicationControl) -> Result<bool, Error> {
-        if self.pending.as_ref().is_some_and(|pending| pending.delivery.is_some()) {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.delivery.is_some())
+        {
             return self.poll_delivered_point(control);
         }
         let Some(pending) = self.pending.as_ref() else {
