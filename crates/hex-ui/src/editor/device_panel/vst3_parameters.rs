@@ -481,16 +481,15 @@ fn apply_result(
     };
     for (offset, row) in rows.iter().enumerate() {
         let index = usize::from(first) + offset;
-        if &cached[index] != row {
-            if let Some(knob) = panel.knobs.get(&row.id)
-                && let Some(origin) = parameter_origin(result.query, row)
-            {
-                knob.origin.set(origin);
-                let value = row.normalized;
-                let _ = knob.control.update(cx, |control, cx| {
-                    let _ = control.set_external_value(value, cx);
-                });
-            }
+        if &cached[index] != row
+            && let Some(knob) = panel.knobs.get(&row.id)
+            && let Some(origin) = parameter_origin(result.query, row)
+        {
+            knob.origin.set(origin);
+            let value = row.normalized;
+            knob.control.update(cx, |control, cx| {
+                let _ = control.set_external_value(value, cx);
+            });
         }
     }
     panel.source = Some(source);

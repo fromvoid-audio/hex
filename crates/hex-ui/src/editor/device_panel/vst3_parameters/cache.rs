@@ -352,7 +352,7 @@ mod tests {
         assert_eq!(load(&directory.file(), "key"), Ok(None));
         save(&directory.file(), "one", &[4; 32], &[row(1, "gain", 0)]).unwrap();
         assert_eq!(load(&directory.file(), "two"), Ok(None));
-        fs::write(&directory.file(), br#"{"version":1,"key":"one","rows":[]}"#).unwrap();
+        fs::write(directory.file(), br#"{"version":1,"key":"one","rows":[]}"#).unwrap();
         assert_eq!(load(&directory.file(), "one"), Ok(None));
     }
 
