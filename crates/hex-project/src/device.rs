@@ -87,6 +87,9 @@ mod unit_order_tests;
 #[cfg(test)]
 #[path = "device_unit_removal_tests.rs"]
 mod unit_removal_tests;
+#[cfg(test)]
+#[path = "device_unit_track_tests.rs"]
+mod unit_track_tests;
 
 pub const MAX_DEVICES_PER_TRACK: usize = 64;
 pub const MAX_DEVICES: usize = crate::MAX_TRACKS * (MAX_DEVICES_PER_TRACK + 1)
@@ -462,6 +465,47 @@ pub(crate) fn move_serial_unit(
     Ok(())
 }
 
+/// Effect order and instrument order share local indices but distinct anchors.
+fn move_local_unit(
+    track: &mut crate::Track,
+    source: usize,
+    destination: usize,
+    before_instrument: bool,
+) -> Result<(), Invalid> {
+    let span = crate::device_inventory::serial_unit_span(&track.devices, source)?;
+    if span.contains(&destination) && !before_instrument {
+        return Ok(());
+    }
+    let count = span.len();
+    let after_remove = if destination >= span.end {
+        destination
+            .checked_sub(count)
+            .ok_or(Invalid("device position underflow"))?
+    } else {
+        destination
+    };
+    let gap = match track.instrument_position {
+        Some(gap) => {
+            let gap = if span.start < gap {
+                gap.checked_sub(count)
+                    .ok_or(Invalid("instrument position underflow"))?
+            } else {
+                gap
+            };
+            Some(if before_instrument || after_remove < gap {
+                gap.checked_add(count)
+                    .ok_or(Invalid("instrument position overflow"))?
+            } else {
+                gap
+            })
+        }
+        None => None,
+    };
+    move_serial_unit(&mut track.devices, source, destination)?;
+    track.instrument_position = gap;
+    Ok(())
+}
+
 fn move_device(
     project: &mut Project,
     id: DeviceId,
@@ -477,6 +521,20 @@ fn move_device(
     if before == Some(id) && source_index == target_index {
         return Ok(());
     }
+    let span = crate::device_inventory::serial_unit_span(
+        &project.tracks[source_index].devices,
+        source_position,
+    )?;
+    if source_index != target_index
+        && (span.len() != 1
+            || project.tracks[source_index].devices[source_position]
+                .parent()
+                .is_some())
+    {
+        return Err(Invalid(
+            "moving serial units between tracks is not supported yet",
+        ));
+    }
     let target_len_after = project.tracks[target_index]
         .devices
         .len()
@@ -485,32 +543,13 @@ fn move_device(
         return Err(Invalid("track device limit reached"));
     }
     if source_index == target_index {
-        let devices = &project.tracks[source_index].devices;
-        let destination = match before {
-            Some(anchor) => {
-                let anchor_position = devices
-                    .iter()
-                    .position(|device| device.id == anchor)
-                    .ok_or(Invalid("device insertion anchor no longer exists"))?;
-                if anchor_position == source_position {
-                    return Err(Invalid("device cannot be moved before itself"));
-                }
-                anchor_position - usize::from(anchor_position > source_position)
-            }
-            None => devices
-                .len()
-                .checked_sub(1)
-                .ok_or(Invalid("device count underflow"))?,
-        };
-        let old_gap = project.tracks[source_index].instrument_position;
-        let gap_after_remove = old_gap.map(|gap| if source_position < gap { gap - 1 } else { gap });
-        let gap_after_insert =
-            gap_after_remove.map(|gap| if destination < gap { gap + 1 } else { gap });
-        let moving = project.tracks[source_index].devices.remove(source_position);
-        project.tracks[source_index]
-            .devices
-            .insert(destination, moving);
-        project.tracks[source_index].instrument_position = gap_after_insert;
+        let destination = anchor_index(&project.tracks[source_index].devices, before)?;
+        move_local_unit(
+            &mut project.tracks[source_index],
+            source_position,
+            destination,
+            false,
+        )?;
     } else {
         let destination = anchor_index(&project.tracks[target_index].devices, before)?;
         let old_gap = project.tracks[source_index].instrument_position;
@@ -611,6 +650,31 @@ fn move_track_device(
         };
         if anchor_track != target_index {
             return Err(Invalid("device insertion anchor belongs to another track"));
+        }
+    }
+    if let DeviceLocation::Effect { track, index } = source {
+        if track == target_index {
+            let target = &project.tracks[target_index];
+            let destination = chain_effect_index_before(target, before)?;
+            let before_instrument = before.is_some_and(|anchor| {
+                target
+                    .instrument
+                    .as_ref()
+                    .is_some_and(|instrument| instrument.id == anchor)
+            });
+            return move_local_unit(
+                &mut project.tracks[target_index],
+                index,
+                destination,
+                before_instrument,
+            );
+        }
+        let span =
+            crate::device_inventory::serial_unit_span(&project.tracks[track].devices, index)?;
+        if span.len() != 1 || project.tracks[track].devices[index].parent().is_some() {
+            return Err(Invalid(
+                "moving serial units between tracks is not supported yet",
+            ));
         }
     }
     if matches!(source, DeviceLocation::Instrument { .. })
