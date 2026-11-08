@@ -401,6 +401,7 @@ struct BrowserGhostGeometry {
 
 struct BrowserGhostDecor {
     selector: &'static str,
+    notched: bool,
     grid: Option<(Vec<super::musical_time::GridLine>, u64, u64)>,
     waveform_visual: Option<Div>,
 }
@@ -419,6 +420,7 @@ fn browser_audio_drag_ghost(
     } = geometry;
     let BrowserGhostDecor {
         selector,
+        notched,
         grid,
         waveform_visual,
     } = decor;
@@ -436,6 +438,7 @@ fn browser_audio_drag_ghost(
         },
     );
     let stroke = 1.0 / scale.max(1.0);
+    let fill = theme::color(theme::PaletteRole::ClipFill);
     let width = width.max(3.0);
     let height = height.max(3.0);
     let mut ghost = div()
@@ -457,46 +460,48 @@ fn browser_audio_drag_ghost(
         ));
     }
     if let Some(waveform) = waveform_visual {
-        ghost = ghost.children([waveform]);
+        ghost = ghost.children([super::tracks::clip_waveform_body(waveform)]);
     } else if let Some(metadata) = metadata {
-        ghost = ghost.children([super::waveform::waveform_summary_view(Arc::clone(
-            &metadata.waveform,
-        ))]);
+        ghost = ghost.children([super::tracks::clip_waveform_body(
+            super::waveform::waveform_summary_view(Arc::clone(&metadata.waveform)),
+        )]);
     } else {
-        ghost = ghost.child(
-            div()
-                .absolute()
-                .top(relative(0.5))
-                .left(px(4.0))
-                .right(px(4.0))
-                .h(px(1.0))
-                .bg(rgb(theme::color(theme::PaletteRole::ClipText))),
-        );
+        ghost = ghost.child(super::tracks::clip_waveform_body(
+            div().child(
+                div()
+                    .absolute()
+                    .top(relative(0.5))
+                    .left(px(4.0))
+                    .right(px(4.0))
+                    .h(px(1.0))
+                    .bg(rgb(theme::color(theme::PaletteRole::ClipText))),
+            ),
+        ));
     }
     let ghost = ghost.child(
-        div()
-            .absolute()
-            .left(px(4.0))
-            .top_0()
-            .right(px(3.0))
-            .h(px(12.0))
-            .flex()
+        super::clip_name::passive_name_header(&payload.label, fill, true)
+            .debug_selector(|| "browser-drag-name".into())
             .gap_1()
-            .text_xs()
-            .text_color(rgb(theme::color(theme::PaletteRole::ClipText)))
-            .line_clamp(1)
-            .child(theme::text(payload.label.clone()))
-            .child(theme::text(status)),
+            .child(div().flex_shrink_0().child(theme::text(status))),
     );
-    super::clip_boundary::pixel_boundary_shell(
+    super::clip_boundary::pixel_backdrop_shell(
         ghost,
-        left,
-        top,
-        width,
-        height,
-        stroke,
-        theme::color(theme::PaletteRole::ClipOutline),
+        gpui::Bounds::new(
+            gpui::point(px(left), px(top)),
+            gpui::size(px(width), px(height)),
+        ),
+        super::clip_boundary::Backdrop {
+            body: fill,
+            header: fill,
+            outline: theme::color(theme::PaletteRole::ClipOutline),
+            hover_outline: theme::color(theme::PaletteRole::ClipOutline),
+            stroke,
+            bottom_radius: 0.0,
+            header_height: super::clip_name::CLIP_NAME_HEIGHT,
+            notch: super::clip_boundary::Notch::new(notched),
+        },
         true,
+        move || format!("{selector}-trailing"),
     )
     .opacity(0.9)
 }
@@ -1312,6 +1317,7 @@ impl EditorView {
                     },
                     BrowserGhostDecor {
                         selector: "browser-audio-append-preview",
+                        notched: false,
                         grid: None,
                         waveform_visual: None,
                     },
@@ -1347,6 +1353,7 @@ impl EditorView {
                 },
                 BrowserGhostDecor {
                     selector: "browser-audio-append-preview",
+                    notched: visible_end == end,
                     grid: Some((
                         super::musical_time::grid_lines(
                             &state.project,
@@ -1397,6 +1404,7 @@ impl EditorView {
             },
             BrowserGhostDecor {
                 selector: "browser-audio-floating-preview",
+                notched: true,
                 grid: None,
                 waveform_visual: None,
             },

@@ -114,7 +114,7 @@ fn held_worker_misses_pipeline(location: usize) {
             let rendered = callback.render(&mut frames);
             assert!(rendered.is_ok());
             assert_eq!(
-                callback.native_sources.test_transport_fault(binding),
+                callback.native_source_fault_for_test(binding),
                 Some(Fault::MissingOutput)
             );
             assert!(crate::device::finish_host_chunk(

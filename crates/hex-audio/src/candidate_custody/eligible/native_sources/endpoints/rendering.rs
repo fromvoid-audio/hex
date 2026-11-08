@@ -5,7 +5,7 @@ use hex_lattice::{ForeignNote, ForeignProcessorNode, ForeignProcessors};
 use hex_lattice_contract::DeviceContractError;
 use hex_plugin_host::transport::Fault;
 impl NativeEndpointBank {
-    #[cfg(all(test, feature = "allocation-probe"))]
+    #[cfg(feature = "allocation-probe")]
     pub(crate) fn test_transport_fault(&self, binding: Binding) -> Option<Fault> {
         self.entries
             .iter()

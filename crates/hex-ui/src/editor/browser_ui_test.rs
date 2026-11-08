@@ -997,6 +997,18 @@ fn browser_audio_drag_floats_outside_lanes_locks_preview_and_imports_exact_candi
         .debug_bounds("browser-audio-floating-preview")
         .expect("outside-lane drag has cursor ghost");
     assert!(f32::from(floating.size.width) > 100.0);
+    crate::editor::clip_boundary::tests::assert_open_upper_right(
+        &mut visual,
+        "browser-audio-floating-preview",
+        "browser-audio-floating-preview-trailing",
+        Some("browser-drag-name"),
+    );
+    let title = visual.debug_bounds("browser-drag-name").unwrap();
+    assert_eq!(
+        title.size.height,
+        px(crate::editor::clip_name::CLIP_NAME_HEIGHT)
+    );
+
     editor.read_with(cx, |view, _| {
         let drag = view
             .active_browser_audio_drag
@@ -1058,6 +1070,12 @@ fn browser_audio_drag_floats_outside_lanes_locks_preview_and_imports_exact_candi
         preview.start_frame
     });
     assert!(visual.debug_bounds("clip-drop-preview").is_some());
+    crate::editor::clip_boundary::tests::assert_open_upper_right(
+        &mut visual,
+        "clip-drop-preview",
+        "clip-drop-preview-trailing",
+        None,
+    );
 
     // Moving back out of the lane restores the cursor ghost and clears the target.
     visual.simulate_mouse_move(outside, MouseButton::Left, Modifiers::default());

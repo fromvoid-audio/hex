@@ -6,11 +6,102 @@
 //! changing trim or drag coordinates. Degenerate intervals retain lane-anchored
 //! edges; looping callers supply the existing rounded-corner bottom inset.
 use gpui::{Div, canvas, div, prelude::*, px, relative, rgb};
+use std::{cell::Cell, rc::Rc};
+
+/// Per-render geometry shared by the backdrop and its independently raised edge.
+/// Resolve after layout, so a resize cannot leave a cached-width corner gap.
+#[derive(Clone, Default)]
+pub(super) struct Notch(Option<Rc<Cell<f32>>>);
+
+impl Notch {
+    pub fn new(enabled: bool) -> Self {
+        Self(enabled.then(|| Rc::new(Cell::new(0.0))))
+    }
+    pub fn enabled(&self) -> bool {
+        self.0.is_some()
+    }
+    fn observe(&self, bounds: gpui::Bounds<gpui::Pixels>) {
+        if let Some(extent) = &self.0 {
+            extent.set(corner_extent(
+                f32::from(bounds.size.width),
+                f32::from(bounds.size.height),
+            ));
+        }
+    }
+    fn extent(&self) -> f32 {
+        self.0.as_ref().map_or(0.0, |value| value.get())
+    }
+}
+
+fn corner_extent(width: f32, height: f32) -> f32 {
+    if !width.is_finite() || !height.is_finite() {
+        return 0.0;
+    }
+    5.0_f32.min(width.max(0.0) / 2.0).min(height.max(0.0) / 2.0)
+}
+
+/// Keep the diagnostic and input bounds of a physical edge; mask only its paint.
+pub(super) fn trailing_edge(notch: Notch, color: u32, hover: u32) -> Div {
+    if !notch.enabled() {
+        return div().bg(rgb(color)).when(hover != color, |line| {
+            line.group_hover("clip-boundary", move |style| style.bg(rgb(hover)))
+        });
+    }
+    div()
+        .text_color(rgb(color))
+        .when(hover != color, |line| {
+            line.group_hover("clip-boundary", move |style| style.text_color(rgb(hover)))
+        })
+        .child(
+            canvas(
+                |_, _, _| (),
+                move |bounds, _, window, _| {
+                    let mask = gpui::Bounds::from_corners(
+                        gpui::point(bounds.left(), bounds.top() + px(notch.extent())),
+                        bounds.bottom_right(),
+                    );
+                    window.with_content_mask(Some(gpui::ContentMask { bounds: mask }), |window| {
+                        window.paint_quad(gpui::fill(bounds, window.text_style().color));
+                    });
+                },
+            )
+            .absolute()
+            .inset_0(),
+        )
+}
 
 /// Keep the time interval's layout and input bounds unchanged while painting
 /// its trailing stroke on the same physical column as the next interval.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn clip_boundary_shell<T: gpui::IntoElement + gpui::Styled>(
+    body: T,
+    left: f32,
+    width: f32,
+    stroke: f32,
+    color: u32,
+    hover: u32,
+    visible: bool,
+    native_leading: bool,
+    bottom_inset: f32,
+    selector: impl FnOnce() -> String,
+) -> Div {
+    boundary_shell(
+        body,
+        left,
+        width,
+        stroke,
+        color,
+        hover,
+        visible,
+        native_leading,
+        bottom_inset,
+        Notch::default(),
+        selector,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn boundary_shell<T: gpui::IntoElement + gpui::Styled>(
     mut body: T,
     left: f32,
     width: f32,
@@ -20,6 +111,7 @@ pub(super) fn clip_boundary_shell<T: gpui::IntoElement + gpui::Styled>(
     visible: bool,
     native_leading: bool,
     bottom_inset: f32,
+    notch: Notch,
     selector: impl FnOnce() -> String,
 ) -> Div {
     // A sub-pixel interval may round to an empty child. Keep its paint edges
@@ -55,67 +147,97 @@ pub(super) fn clip_boundary_shell<T: gpui::IntoElement + gpui::Styled>(
     }
     if visible {
         outer = outer.child(
-            div()
+            trailing_edge(notch, color, hover)
                 .debug_selector(selector)
                 .absolute()
                 .left(relative(trailing))
                 .top_0()
                 .bottom(px(bottom_inset))
-                .w(px(stroke))
-                .bg(rgb(color))
-                .when(hoverable, |line| {
-                    line.group_hover("clip-boundary", move |style| style.bg(rgb(hover)))
-                }),
+                .w(px(stroke)),
         );
     }
     outer
 }
 
-/// Floating previews use the same physical-pixel boundary without changing
-/// the rectangle used for their contents or pointer geometry.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn pixel_boundary_shell(
-    body: impl gpui::IntoElement,
-    left: f32,
-    top: f32,
-    width: f32,
-    height: f32,
-    stroke: f32,
-    color: u32,
+/// A passive pixel-positioned clip. Keep background, body and border columns
+/// in the same containing coordinate space: nesting a percentage edge beneath
+/// a fractional positioned parent can round its endpoint a second time.
+pub(super) fn pixel_backdrop_shell<T: gpui::IntoElement + gpui::Styled>(
+    body: T,
+    bounds: gpui::Bounds<gpui::Pixels>,
+    style: Backdrop,
     native_leading: bool,
+    selector: impl FnOnce() -> String,
 ) -> Div {
-    let mut outer = div()
+    let notch = if native_leading {
+        style.notch.clone()
+    } else {
+        Notch::default()
+    };
+    let mut body = body
         .absolute()
-        .left(px(left))
-        .top(px(top))
-        .w(px(width))
-        .h(px(height))
-        .child(body);
+        .left(bounds.left())
+        .top(bounds.top())
+        .w(bounds.size.width)
+        .h(bounds.size.height);
+    let mut outer = div().absolute().inset_0();
+    if native_leading {
+        let observe = notch.clone();
+        let paint_style = style.clone();
+        outer = outer.child(
+            canvas(
+                move |bounds, _, _| observe.observe(bounds),
+                move |bounds, _, window, _| {
+                    paint_backdrop(
+                        bounds,
+                        &paint_style,
+                        rgb(paint_style.outline).into(),
+                        window,
+                    )
+                },
+            )
+            .absolute()
+            .left(bounds.left())
+            .top(bounds.top())
+            .w(bounds.size.width)
+            .h(bounds.size.height),
+        );
+        body = body
+            .bg(gpui::transparent_black())
+            .border_color(gpui::transparent_black());
+    }
+    outer = outer.child(body);
     if !native_leading {
         outer = outer.child(
             div()
                 .absolute()
-                .left_0()
-                .top_0()
-                .bottom_0()
-                .w(px(stroke))
-                .bg(rgb(color)),
+                .left(bounds.left())
+                .top(bounds.top())
+                .h(bounds.size.height)
+                .w(px(style.stroke))
+                .bg(rgb(style.outline)),
         );
     }
     outer.child(
-        div()
+        trailing_edge(notch, style.outline, style.outline)
+            .debug_selector(selector)
             .absolute()
-            .left(relative(1.0))
-            .top_0()
-            .bottom_0()
-            .w(px(stroke))
-            .bg(rgb(color)),
+            .left(bounds.right())
+            .top(bounds.top())
+            .w(px(style.stroke))
+            .h(px((f32::from(bounds.size.height)
+                - if native_leading {
+                    style.bottom_radius
+                } else {
+                    0.0
+                })
+            .max(0.0))),
     )
 }
 
 /// Paint supplied by the frame, while the clip body retains layout/input and
 /// the name component retains text, aliases, its divider and rename state.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) struct Backdrop {
     pub body: u32,
     pub header: u32,
@@ -124,10 +246,14 @@ pub(super) struct Backdrop {
     pub stroke: f32,
     pub bottom_radius: f32,
     pub header_height: f32,
+    pub notch: Notch,
 }
 
 /// Wide canonical clips use one background owner outside their content mask.
 /// Their transparent layout borders still define the same content/hit bounds.
+/// Callers reserve `header_height` for title content and keep body/grid paint
+/// below it; passive titles and badges must also leave the upper-right cut clear.
+/// This owner paints the background contour, not a GPU mask for arbitrary children.
 /// Narrow intervals keep the legacy lane-anchored boundary path.
 pub(super) fn backdrop_shell(
     body: impl gpui::IntoElement,
@@ -139,6 +265,8 @@ pub(super) fn backdrop_shell(
 ) -> Div {
     // The paint-only layer inherits currentColor so GPUI owns group hover,
     // occlusion and drag suppression. Clip contents remain a separate sibling.
+    let observe = backdrop.notch.clone();
+    let paint_style = backdrop.clone();
     let paint = div()
         .absolute()
         .inset_0()
@@ -150,10 +278,11 @@ pub(super) fn backdrop_shell(
         })
         .child(
             canvas(
-                |_, _, _| (),
+                move |bounds, _, _| observe.observe(bounds),
                 move |bounds, _, window, _| {
                     if visible {
-                        paint_backdrop(bounds, backdrop, window);
+                        let color = window.text_style().color;
+                        paint_backdrop(bounds, &paint_style, color, window);
                     }
                 },
             )
@@ -161,7 +290,7 @@ pub(super) fn backdrop_shell(
             .inset_0(),
         );
     let contents = div().absolute().inset_0().child(paint).child(body);
-    clip_boundary_shell(
+    boundary_shell(
         contents,
         left,
         width,
@@ -171,11 +300,17 @@ pub(super) fn backdrop_shell(
         visible,
         true,
         backdrop.bottom_radius,
+        backdrop.notch,
         selector,
     )
 }
 
-fn paint_backdrop(bounds: gpui::Bounds<gpui::Pixels>, style: Backdrop, window: &mut gpui::Window) {
+fn paint_backdrop(
+    bounds: gpui::Bounds<gpui::Pixels>,
+    style: &Backdrop,
+    color: gpui::Hsla,
+    window: &mut gpui::Window,
+) {
     use gpui::{Bounds, ContentMask, Corners, Edges, fill, point, quad};
     if bounds.size.width <= px(0.0) || bounds.size.height <= px(0.0) {
         return;
@@ -187,39 +322,86 @@ fn paint_backdrop(bounds: gpui::Bounds<gpui::Pixels>, style: Backdrop, window: &
         bottom_right: px(style.bottom_radius),
     }
     .clamp_radii_for_quad_size(bounds.size);
-    window.paint_quad(fill(bounds, rgb(style.body)).corner_radii(corners));
-    // clip_name's -1 offsets compensate the containing layout border. Preserve
-    // its old quad and ancestor mask exactly, including physical leading edges.
-    let header = Bounds::from_corners(
-        point(bounds.left() + px(style.stroke - 1.0), bounds.top()),
-        point(
-            bounds.right() + px(1.0),
-            bounds.top() + px(style.header_height),
-        ),
+    let cut = style.notch.extent();
+    let paint_square = |window: &mut gpui::Window| {
+        window.paint_quad(fill(bounds, rgb(style.body)).corner_radii(corners));
+        // clip_name's -1 offsets compensate the containing layout border. Preserve
+        // its old quad and ancestor mask exactly, including physical leading edges.
+        let header = Bounds::from_corners(
+            point(bounds.left() + px(style.stroke - 1.0), bounds.top()),
+            point(
+                bounds.right() + px(1.0),
+                bounds.top() + px(style.header_height),
+            ),
+        );
+        let inner = Bounds::from_corners(
+            point(bounds.left() + px(style.stroke), bounds.top() + px(1.0)),
+            point(bounds.right(), bounds.bottom() - px(1.0)),
+        );
+        window.with_content_mask(Some(ContentMask { bounds: inner }), |window| {
+            window.paint_quad(fill(header, rgb(style.header)));
+        });
+        window.paint_quad(quad(
+            bounds,
+            corners,
+            gpui::transparent_black(),
+            Edges {
+                top: px(1.0),
+                bottom: px(1.0),
+                left: px(style.stroke),
+                right: px(0.0),
+            },
+            color,
+            Default::default(),
+        ));
+    };
+    if cut == 0.0 {
+        paint_square(window);
+        return;
+    }
+    let below = Bounds::from_corners(
+        point(bounds.left(), bounds.top() + px(cut)),
+        bounds.bottom_right(),
     );
-    let inner = Bounds::from_corners(
-        point(bounds.left() + px(style.stroke), bounds.top() + px(1.0)),
-        point(bounds.right(), bounds.bottom() - px(1.0)),
+    window.with_content_mask(Some(ContentMask { bounds: below }), paint_square);
+    let upper_left = Bounds::from_corners(
+        bounds.origin,
+        point(bounds.right() - px(cut), bounds.top() + px(cut)),
     );
-    window.with_content_mask(Some(ContentMask { bounds: inner }), |window| {
-        window.paint_quad(fill(header, rgb(style.header)));
+    window.with_content_mask(Some(ContentMask { bounds: upper_left }), paint_square);
+    window.with_content_mask(Some(ContentMask { bounds }), |window| {
+        // The remaining triangle is actual clip fill, not a lane-colored cover.
+        // Extend the two interior joins under their neighboring quads to avoid AA seams.
+        let overlap = px(style.stroke);
+        let mut triangle = gpui::PathBuilder::fill();
+        triangle.move_to(point(bounds.right() - px(cut) - overlap, bounds.top()));
+        triangle.line_to(point(bounds.right() - px(cut), bounds.top()));
+        triangle.line_to(point(bounds.right(), bounds.top() + px(cut)));
+        triangle.line_to(point(bounds.right(), bounds.top() + px(cut) + overlap));
+        triangle.line_to(point(
+            bounds.right() - px(cut) - overlap,
+            bounds.top() + px(cut) + overlap,
+        ));
+        triangle.close();
+        if let Ok(path) = triangle.build() {
+            window.paint_path(path, rgb(style.header));
+        }
+        let inset = px(style.stroke / (2.0 * std::f32::consts::SQRT_2));
+        let mut diagonal = gpui::PathBuilder::stroke(px(style.stroke));
+        diagonal.move_to(point(
+            bounds.right() - px(cut) - inset,
+            bounds.top() + inset,
+        ));
+        diagonal.line_to(point(
+            bounds.right() - inset,
+            bounds.top() + px(cut) + inset,
+        ));
+        if let Ok(path) = diagonal.build() {
+            window.paint_path(path, color);
+        }
     });
-    let color = window.text_style().color;
-    window.paint_quad(quad(
-        bounds,
-        corners,
-        gpui::transparent_black(),
-        Edges {
-            top: px(1.0),
-            bottom: px(1.0),
-            left: px(style.stroke),
-            right: px(0.0),
-        },
-        color,
-        Default::default(),
-    ));
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "clip_border_ui_test.rs"]
-mod tests;
+pub(super) mod tests;

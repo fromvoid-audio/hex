@@ -93,11 +93,22 @@ impl EditorView {
                     } else {
                         TransportIcon::Play
                     },
-                    "play or pause · space",
+                    if self.mode == EditorMode::Arrangement {
+                        "play or pause · space · right-click for history playback"
+                    } else {
+                        "play or pause · space"
+                    },
                     TogglePlay,
                     cx,
                 )
-                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+                .on_mouse_down(
+                    gpui::MouseButton::Right,
+                    cx.listener(|view, event: &gpui::MouseDownEvent, window, cx| {
+                        view.open_history_playback_menu(event.position, window, cx);
+                        cx.stop_propagation();
+                    }),
+                ),
             )
             .child(
                 self.vector_icon(TransportIcon::Stop, "stop · escape", Stop, cx)

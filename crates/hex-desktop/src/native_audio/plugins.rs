@@ -239,6 +239,9 @@ impl Plugins {
         }
         self.configured = false;
         self.observed_parameters.clear();
+        if let Some(gesture) = self.parameter_gesture.as_mut() {
+            gesture.recording_output_closed();
+        }
         self.collect_parameter_observations();
         if !self
             .parameter_gesture

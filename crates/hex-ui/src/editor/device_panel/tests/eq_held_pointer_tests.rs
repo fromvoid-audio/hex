@@ -991,7 +991,7 @@ fn eq_held_node_retirement_fallback_blocks_admission_and_retries_exact_runtime(
         let root = Arc::as_ptr(seek.prepared_revision.as_ref().unwrap()) as usize;
         view.retired_seek_result = Some(hex_session::arrangement_seek::ArrangementSeekResult {
             request_id: id,
-            mode: seek.mode,
+            mode: seek.kind.mode(),
             generation: seek.project_generation,
             revision: seek.project_revision,
             prepared_revision: seek.prepared_revision.unwrap(),
