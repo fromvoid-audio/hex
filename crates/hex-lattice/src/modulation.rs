@@ -61,6 +61,24 @@ pub struct PreparedModulation {
     source_count: usize,
 }
 impl PreparedModulation {
+    /// Copy a prepared program on control, reporting allocation failure.
+    /// Runtime publication must account the copy as separately owned storage.
+    pub fn try_clone(&self) -> Result<Self, Error> {
+        fn copy<T: Copy>(input: &[T]) -> Result<Vec<T>, Error> {
+            let mut output = Vec::new();
+            output
+                .try_reserve_exact(input.len())
+                .map_err(|_| Error::RuntimeAllocation)?;
+            output.extend_from_slice(input);
+            Ok(output)
+        }
+        Ok(Self {
+            ids: copy(&self.ids)?,
+            targets: copy(&self.targets)?,
+            routes: copy(&self.routes)?,
+            source_count: self.source_count,
+        })
+    }
     /// Rejects invalid targets, routes and capacities before constructing a program.
     /// Callers remain responsible for state-aware runtime admission.
     pub fn new(

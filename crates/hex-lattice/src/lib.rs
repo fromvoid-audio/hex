@@ -23,6 +23,8 @@ mod modulation_runtime;
 mod modulation_sources;
 mod owned_processor;
 mod parameter_automation;
+mod prepared_modulation;
+pub use prepared_modulation::{MAX_PREPARED_MODULATION_BYTES, PreparedModulationState};
 #[cfg(test)]
 mod static_processing_tests;
 mod tail_split;
