@@ -141,19 +141,28 @@ pub(super) const BINDINGS: [Binding<ControlValues>; COUNT] = [
     ),
     Binding::boolean(
         state::DESCRIPTORS[4],
-        crate::parameter_binding::BOOLEAN_ENVELOPE,
+        ParameterSemantics {
+            smoothing: ParameterSmoothing::DeviceManaged,
+            ..crate::parameter_binding::BOOLEAN_ENVELOPE
+        },
         |s| s.timing.sync[0],
         |s, v| s.timing.sync[0] = v,
     ),
     Binding::boolean(
         state::DESCRIPTORS[5],
-        crate::parameter_binding::BOOLEAN_ENVELOPE,
+        ParameterSemantics {
+            smoothing: ParameterSmoothing::DeviceManaged,
+            ..crate::parameter_binding::BOOLEAN_ENVELOPE
+        },
         |s| s.timing.sync[1],
         |s, v| s.timing.sync[1] = v,
     ),
     Binding::choice(
         state::DESCRIPTORS[6],
-        crate::parameter_binding::CHOICE_ENVELOPE,
+        ParameterSemantics {
+            smoothing: ParameterSmoothing::DeviceManaged,
+            ..crate::parameter_binding::CHOICE_ENVELOPE
+        },
         |s| s.timing.division[0],
         |s, v| {
             s.timing.division[0] = v;
@@ -162,7 +171,10 @@ pub(super) const BINDINGS: [Binding<ControlValues>; COUNT] = [
     ),
     Binding::choice(
         state::DESCRIPTORS[7],
-        crate::parameter_binding::CHOICE_ENVELOPE,
+        ParameterSemantics {
+            smoothing: ParameterSmoothing::DeviceManaged,
+            ..crate::parameter_binding::CHOICE_ENVELOPE
+        },
         |s| s.timing.division[1],
         |s, v| {
             s.timing.division[1] = v;
@@ -183,7 +195,10 @@ pub(super) const BINDINGS: [Binding<ControlValues>; COUNT] = [
     ),
     Binding::boolean(
         state::DESCRIPTORS[10],
-        crate::parameter_binding::BOOLEAN_ENVELOPE,
+        ParameterSemantics {
+            smoothing: ParameterSmoothing::DeviceManaged,
+            ..crate::parameter_binding::BOOLEAN_ENVELOPE
+        },
         |s| s.timing.link,
         |s, v| s.timing.link = v,
     ),
