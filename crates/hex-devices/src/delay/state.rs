@@ -3,7 +3,8 @@
 //! feedback and mix. Migration preserves its free stereo timing and dry/wet,
 //! disables the new filter and modulation, and retains its repitch transition.
 //! Version 2 adds the independently authored Live-style control inventory.
-//! Generic automation is explicitly unsupported, as requested for this delivery.
+//! Feedback and dry/wet expose shared owned-transaction automation; other
+//! parameters retain their explicit unsupported declaration.
 use super::DelayDefinition;
 use hex_lattice_contract::*;
 pub const TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.delay");
@@ -483,6 +484,9 @@ impl NativeDeviceMetadata for DelayDefinition {
         id: ParameterId,
     ) -> Result<Option<ParameterSemantics>, DeviceContractError> {
         decode(state)?;
+        if let Some(semantics) = super::automation::semantics(id) {
+            return Ok(Some(semantics));
+        }
         let d = DESCRIPTORS
             .iter()
             .find(|d| d.id == id)
