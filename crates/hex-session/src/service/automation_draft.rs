@@ -15,9 +15,19 @@
 //! custody; producing a durable draft alone does not implement a playable recording workflow.
 use super::{Session, recovery};
 use hex_storage::automation_draft::DraftWriter;
+mod native_device;
+mod recovery_copy;
+pub(in crate::service) use recovery_copy::copy_failed_with_tail_on_control;
+mod recovery_worker;
 pub use hex_storage::automation_draft::{
-    AppliedEvent, DraftProgress, DraftProvenance, DraftTarget, DraftTerminal,
+    AppliedEvent, DraftAbortReason, DraftClock, DraftPrefixIdentity, DraftProgress,
+    DraftProvenance, DraftTarget, DraftTerminal,
 };
+pub use native_device::{
+    DeviceDraftInput, Vst3ApplicationValue, Vst3CaptureTarget, Vst3ParameterApplication,
+};
+pub use recovery_copy::{RecoveryCopyReceipt, copy_failed_on_control};
+pub use recovery_worker::{RecoveryCopyCompletion, RecoveryCopyWorker};
 use std::{
     collections::VecDeque,
     path::{Path, PathBuf},
@@ -217,6 +227,8 @@ pub struct DraftWorkerOutcome {
     pub path: PathBuf,
     pub admitted_events: u64,
     pub progress: DraftProgress,
+    /// Exact header and last sync-acknowledged event chain, retained after writer failure.
+    pub durable_prefix: DraftPrefixIdentity,
     pub requested_terminal: DraftTerminal,
     pub failure: Option<String>,
     /// At most three original batches, including any partially written/synced batch.
@@ -367,12 +379,13 @@ fn spawn_with_start(
                     }
                 }
             };
-            if failure.is_none() {
-                if let Err(error) = writer.finish(terminal) {
-                    failure = Some(error.to_string());
-                }
+            if failure.is_none()
+                && let Err(error) = writer.finish(terminal)
+            {
+                failure = Some(error.to_string());
             }
             let progress = writer.progress();
+            let durable_prefix = writer.durable_prefix_identity();
             let path = writer.path().to_path_buf();
             // Release the exclusive file lock before publishing a completed observation.
             drop(writer);
@@ -387,6 +400,7 @@ fn spawn_with_start(
                 path,
                 admitted_events: state.accepted_events,
                 progress,
+                durable_prefix,
                 requested_terminal: terminal,
                 failure,
                 retained,
@@ -612,13 +626,13 @@ impl DraftWorker {
     }
     fn join(&mut self) -> Result<(), String> {
         let _ = self.shared.finish(DraftTerminal::Interrupted);
-        if let Some(thread) = self.thread.take() {
-            if thread.join().is_err() {
-                let mut state = self.shared.state();
-                state.failed = true;
-                state.finished = true;
-                return Err("automation writer failed; recover its retained file".to_owned());
-            }
+        if let Some(thread) = self.thread.take()
+            && thread.join().is_err()
+        {
+            let mut state = self.shared.state();
+            state.failed = true;
+            state.finished = true;
+            return Err("automation writer failed; recover its retained file".to_owned());
         }
         Ok(())
     }
@@ -630,4 +644,4 @@ impl Drop for DraftWorker {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

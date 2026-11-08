@@ -26,7 +26,7 @@ fn repaint(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
     visual.run_until_parked();
 }
 fn terminal(editor: &Entity<EditorView>, visual: &mut VisualTestContext) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = editor.read_with(&*visual, |v, _| v.service.try_event()) {
             if event.request_complete {

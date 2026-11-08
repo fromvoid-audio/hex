@@ -7,10 +7,7 @@ use crate::editor::{
 };
 use gpui::{Entity, TestAppContext, VisualTestContext, px, size};
 use hex_project::Command;
-use std::{
-    sync::atomic::Ordering::Acquire,
-    time::{Duration, Instant},
-};
+use std::{sync::atomic::Ordering::Acquire, time::Instant};
 
 fn marker(
     visual: &mut VisualTestContext,
@@ -47,7 +44,7 @@ fn pump_until(
     backend: &mut hex_audio::worker_fixture::HeadlessBackend,
     ready: impl Fn(&EditorView) -> bool,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         held_pointer_tests::pump_output(editor, cx, output, backend);
         visual.run_until_parked();
@@ -468,6 +465,36 @@ fn audio_playhead_case(cx: &mut TestAppContext, warped: bool) {
         "audio-playback-position",
         "audio-events-waveform",
         None,
+    );
+    // The Console cell editor follows that accepted launch on the performance
+    // clock: the route publishes its launch frame with the owner it accepted.
+    let (launch, performance) = editor.update(cx, |v, cx| {
+        v.mode = crate::editor::EditorMode::Session;
+        v.selected_cell = Some((track, scene));
+        cx.notify();
+        let status = v.audio_status().unwrap();
+        let mut entries = [hex_audio::prepared::SessionRouteEntry::default();
+            hex_audio::prepared::SESSION_ROUTE_CAPACITY];
+        let snapshot = status.session_routes(&mut entries).unwrap();
+        let entry = entries[..snapshot.count]
+            .iter()
+            .find(|e| e.track_id == track.value())
+            .unwrap();
+        (
+            entry
+                .audio_launch_frame
+                .expect("published Session audio launch"),
+            status.performance_frame.load(Acquire),
+        )
+    });
+    visual.run_until_parked();
+    let elapsed = performance.checked_sub(launch).unwrap();
+    assert!(elapsed < 60_000, "one-shot cell still audible");
+    marker(
+        &mut visual,
+        "session-audio-playback-position",
+        "session-audio-waveform",
+        Some(elapsed as f32 / 60_000.0),
     );
     editor.update(cx, |v, _| {
         v.audio.take();

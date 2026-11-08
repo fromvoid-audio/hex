@@ -12,6 +12,9 @@ impl SessionPlayback {
             .routes
             .iter()
             .position(|route| route.id == keyboard.track())?;
+        if !self.revision.source_routing().contributes(contributor) {
+            return None;
+        }
         self.revision.source_routing().receiver_index(contributor)
     }
 }

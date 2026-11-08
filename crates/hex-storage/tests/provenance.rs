@@ -109,14 +109,16 @@ fn current_provenance_is_required_even_when_empty() {
     assert!(decode(&serde_json::to_vec(&missing).unwrap()).is_err());
 }
 
+/// Maximal import evidence survives beside a source. Documents above the
+/// former 8 MiB reader limit are covered by the save/replace/recover test below.
 #[test]
-fn large_document_preserves_provenance_and_source_identity() {
+fn maximal_provenance_preserves_original_bytes_and_source_identity() {
     let mut editor = Editor::new(project(vec![255; MAX_IMPORT_DOCUMENT_BYTES]), 1).unwrap();
     assert!(matches!(
         editor
             .execute(Command::ImportAudioTrack {
                 name: "original".into(),
-                path: "x".repeat(LEGACY_READER_DOCUMENT_BYTES).into(),
+                path: "original.wav".into(),
                 sample_rate: 48_000,
                 frames: 100,
             })
@@ -124,8 +126,7 @@ fn large_document_preserves_provenance_and_source_identity() {
         Created::Imported { .. }
     ));
     let candidate = editor.project();
-    let bytes = encode(candidate).expect("valid metadata above the former document cap");
-    assert!(bytes.len() > LEGACY_READER_DOCUMENT_BYTES);
+    let bytes = encode(candidate).expect("maximal provenance encodes");
     assert_eq!(decode(&bytes).unwrap(), *candidate);
     assert_eq!(
         candidate
@@ -165,6 +166,28 @@ fn large_documents_save_replace_recover_and_checkpoint_without_truncation() {
     let (_, small_token) = load_with_token(&path).unwrap();
     assert!(!small_token.requires_save_confirmation(&small).unwrap());
     assert!(small_token.requires_save_confirmation(large).unwrap());
+    // An explicit ceiling uses the same rule: only crossing it from at/below asks.
+    let small_len = fs::read(&path).unwrap().len();
+    assert!(
+        !small_token
+            .requires_save_confirmation_within(&small, small_len)
+            .unwrap()
+    );
+    let mut grown = Editor::new(small.clone(), 1).unwrap();
+    grown
+        .execute(Command::AddTrack { name: "t".into() })
+        .unwrap();
+    assert!(
+        small_token
+            .requires_save_confirmation_within(grown.project(), small_len)
+            .unwrap()
+    );
+    // Already above the ceiling: no new compatibility loss to confirm.
+    assert!(
+        !small_token
+            .requires_save_confirmation_within(large, small_len - 1)
+            .unwrap()
+    );
     replace_existing(&path, &small_token, large).unwrap();
     let (reopened, token) = load_with_token(&path).unwrap();
     assert_eq!(reopened, *large);

@@ -3,13 +3,10 @@ use super::*;
 use crate::editor::test_environment::Environment;
 use gpui::{AppContext, Entity, Modifiers, TestAppContext, VisualTestContext, point, size};
 use hex_session::service::{Event, Service};
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, time::Instant};
 
 fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         let ready = editor.update(&mut *visual, |v, cx| {
             if v.tick(cx) {
@@ -75,7 +72,7 @@ fn rail_point(visual: &mut VisualTestContext, fraction: f32) -> gpui::Point<gpui
     point(rail.left() + rail.size.width * fraction, rail.center().y)
 }
 fn hold_real_response(editor: &Entity<EditorView>, visual: &mut VisualTestContext) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         if let Some(event) = editor.update(&mut *visual, |v, _| v.service.try_event().ok()) {
             return event;

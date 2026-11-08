@@ -67,7 +67,7 @@ impl Source {
                     clip_data,
                     clip_data.start(),
                     a..b,
-                    original.source_frames,
+                    original.source_frames(),
                 );
                 aggregate_ranges(original, ranges.as_slice())
             };
@@ -127,7 +127,7 @@ impl Source {
             let a = source_frame(frame(i)?)?;
             let b = source_frame(frame(i + 1)?)?
                 .max(a.checked_add(1)?)
-                .min(self.waveform.source_frames);
+                .min(self.waveform.source_frames());
             bins.push(self.waveform.peaks_for_frames(a, b)?);
         }
         Some(Preview {

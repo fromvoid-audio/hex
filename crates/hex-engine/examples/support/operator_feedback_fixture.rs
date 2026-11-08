@@ -38,7 +38,11 @@ pub fn project_with_operators(
     level: f32,
     all_operators: bool,
 ) -> Result<Fixture, Box<dyn Error>> {
-    if tracks == 0 || tracks > hex_project::MAX_TRACKS || notes_per_track == 0 {
+    if tracks == 0
+        || tracks > hex_project::MAX_TRACKS
+        || notes_per_track == 0
+        || notes_per_track > 128
+    {
         return Err("tracks and notes must be nonzero and within project limits".into());
     }
     let authored_notes = tracks
@@ -62,12 +66,20 @@ pub fn project_with_operators(
                 id: take_id(&mut next_id)?,
                 start_raw: 0,
                 duration_raw: note_duration,
-                pitch: 48 + ((track_index + note_index) % 36) as u8,
+                // Keep historical small workloads identical. Larger admission
+                // probes need distinct pitches rather than invalid same-pitch overlaps.
+                pitch: if notes_per_track <= 36 {
+                    48 + ((track_index + note_index) % 36) as u8
+                } else {
+                    u8::try_from(note_index)?
+                },
                 channel: 0,
                 velocity: 100,
             });
         }
         track_snapshots.push(TrackSnapshot {
+            group_output_mutes: Vec::new(),
+            tags: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),
@@ -112,6 +124,8 @@ pub fn project_with_operators(
     }
 
     let project = Project::from_legacy_snapshot(Snapshot {
+        automatic_track_names: Vec::new(),
+        retained_source_paths: Vec::new(),
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
@@ -120,8 +134,10 @@ pub fn project_with_operators(
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
+        sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: SAMPLE_RATE,
+        sample_rate_mode: Default::default(),
         next_id,
         assets: Vec::new(),
         tracks: track_snapshots,
@@ -246,6 +262,13 @@ pub fn shared_source_project_with_operators(
 
 pub fn state(feedback: f32, level: f32) -> Result<NativeDeviceState, Box<dyn Error>> {
     let state = OPERATOR_METADATA.default_state()?;
+    let state = OPERATOR_METADATA.patch_parameter(
+        &state,
+        parameter::GLOBAL_MODE,
+        ParameterValue::Choice(1),
+    )?;
+    let state =
+        OPERATOR_METADATA.patch_parameter(&state, parameter::VOICES, ParameterValue::Choice(14))?;
     let state = OPERATOR_METADATA.patch_parameter(
         &state,
         parameter::feedback(1),

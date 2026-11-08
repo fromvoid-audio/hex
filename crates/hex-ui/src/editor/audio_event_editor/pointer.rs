@@ -10,10 +10,15 @@ impl Kind {
         match self {
             Self::Select => CursorStyle::Arrow,
             Self::PlayStart { .. } => CursorStyle::ResizeLeftRight,
-            Self::RangeMove { .. } | Self::Move(_) => CursorStyle::OpenHand,
+            Self::RangeMove { .. }
+            | Self::FreeRangeMove { .. }
+            | Self::Move(_)
+            | Self::FreeMove { .. }
+            | Self::Duplicate { .. } => CursorStyle::OpenHand,
             Self::Leading(_) => CursorStyle::ResizeLeftBracket,
             Self::Trailing(_) => CursorStyle::ResizeRightBracket,
             Self::Fade(fade) => fade.pointer_cursor(),
+            Self::Gain { .. } => CursorStyle::ResizeUpDown,
         }
     }
 }
@@ -78,6 +83,7 @@ impl EditorView {
                         return;
                     }
                     let fade = matches!(gesture.kind, Kind::Fade(_));
+                    let gain = matches!(gesture.kind, Kind::Gain { .. });
                     if let Some(event) = moved {
                         if fade {
                             view.update_audio_event_fade_pointer(
@@ -86,6 +92,12 @@ impl EditorView {
                                 window,
                                 cx,
                             );
+                        } else if gain {
+                            view.event_update_gain(
+                                f32::from(event.position.y),
+                                event.modifiers.shift,
+                            );
+                            cx.notify();
                         } else {
                             view.event_update_pointer(
                                 f32::from(event.position.x),
@@ -101,6 +113,17 @@ impl EditorView {
                                 window,
                                 cx,
                             );
+                        } else if gain {
+                            view.event_update_gain(
+                                f32::from(event.position.y),
+                                event.modifiers.shift,
+                            );
+                            if let Some(gesture) = view.audio_event_editor.gesture.take()
+                                && let Some(operation) = gesture.operation
+                            {
+                                view.event_commit(operation);
+                            }
+                            cx.notify();
                         } else {
                             view.event_release_pointer(
                                 f32::from(event.position.x),

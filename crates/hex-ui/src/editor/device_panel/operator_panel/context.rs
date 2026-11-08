@@ -1,9 +1,7 @@
 //! View selection guarded by the canonical instrument owner, independent of DSP edits.
-use super::super::{
-    DevicePanelOwner, EditorView, ParameterControl, ParameterKey, finalize_controls_except,
-};
+use super::super::{DevicePanelOwner, EditorView};
 use super::{OperatorPage, OperatorPanelState};
-use gpui::{App, Bounds, Context, EntityId, FocusHandle, Focusable, Pixels, Window};
+use gpui::{App, Bounds, Context, FocusHandle, Pixels, Window};
 use hex_project::{DeviceId, TrackId};
 
 #[derive(Clone, Copy, Debug)]
@@ -51,17 +49,35 @@ impl Owner {
             && view.focused_return.is_none()
             && view.device_panel.owner == Some(DevicePanelOwner::Track(self.track))
     }
+
+    /// Immutable canonical state for this currently selected instrument owner.
+    pub(super) fn state(
+        self,
+        view: &EditorView,
+    ) -> Option<&hex_lattice_contract::NativeDeviceState> {
+        if !self.is_current(view) {
+            return None;
+        }
+        Some(
+            view.state
+                .as_ref()?
+                .project
+                .track(self.track)?
+                .instrument()?
+                .state(),
+        )
+    }
 }
 
+/// Context changes are explicit and cannot abandon a pending invalid draft.
 pub(in crate::editor::device_panel) fn select_oscillator(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
     owner: Owner,
     operator: usize,
-    excluded: &[ParameterKey],
-) {
-    if operator >= 4 || !owner.is_current(view) {
-        return;
+) -> bool {
+    if operator >= 4 || !owner.is_current(view) || !super::super::finalize_controls(view, cx) {
+        return false;
     }
     let current = view
         .device_panel
@@ -71,118 +87,49 @@ pub(in crate::editor::device_panel) fn select_oscillator(
         .unwrap_or_default();
     let target = OperatorPanelState {
         selected_operator: operator,
-        page: if current.page == OperatorPage::Envelope {
-            OperatorPage::Envelope
-        } else {
+        page: if current.page == OperatorPage::Oscillator {
             OperatorPage::Oscillator
+        } else {
+            OperatorPage::Envelope
         },
+        ..current
     };
-    if target != current && finalize_controls_except(view, cx, excluded) {
+    if target != current {
         view.device_panel
             .operator_pages
             .insert(owner.device, target);
         cx.notify();
     }
+    true
+}
+
+pub(super) fn select_page(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    owner: Owner,
+    page: OperatorPage,
+) -> bool {
+    if !owner.is_current(view) || !super::super::finalize_controls(view, cx) {
+        return false;
+    }
+    let state = view
+        .device_panel
+        .operator_pages
+        .entry(owner.device)
+        .or_default();
+    if state.page != page {
+        state.page = page;
+        cx.notify();
+    }
+    true
 }
 
 pub(super) fn select_routing(view: &mut EditorView, cx: &mut Context<EditorView>, owner: Owner) {
-    if owner.is_current(view) && super::super::finalize_controls(view, cx) {
-        view.device_panel
-            .operator_pages
-            .entry(owner.device)
-            .or_default()
-            .page = OperatorPage::Routing;
-        cx.notify();
-    }
+    select_page(view, cx, owner, OperatorPage::Routing);
 }
 
-// Subscribe at prepaint, when GPUI supplies the actual window. Subscriptions are
-// retained per device and pruned to the live controls on every render. They never
-// retain an audio/project owner or steal focus from the widget that activated.
-pub(super) fn focus_listener(
-    view: &EditorView,
-    cx: &Context<EditorView>,
-    device: DeviceId,
-) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
-    let owner = Owner::capture(view, device);
-    let entity = cx.weak_entity();
-    move |_, window, cx| {
-        let Some(owner) = owner else {
-            return;
-        };
-        let _ = entity.update(cx, |view, cx| {
-            let mut handles: Vec<(EntityId, FocusHandle, Option<usize>, Option<ParameterKey>)> =
-                Vec::new();
-            for (key, control) in &view.device_panel.controls {
-                if key.device != device {
-                    continue;
-                }
-                let operator = super::shell_operator_for_numeric_parameter(key.parameter).or_else(
-                    || match key.parameter.value() {
-                        62 | 65 | 68 | 71 => Some(((key.parameter.value() - 62) / 3) as usize),
-                        _ => None,
-                    },
-                );
-                if let Some(operator) = operator {
-                    let (id, focus) = match control {
-                        ParameterControl::Float { entity, .. } => {
-                            (entity.entity_id(), entity.focus_handle(cx))
-                        }
-                        ParameterControl::Bool { entity, .. } => {
-                            (entity.entity_id(), entity.focus_handle(cx))
-                        }
-                        ParameterControl::Choice { entity, .. } => {
-                            (entity.entity_id(), entity.focus_handle(cx))
-                        }
-                    };
-                    handles.push((id, focus, Some(operator), Some(*key)));
-                }
-            }
-            if let Some(state) = view.device_panel.operator_previews.get(&device) {
-                for (field, control) in &state.controls {
-                    let operator = field.operator();
-                    if operator.is_some() || field.is_global() {
-                        handles.push((
-                            control.entity.entity_id(),
-                            control.entity.focus_handle(cx),
-                            operator,
-                            None,
-                        ));
-                    }
-                }
-            }
-            view.device_panel
-                .operator_context_focus
-                .entry(device)
-                .or_default()
-                .retain(|id, _| handles.iter().any(|(live, _, _, _)| id == live));
-            for (id, handle, operator, key) in handles {
-                if view
-                    .device_panel
-                    .operator_context_focus
-                    .get(&device)
-                    .is_some_and(|watches| watches.contains_key(&id))
-                {
-                    continue;
-                }
-                let subscription = cx.on_focus(&handle, window, move |view, _, cx| {
-                    if let Some(operator) = operator {
-                        select_oscillator(view, cx, owner, operator, key.as_slice());
-                    } else {
-                        select_routing(view, cx, owner);
-                    }
-                });
-                view.device_panel
-                    .operator_context_focus
-                    .entry(device)
-                    .or_default()
-                    .insert(id, subscription);
-            }
-        });
-    }
-}
-
-// Section containers track descendant focus, but are never keyboard targets.
+// Oscillator section backgrounds are explicit keyboard selection targets.
+// Other containers only track descendant focus.
 pub(in crate::editor::device_panel) struct SectionFocus {
     pub(in crate::editor::device_panel) handle: FocusHandle,
     pub(in crate::editor::device_panel) focused: bool,
@@ -200,7 +147,10 @@ pub(super) fn section_focus(
         .operator_section_focus
         .entry((device, section))
         .or_insert_with(|| SectionFocus {
-            handle: cx.focus_handle().tab_stop(false),
+            handle: cx
+                .focus_handle()
+                .tab_index(0)
+                .tab_stop(matches!(section, super::Section::Oscillator(_))),
             focused: false,
             subscriptions: None,
         });
@@ -226,44 +176,11 @@ pub(super) fn section_listener(
             }
             let handle = state.handle.clone();
             let focus_in = cx.on_focus_in(&handle, window, move |view, window, cx| {
+                if !owner.is_some_and(|owner| owner.is_alive(view)) {
+                    return;
+                }
                 if let Some(state) = view.device_panel.operator_section_focus.get_mut(&key) {
                     state.focused = true;
-                }
-                if let Some(owner) = owner {
-                    let excluded: Vec<_> = view
-                        .device_panel
-                        .controls
-                        .iter()
-                        .filter_map(|(key, control)| {
-                            let focus = match control {
-                                ParameterControl::Float { entity, .. } => entity.focus_handle(cx),
-                                ParameterControl::Bool { entity, .. } => entity.focus_handle(cx),
-                                ParameterControl::Choice { entity, .. } => entity.focus_handle(cx),
-                            };
-                            (key.device == device && focus.is_focused(window)).then_some(*key)
-                        })
-                        .collect();
-                    match section {
-                        super::Section::Oscillator(operator) => {
-                            select_oscillator(view, cx, owner, operator, &excluded);
-                        }
-                        super::Section::Preview("lfo" | "filter")
-                            if owner.is_current(view)
-                                && super::super::finalize_controls_except(view, cx, &excluded) =>
-                        {
-                            view.device_panel
-                                .operator_pages
-                                .entry(device)
-                                .or_default()
-                                .page = if section == super::Section::Preview("filter") {
-                                super::OperatorPage::Filter
-                            } else {
-                                super::OperatorPage::Lfo
-                            };
-                            cx.notify();
-                        }
-                        _ => {}
-                    }
                 }
                 // GPUI delivers focus events after painting, when immediate
                 // notifications cannot dirty the window. Schedule the changed
@@ -281,4 +198,23 @@ pub(super) fn section_listener(
             }
         });
     }
+}
+
+/// View-only expansion. Never hide an unfinished invalid native parameter edit.
+pub(in crate::editor::device_panel) fn toggle_options(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    owner: Owner,
+) -> bool {
+    if !owner.is_current(view) || !super::super::finalize_controls(view, cx) {
+        return false;
+    }
+    let state = view
+        .device_panel
+        .operator_pages
+        .entry(owner.device)
+        .or_default();
+    state.options_open = !state.options_open;
+    cx.notify();
+    true
 }

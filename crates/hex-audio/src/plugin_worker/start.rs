@@ -118,6 +118,7 @@ impl NativeWorker {
     /// in the existing refusal packet until independently observed disposal.
     /// An admitted live capture reaches its real terminal before SDK quiescence,
     /// including when transport revocation has already refused its caller token.
+    /// Stopped graph renewal releases the retired instrument gates in that child.
     #[allow(clippy::result_large_err)]
     pub(crate) fn into_quiescent_on_control(
         mut self,
@@ -149,7 +150,7 @@ impl NativeWorker {
                     if cause.is_some() {
                         native = Some((*instance).cancel_retained_on_control());
                     } else {
-                        match (*instance).quiesce_retained_on_control() {
+                        match (*instance).quiesce_for_stopped_restore_on_control() {
                             Ok(source) => return Ok(source),
                             Err(mut failure) => {
                                 cause = Some(failure.take_cause_on_control());
@@ -203,16 +204,20 @@ impl NativeWorker {
         let binding = instance.configuration().binding;
         let quantum = instance.configuration().quantum;
         let prefix = instance.completed_blocks_on_control();
-        let (control, callback, worker) =
-            match channel_from_completed_prefix(binding, quantum, prefix) {
-                Ok(pair) => pair,
-                Err(fault) => {
-                    return Err(NativeWorkerStartFailure::retain_source_on_control(
-                        Error::Protocol(fault.message()),
-                        instance,
-                    ));
-                }
-            };
+        let channel = if instance.configuration().input_channels == 0 {
+            instrument_channel_from_completed_prefix(binding, quantum, prefix)
+        } else {
+            channel_from_completed_prefix(binding, quantum, prefix)
+        };
+        let (control, callback, worker) = match channel {
+            Ok(pair) => pair,
+            Err(fault) => {
+                return Err(NativeWorkerStartFailure::retain_source_on_control(
+                    Error::Protocol(fault.message()),
+                    instance,
+                ));
+            }
+        };
         let cancellation = instance.cancellation_on_control();
         match spawn_processor_with(
             control,

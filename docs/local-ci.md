@@ -15,6 +15,48 @@ partial feedback. Runner certification and reviewed change-based verification
 are distinct evidence routes under AGENTS.md; neither implies native acceptance.
 See [development-workflow.md](development-workflow.md).
 
+## Default sequence for an issue
+
+Use the cheapest check that can fail first; do not use the merge runner as
+first feedback.
+
+1. **Focused tests** for the changed boundary and its named consumers, for
+   example `cargo test -p OWNER --lib FILTER` (target under ten seconds; see
+   [focused commands](#focused-commands)).
+2. **Preflight**: `python3 scripts/local-ci.py --quick` plus
+   `cargo clippy -p OWNER --all-targets [--features …] --locked -- -D warnings`
+   for each touched package and its relevant feature configurations. This
+   catches style, guard and lint failures in about a minute.
+3. **Merge qualification**: run the merge profile (below). Where the selector
+   has no narrower supported boundary and would widen far beyond the change's
+   actual impact, a reviewed change-based check set may qualify instead under
+   AGENTS.md, recorded in the PR as shown in the template below. Allocation-probe,
+   persistence and Undo/Redo requirements of the touched boundaries still apply.
+
+Complete verification before merging. When the base moves during step 3,
+[carry](#continue-after-the-base-advances) eligible evidence instead of
+rerunning everything. Do not run a routine post-merge check.
+
+When several sessions share the machine, run one Cargo-heavy command (test,
+clippy, build or runner) at a time. A session's own worktree target may need
+`--adopt-target` on its first runner use; never adopt another session's target.
+Do not edit a checkout while a runner is using it: a changed tree marks the
+run stale, and Python self-tests that start scripts would test the edit.
+
+Reviewed check set template for a PR description:
+
+```text
+## Verification (reviewed change-based check set)
+Base BASE_SHA, source SOURCE_SHA.
+Owners: crate::module (responsibility); contracts: …; consumers: …
+- cargo test -p OWNER --locked [--features …]: passed (N tests)
+- cargo test -p CONSUMER --test NAME --locked: passed (N tests)
+- cargo clippy -p OWNER -p CONSUMER --all-targets --locked -- -D warnings: passed
+- python3 scripts/local-ci.py --quick: passed
+Omitted, with reasons: …
+Not a runner-certified plan; native acceptance remains in Pulse.
+```
+
 The runner executes sequentially and stops on failure. Read the numbered log for
 the failing step; later `not_run` steps did not pass. Results are in
 `artifacts/local-ci/<run-id>/summary.json` and adjacent raw logs. A runner-certified run
@@ -58,9 +100,86 @@ Ordering changes no required commands, configurations or qualification rules;
 quick/edit/custom probes remain partial. Preflight source/target checks still apply.
 
 `scripts/ci_plan.py` selects checks from both sides of changed Git paths, Cargo
-ownership and transitive normal/dev/build/optional/target dependencies. Rust,
-package manifests and package build scripts select owning packages and consumers,
-including reviewed runtime relationships such as opaque device state in storage.
+ownership and transitive normal/dev/build/optional/target dependencies.
+
+**Owner boundaries (policy since 1 November 2026).** A merge runs the test suites
+of the packages that own the changed source, in every configuration, plus reviewed
+runtime consumers with no Cargo edge (opaque device state in hex-storage). Every
+transitive Cargo consumer still compiles and lints, default and feature
+configurations, so an API break cannot reach main, but consumer suites are not
+rerun. The owner's boundary tests are what guarantee behaviour downstream. If a
+consumer later breaks, the defect is a missing owner boundary test: add it at the
+owner. Package manifests and build scripts can change how consumers build, so they
+keep the whole affected closure's suites.
+
+**Profile-only root manifest changes.** A root `Cargo.toml` change whose
+every changed table is `[profile.NAME.package.MEMBER]` (a workspace member, never
+`"*"`) using only `opt-level`, `debug`, `codegen-units`, `incremental`,
+`split-debuginfo` or `strip` selects those members as if their crate roots
+changed: their whole suites test, consumers lint. These keys change codegen, not
+program meaning. Any other root-manifest change, including `debug-assertions`,
+`overflow-checks`, `panic`, `lto`, dependencies or workspace members, keeps the
+comprehensive audit.
+
+**Module scope.** Inside an owner, a changed `src/` file runs only the tests of
+its own Rust module subtree. The planner resolves `mod`/`#[path]` from the crate
+root and runs `cargo test … -- module::path::` in each of the owner's test
+configurations, including sharded ones via `test_shards.py --filter`. A module
+with no tests of its own selects its nearest ancestor module that has tests.
+The crate root, `include!`, non-`src/` inputs and manifests keep whole-crate
+tests. One configuration may hold none of a module's tests, so module-scoped
+steps are checked together: a merge whose changed modules pass no test fails
+with "changed modules ran no tests". Example targets (the device gallery) are
+skipped for module-scoped owners. Smaller, self-tested modules therefore mean
+faster merges; an untested module inherits its parent's often-large suite.
+
+Standalone `scripts/test_shards.py` refuses an empty combined selection, including
+filter typos and skips removing every case. The runner passes `--allow-empty` only
+for module-scoped configurations whose coverage it checks together. That option
+reports an empty selection without claiming tests passed; callers must verify
+aggregate coverage themselves. An empty target alongside selected tests is allowed.
+
+A changed module root (for example `editor/mod.rs`) runs its complete test
+subtree, including tests in child modules, regardless of which child names
+appear in the diff. Module-scoped doctest steps run only when a changed file
+carries a doc example (a fenced block in `///` or `//!` comments). A reviewed runtime
+consumer that is itself the changed owner (for example hex-storage) is
+module-scoped like any owner.
+
+Python tooling follows the same rule. A changed `scripts/NAME.py` (or
+`scripts/NAME`) runs its own `test_NAME` module, and a changed
+`scripts/tests/test_X.py` runs itself. Both add the shared planner invariants.
+Scripts without their own test module, config files and unknown inputs keep
+comprehensive discovery. Merge checks without explicit native acceptance inputs
+run that inventory through `scripts/python_shards.py --discover` with up to
+eight workers and batches of up to eight ordinary cases from the same
+module or package. When Git on the
+original PATH is Apple's `/usr/bin/git` launcher, discovery resolves the
+selected Git once with `xcrun` and puts only that executable ahead of the
+original PATH for its child processes. Comprehensive full, release and health runs
+remain serial. Owner selections run through `scripts/python_shards.py`:
+one process per test from a shared work queue (up to 12 workers), which brings
+`test_local_ci` + `test_ci_plan` from 124 s serial to about 40 s.
+Subprocess-heavy test methods explicitly marked `__hex_shard_bounded__ = True`
+use at most two workers. Owner selections run them after ordinary tests.
+Discovery queues them after the first wave of ordinary batches and shares the
+same worker limit. The real Cargo fixture classes marked
+`__hex_shard_early__ = True` start as isolated cases in that first wave. Both modes report every
+result and include the time spent on every case.
+
+Module-scoped test steps build only the library (or, for a binary-only crate,
+the binaries): a `module::path::` filter can never match an integration test,
+example or bench, so building and linking those targets was pure overhead
+(hex-session has 28 test and 7 example targets, hex-storage 34).
+
+**One-minute budget.** Merge runs keep test setup and execution, excluding Cargo's
+build phase, under 60 s. local-ci sums executed test steps (wall time minus the
+reported build phase; carried steps excluded) into `test_budget` in the summary.
+Exceeding the limit prints a warning naming the slowest steps; it does not fail
+the run, and a run that is otherwise green qualifies (user decision,
+1 November 2026; overruns are investigated in Pulse #4100). Record a recurring
+slow owner suite in Pulse, and optionally pass `--over-budget-reason "Pulse #N …"`
+to keep the reason in the summary.
 Mixed tooling/Rust changes combine comprehensive Python checks with affected Rust
 configurations. Contributor prose, including AGENTS.md, gets link/path checks;
 executable selector/runner policy gets comprehensive tooling tests and guards.
@@ -75,9 +194,30 @@ plan. A new consumer or macro/include input widens to complete affected-package
 tests; missing required consumers/targets refuse. Other device modules currently
 retain affected-package coverage until their runtime relationships are reviewed.
 
-Package plans retain default tests/lints, applicable allocation/UI/export feature
-configurations, gallery and desktop build checks, and independently declared
-additional features. Feature combinations need reviewed contract rules; individual
+Changes that only touch code other packages cannot observe test the owning
+packages only: integration tests, benches and examples, and `src/` files whose
+every `mod` declaration (resolving `#[path]`) is `#[cfg(test)]` or
+`#[cfg(all(test, …))]`, directly or through a parent test module. `any(`/`not(`
+conditions, inline-module nesting, `include!(` in the package, deleted files and
+any production path in the same change keep the consumer closure.
+
+hex-desktop's allocation-probe tests run through `scripts/test_shards.py` as four
+disjoint processes: its native fixtures serialize on a process-wide output lease,
+so one process ran them back to back (109 s). Each shard owns its own lease and
+prints its own `test result`; every listed test runs exactly once (70 s).
+
+Packages whose only extra feature is reviewed as additive for tests (see
+`ADDITIVE_TEST_FEATURES` in `scripts/ci_plan.py`) run their tests once with the
+feature and keep a separate doctest run; default-feature Clippy still applies.
+
+Package plans run the owners' default tests and applicable allocation/UI/export
+feature tests. Consumers lint in two invocations: default features
+(`affected-clippy`, which keeps `cfg(not(feature))` branches compiling) and every
+reviewed feature configuration together (`affected-feature-clippy`). Separate
+per-feature lints recompiled the shared dependency chain each time (55–112 s
+against 38–42 s, measured 1 November 2026). Formatting checks only the changed
+owners' packages. The
+desktop build runs when hex-desktop owns the change. Feature combinations need reviewed contract rules; individual
 feature runs do not prove all combinations. Global manifests/lockfiles, toolchain,
 vendor, unowned resources and unknown inputs conservatively select the comprehensive
 audit with explicit input reasons. Review unknown effects rather than assuming
@@ -118,6 +258,55 @@ SDK/fixture/receipt setup, or `HEX_TEST_SIGNING_IDENTITY`) keep comprehensive
 Python discovery for app-only merges too. Native suites retain their own opt-in
 requirements; a skipped fixture is not native acceptance.
 
+## Continue after the base advances
+
+When `main` moves while a merge run is in progress, or right after it passes,
+merge the new base into the candidate and rerun with the earlier passed report:
+
+```sh
+git fetch origin main && git merge --no-edit origin/main
+python3 scripts/local-ci.py --profile merge --base "$(git rev-parse origin/main)" \
+  --source "$(git rev-parse HEAD)" --carry-report artifacts/local-ci/PASSED/summary.json
+```
+
+A passed merge run prints this hint with its own summary path. The carry is
+accepted only when every executable path changed since the earlier candidate
+came verbatim from the base advance, touches none of the candidate's own paths,
+and is ordinary package source. A changed manifest, lockfile, build script,
+toolchain, tooling or unknown input refuses the carry, and so do a different
+Cargo inventory, guarded toolchain/dependency identity or native opt-in. A
+refused carry is recorded and every step runs fresh; it never fails the run.
+
+Per step, guards and formatting always rerun. A Cargo step is carried only when
+the dependency closure of every package it names excludes all packages the base
+advance changed; a workspace-wide step carries only when no package changed.
+The Python step reruns just the selection the changed paths require. Carried
+steps keep `status: carried`, `execution: carried` and `carried_from` (the report,
+commit and log that actually executed them, preserved through chained carries);
+the summary's `carry` lists each decision and its reason. A carried report is
+not a fresh full run and cannot feed `--reuse-report`.
+
+## Investigate main on request
+
+The health profile remains available when a specific investigation calls for
+checking a merge commit on an up-to-date main checkout:
+
+```sh
+git switch main && git pull --ff-only
+python3 scripts/local-ci.py --profile health --base HEAD^1 --source HEAD
+```
+
+`health` compares the merge commit with its first parent and runs formatting
+plus the tests of the merged change's own packages, not every consumer (tooling
+paths add the Python self-tests; unknown or high-risk inputs test the
+workspace). It is a fast red-main signal, never merge qualification, so a pass
+reports `partial`. A failure prints the merge that turned main red: fix forward
+in a focused PR before merging anything else, and tell other active sessions.
+
+When health runs Python checks for exclusively reviewed tooling paths, it selects
+each changed owner's test module and the shared planner invariants. Mixed,
+unowned, unknown, or native-acceptance inputs retain comprehensive discovery.
+
 ## macOS target storage
 
 Use a persistent Cargo target on APFS. Set `CARGO_TARGET_DIR` to a fresh directory
@@ -134,6 +323,18 @@ stalls make that storage unsuitable for these checks. The launch-stall cause
 is unproven; the guard does not change OS security or relocate executables.
 Other platforms retain their existing storage behavior without a new filesystem
 qualification claim.
+
+If a test executable stalls before the harness starts on an APFS target, try a
+separate fresh APFS target outside the existing target directory, for example:
+
+```sh
+export CARGO_TARGET_DIR="$PWD/artifacts/cargo-ci-target"
+```
+
+Keep that target for the same executor and run the normal checks again. Preserve
+the previous target and failed report; changing the location is not evidence that
+every test meets its time limit. Measure test setup and execution, including any
+copying or other setup, and investigate any remaining slow test separately.
 
 The summary records the identified filesystem, probe duration and dev cleanup
 duration (including failed cleanup). A target
@@ -236,6 +437,11 @@ ownership refuses before normal checks. Read the diagnostic before recovery.
 and establishes the checkout's development owner; it is not permission to remove
 another executor's active cache, release artifacts or user data.
 
+Development and release ownership are separate markers: a target populated by
+local CI has no release owner, so packaging refuses it unless it is empty or
+explicitly adopted. Set separate `CARGO_TARGET_DIR` values for local CI and
+release packaging when both are needed; see [native macOS builds](test-builds.md).
+
 Package-scoped handoffs use Cargo-supported plain package names only after
 complete metadata proves each selected workspace/path name is unique across
 sources and versions. Provenance retains full package IDs. Ambiguous names or
@@ -248,6 +454,63 @@ The runner may refuse insufficient disk headroom. Inspect and remove only known
 reproducible, inactive generated outputs. Do not delete projects, source, accepted
 artifacts or another worktree's target merely to get a run started. Do not edit
 ownership markers to claim a successful check.
+
+## Controlled macOS VST3 fixtures
+
+The opt-in native instance tests use a clean, pinned VST3 SDK checkout and
+original fixture bundles, not installed plug-ins. `build.py` owns the exact SDK
+and submodule pins; `macos_bootstrap.py` checks those revisions, tracked changes
+and MIT license files before building. Keep the checkout outside the repository
+and choose fresh output directories. Set `HEX_VST3_SDK` locally to its path.
+
+```sh
+test ! -e artifacts/vst3-local-controlled
+test ! -e artifacts/vst3-local-instance
+python3 crates/hex-plugin-scan/native/macos_bootstrap.py build \
+  --sdk "$HEX_VST3_SDK" --output artifacts/vst3-local-controlled
+python3 crates/hex-plugin-scan/native/macos_bootstrap.py build --instance-only \
+  --sdk "$HEX_VST3_SDK" --output artifacts/vst3-local-instance
+python3 crates/hex-plugin-scan/native/macos_bootstrap.py verify \
+  --receipt artifacts/vst3-local-controlled/controlled-macos.json
+python3 crates/hex-plugin-scan/native/macos_bootstrap.py verify \
+  --receipt artifacts/vst3-local-instance/controlled-macos.json
+HEX_VST3_MACOS_RECEIPT="$PWD/artifacts/vst3-local-controlled/controlled-macos.json" \
+HEX_VST3_INSTANCE_RECEIPT="$PWD/artifacts/vst3-local-instance/controlled-macos.json" \
+  cargo test -p hex-plugin-host --lib --locked \
+  native::tests::epoch::actual_current_capture_uses_same_quiescent_instance_and_keeps_startup_historical \
+  -- --ignored --exact
+```
+
+Receipts are bound to the native sources and SDK pins. Rebuild them after those
+inputs change. This controlled helper test does not establish installed plug-in,
+native UI, listening, device deadline or release acceptance. Keep SDK paths and
+local receipts out of Git; record the exact receipt hashes and result with the
+issue or PR being verified.
+
+### Dense playback baseline
+
+The opt-in macOS arm64 profile uses the resident Session and prepared callback
+with generated audio. The native and mixed runs use the same 48 tracks and 96
+native effects. The mixed run also admits four instances of the controlled VST3
+processing fixture. Export both verified receipt paths above before the mixed
+run. The fixture uses a fixed 256-frame VST3 transport quantum. Select 64, 128,
+or 256 frames per measured callback and keep that size fixed when comparing
+revisions. Smaller callbacks feed fragments into the fixed transport quantum.
+
+```sh
+HEX_PLAYBACK_PROFILE_BLOCK=256 cargo test --release --locked -p hex-desktop \
+  --features allocation-probe --bin hex-desktop \
+  -- native_audio::tests::plugins::performance_profile \
+  --ignored --nocapture --test-threads=1
+```
+
+The native-only test can run without the VST3 receipts. Each profile prints the
+warm-up and measured block counts, elapsed-time percentiles, blocks that exceeded
+their nominal budget, first nonzero audio, observed presentation lag, and PCM
+fingerprint. Run alternating candidates on the same machine and compare
+fingerprints only within the same workload and block size. Measure aggregate
+process CPU and physical output/monitoring latency separately. The paced
+headless callback does not verify device deadlines or listening quality.
 
 ## Focused commands
 
@@ -279,6 +542,88 @@ cargo test -p hex-audio --features allocation-probe --locked
 cargo test -p hex-stream --features allocation-probe --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
+
+The headless callback probes share the `allocation_probes` integration target.
+Use the former target name as a module filter to run one fixture family, for
+example:
+
+```sh
+cargo test -p hex-audio --locked --features allocation-probe \
+  --test allocation_probes -- track_gain_allocations::
+```
+
+The calibration, stage-clock and device-comparison targets still support
+isolated runs. The stream-pressure target requires both `allocation-probe` and
+`stream-test-support`.
+
+For the focused Limiter stage-clock allocation check, a smaller test binary
+can reduce cold-start time while retaining debug assertions and the same test
+coverage. This opt-in command optimizes only `hex-engine`; it does not change
+the workspace's default test profile or the application build:
+
+```sh
+CARGO_PROFILE_TEST_DEBUG=0 CARGO_PROFILE_TEST_STRIP=symbols \
+  cargo --config 'profile.test.package.hex-engine.opt-level=1' test \
+  -p hex-audio --locked --features allocation-probe --test callback_stage_clocks \
+  stage_clocks::limiter_output_gain_uses_delayed_content_clock_without_callback_allocations \
+  -- --exact
+```
+
+Measure the selected check's wall time, including test-process startup, and
+report compilation separately. This targeted profile is not a substitute for
+the other affected owner and consumer checks, or for an unoptimized debugging
+run when one is needed.
+
+For a focused streamed-readiness or ordinary audio publication regression whose
+library test startup exceeds the unit limit, an optimized test harness can retain
+debug assertions and overflow checks:
+
+```sh
+mkdir -p artifacts
+CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS=true \
+  CARGO_PROFILE_RELEASE_LTO=fat CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
+  CARGO_PROFILE_RELEASE_STRIP=symbols cargo \
+  --config 'profile.release.package.hex-engine.opt-level="z"' \
+  --config 'profile.release.package.hex-stream.opt-level="z"' \
+  --config 'profile.release.package.hex-audio.opt-level="z"' \
+  --config 'profile.release.package.allocation-counter.opt-level=0' \
+  test -p hex-audio --features allocation-probe --lib --release --locked \
+  --no-run --message-format=json > artifacts/audio-test-build.jsonl
+```
+
+For the stream owner, use `-p hex-stream --features allocation-probe` with the
+same profile settings. The Cargo JSON `compiler-artifact` with target `hex_audio`
+or `hex_stream` and `profile.test` true identifies the executable. Invoke it
+with the full test name and `--exact`;
+confirm exactly one test ran and include process launch in the timing. Use the
+corresponding `--test` target for separately linked consumer and calibration
+checks. Do not set global `RUSTFLAGS` for symbol stripping: the PCM constructor
+layout gate deliberately rejects that unsupported compiler configuration. The
+profile does not guarantee every launch meets the limit or replace the other
+affected owner, consumer, and configuration checks.
+
+For allocator-probe sensitivity checks, the original two tests can also be
+compiled as an optimized, separately linked executable while retaining the
+test target's debug assertions and overflow checks. The pinned counter is
+compiled with the same opt-level, debug-assertion and overflow settings as the
+ordinary debug test profile:
+
+```sh
+mkdir -p artifacts
+cargo --config 'profile.release.package.allocation-counter.opt-level=0' \
+  --config 'profile.release.package.allocation-counter.debug-assertions=true' \
+  --config 'profile.release.package.allocation-counter.overflow-checks=true' \
+  rustc -p hex-audio --features allocation-probe \
+  --test allocation_probe_calibration --release --locked --message-format=json \
+  -- -C debug-assertions=yes -C overflow-checks=yes -C strip=symbols \
+  > artifacts/allocation-calibration-build.jsonl
+```
+
+Use the JSON test artifact's `executable` path to run each calibration test
+with its full name and `--exact`. Include process startup in each wall time;
+report compilation separately. The normal test target and discovery remain
+unchanged. This is an optional measurement profile, not proof that every cold
+launch fits the limit or that the affected audio/stream tests are covered.
 
 Focused tests can form part of a reviewed change-based merge check set when its
 affected contracts, consumers and configurations are covered; an isolated passing

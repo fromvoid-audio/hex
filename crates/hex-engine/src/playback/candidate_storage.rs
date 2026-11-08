@@ -26,6 +26,7 @@ impl Playback {
             position: _,
             performance_frame: _,
             performance_clock_exhausted: _,
+            transport_fade,
             playing: _,
         } = self;
         if resident_pcm_publication.is_some()
@@ -60,6 +61,11 @@ impl Playback {
             std::mem::size_of::<SessionPlayback>(),
         )?;
         session.visit_fresh_candidate_storage(ledger)?;
+        ledger.bytes(
+            Owner::exclusive(transport_fade),
+            Location("transport-fade-box", 0),
+            std::mem::size_of::<super::transport_fade::TransportFade>(),
+        )?;
         let metronome = metronome
             .as_ref()
             .ok_or(AudioStorageError::UnknownStorage)?;

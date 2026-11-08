@@ -5,6 +5,9 @@ use hex_lattice::{
 };
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterId, ParameterValue};
 use parameter::*;
+mod bypass;
+mod bypass_profile;
+mod true_peak_oracle;
 fn state(changes: &[(ParameterId, ParameterValue)]) -> NativeDeviceState {
     let mut state = DEFINITION.default_state().unwrap();
     for (id, value) in changes {
@@ -49,6 +52,35 @@ fn render(
         offset = end;
     }
     output
+}
+
+#[test]
+fn block_bypass_matches_single_frame_history_and_meter() {
+    for size in [1, 64, 256, 513] {
+        let factory = factory(48_000, &[]);
+        let mut block = factory.create_runtime().unwrap();
+        let mut reference = factory.create_runtime().unwrap();
+        let input: Vec<_> = (0..size)
+            .map(|i| [i as f32 / 256.0, -(i as f32) / 512.0])
+            .collect();
+        let mut dry = input.clone();
+        block.begin_block();
+        reference.begin_block();
+        block.process_bypassed_block_with_clock(&mut dry, None, &EMPTY_DEVICE_RESOURCES);
+        for frame in &input {
+            let mut discarded = [*frame];
+            reference.process_block(&mut discarded, &EMPTY_DEVICE_RESOURCES);
+        }
+        block.commit_block();
+        reference.commit_block();
+        assert_eq!(dry, input);
+        assert_eq!(block.take_dynamics_meter(), reference.take_dynamics_meter());
+        let tail = [[0.0; 2]; 512];
+        assert_eq!(
+            render(block.as_mut(), &tail, &[64]),
+            render(reference.as_mut(), &tail, &[64])
+        );
+    }
 }
 
 #[test]
@@ -340,6 +372,57 @@ fn standard_attack_keeps_earlier_deadlines_when_stronger_peaks_arrive() {
 }
 
 #[test]
+fn falling_ceiling_limits_first_sample_after_compatible_handoff() {
+    let rate = 8_000;
+    let ceiling = 10.0_f32.powf(-24.0 / 20.0);
+    for mode in 0..3 {
+        for routing in 0..2 {
+            let settings = |db| {
+                [
+                    (MODE, ParameterValue::Choice(mode)),
+                    (ROUTING, ParameterValue::Choice(routing)),
+                    (CEILING, ParameterValue::Float(db)),
+                    (LINK, ParameterValue::Float(0.0)),
+                ]
+            };
+            let old_factory = factory(rate, &settings(0.0));
+            let new_factory = factory(rate, &settings(-24.0));
+            let mut old = old_factory.create_runtime().unwrap();
+            let warm = vec![[0.8, -0.4]; 4_000];
+            let previous = render(old.as_mut(), &warm, &[127, 31]);
+            assert!(
+                previous.last().unwrap()[0] > 0.2,
+                "mode={mode} routing={routing}"
+            );
+            let mut whole = new_factory.create_runtime().unwrap();
+            let mut split = new_factory.create_runtime().unwrap();
+            assert!(whole.can_inherit_from(old.as_ref()));
+            assert!(split.can_inherit_from(old.as_ref()));
+            whole.inherit_from(old.as_ref());
+            split.inherit_from(old.as_ref());
+
+            // An abandoned render must not consume the retained predecessor.
+            split.begin_block();
+            let mut abandoned = [[4.0, -2.0]; 19];
+            split.process_block(&mut abandoned, &EMPTY_DEVICE_RESOURCES);
+            split.rollback_block();
+            let continuation = [[0.8, -0.4]; 257];
+            let output = render(whole.as_mut(), &continuation, &[257]);
+            assert_eq!(output, render(split.as_mut(), &continuation, &[1, 7, 53]));
+            assert_ne!(output[0], [0.0; 2], "retained audio must continue");
+            assert!(
+                output
+                    .iter()
+                    .flatten()
+                    .all(|sample| sample.is_finite() && sample.abs() <= ceiling + 1e-7),
+                "falling ceiling violated: mode={mode} routing={routing} first={:?}",
+                output[0]
+            );
+        }
+    }
+}
+
+#[test]
 fn standard_attack_rollback_and_compatible_handoff_preserve_envelope() {
     let f = factory(48_000, &[(CEILING, ParameterValue::Float(0.0))]);
     let mut original = f.create_runtime().unwrap();
@@ -365,42 +448,61 @@ fn standard_attack_rollback_and_compatible_handoff_preserve_envelope() {
     );
 }
 
-#[test]
-fn sample_ceiling_and_partition_independence_with_extreme_stereo_transients() {
-    for mode in 0..3 {
-        for routing in 0..2 {
-            let f = factory(
-                48000,
-                &[
-                    (MODE, ParameterValue::Choice(mode)),
-                    (ROUTING, ParameterValue::Choice(routing)),
-                    (CEILING, ParameterValue::Float(-6.0)),
-                    (LINK, ParameterValue::Float(0.0)),
-                    (RELEASE, ParameterValue::Float(0.01)),
-                ],
-            );
-            let input: Vec<_> = (0..16000)
-                .map(|i| {
-                    [
-                        (i as f32 * 0.713).sin() * if i % 997 == 0 { 100.0 } else { 2.0 },
-                        (i as f32 * 2.7).sin() * 3.0,
-                    ]
-                })
-                .collect();
-            let mut a = f.create_runtime().unwrap();
-            let mut b = f.create_runtime().unwrap();
-            let output = render(a.as_mut(), &input, &[input.len()]);
-            assert_eq!(output, render(b.as_mut(), &input, &[1, 63, 257, 17]));
-            assert!(
-                output
-                    .iter()
-                    .flatten()
-                    .all(|v| v.is_finite() && v.abs() <= 10.0f32.powf(-6.0 / 20.0) + 1e-6),
-                "mode={mode} routing={routing}"
-            );
-        }
-    }
+fn check_sample_ceiling_and_partition_independence(mode: u32, routing: u32) {
+    let f = factory(
+        48000,
+        &[
+            (MODE, ParameterValue::Choice(mode)),
+            (ROUTING, ParameterValue::Choice(routing)),
+            (CEILING, ParameterValue::Float(-6.0)),
+            (LINK, ParameterValue::Float(0.0)),
+            (RELEASE, ParameterValue::Float(0.01)),
+        ],
+    );
+    let input: Vec<_> = (0..16000)
+        .map(|i| {
+            [
+                (i as f32 * 0.713).sin() * if i % 997 == 0 { 100.0 } else { 2.0 },
+                (i as f32 * 2.7).sin() * 3.0,
+            ]
+        })
+        .collect();
+    let mut a = f.create_runtime().unwrap();
+    let mut b = f.create_runtime().unwrap();
+    // Both isolated runtimes consume the same immutable full signal. Running
+    // them concurrently preserves the complete partition oracle while keeping
+    // this relatively expensive 48 kHz fixture within a short feedback loop.
+    let (output, partitioned) = std::thread::scope(|scope| {
+        let first = scope.spawn(|| render(a.as_mut(), &input, &[input.len()]));
+        let second = render(b.as_mut(), &input, &[1, 63, 257, 17]);
+        (first.join().unwrap(), second)
+    });
+    assert_eq!(output, partitioned);
+    assert!(
+        output
+            .iter()
+            .flatten()
+            .all(|v| v.is_finite() && v.abs() <= 10.0f32.powf(-6.0 / 20.0) + 1e-6),
+        "mode={mode} routing={routing}"
+    );
 }
+
+macro_rules! sample_ceiling_case {
+    ($name:ident, $mode:expr, $routing:expr) => {
+        #[test]
+        fn $name() {
+            check_sample_ceiling_and_partition_independence($mode, $routing);
+        }
+    };
+}
+
+sample_ceiling_case!(sample_ceiling_standard_lr, 0, 0);
+sample_ceiling_case!(sample_ceiling_standard_ms, 0, 1);
+sample_ceiling_case!(sample_ceiling_soft_lr, 1, 0);
+sample_ceiling_case!(sample_ceiling_soft_ms, 1, 1);
+sample_ceiling_case!(sample_ceiling_true_peak_lr, 2, 0);
+sample_ceiling_case!(sample_ceiling_true_peak_ms, 2, 1);
+
 #[test]
 fn rollback_and_reopen_preserve_pcm_and_publish_only_committed_reduction() {
     let f = factory(8000, &[]);
@@ -599,6 +701,90 @@ fn dense_reconstructed_peak(output: &[StereoFrame]) -> (f64, usize) {
     }
     maximum
 }
+#[test]
+fn bs1770_meter_recovers_intersample_peaks_of_a_known_signal() {
+    // A quarter-rate sine offset by 45 degrees has 0.7071 sample peaks and a
+    // 1.0 continuous peak; the standard 4x meter must recover it closely.
+    let tone: Vec<StereoFrame> = (0..4096)
+        .map(|i| {
+            let value =
+                (std::f64::consts::FRAC_PI_2 * i as f64 + std::f64::consts::FRAC_PI_4).sin() as f32;
+            [value, -value]
+        })
+        .collect();
+    let sample_peak = tone.iter().flatten().fold(0.0_f32, |a, s| a.max(s.abs()));
+    assert!(sample_peak < 0.71);
+    let true_peak = true_peak_oracle::bs1770_true_peak(&tone).unwrap();
+    assert!((true_peak - 1.0).abs() < 0.03, "{true_peak}");
+    assert!(true_peak_oracle::bs1770_true_peak(&[]).is_none());
+    assert!(true_peak_oracle::bs1770_true_peak(&[[f32::NAN, 0.0]]).is_none());
+}
+
+/// Render a gated-burst fixture through True Peak mode at 48 and 192 kHz in
+/// both routings, returning the largest BS.1770-4 meter reading.
+///
+/// Gated bursts make the gain move inside the 32-tap detector window. The
+/// detector reconstructs the pre-gain input, so modulation-induced
+/// intersample peaks are not tracked (Pulse #3379). The 0.1 criterion is the
+/// standard BS.1770-4 4x meter with a recorded +0.3 dB bound; ideal
+/// reconstruction reads higher and remains a documented limitation.
+fn gated_burst_bs1770_peak(high: f32, low: f32) -> f64 {
+    let ceiling = 10.0_f64.powf(-1.0 / 20.0);
+    let bound = ceiling * 10.0_f64.powf(0.3 / 20.0);
+    let mut worst = 0.0_f64;
+    for rate in [48_000, 192_000] {
+        for routing in [0, 1] {
+            let factory = factory(
+                rate,
+                &[
+                    (MODE, ParameterValue::Choice(2)),
+                    (ROUTING, ParameterValue::Choice(routing)),
+                    (LINK, ParameterValue::Float(0.0)),
+                    (RELEASE, ParameterValue::Float(0.01)),
+                    (CEILING, ParameterValue::Float(-1.0)),
+                ],
+            );
+            let mut runtime = factory.create_runtime().unwrap();
+            let mut input: Vec<StereoFrame> = (0..4000)
+                .map(|i| {
+                    let envelope = if i % 137 < 17 { 10.0 } else { 1.0 };
+                    [
+                        envelope * (i as f32 * high + 0.2).sin(),
+                        envelope * (i as f32 * low + 0.7).sin(),
+                    ]
+                })
+                .collect();
+            input.extend(vec![[0.0; 2]; 2048]);
+            let output = render(runtime.as_mut(), &input, &[1, 63, 257]);
+            let sample_peak = output
+                .iter()
+                .flatten()
+                .fold(0.0_f64, |a, s| a.max(f64::from(s.abs())));
+            assert!(sample_peak <= ceiling + 1e-6, "{high} {rate} {routing}");
+            let measured = true_peak_oracle::bs1770_true_peak(&output).unwrap();
+            assert!(
+                measured <= bound,
+                "{high} {rate} {routing}: {:+.3} dB",
+                20.0 * (measured / ceiling).log10()
+            );
+            worst = worst.max(measured);
+        }
+    }
+    // Guard against the fixture silently becoming trivial.
+    assert!(worst > ceiling * 0.99, "{worst}");
+    worst
+}
+
+#[test]
+fn true_peak_mode_stays_within_bs1770_bound_on_near_nyquist_bursts() {
+    gated_burst_bs1770_peak(2.7, 2.1);
+}
+
+#[test]
+fn true_peak_mode_stays_within_bs1770_bound_on_mid_band_bursts() {
+    gated_burst_bs1770_peak(0.8, 0.6);
+}
+
 #[test]
 fn invalid_rates_and_nonfinite_pcm_are_contained() {
     for rate in [0, 7999, 192001, u32::MAX] {
@@ -957,4 +1143,132 @@ fn compatible_quiet_handoffs_preserve_envelopes_and_gain_ramps() {
     );
     let mut fresh = changed.create_runtime().unwrap();
     assert_ne!(render(fresh.as_mut(), &input, &[17]), continuation);
+}
+
+#[test]
+fn reduction_meter_matches_original_factor_oracle_across_routing_and_rollback() {
+    // Captured from the original per-factor dB owner at base fd44b147; each
+    // value represents the same delayed sample, not independent stage peaks.
+    type MeterReference = ([f32; 2], bool);
+    const EXPECTED: [[[MeterReference; 2]; 6]; 2] = [
+        [
+            [
+                ([17.97917_f32, 18.7157_f32], false),
+                ([399.6043_f32, 398.4103_f32], false),
+            ],
+            [
+                ([405.5046_f32, 399.9174_f32], false),
+                ([402.7183_f32, 401.1347_f32], false),
+            ],
+            [
+                ([18.59695_f32, 19.33349_f32], true),
+                ([400.2221_f32, 399.028_f32], true),
+            ],
+            [
+                ([404.4733_f32, 399.8142_f32], true),
+                ([403.3361_f32, 400.4533_f32], true),
+            ],
+            [
+                ([401.8966_f32, 399.7475_f32], false),
+                ([400.2112_f32, 399.8473_f32], false),
+            ],
+            [
+                ([402.8987_f32, 398.1146_f32], false),
+                ([401.1973_f32, 400.0852_f32], false),
+            ],
+        ],
+        [
+            [
+                ([17.97917_f32, 18.7157_f32], false),
+                ([600_f32, 18.57331_f32], false),
+            ],
+            [
+                ([606.0206_f32, 606.0206_f32], false),
+                ([606.0206_f32, 606.0206_f32], false),
+            ],
+            [
+                ([18.59695_f32, 19.33349_f32], true),
+                ([601.8317_f32, 19.19109_f32], true),
+            ],
+            [
+                ([607.8524_f32, 607.8524_f32], true),
+                ([607.8524_f32, 607.8524_f32], true),
+            ],
+            [
+                ([600_f32, 600_f32], false),
+                ([600_f32, 18.90832_f32], false),
+            ],
+            [
+                ([606.0029_f32, 606.0029_f32], false),
+                ([606.0206_f32, 606.0206_f32], false),
+            ],
+        ],
+    ];
+    for (extreme, cases) in EXPECTED.iter().enumerate() {
+        for (case, expected) in cases.iter().enumerate() {
+            let mode = (case / 2) as u32;
+            let routing = (case % 2) as u32;
+            let f = factory(
+                8_000,
+                &[
+                    (MODE, ParameterValue::Choice(mode)),
+                    (ROUTING, ParameterValue::Choice(routing)),
+                    (LINK, ParameterValue::Float(0.0)),
+                    (LINK_MID_SIDE, ParameterValue::Float(0.0)),
+                    (RELEASE, ParameterValue::Float(0.01)),
+                    (CEILING, ParameterValue::Float(-1.0)),
+                ],
+            );
+            let mut runtime = f.create_runtime().unwrap();
+            for block in 0..20 {
+                let mut frames: Vec<StereoFrame> = (0..64)
+                    .map(|n| {
+                        let i = block * 64 + n;
+                        let scale = if i % 173 < 5 {
+                            if extreme == 0 {
+                                1e20_f32
+                            } else {
+                                f32::MAX / 4.0
+                            }
+                        } else if i % 97 < 9 {
+                            8.0
+                        } else {
+                            1.0
+                        };
+                        [
+                            scale * (i * 37 % 257 - 128) as f32 / 128.0,
+                            scale * (i * 71 % 251 - 125) as f32 / 128.0,
+                        ]
+                    })
+                    .collect();
+                if block % 5 == 0 {
+                    let mut discarded = frames.clone();
+                    runtime.begin_block();
+                    runtime.process_block(&mut discarded, &EMPTY_DEVICE_RESOURCES);
+                    runtime.rollback_block();
+                    assert_eq!(
+                        runtime.take_dynamics_meter().unwrap(),
+                        hex_lattice::DynamicsMeter::default()
+                    );
+                }
+                runtime.begin_block();
+                runtime.process_block(&mut frames, &EMPTY_DEVICE_RESOURCES);
+                runtime.commit_block();
+                let actual = runtime.take_dynamics_meter().unwrap();
+                if let Some(index) = [3, 19].iter().position(|&value| value == block) {
+                    let (levels, clipped) = expected[index];
+                    assert_eq!(actual.clipped, clipped, "case={case} block={block}");
+                    for (lane, &expected_level) in levels.iter().enumerate() {
+                        let tolerance = if expected_level <= 120.0 { 1e-4 } else { 1e-3 };
+                        assert!(
+                            (actual.reduction_db[lane] - expected_level).abs() <= tolerance,
+                            "extreme={extreme} case={case} block={block} lane={lane}: actual={} expected={}",
+                            actual.reduction_db[lane],
+                            expected_level
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
