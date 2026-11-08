@@ -922,3 +922,85 @@ fn retained_gain_eligibility_preserves_manual_ramps_and_transactional_twins() {
         }
     }
 }
+
+#[test]
+fn shared_lfo_matches_independent_saturator_control_frames() {
+    use hex_lattice::{
+        ModulationRoute, ModulationTarget, NativeParameterAutomation, PreparedModulation,
+    };
+    struct Expected;
+    impl NativeParameterAutomation for Expected {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            &[parameter::DRIVE, parameter::DRY_WET]
+        }
+        fn value_at(&self, id: ParameterId, offset: usize) -> Option<ParameterValue> {
+            let lfo = [0.0, 1.0, 0.0, -1.0][offset % 4];
+            match id {
+                parameter::DRIVE => Some(ParameterValue::Float(lfo * 7.2)),
+                parameter::DRY_WET => Some(ParameterValue::Float(
+                    (1.0 + lfo * 0.25_f32).clamp(0.0, 1.0),
+                )),
+                _ => None,
+            }
+        }
+    }
+    let state = SATURATOR_DEFINITION.default_state().unwrap();
+    let ids = [parameter::DRIVE, parameter::DRY_WET];
+    let targets = ids.map(|id| ModulationTarget {
+        descriptor: *DESCRIPTORS.iter().find(|d| d.id == id).unwrap(),
+        semantics: SATURATOR_DEFINITION
+            .parameter_semantics_for_state(&state, id)
+            .unwrap()
+            .unwrap(),
+        base: SATURATOR_DEFINITION.read_parameter(&state, id).unwrap(),
+    });
+    let program = PreparedModulation::new(
+        &targets,
+        &[
+            ModulationRoute {
+                source: 0,
+                target: ids[0],
+                amount: 0.1,
+            },
+            ModulationRoute {
+                source: 0,
+                target: ids[1],
+                amount: 0.25,
+            },
+        ],
+        1,
+    )
+    .unwrap();
+    let mut lfo =
+        hex_dsp::ModulationLfo::new(hex_dsp::LfoRate::free(48_000.0, 12_000.0).unwrap(), 0.0)
+            .unwrap();
+    let mut samples = [0.0; 64];
+    lfo.render(&mut samples);
+    let sources = [&samples[..]];
+    let block = program.block(None, &sources, samples.len()).unwrap();
+    let factory = SaturatorDefinition::prepare_owned(&state, 48_000, &ids).unwrap();
+    let mut actual_runtime = factory.create_runtime();
+    let mut expected_runtime = factory.create_runtime();
+    let mut actual = [[0.2, -0.1]; 64];
+    let mut expected = actual;
+    actual_runtime
+        .process_block_with_automation(
+            &mut actual,
+            None,
+            &block,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
+    expected_runtime
+        .process_block_with_automation(
+            &mut expected,
+            None,
+            &Expected,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
+    for (a, b) in actual.into_iter().zip(expected) {
+        assert_near(a, b);
+    }
+    assert_eq!(SATURATOR_DEFINITION.default_state().unwrap(), state);
+}

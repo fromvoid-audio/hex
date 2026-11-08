@@ -8,22 +8,7 @@ use std::collections::BTreeMap;
 
 pub(crate) fn authored_states(project: &Project) -> impl Iterator<Item = &NativeDeviceState> {
     project
-        .tracks()
-        .iter()
-        .flat_map(|track| track.devices().iter().chain(track.instrument()))
-        .chain(
-            project
-                .return_tracks()
-                .iter()
-                .flat_map(|track| track.devices()),
-        )
-        .chain(project.main_devices())
-        .chain(
-            project
-                .native_sources()
-                .iter()
-                .flat_map(hex_project::NativeSource::devices),
-        )
+        .devices()
         .flat_map(hex_project::Device::authored_states)
 }
 

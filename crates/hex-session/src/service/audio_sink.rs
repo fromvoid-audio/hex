@@ -82,7 +82,7 @@ impl<'a> PluginParameterGestureInput<'a> {
 /// Control-side observation copied only after matching the complete private
 /// final-output receipt. Persist `application.origin`, not the later delivery
 /// processing frame. A caller requesting these records owns their retention.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PluginParameterDelivery {
     pub key: crate::device_gesture::GestureKey,
     pub context: hex_engine::AudioSourceContext,
@@ -93,7 +93,7 @@ pub struct PluginParameterDelivery {
     pub delivery_performance_frame: u64,
 }
 /// A confirmed point or a conservative interruption with no invented clock.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PluginParameterObservation {
     Ready {
         key: crate::device_gesture::GestureKey,

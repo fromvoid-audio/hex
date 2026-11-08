@@ -427,6 +427,12 @@ pub enum PublicationPolicy {
     /// Only its ready native gate admits this ordinary successor; it does not
     /// inherit an old revoked runtime or authorize a different source context.
     InstallUnderNativeEpoch(StoppedEditFence),
+    /// Inherit the exact still-active ordinary native graph while its stopped
+    /// fence remains held. This does not renew or return its original sources.
+    InheritUnderStoppedNative {
+        source: AppliedAudioSource,
+        fence: StoppedEditFence,
+    },
     /// Structural live edit under the same source/command gate; inherit the actual
     /// installation-boundary transport, routes and voice/release state.
     InheritUnderArrangement(StoppedEditFence),
@@ -1900,26 +1906,43 @@ impl PublicationControl {
         source_context: Option<hex_engine::AudioSourceContext>,
     ) -> Result<u64, PublishError> {
         let native_epoch = match policy {
-            PublicationPolicy::InstallUnderNativeEpoch(token) => Some(token),
+            PublicationPolicy::InstallUnderNativeEpoch(token)
+            | PublicationPolicy::InheritUnderStoppedNative { fence: token, .. } => Some(token),
             _ => None,
         };
-        let reason = if native_epoch.is_some_and(|token| {
-            self.status
-                .sampler_edit
-                .native_epoch_context(token)
-                .is_none()
-                || self.status.sampler_edit.native_epoch_context(token) != source_context
-                || self.status.native_effect_source().is_some()
+        let native_inheritance = match policy {
+            PublicationPolicy::InheritUnderStoppedNative { source, fence } => Some((source, fence)),
+            _ => None,
+        };
+        let reason = if native_inheritance.is_some_and(|(source, fence)| {
+            !self
+                .status
+                .stopped_native_source_fence_matches(source, fence)
+                || self.status.applied_audio_source().is_some()
+                || source_context.is_none_or(|context| {
+                    context.project_generation != source.context.project_generation
+                })
         }) {
+            Some("native inheritance requires its exact stopped active source")
+        } else if native_inheritance.is_none()
+            && native_epoch.is_some_and(|token| {
+                self.status
+                    .sampler_edit
+                    .native_epoch_context(token)
+                    .is_none()
+                    || self.status.sampler_edit.native_epoch_context(token) != source_context
+                    || self.status.native_effect_source().is_some()
+            })
+        {
             Some("native successor requires its matching stopped returned source")
         } else if self.status.sampler_edit.native_epoch_active() && native_epoch.is_none() {
             Some("native epoch excludes unrelated graph publication")
         } else if self.status.sampler_edit.active()
-            && !matches!(policy, PublicationPolicy::InstallUnderStoppedArrangement(token) | PublicationPolicy::InheritUnderArrangement(token) | PublicationPolicy::InstallUnderNativeEpoch(token)
+            && !matches!(policy, PublicationPolicy::InstallUnderStoppedArrangement(token) | PublicationPolicy::InheritUnderArrangement(token) | PublicationPolicy::InstallUnderNativeEpoch(token) | PublicationPolicy::InheritUnderStoppedNative { fence: token, .. }
                 if self.stopped_edit_fence_state(token) == StoppedEditFenceState::Ready)
         {
             Some("stopped edit excludes unrelated graph publication")
-        } else if matches!(policy, PublicationPolicy::InstallUnderStoppedArrangement(token) | PublicationPolicy::InheritUnderArrangement(token) | PublicationPolicy::InstallUnderNativeEpoch(token)
+        } else if matches!(policy, PublicationPolicy::InstallUnderStoppedArrangement(token) | PublicationPolicy::InheritUnderArrangement(token) | PublicationPolicy::InstallUnderNativeEpoch(token) | PublicationPolicy::InheritUnderStoppedNative { fence: token, .. }
             if self.stopped_edit_fence_state(token) != StoppedEditFenceState::Ready)
         {
             Some("arrangement stopped fence is no longer ready")
@@ -3292,6 +3315,28 @@ impl Callback {
                         || !live)
                         .then_some(hex_engine::PlaybackHandoffError::RuntimeFenceChanged)
                 }
+                PublicationPolicy::InheritUnderStoppedNative { source, fence } => {
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    let live = self
+                        .native_sources
+                        .runtime_transports_are_live(&next.playback)
+                        && self.current_native_epoch_source() == Some(source);
+                    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+                    let live = false;
+                    (!live
+                        || !self
+                            .status
+                            .stopped_native_source_fence_matches(source, fence)
+                        || self
+                            .active
+                            .as_ref()
+                            .and_then(ActivePublication::legacy)
+                            .is_none_or(|active| active.playback.playing())
+                        || next.source_context.is_none_or(|context| {
+                            context.project_generation != source.context.project_generation
+                        }))
+                    .then_some(hex_engine::PlaybackHandoffError::RuntimeFenceChanged)
+                }
                 PublicationPolicy::InheritRuntime | PublicationPolicy::InstallFreshRuntime => None,
             };
             #[cfg(test)]
@@ -3318,6 +3363,7 @@ impl Callback {
                         next.policy,
                         PublicationPolicy::InheritRuntime
                             | PublicationPolicy::InheritUnderArrangement(_)
+                            | PublicationPolicy::InheritUnderStoppedNative { .. }
                     ) {
                         // Give an inheriting successor's predecessor a chance
                         // to commit its exact pending window first.
@@ -3340,6 +3386,7 @@ impl Callback {
                     next.policy,
                     PublicationPolicy::InheritRuntime
                         | PublicationPolicy::InheritUnderArrangement(_)
+                        | PublicationPolicy::InheritUnderStoppedNative { .. }
                 ) && self
                     .active
                     .as_ref()
@@ -3362,6 +3409,7 @@ impl Callback {
                     next.policy,
                     PublicationPolicy::InheritRuntime
                         | PublicationPolicy::InheritUnderArrangement(_)
+                        | PublicationPolicy::InheritUnderStoppedNative { .. }
                 ) {
                     self.active
                         .as_mut()
@@ -3839,6 +3887,9 @@ impl Callback {
     fn take_stop_marker(&self) -> u64 {
         let marker = self.status.pending_stop_marker.load(Acquire);
         if marker != 0 {
+            // A reader may observe the cleared marker before Stop finishes.
+            // Refuse any existing stopped witness before opening that window.
+            self.status.sampler_edit.interrupt_for_stop();
             if !self.status.closing.load(Acquire) {
                 self.status.recovery_position.store(0, Release);
             }
@@ -5450,6 +5501,7 @@ mod tests {
             arrangement_sections: Vec::new(),
             main_devices: if effect_buses {
                 vec![DeviceSnapshot {
+                    parent: None,
                     automation: Vec::new(),
                     comparison: None,
                     id: DEVICE_ID + 2,
@@ -5493,6 +5545,7 @@ mod tests {
                 muted: false,
                 soloed: false,
                 devices: vec![DeviceSnapshot {
+                    parent: None,
                     automation: Vec::new(),
                     comparison: None,
                     id: DEVICE_ID,
@@ -5532,6 +5585,7 @@ mod tests {
                 gain: 1.0,
                 muted: false,
                 devices: vec![DeviceSnapshot {
+                    parent: None,
                     automation: Vec::new(),
                     comparison: None,
                     id: DEVICE_ID + 1,
@@ -5663,6 +5717,7 @@ mod tests {
                 muted: false,
                 soloed: false,
                 devices: vec![DeviceSnapshot {
+                    parent: None,
                     automation: Vec::new(),
                     comparison: None,
                     id: TRACK_DEVICE_ID,
@@ -5698,6 +5753,7 @@ mod tests {
                 gain: 0.75,
                 muted: false,
                 devices: vec![DeviceSnapshot {
+                    parent: None,
                     automation: Vec::new(),
                     comparison: None,
                     id: RETURN_DEVICE_ID,
@@ -5802,6 +5858,7 @@ mod tests {
                 muted: false,
                 soloed: false,
                 devices: vec![DeviceSnapshot {
+                    parent: None,
                     automation: Vec::new(),
                     comparison: None,
                     id: TRACK_DEVICE_ID,
@@ -5837,6 +5894,7 @@ mod tests {
                 gain: 0.75,
                 muted: false,
                 devices: vec![DeviceSnapshot {
+                    parent: None,
                     automation: Vec::new(),
                     comparison: None,
                     id: RETURN_DEVICE_ID,
@@ -5962,6 +6020,7 @@ mod tests {
                 devices: state
                     .as_ref()
                     .map(|state| DeviceSnapshot {
+                        parent: None,
                         automation: Vec::new(),
                         comparison: None,
                         id: TRACK_DEVICE_ID,
@@ -6001,6 +6060,7 @@ mod tests {
                 devices: state
                     .as_ref()
                     .map(|state| DeviceSnapshot {
+                        parent: None,
                         automation: Vec::new(),
                         comparison: None,
                         id: RETURN_DEVICE_ID,

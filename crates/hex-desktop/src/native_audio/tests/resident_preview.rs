@@ -363,15 +363,24 @@ impl WorkerAudioSink for ResidentSink {
         &mut self,
     ) -> Option<hex_session::service::PluginParameterObservation> {
         let observation = self.inner.take_plugin_parameter_observation();
-        if std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE")
-            .is_ok_and(|case| case.starts_with("session_record") || case == "session_recover")
-            && let Some(observation) = observation
+        if std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").is_ok_and(|case| {
+            case.starts_with("session_record")
+                || case == "session_recover"
+                || case.starts_with("session_writer_")
+        }) && let Some(observation) = observation
         {
             let mut originals = SESSION_RECORDING_OBSERVATIONS.lock().unwrap();
             assert!(originals.len() < 8, "one bounded recording oracle");
             originals.push(observation);
         }
         observation
+    }
+    fn device_automation_source(
+        &mut self,
+        context: hex_engine::AudioSourceContext,
+        target: hex_session::service::DeviceCaptureTarget,
+    ) -> Result<Option<hex_session::service::DeviceAutomationSource>, String> {
+        self.inner.device_automation_source(context, target)
     }
     fn confirm_plugin_parameter_publication(
         &mut self,

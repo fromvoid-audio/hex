@@ -8,6 +8,8 @@ publish.workspace = true
 [features]
 # Constructor/adapter integration only; no physical device is opened by fixtures.
 allocation-probe = ["hex-audio/allocation-probe", "hex-ui/ui-test-support"]
+# Explicit signed recording-failure fixtures only.
+recording-fault-test-support = ["hex-session/recording-fault-test-support"]
 
 [dependencies]
 fs2 = "=0.4.3"

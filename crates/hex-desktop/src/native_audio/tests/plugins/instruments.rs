@@ -812,6 +812,10 @@ fn recorded_session_gesture_commits_one_take_and_reopens() {
                     | "session_stop"
                     | "session_refused"
                     | "session_recover"
+                    | "session_writer_failure"
+                    | "session_writer_adopt"
+                    | "session_writer_refusal"
+                    | "session_writer_source_lost"
                     | "session_cancel"
                     | "session_empty"
             ))
@@ -2229,6 +2233,235 @@ fn verify_instrument_takeover(
         let binding = h.plugin_progress.lock().unwrap().binding;
         client.begin_plugin_recording(origin).unwrap();
         assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
+        #[cfg(feature = "recording-fault-test-support")]
+        if matches!(
+            case.as_str(),
+            "session_writer_failure"
+                | "session_writer_adopt"
+                | "session_writer_refusal"
+                | "session_writer_source_lost"
+        ) {
+            use hex_session::service::automation_draft::{DraftProvenance, Vst3CaptureTarget};
+            use hex_session::service::{
+                DeviceAutomationTakeAction as Action, DeviceAutomationTakeProgress as Progress,
+                DeviceAutomationTakeScope, DeviceCaptureTarget,
+            };
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            let applied_source = status.recording_source().unwrap();
+            let scope = DeviceAutomationTakeScope {
+                target: DeviceCaptureTarget::Vst3(Vst3CaptureTarget {
+                    device,
+                    parameter: 7,
+                    class,
+                    binding: binding.unwrap(),
+                }),
+                stamp: DraftProvenance {
+                    sample_rate: 48_000,
+                    output_identity: applied_source.output_identity,
+                    project_generation: origin.context.project_generation,
+                    editor_revision: origin.context.editor_revision,
+                    audio_revision: applied_source.audio_revision,
+                    transport_epoch: status.transport_epoch.load(Acquire),
+                    gesture_serial: client.snapshot().unwrap().key.token,
+                },
+            };
+            let armed = h.run(Request::DeviceAutomationTake {
+                request_id: 491,
+                scope,
+                action: Action::InjectWriterFailure,
+            });
+            assert!(armed.error.is_none(), "{:?}", armed.error);
+            assert_eq!(
+                armed.device_automation_take_complete.unwrap().progress,
+                Progress::Appended
+            );
+            client
+                .change_plugin(PluginParameterValue::new(0.75).unwrap())
+                .unwrap();
+            send(h, &mut client, true);
+            client.finish_plugin(origin.initial).unwrap();
+            let failed = send(h, &mut client, false);
+            assert_eq!(failed.state.project.as_ref(), &before);
+            let directory = recovery_directory.unwrap().join("automation-drafts");
+            let paths = std::fs::read_dir(directory)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect::<Vec<_>>();
+            assert_eq!(paths.len(), 1);
+            let original = std::fs::read(&paths[0]).unwrap();
+            let copy = paths[0].with_extension("recovery-copy");
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                let started = super::automation::edit_with_running_callback(
+                    h,
+                    Request::DeviceAutomationTake {
+                        request_id: 492,
+                        scope,
+                        action: Action::CopyFailedPlugin {
+                            destination: copy.clone(),
+                            max_events: 16,
+                        },
+                    },
+                );
+                if let Some(reason) = started.error {
+                    assert!(
+                        reason.contains("no failed device automation custody")
+                            || reason.contains("vst3 recovery custody is incomplete")
+                            || reason.contains("vst3 recovery requires a quiescent gesture"),
+                        "{reason}"
+                    );
+                    assert!(
+                        Instant::now() < deadline,
+                        "writer custody was not handed off: {reason}"
+                    );
+                    continue;
+                }
+                assert_eq!(
+                    started.device_automation_take_complete.unwrap().progress,
+                    Progress::Pending
+                );
+                break;
+            }
+            let receipt = loop {
+                let event = super::automation::edit_with_running_callback(
+                    h,
+                    Request::DeviceAutomationTake {
+                        request_id: 493,
+                        scope,
+                        action: Action::PollFailedCopy,
+                    },
+                );
+                assert!(event.error.is_none(), "{:?}", event.error);
+                match event.device_automation_take_complete.unwrap().progress {
+                    Progress::Pending => assert!(Instant::now() < deadline),
+                    Progress::VerifiedCopy { path, receipt } => {
+                        assert_eq!(path, copy);
+                        use hex_session::service::PluginParameterObservation as Observation;
+                        use hex_storage::automation_draft::DraftTerminal;
+                        let originals = crate::native_audio::tests::resident_preview::SESSION_RECORDING_OBSERVATIONS.lock().unwrap().clone();
+                        let points = originals
+                            .iter()
+                            .filter(|event| matches!(event, Observation::Delivered(_)))
+                            .count();
+                        assert!(points > 0);
+                        assert_eq!(receipt.events(), points as u64);
+                        let restored = originals.iter().find_map(|event| match event {
+                            Observation::Restored(delivery) => Some(delivery.application.origin),
+                            _ => None,
+                        });
+                        assert_eq!(
+                            receipt.terminal(),
+                            restored.map_or(DraftTerminal::Interrupted, DraftTerminal::Finished)
+                        );
+                        break receipt;
+                    }
+                    other => panic!("unexpected recovery copy: {other:?}"),
+                }
+            };
+            assert_eq!(std::fs::read(&paths[0]).unwrap(), original);
+            assert_eq!(h.service.try_event().ok().and_then(|e| e.error), None);
+            let mut discovered = super::automation::edit_with_running_callback(
+                h,
+                Request::QueryFailedPluginAutomation { request_id: 493 },
+            );
+            assert!(discovered.error.is_none(), "{:?}", discovered.error);
+            let discovery = discovered.device_automation_take_complete.take().unwrap();
+            assert_eq!(discovery.request_id, 493);
+            assert_eq!(
+                discovery.progress,
+                Progress::FailedPluginCustody {
+                    scope: Box::new(scope),
+                    path: std::fs::canonicalize(&paths[0]).unwrap(),
+                }
+            );
+            if case != "session_writer_failure" {
+                use hex_storage::automation_draft::DraftTerminal;
+                assert!(
+                    matches!(receipt.terminal(), DraftTerminal::Finished(_)),
+                    "actual restoration is required for adoption: {:?}",
+                    receipt.terminal()
+                );
+                let copy_bytes = std::fs::read(&copy).unwrap();
+                let adopt = |request_id| Request::DeviceAutomationTake {
+                    request_id,
+                    scope,
+                    action: Action::AdoptFailedPluginCopy { max_events: 16 },
+                };
+                if case == "session_writer_source_lost" {
+                    h.audio.as_ref().unwrap().control.stop();
+                    h.render_plugin_block();
+                    let refused = super::automation::edit_with_running_callback(h, adopt(494));
+                    assert!(refused.error.is_some());
+                    assert_eq!(refused.state.project.as_ref(), &before);
+                    assert_eq!(std::fs::read(&paths[0]).unwrap(), original);
+                    assert_eq!(std::fs::read(&copy).unwrap(), copy_bytes);
+                    let inspected = super::automation::edit_with_running_callback(
+                        h,
+                        Request::DeviceAutomationTake {
+                            request_id: 495,
+                            scope,
+                            action: Action::InspectFailedPluginCopy,
+                        },
+                    );
+                    assert!(
+                        matches!(inspected.device_automation_take_complete.unwrap().progress, Progress::VerifiedCopy { receipt: found, .. } if found == receipt)
+                    );
+                    return;
+                }
+                if case == "session_writer_refusal" {
+                    h.refuse.store(true, std::sync::atomic::Ordering::Release);
+                    let refused = super::automation::edit_with_running_callback(h, adopt(494));
+                    h.refuse.store(false, std::sync::atomic::Ordering::Release);
+                    assert!(refused.error.is_some());
+                    assert_eq!(refused.state.project.as_ref(), &before);
+                    assert_eq!(std::fs::read(&paths[0]).unwrap(), original);
+                    let inspected = super::automation::edit_with_running_callback(
+                        h,
+                        Request::DeviceAutomationTake {
+                            request_id: 495,
+                            scope,
+                            action: Action::InspectFailedPluginCopy,
+                        },
+                    );
+                    assert!(
+                        matches!(inspected.device_automation_take_complete.unwrap().progress, Progress::VerifiedCopy { receipt: found, .. } if found == receipt)
+                    );
+                }
+                let committed = super::automation::edit_with_running_callback(h, adopt(496));
+                assert!(committed.error.is_none(), "{:?}", committed.error);
+                assert_eq!(
+                    committed.device_automation_take_complete.unwrap().progress,
+                    Progress::Committed
+                );
+                assert_ne!(committed.state.project.as_ref(), &before);
+                let after = committed.state.project.clone();
+                assert_eq!(std::fs::read(&paths[0]).unwrap(), original);
+                assert_eq!(std::fs::read(&copy).unwrap(), copy_bytes);
+                let mut cleared = super::automation::edit_with_running_callback(
+                    h,
+                    Request::QueryFailedPluginAutomation { request_id: 498 },
+                );
+                assert!(cleared.error.is_none(), "{:?}", cleared.error);
+                let cleared = cleared.device_automation_take_complete.take().unwrap();
+                assert_eq!(cleared.request_id, 498);
+                assert_eq!(cleared.progress, Progress::FailedPluginUnavailable);
+                let duplicate = super::automation::edit_with_running_callback(h, adopt(497));
+                assert!(duplicate.error.is_some());
+                assert_eq!(duplicate.state.project, after);
+                let undone = super::automation::edit_with_running_callback(h, Request::Undo);
+                assert!(undone.error.is_none(), "{:?}", undone.error);
+                assert_eq!(undone.state.project.as_ref(), &before);
+                let redone = super::automation::edit_with_running_callback(h, Request::Redo);
+                assert!(redone.error.is_none(), "{:?}", redone.error);
+                assert_eq!(redone.state.project, after);
+            }
+            return;
+        }
+        #[cfg(not(feature = "recording-fault-test-support"))]
+        assert!(
+            !case.starts_with("session_writer_"),
+            "fixture feature is required"
+        );
         if case == "session_empty" {
             client.finish_plugin(origin.initial).unwrap();
             let empty = send(h, &mut client, true);
