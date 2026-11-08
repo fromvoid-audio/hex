@@ -201,16 +201,15 @@ impl Plugins {
             }) {
                 return Err(refused("stopped vst3 restoration was refused"));
             }
-            if self.parameter_gesture.is_some()
-                || self.parameters.is_some()
-                || self.restore.is_some()
-            {
+            if self.parameter_gesture.is_some() || self.restore.is_some() {
                 return Err(refused("vst3 controller is busy"));
             }
+            self.yield_parameters_to_control(control, input.context(), cancellation)
+                .map_err(refused)?;
             let inventory = self
                 .observed_parameters
-                .as_ref()
-                .filter(|inventory| {
+                .iter()
+                .find(|inventory| {
                     inventory.query.context == origin.context
                         && inventory.query.device == origin.device
                         && control.output_identity() == Some(inventory.query.output_identity)
@@ -408,7 +407,7 @@ impl Plugins {
             && gesture.commit == Some((context, sequence))
         {
             if accepted {
-                self.observed_parameters = None;
+                self.observed_parameters.clear();
                 if gesture.next_program.is_some()
                     && gesture
                         .live
