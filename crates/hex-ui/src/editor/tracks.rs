@@ -696,6 +696,10 @@ impl EditorView {
                 .h(px(1.0))
                 .bg(rgb(theme::color(theme::PaletteRole::Border))),
         );
+        if track.is_group() {
+            clip_area =
+                clip_area.children([super::group_overview::view(self, state, track, viewport)]);
+        }
         // Keep the divider out of layout: clips, pointer projection and the Main
         // lane must all use the complete timeline width. Paint beneath clips to
         // preserve their selection stroke at the viewport edge.

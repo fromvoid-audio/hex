@@ -6,11 +6,11 @@ use gpui::{Div, canvas, div, fill, point, prelude::*, px, rgb, size};
 use hex_project::{BeatTime, Project, TrackId};
 use std::{cell::RefCell, rc::Rc};
 
-const MAX_ROWS: usize = 32;
+pub(super) const MAX_ROWS: usize = 32;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Interval {
-    start: u64,
-    end: u64,
+pub(super) struct Interval {
+    pub(super) start: u64,
+    pub(super) end: u64,
 }
 
 pub(super) struct MapCache {
@@ -21,7 +21,7 @@ pub(super) struct MapCache {
     rows: Vec<Vec<Interval>>,
 }
 
-fn merge(row: &mut Vec<Interval>) {
+pub(super) fn merge(row: &mut Vec<Interval>) {
     row.sort_unstable_by_key(|span| (span.start, span.end));
     let mut count = 0;
     for read in 0..row.len() {
@@ -56,30 +56,39 @@ fn project_rows(
     let row_count = rows.len();
     for (index, track) in project.tracks().iter().filter(visible).enumerate() {
         let row = &mut rows[index * row_count / count];
-        for clip in track.clips() {
-            if let Some(end) = clip.start().checked_add(clip.duration()) {
-                row.push(Interval {
-                    start: clip.start(),
-                    end,
-                });
-            }
-        }
-        for clip in track.midi_clips() {
-            let Some(end) = clip.start().raw().checked_add(clip.length().raw()) else {
-                continue;
-            };
-            if let (Ok(start), Ok(end)) = (
-                project.tempo_map().beat_to_frame(clip.start()),
-                project.tempo_map().beat_to_frame(BeatTime::from_raw(end)),
-            ) {
-                row.push(Interval { start, end });
-            }
-        }
+        append_track_intervals(project, track, row);
     }
     for row in &mut rows {
         merge(row);
     }
     rows
+}
+
+/// Canonical clip containers, independent of view filters and preview data.
+pub(super) fn append_track_intervals(
+    project: &Project,
+    track: &hex_project::Track,
+    row: &mut Vec<Interval>,
+) {
+    for clip in track.clips() {
+        if let Some(end) = clip.start().checked_add(clip.duration()) {
+            row.push(Interval {
+                start: clip.start(),
+                end,
+            });
+        }
+    }
+    for clip in track.midi_clips() {
+        let Some(end) = clip.start().raw().checked_add(clip.length().raw()) else {
+            continue;
+        };
+        if let (Ok(start), Ok(end)) = (
+            project.tempo_map().beat_to_frame(clip.start()),
+            project.tempo_map().beat_to_frame(BeatTime::from_raw(end)),
+        ) {
+            row.push(Interval { start, end });
+        }
+    }
 }
 
 fn cached(
@@ -110,7 +119,11 @@ fn cached(
     next
 }
 
-fn project_interval(span: Interval, viewport: Viewport, width: f32) -> Option<(f32, f32)> {
+pub(super) fn project_interval(
+    span: Interval,
+    viewport: Viewport,
+    width: f32,
+) -> Option<(f32, f32)> {
     let limit = viewport.end()?;
     if viewport.length == 0 || !width.is_finite() || width <= 0.0 {
         return None;
