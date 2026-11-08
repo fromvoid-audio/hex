@@ -272,7 +272,7 @@ impl WorkerAudioSink for ResidentSink {
                     panic!("point")
                 };
                 assert_eq!(value, snapshot.plugin_value.unwrap().normalized());
-                CONFIRMED_TEST_POINTS.fetch_add(1, Ordering::Relaxed);
+                CONFIRMED_TEST_POINTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
         }
         result

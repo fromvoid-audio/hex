@@ -14,7 +14,7 @@ pub(super) struct Context {
     pub(super) applied: AppliedAudioSource,
     target: Vst3CaptureTarget,
     sample_rate: u32,
-    section_loop: Option<hex_project::LoopRegion>,
+    clock: ResidentRuntimeLoop,
 }
 impl Context {
     pub(super) fn new(
@@ -52,7 +52,7 @@ impl Context {
                 binding: gesture.binding,
             },
             sample_rate,
-            section_loop: clock.section_loop,
+            clock,
         })
     }
 }
@@ -69,12 +69,12 @@ impl PendingDelivery {
             output_identity: self.target.source.output_identity,
             audio_revision: self.target.source.audio_revision,
             transport_epoch: self.target.transport_epoch,
-            section_loop: self.context.section_loop,
+            section_loop: self.context.clock.section_loop,
         }
     }
 }
 impl Gesture {
-    pub(super) fn has_retired_delivery(&self) -> bool {
+    pub(in crate::native_audio::plugins) fn has_retired_delivery(&self) -> bool {
         self.retired_delivery.is_some()
     }
     fn observe_delivery(

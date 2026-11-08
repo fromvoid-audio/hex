@@ -334,7 +334,7 @@ impl Plugins {
                 next_program: None,
                 commit_accepted: false,
                 capture_class: automation_class,
-                deliveries: Vec::with_capacity(2),
+                deliveries: Vec::new(),
                 retired_delivery: None,
             };
             if !gesture.current(self, control, input.context()) {
@@ -496,6 +496,9 @@ impl Gesture {
             }
             let actual = self.sdk_value(value);
             let source = if input.requires_delivery_confirmation() {
+                self.deliveries
+                    .try_reserve(2)
+                    .map_err(|_| refused("could not reserve vst3 delivery observations"))?;
                 Some(delivery::Context::new(self, control, context, clock)?)
             } else {
                 None
