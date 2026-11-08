@@ -73,20 +73,6 @@ fn is_initial_observation(request: &Request) -> bool {
     request.is_read_only_observation() && !matches!(request, Request::ContinuePluginParameters)
 }
 
-#[cfg(test)]
-mod observation_tests {
-    use super::*;
-
-    #[test]
-    fn recovery_reads_do_not_count_as_editor_mutations() {
-        assert!(is_initial_observation(
-            &Request::QueryFailedPluginAutomation { request_id: 7 }
-        ));
-        assert!(!is_initial_observation(&Request::ContinuePluginParameters));
-        assert!(!is_initial_observation(&Request::Undo));
-    }
-}
-
 impl EditorView {
     pub(super) fn classify_submission(&self, request: &Request) -> Submission {
         Submission {
@@ -346,3 +332,17 @@ impl EditorView {
 
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests;
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+
+    #[test]
+    fn recovery_reads_do_not_count_as_editor_mutations() {
+        assert!(is_initial_observation(
+            &Request::QueryFailedPluginAutomation { request_id: 7 }
+        ));
+        assert!(!is_initial_observation(&Request::ContinuePluginParameters));
+        assert!(!is_initial_observation(&Request::Undo));
+    }
+}
