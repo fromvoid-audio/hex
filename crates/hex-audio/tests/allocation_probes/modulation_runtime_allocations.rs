@@ -160,7 +160,7 @@ fn utility_graph_modulation_transactions_do_not_allocate_or_free() {
             None
         }
         fn tempo_micro_bpm_at_offset(&self, offset: usize) -> Option<u32> {
-            Some(if offset % 2 == 0 {
+            Some(if offset.is_multiple_of(2) {
                 120_000_000
             } else {
                 180_000_000
