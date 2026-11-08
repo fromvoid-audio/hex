@@ -297,3 +297,66 @@ fn definition_is_admitted_by_builtin_and_explicit_registries() {
     );
     assert_eq!(builtins.definitions().len(), 4);
 }
+
+#[test]
+fn registered_definition_supplies_bounded_mutable_playback_matching_its_inline_oracle() {
+    let state = FM4_DEFINITION.default_state().unwrap();
+    let tuning = hex_lattice::TuningTable::default();
+    let context = hex_lattice::DevicePreparationContext {
+        sample_rate: 48000,
+        tuning: &tuning,
+        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    };
+    let prepared = explicit_registry()
+        .prepare_instrument(&state, &context)
+        .unwrap();
+    let factory = prepared
+        .prepare_mutable_runtime()
+        .unwrap()
+        .expect("registered FM4 mutable factory");
+    let limits = hex_lattice::NativeInstrumentRuntimeLimits {
+        max_pair_bytes: 2 * 1024 * 1024,
+        max_events_per_block: 259,
+        max_active_occurrences: 64,
+        max_tail_frames: 48000 * 120,
+    };
+    let bytes = factory.resource_factory_inline_bytes().unwrap();
+    assert_eq!(bytes, std::mem::size_of_val(factory.as_ref()));
+    assert!(bytes <= FM4_DEFINITION.resource_factory_inline_bound().unwrap());
+    assert_eq!(
+        factory.algorithmic_latency_frames(),
+        prepared.algorithmic_latency_frames()
+    );
+    let mut runtime =
+        hex_lattice::NativeInstrumentRuntimePair::new(factory.as_ref(), limits).unwrap();
+    assert!(runtime.supports_active_occurrence_ids());
+    assert!(runtime.supports_occurrence_gain());
+    let note = prepared.prepare_note(60, 93).unwrap();
+    runtime.begin_block();
+    let mut output = [[0.0; 2]; 64];
+    runtime
+        .process_block(
+            &[
+                hex_lattice::NativeInstrumentEvent::NoteOn {
+                    frame_offset: 0,
+                    occurrence_id: 7,
+                    pitch: 60,
+                    velocity: 93,
+                },
+                hex_lattice::NativeInstrumentEvent::NoteOff {
+                    frame_offset: 32,
+                    occurrence_id: 7,
+                },
+            ],
+            &mut output,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
+    runtime.commit_block();
+    for (age, actual) in output.iter().enumerate() {
+        assert_eq!(
+            *actual,
+            note.sample(age as u64, 32, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+        );
+    }
+}
