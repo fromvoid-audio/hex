@@ -341,10 +341,10 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                                 (preview.start(), offset)
                             });
                         let root_matches = Arc::ptr_eq(&rendered[0].source, expected_source);
-                        if !rendered[0].spans.iter().all(|span| *span > 1.0)
+                        if !rendered[0].spans().iter().all(|span| *span > 1.0)
                             || !root_matches || rendered[0].prepared != expected_mapping
                         {
-                            failures.push(format!("{rate}/{pattern}/{processing}/loop={looping}/{edge:?}/{distance}: spans={:?}, accepted_root={root_matches}, mapping={:?}, expected={expected_mapping:?}", rendered[0].spans, rendered[0].prepared));
+                            failures.push(format!("{rate}/{pattern}/{processing}/loop={looping}/{edge:?}/{distance}: spans={:?}, accepted_root={root_matches}, mapping={:?}, expected={expected_mapping:?}", rendered[0].spans(), rendered[0].prepared));
                         }
                         assert!(view.last_enqueued_edit.is_none());
                         assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original);
@@ -372,7 +372,7 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                     let rendered = view.waveform_geometry_cache.borrow().rendered_waveforms();
                     assert_eq!(rendered.len(), 1);
                     assert!(
-                        rendered[0].spans.iter().all(|span| *span > 1.0),
+                        rendered[0].spans().iter().all(|span| *span > 1.0),
                         "waveform must remain visible after the drag ends"
                     );
                     assert!(Arc::ptr_eq(&rendered[0].source, expected_source));
@@ -541,7 +541,7 @@ fn check_silent_left_prefix_through_ack(
                     );
                     assert!(Arc::ptr_eq(&waveforms[0].source, &source));
                     assert!(
-                        waveforms[0].spans.iter().all(|s| *s > 1.0),
+                        waveforms[0].spans().iter().all(|s| *s > 1.0),
                         "nonzero audio must stay visible after adding leading silence"
                     );
                     if processed && !once && !musical {

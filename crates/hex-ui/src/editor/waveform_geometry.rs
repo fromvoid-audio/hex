@@ -1,4 +1,6 @@
 //! Bounded retained waveform paths for the visible editor working set.
+//! Compact bodies combine signed channel extrema; proven duplicated samples use
+//! one full-height lane at every height. Source summaries remain unchanged.
 use gpui::{Bounds, Pixels, point, px};
 use hex_project::Clip;
 use hex_session::{CachedPeak, CachedWaveform};
@@ -84,7 +86,7 @@ enum WaveformMappingKey {
 pub(super) struct WaveformGeometry {
     display: hex_widgets::WaveformGeometry,
     #[cfg(test)]
-    pub(super) channels: [WaveformChannelGeometry; 2],
+    channel_storage: [WaveformChannelGeometry; 2],
     // X positions per channel, including both edges of coarse bins. Charge
     // these actual display positions to the existing cache's column budget.
     columns: usize,
@@ -97,7 +99,7 @@ pub(super) struct WaveformChannelGeometry {
 #[cfg(test)]
 impl WaveformGeometry {
     fn channels(&self) -> &[WaveformChannelGeometry] {
-        &self.channels[..self.display.channels().len()]
+        &self.channel_storage[..self.display.channels().len()]
     }
 }
 
@@ -111,7 +113,8 @@ impl AsRef<hex_widgets::WaveformGeometry> for WaveformGeometry {
 pub(super) struct RenderedWaveformSample {
     pub(super) source: Arc<CachedWaveform>,
     pub(super) prepared: Option<(u64, u64)>,
-    pub(super) spans: [f32; 2],
+    spans: [f32; 2],
+    channel_count: usize,
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -120,8 +123,23 @@ pub(super) struct WaveformPaintSample {
     pub(super) colors: hex_widgets::WaveformColors,
     pub(super) bounds: Bounds<Pixels>,
     pub(super) mask: Bounds<Pixels>,
-    pub(super) ordinates: [(f32, f32); 2],
+    ordinates: [(f32, f32); 2],
+    channel_count: usize,
     pub(super) envelope_points: usize,
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+impl RenderedWaveformSample {
+    pub(super) fn spans(&self) -> &[f32] {
+        &self.spans[..self.channel_count]
+    }
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+impl WaveformPaintSample {
+    pub(super) fn ordinates(&self) -> &[(f32, f32)] {
+        &self.ordinates[..self.channel_count]
+    }
 }
 
 impl WaveformGeometryCache {
@@ -205,17 +223,23 @@ impl WaveformGeometryCache {
             colors,
             bounds,
             mask,
+            channel_count: geometry.channels().len(),
             ordinates: std::array::from_fn(|channel| {
-                geometry.channels[channel]
-                    .outline
-                    .iter()
-                    .map(|p| f32::from(p.y))
-                    .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), y| {
-                        (lo.min(y), hi.max(y))
+                geometry
+                    .channels()
+                    .get(channel)
+                    .map_or((0.0, 0.0), |channel| {
+                        channel
+                            .outline
+                            .iter()
+                            .map(|p| f32::from(p.y))
+                            .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), y| {
+                                (lo.min(y), hi.max(y))
+                            })
                     })
             }),
             envelope_points: geometry
-                .channels
+                .channels()
                 .iter()
                 .map(|channel| channel.outline.len())
                 .sum(),
@@ -248,15 +272,22 @@ impl WaveformGeometryCache {
                     } => Some((timeline_origin, root_offset)),
                     _ => None,
                 },
+                channel_count: entry.geometry.channels().len(),
                 spans: std::array::from_fn(|channel| {
-                    let (low, high) = entry.geometry.channels[channel]
-                        .outline
-                        .iter()
-                        .map(|point| f32::from(point.y))
-                        .fold((f32::INFINITY, f32::NEG_INFINITY), |(low, high), y| {
-                            (low.min(y), high.max(y))
-                        });
-                    high - low
+                    entry
+                        .geometry
+                        .channels()
+                        .get(channel)
+                        .map_or(0.0, |channel| {
+                            let (low, high) = channel
+                                .outline
+                                .iter()
+                                .map(|p| f32::from(p.y))
+                                .fold((f32::INFINITY, f32::NEG_INFINITY), |(low, high), y| {
+                                    (low.min(y), high.max(y))
+                                });
+                            high - low
+                        })
                 }),
             })
             .collect()
@@ -671,20 +702,31 @@ pub(super) fn prepare_waveform_geometry(
     #[cfg(all(test, feature = "ui-test-support"))]
     let _paths_timer =
         super::navigation_metrics::Timer::start(super::navigation_metrics::Stage::WaveformPaths);
-    let mut channels = Vec::with_capacity(2);
+    let combined =
+        height < crate::theme::WAVEFORM_STEREO_MIN_BODY_HEIGHT || waveform.has_identical_channels();
+    let channel_count = if combined { 1 } else { 2 };
+    let mut channels = Vec::with_capacity(channel_count);
     #[cfg(test)]
     let mut outlines = std::array::from_fn(|_| WaveformChannelGeometry {
         outline: Vec::new(),
     });
-    for channel in 0..2 {
-        let band_top = height * channel as f32 * 0.5;
-        let band_height = height * 0.5;
+    for channel in 0..channel_count {
+        let band_height = height / channel_count as f32;
+        let band_top = band_height * channel as f32;
         let center = band_top + band_height * 0.5;
         let amplitude = (band_height * 0.44).max(0.5);
         let mut maxima = Vec::with_capacity(point_count);
         let mut minima = Vec::with_capacity(point_count);
         for (column, peaks) in stereo_peaks.iter().enumerate() {
-            let (top, bottom) = peak_vertical_bounds(peaks[channel], center, amplitude);
+            let peak = if combined {
+                CachedPeak {
+                    min: peaks[0].min.min(peaks[1].min),
+                    max: peaks[0].max.max(peaks[1].max),
+                }
+            } else {
+                peaks[channel]
+            };
+            let (top, bottom) = peak_vertical_bounds(peak, center, amplitude);
             if grid.binned {
                 for edge in [first + column, first + column + 1] {
                     let x = grid.left + edge as f32 * grid.width / grid.columns as f32;
@@ -736,10 +778,15 @@ pub(super) fn prepare_waveform_geometry(
             };
         }
     }
+    let display = if combined {
+        hex_widgets::WaveformGeometry::mono(channels.pop()?)
+    } else {
+        hex_widgets::WaveformGeometry::stereo(channels.try_into().ok()?)
+    };
     Some(WaveformGeometry {
-        display: hex_widgets::WaveformGeometry::stereo(channels.try_into().ok()?),
+        display,
         #[cfg(test)]
-        channels: outlines,
+        channel_storage: outlines,
         columns: point_count,
     })
 }
@@ -898,7 +945,7 @@ mod tests {
                 None,
             )
             .unwrap();
-            let peaks: Vec<_> = geometry.channels[0].outline[..100]
+            let peaks: Vec<_> = geometry.channels()[0].outline[..100]
                 .iter()
                 .enumerate()
                 .filter(|(_, point)| point.y < px(25.0))
@@ -950,7 +997,7 @@ mod tests {
                 None,
             )
             .unwrap();
-            let top = &geometry.channels[0].outline[..100];
+            let top = &geometry.channels()[0].outline[..100];
             let peaks: Vec<_> = top
                 .iter()
                 .enumerate()
@@ -981,7 +1028,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let peaks: Vec<_> = geometry.channels[0].outline[..100]
+        let peaks: Vec<_> = geometry.channels()[0].outline[..100]
             .iter()
             .enumerate()
             .filter(|(_, p)| p.y < px(25.0))
@@ -1146,7 +1193,7 @@ mod tests {
                 }
                 let expected = expected.unwrap_or([CachedPeak { min: 0.0, max: 0.0 }; 2]);
                 for (channel, peak) in expected.iter().enumerate() {
-                    let outline = &geometry.channels[channel].outline;
+                    let outline = &geometry.channels()[channel].outline;
                     let center = 34.0 + channel as f32 * 40.0 + 20.0;
                     for edge in [column * 2, column * 2 + 1] {
                         assert!(
@@ -1201,7 +1248,7 @@ mod tests {
         )
         .unwrap();
         let middle = left + width * 0.5;
-        let outline = &geometry.channels[0].outline;
+        let outline = &geometry.channels()[0].outline;
         let visible_peak = (0..geometry.columns.saturating_sub(1)).any(|i| {
             let a = outline[i];
             let b = outline[i + 1];
@@ -1256,7 +1303,7 @@ mod tests {
                 / u128::from(grid.end - grid.start)) as usize;
             let first = first.saturating_sub(1);
             std::array::from_fn::<_, 2, _>(|channel| {
-                let outline = &geometry.channels[channel].outline;
+                let outline = &geometry.channels()[channel].outline;
                 (0..geometry.columns / 2)
                     .map(|i| {
                         (
@@ -1347,7 +1394,7 @@ mod tests {
                     let resized = draw(start, end);
                     for channel in 0..2 {
                         let interior = |geometry: &WaveformGeometry| {
-                            geometry.channels[channel]
+                            geometry.channels()[channel]
                                 .outline
                                 .iter()
                                 .filter(|p| {
@@ -1368,13 +1415,13 @@ mod tests {
                 }
                 let revealed = draw(4_003, 92_017);
                 assert!(
-                    revealed.channels[0]
+                    revealed.channels()[0]
                         .outline
                         .iter()
                         .any(|p| f32::from(p.x) < grid.left + width * 4_900.0 / 96_000.0)
                 );
                 assert!(
-                    revealed.channels[0]
+                    revealed.channels()[0]
                         .outline
                         .iter()
                         .any(|p| f32::from(p.x) > grid.left + width * 91_100.0 / 96_000.0)
@@ -1418,7 +1465,7 @@ mod tests {
         let retained_crop = draw(5_001, 5_001);
         for channel in 0..2 {
             assert!(
-                retained_crop.channels[channel].outline == full_root.channels[channel].outline,
+                retained_crop.channels()[channel].outline == full_root.channels()[channel].outline,
                 "same accepted root/time positions retain edge-bin peaks after a crop"
             );
         }
@@ -1497,7 +1544,7 @@ mod tests {
                     let after = draw(&cropped);
                     for channel in 0..2 {
                         let interior = |g: &WaveformGeometry| {
-                            g.channels[channel]
+                            g.channels()[channel]
                                 .outline
                                 .iter()
                                 .filter(|p| f32::from(p.x) > 300.0 && f32::from(p.x) < 700.0)

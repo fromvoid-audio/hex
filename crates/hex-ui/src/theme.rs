@@ -375,6 +375,10 @@ pub fn readable_text(background: u32, preferred: u32) -> u32 {
 // Keep this chrome reservation separate from compact panel padding.
 pub const TITLEBAR_LEADING_INSET: f32 = if cfg!(target_os = "macos") { 80.0 } else { 8.0 };
 
+/// Minimum logical body height for separate stereo waveform lanes.
+/// Compact rows project the union of both channels into one full-height band.
+pub const WAVEFORM_STEREO_MIN_BODY_HEIGHT: f32 = 32.0;
+
 pub const FONT_FAMILY: &str = "Ioskeley Mono";
 const REGULAR: &[u8] =
     include_bytes!("../../../assets/fonts/ioskeley-mono/ioskeley-mono-regular.ttf");

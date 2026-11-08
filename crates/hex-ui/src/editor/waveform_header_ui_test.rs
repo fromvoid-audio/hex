@@ -114,7 +114,7 @@ fn assert_body(visual: &mut VisualTestContext, editor: &Entity<EditorView>, clip
                 header.bottom(),
                 p.bounds,
                 p.mask,
-                p.ordinates
+                p.ordinates()
             );
             assert!(
                 p.bounds.top() >= header.bottom(),
@@ -124,7 +124,7 @@ fn assert_body(visual: &mut VisualTestContext, editor: &Entity<EditorView>, clip
                 p.mask.top() >= header.bottom(),
                 "actual fill/stroke content mask must exclude title"
             );
-            for (lo, hi) in p.ordinates {
+            for &(lo, hi) in p.ordinates() {
                 assert!(lo >= f32::from(header.bottom()) && hi >= lo);
             }
         }
@@ -333,7 +333,7 @@ fn waveform_body_painter_omits_header_only_rows_and_clips_tiny_bodies(cx: &mut T
                 assert!(paint.bounds.top() >= title.bottom());
                 assert!(paint.mask.top() >= title.bottom());
                 assert!(paint.mask.bottom() <= px(height));
-                for (lo, hi) in paint.ordinates {
+                for &(lo, hi) in paint.ordinates() {
                     assert!(lo.max(f32::from(paint.mask.top())) >= f32::from(title.bottom()));
                     assert!(hi.min(f32::from(paint.mask.bottom())) <= height);
                 }

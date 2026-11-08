@@ -172,7 +172,7 @@ mod tests {
                     .iter()
                     .any(|w| std::sync::Arc::ptr_eq(&w.source, &accepted)
                         && w.prepared.is_some_and(|(_, offset)| offset > 0)
-                        && w.spans.iter().all(|s| *s > 1.0)),
+                        && w.spans().iter().all(|s| *s > 1.0)),
                 "accepted finite directed peaks must paint during a second trim"
             );
         });

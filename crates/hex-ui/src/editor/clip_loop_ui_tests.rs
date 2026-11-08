@@ -551,7 +551,7 @@ fn clip_loop_audio_preview_keeps_nonzero_waveform_across_the_extended_body(
                         .painted_waveforms()
                         .iter()
                         .any(|p| p.bounds.right() >= held.right() - px(2.0)
-                            && p.ordinates.iter().any(|(lo, hi)| hi - lo > 1.0)),
+                            && p.ordinates().iter().any(|(lo, hi)| hi - lo > 1.0)),
                     "held loop must paint accepted nonzero peaks through its new outer edge"
                 );
             });
@@ -609,7 +609,7 @@ fn clip_loop_existing_repeat_shift_warp_keeps_processed_waveform_and_real_histor
         f.visual.run_until_parked();
         let held = f.visual.debug_bounds("trim-live-preview").unwrap();
         f.editor.read_with(&f.visual,|v,_|assert!(v.waveform_geometry_cache.borrow().painted_waveforms().iter().any(|p|
-            p.bounds.right()>=held.right()-px(2.0) && p.ordinates.iter().any(|(lo,hi)| hi-lo>1.0)
+            p.bounds.right()>=held.right()-px(2.0) && p.ordinates().iter().any(|(lo,hi)| hi-lo>1.0)
         ),"ordinary Shift-Warp retains accepted processed root peaks on an existing repeat; warped={warped}"));
         f.visual.simulate_mouse_up(target, MouseButton::Left, shift);
         f.visual.run_until_parked();

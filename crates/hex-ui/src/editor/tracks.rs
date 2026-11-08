@@ -4337,7 +4337,7 @@ mod overlap_tests {
                     cache.rendered_waveforms().iter().any(|sample| {
                         Arc::ptr_eq(&sample.source, &ready.waveform)
                             && sample.prepared == Some((source.start(), ready.offset))
-                            && sample.spans[0] > 0.0
+                            && sample.spans()[0] > 0.0
                     }),
                     "clone must use original ready processed root and source offset"
                 );
