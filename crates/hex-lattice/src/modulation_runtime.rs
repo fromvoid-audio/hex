@@ -46,6 +46,11 @@ impl ModulationRuntime {
         self.bank.source_id(index)
     }
 
+    /// Maximum frames accepted by one synchronous render call.
+    pub fn chunk_frames(&self) -> usize {
+        self.bank.chunk_frames()
+    }
+
     pub fn begin(&mut self) {
         self.bank.begin();
     }
@@ -227,6 +232,7 @@ mod tests {
     #[test]
     fn oversized_chunks_and_mismatched_inventory_are_refused() {
         let mut current = runtime(6_000.0);
+        assert_eq!(current.chunk_frames(), 8);
         current.begin();
         assert!(current.render_chunk(9, None, |_| Ok(())).is_err());
         let mut output = [0.0; 1];
@@ -247,5 +253,22 @@ mod tests {
         let empty = ModulationLfoBank::new(&[], 8).unwrap();
         let two_sources = PreparedModulation::new(&[], &[], 2).unwrap();
         assert!(ModulationRuntime::new(empty, two_sources).is_err());
+    }
+
+    #[test]
+    fn exposed_chunk_limit_allows_a_long_segment_without_phase_gaps() {
+        let mut current = runtime(6_000.0);
+        let mut output = [0.0; 19];
+        let limit = current.chunk_frames();
+        current.begin();
+        for chunk in output.chunks_mut(limit) {
+            read(&mut current, chunk).unwrap();
+        }
+        current.commit().unwrap();
+        for (frame, actual) in output.into_iter().enumerate() {
+            let phase = frame as f32 * std::f32::consts::TAU;
+            let expected = 0.5 + 0.1 * ((phase / 4.0).sin() + (phase / 8.0).sin());
+            assert!((actual - expected).abs() < 1e-6);
+        }
     }
 }
