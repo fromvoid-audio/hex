@@ -68,7 +68,11 @@ impl EditorView {
         let lanes = &mut self.automation_view.devices;
         lanes.main.retain(|old| old.target.owner != owner);
         lanes.main.push(entry.clone());
-        for extra in lanes.extra.iter_mut().filter(|extra| extra.target == target) {
+        for extra in lanes
+            .extra
+            .iter_mut()
+            .filter(|extra| extra.target == target)
+        {
             *extra = entry.clone();
         }
         if let Some(known) = lanes.known.iter_mut().find(|old| old.target == target) {
