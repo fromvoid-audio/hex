@@ -26,6 +26,7 @@ const MAX_AUTOMATIC_RETRIES: u8 = 3;
 const REFRESH_YIELDED_TO_CONTROL: &str = "vst3 parameter refresh yielded to control";
 
 mod cache;
+mod scrollbar;
 
 #[derive(Default)]
 pub(super) struct State {
@@ -67,6 +68,7 @@ struct Panel {
     search: Entity<TextInput>,
     _observe_search: Subscription,
     scroll: UniformListScrollHandle,
+    scrollbar: scrollbar::State,
     visible_pages: BTreeSet<u16>,
     priority_page: Option<u16>,
     queued_touch: Option<TouchObservation>,
@@ -108,6 +110,9 @@ impl Panel {
         let Some(matched) = self.rows().map(|rows| matching_rows(rows, &self.filter)) else {
             return;
         };
+        if *self.matched != matched {
+            self.scrollbar.invalidate();
+        }
         self.matched = Arc::new(matched);
         if reset_scroll {
             self.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
@@ -115,6 +120,7 @@ impl Panel {
     }
 
     fn mark_values_stale(&mut self) {
+        self.scrollbar.invalidate();
         let total = self.rows().and_then(|rows| u16::try_from(rows.len()).ok());
         if let Some(rows) = &self.result {
             self.result = Some(Arc::new(
@@ -609,6 +615,7 @@ fn ensure_panel(view: &mut EditorView, device: DeviceId, cx: &mut Context<Editor
             search,
             _observe_search: observe_search,
             scroll: UniformListScrollHandle::new(),
+            scrollbar: scrollbar::State::default(),
             visible_pages: BTreeSet::new(),
             priority_page: None,
             queued_touch: None,
@@ -781,6 +788,7 @@ fn apply_result(
             record_error(panel, "vst3 parameter inventory differs".into());
             return;
         }
+        panel.scrollbar.invalidate();
         panel.source = Some(source);
         panel.descriptor_signature = Some(descriptor_signature);
         panel.total = Some(result.total);
@@ -1386,7 +1394,7 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
     } else {
         follow_display(view, device, cx)
     };
-    let Some(panel) = view.device_panel.vst3_parameters.panels.get(&device) else {
+    let Some(panel) = view.device_panel.vst3_parameters.panels.get_mut(&device) else {
         return body.h(px(56.0)).child(div().h(px(56.0)).flex_shrink_0());
     };
     let row = follow_row.as_ref();
@@ -1530,15 +1538,15 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
             let query = panel.query;
             let scroll = panel.scroll.clone();
             let editor = cx.weak_entity();
+            let scrollbar = scrollbar::element(panel, device, cx);
             body.child(
                 div()
                     .debug_selector(|| "vst3-parameter-list-area".to_string())
                     .flex()
-                    .flex_col()
                     .flex_1()
                     .min_h_0()
                     .w_full()
-                    .child(
+                    .child(div().flex().flex_col().flex_1().min_w_0().h_full().child(
                         uniform_list(
                             ("vst3-parameter-list", device.value()),
                             matched.len(),
@@ -1661,7 +1669,8 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
                         .flex_1()
                         .min_h_0()
                         .w_full(),
-                    ),
+                    ))
+                    .children([scrollbar]),
             )
         }
     }
@@ -2759,6 +2768,107 @@ mod tests {
                 .unwrap();
             assert!(!panel.row_placeholders.contains_key(&124));
             assert!(panel.knobs.contains_key(&124));
+        });
+        editor.update(&mut visual, |view, cx| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap();
+            panel.result = Some(Arc::new(
+                (0..40)
+                    .map(|index| PluginParameterRow {
+                        id: 100 + index,
+                        page_first: ((index as usize / PAGE_SIZE) * PAGE_SIZE) as u16,
+                        ..layout_row(0.35, false, 0)
+                    })
+                    .collect(),
+            ));
+            panel.refilter(true);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("vst3-parameter-scrollbar").is_some(),
+            "a long parameter list has a scrollbar"
+        );
+        let geometry = |visual: &VisualTestContext| {
+            editor.read_with(visual, |view, _| {
+                view.device_panel.vst3_parameters.panels[&device]
+                    .scrollbar
+                    .test_geometry()
+                    .unwrap()
+            })
+        };
+        let (track, thumb, maximum) = geometry(&visual);
+        assert!(maximum > 0.0);
+        assert_eq!(thumb.top(), track.top());
+        let row = visual.debug_bounds("vst3-parameter-row-100").unwrap();
+        visual.simulate_event(gpui::ScrollWheelEvent {
+            position: row.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(-150.0))),
+            ..Default::default()
+        });
+        visual.run_until_parked();
+        let (track, thumb, _) = geometry(&visual);
+        assert!(thumb.top() > track.top());
+        visual.simulate_mouse_down(thumb.center(), gpui::MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert!(
+                view.device_panel.vst3_parameters.panels[&device]
+                    .scrollbar
+                    .test_dragging()
+            )
+        });
+        let outside = gpui::point(track.left(), track.bottom() + px(300.0));
+        visual.simulate_mouse_move(outside, gpui::MouseButton::Left, modifiers);
+        visual.simulate_mouse_up(outside, gpui::MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        let (track, thumb, _) = geometry(&visual);
+        assert!((f32::from(thumb.bottom() - track.bottom())).abs() < 0.01);
+        editor.read_with(&visual, |view, _| {
+            assert!(
+                !view.device_panel.vst3_parameters.panels[&device]
+                    .scrollbar
+                    .test_dragging()
+            );
+            assert!(view.device_gesture.snapshot().is_none());
+        });
+        visual.simulate_mouse_down(thumb.center(), gpui::MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        editor.update(&mut visual, |view, cx| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap();
+            assert!(panel.scrollbar.test_dragging());
+            panel.filter = "no matching parameter".into();
+            panel.refilter(true);
+            assert!(!panel.scrollbar.test_dragging());
+            cx.notify();
+        });
+        visual.simulate_mouse_move(
+            gpui::point(track.left(), track.top()),
+            gpui::MouseButton::Left,
+            modifiers,
+        );
+        visual.simulate_mouse_up(
+            gpui::point(track.left(), track.top()),
+            gpui::MouseButton::Left,
+            modifiers,
+        );
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert!(
+                !view.device_panel.vst3_parameters.panels[&device]
+                    .scrollbar
+                    .test_dragging()
+            );
+            assert!(view.device_gesture.snapshot().is_none());
         });
     }
 
