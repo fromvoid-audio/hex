@@ -38,6 +38,7 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                 "crates/hex-ui/src/editor/time_move_preview.rs": '.child(super::clip_name::passive_name_header(name, fill, true))',
                 "crates/hex-ui/src/editor/console_mixer.rs": '.child(activator) .child(solo) .child(gain) .child(pan) .child(toggles) .child(controls) .child(column) .child(super::track_meters::render(id, peaks, height))',
                 "crates/hex-ui/src/editor/session_grid.rs": '.child(session_clip_backdrop(clip, fill, stroke)) .child(super::clip_boundary::backdrop_shell(body, left, width, style, true, selector)) .child(self.console_mixer_row(page, width, scenes, cx))',
+                "crates/hex-ui/src/editor/mixer.rs": '.child(self.main_volume(cx))',
                 "crates/hex-ui/src/editor/return_tracks.rs": '.child(super::waveform::toggle_button_with_style(label, tooltip, id, style))',
             }
             for name, text in files.items():
@@ -58,6 +59,9 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                 ("other.rs", '.child(framed_clip)'),
                 ("other.rs", '.child(paint)'),
                 ("other.rs", '.child(session_clip_backdrop(clip, fill, stroke))'),
+                ("other.rs", '.child(self.main_volume(cx))'),
+                ("editor/mixer.rs", '.child("Unnormalized")'),
+                ("editor/mixer.rs", '.child(self.unregistered_component(cx))'),
                 ("editor/console_mixer.rs", '.child("Unnormalized")'),
                 ("editor/console_mixer.rs", '.child(self.unregistered_component(cx))'),
                 ("other.rs", '.child(self.console_mixer_row(page, width, scenes, cx))'),

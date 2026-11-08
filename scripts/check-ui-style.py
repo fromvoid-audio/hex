@@ -209,7 +209,7 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             and suffix.startswith(('self.return_volume(', 'gain_control)', 'super::waveform::toggle_button_with_style('))
         ) or (
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/mixer.rs'
-            and suffix.startswith(('super::track_meters::render(', 'toggle_button_with_style('))
+            and suffix.startswith(('super::track_meters::render(', 'toggle_button_with_style(', 'self.main_volume('))
         )
         # Typed clip/backdrop and passive-title components route captions and
         # rename input through clip_name's own checked boundary.

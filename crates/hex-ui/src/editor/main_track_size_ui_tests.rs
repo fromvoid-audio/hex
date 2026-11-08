@@ -46,9 +46,9 @@ fn main_shrinks_to_header_only_expands_and_keeps_pin_alignment_and_controls(
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         assert_eq!(v.worker_requests_pending, 0);
     });
-    let gain = visual.debug_bounds("main-gain-up").unwrap().center();
-    visual.simulate_click(gain, Modifiers::default());
-    editor.read_with(&visual, |v, _| assert!(v.last_enqueued_edit.is_some()));
+    let gain = visual.debug_bounds("main-volume-slider").unwrap();
+    assert!(gain.top() >= controls.top() && gain.bottom() <= controls.bottom());
+    assert!(visual.debug_bounds("main-gain-up").is_none());
 }
 #[gpui::test]
 fn main_all_track_resize_and_overview_share_rollback_and_restore_normal_heights(
