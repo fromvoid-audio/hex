@@ -1484,21 +1484,7 @@ impl EditorView {
                         track_id.value(),
                         clip.id().value()
                     ),
-                    (self.track_body_height(track_id) <= super::track_layout::HEADER_ONLY_HEIGHT)
-                        .then(|| {
-                            self.clip_name_drag_header(
-                                fragment.id(),
-                                fragment.name(),
-                                theme::clip_activity_fill(
-                                    track.color(),
-                                    fragment.flavor(),
-                                    false,
-                                    fragment.active(),
-                                ),
-                                false,
-                            )
-                            .into_any_element()
-                        }),
+                    self.track_body_height(track_id) <= super::track_layout::HEADER_ONLY_HEIGHT,
                 ) {
                     clip_area = clip_area.children([fragment_view]);
                 }
@@ -1530,6 +1516,8 @@ impl EditorView {
                     scale_factor,
                     theme::clip_activity_fill(track.color(), clip.flavor(), false, clip.active()),
                     clip.id(),
+                    clip.name(),
+                    clip.looping(),
                     |start, end, merge| {
                         self.loop_note_shapes(&state.project, clip, start, end, merge)
                     },
@@ -1539,21 +1527,7 @@ impl EditorView {
                     viewport_end,
                     grid,
                     "time-move-midi-fragment".to_owned(),
-                    (self.track_body_height(track_id) <= super::track_layout::HEADER_ONLY_HEIGHT)
-                        .then(|| {
-                            self.clip_name_drag_header(
-                                clip.id(),
-                                clip.name(),
-                                theme::clip_activity_fill(
-                                    track.color(),
-                                    clip.flavor(),
-                                    false,
-                                    clip.active(),
-                                ),
-                                false,
-                            )
-                            .into_any_element()
-                        }),
+                    self.track_body_height(track_id) <= super::track_layout::HEADER_ONLY_HEIGHT,
                 );
                 if let Some(fragment) = fragment {
                     clip_area = clip_area.children([fragment]);
@@ -2250,22 +2224,7 @@ impl EditorView {
                             track_id.value(),
                             fragment.start()
                         ),
-                        (self.track_body_height(track_id)
-                            <= super::track_layout::HEADER_ONLY_HEIGHT)
-                            .then(|| {
-                                self.clip_name_drag_header(
-                                    fragment.id(),
-                                    fragment.name(),
-                                    theme::clip_activity_fill(
-                                        track.color(),
-                                        fragment.flavor(),
-                                        false,
-                                        fragment.active(),
-                                    ),
-                                    false,
-                                )
-                                .into_any_element()
-                            }),
+                        self.track_body_height(track_id) <= super::track_layout::HEADER_ONLY_HEIGHT,
                     ) {
                         clip_area = clip_area.children([fragment_view]);
                     }
@@ -2354,6 +2313,8 @@ impl EditorView {
                             clip.active(),
                         ),
                         clip.id(),
+                        clip.name(),
+                        clip.looping(),
                         |start, end, merge| {
                             self.loop_note_shapes(&state.project, clip, start, end, merge)
                         },
@@ -2363,22 +2324,7 @@ impl EditorView {
                         viewport_end,
                         grid,
                         format!("time-move-midi-residual-{fragment_index}"),
-                        (self.track_body_height(track_id)
-                            <= super::track_layout::HEADER_ONLY_HEIGHT)
-                            .then(|| {
-                                self.clip_name_drag_header(
-                                    clip.id(),
-                                    clip.name(),
-                                    theme::clip_activity_fill(
-                                        track.color(),
-                                        clip.flavor(),
-                                        false,
-                                        clip.active(),
-                                    ),
-                                    false,
-                                )
-                                .into_any_element()
-                            }),
+                        self.track_body_height(track_id) <= super::track_layout::HEADER_ONLY_HEIGHT,
                     );
                     if let Some(fragment) = fragment {
                         clip_area = clip_area.children([fragment]);
