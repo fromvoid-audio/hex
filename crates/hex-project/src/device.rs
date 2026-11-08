@@ -82,6 +82,9 @@ use crate::{Command, DeviceId, Invalid, Project, TrackId};
 use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
 
 #[cfg(test)]
+#[path = "device_unit_order_tests.rs"]
+mod unit_order_tests;
+#[cfg(test)]
 #[path = "device_unit_removal_tests.rs"]
 mod unit_removal_tests;
 
@@ -429,6 +432,36 @@ fn anchor_index(devices: &[Device], before: Option<DeviceId>) -> Result<usize, I
         None => Ok(devices.len()),
     }
 }
+
+/// Reorder one complete serial unit without allocating or cloning authored state.
+/// Both positions refer to the original validated owning chain.
+pub(crate) fn move_serial_unit(
+    devices: &mut [Device],
+    source: usize,
+    destination: usize,
+) -> Result<(), Invalid> {
+    if destination > devices.len() {
+        return Err(Invalid("device destination is out of bounds"));
+    }
+    let span = crate::device_inventory::serial_unit_span(devices, source)?;
+    if (span.start..=span.end).contains(&destination) {
+        return Ok(());
+    }
+    let count = span.len();
+    if destination < span.start {
+        devices
+            .get_mut(destination..span.end)
+            .ok_or(Invalid("device move range is invalid"))?
+            .rotate_right(count);
+    } else {
+        devices
+            .get_mut(span.start..destination)
+            .ok_or(Invalid("device move range is invalid"))?
+            .rotate_left(count);
+    }
+    Ok(())
+}
+
 fn move_device(
     project: &mut Project,
     id: DeviceId,
