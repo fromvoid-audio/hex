@@ -1207,7 +1207,8 @@ fn compile_effect_devices(
         .map_err(|_| Invalid("could not reserve prepared device chain"))?;
 
     let mut admission_matrix = hex_lattice::StereoMatrix::identity();
-    for device in source_devices {
+    for entry in crate::serial_effect_power::EffectPower::new(source_devices)? {
+        let (device, bypassed) = entry?;
         let identity = hex_lattice::ProcessorInstanceIdentity::new(owner, device.id().value())
             .map_err(|_| Invalid("invalid prepared device identity"))?;
         let migrated = registry
@@ -1272,7 +1273,7 @@ fn compile_effect_devices(
             return Err(Invalid("authored vst3 source metadata is unavailable"));
         }
 
-        let prepared = if device.bypassed() {
+        let prepared = if bypassed {
             hex_lattice::StereoMatrix::identity()
         } else {
             prepared_device.matrix
@@ -1282,7 +1283,7 @@ fn compile_effect_devices(
         admission_matrix = admission_matrix
             .then(prepared)
             .map_err(|error| Invalid(error.0))?;
-        if !device.bypassed() {
+        if !bypassed {
             let gain = migrated.output_gain_linear() * migrated.input_gain_linear();
             let trim = hex_lattice::StereoMatrix::new([[gain, 0.0], [0.0, gain]])
                 .map_err(|error| Invalid(error.0))?;
@@ -1298,7 +1299,7 @@ fn compile_effect_devices(
             device_id: device.id().value(),
             device_type: migrated.type_id(),
             matrix: prepared,
-            bypassed: device.bypassed(),
+            bypassed,
             sample_rate,
             configuration: Some(std::sync::Arc::new(migrated)),
             definition: processor,
