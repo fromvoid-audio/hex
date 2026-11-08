@@ -25,6 +25,7 @@ impl NativeDeviceDefinition for DelayDefinition {
     }
     fn prepare_automated_runtime_instance(
         &self,
+        _identity: hex_lattice::ProcessorInstanceIdentity,
         state: &NativeDeviceState,
         context: &hex_lattice::DevicePreparationContext<'_>,
         ids: &[hex_lattice_contract::ParameterId],
