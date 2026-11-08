@@ -1968,9 +1968,28 @@ fn verify_instrument_takeover(
     assert_eq!(undone.state.project.as_ref(), &before);
     applied = h.applied(applied).0;
     if playing {
+        let restored = peak(h);
         assert!(
-            (peak(h) - baseline).abs() < 0.0001,
-            "undo must restore audible authored input"
+            (restored - baseline).abs() < 0.0001,
+            "undo must restore audible authored input: case={case} actual={restored} expected={baseline} phase={:?} source={:?} fault={:?}",
+            h.callback
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .native_worker_phase_for_test(),
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .recording_source(),
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .render_fault_snapshot(),
         );
     }
     let redone = super::automation::edit_with_running_callback(h, Request::Redo);
