@@ -154,13 +154,23 @@ pub(super) fn delete(project: &mut Project, section: SectionId) -> Result<Create
 }
 
 pub(super) fn duplicate(project: &mut Project, section: SectionId) -> Result<Created, Invalid> {
+    let color = super::color::duplicate_color(project, section);
+    duplicate_colored(project, section, color)
+}
+
+/// Replacement carries source appearance; ordinary copies keep their normal draw.
+pub(super) fn duplicate_colored(
+    project: &mut Project,
+    section: SectionId,
+    color: ElementColor,
+) -> Result<Created, Invalid> {
     let index = section_index(project, section)?;
     let marker = project.arrangement_sections[index].clone();
     if project.arrangement_sections.len() == MAX_ARRANGEMENT_SECTIONS {
         return Err(Invalid("arrangement section limit reached"));
     }
     let mut copy = marker.clone();
-    copy.color = super::color::duplicate_color(project, section);
+    copy.color = color;
     copy.id = SectionId(0);
     copy.start = marker.end;
     copy.end = BeatTime::from_raw(
@@ -327,12 +337,30 @@ pub(super) fn preview_duplicate(
     project: &Project,
     section: SectionId,
 ) -> Result<SectionSplicePreview, Invalid> {
-    let marker = &project.arrangement_sections[section_index(project, section)?];
-    if project.arrangement_sections.len() == MAX_ARRANGEMENT_SECTIONS {
+    preview_duplicate_in(
+        &project.arrangement_sections,
+        &project.tempo_map,
+        section,
+        super::color::duplicate_color(project, section),
+    )
+}
+
+/// Bounded metadata composition after another private structural preview.
+pub(super) fn preview_duplicate_in(
+    sections: &[ArrangementSection],
+    tempo: &TempoMap,
+    section: SectionId,
+    color: ElementColor,
+) -> Result<SectionSplicePreview, Invalid> {
+    let marker = sections
+        .iter()
+        .find(|m| m.id == section)
+        .ok_or(Invalid("arrangement section no longer exists"))?;
+    if sections.len() == MAX_ARRANGEMENT_SECTIONS {
         return Err(Invalid("arrangement section limit reached"));
     }
     let mut copy = marker.clone();
-    copy.color = super::color::duplicate_color(project, section);
+    copy.color = color;
     copy.id = SectionId(0);
     copy.start = marker.end;
     copy.end = BeatTime::from_raw(
@@ -343,8 +371,8 @@ pub(super) fn preview_duplicate(
             .ok_or(Invalid("duplicated section end overflow"))?,
     );
     layout_preview(
-        &project.arrangement_sections,
-        &project.tempo_map,
+        sections,
+        tempo,
         Transform::Duplicate {
             start: marker.start,
             end: marker.end,
