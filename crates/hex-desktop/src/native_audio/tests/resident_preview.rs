@@ -2324,6 +2324,31 @@ fn sealed_native_take_recovery_uses_canonical_publication_and_one_undo() {
     );
     assert_ne!(recovered.state.project, inserted.state.project);
     h.applied(applied);
+    #[cfg(all(
+        feature = "allocation-probe",
+        target_os = "macos",
+        target_arch = "aarch64"
+    ))]
+    {
+        let mut output = [[0.0; 2]; 64];
+        let mut host = [0.0; 128];
+        let mut slot = h.callback.lock().unwrap();
+        let callback = slot.as_mut().unwrap();
+        let measured = allocation_counter::measure(|| {
+            callback
+                .render_native_direct(&mut output, &mut host)
+                .unwrap()
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+    }
     let undone = h.run(Request::Undo);
     assert_eq!(undone.state.project, inserted.state.project);
     assert_eq!(std::fs::read(path).unwrap(), bytes);
