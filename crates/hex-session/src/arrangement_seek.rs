@@ -1,6 +1,6 @@
 //! Bounded control-side Arrangement seek preparation.
 //!
-//! This worker only constructs a fresh stateful candidate (interactive seeks and
+//! This worker only constructs a fresh stateful candidate (ordinary interactive seeks and
 //! sections start device history empty; linear and explicitly history-preserving
 //! interactive modes replay). It does not publish
 //! to audio, fence live routes, or mutate the canonical project worker.
