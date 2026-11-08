@@ -1225,6 +1225,23 @@ impl Render for RectangleDemo {
 mod tests {
     use super::*;
     use gpui::{TestAppContext, VisualTestContext, point};
+
+    // The shared chamfer painter fills canvas fragments behind a transparent
+    // header. Observe the completed scene at its center, not a nonexistent
+    // full-bounds header quad.
+    fn painted_surface(
+        visual: &mut VisualTestContext,
+        selector: &'static str,
+    ) -> Option<gpui::Background> {
+        let bounds = visual.debug_bounds(selector)?;
+        let center = visual.update(|window, _| bounds.scale(window.scale_factor()).center());
+        visual
+            .rendered_filled_quads(selector)
+            .into_iter()
+            .rev()
+            .find(|(quad, _)| quad.contains(&center))
+            .map(|(_, background)| background)
+    }
     #[gpui::test]
     fn q_previews_shared_section_focus_without_editing_the_project(cx: &mut TestAppContext) {
         let handle =
@@ -1615,7 +1632,7 @@ mod tests {
         let area = visual.debug_bounds("section-held-highlight-area").unwrap();
         let at = |x: f32| point(area.left() + area.size.width * x, area.top() + px(5.0));
         let outside = point(area.right() + px(50.0), area.top() - px(10.0));
-        let baseline = visual.rendered_background("section-held-highlight-section-header-1");
+        let baseline = painted_surface(&mut visual, "section-held-highlight-section-header-1");
         visual.simulate_mouse_down(at(0.5), MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(at(0.43), MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(outside, MouseButton::Left, Modifiers::default());
@@ -1626,7 +1643,7 @@ mod tests {
             view.update(cx, |_, cx| cx.notify());
             visual.run_until_parked();
             assert_ne!(
-                visual.rendered_background("section-held-highlight-section-header-1"),
+                painted_surface(&mut visual, "section-held-highlight-section-header-1"),
                 baseline
             );
         }
@@ -1635,7 +1652,7 @@ mod tests {
         });
         visual.run_until_parked();
         assert_eq!(
-            visual.rendered_background("section-held-highlight-section-header-1"),
+            painted_surface(&mut visual, "section-held-highlight-section-header-1"),
             baseline
         );
     }
@@ -2942,19 +2959,17 @@ mod tests {
                     let header = visual
                         .debug_bounds("rectangle-narrow-section-header-0")
                         .unwrap();
-                    assert!(
-                        (f32::from(header.size.height) * 3.0 - f32::from(a.size.height)).abs()
-                            <= 2.0
-                    );
+                    assert_eq!(header.size.height, px(14.0));
+                    assert!(header.bottom() < a.bottom());
                     let (fill, _, _) =
                         theme::section_colors(hex_project::ElementColor::Cyan, false, false);
                     assert_eq!(
-                        visual.rendered_background("rectangle-narrow-section-header-0"),
+                        painted_surface(&mut visual, "rectangle-narrow-section-header-0"),
                         Some(gpui::rgb(fill).into())
                     );
                     assert_eq!(
-                        visual.rendered_background("rectangle-narrow-rectangle-0"),
-                        Some(gpui::rgba((fill << 8) | 0x38).into())
+                        painted_surface(&mut visual, "rectangle-narrow-rectangle-0"),
+                        Some(gpui::rgb(fill).into())
                     );
                 }
                 let at = point(a.left() + px(2.0), a.top() + px(20.0));
