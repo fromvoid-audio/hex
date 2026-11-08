@@ -8,6 +8,8 @@
 //! # Does not own
 //! Does not own device registration, projects, UI, threads, audio I/O or media storage.
 mod gain;
+mod modulation_lfo;
 mod stereo;
 pub use gain::{Decibels, InvalidGain, LinearAmplitude};
+pub use modulation_lfo::{InvalidLfo, LfoRate, ModulationLfo};
 pub use stereo::{InvalidMatrix, StereoFrame, StereoMatrix};
