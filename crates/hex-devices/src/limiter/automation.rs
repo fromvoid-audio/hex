@@ -1,11 +1,11 @@
-//! Gain/ceiling/release use the existing owned history and fixed latency.
+//! Nine scalar and boolean controls use the existing owned history and fixed latency.
 //! Targets derive only scalar laws; reconstruction and queue layout stay fixed.
 use super::{
     decode,
     runtime::Factory,
     state::{self, Settings, parameter::*},
 };
-use crate::parameter_binding::{Binding, SCALAR_ENVELOPE};
+use crate::parameter_binding::{BOOLEAN_ENVELOPE, Binding, SCALAR_ENVELOPE};
 use hex_lattice::{
     DevicePreparationContext, PreparedProcessorFactory, PreparedRuntimeDevice, StereoMatrix,
 };
@@ -14,7 +14,7 @@ use hex_lattice_contract::{
     ParameterNormalization, ParameterSemantics, ParameterSmoothing,
 };
 use std::sync::Arc;
-pub(super) const COUNT: usize = 3;
+pub(super) const COUNT: usize = 9;
 pub(super) const BINDINGS: [Binding<Settings>; COUNT] = [
     Binding::float(
         state::DESCRIPTORS[0],
@@ -39,6 +39,48 @@ pub(super) const BINDINGS: [Binding<Settings>; COUNT] = [
         },
         |s| s.value(RELEASE),
         |s, v| s.0[2] = v,
+    ),
+    Binding::boolean(
+        state::DESCRIPTORS[3],
+        BOOLEAN_ENVELOPE,
+        |s| s.flag(AUTO_RELEASE),
+        |s, v| s.0[3] = f32::from(v),
+    ),
+    Binding::float(
+        state::DESCRIPTORS[4],
+        SCALAR_ENVELOPE,
+        |s| s.value(LINK),
+        |s, v| s.0[4] = v,
+    ),
+    Binding::boolean(
+        state::DESCRIPTORS[8],
+        BOOLEAN_ENVELOPE,
+        |s| s.flag(MAXIMIZE),
+        |s, v| s.0[8] = f32::from(v),
+    ),
+    Binding::float(
+        state::DESCRIPTORS[9],
+        ParameterSemantics {
+            smoothing: ParameterSmoothing::DeviceManaged,
+            ..SCALAR_ENVELOPE
+        },
+        |s| s.value(THRESHOLD),
+        |s, v| s.0[9] = v,
+    ),
+    Binding::float(
+        state::DESCRIPTORS[10],
+        ParameterSemantics {
+            smoothing: ParameterSmoothing::DeviceManaged,
+            ..SCALAR_ENVELOPE
+        },
+        |s| s.value(OUTPUT),
+        |s, v| s.0[10] = v,
+    ),
+    Binding::float(
+        state::DESCRIPTORS[11],
+        SCALAR_ENVELOPE,
+        |s| s.value(LINK_MID_SIDE),
+        |s, v| s.0[11] = v,
     ),
 ];
 pub(super) fn slot(id: ParameterId) -> Option<usize> {
@@ -83,14 +125,14 @@ mod tests {
         OwnedProcessorRuntime, ProcessorChainOwner, ProcessorInstanceIdentity, TuningTable,
     };
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
-    fn state(changes: &[(ParameterId, ParameterValue)]) -> NativeDeviceState {
+    pub(super) fn state(changes: &[(ParameterId, ParameterValue)]) -> NativeDeviceState {
         let mut s = DEFINITION.default_state().unwrap();
         for &(id, v) in changes {
             s = DEFINITION.patch_parameter(&s, id, v).unwrap();
         }
         s
     }
-    fn runtime(
+    pub(super) fn runtime(
         s: &NativeDeviceState,
         rate: u32,
         ids: Option<&[ParameterId]>,
@@ -154,7 +196,7 @@ mod tests {
             bad: false,
         }
     }
-    fn plain(rt: &mut dyn OwnedProcessorRuntime, input: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    pub(super) fn plain(rt: &mut dyn OwnedProcessorRuntime, input: &[[f32; 2]]) -> Vec<[f32; 2]> {
         let mut out = input.to_vec();
         rt.begin_block();
         rt.process_block(&mut out, &R);
@@ -188,9 +230,30 @@ mod tests {
         for ids in [&[][..], &[GAIN, GAIN], &[CEILING, GAIN], &[LOOKAHEAD]] {
             assert!(prepare(&base, &context, ids).is_err());
         }
-        for id in [GAIN, CEILING, RELEASE] {
+        for id in [
+            GAIN,
+            CEILING,
+            RELEASE,
+            AUTO_RELEASE,
+            LINK,
+            MAXIMIZE,
+            THRESHOLD,
+            OUTPUT,
+            LINK_MID_SIDE,
+        ] {
             let rt = runtime(&base, 8000, Some(&[id]));
-            for candidate in [GAIN, CEILING, RELEASE, LOOKAHEAD] {
+            for candidate in [
+                GAIN,
+                CEILING,
+                RELEASE,
+                AUTO_RELEASE,
+                LINK,
+                LOOKAHEAD,
+                MAXIMIZE,
+                THRESHOLD,
+                OUTPUT,
+                LINK_MID_SIDE,
+            ] {
                 assert_eq!(rt.supports_parameter_automation(candidate), candidate == id);
             }
         }
@@ -198,7 +261,7 @@ mod tests {
             let id = ParameterId::new(raw).unwrap();
             assert_eq!(
                 DEFINITION.supports_parameter_automation(&base, id).unwrap(),
-                raw <= 3
+                ![6, 7, 8].contains(&raw)
             );
         }
     }
@@ -378,3 +441,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod control_tests;
