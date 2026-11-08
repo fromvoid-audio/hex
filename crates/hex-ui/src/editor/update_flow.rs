@@ -465,9 +465,16 @@ mod tests {
         }
     }
 
+    struct Refusal;
+    impl crate::UpdateApproval for Refusal {
+        fn approve(self: Box<Self>) -> Result<(), String> {
+            Err("fixture helper refused".into())
+        }
+    }
+
     #[gpui::test]
-    fn cancellation_and_blocked_custody_release_update_without_approving(cx: &mut TestAppContext) {
-        for blocked_custody in [false, true] {
+    fn cancelled_blocked_and_refused_updates_release_custody_freeze(cx: &mut TestAppContext) {
+        for (blocked_custody, helper_refused) in [(false, false), (true, false), (false, true)] {
             let service = Service::new(48_000, 32, 8_000_000).unwrap();
             let deadline = crate::test_wait::hang_deadline();
             let event = loop {
@@ -497,12 +504,16 @@ mod tests {
                         };
                         view.update_flow.ready = Some(UpdateReady {
                             id: 7,
-                            approval: Box::new(Approval(approved.clone())),
+                            approval: if helper_refused {
+                                Box::new(Refusal)
+                            } else {
+                                Box::new(Approval(approved.clone()))
+                            },
                         });
                         view.reconcile_update_ready(window, cx);
                         cx.defer_in(window, move |view, _, cx| {
                             assert!(view.automation_close_preflight.frozen());
-                            if blocked_custody {
+                            if blocked_custody || helper_refused {
                                 view.tick_automation_close(cx);
                             } else {
                                 view.cancel_requested_update(cx);
@@ -514,7 +525,7 @@ mod tests {
                 })
                 .unwrap();
             cx.run_until_parked();
-            if blocked_custody {
+            if blocked_custody || helper_refused {
                 let mut event = loop {
                     if let Ok(event) = editor.read_with(cx, |view, _| view.service.try_event()) {
                         break event;
@@ -524,11 +535,14 @@ mod tests {
                 };
                 // Use the real ordered response and its request/revision identity;
                 // the Session owner separately covers each blocked custody state.
-                event
-                    .device_automation_take_complete
-                    .as_mut()
-                    .unwrap()
-                    .progress = hex_session::service::DeviceAutomationTakeProgress::CloseBlocked;
+                if blocked_custody {
+                    event
+                        .device_automation_take_complete
+                        .as_mut()
+                        .unwrap()
+                        .progress =
+                        hex_session::service::DeviceAutomationTakeProgress::CloseBlocked;
+                }
                 editor.update(cx, |view, cx| {
                     view.receive(event);
                     view.tick_automation_close(cx);
@@ -725,10 +739,9 @@ mod tests {
         );
         cx.run_until_parked();
         while !approved.load(Ordering::SeqCst) {
-            cx.update_window(handle, |_, window, cx| {
+            cx.update_window(handle, |_, _, cx| {
                 editor.update(cx, |view, cx| {
                     view.tick(cx);
-                    view.reconcile_update_ready(window, cx);
                 });
             })
             .unwrap();

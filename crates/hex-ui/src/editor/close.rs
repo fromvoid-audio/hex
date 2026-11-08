@@ -514,6 +514,7 @@ impl EditorView {
         }
         self.automation_close_preflight.state = PreflightState::Held { quit };
         if self.automation_close_preflight.update.is_some() {
+            self.reconcile_update_ready(window, cx);
             cx.notify();
             return;
         }
