@@ -1999,11 +1999,12 @@ impl EditorView {
                         .map(|p| &p.command)
                 })
                 .is_some_and(|c| matches!(c, Command::DuplicateArrangementSectionAt { .. }));
-            let selected = (copy_preview && m.id.is_none())
-                || (!copy_preview
-                    && m.id.is_some_and(|id| {
-                        self.sections.selection.contains(&id) || self.sections.selected == Some(id)
-                    }));
+            let canonical_selected = m.id.is_some_and(|id| {
+                self.sections.selection.contains(&id) || self.sections.selected == Some(id)
+            });
+            let selected =
+                (copy_preview && m.id.is_none()) || (!copy_preview && canonical_selected);
+            let focused = self.arrangement_focus.projection.enabled && canonical_selected;
             let owned_hover = crate::section_surface::Hover {
                 held: display.held,
                 pointer: display.pointer_hover,
@@ -2062,11 +2063,14 @@ impl EditorView {
                         .pl(px(16.0))
                         .child(self.section_launch_action(id, cx));
                 }
-                header = header.child(theme::text(if selected {
-                    format!("✓ {}", m.name)
-                } else {
-                    m.name.clone()
-                }));
+                header = header.child(theme::text(m.name.clone()));
+            }
+            if focused {
+                element =
+                    element.children([crate::section_surface::focus::overlay(m.color, chamfer)
+                        .debug_selector(move || {
+                            format!("arrangement-section-focus-hatch-{index}")
+                        })]);
             }
             element = element
                 .child(super::arrangement_map::section(self, start, end, chamfer))

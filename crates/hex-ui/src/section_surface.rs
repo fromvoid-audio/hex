@@ -6,6 +6,9 @@ use gpui::{
 };
 use hex_project::{BeatTime, ElementColor, SectionId};
 
+#[path = "section_surface/focus.rs"]
+pub(crate) mod focus;
+
 /// The gesture owner retains this display state until its edit is acknowledged.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Hover {
@@ -146,11 +149,33 @@ pub(crate) fn paint(
             window.paint_path(path, rgb(color));
         }
     }
-    if let Some(color) = outline
-        .filter(|_| width >= 2.0 / window.scale_factor() && height >= 2.0 / window.scale_factor())
+    if let Some(color) = outline {
+        paint_outline(bounds, requested, color, 1.0, window);
+    }
+}
+
+fn paint_outline(
+    bounds: Bounds<Pixels>,
+    requested: f32,
+    color: u32,
+    device_width: f32,
+    window: &mut Window,
+) {
+    let width = f32::from(bounds.size.width);
+    let height = f32::from(bounds.size.height);
+    let scale = window.scale_factor();
+    if ![width, height, scale, device_width]
+        .into_iter()
+        .all(f32::is_finite)
+        || scale <= 0.0
+        || device_width <= 0.0
     {
-        let inset = 0.5 / window.scale_factor();
-        let mut path = PathBuilder::stroke(px(1.0 / window.scale_factor()));
+        return;
+    }
+    if width >= 2.0 * device_width / scale && height >= 2.0 * device_width / scale {
+        let cut = cut(width, height, requested);
+        let inset = device_width / (2.0 * scale);
+        let mut path = PathBuilder::stroke(px(device_width / scale));
         for (i, [x, y]) in [
             [inset, inset],
             [width - inset, inset],
