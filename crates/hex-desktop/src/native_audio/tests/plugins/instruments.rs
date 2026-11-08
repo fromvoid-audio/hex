@@ -613,6 +613,13 @@ fn paced_live_instrument_automation_preserves_the_worker() {
     instrument_entrypoint(InstrumentWorkflow::PacedAuthoring);
 }
 
+/// Includes the live parameter reads present in the reported editing workflow.
+#[test]
+#[ignore = "requires an installed VST3 instrument, its catalog and a source-bound helper"]
+fn paced_automation_and_parameter_polling_preserve_the_worker() {
+    instrument_entrypoint(InstrumentWorkflow::PacedMonitoring);
+}
+
 #[test]
 #[ignore = "requires explicit source-bound SDK receipts and optional installed catalog"]
 fn shared_instrument_lane_authoring_undo_read_controls_and_pcm() {
@@ -818,13 +825,18 @@ enum InstrumentWorkflow {
     Playback,
     Authoring,
     PacedAuthoring,
+    PacedMonitoring,
     Takeover,
 }
 
 fn instrument_entrypoint(workflow: InstrumentWorkflow) {
     let shared_authoring = !matches!(workflow, InstrumentWorkflow::Playback);
     let takeover = matches!(workflow, InstrumentWorkflow::Takeover);
-    let paced = matches!(workflow, InstrumentWorkflow::PacedAuthoring);
+    let paced = matches!(
+        workflow,
+        InstrumentWorkflow::PacedAuthoring | InstrumentWorkflow::PacedMonitoring
+    );
+    let monitor = matches!(workflow, InstrumentWorkflow::PacedMonitoring);
     let name = std::thread::current().name().unwrap().to_owned();
     const CHILD: &str = "HEX_DESKTOP_TEST_INSTRUMENT_CHILD";
     let installed = std::env::var("HEX_TEST_VST3_INSTRUMENT_BUNDLE").ok();
@@ -1054,6 +1066,7 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
             &mut harness,
             project_track.instrument().unwrap().id(),
             applied,
+            monitor,
         );
         return;
     }
@@ -1442,6 +1455,7 @@ fn verify_paced_instrument_authoring(
     harness: &mut ResidentHarness,
     device: hex_project::DeviceId,
     mut applied: u64,
+    monitor: bool,
 ) {
     use hex_project::{
         AutomationInterpolation, AutomationPoint, AutomationValue, DeviceAutomationTarget,
@@ -1492,6 +1506,11 @@ fn verify_paced_instrument_authoring(
     let mut pending = false;
     let mut sent = 0;
     let mut completed = 0;
+    let mut query_pending = None;
+    let mut query_sent = 0_u64;
+    let mut query_completed = 0_u64;
+    let mut query_changed = 0_u64;
+    let mut query_yielded = 0_u64;
     let mut revision = context.editor_revision;
     let mut max_lateness = Duration::ZERO;
     let mut peak = 0.0_f32;
@@ -1511,6 +1530,25 @@ fn verify_paced_instrument_authoring(
         peak = peak.max(block_peak);
         if block >= 550 {
             tail_peak = tail_peak.max(block_peak);
+        }
+        if monitor && query_pending.is_none() && (30..500).contains(&block) && block % 25 == 0 {
+            let query_context = hex_engine::AudioSourceContext {
+                editor_revision: revision,
+                ..context
+            };
+            let request_id = 100 + query_sent;
+            harness
+                .service
+                .submit(Request::QueryPluginParameters(PluginParameterQuery {
+                    context: query_context,
+                    device,
+                    output_identity,
+                    request_id,
+                    page_first: Some(page_first),
+                }))
+                .unwrap();
+            query_sent += 1;
+            query_pending = Some(request_id);
         }
         if !pending && sent < 3 && block >= 50 + sent * 125 {
             let points = [
@@ -1538,18 +1576,46 @@ fn verify_paced_instrument_authoring(
             pending = true;
         }
         while let Ok(event) = harness.service.try_event() {
-            assert!(
-                event.error.is_none(),
-                "live automation failed: {:?}",
-                event.error
-            );
-            assert!(
-                pending && event.state.revision > revision,
-                "expected the admitted edit's new revision"
-            );
-            revision = event.state.revision;
-            pending = false;
-            completed += 1;
+            if let Some(error) = &event.error {
+                harness.pump();
+                let progress = *harness.plugin_progress.lock().unwrap();
+                let status = harness.audio.as_ref().unwrap().status().unwrap();
+                let fault = status.render_fault_snapshot();
+                let source = status.native_effect_source();
+                let blocks = harness.plugin_completed.load(Acquire);
+                let worker_failure = harness.plugin_failure.lock().unwrap().clone();
+                panic!(
+                    "live automation failed at block {block}, edits={sent}/{completed}, query={query_pending:?}, observation={}, progress={progress:?}, source={source:?}, blocks={blocks}, degraded={:?}, max_late={max_lateness:?}, render_fault={fault:?}, worker_failure={worker_failure:?}: {error}",
+                    event.plugin_parameter_observation, harness.degraded_devices
+                );
+            }
+            if let Some(result) = event.plugin_parameters {
+                assert_eq!(query_pending, Some(result.query.request_id));
+                match result.rows {
+                    Ok(_) => query_completed += 1,
+                    Err(error) if error == "vst3 parameter refresh yielded to control" => {
+                        query_yielded += 1;
+                    }
+                    Err(error) => {
+                        assert!(
+                            error.contains("changed") || error.contains("cancel"),
+                            "unexpected live query error: {error}"
+                        );
+                        query_changed += 1;
+                    }
+                }
+                query_pending = None;
+            } else if event.state.revision > revision {
+                assert!(pending, "unexpected project revision during polling");
+                revision = event.state.revision;
+                pending = false;
+                completed += 1;
+            } else {
+                assert!(
+                    monitor && query_pending.is_some(),
+                    "unexpected event during authoring"
+                );
+            }
         }
         assert!(
             harness.degraded_devices.is_empty(),
@@ -1574,6 +1640,25 @@ fn verify_paced_instrument_authoring(
         harness.degraded_devices
     );
     assert_eq!((sent, completed, pending), (3, 3, false));
+    if monitor {
+        assert!(
+            query_completed >= 5,
+            "too few parameter queries completed: sent={query_sent} completed={query_completed} changed={query_changed} yielded={query_yielded}"
+        );
+        assert!(
+            query_yielded > 0,
+            "the test must exercise a read yielding to an automation edit"
+        );
+        assert!(
+            query_pending.is_none(),
+            "the last parameter query must complete"
+        );
+        assert_eq!(query_sent, query_completed + query_changed + query_yielded);
+        println!(
+            "paced_vst3 queries_sent={query_sent} completed={query_completed} invalidated={query_changed} yielded={query_yielded} pending={}",
+            query_pending.is_some()
+        );
+    }
     let source = harness
         .audio
         .as_ref()

@@ -171,6 +171,8 @@ pub(super) struct Plugins {
     pub(super) facts_gate: Option<FactsGate>,
     #[cfg(all(test, feature = "allocation-probe"))]
     pub(super) progress: Option<Arc<std::sync::Mutex<PreparationObservation>>>,
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(super) failure_observation: Option<Arc<std::sync::Mutex<Option<String>>>>,
 }
 impl Plugins {
     pub fn set_diagnostics(&mut self, log: Option<hex_diagnostics::DiagnosticsHandle>) {
@@ -570,19 +572,32 @@ impl Plugins {
                         source.edit_recovery = None;
                         source.pending_touch = None;
                     }
-                    if status == Some((true, false))
-                        && let Some(log) = &self.diagnostics
-                        && let Some(diagnostic) =
-                            control.take_native_source_failure_diagnostic(source.binding)
-                    {
-                        let _ = log.record_typed(
-                            hex_diagnostics::Level::Warn,
-                            hex_diagnostics::Category::Audio,
-                            &format!(
-                                "vst3_editor v=1 stage=worker_failure generation={generation} output={output} device={} {diagnostic}",
-                                source.device
-                            ),
-                        );
+                    if status == Some((true, false)) {
+                        #[cfg(all(test, feature = "allocation-probe"))]
+                        let observe_failure = self.failure_observation.is_some();
+                        #[cfg(not(all(test, feature = "allocation-probe")))]
+                        let observe_failure = false;
+                        if (self.diagnostics.is_some() || observe_failure)
+                            && let Some(diagnostic) =
+                                control.take_native_source_failure_diagnostic(source.binding)
+                        {
+                            #[cfg(all(test, feature = "allocation-probe"))]
+                            if let Some(observation) = &self.failure_observation
+                                && let Ok(mut observed) = observation.lock()
+                            {
+                                *observed = Some(diagnostic.clone());
+                            }
+                            if let Some(log) = &self.diagnostics {
+                                let _ = log.record_typed(
+                                    hex_diagnostics::Level::Warn,
+                                    hex_diagnostics::Category::Audio,
+                                    &format!(
+                                        "vst3_editor v=1 stage=worker_failure generation={generation} output={output} device={} {diagnostic}",
+                                        source.device
+                                    ),
+                                );
+                            }
+                        }
                     }
                     (source.binding, source.device, status)
                 });
