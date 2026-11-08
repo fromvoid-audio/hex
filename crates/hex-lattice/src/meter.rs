@@ -32,7 +32,7 @@ pub struct DeviceMeter {
     input: AtomicU32,
     /// Post-device left/right sample peaks for the passive inter-device meter.
     output: [AtomicU32; 2],
-    track_output: AtomicU32,
+    track_output: [AtomicU32; 2],
     reduction: [AtomicU32; 2],
     clipped: AtomicU32,
     post_input_peak: AtomicU32,
@@ -74,6 +74,9 @@ impl DeviceMeter {
     }
     /// Accumulate left and right independently for the stereo output meter.
     pub fn observe_output(&self, frames: &[[f32; 2]]) {
+        Self::observe_stereo(&self.output, frames);
+    }
+    fn observe_stereo(output: &[AtomicU32; 2], frames: &[[f32; 2]]) {
         let mut peaks = [0.0_f32; 2];
         for frame in frames {
             for (peak, sample) in peaks.iter_mut().zip(frame) {
@@ -82,7 +85,7 @@ impl DeviceMeter {
                 }
             }
         }
-        Self::publish_output(&self.output, peaks);
+        Self::publish_output(output, peaks);
     }
     fn publish_output(output: &[AtomicU32; 2], peaks: [f32; 2]) {
         for (target, peak) in output.iter().zip(peaks) {
@@ -92,11 +95,21 @@ impl DeviceMeter {
     /// Accumulate the containing track's post-fader output independently of
     /// the instrument's own input and output taps.
     pub fn observe_track_output(&self, frames: &[[f32; 2]]) {
-        Self::observe(&self.track_output, frames);
+        Self::observe_stereo(&self.track_output, frames);
     }
-    /// Drain the track-output peak from its single display consumer.
+    /// Drain the aggregate track-output peak for the legacy single display consumer.
+    /// This consumes both channels, just like [`Self::take_track_output_stereo`].
     pub fn take_track_output(&self) -> f32 {
-        f32::from_bits(self.track_output.swap(0, Relaxed))
+        let [left, right] = self.take_track_output_stereo();
+        left.max(right)
+    }
+    /// Drain independent post-fader peaks, left then right. There is one display
+    /// consumer; choose this or the aggregate drain, not both. Each channel
+    /// accumulates independently between drains, not at one synchronous instant.
+    pub fn take_track_output_stereo(&self) -> [f32; 2] {
+        self.track_output
+            .each_ref()
+            .map(|peak| f32::from_bits(peak.swap(0, Relaxed)))
     }
     /// Recover a device tap from an analytic source's already mixed lanes.
     /// Unity lanes are exact; fader normalization carries f32 rounding only.
@@ -228,6 +241,34 @@ mod tests {
             DevicePeaks {
                 input: 1.2,
                 output: [1.0, 0.0],
+            }
+        );
+    }
+
+    #[test]
+    fn track_channels_retain_transients_independently_and_legacy_drain_consumes_both() {
+        let meter = DeviceMeter::default();
+        meter.observe_output(&[[0.125, 0.25]]);
+        meter.observe_track_output(&[[0.5, -0.125], [f32::NAN, -2.0]]);
+        meter.observe_track_output(&[[0.001, f32::INFINITY], [-0.0, 0.0]]);
+        meter.observe_track_output(&[]);
+        assert_eq!(
+            meter.take_peaks().output,
+            [0.125, 0.25],
+            "device output is independent of track output"
+        );
+        assert_eq!(meter.take_track_output_stereo(), [0.5, 2.0]);
+        assert_eq!(meter.take_track_output_stereo(), [0.0; 2]);
+        meter.observe_track_output(&[[-0.75, 0.25]]);
+        assert_eq!(meter.take_track_output(), 0.75);
+        assert_eq!(meter.take_track_output_stereo(), [0.0; 2]);
+        meter.observe_track_output(&[[0.0, -0.875]]);
+        assert_eq!(meter.take_track_output(), 0.875);
+        assert_eq!(meter.take_track_output(), 0.0);
+        assert_eq!(
+            meter.control_storage_declaration(),
+            crate::PreparedStorageDeclaration::ExclusiveOnly {
+                bytes: std::mem::size_of::<DeviceMeter>()
             }
         );
     }
