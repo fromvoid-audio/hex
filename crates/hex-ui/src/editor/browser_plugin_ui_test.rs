@@ -1246,7 +1246,12 @@ fn vst_effect_drag_to_unselected_track_reaches_plugin_worker(cx: &mut TestAppCon
             );
             visual.simulate_mouse_up(insertion, MouseButton::Left, Modifiers::default());
             editor.read_with(&visual, |view, _| {
-                assert!(view.pending_plugin_effect.is_none())
+                assert!(view.pending_plugin_effect.is_none());
+                assert!(
+                    view.error
+                        .as_ref()
+                        .is_some_and(|error| error.contains("not supported yet"))
+                );
             });
             visual.run_until_parked();
         }

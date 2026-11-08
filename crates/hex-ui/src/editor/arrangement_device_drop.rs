@@ -119,6 +119,13 @@ impl EditorView {
             });
         let captured = self.arrangement_device_preview;
         let pointer = window.mouse_position();
+        let unsupported_new_track = owns
+            && self.native_device_drag_is_current(drag)
+            && matches!(drag.source, NativeDeviceDragSource::PluginEffect(_))
+            && matches!(
+                self.painted_arrangement_drop_target(f32::from(pointer.x), f32::from(pointer.y)),
+                Some(ArrangementDropTarget::NewTrack { .. })
+            );
         self.update_arrangement_device_drop(drag, f32::from(pointer.x), f32::from(pointer.y));
         let current = self.arrangement_device_preview;
         let valid = owns
@@ -172,8 +179,14 @@ impl EditorView {
                 self.status = "adding device to arrangement".into();
             }
         } else {
-            self.error =
-                Some("device drop canceled · target or project changed, or editing is busy".into());
+            self.error = Some(
+                if unsupported_new_track {
+                    "creating a track with a vst3 is not supported yet"
+                } else {
+                    "device drop canceled · target or project changed, or editing is busy"
+                }
+                .into(),
+            );
         }
         cx.notify();
     }
