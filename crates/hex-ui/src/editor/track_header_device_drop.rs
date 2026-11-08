@@ -12,12 +12,9 @@ use hex_engine::NativeDeviceClass;
 use hex_project::TrackId;
 use hex_session::service::{NativeDeviceDropSource, Request};
 
-enum HeaderDeviceDrop {
-    Native(Request),
-    PluginEffect(std::sync::Arc<hex_plugin_catalog::PluginSelection>),
-}
-
 impl EditorView {
+    // A validated plugin effect uses the separate asynchronous insertion path;
+    // native devices return their existing typed request.
     fn header_device_request(
         &self,
         drag: &NativeDeviceDrag,
@@ -26,7 +23,7 @@ impl EditorView {
         track: TrackId,
         copy: bool,
         cx: &App,
-    ) -> Result<HeaderDeviceDrop, &'static str> {
+    ) -> Result<Option<Request>, &'static str> {
         if generation != drag.project_generation
             || revision != Some(drag.revision)
             || !self.native_device_drag_is_current(drag)
@@ -50,7 +47,7 @@ impl EditorView {
             if selection.role != hex_plugin_catalog::PluginRole::Effect {
                 return Err("drop a vst3 effect on the track header");
             }
-            return Ok(HeaderDeviceDrop::PluginEffect(selection.clone()));
+            return Ok(None);
         }
         let NativeDeviceDragSource::Browser { class, type_id } = drag.source else {
             self.check_device_append_target(track, cx)?;
@@ -61,17 +58,17 @@ impl EditorView {
                         hex_project::DeviceChainOwner::Track(track),
                         None,
                     )
-                    .map(HeaderDeviceDrop::Native);
+                    .map(Some);
             }
             return Err("hold option to copy devices onto a track");
         };
         if class != NativeDeviceClass::Instrument {
             return self
                 .browser_device_append_request(track, class, type_id, cx)
-                .map(HeaderDeviceDrop::Native);
+                .map(Some);
         }
         let target = self.check_device_append_target(track, cx)?;
-        Ok(HeaderDeviceDrop::Native(Request::DropNativeDevice {
+        Ok(Some(Request::DropNativeDevice {
             project_generation: generation,
             revision: drag.revision,
             source: NativeDeviceDropSource::Browser { class, type_id },
@@ -187,19 +184,23 @@ impl EditorView {
                     view.clear_native_device_drag(drag);
                     cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
                     match request {
-                        Ok(HeaderDeviceDrop::Native(request)) => {
+                        Ok(Some(request)) => {
                             if view.enqueue_device_barrier(request) {
                                 view.error = None;
                                 view.status = "adding device to track".into();
                             }
                         }
-                        Ok(HeaderDeviceDrop::PluginEffect(selection)) => {
-                            view.insert_plugin_effect(
-                                &selection,
-                                hex_session::service::PluginEffectDestination::Track(track),
-                                None,
-                                cx,
-                            );
+                        Ok(None) => {
+                            if let NativeDeviceDragSource::PluginEffect(selection) = &drag.source {
+                                view.insert_plugin_effect(
+                                    selection,
+                                    hex_session::service::PluginEffectDestination::Track(track),
+                                    None,
+                                    cx,
+                                );
+                            } else {
+                                view.error = Some("device drop source changed".into());
+                            }
                         }
                         Err(reason) => view.error = Some(reason.into()),
                     }
