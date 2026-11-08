@@ -949,13 +949,11 @@ fn report_panel_state(view: &mut EditorView) -> bool {
                     None,
                 ));
             }
-            let Some(row) = panel.last_touched.and_then(|id| {
+            let row = panel.last_touched.and_then(|id| {
                 panel
                     .rows()
                     .and_then(|rows| rows.iter().find(|row| row.id == id))
-            }) else {
-                return None;
-            };
+            })?;
             if row.metadata_revision == 0 || panel.source.is_none() {
                 return None;
             }
