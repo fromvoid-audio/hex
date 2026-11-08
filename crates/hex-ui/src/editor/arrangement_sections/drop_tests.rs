@@ -183,7 +183,7 @@ fn queued_tempo_completion_keeps_drop_feedback_frozen_until_exact_refusal(cx: &m
     let (earlier, terminal) = editor.update(cx, |v, _| {
         v.service
             .submit(Request::Edit(Command::SetProjectTempo {
-                tempo: hex_project::Tempo::from_bpm(60).unwrap(),
+                tempo: hex_project::Tempo::new(60_000_000).unwrap(),
             }))
             .unwrap();
         let earlier = next(&v.service);
