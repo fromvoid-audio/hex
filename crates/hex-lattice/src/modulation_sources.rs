@@ -340,6 +340,8 @@ mod tests {
     fn invalid_requests_do_not_advance_committed_or_speculative_state() {
         assert!(ModulationSourceId::new(0).is_err());
         let prepared = source(1, 12_000.0, 0.0);
+        assert!(PreparedLfoSource::tempo(prepared.id, 48_000.0, f64::NAN, 1.0, 0.0).is_err());
+        assert!(PreparedLfoSource::tempo(prepared.id, 48_000.0, 120.0, 0.0, 0.0).is_err());
         assert!(ModulationLfoBank::new(&[prepared, prepared], 8).is_err());
         assert!(ModulationLfoBank::new(&[prepared], 0).is_err());
         assert!(ModulationLfoBank::new(&[prepared], usize::MAX).is_err());
