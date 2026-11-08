@@ -110,6 +110,126 @@ fn failed_copy_fixture() -> (
 }
 
 #[test]
+fn failed_plugin_copy_uses_enabled_project_loop_without_section_override() {
+    use crate::service::automation_draft::tests::failed_outcome;
+    use hex_storage::automation_draft::{DraftTarget, DraftWriter};
+
+    let (files, mut session, scope, source) = fixture();
+    session
+        .editor
+        .execute(hex_project::Command::SetLoopRegion {
+            start: 0,
+            end: 48000,
+            enabled: true,
+        })
+        .unwrap();
+    let DeviceCaptureTarget::Vst3(target) = scope.target else {
+        panic!("foreign")
+    };
+    let path = files.0.join("loop-source");
+    let mut writer = DraftWriter::create_with_clock(
+        &path,
+        session.project(),
+        DraftTarget::Device {
+            device: target.device,
+            target: hex_project::DeviceAutomationTarget::Vst3 {
+                parameter: target.parameter,
+            },
+        },
+        scope.stamp,
+        CaptureClock {
+            sample_rate: source.sample_rate,
+            loop_region: session.project().loop_region(),
+        },
+    )
+    .unwrap();
+    let base = AppliedEvent {
+        sequence: 1,
+        performance_frame: 8,
+        content_frame: 0,
+        loop_pass: 0,
+        value: hex_project::AutomationValue::new(0.25).unwrap(),
+    };
+    writer.append(&[base]).unwrap();
+    let identity = writer.durable_prefix_identity();
+    drop(writer);
+    let outcome = failed_outcome(path.clone(), 1, identity, &[]);
+    let original = std::fs::read(&path).unwrap();
+    let delivered = point(scope, source, 16, Vst3ApplicationValue::Value(0.75));
+    let mut restored = point(scope, source, 24, Vst3ApplicationValue::Restored);
+    restored.sequence = delivered.sequence;
+    let output = files.0.join("loop-copy");
+    let limits = DraftReadLimits {
+        max_source_bytes: 65536,
+    };
+    assert_eq!(
+        copy_failed_plugin_on_control(
+            &outcome,
+            &output,
+            limits,
+            2,
+            scope,
+            source,
+            &[
+                Observation::Delivered(delivered),
+                Observation::Restored(restored)
+            ]
+        )
+        .unwrap(),
+        DraftTerminal::Finished(restored.application.origin)
+    );
+    let reader = DraftReader::open(output, limits).unwrap();
+    assert_eq!(
+        reader.capture_clock().unwrap().loop_region,
+        session.project().loop_region()
+    );
+    let mut different = source;
+    different.section_loop = Some(hex_project::LoopRegion::new(10, 100, true).unwrap());
+    assert!(
+        copy_failed_plugin_on_control(
+            &outcome,
+            &files.0.join("wrong-loop"),
+            limits,
+            2,
+            scope,
+            different,
+            &[Observation::Delivered(delivered)],
+        )
+        .is_err()
+    );
+    assert_eq!(std::fs::read(path).unwrap(), original);
+}
+
+#[test]
+fn capture_clock_prefers_section_loop_and_ignores_disabled_project_loop() {
+    let (_files, mut session, _scope, mut source) = fixture();
+    assert_eq!(source.capture_clock(session.project()).loop_region, None);
+    session
+        .editor
+        .execute(hex_project::Command::SetLoopRegion {
+            start: 0,
+            end: 48000,
+            enabled: false,
+        })
+        .unwrap();
+    assert_eq!(source.capture_clock(session.project()).loop_region, None);
+    session
+        .editor
+        .execute(hex_project::Command::ToggleLoopRegion)
+        .unwrap();
+    assert_eq!(
+        source.capture_clock(session.project()).loop_region,
+        session.project().loop_region()
+    );
+    let section = hex_project::LoopRegion::new(10, 100, true).unwrap();
+    source.section_loop = Some(section);
+    assert_eq!(
+        source.capture_clock(session.project()).loop_region,
+        Some(section)
+    );
+}
+
+#[test]
 fn failed_plugin_copy_preserves_originals_and_real_restoration() {
     let (files, scope, source, outcome) = failed_copy_fixture();
     let original = std::fs::read(&outcome.path).unwrap();
