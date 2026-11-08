@@ -3839,6 +3839,9 @@ impl Callback {
     fn take_stop_marker(&self) -> u64 {
         let marker = self.status.pending_stop_marker.load(Acquire);
         if marker != 0 {
+            // A reader may observe the cleared marker before Stop finishes.
+            // Refuse any existing stopped witness before opening that window.
+            self.status.sampler_edit.interrupt_for_stop();
             if !self.status.closing.load(Acquire) {
                 self.status.recovery_position.store(0, Release);
             }
