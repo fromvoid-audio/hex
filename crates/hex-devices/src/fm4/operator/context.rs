@@ -31,9 +31,8 @@ pub struct PreparedOperatorConfiguration {
     sample_rate: u32,
     configuration_id: u64,
     ratios: [f64; OPERATORS],
-    tuning: [OperatorTuning; OPERATORS],
+    tuning: super::keytrack::Prepared,
     fine_offsets_hz: [f32; OPERATORS],
-    pitch_keytrack: super::keytrack::Amounts,
     configuration: PreparedFmConfiguration,
     oscillator_levels: [f64; OPERATORS],
     envelopes: PreparedOperatorEnvelopes,
@@ -150,9 +149,8 @@ impl PreparedOperatorConfiguration {
             sample_rate,
             configuration_id,
             ratios: oscillators.map(|oscillator| oscillator.ratio),
-            tuning,
+            tuning: super::keytrack::Prepared::legacy(tuning),
             fine_offsets_hz: [0.0; OPERATORS],
-            pitch_keytrack: [None; OPERATORS],
             configuration: PreparedFmConfiguration::new(oscillators, routing),
             oscillator_levels: oscillators.map(|oscillator| oscillator.level),
             envelopes,
@@ -176,12 +174,16 @@ impl PreparedOperatorConfiguration {
         fixed_anchors: [OperatorTuning; OPERATORS],
     ) -> Result<Self, Invalid> {
         let prepared = super::keytrack::prepare(amounts_percent, fixed_anchors)?;
-        if self.tuning != prepared.tuning || self.pitch_keytrack != prepared.tracking {
+        if self.tuning != prepared {
             self.configuration_id = next_configuration_id()?;
-            self.tuning = prepared.tuning;
-            self.pitch_keytrack = prepared.tracking;
+            self.tuning = prepared;
         }
         Ok(self)
+    }
+
+    /// Control/history identity for retuning held voices after a tracking edit.
+    pub(crate) fn pitch_keytrack_percent(&self) -> [f32; OPERATORS] {
+        self.tuning.percentages()
     }
 
     /// Add signed Hz after ratio/fixed multiplication during control-side note preparation.
@@ -248,13 +250,13 @@ impl PreparedOperatorConfiguration {
     ) -> Result<super::tuning::NoteSteps, Invalid> {
         if self.oscillator_velocity == [0.0; 4]
             && self.fine_offsets_hz == [0.0; 4]
-            && self.pitch_keytrack == [None; OPERATORS]
+            && !self.tuning.fractional()
         {
             return super::tuning::prepared_steps_with_table(
                 self.sample_rate,
                 pitch,
                 &self.ratios,
-                &self.tuning,
+                &self.tuning.legacy_modes(),
                 table,
             );
         }
@@ -275,17 +277,7 @@ impl PreparedOperatorConfiguration {
             } else {
                 2.0_f64.powf(4.0 * amount * f64::from(velocity) / 127.0)
             };
-            let (base, multiplier) = if let Some(tracking) = self.pitch_keytrack[i] {
-                tracking.base_and_multiplier(note_hz, self.ratios[i])
-            } else {
-                match self.tuning[i] {
-                    OperatorTuning::Ratio => (note_hz, self.ratios[i]),
-                    OperatorTuning::Fixed {
-                        frequency_hz,
-                        multiplier,
-                    } => (frequency_hz, multiplier),
-                }
-            };
+            let (base, multiplier) = self.tuning.base_and_multiplier(i, note_hz, self.ratios[i]);
             let mut multiplier = multiplier * factor;
             if amount != 0.0 && self.oscillator_quantize[i] {
                 multiplier = multiplier.round().max(1.0);
@@ -669,7 +661,6 @@ impl PreparedOperatorConfiguration {
             && self.ratios == target.ratios
             && self.tuning == target.tuning
             && self.fine_offsets_hz == target.fine_offsets_hz
-            && self.pitch_keytrack == target.pitch_keytrack
             && self.configuration.phases == target.configuration.phases
             && self.configuration.routing.modulation == target.configuration.routing.modulation
             && self.configuration.routing.order == target.configuration.routing.order

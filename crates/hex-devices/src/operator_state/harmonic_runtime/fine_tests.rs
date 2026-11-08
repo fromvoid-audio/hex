@@ -65,3 +65,90 @@ fn fine_offset_retarget_preserves_phase_envelope_and_occurrence_but_updates_pitc
         );
     }
 }
+
+#[test]
+fn pitch_keytrack_retarget_preserves_held_and_released_voice_history() {
+    for global_active in [false, true] {
+        for release in [false, true] {
+            let mut settings = OperatorSettings::defaults();
+            settings.global.active = global_active;
+            let make = |settings: OperatorSettings| {
+                Factory::new(
+                    settings,
+                    settings.prepare_configuration(48000).unwrap(),
+                    crate::shared_sine_table(),
+                    48000,
+                )
+                .unwrap()
+            };
+            let mut source = make(settings).create_runtime();
+            let events = [NativeInstrumentEvent::NoteOn {
+                frame_offset: 0,
+                occurrence_id: 19,
+                pitch: 81,
+                velocity: 127,
+            }];
+            source
+                .preflight_events(&events, 64, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                .unwrap();
+            source.process_block(
+                &events,
+                &mut [[0.0; 2]; 64],
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            );
+            if release {
+                let events = [NativeInstrumentEvent::NoteOff {
+                    frame_offset: 0,
+                    occurrence_id: 19,
+                }];
+                source
+                    .preflight_events(&events, 8, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                    .unwrap();
+                source.process_block(
+                    &events,
+                    &mut [[0.0; 2]; 8],
+                    &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                );
+            }
+            for amount in [50.0, 0.0, 25.0, 100.0] {
+                settings
+                    .pitch_keytrack
+                    .patch(parameter::pitch_keytrack(1), ParameterValue::Float(amount))
+                    .unwrap();
+                settings
+                    .tuning
+                    .set_fixed_flags(settings.pitch_keytrack.fixed_flags());
+                let next = make(settings);
+                let InstrumentHistoryRetargetPreparation::Prepared(proof) =
+                    next.prepare_history_retarget_target().unwrap()
+                else {
+                    panic!("retarget proof")
+                };
+                let mut target = next.create_runtime();
+                assert!(!target.can_copy_history_from(source.as_ref()));
+                assert!(target.can_retarget_history_from(source.as_ref(), proof.as_ref()));
+                target.retarget_history_from(source.as_ref(), proof.as_ref());
+                let a = source.as_any().downcast_ref::<Runtime>().unwrap().voices[0];
+                let new = target.as_any().downcast_ref::<Runtime>().unwrap();
+                let b = new.voices[0];
+                assert_eq!(a.id, b.id);
+                assert_eq!(a.age, b.age);
+                assert_eq!(a.envelope_age, b.envelope_age);
+                assert_eq!(a.phases, b.phases);
+                assert_eq!(a.gate, b.gate);
+                assert_eq!(a.previous, b.previous);
+                let before = PreparedOperatorConfiguration::lfo_steps(&a.note);
+                let after = PreparedOperatorConfiguration::lfo_steps(&b.note);
+                assert_ne!(before[0], after[0]);
+                assert_eq!(before[1..], after[1..]);
+                assert_eq!(
+                    after,
+                    PreparedOperatorConfiguration::lfo_steps(
+                        &new.factory.configuration.prepare_note(81, 127).unwrap()
+                    )
+                );
+                source = target;
+            }
+        }
+    }
+}

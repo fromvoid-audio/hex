@@ -369,6 +369,7 @@ fn tuning_retargets_held_and_released_voice_steps_without_resetting_phase_or_fee
             .tuning
             .patch(ParameterId::from_static(66), ParameterValue::Float(170.0))
             .unwrap();
+        settings.pitch_keytrack = keytrack::Settings::from_fixed(settings.tuning.fixed_flags());
         if lfo {
             settings.lfo.0[0] = 1;
             settings.lfo.0[5] = 0.2f32.to_bits();
