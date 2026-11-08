@@ -2,7 +2,7 @@
 //! audio owns real capture, freshness, worker storage and retirement.
 use super::EditorView;
 use crate::theme;
-use gpui::{Context, IntoElement, Pixels, Window, div, prelude::*, px, rgb};
+use gpui::{Context, IntoElement, Pixels, Window, div, prelude::*, px};
 use hex_audio::spectrum_worker::PublishedProjectSpectrum;
 use hex_widgets::{
     SpectrumPlotLayer, SpectrumPlotLayers, SplitterAxis, SplitterEvent, SplitterGesture,
@@ -96,7 +96,7 @@ impl EditorView {
     }
     fn project_spectrum_height(&self, window: &Window) -> f32 {
         if !self.project_spectrum.expanded || self.project_spectrum_compact(window) {
-            return 22.0;
+            return 22.0 + 2.0 * hex_widgets::PANEL_FRAME_INSET;
         }
         let viewport = f32::from(window.viewport_size().height);
         let desired = bounded_height(self.project_spectrum.height, window.viewport_size());
@@ -114,7 +114,7 @@ impl EditorView {
     pub(super) fn project_spectrum_detail_height(&self, window: &Window, preferred: f32) -> f32 {
         let viewport = f32::from(window.viewport_size().height);
         let workspace = if self.project_spectrum.detail_height.is_some()
-            && self.project_spectrum_height(window) == 22.0
+            && (!self.project_spectrum.expanded || self.project_spectrum_compact(window))
         {
             44.0
         } else {
@@ -450,17 +450,13 @@ impl EditorView {
             );
         }
         let mut panel = div()
-            .id("project-spectrum")
-            .debug_selector(|| "project-spectrum".into())
             .relative()
-            .h(px(height))
-            .flex_shrink_0()
+            .flex_1()
+            .min_w_0()
             .min_h_0()
             .flex()
             .flex_col()
-            .text_xs()
-            .border_b_1()
-            .border_color(rgb(style.border));
+            .text_xs();
         if expanded && !compact {
             let layers = self.project_spectrum_layers(std::time::Instant::now());
             let plot = layered_spectrum_plot(layers, style);
@@ -482,7 +478,11 @@ impl EditorView {
         } else {
             panel = panel.child(header);
         }
-        panel
+        hex_widgets::panel_frame(theme::workspace_panel_style(), panel)
+            .id("project-spectrum")
+            .debug_selector(|| "project-spectrum".into())
+            .h(px(height))
+            .flex_shrink_0()
     }
 }
 

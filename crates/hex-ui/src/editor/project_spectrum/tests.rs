@@ -333,9 +333,14 @@ fn project_spectrum_collapse_resize_and_cancel_preserve_layout_and_history(
         visual.run_until_parked();
         assert_eq!(
             visual.debug_bounds("project-spectrum").unwrap().size.height,
-            px(22.0)
+            px(30.0)
         );
         assert!(visual.debug_bounds("project-spectrum-plot").is_none());
+        let collapsed = visual.debug_bounds("project-spectrum").unwrap();
+        let controls = visual.debug_bounds("project-spectrum-controls").unwrap();
+        assert_eq!(controls.size.height, px(22.0));
+        assert!(controls.top() >= collapsed.top() + px(4.0));
+        assert!(controls.bottom() <= collapsed.bottom() - px(4.0));
         let toggle = visual
             .debug_bounds("project-spectrum-toggle")
             .unwrap()
@@ -499,10 +504,22 @@ fn browser_and_spectrum_share_columns_in_both_workspaces(cx: &mut TestAppContext
             assert_eq!(browser.size.width, px(reported_browser_width));
             let spectrum = visual.debug_bounds("project-spectrum").unwrap();
             let plot = visual.debug_bounds("project-spectrum-plot").unwrap();
-            assert_eq!(plot.top(), spectrum.top(), "no reserved title row");
+            assert_eq!(
+                plot.top(),
+                spectrum.top() + px(4.0),
+                "only the structural inset"
+            );
+            assert_eq!(plot.left(), spectrum.left() + px(4.0));
+            assert_eq!(plot.right(), spectrum.right() - px(4.0));
+            let scale = visual.update(|window, _| window.scale_factor());
+            let (corners, _) = visual
+                .rendered_surface_geometry("project-spectrum")
+                .unwrap();
+            assert_eq!(corners.top_left, px(4.0).scale(scale));
+            assert_eq!(corners.bottom_right, px(4.0).scale(scale));
             let controls = visual.debug_bounds("project-spectrum-controls").unwrap();
-            assert_eq!(controls.top(), spectrum.top());
-            assert_eq!(controls.right(), spectrum.right());
+            assert_eq!(controls.top(), spectrum.top() + px(4.0));
+            assert_eq!(controls.right(), spectrum.right() - px(4.0));
             assert!(controls.size.width < spectrum.size.width / 2.0);
             for selector in ["project-spectrum-toggle", "sample-recorder-mode"] {
                 let control = visual.debug_bounds(selector).unwrap();
