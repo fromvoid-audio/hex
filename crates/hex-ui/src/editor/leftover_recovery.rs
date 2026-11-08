@@ -4,7 +4,7 @@
 //! An untitled launch offers every unowned leftover slot one after another
 //! (Pulse #4575); a declined foreign slot is released for a later launch.
 use super::{EditorView, theme};
-use gpui::{AppContext as _, Context, PromptButton, PromptLevel, Window};
+use gpui::{Context, PromptButton, PromptLevel, Window};
 use hex_session::service::{LeftoverRecovery, Request};
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -158,7 +158,7 @@ impl EditorView {
     ) {
         let title = theme::text("recover unsaved work?");
         let detail = theme::text(
-            "hex found unsaved changes from a session that ended unexpectedly. recover opens them in place of the current project. keep for later leaves them untouched; your next edit keeps a copy beside the recovery journal.",
+            "hex found unsaved changes from a session that ended unexpectedly. recover opens them in place of the current project. discard sets them aside in a kept-copies folder; keep for later leaves them untouched.",
         );
         let answer = window.prompt(
             PromptLevel::Warning,
@@ -166,22 +166,13 @@ impl EditorView {
             Some(&detail),
             &[
                 PromptButton::new(theme::text("recover")),
-                PromptButton::new(theme::text("discard…")),
+                PromptButton::new(theme::text("discard")),
                 PromptButton::cancel(theme::text("keep for later")),
             ],
             cx,
         );
-        let handle = window.window_handle();
         cx.spawn(async move |this, cx| {
             let answer = answer.await.ok();
-            if answer == Some(1) {
-                let _ = cx.update_window(handle, |_, window, cx| {
-                    let _ = this.update(cx, |view, cx| {
-                        view.confirm_leftover_discard(offer, window, cx);
-                    });
-                });
-                return;
-            }
             let _ = this.update(cx, |view, cx| {
                 let Offer {
                     found,
@@ -189,7 +180,27 @@ impl EditorView {
                     generation,
                 } = offer;
                 let mut next = generation;
-                if answer != Some(0) {
+                if answer == Some(1) {
+                    if !view.leftover_offer_current(generation) {
+                        view.error = Some("project changed · unsaved work kept".into());
+                        rest.clear();
+                    } else {
+                        match found.discard() {
+                            Ok(kept) => {
+                                view.status = format!(
+                                    "unsaved work set aside at {}",
+                                    hex_session::service::text::verbatim(kept.display())
+                                );
+                            }
+                            Err(reason) => {
+                                view.error = Some(
+                                    format!("could not discard: {reason} · unsaved work kept")
+                                        .into(),
+                                );
+                            }
+                        }
+                    }
+                } else if answer != Some(0) {
                     view.status = "unsaved work kept for later".into();
                 } else if !view.leftover_offer_current(generation)
                     || !view.leftover_offer_ready(generation)
@@ -222,65 +233,6 @@ impl EditorView {
                     }
                 }
                 view.queue_leftover_offers(rest, next);
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-}
-
-impl EditorView {
-    /// Discard needs its own confirmation. It sets the journal aside into a
-    /// kept-copies folder rather than deleting it, and says where.
-    fn confirm_leftover_discard(
-        &mut self,
-        offer: Offer,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let title = theme::text("discard unsaved work?");
-        let detail = theme::text(
-            "hex stops offering these changes and moves them into a kept-copies folder beside the recovery journal. you can still open them with file > recover kept session….",
-        );
-        let answer = window.prompt(
-            PromptLevel::Warning,
-            &title,
-            Some(&detail),
-            &[
-                PromptButton::new(theme::text("discard")),
-                PromptButton::cancel(theme::text("cancel")),
-            ],
-            cx,
-        );
-        cx.spawn(async move |this, cx| {
-            let answer = answer.await.ok();
-            let _ = this.update(cx, |view, cx| {
-                let Offer {
-                    found,
-                    mut rest,
-                    generation,
-                } = offer;
-                if answer != Some(0) {
-                    view.status = "unsaved work kept for later".into();
-                } else if !view.leftover_offer_current(generation) {
-                    view.error = Some("project changed · unsaved work kept".into());
-                    rest.clear(); // later offers no longer apply either
-                } else {
-                    match found.discard() {
-                        Ok(kept) => {
-                            view.status = format!(
-                                "unsaved work set aside at {}",
-                                hex_session::service::text::verbatim(kept.display())
-                            );
-                        }
-                        Err(reason) => {
-                            view.error = Some(
-                                format!("could not discard: {reason} · unsaved work kept").into(),
-                            );
-                        }
-                    }
-                }
-                view.queue_leftover_offers(rest, generation);
                 cx.notify();
             });
         })
