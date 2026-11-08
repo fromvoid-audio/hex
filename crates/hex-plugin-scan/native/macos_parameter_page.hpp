@@ -34,6 +34,7 @@ struct ControllerParameterPage {
     uint16 first=0,total=0,count=0;
     bool changed=false;
     bool conversion=false;ControllerConversion converted{};
+    std::array<unsigned char,32> descriptor_signature{};
     std::array<ControllerParameter,CONTROLLER_PAGE_COUNT> parameters{};
 };
 static_assert(sizeof(ControllerParameterPage)<8192,
@@ -103,7 +104,10 @@ inline bool controller_page(IEditController* controller,const ParameterSnapshot*
     if(![NSThread isMainThread] || !valid_controller_query(query) || editor_request(query.kind)) return false;
     result={};result.first=first;
     if((controller && !snapshot) || (snapshot && snapshot->count>HOST_PARAMETER_COUNT)) return false;
-    if(snapshot) {result.revision=snapshot->revision;result.total=static_cast<uint16>(snapshot->count);}
+    if(snapshot) {
+        result.revision=snapshot->revision;result.total=static_cast<uint16>(snapshot->count);
+        result.descriptor_signature=snapshot->descriptor_signature;
+    }
     if((revision && revision!=result.revision) || first>result.total) {result.changed=true;return true;}
     // Selected eligibility reads remain fresh while PCM feedback advances the
     // ordinary enumeration revision. The original reader validates its target
