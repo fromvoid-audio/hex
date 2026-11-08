@@ -1,7 +1,9 @@
 //! Opt-in parameter delivery inside the existing independent-twin transaction.
 use super::*;
 use crate::NativeParameterAutomation;
-use hex_lattice_contract::{MAX_PARAMETERS_PER_DEVICE, ParameterDescriptor};
+use hex_lattice_contract::{
+    MAX_PARAMETERS_PER_DEVICE, ParameterDescriptor, ParameterId, ParameterValue,
+};
 
 /// Maximum frames in one automated segment. Hosts split larger blocks without
 /// resetting voices or automation; ordinary runtime entrypoints are unchanged.
@@ -20,6 +22,19 @@ pub const MAX_INSTRUMENT_AUTOMATION_FRAMES: usize = 4_096;
 /// History copy/reset must include all effective values and smoothing history.
 pub trait InstrumentParameterRuntime {
     fn descriptors(&self) -> &[ParameterDescriptor];
+    /// Copy every descriptor's last selected canonical target, resolving Base.
+    /// This observes targets, not smoothed effective values or future curves;
+    /// feeding the result back lets existing ramps finish without restarting.
+    /// Success fills every exact-length slot with Some in descriptor order.
+    /// Read-only opt-in promises this remains bounded, deterministic and free of
+    /// allocation/deallocation through processing, reset and history transfer.
+    fn copy_targets(
+        &self,
+        _output: &mut [Option<ParameterValue>],
+    ) -> Result<(), NativeInstrumentRuntimeError> {
+        Err(NativeInstrumentRuntimeError::UnsupportedParameterAutomation)
+    }
+
     /// Read-only coupled-value preflight, after generic typed-value, event,
     /// clock and occurrence-gain checks. Errors leave PCM and runtime unchanged.
     fn preflight(
@@ -67,6 +82,51 @@ pub(super) fn matches_grants(
     }
 }
 
+fn checked_targets(
+    view: &dyn InstrumentParameterRuntime,
+    targets: &mut [Option<ParameterValue>],
+) -> Result<(), NativeInstrumentRuntimeError> {
+    let descriptors = view.descriptors();
+    validate_grants(descriptors)?;
+    if targets.len() != descriptors.len() || descriptors.is_empty() {
+        return Err(NativeInstrumentRuntimeError::InvalidParameterAutomation);
+    }
+    view.copy_targets(targets)?;
+    for (target, descriptor) in targets.iter().zip(descriptors) {
+        let Some(value) = target else {
+            return Err(NativeInstrumentRuntimeError::InvalidParameterAutomation);
+        };
+        descriptor
+            .validate(*value)
+            .map_err(|_| NativeInstrumentRuntimeError::InvalidParameterAutomation)?;
+    }
+    Ok(())
+}
+
+pub(super) fn validate_target_views(
+    primary: &dyn MutableInstrumentRuntime,
+    scratch: &dyn MutableInstrumentRuntime,
+    descriptors: &[ParameterDescriptor],
+) -> Result<(), NativeInstrumentRuntimeError> {
+    match (
+        primary.parameter_automation_readonly(),
+        scratch.parameter_automation_readonly(),
+    ) {
+        (None, None) => Ok(()),
+        (Some(primary), Some(scratch))
+            if !descriptors.is_empty()
+                && primary.descriptors() == descriptors
+                && scratch.descriptors() == descriptors =>
+        {
+            let mut targets = [None; MAX_PARAMETERS_PER_DEVICE];
+            checked_targets(primary, &mut targets[..descriptors.len()])?;
+            targets.fill(None);
+            checked_targets(scratch, &mut targets[..descriptors.len()])
+        }
+        _ => Err(NativeInstrumentRuntimeError::IncompatibleTwins),
+    }
+}
+
 fn validate_values(
     descriptors: &[ParameterDescriptor],
     values: &dyn NativeParameterAutomation,
@@ -102,6 +162,43 @@ fn validate_values(
 }
 
 impl NativeInstrumentRuntimePair {
+    /// Immutable opt-in validated against both twins during construction.
+    pub fn supports_committed_parameter_targets(&self) -> bool {
+        self.primary.parameter_automation_readonly().is_some()
+    }
+
+    /// Observe committed primary targets, including while a speculative block is
+    /// open. Exact ordered factory IDs are required; output is unchanged on every
+    /// refusal. No caller buffer or descriptor borrow is retained. Construction
+    /// validates the immutable view/grants; callback queries allocate/free nothing.
+    pub fn copy_committed_parameter_targets(
+        &self,
+        ids: &[ParameterId],
+        output: &mut [Option<ParameterValue>],
+    ) -> Result<(), NativeInstrumentRuntimeError> {
+        let view = self
+            .primary
+            .parameter_automation_readonly()
+            .ok_or(NativeInstrumentRuntimeError::UnsupportedParameterAutomation)?;
+        let descriptors = view.descriptors();
+        if ids.len() != descriptors.len()
+            || output.len() != ids.len()
+            || ids
+                .iter()
+                .zip(descriptors)
+                .any(|(id, descriptor)| *id != descriptor.id)
+        {
+            return Err(NativeInstrumentRuntimeError::InvalidParameterAutomation);
+        }
+        let mut targets = [None; MAX_PARAMETERS_PER_DEVICE];
+        let targets = targets
+            .get_mut(..descriptors.len())
+            .ok_or(NativeInstrumentRuntimeError::InvalidParameterAutomation)?;
+        checked_targets(view, targets)?;
+        output.copy_from_slice(targets);
+        Ok(())
+    }
+
     pub const fn supports_parameter_automation(&self) -> bool {
         self.parameter_automation
     }
