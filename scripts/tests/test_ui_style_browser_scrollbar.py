@@ -26,6 +26,8 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                 "crates/hex-ui/src/editor/browser.rs": '.child(self.browser_results(rows, count, cx))',
                 "crates/hex-ui/src/editor/browser/scrollbar.rs": '.child(list) .child(self.browser_scrollbar(cx))',
                 "crates/hex-ui/src/editor/track_meters.rs": '.child(bar) .child(bars.id(id))',
+                "crates/hex-ui/src/editor/tracks.rs": '.child(toggle_button_with_style(label, tooltip, id, style))',
+                "crates/hex-ui/src/editor/return_tracks.rs": '.child(super::waveform::toggle_button_with_style(label, tooltip, id, style))',
             }
             for name, text in files.items():
                 path = root / name
@@ -42,6 +44,12 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                 ("other.rs", '.child(self.browser_scrollbar(cx))'),
                 ("other.rs", '.child(list)'),
                 ("other.rs", '.child(bar)'),
+                ("other.rs", '.child(toggle_button_with_style(label, tooltip, id, style))'),
+                ("other.rs", '.child(super::waveform::toggle_button_with_style(label, tooltip, id, style))'),
+                ("editor/tracks.rs", '.child("Unnormalized")'),
+                ("editor/tracks.rs", '.child(self.unregistered_component(cx))'),
+                ("editor/return_tracks.rs", '.child("Unnormalized")'),
+                ("editor/return_tracks.rs", '.child(self.unregistered_component(cx))'),
                 ("other.rs", '.child(bars.id(id))'),
                 ("editor/track_meters.rs", '.child("Unnormalized")'),
                 ("editor/track_meters.rs", '.child(self.unregistered_component(cx))'),
@@ -54,8 +62,9 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                 original = path.read_text() if path.exists() else None
                 path.write_text(content)
                 with self.subTest(name=name, content=content):
-                    self.assertIn(name, run().stderr)
-                    self.assertNotEqual(run().returncode, 0)
+                    result = run()
+                    self.assertIn(name, result.stderr)
+                    self.assertNotEqual(result.returncode, 0)
                 if original is None:
                     path.unlink()
                 else:

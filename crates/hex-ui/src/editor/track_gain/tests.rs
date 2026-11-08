@@ -708,11 +708,8 @@ fn verified_header_volume_recorded_touch_lane_refuses_drag(cx: &mut TestAppConte
 
 #[gpui::test]
 fn header_volume_is_one_filled_numeric_field_not_a_separate_rail(cx: &mut TestAppContext) {
-    #[cfg(target_os = "macos")]
-    {
-        cx.use_native_text_system().unwrap();
-        cx.update(|app| crate::theme::load_fonts(app).unwrap());
-    }
+    // This fixture verifies control bounds and painted fields, not glyph metrics.
+    // Keep OS font initialization in the native typography acceptance boundary.
     let (_browser, mut visual, _editor, [track, _]) = actor_fixture(cx);
     let bounds = |visual: &mut VisualTestContext, suffix: &str| {
         visual
@@ -734,6 +731,11 @@ fn header_volume_is_one_filled_numeric_field_not_a_separate_rail(cx: &mut TestAp
     let activator = self::bounds(&mut visual, "track-mute", track);
     let solo = self::bounds(&mut visual, "track-solo", track);
     let arm = self::bounds(&mut visual, "track-arm-unavailable", track);
+    assert_eq!(activator.size.height, px(14.0));
+    assert_eq!(solo.size.width, px(16.0));
+    assert_eq!(solo.size.height, px(14.0));
+    assert_eq!(arm.size.width, px(16.0));
+    assert_eq!(arm.size.height, px(14.0));
     assert_eq!(activator.top(), solo.top());
     assert_eq!(solo.top(), arm.top());
     assert_eq!(whole.top(), pan.top());
