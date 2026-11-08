@@ -416,7 +416,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
         assert!(
             visual
                 .debug_bounds(selector(format!(
-                    "device-{}-parameter-{}-slider",
+                    "device-{}-parameter-{}-value",
                     device.value(),
                     63 + operator * 3
                 )))

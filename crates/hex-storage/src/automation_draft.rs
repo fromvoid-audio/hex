@@ -162,6 +162,12 @@ pub struct DraftPrefixIdentity {
     events: u64,
     chain: [u8; 32],
 }
+impl DraftPrefixIdentity {
+    /// Number of sync-acknowledged events bound by this identity.
+    pub fn events(self) -> u64 {
+        self.events
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct DraftReadLimits {

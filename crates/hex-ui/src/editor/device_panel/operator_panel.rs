@@ -243,19 +243,15 @@ fn operator_row(
     operator: usize,
 ) -> Stateful<Div> {
     let base = operator as u32 * 3 + 1;
-    let fixed_id = 62 + operator as u32 * 3;
-    let fixed_value = value(view, device, parameters, id(fixed_id));
-    let fixed = matches!(fixed_value, Some(ParameterValue::Bool(true)));
-    let primary_id = if fixed { fixed_id + 1 } else { base };
     let primary = shell_control(
         view,
         cx,
         device,
         identity,
         parameters,
-        id(primary_id),
+        id(base),
         ControlPresentation::FilledSlider,
-        Some(if fixed { "freq" } else { "coarse" }),
+        Some("coarse"),
     );
     let fine = compact_control_with_codec(
         view,
@@ -318,15 +314,15 @@ fn operator_row(
                 cx.stop_propagation();
             }),
         );
-    let fixed_control = shell_control(
+    let control = compact_control(
         view,
         cx,
         device,
         identity,
         parameters,
-        id(fixed_id),
-        ControlPresentation::CompactButton,
-        Some(""),
+        id(613 + operator as u32),
+        ControlPresentation::FilledVerticalSlider,
+        Some("pitch keytrack"),
     );
     let waveform = compact_control(
         view,
@@ -338,19 +334,14 @@ fn operator_row(
         ControlPresentation::CompactSelector,
         Some("wave"),
     );
+    let icon = gpui::svg()
+        .path("icons/device/keyboard.svg")
+        .w(px(10.0))
+        .h(px(8.0))
+        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+        .debug_selector(move || format!("operator-keytrack-icon-{}-{operator}", device.value()));
     row = row
         .child(operator_power(view, cx, device, parameters, operator))
-        .child(
-            div()
-                .w(px(18.0))
-                .flex_shrink_0()
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap(px(4.0))
-                .child(section_title(["a", "b", "c", "d"][operator]))
-                .child(fixed_control),
-        )
         .child(
             div()
                 .w(px(60.0))
@@ -370,6 +361,17 @@ fn operator_row(
                 .gap(px(2.0))
                 .child(level)
                 .child(waveform),
+        )
+        .child(
+            div()
+                .w(px(12.0))
+                .flex_shrink_0()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(1.0))
+                .child(control)
+                .child(icon),
         );
     row
 }
@@ -574,23 +576,39 @@ fn oscillator_envelope_detail(
         Some("feedback"),
         Some(super::numeric_display::NumericDisplayCodec::Percent),
     );
-    let fixed = matches!(
-        value(view, device, parameters, id(62 + operator as u32 * 3)),
-        Some(ParameterValue::Bool(true))
+    let fixed_id = 62 + operator as u32 * 3;
+    let fixed = compact_control(
+        view,
+        cx,
+        device,
+        identity,
+        parameters,
+        id(fixed_id),
+        ControlPresentation::CompactButton,
+        Some(""),
     );
-    let multiplier = fixed.then(|| {
-        compact_control(
-            view,
-            cx,
-            device,
-            identity,
-            parameters,
-            id(64 + operator as u32 * 3),
-            ControlPresentation::InlineValue,
-            Some("multi"),
-        )
-    });
-    let (graph, waveform_preview) = harmonics::graph(view, cx, device, operator, parameters);
+    let frequency = compact_control_with_codec(
+        view,
+        cx,
+        device,
+        identity,
+        parameters,
+        id(fixed_id + 1),
+        ControlPresentation::InlineValue,
+        None,
+        Some(super::numeric_display::NumericDisplayCodec::Hertz),
+    );
+    let multiplier = compact_control(
+        view,
+        cx,
+        device,
+        identity,
+        parameters,
+        id(fixed_id + 2),
+        ControlPresentation::InlineValue,
+        None,
+    );
+    let (graph, _) = harmonics::graph(view, cx, device, operator, parameters);
     let harmonic_range_control = harmonics::ranges(view, cx, device, operator, parameters);
     let harmonic_repeat_control = compact_control(
         view,
@@ -602,11 +620,10 @@ fn oscillator_envelope_detail(
         ControlPresentation::CompactSelector,
         Some("repeat"),
     );
-    let envelope_fields =
-        envelope_fields(view, cx, device, identity, parameters, operator, multiplier)
-            .when(SHOW_HARMONIC_TOOLS, |fields| {
-                fields.child(harmonics::tools(view, cx, device, operator))
-            });
+    let envelope_fields = envelope_fields(view, cx, device, identity, parameters, operator)
+        .when(SHOW_HARMONIC_TOOLS, |fields| {
+            fields.child(harmonics::tools(view, cx, device, operator))
+        });
     let oscillator_fields = div()
         .id("operator-oscillator-fields")
         .debug_selector(|| "operator-oscillator-fields".into())
@@ -616,20 +633,27 @@ fn oscillator_envelope_detail(
         .flex_col()
         .child(
             div()
+                .debug_selector(|| "operator-fixed-anchors".into())
                 .w_full()
                 .h(px(21.0))
                 .flex_shrink_0()
                 .flex()
-                .gap(px(4.0))
-                .child(
-                    div()
-                        .id("operator-waveform-preview")
-                        .debug_selector(|| "operator-waveform-preview".into())
-                        .w(px(52.0))
-                        .h(px(21.0))
-                        .flex_shrink_0()
-                        .child(waveform_preview),
-                ),
+                .gap(px(2.0))
+                .child(detail_field(device, id(fixed_id), "fixed", 24.0, fixed))
+                .child(detail_field(
+                    device,
+                    id(fixed_id + 1),
+                    "base",
+                    46.0,
+                    frequency,
+                ))
+                .child(detail_field(
+                    device,
+                    id(fixed_id + 2),
+                    "multi",
+                    46.0,
+                    multiplier,
+                )),
         )
         .child(
             div()
@@ -817,7 +841,6 @@ fn detail_field(
         )
 }
 
-#[allow(clippy::too_many_arguments)] // Fixed multiplier shares the third inspector row.
 fn envelope_fields(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
@@ -825,7 +848,6 @@ fn envelope_fields(
     identity: DeviceControlIdentity,
     parameters: &[NativeDeviceParameterView],
     operator: usize,
-    multiplier: Option<Div>,
 ) -> Div {
     use super::numeric_display::NumericDisplayCodec as Codec;
     let base = 33 + operator as u32 * 6;
@@ -943,7 +965,7 @@ fn envelope_fields(
         None,
         Some(Codec::Percent),
     );
-    let mut row = div()
+    let row = div()
         .w_full()
         .h(px(21.0))
         .flex_shrink_0()
@@ -951,15 +973,6 @@ fn envelope_fields(
         .gap(px(4.0))
         .child(loop_cell)
         .child(detail_field(device, id(companion + 4), "key", 46.0, key));
-    if let Some(multiplier) = multiplier {
-        row = row.child(detail_field(
-            device,
-            id(64 + operator as u32 * 3),
-            "multi",
-            46.0,
-            multiplier,
-        ));
-    }
     fields.child(row)
 }
 
