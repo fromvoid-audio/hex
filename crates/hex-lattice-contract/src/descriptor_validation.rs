@@ -112,34 +112,36 @@ mod tests {
 
     #[test]
     fn duplicate_and_invalid_default_errors_keep_declaration_order() {
-        let mut set = descriptors(48);
-        set[7].id = set[0].id;
-        set[15].default = ParameterValue::Float(0.0);
-        assert_eq!(
-            validate_parameter_descriptors(&set),
-            Err(DeviceContractError::InvalidDescriptor)
-        );
-        set[5].default = ParameterValue::Float(0.0);
-        assert_eq!(
-            validate_parameter_descriptors(&set),
-            Err(DeviceContractError::InvalidParameterValue)
-        );
-        set[5].default = ParameterValue::Bool(false);
-        set[7].default = ParameterValue::Float(0.0);
-        assert_eq!(
-            validate_parameter_descriptors(&set),
-            Err(DeviceContractError::InvalidParameterValue)
-        );
-        set[4].id = ParameterId::from_static(0);
-        assert_eq!(
-            validate_parameter_descriptors(&set),
-            Err(DeviceContractError::InvalidId)
-        );
+        for count in [48, 96] {
+            let mut set = descriptors(count);
+            set[7].id = set[0].id;
+            set[15].default = ParameterValue::Float(0.0);
+            assert_eq!(
+                validate_parameter_descriptors(&set),
+                Err(DeviceContractError::InvalidDescriptor)
+            );
+            set[5].default = ParameterValue::Float(0.0);
+            assert_eq!(
+                validate_parameter_descriptors(&set),
+                Err(DeviceContractError::InvalidParameterValue)
+            );
+            set[5].default = ParameterValue::Bool(false);
+            set[7].default = ParameterValue::Float(0.0);
+            assert_eq!(
+                validate_parameter_descriptors(&set),
+                Err(DeviceContractError::InvalidParameterValue)
+            );
+            set[4].id = ParameterId::from_static(0);
+            assert_eq!(
+                validate_parameter_descriptors(&set),
+                Err(DeviceContractError::InvalidId)
+            );
+        }
     }
 
     #[test]
     fn first_repeated_declaration_wins_over_sorted_id_order_and_later_errors() {
-        let mut set = descriptors(48);
+        let mut set = descriptors(96);
         set[0].id = ParameterId::from_static(500);
         set[4].id = set[0].id;
         set[30].id = set[1].id;
