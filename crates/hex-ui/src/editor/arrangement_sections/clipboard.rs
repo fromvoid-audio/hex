@@ -18,12 +18,13 @@ impl Reference {
         revision: u64,
         state: &ViewState,
     ) {
+        let source = match command {
+            Command::DuplicateArrangementSection(section) => Some(*section),
+            _ => copied_section_source(command),
+        };
         if self.generation == generation
             && self.revision == revision
-            && (copied_section_source(command).or_else(|| match command {
-                Command::DuplicateArrangementSection(section) => Some(*section),
-                _ => None,
-            })) == Some(self.section)
+            && source == Some(self.section)
             && state.project.arrangement_section(self.section).is_some()
         {
             self.revision = state.revision;
