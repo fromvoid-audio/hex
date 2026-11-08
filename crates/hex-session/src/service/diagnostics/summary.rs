@@ -354,6 +354,14 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("duplicate_arrangement_section_at"; ["section" => section.value(), "target" => target.value(), "after" => after]; omitted="")
         }
+        Command::AppendArrangementSectionCopy {
+            section,
+            start,
+            gap_name,
+            ..
+        } => {
+            describe!("append_arrangement_section_copy"; ["section" => section.value(), "start_beats_q32" => start.raw(), "gap_name_redacted_bytes" => gap_name.len()]; omitted="gap_color")
+        }
         Command::SplitArrangementSection { section, at } => {
             describe!("split_arrangement_section"; ["section" => section.value(), "at_beats_q32" => at.raw()]; omitted="")
         }
@@ -1898,5 +1906,41 @@ pub(super) fn gesture_target(value: &crate::device_gesture::GestureTarget) -> De
         } => {
             describe!("return_send"; ["track" => track.value(), "return_track" => return_track.value()]; omitted="")
         }
+    }
+}
+
+#[cfg(test)]
+mod append_tests {
+    use super::*;
+
+    #[test]
+    fn append_gap_names_are_redacted() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 1).unwrap();
+        let hex_project::Created::ArrangementSection(section) = editor
+            .execute(Command::AddArrangementSection {
+                name: "source".into(),
+                color: hex_project::ElementColor::Blue,
+                start: hex_project::BeatTime::ZERO,
+                end: hex_project::BeatTime::from_quarters(4).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("source");
+        };
+        let description = command(&Command::AppendArrangementSectionCopy {
+            section,
+            start: hex_project::BeatTime::from_quarters(8).unwrap(),
+            gap_name: "private secret gap".into(),
+            gap_color: hex_project::ElementColor::Rose,
+        });
+        assert_eq!(description.name, "append_arrangement_section_copy");
+        assert!(
+            description
+                .details
+                .text
+                .contains("gap_name_redacted_bytes=")
+        );
+        assert!(!description.details.text.contains("private secret"));
     }
 }

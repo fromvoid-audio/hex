@@ -21,6 +21,9 @@
 //! effective signature changes; equal-meter section seams do not restart bars.
 //! Copies draw a semantic color with reuse allowed. Preview and publication agree
 //! for the same candidate identity; history and storage retain the chosen color.
+//! Appended copies use an absolute final beat beyond the last marker; one
+//! nonempty gap marker and the musical copy share a single candidate/history edge.
+//! Metadata-only previews use zero IDs for both unpublished new markers.
 //! Destination copies compose the adjacent-copy and stable-ID reorder laws in
 //! one private candidate; display previews compose only markers and tempo.
 //! The session/transport owner fences structural publication. Reorders/copies
@@ -391,6 +394,12 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             target,
             after,
         } => splice::duplicate_at(project, section, target, after),
+        Command::AppendArrangementSectionCopy {
+            section,
+            start,
+            gap_name,
+            gap_color,
+        } => append::apply(project, section, start, gap_name, gap_color),
         Command::SplitArrangementSection { section, at } => {
             let (right, mut sections) = project.preview_section_split(section, at)?;
             let id = SectionId(project.allocate_id()?);
@@ -441,6 +450,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
         }
     }
 }
+mod append;
 mod color;
 mod meter;
 mod reorder;
@@ -491,6 +501,12 @@ impl Project {
                 target,
                 after,
             } => splice::preview_duplicate_at(self, *section, *target, *after),
+            Command::AppendArrangementSectionCopy {
+                section,
+                start,
+                gap_name,
+                gap_color,
+            } => append::preview(self, *section, *start, gap_name, *gap_color),
             Command::SplitArrangementSection { section, at } => {
                 let (_, sections) = self.preview_section_split(*section, *at)?;
                 Ok(SectionSplicePreview {
