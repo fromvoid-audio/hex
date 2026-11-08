@@ -75,6 +75,7 @@ struct Display {
     // gesture and its receipt; a snapped edge crossing the pointer must not
     // toggle it.
     held: [Option<SectionId>; 2],
+    marker_only: bool,
 }
 impl Display {
     fn pointer_hover_at(
@@ -117,6 +118,19 @@ enum Mode {
     ContentEnd(SectionId),
 }
 impl Mode {
+    fn marker_only(self) -> bool {
+        matches!(
+            self,
+            Self::Start(_)
+                | Self::End(_)
+                | Self::Move(_)
+                | Self::Shared {
+                    marker_only: true,
+                    ..
+                }
+        )
+    }
+
     fn held(self) -> [Option<SectionId>; 2] {
         match self {
             Mode::Paint => [None; 2],
@@ -642,9 +656,12 @@ impl EditorView {
         )
     }
     fn section_edge_hit(&self, x: f32) -> Option<SectionEdge> {
+        self.section_edge_hit_in(x, self.section_layout()?)
+    }
+    fn section_edge_hit_in(&self, x: f32, geometry: [f32; 4]) -> Option<SectionEdge> {
         let state = self.state.as_ref()?;
         let viewport = self.visible_viewport(state.timeline_frames);
-        let [left, _, width, _] = self.section_layout()?;
+        let [left, _, width, _] = geometry;
         let position = |beat| {
             state
                 .project
@@ -932,6 +949,7 @@ impl EditorView {
             tempo: state.project.tempo_map().clone(),
             pointer_hover: None,
             held: [None; 2],
+            marker_only: mode.marker_only(),
         };
         let part = match edge {
             Some(SectionEdge::Shared(..)) => RectanglePart::Seam,
@@ -1035,6 +1053,7 @@ impl EditorView {
             tempo: state.project.tempo_map().clone(),
             pointer_hover: None,
             held: [None; 2],
+            marker_only: g.mode.marker_only(),
         };
         match g.mode {
             Mode::Reorder(id) => {
@@ -1756,6 +1775,7 @@ impl EditorView {
             tempo: state.project.tempo_map().clone(),
             pointer_hover: None,
             held: [None; 2],
+            marker_only: false,
         };
         match &command {
             Command::RenameArrangementSection { section, name } => {
@@ -1934,6 +1954,7 @@ impl EditorView {
         &self,
         viewport: Viewport,
         scale: f32,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let Some(state) = self.state.as_ref() else {
@@ -1960,6 +1981,7 @@ impl EditorView {
                 tempo: state.project.tempo_map().clone(),
                 pointer_hover: None,
                 held: [None; 2],
+                marker_only: false,
             };
             &canonical
         };
@@ -1969,6 +1991,30 @@ impl EditorView {
         if viewport.length == 0 {
             return Vec::new();
         }
+        let hover_marker = (self.sections.gesture.is_none()
+            && self.sections.pending.is_none()
+            && self.sections.name.is_none()
+            && section_input::EditModifiers::from(window.modifiers()).marker_only)
+            .then(|| {
+                let position = window.mouse_position();
+                // Rendering advances the epoch before layout measurement. Hover
+                // uses cached paint geometry; admitted input still requires freshness.
+                let geometry = self.section_geometry()?;
+                let beat = display.pointer_hover_at(
+                    viewport,
+                    geometry,
+                    (position.x.into(), position.y.into()),
+                )?;
+                match self.section_edge_hit_in(position.x.into(), geometry) {
+                    Some(SectionEdge::Single(id, _)) | Some(SectionEdge::Shared(id, _)) => Some(id),
+                    None => display
+                        .markers
+                        .iter()
+                        .find(|m| m.start <= beat && beat < m.end)
+                        .and_then(|m| m.id),
+                }
+            })
+            .flatten();
         let mut elements = Vec::new();
         let mut selected_edges = Vec::new();
         for (index, m) in display.markers.iter().enumerate() {
@@ -2014,6 +2060,8 @@ impl EditorView {
                 pointer: display.pointer_hover,
             }
             .contains(m.id, m.start, m.end);
+            let marker_only = (display.marker_only && owned_hover)
+                || m.id.is_some_and(|id| hover_marker == Some(id));
             let colors = theme::section_colors(m.color, selected, owned_hover);
             let hover = theme::section_colors(m.color, selected, true);
             let border = colors.2;
@@ -2040,12 +2088,23 @@ impl EditorView {
                     })
                     .into()
                 });
+            if marker_only {
+                element = element.child(
+                    crate::section_surface::marker_only_overlay(m.color, chamfer, selected)
+                        .debug_selector(move || {
+                            format!("arrangement-section-markers-only-{index}")
+                        }),
+                );
+            }
             let mut header = crate::section_surface::header(
                 m.color,
                 selected,
                 owned_hover,
                 super::clip_name::CLIP_NAME_HEIGHT,
             )
+            .when(marker_only, |header| {
+                header.text_color(rgb(theme::color(theme::PaletteRole::Text)))
+            })
             .id(("arrangement-section-header", index))
             .debug_selector(move || format!("arrangement-section-header-{index}"));
             if let Some(id) = m.id {
@@ -2067,7 +2126,11 @@ impl EditorView {
                         .pl(px(16.0))
                         .child(self.section_launch_action(id, cx));
                 }
-                header = header.child(theme::text(m.name.clone()));
+                header = header.child(theme::text(if marker_only {
+                    format!("◇ {}", m.name)
+                } else {
+                    m.name.clone()
+                }));
             }
             if focused {
                 element =
@@ -2463,6 +2526,88 @@ pub(super) mod tests {
             ))
             .expect("painted section")
     }
+    #[gpui::test]
+    fn marker_only_paint_tracks_hover_latched_drag_and_exact_ack(cx: &mut TestAppContext) {
+        let (handle, editor, _) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let (from, to) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 6)));
+        let marker = Modifiers {
+            platform: true,
+            alt: true,
+            ..Modifiers::default()
+        };
+        visual.update(|window, cx| {
+            window.dispatch_input(
+                gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                    position: from,
+                    ..Default::default()
+                }),
+                cx,
+            );
+        });
+        visual.simulate_modifiers_change(marker);
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("arrangement-section-markers-only-0")
+                .is_some()
+        );
+        let hover_fill = painted_fill_for(&mut visual, "arrangement-section-markers-only-0");
+        visual.simulate_modifiers_change(Modifiers::default());
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("arrangement-section-markers-only-0")
+                .is_none()
+        );
+        visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("arrangement-section-markers-only-0")
+                .is_none()
+        );
+        visual.simulate_modifiers_change(marker);
+        visual.simulate_modifiers_change(Modifiers::default());
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("arrangement-section-markers-only-0")
+                .is_some(),
+            "released modifiers retain the actual latched marker-only mode"
+        );
+        assert_ne!(
+            painted_fill_for(&mut visual, "arrangement-section-markers-only-0"),
+            hover_fill,
+            "selection remains visible within marker-only feedback",
+        );
+        visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+        let terminal = editor.update(cx, |view, _| next(&view.service));
+        assert!(terminal.error.is_none(), "{:?}", terminal.error);
+        for _ in 0..3 {
+            visual.update(|window, _| window.refresh());
+            visual.run_until_parked();
+            assert!(
+                visual
+                    .debug_bounds("arrangement-section-markers-only-0")
+                    .is_some()
+            );
+            assert!(painted_fill_for(&mut visual, "arrangement-section-markers-only-0").is_some());
+        }
+        editor.update(cx, |view, cx| {
+            view.receive(terminal);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("arrangement-section-markers-only-0")
+                .is_none()
+        );
+    }
+
     #[gpui::test]
     fn option_drag_copies_sections_with_live_modifiers_and_acknowledged_selection(
         cx: &mut TestAppContext,
