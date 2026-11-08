@@ -4158,3 +4158,136 @@ fn drag_guides_preserve_locked_play_start_through_cancel_and_ack(cx: &mut TestAp
         });
     }
 }
+
+#[gpui::test]
+fn parameter_observations_preserve_audio_and_midi_resize_custody(cx: &mut TestAppContext) {
+    use hex_session::service::{PluginParameterQuery, Request};
+    for midi in [false, true] {
+        let (project, _, _, clip) = if midi {
+            midi_project()
+        } else {
+            audio_project()
+        };
+        let mut model = Editor::new(project, 8).unwrap();
+        let Created::Device(device) = model
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: hex_engine::default_native_device_state(
+                    hex_engine::DeviceTypeId::from_static("hex.utility"),
+                )
+                .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("device")
+        };
+        let preview = if midi {
+            hex_engine::compile::project_with_midi_preview(model.project(), &Default::default())
+                .unwrap()
+                .1
+        } else {
+            Default::default()
+        };
+        let (handle, editor) = editor_window(cx, model.project().clone(), Arc::new(preview));
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let prefix = if midi {
+            "midi-clip-trim-right"
+        } else {
+            "clip-trim-right"
+        };
+        let selector = Box::leak(format!("{prefix}-{}", clip.value()).into_boxed_str());
+        let down = trim_grab_point(visual.debug_bounds(selector).unwrap());
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            point(down.x - px(12.0), down.y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        editor.update(cx, |view, _| {
+            let query = PluginParameterQuery {
+                context: hex_engine::AudioSourceContext {
+                    project_generation: view.project_generation,
+                    editor_revision: view.state.as_ref().unwrap().revision,
+                },
+                device,
+                output_identity: 1,
+                request_id: 1,
+                page_first: Some(0),
+            };
+            assert!(view.enqueue(Request::QueryPluginParameters(query)));
+        });
+        visual.run_until_parked();
+        let target = point(down.x - px(28.0), down.y);
+        visual.simulate_mouse_move(
+            target,
+            MouseButton::Left,
+            Modifiers {
+                platform: true,
+                ..Default::default()
+            },
+        );
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert!(
+                if midi {
+                    view.active_midi_trim_drag
+                        .as_ref()
+                        .is_some_and(|drag| drag.preview.borrow().is_some())
+                } else {
+                    view.active_trim_drag
+                        .as_ref()
+                        .is_some_and(|drag| drag.preview.borrow().is_some())
+                },
+                "a completed repaint retains the held resize preview"
+            );
+            assert_eq!(
+                view.worker_requests_pending, 0,
+                "a parameter read cannot add a pending-edit badge"
+            );
+        });
+        visual.simulate_mouse_up(
+            target,
+            MouseButton::Left,
+            Modifiers {
+                platform: true,
+                ..Default::default()
+            },
+        );
+        visual.run_until_parked();
+        editor.update(cx, |view, _| {
+            assert!(
+                view.last_enqueued_edit.is_some(),
+                "resize release commits the preview"
+            );
+            assert!(view.pending_trim.is_some());
+            let pending = view.worker_requests_pending;
+            let state = Arc::clone(view.state.as_ref().unwrap());
+            let mut observation = super::arrangement_main_track_ui_test::completed_event(&state);
+            observation.state = state;
+            observation.plugin_parameter_observation = true;
+            view.receive(observation);
+            assert_eq!(
+                view.worker_requests_pending, pending,
+                "read completion cannot acknowledge the resize edit"
+            );
+            assert!(
+                view.pending_trim.is_some(),
+                "read completion retains the pending resize display"
+            );
+            let state = Arc::clone(view.state.as_ref().unwrap());
+            let mut refused_edit = super::arrangement_main_track_ui_test::completed_event(&state);
+            refused_edit.state = state;
+            refused_edit.error = Some("fixture edit refused".into());
+            view.receive(refused_edit);
+            assert_eq!(view.worker_requests_pending, 0);
+            assert!(
+                view.pending_trim.is_none(),
+                "a real edit terminal still retires resize custody"
+            );
+        });
+        visual.update(|window, _| window.remove_window());
+        visual.run_until_parked();
+    }
+}

@@ -332,7 +332,8 @@ impl EditorView {
             .px_1()
             .flex()
             .items_center()
-            .text_xs()
+            .text_size(px(10.0))
+            .line_height(px(ROW_HEIGHT))
             .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
             .child(theme::text(label))
     }
@@ -729,26 +730,11 @@ impl EditorView {
             hex_session::service::text::verbatim(row.module.display()),
             row.status
         );
-        let row = div()
+        let selected = self.browser.results_focused && self.browser.selected_index == index;
+        let row = result_row(selected)
             .id(("browser-vst3", index))
             .debug_selector(move || format!("browser-vst3-row-{index}"))
-            .h(px(ROW_HEIGHT))
-            .w_full()
-            .min_w_0()
-            .overflow_hidden()
-            .px_1()
-            .flex()
-            .items_center()
-            .gap_1()
-            .cursor_pointer()
             .tooltip(move |_, cx| layout::browser_label_tooltip(&tooltip, cx))
-            .bg(rgb(theme::color(
-                if self.browser.results_focused && self.browser.selected_index == index {
-                    theme::PaletteRole::Hover
-                } else {
-                    theme::PaletteRole::Surface
-                },
-            )))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, event: &MouseDownEvent, window, cx| {
@@ -767,22 +753,12 @@ impl EditorView {
                 }),
             )
             .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_xs()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .child(theme::text(row.name)),
+                result_label(row.name, selected, theme::PaletteRole::Text)
+                    .debug_selector(move || format!("browser-vst3-name-{index}")),
             )
             .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_xs()
-                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                    .child(theme::text(row.status)),
+                result_label(row.status, selected, theme::PaletteRole::Muted)
+                    .debug_selector(move || format!("browser-vst3-status-{index}")),
             );
         Self::with_browser_device_drag(row, payload, cx)
     }

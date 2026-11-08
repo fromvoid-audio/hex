@@ -8,9 +8,10 @@ const SECTIONS: [(BrowserSection, &str); 5] = [
     (BrowserSection::All, "all"),
     (BrowserSection::Plugins, "vst3"),
 ];
-// Match existing browser buttons: a 22px hit/centering slot plus the
-// sidebar's existing 1px right border. Glyph padding lives inside the slot.
+// Retain the 22px control-column width plus the sidebar's one-pixel border.
+// Compact row height is independent of that existing resize minimum.
 const PICKER_CONTROL_SIZE: f32 = 22.0;
+const PICKER_ROW_HEIGHT: f32 = 18.0;
 const PICKER_BORDER_WIDTH: f32 = 1.0;
 const PICKER_MIN_WIDTH: f32 = PICKER_CONTROL_SIZE + PICKER_BORDER_WIDTH;
 const PICKER_RESIZE_WIDTH: f32 = 4.0;
@@ -141,23 +142,111 @@ fn browser_caption(value: impl AsRef<str>) -> Div {
 }
 
 fn browser_vector_icon(path: &'static str) -> Div {
-    div().flex().items_center().justify_center().child(
-        gpui::svg()
-            .path(path)
-            .size(px(14.0))
-            .text_color(rgb(theme::color(theme::PaletteRole::Text))),
-    )
+    browser_vector_icon_colored(path, theme::color(theme::PaletteRole::Text))
+}
+
+fn browser_vector_icon_colored(path: &'static str, ink: u32) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(gpui::svg().path(path).size(px(14.0)).text_color(rgb(ink)))
 }
 
 fn picker_icon(icon: Div) -> Div {
     let icon = icon.whitespace_nowrap();
     div()
-        .size(px(PICKER_CONTROL_SIZE))
+        .w(px(PICKER_CONTROL_SIZE))
+        .h(px(PICKER_ROW_HEIGHT))
         .flex_shrink_0()
         .flex()
         .items_center()
         .justify_center()
         .child(icon)
+}
+
+// Width/minimum-resize custody stays independent of compact row height.
+fn picker_ink(active: bool, missing: bool) -> u32 {
+    selection_ink(
+        active,
+        if missing {
+            theme::PaletteRole::Muted
+        } else {
+            theme::PaletteRole::Text
+        },
+    )
+}
+
+pub(super) fn selection_ink(active: bool, idle: theme::PaletteRole) -> u32 {
+    if active {
+        theme::readable_text(
+            theme::color(theme::PaletteRole::Secondary),
+            theme::color(theme::PaletteRole::Background),
+        )
+    } else {
+        theme::color(idle)
+    }
+}
+
+/// One visual row contract for files, native devices, plugins and virtual groups.
+pub(super) fn result_row(selected: bool) -> Div {
+    div()
+        .h(px(ROW_HEIGHT))
+        .w_full()
+        .min_w_0()
+        .overflow_hidden()
+        .px_1()
+        .flex()
+        .items_center()
+        .gap_1()
+        .cursor_pointer()
+        .bg(rgb(theme::color(if selected {
+            theme::PaletteRole::Secondary
+        } else {
+            theme::PaletteRole::Surface
+        })))
+        .when(!selected, |row| {
+            row.hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
+        })
+        .text_size(px(10.0))
+        .line_height(px(ROW_HEIGHT))
+        .text_color(rgb(selection_ink(selected, theme::PaletteRole::Text)))
+}
+
+pub(super) fn result_label(
+    value: impl AsRef<str>,
+    selected: bool,
+    idle: theme::PaletteRole,
+) -> Div {
+    div()
+        .flex_1()
+        .min_w_0()
+        .overflow_hidden()
+        .line_clamp(1)
+        .text_ellipsis()
+        .h(px(ROW_HEIGHT))
+        .text_size(px(10.0))
+        .line_height(px(ROW_HEIGHT))
+        .text_color(rgb(selection_ink(selected, idle)))
+        .child(theme::text(value))
+}
+
+fn picker_row(active: bool, missing: bool) -> Div {
+    div()
+        .h(px(PICKER_ROW_HEIGHT))
+        .w_full()
+        .min_w_0()
+        .flex_shrink_0()
+        .overflow_hidden()
+        .flex()
+        .items_center()
+        .gap_1()
+        .bg(rgb(theme::color(if active {
+            theme::PaletteRole::Secondary
+        } else {
+            theme::PaletteRole::Surface
+        })))
+        .text_color(rgb(picker_ink(active, missing)))
 }
 
 // Keep the full capture gutter independent of its visible separator. The leading
@@ -194,6 +283,9 @@ fn browser_divider() -> Div {
 // wrapping, ellipsizing or removing rows when the icon-only width is reached.
 fn picker_label(value: impl AsRef<str>) -> Div {
     browser_caption(value)
+        .text_size(px(10.0))
+        .line_height(px(PICKER_ROW_HEIGHT))
+        .h(px(PICKER_ROW_HEIGHT))
         .flex_1()
         .min_w_0()
         .whitespace_nowrap()
@@ -440,40 +532,26 @@ impl EditorView {
             .into_iter()
             .enumerate()
         {
+            let active = self.browser.section == BrowserSection::Collection(index);
             let color = [
                 hex_project::ElementColor::Red,
                 hex_project::ElementColor::Cyan,
                 hex_project::ElementColor::Rose,
             ][index];
             let icon = picker_icon(
-                browser_caption("■")
-                    .text_color(rgb(theme::element_colors(color).accent))
+                div()
+                    .size(px(8.0))
+                    .bg(rgb(theme::element_colors(color).accent))
                     .debug_selector(move || format!("browser-picker-glyph-collection-{index}")),
             );
             collections = collections.child(
-                div()
+                picker_row(active, false)
                     .id(("browser-collection", index))
                     .debug_selector(move || format!("browser-collection-{index}"))
                     .tooltip(move |_, cx| {
                         browser_label_tooltip(format!("{name} · collections pending"), cx)
                     })
-                    .h(px(22.0))
-                    .w_full()
-                    .min_w_0()
-                    .flex_shrink_0()
-                    .overflow_hidden()
-                    .flex()
-                    .items_center()
-                    .gap_1()
                     .cursor_pointer()
-                    .bg(rgb(theme::color(
-                        if self.browser.section == BrowserSection::Collection(index) {
-                            theme::PaletteRole::Hover
-                        } else {
-                            theme::PaletteRole::Surface
-                        },
-                    )))
-                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |view, _, window, cx| {
@@ -516,34 +594,19 @@ impl EditorView {
             }
             let active = self.browser.section == section;
             let icon = picker_icon(
-                browser_vector_icon(ICONS[self.browser.layout.icons[index]])
-                    .debug_selector(move || format!("browser-picker-glyph-section-{index}")),
+                browser_vector_icon_colored(
+                    ICONS[self.browser.layout.icons[index]],
+                    picker_ink(active, false),
+                )
+                .debug_selector(move || format!("browser-picker-glyph-section-{index}")),
             );
             sidebar =
                 sidebar.child(
-                    div()
+                    picker_row(active, false)
                         .id(("browser-section", index))
                         .debug_selector(move || format!("browser-section-{name}"))
                         .tooltip(move |_, cx| browser_label_tooltip(name, cx))
-                        .h(px(25.0))
-                        .w_full()
-                        .min_w_0()
-                        .flex_shrink_0()
-                        .overflow_hidden()
-                        .flex()
-                        .items_center()
-                        .gap_1()
                         .cursor_pointer()
-                        .bg(rgb(theme::color(if active {
-                            theme::PaletteRole::Hover
-                        } else {
-                            theme::PaletteRole::Surface
-                        })))
-                        .text_color(rgb(theme::color(if active {
-                            theme::PaletteRole::Secondary
-                        } else {
-                            theme::PaletteRole::Text
-                        })))
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |view, _, window, cx| {
@@ -776,6 +839,7 @@ impl EditorView {
                     .unwrap_or("folder")
             };
             let missing = self.browser_place_missing(place);
+            let active = self.browser.section == BrowserSection::Place(place.clone());
             let label = if missing {
                 format!("{name} · missing")
             } else {
@@ -787,31 +851,19 @@ impl EditorView {
                 name.to_owned()
             };
             let icon = picker_icon(
-                browser_vector_icon(self.browser_place_icon_path(place))
-                    .debug_selector(move || format!("browser-picker-glyph-place-{index}")),
+                browser_vector_icon_colored(
+                    self.browser_place_icon_path(place),
+                    picker_ink(active, missing),
+                )
+                .debug_selector(move || format!("browser-picker-glyph-place-{index}")),
             );
             places = places.child(
-                div()
+                picker_row(active, missing)
                     .relative()
                     .id(("browser-place", index))
                     .debug_selector(move || format!("browser-place-{index}"))
                     .tooltip(move |_, cx| browser_label_tooltip(&tooltip, cx))
-                    .h(px(23.0))
-                    .w_full()
-                    .min_w_0()
-                    .flex_shrink_0()
-                    .overflow_hidden()
-                    .flex()
-                    .items_center()
-                    .gap_1()
                     .cursor_pointer()
-                    .bg(rgb(theme::color(
-                        if self.browser.section == BrowserSection::Place(place.clone()) {
-                            theme::PaletteRole::Hover
-                        } else {
-                            theme::PaletteRole::Surface
-                        },
-                    )))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |view, _, window, cx| {
@@ -847,9 +899,6 @@ impl EditorView {
                     .child(icon)
                     .child(
                         picker_label(label)
-                            .when(missing, |label| {
-                                label.text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                            })
                             .debug_selector(move || format!("browser-picker-label-place-{index}")),
                     ),
             );

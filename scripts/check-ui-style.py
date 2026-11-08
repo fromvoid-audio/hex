@@ -84,7 +84,7 @@ widgets = (
     # Split browser components normalize every caption at their boundary.
     'self.browser_history_arrow(', 'self.browser_reveal_button(',
     'self.browser_tag_selector(', 'browser_caption(', 'browser_heading(',
-    'picker_label(', 'picker_heading(', 'picker_group_heading(',
+    'picker_label(', 'picker_heading(', 'picker_group_heading(', 'picker_row(', 'result_label(',
     # Audition row controls normalize labels; miniature waveform contains no text.
     'self.browser_audition_row(',
     # Shared sampler/browser waveform canvas contains no text.
