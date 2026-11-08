@@ -32,8 +32,20 @@ pub struct PluginParameterGestureInput<'a> {
     pub(in crate::service) isolated_class: Option<[u8; 16]>,
     pub(in crate::service) instrument: bool,
     pub(in crate::service) confirm_delivery: bool,
+    pub(in crate::service) record_touch: bool,
 }
 impl<'a> PluginParameterGestureInput<'a> {
+    /// Recorded touches require a playing reading lane and return admission
+    /// before input, then exclusive restoration instead of an opaque edit.
+    pub fn with_touch_recording(mut self) -> Self {
+        self.confirm_delivery = true;
+        self.record_touch = true;
+        self
+    }
+    pub fn records_touch(&self) -> bool {
+        self.record_touch
+    }
+
     /// Request actual final-output point receipts. This copied request grants
     /// no source/SDK authority; the adapter must admit its exact loaded worker.
     pub fn with_delivery_confirmation(mut self) -> Self {
@@ -83,7 +95,18 @@ pub struct PluginParameterDelivery {
 /// A confirmed point or a conservative interruption with no invented clock.
 #[derive(Clone, Copy)]
 pub enum PluginParameterObservation {
+    Ready {
+        key: crate::device_gesture::GestureKey,
+        context: hex_engine::AudioSourceContext,
+        target: super::automation_draft::Vst3CaptureTarget,
+        source: super::DeviceAutomationSource,
+    },
     Delivered(PluginParameterDelivery),
+    Restored(PluginParameterDelivery),
+    /// No point was admitted; no audio clock is invented for this no-op.
+    Unchanged {
+        key: crate::device_gesture::GestureKey,
+    },
     Interrupted {
         key: crate::device_gesture::GestureKey,
         context: hex_engine::AudioSourceContext,

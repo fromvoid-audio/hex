@@ -14,6 +14,7 @@ pub(super) struct Context {
     pub(super) applied: AppliedAudioSource,
     target: Vst3CaptureTarget,
     sample_rate: u32,
+    transport_epoch: u64,
     clock: ResidentRuntimeLoop,
 }
 impl Context {
@@ -32,7 +33,7 @@ impl Context {
             ));
         }
         let (sample_rate, clock) = clock.filter(|(rate, _)| *rate != 0).ok_or_else(lost)?;
-        let (applied, _) = control
+        let (applied, transport_epoch) = control
             .status
             .native_parameter_source(true)
             .filter(|(source, _)| source.context == context)
@@ -52,15 +53,39 @@ impl Context {
                 binding: gesture.binding,
             },
             sample_rate,
+            transport_epoch,
             clock,
         })
     }
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Kind {
+    Point,
+    Release,
 }
 #[derive(Clone, Copy)]
 pub(super) struct PendingDelivery {
     pub(super) target: hex_audio::foreign_parameter_delivery::Target,
     pub(super) context: Context,
     pub(super) receipt: Option<Receipt>,
+    pub(super) kind: Kind,
+}
+impl Context {
+    pub(super) fn ready(self, key: GestureKey) -> Observation {
+        Observation::Ready {
+            key,
+            context: self.applied.context,
+            target: self.target,
+            source: DeviceAutomationSource {
+                target: DeviceCaptureTarget::Vst3(self.target),
+                sample_rate: self.sample_rate,
+                output_identity: self.applied.output_identity,
+                audio_revision: self.applied.audio_revision,
+                transport_epoch: self.transport_epoch,
+                section_loop: self.clock.section_loop,
+            },
+        }
+    }
 }
 impl PendingDelivery {
     fn source(self) -> DeviceAutomationSource {
@@ -84,7 +109,11 @@ impl Gesture {
         receipt: Option<Receipt>,
     ) -> Result<(), Error> {
         let delivery = pending.delivery.ok_or_else(lost)?;
-        let delivered = matches!(receipt, Some(Receipt::Delivered { .. }));
+        let delivered = matches!(
+            (delivery.kind, receipt),
+            (Kind::Point, Some(Receipt::Delivered { .. }))
+                | (Kind::Release, Some(Receipt::Released { .. }))
+        );
         if pending.processed || delivered {
             self.last = pending.value;
             self.sequence = pending.sequence;
@@ -93,16 +122,51 @@ impl Gesture {
             {
                 live.hold = Some(pending.token);
             }
+            // SDK release custody ends at its ACK even if final Main later
+            // aborts. That abort still cannot become a successful take end.
+            if delivery.kind == Kind::Release
+                && let Some(live) = self.live.as_mut()
+            {
+                live.hold = None;
+            }
         }
         let source = delivery.source();
-        let observation = if let Some(Receipt::Delivered {
-            normalized,
-            origin,
-            delivery_performance_frame,
-            ..
-        }) = receipt
-        {
-            Observation::Delivered(PluginParameterDelivery {
+        let payload = match (delivery.kind, receipt) {
+            (
+                Kind::Point,
+                Some(Receipt::Delivered {
+                    normalized,
+                    origin,
+                    delivery_performance_frame,
+                    ..
+                }),
+            ) => Some((
+                Vst3ApplicationValue::Value(normalized),
+                origin,
+                delivery_performance_frame,
+            )),
+            (
+                Kind::Release,
+                Some(Receipt::Released {
+                    origin,
+                    delivery_performance_frame,
+                    ..
+                }),
+            ) => {
+                if let Some(live) = self.live.as_mut() {
+                    live.hold = None;
+                }
+                self.recorded_release = true;
+                Some((
+                    Vst3ApplicationValue::Restored,
+                    origin,
+                    delivery_performance_frame,
+                ))
+            }
+            _ => None,
+        };
+        let observation = if let Some((value, origin, delivery_performance_frame)) = payload {
+            let point = PluginParameterDelivery {
                 key: self.key,
                 context: delivery.target.source.context,
                 target: delivery.context.target,
@@ -116,10 +180,15 @@ impl Gesture {
                         content_frame: origin.arrangement_frame,
                         loop_pass: origin.loop_pass,
                     },
-                    value: Vst3ApplicationValue::Value(normalized),
+                    value,
                 },
                 delivery_performance_frame,
-            })
+            };
+            if delivery.kind == Kind::Release {
+                Observation::Restored(point)
+            } else {
+                Observation::Delivered(point)
+            }
         } else {
             Observation::Interrupted {
                 key: self.key,
@@ -155,6 +224,12 @@ impl Gesture {
                     pending.processed = true;
                     pending.sdk_finished = true;
                 }
+                Ok(NativeWorkerParameterProgress::Released { .. })
+                    if delivery.kind == Kind::Release =>
+                {
+                    pending.processed = true;
+                    pending.sdk_finished = true;
+                }
                 Ok(NativeWorkerParameterProgress::Pending) | Err("native preparation is busy") => {}
                 _ => {
                     pending.sdk_finished = true;
@@ -183,6 +258,63 @@ impl Gesture {
         let pending = self.pending.take().ok_or_else(lost)?;
         self.observe_delivery(pending, receipt)?;
         Ok(true)
+    }
+    pub(super) fn release_recorded(
+        &mut self,
+        control: &mut PublicationControl,
+        context: AudioSourceContext,
+        clock: Option<(u32, ResidentRuntimeLoop)>,
+    ) -> Result<Prepared, Error> {
+        self.drain_point(control)?;
+        if self.recorded_release {
+            return Ok(Prepared::Applied);
+        }
+        let live = self.live.as_ref().ok_or_else(lost)?;
+        if live.hold.is_none() {
+            self.recorded_release = true;
+            self.deliveries
+                .push(Observation::Unchanged { key: self.key });
+            return Ok(Prepared::Applied);
+        }
+        if control.status.native_parameter_source(true) != Some((live.source, live.transport_epoch))
+        {
+            return Err(lost());
+        }
+        let capture = Context::new(self, control, context, clock)?;
+        let hold = self
+            .live
+            .as_ref()
+            .and_then(|live| live.hold.as_ref())
+            .ok_or_else(lost)?;
+        let (token, target) = admit(control, |control| {
+            control.native_source_parameter_hold_with_delivery_on_control(
+                capture.applied,
+                self.binding,
+                NativeParameterHold::Release { hold },
+            )
+        })?;
+        self.pending = Some(PendingPoint {
+            token,
+            value: self.last,
+            sequence: self.sequence,
+            opening_hold: false,
+            delivery: Some(PendingDelivery {
+                target,
+                context: capture,
+                receipt: None,
+                kind: Kind::Release,
+            }),
+            processed: false,
+            sdk_finished: false,
+            #[cfg(all(test, feature = "allocation-probe"))]
+            hold_sdk_ack: false,
+        });
+        self.drain_point(control)?;
+        if self.recorded_release {
+            Ok(Prepared::Applied)
+        } else {
+            Err(lost())
+        }
     }
     fn poll_retired(&mut self) {
         let Some(outcome) = self
