@@ -1,5 +1,5 @@
 use super::*;
-use operator_panel::preview::{Field, Switch};
+use operator_panel::preview::Switch;
 
 pub(super) fn operator_fixture() -> (Service, Arc<ViewState>, TrackId, DeviceId) {
     let (service, _, track, _, _, _) = actor_utility_fixture();
@@ -463,16 +463,20 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             )))
             .is_none()
     );
-    // Click the Time tile rather than the icon, then activate the rail by keyboard.
-    let time = visual
+    // Select the optional global context explicitly through its background.
+    let global = visual
         .debug_bounds(selector(format!(
-            "operator-preview-{}-{}",
-            device.value(),
-            Field::Time as usize
+            "operator-preview-row-{}-global",
+            device.value()
         )))
         .unwrap();
+    let routing = visual
+        .debug_bounds(Box::leak(
+            format!("operator-preview-{}-route-link", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
     visual.simulate_click(
-        point(time.center().x, time.origin.y + px(3.0)),
+        point(routing.right() + px(2.0), global.center().y),
         Modifiers::default(),
     );
     visual.run_until_parked();
@@ -552,8 +556,22 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.device_panel.operator_pages[&device].page,
-            operator_panel::OperatorPage::Routing,
-            "focused routing activation takes precedence over session launch"
+            operator_panel::OperatorPage::Envelope,
+            "focused routing picker preserves envelope context"
+        );
+    });
+    visual.simulate_keystrokes("escape");
+    visual.simulate_keystrokes("alt-enter");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.device_panel.operator_pages[&device].page,
+            operator_panel::OperatorPage::Routing
+        );
+        assert!(
+            view.device_panel.operator_previews[&device]
+                .routing_popup
+                .is_none()
         );
     });
     visual.simulate_click(shell.center(), Modifiers::default());
@@ -572,17 +590,19 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             view.device_panel.operator_pages[&device].page,
             page_before_space
         );
-        assert!(matches!(
-            view.last_transport_command,
-            Some(hex_engine::PlaybackCommand::PlayFrom(_))
-        ));
+        assert!(view.last_transport_command.is_none());
+        assert!(
+            view.device_panel.operator_previews[&device]
+                .routing_popup
+                .is_some()
+        );
     });
-    visual.simulate_keystrokes("enter");
+    visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.device_panel.operator_pages[&device].page,
-            operator_panel::OperatorPage::Routing
+            page_before_space
         );
         assert_eq!(
             view.state

@@ -39,6 +39,8 @@ use hex_widgets::{
 };
 use std::sync::Arc;
 
+#[cfg(all(test, feature = "ui-test-support"))]
+mod beyond_end_tests;
 mod clipboard;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -148,6 +150,7 @@ impl Mode {
 }
 struct Gesture {
     launch_eligible: bool,
+    gap_appearance: Option<(String, ElementColor)>,
     generation: u64,
     revision: u64,
     viewport: Viewport,
@@ -252,10 +255,7 @@ impl EditorView {
             return None;
         }
         Some(
-            if matches!(
-                g.command,
-                Some(Command::DuplicateArrangementSectionAt { .. })
-            ) {
+            if g.command.as_ref().and_then(copied_section_source).is_some() {
                 super::drag::copy_cursor(true)
             } else if g.capture.displaced(4.0) {
                 gpui::CursorStyle::ClosedHand
@@ -513,6 +513,7 @@ impl EditorView {
                     | Command::DuplicateArrangementSection(_)
                     | Command::DuplicateArrangementSectionAt { .. }
                     | Command::AppendArrangementSectionCopy { .. }
+                    | Command::MoveArrangementSectionBeyondEnd { .. }
             )
         }) || self
             .audio
@@ -980,6 +981,7 @@ impl EditorView {
             mode,
             display,
             command: None,
+            gap_appearance: None,
         });
         self.select_section_metadata(id);
         self.status = if matches!(mode, Mode::Reorder(_)) {
@@ -1063,14 +1065,20 @@ impl EditorView {
         };
         match g.mode {
             Mode::Reorder(id) => {
-                // Structural destinations are fixed edges, independent of grid snap.
-                // A click must never move music, even when it snaps outside its marker.
+                // Interior destinations retain stable edges. Beyond the end,
+                // the absolute pointer uses the grid. A click never moves music.
                 let raw_beat = self
                     .section_pointer(g.last_pointer.0, g.last_pointer.1, true)
                     .unwrap_or(beat);
                 if g.capture.displaced(4.0) {
-                    match section_reorder::preview(&state.project, id, raw_beat, edit.copy_content)
-                    {
+                    match section_reorder::drag_preview(
+                        &state.project,
+                        id,
+                        raw_beat,
+                        beat,
+                        edit.copy_content,
+                        &mut g.gap_appearance,
+                    ) {
                         Ok(Some(preview)) => {
                             g.display.markers =
                                 preview.sections().iter().map(Marker::from).collect();
@@ -1813,6 +1821,7 @@ impl EditorView {
             | Command::DuplicateArrangementSection(_)
             | Command::DuplicateArrangementSectionAt { .. }
             | Command::AppendArrangementSectionCopy { .. }
+            | Command::MoveArrangementSectionBeyondEnd { .. }
             | Command::SplitArrangementSection { .. }
             | Command::MergeArrangementSections(_) => {
                 match state.project.preview_arrangement_section_edit(&command) {
@@ -2306,6 +2315,20 @@ fn same_command(a: &Command, b: &Command) -> bool {
                 gap_name: bn,
                 gap_color: bc,
             },
+        )
+        | (
+            Command::MoveArrangementSectionBeyondEnd {
+                section: a,
+                start: at,
+                gap_name: an,
+                gap_color: ac,
+            },
+            Command::MoveArrangementSectionBeyondEnd {
+                section: b,
+                start: bt,
+                gap_name: bn,
+                gap_color: bc,
+            },
         ) => (a, at, an, ac) == (b, bt, bn, bc),
         (
             Command::DuplicateArrangementSectionAt {
@@ -2706,7 +2729,7 @@ pub(super) mod tests {
             let before =
                 editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
             let (from, to) =
-                editor.read_with(cx, |view, _| (position(view, 2), position(view, 13)));
+                editor.read_with(cx, |view, _| (position(view, 2), position(view, 12)));
             let copy = Modifiers {
                 alt: true,
                 ..Modifiers::default()
@@ -2843,7 +2866,12 @@ pub(super) mod tests {
                 frozen
             );
             if !select_elsewhere {
-                assert_eq!(painted_fill(&mut visual, 2), selected_fill);
+                // At the exact insertion edge, the pointer is outside the new
+                // copy's hover fill after ACK; pending target paint above stays frozen.
+                assert_eq!(
+                    painted_fill(&mut visual, 2),
+                    Some(rgb(theme::section_colors(copy_color, true, false).0).into())
+                );
             }
         }
     }
@@ -3416,7 +3444,7 @@ pub(super) mod tests {
         let (handle, editor, _) = fixture(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
-        let (down, to) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 13)));
+        let (down, to) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 12)));
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();

@@ -205,6 +205,16 @@ pub enum Command {
         gap_name: String,
         gap_color: crate::ElementColor,
     },
+    /// Replace a target's complete song interval with source content. Moves
+    /// close the old source interval and retain its ID; copies preserve it and
+    /// allocate a new result ID. Both carry source name/color and retire target.
+    /// All non-replaced music ripples intact. Self replacement is a no-op;
+    /// one private candidate owns preparation, refusal and Undo/Redo.
+    ReplaceArrangementSection {
+        source: crate::SectionId,
+        target: crate::SectionId,
+        copy: bool,
+    },
     /// Split marker metadata at a strict interior beat, preserving all music.
     /// The left marker retains its ID; the right gets a fresh ID and the same
     /// name/color. One validated command owns both adjoining positive ranges.
@@ -2002,6 +2012,7 @@ impl Project {
             | Command::DuplicateArrangementSectionAt { .. }
             | Command::AppendArrangementSectionCopy { .. }
             | Command::MoveArrangementSectionBeyondEnd { .. }
+            | Command::ReplaceArrangementSection { .. }
             | Command::SplitArrangementSection { .. }
             | Command::MergeArrangementSections(_)) => {
                 crate::arrangement_sections::apply(self, command)
@@ -3344,6 +3355,7 @@ impl Command {
                 | Self::DuplicateArrangementSectionAt { .. }
                 | Self::AppendArrangementSectionCopy { .. }
                 | Self::MoveArrangementSectionBeyondEnd { .. }
+                | Self::ReplaceArrangementSection { .. }
         )
     }
 }
