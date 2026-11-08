@@ -121,6 +121,9 @@ impl DeviceAutomationSource {
 #[derive(Debug)]
 pub enum DeviceAutomationTakeAction {
     Begin,
+    /// Per-take deterministic writer refusal, available only in explicit fixtures.
+    #[cfg(feature = "recording-fault-test-support")]
+    InjectWriterFailure,
     Append(Arc<[(u64, NativeParameterApplication)]>),
     Finish(NativeParameterApplication),
     AppendVst3(Arc<[(u64, Vst3ParameterApplication)]>),
@@ -481,6 +484,14 @@ impl Lane {
         };
         while active.input.poll().is_some() {}
         let progress = match action {
+            #[cfg(feature = "recording-fault-test-support")]
+            DeviceAutomationTakeAction::InjectWriterFailure => {
+                if !matches!(scope.target, DeviceCaptureTarget::Vst3(_)) {
+                    return Err("writer failure fixture requires a vst3 take".into());
+                }
+                active.input.inject_next_append_failure()?;
+                Progress::Appended
+            }
             DeviceAutomationTakeAction::CopyFailed { .. }
             | DeviceAutomationTakeAction::CopyFailedPlugin { .. }
             | DeviceAutomationTakeAction::PollFailedCopy
