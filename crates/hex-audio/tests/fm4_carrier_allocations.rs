@@ -55,6 +55,14 @@ fn real_fm4_carrier_processing_rollbacks_and_reset_allocate_and_free_nothing() {
     let mut results = [Ok(()); 3];
     let mut ids = [0; 64];
     let mut observed = Ok(0);
+    let target_ids = [
+        parameter::carrier(1),
+        parameter::carrier(2),
+        parameter::carrier(3),
+        parameter::carrier(4),
+    ];
+    let mut target_results = [Ok(()); 3];
+    let mut targets = [[None; 4]; 3];
     let counts = allocation_counter::measure(|| {
         pair.begin_block();
         results[0] = pair.process_block_with_clock_and_automation(
@@ -65,6 +73,7 @@ fn real_fm4_carrier_processing_rollbacks_and_reset_allocate_and_free_nothing() {
             &Values,
             &EMPTY_DEVICE_RESOURCES,
         );
+        target_results[0] = pair.copy_committed_parameter_targets(&target_ids, &mut targets[0]);
         pair.rollback_block();
         pair.begin_block();
         results[1] = pair.process_block_with_clock_and_automation(
@@ -77,6 +86,7 @@ fn real_fm4_carrier_processing_rollbacks_and_reset_allocate_and_free_nothing() {
         );
         pair.commit_block();
         observed = pair.active_occurrence_ids(&mut ids);
+        target_results[1] = pair.copy_committed_parameter_targets(&target_ids, &mut targets[1]);
         pair.begin_block();
         results[2] = pair.process_block_with_clock_and_automation(
             &[],
@@ -88,9 +98,15 @@ fn real_fm4_carrier_processing_rollbacks_and_reset_allocate_and_free_nothing() {
         );
         pair.commit_block();
         pair.reset();
+        target_results[2] = pair.copy_committed_parameter_targets(&target_ids, &mut targets[2]);
     });
     assert_eq!(results, [Ok(()); 3]);
     assert_eq!(observed, Ok(64));
+    assert_eq!(target_results, [Ok(()); 3]);
+    let base = [1.0, 0.0, 0.0, 0.0].map(|value| Some(ParameterValue::Float(value)));
+    assert_eq!(targets[0], base);
+    assert_eq!(targets[1], [Some(ParameterValue::Float(0.0)); 4]);
+    assert_eq!(targets[2], base);
     assert_eq!(
         (
             counts.count_total,
