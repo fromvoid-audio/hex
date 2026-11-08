@@ -3,7 +3,7 @@
 //! feedback and mix. Migration preserves its free stereo timing and dry/wet,
 //! disables the new filter and modulation, and retains its repitch transition.
 //! Version 2 adds the independently authored Live-style control inventory.
-//! Feedback and dry/wet expose shared owned-transaction automation; other
+//! Feedback, dry/wet, filter frequency/width and all eight LFO controls expose shared owned-transaction automation; other
 //! parameters retain their explicit unsupported declaration.
 use super::DelayDefinition;
 use hex_lattice_contract::*;

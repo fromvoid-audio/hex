@@ -987,6 +987,7 @@ fn controller_pages_preserve_sdk_ids_text_and_explicit_conversion_states() {
     body.extend(0_u16.to_le_bytes());
     body.push(1);
     record(&mut body, 0, 1);
+    body.extend(0_u8..32);
     let selected = ControllerRequest::SelectedParameters { first: 8 };
     let encoded = parameter_page_request(&config, 1, 7, selected, false).unwrap();
     assert_eq!(&encoded[72..74], &8_u16.to_le_bytes());
@@ -1032,6 +1033,7 @@ fn controller_pages_preserve_sdk_ids_text_and_explicit_conversion_states() {
         panic!("completed metadata page")
     };
     assert_eq!((page.revision, page.total, page.first), (9, 1, 0));
+    assert_eq!(page.descriptor_signature, std::array::from_fn(|n| n as u8));
     let value = page.as_slice()[0];
     assert_eq!(value.id, 0);
     assert!(value.is_editable());
@@ -1062,6 +1064,7 @@ fn controller_pages_preserve_sdk_ids_text_and_explicit_conversion_states() {
     for id in [9, 0, 3, 17] {
         record(&mut full, id, 1);
     }
+    full.extend(0_u8..32);
     assert!(full.len() < CONTROL_LIMIT);
     let ParameterPageProgress::Page(page) = parameter_page(&full, &config, 1, 7, query).unwrap()
     else {

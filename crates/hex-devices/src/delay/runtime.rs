@@ -82,7 +82,7 @@ impl PreparedOwnedProcessorRuntime for Factory {
 }
 #[derive(Clone, Copy, Debug)]
 struct Scalar {
-    controls: crate::parameter_binding::Controls<automation::Mix, { automation::COUNT }>,
+    controls: crate::parameter_binding::Controls<automation::ControlValues, { automation::COUNT }>,
     next: usize,
     valid: usize,
     nonzero: usize,
@@ -116,7 +116,10 @@ impl Scalar {
             );
         }
         Self {
-            controls: crate::parameter_binding::Controls::new(automation::Mix::new(s), admitted),
+            controls: crate::parameter_binding::Controls::new(
+                automation::ControlValues::new(s),
+                admitted,
+            ),
             next: 0,
             valid: 0,
             nonzero: 0,
@@ -169,15 +172,15 @@ pub(super) fn times(s: Settings, rate: u32, tempo: u32) -> [f64; 2] {
         )
     })
 }
-fn lfo_increment(s: Settings, rate: u32, tempo: u32) -> f64 {
-    let mode = s.choice(LFO_MODE);
+fn lfo_increment(s: automation::LfoControls, rate: u32, tempo: u32) -> f64 {
+    let mode = s.mode;
     let hz = match mode {
-        0 => f64::from(s.value(LFO_RATE)),
-        1 => 1000.0 / f64::from(s.value(LFO_TIME)),
+        0 => f64::from(s.rate),
+        1 => 1000.0 / f64::from(s.time),
         _ => {
             let quarters = [
                 0.0625, 0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0,
-            ][s.choice(LFO_DIVISION) as usize];
+            ][s.division as usize];
             let period = quarters
                 * match mode {
                     3 => 2.0 / 3.0,
@@ -255,8 +258,10 @@ impl Runtime {
         // Bound targets are installed by the next borrowed sample/fallback.
         // Only unbound canonical controls retime this shared ramp immediately.
         let mut unbound = old_settings;
-        unbound.set(FEEDBACK, self.settings.value(FEEDBACK));
-        unbound.set(DRY_WET, self.settings.value(DRY_WET));
+        for binding in &automation::BINDINGS {
+            let id = binding.descriptor.id;
+            unbound.set(id, self.settings.value(id));
+        }
         if self.settings != unbound {
             self.primary.ramp_left = self.rate.div_ceil(100);
         }
@@ -363,13 +368,13 @@ impl Runtime {
             s.tempo = tempo;
         }
         let oscillator = s.lfo.process(
-            settings.choice(LFO_WAVE),
-            f64::from(settings.value(LFO_MORPH)),
-            lfo_increment(settings, rate, s.tempo),
+            targets.lfo.wave,
+            f64::from(targets.lfo.morph),
+            lfo_increment(targets.lfo, rate, s.tempo),
         );
         let mut requested = times(settings, rate, s.tempo);
         for time in &mut requested {
-            *time = (*time * (1.0 + oscillator * f64::from(settings.value(LFO_DELAY)))).clamp(
+            *time = (*time * (1.0 + oscillator * f64::from(targets.lfo.delay))).clamp(
                 f64::from(rate) / 1000.0,
                 f64::from(rate) * MAX_SECONDS as f64,
             );
@@ -410,16 +415,15 @@ impl Runtime {
             s.mix += (f64::from(targets.mix) - s.mix) / f64::from(s.ramp_left);
             s.filter_mix +=
                 (f64::from(settings.flag(FILTER)) - s.filter_mix) / f64::from(s.ramp_left);
-            s.frequency +=
-                (f64::from(settings.value(FREQUENCY)) - s.frequency) / f64::from(s.ramp_left);
-            s.width += (f64::from(settings.value(WIDTH)) - s.width) / f64::from(s.ramp_left);
+            s.frequency += (f64::from(targets.frequency) - s.frequency) / f64::from(s.ramp_left);
+            s.width += (f64::from(targets.width) - s.width) / f64::from(s.ramp_left);
             s.ramp_left -= 1;
             if s.ramp_left == 0 {
                 s.feedback = f64::from(targets.feedback);
                 s.mix = f64::from(targets.mix);
                 s.filter_mix = f64::from(settings.flag(FILTER));
-                s.frequency = f64::from(settings.value(FREQUENCY));
-                s.width = f64::from(settings.value(WIDTH));
+                s.frequency = f64::from(targets.frequency);
+                s.width = f64::from(targets.width);
             }
             (s.dry_gain, s.wet_gain) = mix_gains(s.mix, settings.flag(EQUAL_LOUDNESS));
         }
@@ -437,7 +441,7 @@ impl Runtime {
         }
         if s.filter_tick == 0 {
             let frequency = (s.frequency
-                * 2.0_f64.powf(oscillator * f64::from(settings.value(LFO_FILTER)) * 4.0))
+                * 2.0_f64.powf(oscillator * f64::from(targets.lfo.filter) * 4.0))
             .clamp(20.0, 20000.0);
             for filter in &mut s.filters {
                 filter.tune(frequency, s.width, rate);
