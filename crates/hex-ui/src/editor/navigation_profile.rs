@@ -8,6 +8,10 @@
 //! fixture directory and selects its 100-track normal-row dense pan/zoom cases;
 //! project-dense requires the project override and selects its corresponding
 //! normal-row cases. Both retain eight warmups and forty measured events per case.
+//! HEX_NAVIGATION_COMPARE_LAYOUTS=1 runs reference/current/current/reference in
+//! one persistent fixture, retaining every warmup/event. Trial switches invalidate
+//! retained content and geometry; layout identity also participates in cache keys.
+//! The reference hook is test-only; on legacy stereo both variants calibrate A/A.
 //! HEX_NAVIGATION_SUPPRESS_WAVEFORMS=1 performs diagnostic arranger waveform
 //! ablation with the same layout/input; it is not a shipped display mode.
 #[path = "navigation_profile/selection.rs"]
@@ -322,6 +326,13 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
         "timing requires --release; debug smoke must be explicit"
     );
     let (rounds, warmup) = selection::iterations(smoke);
+    let comparison = std::env::var("HEX_NAVIGATION_COMPARE_LAYOUTS");
+    assert!(
+        !matches!(comparison, Err(std::env::VarError::NotUnicode(_))),
+        "navigation layout comparison must be UTF-8"
+    );
+    let trials = selection::comparison_trials(comparison.as_deref().ok())
+        .expect("valid navigation layout comparison");
     let scope = std::env::var("HEX_NAVIGATION_SCOPE");
     assert!(
         !matches!(scope, Err(std::env::VarError::NotUnicode(_))),
@@ -344,12 +355,19 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
                 .sum::<usize>()
         })
         .sum();
+    let selected_cases = selected_cases * trials.len();
     assert!(selected_cases > 0, "navigation selection cannot be empty");
     println!(
         "NAV_SELECTION,scope={},cases={selected_cases},warmup={warmup},measured={}",
         selection.label(),
         rounds - warmup
     );
+    if trials.len() > 1 {
+        println!(
+            "NAV_COMPARE,trials={},order=reference/current/current/reference",
+            trials.len()
+        );
+    }
     let stage_timing =
         std::env::var_os("HEX_NAVIGATION_STAGE_TIMING").is_some_and(|value| value == "1");
     println!(
@@ -403,216 +421,239 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
                 });
             }
             let revision = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().revision);
-            for case in cases {
-                let (density, divisor, action) = (case.density, case.divisor, case.action);
-                visual.update(|window, cx| {
+            for (trial, &reference) in trials.iter().enumerate() {
+                let _reference = navigation_metrics::use_reference_stereo(reference);
+                if trials.len() > 1 {
+                    println!(
+                        "NAV_TRIAL,content={content},tracks={tracks},row_mode={},index={trial},layout={}",
+                        if single_row {
+                            "single_visible"
+                        } else {
+                            "normal"
+                        },
+                        if reference { "reference" } else { "current" },
+                    );
                     editor.update(cx, |view, cx| {
-                        let horizon = view.state.as_ref().unwrap().timeline_frames;
-                        let length = ((horizon - horizon.div_ceil(5)) / divisor).max(1);
-                        view.viewport = Some(Viewport {
-                            start: horizon.saturating_sub(length) / 2,
-                            length,
-                        });
+                        view.waveform_geometry_cache.borrow_mut().clear();
+                        view.clip_content_cache.entries.clear();
                         cx.notify();
                     });
-                    window.draw(cx).clear();
-                    window.draw(cx).clear();
-                });
-                let body = editor.read_with(cx, |view, _| view.arrangement_bounds.unwrap());
-                let width = editor.read_with(cx, |view, _| body.width - view.track_header_width());
-                let origin = point(
-                    px(body.left + width * 0.5),
-                    px(body.top + body.height.min(40.0) * 0.5),
-                );
-                let mut pointer = origin;
-                if action == "pan" {
-                    visual.update(|window, cx| {
-                        window.dispatch_input(
-                            PlatformInput::MouseDown(MouseDownEvent {
-                                position: origin,
-                                button: MouseButton::Middle,
-                                modifiers: Modifiers::default(),
-                                click_count: 1,
-                                first_mouse: false,
-                            }),
-                            cx,
-                        )
-                    });
-                    editor.read_with(cx, |view, _| {
-                        assert!(view.arrangement_pan.is_some(), "actual middle capture")
-                    });
                 }
-                editor.update(cx, |view, _| {
-                    view.waveform_geometry_cache.borrow_mut().clear()
-                });
-                let mut rows = Vec::with_capacity(rounds);
-                for iteration in 0..rounds {
-                    let before = editor.read_with(cx, |view, _| {
-                        view.waveform_geometry_cache
-                            .borrow_mut()
-                            .clear_paint_samples();
-                        view.visible_viewport(view.state.as_ref().unwrap().timeline_frames)
+                for case in &cases {
+                    let (density, divisor, action) = (case.density, case.divisor, case.action);
+                    visual.update(|window, cx| {
+                        editor.update(cx, |view, cx| {
+                            let horizon = view.state.as_ref().unwrap().timeline_frames;
+                            let length = ((horizon - horizon.div_ceil(5)) / divisor).max(1);
+                            view.viewport = Some(Viewport {
+                                start: horizon.saturating_sub(length) / 2,
+                                length,
+                            });
+                            cx.notify();
+                        });
+                        window.draw(cx).clear();
+                        window.draw(cx).clear();
                     });
-                    let builds_before = observe(&editor, &visual).builds;
+                    let body = editor.read_with(cx, |view, _| view.arrangement_bounds.unwrap());
+                    let width =
+                        editor.read_with(cx, |view, _| body.width - view.track_header_width());
+                    let origin = point(
+                        px(body.left + width * 0.5),
+                        px(body.top + body.height.min(40.0) * 0.5),
+                    );
+                    let mut pointer = origin;
                     if action == "pan" {
-                        pointer.x += px(if iteration % 20 < 10 { -4.0 } else { 4.0 });
-                    }
-                    navigation_metrics::reset(stage_timing);
-                    let (event, draw, clear, total) = visual.update(|window, cx| {
-                        let started = Instant::now();
-                        if action == "pan" {
+                        visual.update(|window, cx| {
                             window.dispatch_input(
-                                PlatformInput::MouseMove(MouseMoveEvent {
-                                    position: pointer,
-                                    pressed_button: Some(MouseButton::Middle),
-                                    modifiers: Modifiers::default(),
-                                }),
-                                cx,
-                            );
-                        } else {
-                            window.dispatch_input(
-                                PlatformInput::ScrollWheel(ScrollWheelEvent {
+                                PlatformInput::MouseDown(MouseDownEvent {
                                     position: origin,
-                                    delta: ScrollDelta::Pixels(point(
-                                        px(0.0),
-                                        px(if iteration % 16 < 8 { 80.0 } else { -80.0 }),
-                                    )),
-                                    ..Default::default()
+                                    button: MouseButton::Middle,
+                                    modifiers: Modifiers::default(),
+                                    click_count: 1,
+                                    first_mouse: false,
                                 }),
                                 cx,
+                            )
+                        });
+                        editor.read_with(cx, |view, _| {
+                            assert!(view.arrangement_pan.is_some(), "actual middle capture")
+                        });
+                    }
+                    editor.update(cx, |view, _| {
+                        view.waveform_geometry_cache.borrow_mut().clear()
+                    });
+                    let mut rows = Vec::with_capacity(rounds);
+                    for iteration in 0..rounds {
+                        let before = editor.read_with(cx, |view, _| {
+                            view.waveform_geometry_cache
+                                .borrow_mut()
+                                .clear_paint_samples();
+                            view.visible_viewport(view.state.as_ref().unwrap().timeline_frames)
+                        });
+                        let builds_before = observe(&editor, &visual).builds;
+                        if action == "pan" {
+                            pointer.x += px(if iteration % 20 < 10 { -4.0 } else { 4.0 });
+                        }
+                        navigation_metrics::reset(stage_timing);
+                        let (event, draw, clear, total) = visual.update(|window, cx| {
+                            let started = Instant::now();
+                            if action == "pan" {
+                                window.dispatch_input(
+                                    PlatformInput::MouseMove(MouseMoveEvent {
+                                        position: pointer,
+                                        pressed_button: Some(MouseButton::Middle),
+                                        modifiers: Modifiers::default(),
+                                    }),
+                                    cx,
+                                );
+                            } else {
+                                window.dispatch_input(
+                                    PlatformInput::ScrollWheel(ScrollWheelEvent {
+                                        position: origin,
+                                        delta: ScrollDelta::Pixels(point(
+                                            px(0.0),
+                                            px(if iteration % 16 < 8 { 80.0 } else { -80.0 }),
+                                        )),
+                                        ..Default::default()
+                                    }),
+                                    cx,
+                                );
+                            }
+                            let event = started.elapsed();
+                            let draw_start = Instant::now();
+                            let arena = window.draw(cx);
+                            let draw = draw_start.elapsed();
+                            let clear_start = Instant::now();
+                            arena.clear();
+                            (event, draw, clear_start.elapsed(), started.elapsed())
+                        });
+                        let stages = navigation_metrics::snapshot();
+                        navigation_metrics::reset(false);
+                        let observation = observe(&editor, &visual);
+                        if suppressed {
+                            assert_eq!(
+                                observation.waveform_paints, 0,
+                                "ablation painted waveforms"
+                            );
+                            assert_eq!(
+                                observation.geometry_entries, 0,
+                                "ablation prepared waveforms"
+                            );
+                        } else if observation.audio_clips > 0 {
+                            assert!(
+                                observation.waveform_paints > 0,
+                                "normal display lost waveforms"
                             );
                         }
-                        let event = started.elapsed();
-                        let draw_start = Instant::now();
-                        let arena = window.draw(cx);
-                        let draw = draw_start.elapsed();
-                        let clear_start = Instant::now();
-                        arena.clear();
-                        (event, draw, clear_start.elapsed(), started.elapsed())
-                    });
-                    let stages = navigation_metrics::snapshot();
-                    navigation_metrics::reset(false);
-                    let observation = observe(&editor, &visual);
-                    if suppressed {
-                        assert_eq!(observation.waveform_paints, 0, "ablation painted waveforms");
-                        assert_eq!(
-                            observation.geometry_entries, 0,
-                            "ablation prepared waveforms"
-                        );
-                    } else if observation.audio_clips > 0 {
-                        assert!(
-                            observation.waveform_paints > 0,
-                            "normal display lost waveforms"
-                        );
+                        let after = editor.read_with(cx, |view, _| {
+                            view.visible_viewport(view.state.as_ref().unwrap().timeline_frames)
+                        });
+                        assert_ne!(before, after, "the actual input must move the viewport");
+                        navigation_metrics::reset(stage_timing);
+                        let warm = visual.update(|window, cx| {
+                            let started = Instant::now();
+                            window.draw(cx).clear();
+                            started.elapsed()
+                        });
+                        let warm_stages = navigation_metrics::snapshot();
+                        navigation_metrics::reset(false);
+                        rows.push((
+                            iteration,
+                            event,
+                            draw,
+                            clear,
+                            total,
+                            warm,
+                            after,
+                            observation,
+                            builds_before,
+                            stages,
+                            warm_stages,
+                        ));
                     }
-                    let after = editor.read_with(cx, |view, _| {
-                        view.visible_viewport(view.state.as_ref().unwrap().timeline_frames)
-                    });
-                    assert_ne!(before, after, "the actual input must move the viewport");
-                    navigation_metrics::reset(stage_timing);
-                    let warm = visual.update(|window, cx| {
-                        let started = Instant::now();
-                        window.draw(cx).clear();
-                        started.elapsed()
-                    });
-                    let warm_stages = navigation_metrics::snapshot();
-                    navigation_metrics::reset(false);
-                    rows.push((
+                    if action == "pan" {
+                        visual.update(|window, cx| {
+                            window.dispatch_input(
+                                PlatformInput::MouseUp(MouseUpEvent {
+                                    position: pointer,
+                                    button: MouseButton::Middle,
+                                    modifiers: Modifiers::default(),
+                                    click_count: 1,
+                                }),
+                                cx,
+                            )
+                        });
+                    }
+                    for (
                         iteration,
                         event,
                         draw,
                         clear,
                         total,
                         warm,
-                        after,
+                        viewport,
                         observation,
                         builds_before,
                         stages,
                         warm_stages,
-                    ));
-                }
-                if action == "pan" {
-                    visual.update(|window, cx| {
-                        window.dispatch_input(
-                            PlatformInput::MouseUp(MouseUpEvent {
-                                position: pointer,
-                                button: MouseButton::Middle,
-                                modifiers: Modifiers::default(),
-                                click_count: 1,
-                            }),
-                            cx,
-                        )
-                    });
-                }
-                for (
-                    iteration,
-                    event,
-                    draw,
-                    clear,
-                    total,
-                    warm,
-                    viewport,
-                    observation,
-                    builds_before,
-                    stages,
-                    warm_stages,
-                ) in rows
-                {
-                    println!(
-                        "NAV_WAVEFORM_CSV,{content},{tracks},{},{density},{action},{iteration},{},{}",
-                        if single_row {
-                            "single_visible"
-                        } else {
-                            "normal"
-                        },
-                        iteration < warmup,
-                        observation.envelope_points,
-                    );
-                    println!(
-                        "NAV_CSV,{content},{tracks},{},{density},{action},{iteration},{},{:.3},{:.3},{:.3},{:.3},{:.3},{},{},{},{},{},{},{},{}",
-                        if single_row {
-                            "single_visible"
-                        } else {
-                            "normal"
-                        },
-                        iteration < warmup,
-                        event.as_secs_f64() * 1e6,
-                        draw.as_secs_f64() * 1e6,
-                        clear.as_secs_f64() * 1e6,
-                        total.as_secs_f64() * 1e6,
-                        warm.as_secs_f64() * 1e6,
-                        viewport.start,
-                        viewport.length,
-                        observation.visible_tracks,
-                        observation.audio_clips,
-                        observation.midi_clips,
-                        observation.builds.saturating_sub(builds_before),
-                        observation.waveform_paints,
-                        observation.geometry_entries
-                    );
-                    if stage_timing {
-                        let row_mode = if single_row {
-                            "single_visible"
-                        } else {
-                            "normal"
-                        };
-                        for (phase, measures) in [("event", stages), ("warm", warm_stages)] {
-                            let times = measures
-                                .ns
-                                .iter()
-                                .map(|ns| format!("{:.3}", *ns as f64 / 1000.0))
-                                .collect::<Vec<_>>()
-                                .join(",");
-                            let calls = measures
-                                .calls
-                                .iter()
-                                .map(u64::to_string)
-                                .collect::<Vec<_>>()
-                                .join(",");
-                            println!(
-                                "NAV_STAGE_CSV,{phase},{content},{tracks},{row_mode},{density},{action},{iteration},{},{times},{calls}",
-                                iteration < warmup
-                            );
+                    ) in rows
+                    {
+                        println!(
+                            "NAV_WAVEFORM_CSV,{content},{tracks},{},{density},{action},{iteration},{},{}",
+                            if single_row {
+                                "single_visible"
+                            } else {
+                                "normal"
+                            },
+                            iteration < warmup,
+                            observation.envelope_points,
+                        );
+                        println!(
+                            "NAV_CSV,{content},{tracks},{},{density},{action},{iteration},{},{:.3},{:.3},{:.3},{:.3},{:.3},{},{},{},{},{},{},{},{}",
+                            if single_row {
+                                "single_visible"
+                            } else {
+                                "normal"
+                            },
+                            iteration < warmup,
+                            event.as_secs_f64() * 1e6,
+                            draw.as_secs_f64() * 1e6,
+                            clear.as_secs_f64() * 1e6,
+                            total.as_secs_f64() * 1e6,
+                            warm.as_secs_f64() * 1e6,
+                            viewport.start,
+                            viewport.length,
+                            observation.visible_tracks,
+                            observation.audio_clips,
+                            observation.midi_clips,
+                            observation.builds.saturating_sub(builds_before),
+                            observation.waveform_paints,
+                            observation.geometry_entries
+                        );
+                        if stage_timing {
+                            let row_mode = if single_row {
+                                "single_visible"
+                            } else {
+                                "normal"
+                            };
+                            for (phase, measures) in [("event", stages), ("warm", warm_stages)] {
+                                let times = measures
+                                    .ns
+                                    .iter()
+                                    .map(|ns| format!("{:.3}", *ns as f64 / 1000.0))
+                                    .collect::<Vec<_>>()
+                                    .join(",");
+                                let calls = measures
+                                    .calls
+                                    .iter()
+                                    .map(u64::to_string)
+                                    .collect::<Vec<_>>()
+                                    .join(",");
+                                println!(
+                                    "NAV_STAGE_CSV,{phase},{content},{tracks},{row_mode},{density},{action},{iteration},{},{times},{calls}",
+                                    iteration < warmup
+                                );
+                            }
                         }
                     }
                 }
