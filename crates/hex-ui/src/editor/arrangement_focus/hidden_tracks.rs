@@ -48,8 +48,7 @@ pub(super) fn row(
 
 pub(super) fn empty(projection: &Projection, scale: f32, content: Div) -> Div {
     content.when(projection.all_tracks_hidden(), |content| {
-        content
-            .relative()
-            .child(line("section-hidden-all".into(), scale, false))
+        let marker = line("section-hidden-all".into(), scale, false);
+        content.relative().child(marker)
     })
 }
