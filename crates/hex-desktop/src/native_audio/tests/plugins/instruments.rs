@@ -719,6 +719,7 @@ fn recorded_touch_admission_and_exclusive_restoration_use_actual_output() {
             "touch_close_point",
             "touch_close_pending",
             "touch_close_queued",
+            "touch_close_restored",
             "touch",
             "touch_empty",
             "touch_commit",
@@ -756,6 +757,11 @@ fn recorded_touch_admission_and_exclusive_restoration_use_actual_output() {
             assert_eq!(CONFIRMED_TEST_POINTS.load(Acquire), 100);
             assert_eq!(CONFIRMED_TEST_ENDS.load(Acquire), 100);
             assert_eq!(CONFIRMED_TEST_NOOPS.load(Acquire), 0);
+        } else if std::env::var(CASE).unwrap() == "touch_close_restored" {
+            assert_eq!(CONFIRMED_TEST_READY.load(Acquire), 1);
+            assert_eq!(CONFIRMED_TEST_POINTS.load(Acquire), 1);
+            assert_eq!(CONFIRMED_TEST_ENDS.load(Acquire), 1);
+            assert_eq!(CONFIRMED_TEST_INTERRUPTS.load(Acquire), 0);
         } else if std::env::var(CASE).unwrap().starts_with("touch_close_") {
             assert_eq!(CONFIRMED_TEST_READY.load(Acquire), 1);
             assert_eq!(CONFIRMED_TEST_INTERRUPTS.load(Acquire), 1);
@@ -1852,15 +1858,7 @@ fn verify_instrument_takeover(
             render_takeover_partial(
                 h,
                 [3, 5, 117, 1, 130][fragment % 5],
-                playing
-                    && !matches!(
-                        case.as_str(),
-                        "delivery_retire"
-                            | "touch_close_pending"
-                            | "touch_close_queued"
-                            | "touch_close_point"
-                            | "touch_close_begin"
-                    ),
+                playing && case != "delivery_retire" && !case.starts_with("touch_close_"),
                 &case,
                 Some(&request),
             );
@@ -1924,7 +1922,7 @@ fn verify_instrument_takeover(
                 "held MIDI must continue through preview"
             );
         }
-        if case == "touch_commit" {
+        if matches!(case.as_str(), "touch_commit" | "touch_close_restored") {
             client
                 .finish_plugin(PluginParameterValue::new(0.75).unwrap())
                 .unwrap();
@@ -1932,7 +1930,9 @@ fn verify_instrument_takeover(
             // canonical take adoption is the next consumer increment.
             let ended = send(h, &mut client, false);
             assert_eq!(ended.state.project.as_ref(), &before);
-            assert!((peak(h) - baseline).abs() < 0.0001);
+            if case == "touch_commit" {
+                assert!((peak(h) - baseline).abs() < 0.0001);
+            }
             return;
         }
         client.cancel().unwrap();

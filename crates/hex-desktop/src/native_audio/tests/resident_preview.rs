@@ -248,7 +248,9 @@ impl WorkerAudioSink for ResidentSink {
         let close = case == "touch_close_begin"
             && matches!(input.operation(), PluginGesturePreparation::Begin { .. })
             || case == "touch_close_point"
-                && matches!(input.operation(), PluginGesturePreparation::Preview(_));
+                && matches!(input.operation(), PluginGesturePreparation::Preview(_))
+            || case == "touch_close_restored"
+                && matches!(input.operation(), PluginGesturePreparation::Commit(_));
         let preview = matches!(input.operation(), PluginGesturePreparation::Preview(_));
         let confirm = touch || (retire || case == "delivery") && preview;
         let expected = match input.operation() {
