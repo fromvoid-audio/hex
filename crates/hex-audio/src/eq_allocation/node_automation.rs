@@ -14,6 +14,13 @@ impl NativeParameterAutomation for Values {
     }
     fn value_at(&self, id: ParameterId, offset: usize) -> Option<ParameterValue> {
         let i = self.start + offset;
+        if id == hex_engine::eq::MODE {
+            return Some(ParameterValue::Choice(if self.bad && offset == 17 {
+                3
+            } else {
+                (i / 61 % 3) as u32
+            }));
+        }
         if id == hex_engine::eq::OUTPUT_GAIN {
             return Some(ParameterValue::Float(0.5 + (i % 31) as f32 * 0.01));
         }
@@ -52,8 +59,19 @@ fn zero(info: allocation_counter::AllocationInfo) {
 }
 #[test]
 fn dense_shared_nodes_checkpoint_retry_base_bypass_and_reset_allocate_nothing() {
+    dense_scope(false);
+}
+#[test]
+fn dense_mode_and_nodes_checkpoint_retry_base_bypass_and_reset_allocate_nothing() {
+    dense_scope(true);
+}
+fn dense_scope(mode_grant: bool) {
     let mut state = EqState::default();
-    let mut ids = vec![hex_engine::eq::OUTPUT_GAIN];
+    let mut ids = if mode_grant {
+        vec![hex_engine::eq::MODE, hex_engine::eq::OUTPUT_GAIN]
+    } else {
+        vec![hex_engine::eq::OUTPUT_GAIN]
+    };
     for index in 1..=64 {
         let id = NodeId::new(index).unwrap();
         state.add(Node::new(id, 1000.0, 0.0, 0).unwrap()).unwrap();
