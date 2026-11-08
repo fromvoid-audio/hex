@@ -266,3 +266,158 @@ fn shared_contributors_compile_only_the_receiver_and_unbound_tracks_compile_noth
     }
     assert_eq!(bytes, 0);
 }
+
+#[test]
+fn program_visitor_requires_one_root_and_four_data_rows_including_empty_touch() {
+    let (editor, id) = fixture();
+    let program = compile(&editor, id).unwrap().unwrap();
+    assert_eq!(program.values.touch_storage().capacity(), 0);
+    for (roots, rows, accepted) in [(1, 4, true), (0, 4, false), (1, 3, false)] {
+        let mut ledger = crate::AudioRootStorageLedger::try_new_on_control(
+            crate::AudioStorageLedgerReservation {
+                data_rows: rows,
+                handle_rows: 0,
+                root_rows: roots,
+                max_retained_bytes: 1_000_000,
+                max_construction_peak_bytes: 1_000_000,
+            },
+        )
+        .unwrap();
+        assert_eq!(program.visit(&mut ledger).is_ok(), accepted);
+        if accepted {
+            let first = ledger.summary().unwrap();
+            program.visit(&mut ledger).unwrap();
+            assert_eq!(ledger.summary().unwrap(), first);
+        }
+    }
+}
+#[test]
+fn ordinary_construction_quote_counts_shared_receiving_program_once() {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let (mut editor, device) = fixture();
+            let receiver = editor.project().tracks()[0].id();
+            let source = editor
+                .project()
+                .track(receiver)
+                .unwrap()
+                .source_id()
+                .unwrap();
+            let expected = construction_bytes(editor.project()).unwrap();
+            let full = crate::PreparedRevision::device_handoff_metadata_construction_bytes(
+                editor.project(),
+            )
+            .unwrap();
+            let prepare = |editor: &Editor| {
+                crate::device_automation::with_fm4_source_curves(|| {
+                    crate::PreparedRevision::prepare(
+                        editor.project(),
+                        &std::collections::BTreeMap::new(),
+                        std::sync::Arc::new(hex_devices::SineTable::new()),
+                        None,
+                    )
+                    .unwrap()
+                })
+            };
+            let revision = prepare(&editor);
+            assert!(revision.session().instrument_automation_storage_bytes() > 0);
+            assert!(revision.session().instrument_automation_storage_bytes() <= expected);
+            let Created::Track(contributor) = editor
+                .execute(Command::AddMidiTrack {
+                    name: "contributor".into(),
+                })
+                .unwrap()
+            else {
+                panic!("track")
+            };
+            editor
+                .execute(Command::BindTrackSource {
+                    track: contributor,
+                    source: Some(source),
+                })
+                .unwrap();
+            assert_eq!(construction_bytes(editor.project()).unwrap(), expected);
+            let shared = prepare(&editor);
+            assert_eq!(
+                shared.session().instrument_automation_storage_bytes(),
+                revision.session().instrument_automation_storage_bytes()
+            );
+            assert!(
+                shared
+                    .session()
+                    .instrument_automation(receiver, device)
+                    .is_some()
+            );
+            assert!(
+                shared
+                    .session()
+                    .instrument_automation(contributor, device)
+                    .is_none()
+            );
+            // The existing predecessor evidence quote is unchanged when only curves
+            // disappear. Native construction contributes exactly its separate peak.
+            let (mut plain, id) = fixture();
+            for operator in 1..=4 {
+                plain
+                    .execute(Command::ReplaceDeviceAutomation {
+                        device: id,
+                        parameter: hex_devices::fm4::device::parameter::carrier(operator),
+                        points: vec![],
+                    })
+                    .unwrap();
+            }
+            assert!(
+                crate::AudioCandidateReservationQuote::for_project(plain.project(), 0).is_err(),
+                "ordinary allowance does not widen closed FM4 admission"
+            );
+            let without = crate::PreparedRevision::device_handoff_metadata_construction_bytes(
+                plain.project(),
+            )
+            .unwrap();
+            assert_eq!(full.checked_sub(without), Some(expected));
+            let limits = reservation();
+            assert_eq!(limits.root_rows, hex_project::MAX_TRACKS);
+            assert_eq!(limits.data_rows, hex_project::MAX_TRACKS * 4);
+            assert_eq!(limits.handle_rows, 0);
+            assert!(expected <= limits.max_construction_peak_bytes);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+fn native_quote_does_not_charge_opaque_foreign_source_programs() {
+    let (mut editor, device) = fixture();
+    for operator in 1..=4 {
+        editor
+            .execute(Command::ReplaceDeviceAutomation {
+                device,
+                parameter: hex_devices::fm4::device::parameter::carrier(operator),
+                points: vec![],
+            })
+            .unwrap();
+    }
+    // Unknown foreign payloads remain generic project state. The foreign owner
+    // separately validates/quotes them; native quotation must not reinterpret it.
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device,
+            state: hex_lattice_contract::NativeDeviceState::new(
+                hex_lattice_contract::VST3_DEVICE_TYPE_ID,
+                1,
+                vec![1],
+            )
+            .unwrap(),
+        })
+        .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceAutomation {
+            device,
+            parameter: ParameterId::from_static(29),
+            points: vec![point(BeatTime::ZERO, 0.5)],
+        })
+        .unwrap();
+    assert_eq!(construction_bytes(editor.project()).unwrap(), 0);
+}
