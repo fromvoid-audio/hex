@@ -348,6 +348,11 @@ impl DevicePanelState {
                 .is_some_and(|owner| state.is_some_and(|state| owner_exists(state, owner)))
     }
 
+    /// A sidebar pointer action leaves descendant editors on its owning card.
+    pub(super) fn focus_action_card(&mut self, device: DeviceId, window: &mut Window, cx: &App) {
+        self.chain_window.focus(device, cx).focus(window);
+    }
+
     /// A menu selecting another card restores that card only when a card owned
     /// focus. Nested numeric/text/graph and browser focus remain untouched.
     pub(super) fn comparison_return_focus(
@@ -1228,7 +1233,9 @@ fn render_track(
         )
         .track_focus(&focus);
         let card = keyboard::card(view, cx, device.id(), focus.clone(), card);
-        let card = super::device_comparison::card(view, cx, device.id(), class, focus, card);
+        let card =
+            super::device_comparison::card(view, cx, device.id(), class, focus.clone(), card);
+        let card = super::device_preset::card(view, cx, device.id(), class, focus, card);
         chain = chain.child(card);
     }
     chain = chain.child(render_device_end_target(
@@ -2839,6 +2846,13 @@ fn instrument_actions(
 ) -> Div {
     let id = device.id();
     let actions = div().flex().flex_col().items_center().gap(px(2.0));
+    let actions = if presets_available {
+        let content =
+            super::device_preset::actions(view, id, NativeDeviceClass::Instrument, selected, cx);
+        actions.child(content)
+    } else {
+        actions
+    };
     let actions = if device.state().type_id().as_str() == Ok("hex.vst3")
         && !view.degraded_plugins.contains(id.value())
     {
@@ -2860,20 +2874,13 @@ fn instrument_actions(
         })),
     );
     let actions = if presets_available {
-        actions
-            .child(super::device_preset::actions(
-                id,
-                NativeDeviceClass::Instrument,
-                selected,
-                cx,
-            ))
-            .child(super::device_comparison::actions(
-                view,
-                device,
-                NativeDeviceClass::Instrument,
-                selected,
-                cx,
-            ))
+        actions.child(super::device_comparison::actions(
+            view,
+            device,
+            NativeDeviceClass::Instrument,
+            selected,
+            cx,
+        ))
     } else {
         actions
     };
@@ -2940,26 +2947,24 @@ fn device_actions(
 ) -> Div {
     let id = device.id();
     let mut actions = div().flex().flex_col().items_center().gap(px(2.0));
+    if presets_available {
+        let content =
+            super::device_preset::actions(view, id, NativeDeviceClass::Effect, selected, cx);
+        actions = actions.child(content);
+    }
     if device.state().type_id().as_str() == Ok("hex.vst3")
         && !view.degraded_plugins.contains(id.value())
     {
         actions = actions.child(vst3_editor_button(id, selected, cx));
     }
     if presets_available {
-        actions = actions
-            .child(super::device_preset::actions(
-                id,
-                NativeDeviceClass::Effect,
-                selected,
-                cx,
-            ))
-            .child(super::device_comparison::actions(
-                view,
-                device,
-                NativeDeviceClass::Effect,
-                selected,
-                cx,
-            ));
+        actions = actions.child(super::device_comparison::actions(
+            view,
+            device,
+            NativeDeviceClass::Effect,
+            selected,
+            cx,
+        ));
     }
     actions.child(
         action_button(
