@@ -783,7 +783,9 @@ impl MutableInstrumentRuntime for Runtime {
             };
             // Shared analytic contexts are neutral; custom tables opt into the
             // wide mutable owner before any note is prepared.
-            let note = if self.factory.tuning.is_some() {
+            let note = if self.factory.tuning.is_some()
+                || self.factory.settings.fine.values() != source.configuration.fine_offsets_hz()
+            {
                 let Ok(note) = self.factory.retuned_note(source_note) else {
                     return;
                 };
@@ -1356,7 +1358,8 @@ impl MutableInstrumentRuntime for Runtime {
                         self.factory.settings.global.active,
                     )
                     && p.voices().filter(|v| v.id != 0).count() <= self.factory.capacity()
-                    && (p.tuning == self.factory.tuning.as_ref()
+                    && ((p.tuning == self.factory.tuning.as_ref()
+                        && p.fine_offsets == self.factory.settings.fine.values())
                         || p.voices().filter(|v| v.id != 0).all(|v| {
                             self.factory.retuned_note(v.note).is_ok_and(|note| {
                                 (!self.factory.settings.lfo.active()
@@ -1394,7 +1397,9 @@ impl MutableInstrumentRuntime for Runtime {
                 .zip(p.voices().filter(|voice| voice.id != 0))
             {
                 *target = source;
-                if p.tuning != self.factory.tuning.as_ref() {
+                if p.tuning != self.factory.tuning.as_ref()
+                    || p.fine_offsets != self.factory.settings.fine.values()
+                {
                     let Ok(note) = self.factory.retuned_note(source.note) else {
                         return;
                     };
@@ -1470,6 +1475,7 @@ impl VoiceHistory for Runtime {
 }
 
 pub(super) struct Legacy<'a> {
+    pub fine_offsets: [f32; 4],
     pub tuning: Option<&'a hex_lattice::TuningTable>,
     pub rate: u32,
     pub base: [u8; ENABLE_PAYLOAD_BYTES],
@@ -1516,6 +1522,7 @@ impl<'a> Legacy<'a> {
     fn read(previous: &'a dyn MutableInstrumentRuntime) -> Option<Self> {
         if let Some(p) = previous.as_any().downcast_ref::<Runtime>() {
             return Some(Self {
+                fine_offsets: p.factory.settings.fine.values(),
                 tuning: p.factory.tuning.as_ref(),
                 rate: p.factory.rate,
                 base: p.factory.base,
@@ -1542,3 +1549,6 @@ mod tests;
 
 #[cfg(test)]
 mod global_tests;
+
+#[cfg(test)]
+mod fine_tests;

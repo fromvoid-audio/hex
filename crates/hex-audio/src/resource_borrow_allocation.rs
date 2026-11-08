@@ -446,3 +446,246 @@ fn resident_sampler_occurrence_gains_allocate_and_free_nothing_in_the_actual_pai
         assert_eq!(*actual, [expected; 2]);
     }
 }
+
+#[test]
+fn resident_sampler_voice_steal_declick_allocates_and_frees_nothing_in_the_actual_pair() {
+    use hex_devices::sampler::{Mode, PreparedSamplerPlan, Region, SampleChannels, SampleShape};
+    use hex_lattice::{
+        NativeInstrumentEvent, NativeInstrumentRuntimeError, NativeInstrumentRuntimeLimits,
+        NativeInstrumentRuntimePair,
+    };
+    let pcm = [1.0; 32];
+    let views = [DeviceResourceView {
+        slot: DeviceAssetSlot::new(1).unwrap(),
+        identity: DeviceResourceIdentity {
+            asset: DeviceAssetKey::new(1).unwrap(),
+            content: [2; 32],
+            derivation_version: 1,
+            derivation: [3; 32],
+        },
+        sample_rate: 8_000,
+        pcm: DeviceResourcePcm::Mono(&pcm),
+    }];
+    let resources = BorrowedDeviceResources(&views);
+    let mut settings = hex_devices::sampler::Settings::new(Region { start: 0, end: 32 });
+    settings.mode = Mode::Classic {
+        loop_region: Some(Region { start: 0, end: 32 }),
+    };
+    settings.envelope.release_seconds = 64.0 / 8_000.0;
+    let prepared = PreparedSamplerPlan::new(
+        SampleShape::new(32, 8_000, SampleChannels::Mono).unwrap(),
+        8_000,
+        settings,
+    )
+    .unwrap()
+    .bind_source_on_control(views[0])
+    .unwrap()
+    .prepare_runtime_on_control(1, 128, &TuningTable::default())
+    .unwrap();
+    let limits = NativeInstrumentRuntimeLimits {
+        max_pair_bytes: 2 * 1024 * 1024,
+        max_events_per_block: 128,
+        max_active_occurrences: 1,
+        max_tail_frames: 8_000 * 600,
+    };
+    let mut runtime = NativeInstrumentRuntimePair::new(&prepared, limits).unwrap();
+    assert!(runtime.steals_releasing_voices());
+    let note = |frame_offset, occurrence_id| NativeInstrumentEvent::NoteOn {
+        frame_offset,
+        occurrence_id,
+        pitch: 60,
+        velocity: 127,
+    };
+    // A one-voice runtime: note 2 steals releasing note 1 into the fade pool.
+    let steal = [
+        note(0, 1),
+        NativeInstrumentEvent::NoteOff {
+            frame_offset: 4,
+            occurrence_id: 1,
+        },
+        note(8, 2),
+    ];
+    let held = [note(0, 1), note(2, 2)];
+    // `steals` same-frame steals; one more than the fade pool drops its onset.
+    let burst = |steals: u64| {
+        let mut events = vec![note(0, 1)];
+        for id in 1..=steals {
+            events.push(NativeInstrumentEvent::NoteOff {
+                frame_offset: 0,
+                occurrence_id: id,
+            });
+            events.push(note(0, id + 1));
+        }
+        events
+    };
+    let pool = hex_devices::sampler::MAX_SAMPLER_RUNTIME_VOICES as u64;
+    let full_burst = burst(pool);
+    let over_burst = burst(pool + 1);
+    let mut burst_output = [[0.0; 2]; 24];
+    let mut over_output = burst_output;
+    let mut speculative = [[0.0; 2]; 24];
+    let mut committed = speculative;
+    let mut refused = [[9.0; 2]; 4];
+    let mut ids = [0; 1];
+    let mut failure = None;
+    // Construction, resource binding, buffers and oracles stay outside. Measure
+    // preflight, the steal, the declick, rollback, the held-capacity refusal and
+    // the fade-pool burst and its dropped onset.
+    let measurement = allocation_counter::measure(|| {
+        for _ in 0..32 {
+            let result = (|| {
+                runtime.reset();
+                runtime.begin_block();
+                if runtime.process_block(&held, &mut refused, &resources)
+                    != Err(NativeInstrumentRuntimeError::EventCapacityExceeded)
+                {
+                    return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
+                }
+                runtime.rollback_block();
+                runtime.begin_block();
+                over_output.fill([0.0; 2]);
+                runtime.process_block(&over_burst, &mut over_output, &resources)?;
+                runtime.rollback_block();
+                runtime.begin_block();
+                burst_output.fill([0.0; 2]);
+                runtime.process_block(&full_burst, &mut burst_output, &resources)?;
+                runtime.commit_block();
+                runtime.reset();
+                runtime.begin_block();
+                speculative.fill([0.0; 2]);
+                runtime.process_block(
+                    std::hint::black_box(&steal),
+                    &mut speculative,
+                    &resources,
+                )?;
+                runtime.rollback_block();
+                runtime.begin_block();
+                committed.fill([0.0; 2]);
+                runtime.process_block(std::hint::black_box(&steal), &mut committed, &resources)?;
+                runtime.commit_block();
+                if runtime.active_occurrence_ids(&mut ids)? != 1 || ids[0] != 2 {
+                    return Err(NativeInstrumentRuntimeError::InvalidActiveOccurrenceIds);
+                }
+                Ok(())
+            })();
+            if let Err(error) = result {
+                failure = Some(error);
+                break;
+            }
+        }
+    });
+    assert_eq!(failure, None);
+    assert_eq!(
+        (
+            measurement.count_total,
+            measurement.bytes_total,
+            measurement.count_current,
+            measurement.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(refused, [[9.0; 2]; 4]);
+    assert!((burst_output[0][0] - (1.0 + pool as f32)).abs() < 1e-4);
+    assert!(
+        (burst_output[23][0] - 1.0).abs() < 1e-6,
+        "burst declick complete"
+    );
+    // The dropped onset leaves the releasing slot voice and every fade intact.
+    assert!((over_output[0][0] - (1.0 + pool as f32)).abs() < 1e-4);
+    assert!((over_output[23][0] - (1.0 - 23.0 / 64.0)).abs() < 1e-6);
+    assert_eq!(speculative, committed);
+    // Frame8 carries both the new onset and the stolen voice at its release level.
+    assert!((committed[8][0] - (1.0 + (1.0 - 4.0 / 64.0))).abs() < 1e-6);
+    assert!((committed[23][0] - 1.0).abs() < 1e-6, "declick complete");
+}
+
+#[test]
+fn sampler_loop_crossfade_renders_through_repeated_seams_without_allocations_or_frees() {
+    use hex_devices::sampler::{Mode, PreparedSamplerPlan, Region, SampleChannels, SampleShape};
+    use hex_lattice::{
+        NativeInstrumentEvent, NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair,
+    };
+    // A ramp makes the 8..32 loop seam a large step that the crossfade hides.
+    let pcm: [f32; 32] = std::array::from_fn(|n| n as f32 / 32.0);
+    let views = [DeviceResourceView {
+        slot: DeviceAssetSlot::new(1).unwrap(),
+        identity: DeviceResourceIdentity {
+            asset: DeviceAssetKey::new(1).unwrap(),
+            content: [2; 32],
+            derivation_version: 1,
+            derivation: [3; 32],
+        },
+        sample_rate: 8_000,
+        pcm: DeviceResourcePcm::Mono(&pcm),
+    }];
+    let resources = BorrowedDeviceResources(&views);
+    let mut settings = hex_devices::sampler::Settings::new(Region { start: 0, end: 32 });
+    settings.mode = Mode::Classic {
+        loop_region: Some(Region { start: 8, end: 32 }),
+    };
+    // 8 source frames at 8 kHz: the whole pre-roll.
+    settings.loop_crossfade_ms = 1.0;
+    let prepared = PreparedSamplerPlan::new(
+        SampleShape::new(32, 8_000, SampleChannels::Mono).unwrap(),
+        8_000,
+        settings,
+    )
+    .unwrap()
+    .bind_source_on_control(views[0])
+    .unwrap()
+    .prepare_runtime_on_control(1, 128, &TuningTable::default())
+    .unwrap();
+    let limits = NativeInstrumentRuntimeLimits {
+        max_pair_bytes: 2 * 1024 * 1024,
+        max_events_per_block: 128,
+        max_active_occurrences: 1,
+        max_tail_frames: 8_000 * 600,
+    };
+    // 60 renders at unity (linear interpolation); 72 at 2x (band-limited).
+    for (pitch, bound) in [(60, 0.2), (72, 0.35)] {
+        let mut runtime = NativeInstrumentRuntimePair::new(&prepared, limits).unwrap();
+        let onset = [NativeInstrumentEvent::NoteOn {
+            frame_offset: 0,
+            occurrence_id: 1,
+            pitch,
+            velocity: 127,
+        }];
+        // 16 blocks of 24 frames cross the 24-frame loop seam 15 times.
+        let mut output = [[[0.0; 2]; 24]; 16];
+        let mut failure = None;
+        // Construction, binding and buffers stay outside; measure the rendering.
+        let measurement = allocation_counter::measure(|| {
+            runtime.reset();
+            for (index, block) in output.iter_mut().enumerate() {
+                runtime.begin_block();
+                let events: &[NativeInstrumentEvent] = if index == 0 { &onset } else { &[] };
+                if let Err(error) =
+                    runtime.process_block(std::hint::black_box(events), block, &resources)
+                {
+                    failure = Some(error);
+                    break;
+                }
+                runtime.commit_block();
+            }
+        });
+        assert_eq!(failure, None);
+        assert_eq!(
+            (
+                measurement.count_total,
+                measurement.bytes_total,
+                measurement.count_current,
+                measurement.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        // The ramp's slope is 1/32 per source frame; a hard seam would jump by
+        // 24/32. At 2x the 8-frame fade spans 4 output frames.
+        let frames: Vec<f32> = output.iter().flatten().map(|frame| frame[0]).collect();
+        let step = frames
+            .windows(2)
+            .map(|pair| (pair[1] - pair[0]).abs())
+            .fold(0.0, f32::max);
+        assert!(step < bound, "{pitch}: {step}");
+        assert!(frames[380] > 0.0, "the loop keeps sounding");
+    }
+}

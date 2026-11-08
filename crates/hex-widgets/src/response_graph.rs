@@ -7,21 +7,30 @@ use gpui::{
     App, Bounds, Context, CursorStyle, Element, ElementId, Entity, EventEmitter, FocusHandle,
     Focusable, GlobalElementId, LayoutId, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, PathBuilder, Pixels, Point, SharedString, Style, Subscription, Window, canvas,
-    div, point, prelude::*, px, rgb,
+    div, point, prelude::*, px, quad, rgb, size,
 };
 
 gpui::actions!(hex_response_graph, [RemoveNode, CancelPointer]);
 
-/// Install opt-in graph Backspace and held-pointer Escape bindings.
+/// Install opt-in graph deletion and held-pointer Escape bindings.
 pub fn bind_response_graph_keys(cx: &mut App) {
     cx.bind_keys([
         gpui::KeyBinding::new("backspace", RemoveNode, Some("hex_response_graph_remove")),
+        gpui::KeyBinding::new(
+            "x",
+            RemoveNode,
+            Some("hex_response_graph_remove && !hex_text_editing && !hex_text_input"),
+        ),
         gpui::KeyBinding::new("escape", CancelPointer, Some("hex_response_graph_remove")),
     ]);
 }
 
 mod axes;
 mod creation_hint;
+#[cfg(test)]
+mod node_appearance_tests;
+#[cfg(test)]
+mod reference_tests;
 mod scroll;
 pub use axes::ResponseGraphAxes;
 pub use creation_hint::ResponseGraphCreationHint;
@@ -158,6 +167,15 @@ fn valid_curve(points: &[[f32; 2]]) -> bool {
     }) && points.windows(2).all(|pair| pair[0][0] <= pair[1][0])
 }
 
+/// Passive normalized comparison curve. It has no nodes or input targets.
+/// Owners retain domain meaning; the graph shares its exact plot projection.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResponseGraphReference {
+    pub points: std::sync::Arc<[[f32; 2]]>,
+    pub color: u32,
+    pub opacity: f32,
+}
+
 /// Product-resolved spectrum colors, separate from response and control colors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResponseGraphAnalyzerStyle {
@@ -172,6 +190,7 @@ pub struct ResponseGraphAnalyzerStyle {
 pub struct ResponseGraph {
     id: SharedString,
     model: ResponseGraphModel,
+    references: std::sync::Arc<[ResponseGraphReference]>,
     style: ControlStyle,
     analyzer_style: Option<ResponseGraphAnalyzerStyle>,
     axes: Option<ResponseGraphAxes>,
@@ -186,6 +205,9 @@ pub struct ResponseGraph {
     marquee: Option<MarqueePress>,
     creation_hint_resolver: Option<fn([f32; 2]) -> ResponseGraphCreationHint>,
     creation_hover: Option<creation_hint::Hover>,
+    circular_nodes: bool,
+    node_hover_pointer: Option<Point<Pixels>>,
+    hovered_node: Option<u32>,
     creation_hint_was_focused: bool,
     tab_navigation: bool,
     backspace_removal: bool,
@@ -240,6 +262,7 @@ impl ResponseGraph {
         Self {
             id: id.into(),
             model,
+            references: std::sync::Arc::from([]),
             style,
             analyzer_style: None,
             axes: None,
@@ -254,6 +277,9 @@ impl ResponseGraph {
             marquee: None,
             creation_hint_resolver: None,
             creation_hover: None,
+            circular_nodes: false,
+            node_hover_pointer: None,
+            hovered_node: None,
             creation_hint_was_focused: false,
             tab_navigation: false,
             backspace_removal: false,
@@ -286,6 +312,32 @@ impl ResponseGraph {
             .map(|bounds| axes::plot_bounds(bounds, self.axes.is_some()))
     }
 
+    /// Use circular node markers that fill on hover or selection. Input events
+    /// and hit targets remain the same as the default graph presentation.
+    pub fn set_circular_nodes(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.circular_nodes != enabled {
+            self.circular_nodes = enabled;
+            self.refresh_node_hover(cx);
+            cx.notify();
+        }
+    }
+
+    fn refresh_node_hover(&mut self, cx: &mut Context<Self>) {
+        let next = self
+            .circular_nodes
+            .then_some(self.node_hover_pointer)
+            .flatten()
+            .and_then(|pointer| self.pointer_hit(pointer))
+            .and_then(|(_, hit)| match hit {
+                creation_hint::Hit::Node(id) => Some(id),
+                creation_hint::Hit::Blank { .. } => None,
+            });
+        if self.hovered_node != next {
+            self.hovered_node = next;
+            cx.notify();
+        }
+    }
+
     /// Allow blank plot presses to create one owner-defined point. Node hits
     /// keep select/drag semantics; double-click's second press is suppressed.
     pub fn set_creation_enabled(&mut self, enabled: bool) {
@@ -303,16 +355,16 @@ impl ResponseGraph {
         self.creation_drag_enabled = enabled;
     }
 
-    /// Opt into marquee selection from blank presses (see [`crate::marquee`]).
-    /// A blank press that crosses the drag threshold draws a band and emits
-    /// [`ResponseGraphMarqueeEvent`]s; a blank click without movement emits
-    /// Create on release when creation is enabled, otherwise a Commit with an
-    /// empty set (Replace mode only) so the owner clears its selection. While
-    /// enabled, marquee supersedes plain creation dragging: a creating click on
-    /// a creation-drag owner emits Create then a node-zero Release at the press,
-    /// and an Option blank press keeps that owner's held creation stream. Node presses keep their
-    /// select/drag stream: owners moving a multi-selection apply the dragged
-    /// node's delta to the other selected nodes in one edit.
+    /// Opt into marquee selection from Shift blank presses (see
+    /// [`crate::marquee`]). Plain blank presses keep the ordinary creation
+    /// stream. A Shift blank press that crosses the drag threshold draws a band
+    /// and emits [`ResponseGraphMarqueeEvent`]s; without movement it emits
+    /// Create on release when creation is enabled (closed by a node-zero
+    /// Release for creation-drag owners), otherwise a Commit with an empty set
+    /// so the owner clears its selection. Option Shift blank presses on
+    /// creation-drag owners keep the held creation stream. Node presses keep
+    /// their select/drag stream: owners moving a multi-selection apply the
+    /// dragged node's delta to the other selected nodes in one edit.
     pub fn set_marquee_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         if !enabled && self.marquee.is_some() {
             self.cancel(cx);
@@ -377,6 +429,35 @@ impl ResponseGraph {
         ]
     }
 
+    /// Install at most four bounded, noninteractive curves. Invalid input leaves
+    /// the previous display intact. Repaints only clone the shared allocation.
+    pub fn set_references(
+        &mut self,
+        references: Vec<ResponseGraphReference>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        if references.len() > 4
+            || references.iter().any(|curve| {
+                !(2..=MAX_CURVE_POINTS).contains(&curve.points.len())
+                    || !valid_curve(&curve.points)
+                    || curve.color > 0xffffff
+                    || !curve.opacity.is_finite()
+                    || !(0.0..=1.0).contains(&curve.opacity)
+            })
+        {
+            return Err("invalid graph references");
+        }
+        if self.references.as_ref() != references.as_slice() {
+            self.references = references.into();
+            cx.notify();
+        }
+        Ok(())
+    }
+
+    pub fn references(&self) -> &[ResponseGraphReference] {
+        &self.references
+    }
+
     pub fn set_model(
         &mut self,
         model: ResponseGraphModel,
@@ -397,6 +478,7 @@ impl ResponseGraph {
             self.retire_missing_scroll_node(cx);
             self.style = style;
             self.refresh_creation_hint(cx);
+            self.refresh_node_hover(cx);
             cx.notify();
         }
         Ok(())
@@ -523,8 +605,12 @@ impl ResponseGraph {
             {
                 return;
             }
-            // Creation-drag owners keep their held create-and-shape on Option.
-            if self.marquee_enabled && !(self.creation_drag_enabled && event.modifiers.alt) {
+            // Adding nodes comes first: only Shift starts a marquee, and
+            // creation-drag owners keep their held create-and-shape on Option.
+            if self.marquee_enabled
+                && MarqueeMode::starts(event.modifiers)
+                && !(self.creation_drag_enabled && event.modifiers.alt)
+            {
                 self.begin_marquee(event, position, window, cx);
                 return;
             }
@@ -957,7 +1043,9 @@ impl ResponseGraph {
     ) {
         if self.backspace_removal
             && self.focus.is_focused(window)
-            && event.keystroke.key == "backspace"
+            && (event.keystroke.key == "backspace"
+                || (event.keystroke.key == "x"
+                    && event.keystroke.modifiers == Modifiers::default()))
         {
             // A focused empty/pending graph must not forward deletion to its
             // editor's track/clip action. Numeric/text siblings own their keys.
@@ -1142,6 +1230,7 @@ impl gpui::Render for ResponseGraph {
         }
         self.creation_hint_was_focused = focused;
         self.cancel_unfocused_creation(window, cx);
+        let references = self.references.clone();
         let primary = self.model.primary.clone();
         let secondary = self.model.secondary.clone();
         let analyzer = self.model.analyzer.clone();
@@ -1152,6 +1241,8 @@ impl gpui::Render for ResponseGraph {
             output: self.style.muted,
         });
         let nodes = self.model.nodes.clone();
+        let circular_nodes = self.circular_nodes;
+        let hovered_node = self.hovered_node;
         let style = self.style;
         let axes = self.axes.clone();
         let labels = self
@@ -1192,10 +1283,16 @@ impl gpui::Render for ResponseGraph {
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_mouse_move(cx.listener(|graph, event: &MouseMoveEvent, _, cx| {
                 graph.hover_creation_hint(event, cx);
+                if graph.circular_nodes {
+                    graph.node_hover_pointer = Some(event.position);
+                    graph.refresh_node_hover(cx);
+                }
             }))
             .on_hover(cx.listener(|graph, hovered: &bool, _, cx| {
                 if !hovered {
                     graph.clear_creation_hint(cx);
+                    graph.node_hover_pointer = None;
+                    graph.refresh_node_hover(cx);
                 }
             }))
             .on_scroll_wheel(cx.listener(|graph, event, window, cx| {
@@ -1212,6 +1309,7 @@ impl gpui::Render for ResponseGraph {
                             graph.bounds = Some(bounds);
                             if moved {
                                 graph.refresh_creation_hint(cx);
+                                graph.refresh_node_hover(cx);
                             }
                             if changed && graph.axes.is_some() {
                                 cx.notify();
@@ -1222,11 +1320,14 @@ impl gpui::Render for ResponseGraph {
                             axes.as_ref(),
                             &primary,
                             &secondary,
+                            &references,
                             analyzer.as_deref(),
                             input_analyzer.as_deref(),
                             analyzer_peak.as_deref(),
                             analyzer_style,
                             &nodes,
+                            circular_nodes,
+                            hovered_node,
                             style,
                             window,
                         );
@@ -1261,11 +1362,14 @@ fn paint_graph(
     axes: Option<&ResponseGraphAxes>,
     primary: &[[f32; 2]],
     secondary: &[[f32; 2]],
+    references: &[ResponseGraphReference],
     analyzer: Option<&[[f32; 2]]>,
     input_analyzer: Option<&[[f32; 2]]>,
     analyzer_peak: Option<&[[f32; 2]]>,
     analyzer_style: ResponseGraphAnalyzerStyle,
     nodes: &[ResponseGraphNode],
+    circular_nodes: bool,
+    hovered_node: Option<u32>,
     style: ControlStyle,
     window: &mut Window,
 ) {
@@ -1323,13 +1427,24 @@ fn paint_graph(
     }
     spectrum_painter::paint(plot, spectra.clone(), SpectrumPass::Peak, window);
     spectrum_painter::paint(plot, spectra, SpectrumPass::Trace, window);
+    for reference in references {
+        paint_curve(
+            origin,
+            width,
+            height,
+            &reference.points,
+            px(0.8),
+            gpui::Hsla::from(rgb(reference.color)).alpha(reference.opacity),
+            window,
+        );
+    }
     paint_curve(
         origin,
         width,
         height,
         secondary,
         px(0.75),
-        style.muted,
+        rgb(style.muted).into(),
         window,
     );
     paint_curve(
@@ -1338,7 +1453,7 @@ fn paint_graph(
         height,
         primary,
         px(1.15),
-        style.accent,
+        rgb(style.accent).into(),
         window,
     );
     for node in nodes {
@@ -1347,6 +1462,16 @@ fn paint_graph(
             origin.y + height * (1.0 - node.position[1]),
         );
         let radius = px(if node.selected { 4.0 } else { 3.0 });
+        if circular_nodes {
+            window.paint_quad(circular_node_quad(
+                center,
+                radius,
+                *node,
+                hovered_node,
+                style,
+            ));
+            continue;
+        }
         let mut marker = PathBuilder::stroke(px(1.0));
         marker.move_to(point(center.x - radius, center.y));
         marker.line_to(point(center.x, center.y - radius));
@@ -1366,13 +1491,43 @@ fn paint_graph(
     }
 }
 
+fn circular_node_quad(
+    center: Point<Pixels>,
+    radius: Pixels,
+    node: ResponseGraphNode,
+    hovered_node: Option<u32>,
+    style: ControlStyle,
+) -> gpui::PaintQuad {
+    let color = if node.enabled {
+        style.accent
+    } else {
+        style.muted
+    };
+    let fill: gpui::Hsla = if node.selected || hovered_node == Some(node.id) {
+        rgb(color).into()
+    } else {
+        gpui::transparent_black()
+    };
+    quad(
+        Bounds::new(
+            point(center.x - radius, center.y - radius),
+            size(radius * 2.0, radius * 2.0),
+        ),
+        radius,
+        fill,
+        px(1.0),
+        rgb(color),
+        Default::default(),
+    )
+}
+
 fn paint_curve(
     origin: Point<Pixels>,
     width: Pixels,
     height: Pixels,
     points: &[[f32; 2]],
     stroke_width: Pixels,
-    color: u32,
+    color: gpui::Hsla,
     window: &mut Window,
 ) {
     let mut path = PathBuilder::stroke(stroke_width);
@@ -1385,7 +1540,7 @@ fn paint_curve(
         }
     }
     if let Ok(path) = path.build() {
-        window.paint_path(path, rgb(color));
+        window.paint_path(path, color);
     }
 }
 

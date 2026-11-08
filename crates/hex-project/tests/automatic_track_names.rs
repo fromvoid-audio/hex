@@ -184,3 +184,87 @@ fn snapshot_refuses_malformed_automatic_name_inventories() {
         assert!(Project::from_snapshot(snapshot).is_err());
     }
 }
+
+#[test]
+fn device_track_initial_gain_is_atomic_and_preserves_automatic_names() {
+    for (slot, state, label, expected_name) in [
+        (TrackDeviceSlot::Instrument, instrument(), "sine", "sine"),
+        (TrackDeviceSlot::Effect, effect(), "utility", "track 1"),
+    ] {
+        let mut editor = editor();
+        let before = editor.project().snapshot();
+        let created = editor
+            .execute(Command::InsertDefaultTrackWithDeviceAndGain {
+                before_track: None,
+                slot,
+                state,
+                device_name: label.into(),
+                gain: 0.25,
+            })
+            .unwrap();
+        let id = track(created);
+        assert_eq!(name(&editor, id), (expected_name, true));
+        assert_eq!(editor.project().track(id).unwrap().gain(), 0.25);
+        let after = editor.project().clone();
+        assert_eq!(Project::from_snapshot(after.snapshot()).unwrap(), after);
+        assert!(editor.undo());
+        let mut restored = editor.project().snapshot();
+        restored.next_id = before.next_id;
+        assert_eq!(restored, before);
+        assert!(editor.redo());
+        assert_eq!(editor.project(), &after);
+    }
+}
+
+#[test]
+fn device_track_initial_gain_refusal_keeps_project_and_redo() {
+    let mut editor = editor();
+    let stale = track(
+        editor
+            .execute(Command::InsertDefaultTrack { before_track: None })
+            .unwrap(),
+    );
+    assert!(editor.undo());
+    let before = editor.project().snapshot();
+    for gain in [f32::NAN, f32::INFINITY, -0.1, 2.1] {
+        assert!(
+            editor
+                .execute(Command::InsertDefaultTrackWithDeviceAndGain {
+                    before_track: None,
+                    slot: TrackDeviceSlot::Instrument,
+                    state: instrument(),
+                    device_name: "sine".into(),
+                    gain,
+                })
+                .is_err()
+        );
+        assert_eq!(editor.project().snapshot(), before);
+        assert!(editor.can_redo());
+    }
+    assert!(
+        editor
+            .execute(Command::InsertDefaultTrackWithDeviceAndGain {
+                before_track: Some(stale),
+                slot: TrackDeviceSlot::Effect,
+                state: effect(),
+                device_name: "utility".into(),
+                gain: 0.5,
+            })
+            .is_err()
+    );
+    assert_eq!(editor.project().snapshot(), before);
+    assert!(editor.can_redo());
+    let result = editor.execute_prepared(
+        Command::InsertDefaultTrackWithDeviceAndGain {
+            before_track: None,
+            slot: TrackDeviceSlot::Effect,
+            state: effect(),
+            device_name: "utility".into(),
+            gain: 0.5,
+        },
+        |_| Err::<(), _>(hex_project::Invalid("refused")),
+    );
+    assert!(result.is_err());
+    assert_eq!(editor.project().snapshot(), before);
+    assert!(editor.can_redo());
+}

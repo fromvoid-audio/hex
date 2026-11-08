@@ -198,8 +198,10 @@ pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
     Ok(value)
 }
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
-    let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
-    let mut value: Value = serde_json::from_slice(bytes)?;
+    decode_value(super::audio_events::parse_unique(bytes)?)
+}
+/// Decode an envelope parsed once by [`super::audio_events::parse_unique`].
+pub(crate) fn decode_value(mut value: Value) -> Result<Project, StorageError> {
     if value.get("version").and_then(Value::as_u64) != Some(61) {
         return Err(StorageError::Invalid("invalid audio event gain schema"));
     }
@@ -208,7 +210,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         .and_then(|value| value.remove("audio_event_gains"))
         .ok_or(StorageError::Invalid("audio event gain inventory missing"))?;
     value["version"] = 60.into();
-    let project = super::alias_projection_v60::decode(&serde_json::to_vec(&value)?)?;
+    let project = super::alias_projection_v60::decode_value(value)?;
     let length = raw
         .as_array()
         .ok_or(StorageError::Invalid("invalid audio event gain inventory"))?

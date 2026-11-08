@@ -1,6 +1,5 @@
 //! Display-only geometry for control-prepared Arrangement note samples.
 //! Source projection and tempo conversion never run here.
-pub(super) const ROW_NOTE_SHAPE_LIMIT: usize = 128;
 
 /// A one-pitch clip draws its notes one third of the body tall, centred.
 const MIN_FIT_ROWS: u8 = 3;
@@ -94,33 +93,6 @@ pub(super) fn paint_bounds(
     ))
 }
 
-/// One note for per-note preview layouts. The div spans the body height at the
-/// note's horizontal extent and paints the same fitted row as the batched
-/// body canvas, so previews and resting clips draw identical note heights.
-pub(super) fn note_column(x: f32, width: f32, pitch: u8, fit: PitchFit) -> gpui::Div {
-    use gpui::{Styled, canvas, div, prelude::*, relative, rgb};
-    div()
-        .absolute()
-        .left(relative(x))
-        .w(relative(width))
-        .top_0()
-        .bottom_0()
-        .child(
-            canvas(
-                |_, _, _| (),
-                move |bounds, _, window, _| {
-                    if let Some(note) =
-                        paint_bounds(bounds, 0.0, 1.0, pitch, fit, window.scale_factor())
-                    {
-                        window.paint_quad(gpui::fill(note, rgb(0x000000)));
-                    }
-                },
-            )
-            .absolute()
-            .inset_0(),
-        )
-}
-
 pub(super) fn note_shape(
     frame_start: u64,
     frame_gate_end: u64,
@@ -153,14 +125,24 @@ pub(super) fn rendered_notes(
     clip: hex_project::ClipId,
     dragging: bool,
 ) -> Vec<(gpui::Bounds<gpui::Pixels>, gpui::Background)> {
-    let selector = Box::leak(
-        format!(
+    rendered_note_layer(
+        visual,
+        &format!(
             "clip-{}notes-{}",
             if dragging { "drag-" } else { "" },
             clip.value()
-        )
-        .into_boxed_str(),
-    );
+        ),
+    )
+}
+
+/// Completed note rectangles of the note layer named `selector`, in logical
+/// pixels.
+#[cfg(all(test, feature = "ui-test-support"))]
+pub(super) fn rendered_note_layer(
+    visual: &mut gpui::VisualTestContext,
+    selector: &str,
+) -> Vec<(gpui::Bounds<gpui::Pixels>, gpui::Background)> {
+    let selector: &'static str = Box::leak(selector.to_owned().into_boxed_str());
     let scale = visual.update(|window, _| window.scale_factor());
     visual
         .rendered_filled_quads(selector)

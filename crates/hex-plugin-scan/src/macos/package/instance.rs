@@ -13,18 +13,30 @@ pub struct InstancePackage {
     pub build: InstanceBuild,
 }
 impl InstancePackage {
-    /// Resolve only the running app's fixed package. Raw executables have no
-    /// environment, PATH, checkout or Python fallback into foreign execution.
-    /// Filesystem/hash work belongs on the control worker before exposure.
+    /// Resolve the running app's own package, or the explicit signed instance
+    /// package prepared by the optimized source launcher. Only the raw
+    /// desktop may use the launch setting. Verify on control before exposure.
     pub fn current_on_control() -> Result<Self, String> {
         let executable = std::env::current_exe()
             .map_err(|error| format!("app executable unavailable: {error}"))?;
-        let contents = executable
-            .parent()
-            .and_then(Path::parent)
-            .filter(|path| path.file_name().and_then(|name| name.to_str()) == Some("Contents"))
-            .ok_or("packaged vst3 hosting tools unavailable in this build")?;
-        Self::inspect(contents.parent().ok_or("app bundle unavailable")?)
+        let launch = std::env::var_os("HEX_LAUNCH_INSTANCE_APP").map(PathBuf::from);
+        let (app, source_launch) = hosting_app(&executable, launch.as_deref())?;
+        if source_launch {
+            Self::inspect_source_launch(app)
+        } else {
+            Self::inspect(app)
+        }
+    }
+
+    /// Validate the fixed layout and configured signer of a source-launch
+    /// package. No helper is started during inspection.
+    pub fn inspect_source_launch(app: &Path) -> Result<Self, String> {
+        if !app.is_absolute() {
+            return Err("absolute source-launch vst3 instance package required".into());
+        }
+        let package = Self::inspect(app)?;
+        verify_launch_signature(&package)?;
+        Ok(package)
     }
 
     /// Inspect the fixed package staged by the repository delivery command.
@@ -89,6 +101,74 @@ impl InstancePackage {
     }
 }
 
+fn hosting_app<'a>(
+    executable: &'a Path,
+    launch: Option<&'a Path>,
+) -> Result<(&'a Path, bool), String> {
+    if let Some(contents) = executable
+        .parent()
+        .and_then(Path::parent)
+        .filter(|path| path.file_name().and_then(|name| name.to_str()) == Some("Contents"))
+    {
+        return Ok((contents.parent().ok_or("app bundle unavailable")?, false));
+    }
+    if cfg!(debug_assertions)
+        || executable
+            .file_name()
+            .is_none_or(|name| name != "hex-desktop")
+    {
+        return Err("packaged vst3 hosting tools unavailable in this build".into());
+    }
+    launch
+        .filter(|app| app.is_absolute())
+        .map(|app| (app, true))
+        .ok_or_else(|| "source-launch vst3 instance tools unavailable".into())
+}
+
+fn verify_launch_signature(package: &InstancePackage) -> Result<(), String> {
+    // Use the same trusted signing input as the delivery script. The selected
+    // cache's receipt alone cannot authorize a helper to run.
+    const CONFIG: &str = include_str!("../../../../../scripts/hex-test-build.json");
+    let config: serde_json::Value =
+        serde_json::from_str(CONFIG).map_err(|_| "invalid vst3 launch signing configuration")?;
+    let team = config["signing"]["team_identifier"]
+        .as_str()
+        .filter(|value| {
+            value.len() == 10
+                && value
+                    .bytes()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+        })
+        .ok_or("invalid vst3 launch signer")?;
+    let certificate = config["signing"]["certificate_sha1"]
+        .as_str()
+        .filter(|value| value.len() == 40 && value.bytes().all(|c| c.is_ascii_hexdigit()))
+        .ok_or("invalid vst3 launch certificate")?;
+    let requirement = format!(
+        "=identifier \"org.portalsurfer.hex.vst3.instance\" and anchor apple generic and \
+         certificate leaf[subject.OU] = \"{team}\" and \
+         certificate leaf[field.1.2.840.113635.100.6.1.13] exists and \
+         certificate leaf = H\"{certificate}\""
+    );
+    let bundle = package
+        .build
+        .helper()
+        .ancestors()
+        .nth(3)
+        .ok_or("source-launch vst3 instance bundle unavailable")?;
+    let status = std::process::Command::new("/usr/bin/codesign")
+        .args(["--verify", "--strict", "--test-requirement", &requirement])
+        .arg(bundle)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|_| "could not verify source-launch vst3 instance signature")?;
+    if !status.success() {
+        return Err("invalid source-launch vst3 instance signature".into());
+    }
+    package.build.unchanged().map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,6 +203,25 @@ mod tests {
     impl Drop for Fixture {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn only_optimized_raw_desktop_can_use_explicit_absolute_launch_tools() {
+        let tools = Path::new("/checkout/artifacts/tools/hex.app");
+        let raw = Path::new("/checkout/target/release/hex-desktop");
+        let packaged = Path::new("/Applications/hex.app/Contents/MacOS/hex");
+        assert_eq!(
+            hosting_app(packaged, Some(tools)).unwrap(),
+            (Path::new("/Applications/hex.app"), false)
+        );
+        assert!(hosting_app(raw, None).is_err());
+        assert!(hosting_app(raw, Some(Path::new("hex.app"))).is_err());
+        assert!(hosting_app(Path::new("/checkout/test-helper"), Some(tools)).is_err());
+        if cfg!(debug_assertions) {
+            assert!(hosting_app(raw, Some(tools)).is_err());
+        } else {
+            assert_eq!(hosting_app(raw, Some(tools)).unwrap(), (tools, true));
         }
     }
 
@@ -175,6 +274,10 @@ mod tests {
         assert_eq!(selected.source, source);
         assert!(selected.build.helper().starts_with(f.app().join(ROOT)));
         selected.build.unchanged().unwrap();
+        assert_eq!(
+            InstancePackage::inspect_source_launch(&f.app()).unwrap_err(),
+            "invalid source-launch vst3 instance signature"
+        );
         for bad in [
             {
                 let mut value = manifest.clone();

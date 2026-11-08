@@ -38,6 +38,19 @@ pub(crate) struct NativeEndpointBank {
     ordinary_requirements: bool,
 }
 impl NativeEndpointBank {
+    pub(crate) fn take_accepted_manual_parameter(
+        &mut self,
+        binding: Binding,
+    ) -> Option<hex_plugin_host::transport::AcceptedManualParameter> {
+        self.entries
+            .iter_mut()
+            .flatten()
+            .find(|entry| entry.0.binding == binding)?
+            .0
+            .callback
+            .as_mut()?
+            .take_accepted_manual_parameter()
+    }
     /// Headless control-side progress only. Compare each original installed
     /// endpoint's committed request prefix with its matching actual worker;
     /// source swaps, idle sources and new epochs have independent prefixes.
@@ -53,6 +66,18 @@ impl NativeEndpointBank {
             }
         }
         Some(true)
+    }
+    #[cfg(feature = "allocation-probe")]
+    pub(crate) fn single_worker_phase_for_test(&self) -> Option<usize> {
+        let mut endpoints = self.entries.iter().flatten();
+        let callback = endpoints.next()?.0.callback.as_ref()?;
+        if endpoints.next().is_some() {
+            return None;
+        }
+        Some(
+            (callback.committed_frames_for_test()
+                % u64::try_from(callback.quantum_frames()).ok()?) as usize,
+        )
     }
     pub(crate) fn runtime_transports_are_live(
         &self,
@@ -569,8 +594,10 @@ mod tests {
             sample_rate: 48_000,
             configuration: &configuration,
             prepared,
+            automation: None,
             bypassed: false,
             input_gain: 1.0,
+            output_gain: 1.0,
         };
         let mut frames = [[0.5, -0.25]; 8];
         bank.begin_rendering(8).unwrap();
@@ -722,8 +749,10 @@ mod tests {
             sample_rate: 48_000,
             configuration: &configuration,
             prepared,
+            automation: None,
             bypassed: false,
             input_gain: 1.0,
+            output_gain: 1.0,
         };
         for block in 0..4_u64 {
             let mut frames = [[0.5, -0.25]; 8];

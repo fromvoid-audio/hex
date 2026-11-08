@@ -100,8 +100,8 @@ fn cursor_navigation_keeps_note_nudging_and_resets_on_a_new_clip(cx: &mut TestAp
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
         let cursor = v.midi_marker.unwrap();
-        assert!(cursor >= v.piano_beat_start.raw());
-        assert!(cursor < v.piano_beat_start.raw() + v.piano_beat_span.raw());
+        assert!(i128::from(cursor) >= v.piano_beat_start);
+        assert!(i128::from(cursor) < v.piano_beat_start + i128::from(v.piano_beat_span.raw()));
         assert_eq!(
             v.state
                 .as_ref()

@@ -29,6 +29,7 @@ struct ContentKey {
     lane: Option<LaneBounds>,
     drag_available: bool,
     fade_key_held: bool,
+    fade_handle_hover: Option<(ClipId, super::fade_handles::Handle)>,
     option_held: bool,
     time_selection_key_held: bool,
     automation_view: bool,
@@ -200,6 +201,9 @@ impl EditorView {
             selected_clips_epoch: self.clip_selection.epoch,
             lane: self.drag_lanes.get(&track.id()).copied(),
             fade_key_held: self.fade_key_held,
+            fade_handle_hover: self
+                .hovered_fade_handle
+                .and_then(|hover| hover.in_track(self.project_generation, track.id())),
             option_held: self.option_held,
             time_selection_key_held: self.time_selection_key_held,
             automation_view: self.automation_view.enabled,

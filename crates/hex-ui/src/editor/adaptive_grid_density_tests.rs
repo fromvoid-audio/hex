@@ -1,5 +1,5 @@
 use super::*;
-use hex_project::{Editor, Tempo};
+use hex_project::{Command, Editor, Meter, Tempo};
 
 #[test]
 fn adaptive_density_presets_resolve_distinct_current_zoom_without_changing_default() {
@@ -105,7 +105,7 @@ fn adaptive_density_bands_hold_at_least_four_units_and_stay_bounded() {
         // Bands hold at least four grid units, widened to a musical level.
         let span = bands[0].end_frame - bands[0].start_frame;
         assert!(span >= (lines[1].frame - lines[0].frame) * 4);
-        assert!(span == 24_000 || span % 96_000 == 0, "{span}");
+        assert!(span == 24_000 || span.is_multiple_of(96_000), "{span}");
         for length in [1, 72_000, u64::MAX / 2] {
             let viewport = Viewport::fit(length);
             assert!(grid_lines(&project, viewport, 100_000.0, grid).len() <= MAX_GRID_LINES);

@@ -227,3 +227,47 @@ fn solo_compilation_keeps_mix_order_solo_precedence_and_block_partition() {
         .unwrap();
     assert_eq!(render(editor.project(), &[8]), [[0.0; 2]; 8]);
 }
+
+#[test]
+fn offline_media_compiles_without_media_and_renders_silence() {
+    let (e, a, t) = setup(false);
+    // Missing media is refused unless the project marks the asset offline.
+    assert!(compile::project(e.project(), &BTreeMap::new()).is_err());
+    let offline = e.project().clone().with_offline_assets([a]).unwrap();
+    let p = compile::project(&offline, &BTreeMap::new()).unwrap();
+    let mut r = Renderer::new(&p);
+    r.play();
+    let mut out = [[9.0; 2]; 8];
+    r.render(&mut out).unwrap();
+    assert_eq!(out, [[0.0; 2]; 8]);
+    // Online clips beside an offline one still play.
+    let mut e = Editor::new(offline, 4).unwrap();
+    let b = match e
+        .execute(Command::AddAsset {
+            path: "present.wav".into(),
+            sample_rate: 48_000,
+            frames: 4,
+        })
+        .unwrap()
+    {
+        Created::Asset(id) => id,
+        _ => panic!("asset"),
+    };
+    e.execute(Command::PlaceClip {
+        track: t,
+        asset: b,
+        start: 0,
+        duration: 2,
+        source_offset: 0,
+        source_length: 2,
+        looping: false,
+    })
+    .unwrap();
+    let p = compile::project(e.project(), &bank(b)).unwrap();
+    let mut r = Renderer::new(&p);
+    r.play();
+    let mut out = [[9.0; 2]; 8];
+    r.render(&mut out).unwrap();
+    assert_eq!(&out[..3], &[[9.0, -9.0], [1.0, -1.0], [0.0; 2]]);
+    assert!(out[3..].iter().all(|frame| *frame == [0.0; 2]));
+}

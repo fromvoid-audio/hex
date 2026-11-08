@@ -9,13 +9,31 @@
 //! are bounded to +/-16, recursive storage to +/-32, with a 1e-20 numerical floor.
 //!
 //! Fast/slow/none smoothing means 20 ms/100 ms/one sample. Stop, seek and rate
-//! changes reset; loop wraps continue. Bypass advances private history. Freeze
+//! changes reset; loop wraps continue. Bypass advances private history. Compatible
+//! live bypass edits use the host's reversible 5 ms wet/dry blend and keep one
+//! room owner; removal retains the separate tail policy below. Freeze
 //! ramps feedback to unity; flat neutralizes decay shaping, cut suppresses new
 //! excitation. Frozen rooms declare Unbounded tails under the existing host
 //! policy: removed frozen tails persist until Stop, using bounded tail banks
 //! and explicit admission backpressure. Unfrozen rooms hard-clear at their
 //! declared zero-input deadline (including up to 100 ms of copied smoothing).
-//! No device-specific host lifecycle is introduced.
+//! The shared Arrangement adapter supplies authored dry/wet at host rate.
+//! Other admitted controls use tank evaluations, including decay, size and
+//! decay ratios. Density and six filter/modulation/shaping switches are stepped;
+//! canonical edits retain their smoothing. Freeze/flat/cut use the same typed
+//! delivery. Smoothing-mode automation retimes active canonical ramps to none
+//! (one sample), fast (20ms) or slow (100ms). Authored curves stay direct. Live
+//! handoff inherits the effective mode only when the incoming factory admits
+//! that program; lane removal restores canonical smoothing without DSP reset.
+//! Fixed delay rings preserve history. With authored feedback controls, gains
+//! derive from effective parameter ramps; canonical-only rendering retains
+//! prepared coefficient ramps. Decay-admitted unfrozen factories reserve the
+//! maximum finite tail. Ordinary factories keep their previous tail declaration
+//! and refuse unprepared decay input. Factories admitting freeze input declare
+//! unbounded tails before publication and otherwise refuse freeze delivery.
+//! Detached tails retain their last validated values after the host freezes the
+//! automation clock.
+
 mod runtime;
 mod state;
 use hex_lattice::{NativeDeviceDefinition, StereoMatrix};
@@ -38,9 +56,24 @@ impl ReverbDefinition {
         state: &NativeDeviceState,
         rate: u32,
     ) -> Result<PreparedReverb, DeviceContractError> {
+        Self::prepare_owned_room_for_parameters(state, rate, &[])
+    }
+    /// Exact admitted provider targets, including live base-only input slots.
+    /// Decay admission expands the finite tail promise; freeze admission makes
+    /// it unbounded. Both promises are established before publication. Smoothing
+    /// admission permits effective-mode inheritance across live canonical edits.
+    pub fn prepare_owned_room_for_parameters(
+        state: &NativeDeviceState,
+        rate: u32,
+        parameters: &[ParameterId],
+    ) -> Result<PreparedReverb, DeviceContractError> {
+        if !parameters.is_empty() {
+            runtime::automation::validate_ids(parameters)?;
+        }
         state.require_asset_free_processing()?;
         let state = state::migrate(state)?;
         runtime::PreparedReverb::new(rate, decode(&state)?)
+            .map(|prepared| prepared.with_automation(parameters))
     }
 }
 impl NativeDeviceMetadata for ReverbDefinition {
@@ -114,6 +147,9 @@ impl NativeDeviceMetadata for ReverbDefinition {
         };
         decode(state)?;
         let i = index(id)?;
+        if let Some(semantics) = runtime::automation::semantics(id) {
+            return Ok(Some(semantics));
+        }
         let (normalization, stepping) = match DESCRIPTORS[i].kind {
             ParameterKind::Bool => (N::Discrete, T::Boolean),
             ParameterKind::Choice { .. } => (N::Discrete, T::Choice),
@@ -132,7 +168,11 @@ impl NativeDeviceMetadata for ReverbDefinition {
             access: A::ReadWrite,
             normalization,
             stepping,
-            automation: E::Unsupported,
+            automation: if id == parameter::DRY_WET {
+                E::DeviceArrangementEnvelope
+            } else {
+                E::Unsupported
+            },
             modulation: M::Unsupported,
             smoothing: S::DeviceManaged,
             change_impact: I::ValueOnly,
@@ -140,6 +180,35 @@ impl NativeDeviceMetadata for ReverbDefinition {
     }
 }
 impl NativeDeviceDefinition for ReverbDefinition {
+    fn supports_parameter_automation(
+        &self,
+        state: &NativeDeviceState,
+        parameter: ParameterId,
+    ) -> Result<bool, DeviceContractError> {
+        decode(state)?;
+        Ok(runtime::automation::supports(parameter))
+    }
+
+    fn prepare_automated_runtime_instance(
+        &self,
+        _identity: hex_lattice::ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+        parameters: &[ParameterId],
+    ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
+        runtime::automation::validate_ids(parameters)?;
+        Ok(hex_lattice::PreparedRuntimeDevice {
+            matrix: StereoMatrix::identity(),
+            processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(
+                std::sync::Arc::new(Self::prepare_owned_room_for_parameters(
+                    state,
+                    context.sample_rate,
+                    parameters,
+                )?),
+            )),
+        })
+    }
+
     fn prepare_matrix(
         &self,
         state: &NativeDeviceState,
