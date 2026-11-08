@@ -61,12 +61,32 @@ fn marquee(visual: &mut VisualTestContext, points: [gpui::Point<gpui::Pixels>; 2
     let right = points[0].x.max(points[1].x) + px(10.0);
     let top = points[0].y.min(points[1].y) - px(14.0);
     let bottom = points[0].y.max(points[1].y) + px(14.0);
-    eprintln!("marquee points={points:?} bounds=({left:?},{top:?},{right:?},{bottom:?})");
     let from = point(left, top);
     let to = point(right, bottom);
-    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_move(to, Some(MouseButton::Left), Modifiers::default());
-    visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(
+        from,
+        MouseButton::Left,
+        Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        },
+    );
+    visual.simulate_mouse_move(
+        to,
+        Some(MouseButton::Left),
+        Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        },
+    );
+    visual.simulate_mouse_up(
+        to,
+        MouseButton::Left,
+        Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        },
+    );
     visual.run_until_parked();
 }
 
@@ -75,20 +95,6 @@ fn eq8_marquee_group_move_and_disable_each_commit_one_undo(cx: &mut TestAppConte
     let (handle, editor, track, device) = window(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    let graph = editor.read_with(cx, |v, _| v.device_panel.eq8_graphs[&device].entity.clone());
-    let _observe = cx.update(|cx| {
-        cx.subscribe(
-            &graph,
-            |_, event: &hex_widgets::ResponseGraphMarqueeEvent, _| {
-                eprintln!("marquee event {event:?}")
-            },
-        )
-    });
-    let _node = cx.update(|cx| {
-        cx.subscribe(&graph, |_, event: &hex_widgets::ResponseGraphEvent, _| {
-            eprintln!("node event {event:?}")
-        })
-    });
     let (plot, points) = geometry(&editor, cx, device);
     let before = editor.read_with(cx, |v, _| {
         v.state
@@ -266,8 +272,14 @@ fn eq8_group_drag_cancel_and_blank_selection_never_remove_fixed_device(cx: &mut 
         assert_eq!(mask(v, device), 6);
     });
     let blank = point(plot.left() + px(2.0), plot.top() + px(2.0));
-    visual.simulate_mouse_down(blank, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(blank, MouseButton::Left, Modifiers::default());
+    let shift = Modifiers {
+        shift: true,
+        ..Modifiers::default()
+    };
+    let end = point(blank.x + px(8.0), blank.y + px(8.0));
+    visual.simulate_mouse_down(blank, MouseButton::Left, shift);
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), shift);
+    visual.simulate_mouse_up(end, MouseButton::Left, shift);
     visual.run_until_parked();
     editor.read_with(cx, |v, _| assert_eq!(mask(v, device), 0));
     visual.simulate_keystrokes("backspace");
