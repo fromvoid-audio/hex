@@ -1,5 +1,9 @@
 //! Release CPU benchmark for shared original MIDI instrument rendering.
 //! This measures the offline renderer, not an audio device, UI, or audible acceptance.
+#[cfg(feature = "instrument-test-support")]
+#[path = "profile_instrument/fm4_backend.rs"]
+mod fm4_backend;
+
 use hex_engine::{
     PreparedRevision, compile,
     playback::{Playback, PlaybackCommand},
@@ -257,7 +261,7 @@ fn measure(
     let total_frames = block_size * measured_blocks;
     let deadline_us = block_size as f64 / f64::from(RATE) * 1_000_000.0;
     println!(
-        "block={block_size:3} frames total={total_frames} render_sum={:.3}s elapsed_with_collection_and_hash={:.3}s max_block={:.1}us audio_deadline={deadline_us:.1}us max/deadline={:.2}x final_block_digest={final_block_digest:016x} whole_run_digest={whole_run_digest:016x}",
+        "block={block_size:3} frames total={total_frames} render_sum={:.6}s elapsed_with_collection_and_hash={:.6}s max_block={:.1}us audio_deadline={deadline_us:.1}us max/deadline={:.2}x final_block_digest={final_block_digest:016x} whole_run_digest={whole_run_digest:016x}",
         render_elapsed_nanos as f64 / 1_000_000_000.0,
         elapsed_including_collection_and_hash.as_secs_f64(),
         timings[timings.len() - 1] as f64 / 1_000.0,
@@ -274,6 +278,26 @@ fn main() -> Result<(), Box<dyn Error>> {
     let forced_session_runtime = arguments
         .iter()
         .any(|argument| argument == "--session-runtime");
+    let backend = arguments
+        .iter()
+        .find_map(|argument| argument.strip_prefix("--fm4-backend="));
+    if backend.is_some_and(|backend| !matches!(backend, "inline" | "mutable")) {
+        return Err("--fm4-backend requires inline or mutable".into());
+    }
+    if backend.is_some()
+        && !(prepared_runtime
+            && forced_session_runtime
+            && arguments.iter().any(|argument| argument == "--fm4"))
+    {
+        return Err("--fm4-backend requires --fm4 --prepared-runtime --session-runtime".into());
+    }
+    #[cfg(not(feature = "instrument-test-support"))]
+    if backend.is_some() {
+        return Err("--fm4-backend requires instrument-test-support".into());
+    }
+    if let Some(backend) = backend {
+        println!("fm4_backend={backend}");
+    }
     let instrument_position = if arguments.iter().any(|argument| argument == "--gap-end") {
         2
     } else if arguments.iter().any(|argument| argument == "--ordered-gap") {
@@ -335,6 +359,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let prepare_started = Instant::now();
     let prepared = prepared_runtime
         .then(|| {
+            #[cfg(feature = "instrument-test-support")]
+            if let Some(backend) = backend {
+                return fm4_backend::prepare(&editable, backend == "mutable")
+                    .map(Arc::new)
+                    .map_err(|error| error.to_string());
+            }
             PreparedRevision::prepare(
                 &editable,
                 &BTreeMap::new(),
@@ -342,6 +372,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 None,
             )
             .map(Arc::new)
+            .map_err(|error| error.to_string())
         })
         .transpose()?;
     if let Some(revision) = &prepared {
