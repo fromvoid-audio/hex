@@ -243,3 +243,145 @@ fn reparent_refusals_and_unchanged_membership_preserve_project_and_redo() {
         assert!(!editor.can_undo());
     }
 }
+
+#[test]
+fn nested_insertion_initializes_banks_at_the_parent_end_in_one_history_edge() {
+    for kind in 0..3 {
+        for (parent, index, gap) in [(0, 4, 5), (1, 3, 5), (4, 6, 4)] {
+            let (mut editor, owner, ids, _) = fixture(kind);
+            let before = editor.project().snapshot();
+            let state = crate::default_instrument_state().unwrap();
+            let comparison = crate::DeviceComparison::new(crate::DeviceVariant::B, state.clone());
+            let command = Command::InsertNestedDevice {
+                parent: ids[parent],
+                state,
+            };
+            assert_eq!(command.clip_scope(), crate::ClipCommandScope::Unrelated);
+            let command = Command::InitializeDevice(Box::new(
+                crate::DeviceInitialization::new(command, Some(comparison.clone())).unwrap(),
+            ));
+            let Created::Device(child) = editor.execute(command).unwrap() else {
+                panic!("child")
+            };
+            assert!(!ids.contains(&child));
+            let current = chain(editor.project(), owner);
+            assert_eq!(current.len(), 8);
+            assert_eq!(current[index].id(), child);
+            assert_eq!(current[index].parent(), Some(ids[parent]));
+            assert_eq!(current[index].comparison(), Some(&comparison));
+            assert_eq!(
+                current
+                    .iter()
+                    .filter(|d| d.id() != child)
+                    .map(Device::id)
+                    .collect::<Vec<_>>(),
+                ids
+            );
+            if let DeviceChainOwner::Track(track) = owner {
+                assert_eq!(
+                    editor.project().track(track).unwrap().instrument_position(),
+                    Some(gap)
+                );
+            }
+            let after = editor.project().snapshot();
+            let mut undone = before;
+            undone.next_id = after.next_id;
+            assert!(editor.undo());
+            assert_eq!(editor.project().snapshot(), undone);
+            assert!(editor.redo());
+            assert_eq!(editor.project().snapshot(), after);
+        }
+    }
+}
+
+#[test]
+fn nested_insertion_refusals_preserve_ids_history_and_parent_state() {
+    for kind in 0..3 {
+        let (mut editor, owner, ids, instrument) = fixture(kind);
+        let before = editor.project().snapshot();
+        for parent in [DeviceId(u64::MAX), instrument] {
+            assert!(
+                editor
+                    .execute(Command::InsertNestedDevice {
+                        parent,
+                        state: crate::default_instrument_state().unwrap()
+                    })
+                    .is_err()
+            );
+            assert_eq!(editor.project().snapshot(), before);
+            assert!(!editor.can_undo());
+        }
+        let reached = std::cell::Cell::new(false);
+        let refused: Result<_, crate::Invalid> = editor.execute_prepared(
+            Command::InsertNestedDevice {
+                parent: ids[0],
+                state: crate::default_instrument_state().unwrap(),
+            },
+            |candidate| {
+                reached.set(true);
+                assert_eq!(chain(candidate, owner).len(), 8);
+                assert_eq!(chain(candidate, owner)[4].parent(), Some(ids[0]));
+                Err::<(), _>(crate::Invalid("preparation refused"))
+            },
+        );
+        assert!(refused.is_err());
+        assert!(reached.get());
+        assert_eq!(editor.project().snapshot(), before);
+        assert!(!editor.can_undo());
+        editor.execute(Command::RemoveDevice(ids[6])).unwrap();
+        assert!(editor.undo());
+        assert!(editor.can_redo());
+        assert!(
+            editor
+                .execute(Command::InsertNestedDevice {
+                    parent: DeviceId(u64::MAX),
+                    state: crate::default_instrument_state().unwrap()
+                })
+                .is_err()
+        );
+        assert!(editor.can_redo());
+        assert_eq!(editor.project().snapshot(), before);
+        for depth_limit in [false, true] {
+            let mut limited = before.clone();
+            let chain = match owner {
+                DeviceChainOwner::Main => &mut limited.main_devices,
+                DeviceChainOwner::Return(_) => &mut limited.return_tracks[0].devices,
+                DeviceChainOwner::Track(_) => &mut limited.tracks[0].devices,
+            };
+            let size = if depth_limit {
+                8
+            } else {
+                crate::MAX_DEVICES_PER_TRACK
+            };
+            while chain.len() < size {
+                let mut leaf = chain[6].clone();
+                leaf.id = limited.next_id;
+                limited.next_id += 1;
+                chain.push(leaf);
+            }
+            let parent = if depth_limit {
+                for i in 0..8 {
+                    chain[i].parent = if i == 0 { None } else { Some(chain[i - 1].id) };
+                }
+                DeviceId(chain[7].id)
+            } else {
+                ids[0]
+            };
+            if kind == 2 && depth_limit {
+                limited.tracks[0].instrument_position = Some(8);
+            }
+            let mut editor =
+                Editor::new(Project::from_snapshot(limited.clone()).unwrap(), 16).unwrap();
+            assert!(
+                editor
+                    .execute(Command::InsertNestedDevice {
+                        parent,
+                        state: crate::default_instrument_state().unwrap()
+                    })
+                    .is_err()
+            );
+            assert_eq!(editor.project().snapshot(), limited);
+            assert!(!editor.can_undo());
+        }
+    }
+}

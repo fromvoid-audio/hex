@@ -11,6 +11,7 @@
 //! physical deadline/Live parity from headless checks. Callback paths borrow prepared data;
 //! control owns preparation and final destruction.
 mod native_effect_storage;
+mod serial_effect_power;
 pub use hex_devices::SineTable;
 pub use hex_devices::auto_pan::{
     AutoPanWaveformPreview, waveform_preview as native_auto_pan_waveform_preview,
