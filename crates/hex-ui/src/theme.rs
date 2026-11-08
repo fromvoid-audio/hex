@@ -691,12 +691,18 @@ pub(crate) fn section_focus_ink(identity: hex_project::ElementColor) -> u32 {
 /// Marker-only edits stay near-hollow across identities and selected states.
 pub(crate) const SECTION_MARKER_ONLY_OUTLINE_DEVICE_PX: f32 = 2.0;
 
-pub(crate) fn section_marker_only_colors(identity: hex_project::ElementColor) -> (u32, u32) {
+pub(crate) fn section_marker_only_colors(
+    identity: hex_project::ElementColor,
+    selected: bool,
+) -> (u32, u32) {
     (
-        mix(
-            color(PaletteRole::Surface),
-            element_colors(identity).muted,
-            0.08,
+        arrangement_clip_body_fill(
+            mix(
+                color(PaletteRole::Surface),
+                element_colors(identity).muted,
+                0.08,
+            ),
+            selected,
         ),
         color(PaletteRole::Primary),
     )

@@ -1012,6 +1012,7 @@ impl Render for RectangleDemo {
                     crate::section_surface::marker_only_overlay(
                         identity,
                         crate::section_surface::CHAMFER,
+                        selected,
                     )
                 }))
                 .children((self.section_focus && selected).then(|| {

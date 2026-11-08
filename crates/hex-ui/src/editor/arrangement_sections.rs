@@ -2090,9 +2090,10 @@ impl EditorView {
                 });
             if marker_only {
                 element = element.child(
-                    crate::section_surface::marker_only_overlay(m.color, chamfer).debug_selector(
-                        move || format!("arrangement-section-markers-only-{index}"),
-                    ),
+                    crate::section_surface::marker_only_overlay(m.color, chamfer, selected)
+                        .debug_selector(move || {
+                            format!("arrangement-section-markers-only-{index}")
+                        }),
                 );
             }
             let mut header = crate::section_surface::header(
@@ -2125,12 +2126,11 @@ impl EditorView {
                         .pl(px(16.0))
                         .child(self.section_launch_action(id, cx));
                 }
-                let name = if marker_only {
+                header = header.child(theme::text(if marker_only {
                     format!("◇ {}", m.name)
                 } else {
                     m.name.clone()
-                };
-                header = header.child(theme::text(name));
+                }));
             }
             if focused {
                 element =
@@ -2553,6 +2553,7 @@ pub(super) mod tests {
                 .debug_bounds("arrangement-section-markers-only-0")
                 .is_some()
         );
+        let hover_fill = painted_fill_for(&mut visual, "arrangement-section-markers-only-0");
         visual.simulate_modifiers_change(Modifiers::default());
         visual.run_until_parked();
         assert!(
@@ -2576,6 +2577,11 @@ pub(super) mod tests {
                 .debug_bounds("arrangement-section-markers-only-0")
                 .is_some(),
             "released modifiers retain the actual latched marker-only mode"
+        );
+        assert_ne!(
+            painted_fill_for(&mut visual, "arrangement-section-markers-only-0"),
+            hover_fill,
+            "selection remains visible within marker-only feedback",
         );
         visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
         let terminal = editor.update(cx, |view, _| next(&view.service));
