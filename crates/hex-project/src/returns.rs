@@ -141,6 +141,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             find_mut(project, return_track)?.devices.insert(
                 index,
                 Device {
+                    parent: None,
                     automation: Vec::new(),
                     comparison: None,
                     id,
@@ -236,7 +237,7 @@ fn find_mut(project: &mut Project, id: ReturnId) -> Result<&mut ReturnTrack, Inv
 }
 
 pub(crate) fn device_count(project: &Project) -> Result<usize, Invalid> {
-    project.device_roots().try_fold(0usize, |count, _| {
+    project.devices().try_fold(0usize, |count, _| {
         count.checked_add(1).ok_or(Invalid("device count overflow"))
     })
 }

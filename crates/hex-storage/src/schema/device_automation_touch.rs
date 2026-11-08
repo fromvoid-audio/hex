@@ -515,6 +515,32 @@ mod tests {
             assert_eq!(crate::encode(editor.project()).unwrap(), previous);
             assert!(editor.redo());
             assert_eq!(crate::encode(editor.project()).unwrap(), bytes);
+            assert!(
+                crate::decode(&bytes)
+                    .unwrap()
+                    .devices()
+                    .all(|device| device.parent().is_none())
+            );
+            editor
+                .execute(Command::InsertMainDevice {
+                    before: None,
+                    state: state.clone(),
+                })
+                .unwrap();
+            let mut snapshot = editor.project().snapshot();
+            snapshot.main_devices[1].parent = Some(snapshot.main_devices[0].id);
+            let nested = Project::from_snapshot(snapshot).unwrap();
+            let encoded = crate::encode(&nested).unwrap();
+            let envelope: Value = serde_json::from_slice(&encoded).unwrap();
+            assert_eq!(envelope["version"], crate::SERIAL_DEVICE_SCHEMA_VERSION);
+            assert_eq!(
+                envelope["serial_base_version"],
+                crate::VST3_AUTOMATION_TOUCH_SCHEMA_VERSION
+            );
+            assert_eq!(
+                crate::decode(&encoded).unwrap().snapshot(),
+                nested.snapshot()
+            );
         }
     }
 }

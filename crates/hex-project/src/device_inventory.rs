@@ -1,5 +1,7 @@
 //! Canonical read inventory shared by device lookup, capacity and media checks.
-use crate::{Device, DeviceId, Project};
+use crate::{Device, DeviceId, Invalid, Project};
+
+pub const MAX_SERIAL_DEVICE_DEPTH: usize = 8;
 
 impl Project {
     /// Each authored device root exactly once, including unbound retained sources.
@@ -9,6 +11,11 @@ impl Project {
     /// inventory order; each source retains its own signal order. This is a
     /// control-side inventory, not a playback schedule or a mutable binding view.
     pub fn device_roots(&self) -> impl Iterator<Item = &Device> {
+        self.devices().filter(|device| device.parent().is_none())
+    }
+
+    /// Every canonical node once, in owner order and serial preorder per owner.
+    pub fn devices(&self) -> impl Iterator<Item = &Device> {
         self.tracks()
             .iter()
             .flat_map(|track| track.devices())
@@ -26,14 +33,130 @@ impl Project {
     }
 
     pub fn device(&self, id: DeviceId) -> Option<&Device> {
-        self.device_roots().find(|device| device.id() == id)
+        self.devices().find(|device| device.id() == id)
     }
+
+    pub(crate) fn validate_serial_units(&self) -> Result<(), Invalid> {
+        validate_chain(self.main_devices().iter())?;
+        for track in self.tracks() {
+            validate_chain(track.devices().iter())?;
+        }
+        for track in self.return_tracks() {
+            validate_chain(track.devices().iter())?;
+        }
+        for source in self.native_sources() {
+            if source.instrument().parent().is_some() {
+                return Err(Invalid("source instrument must be a serial root"));
+            }
+            validate_chain(source.devices())?;
+        }
+        Ok(())
+    }
+}
+
+fn validate_chain<'a>(devices: impl Iterator<Item = &'a Device>) -> Result<(), Invalid> {
+    let mut ancestors = [None; MAX_SERIAL_DEVICE_DEPTH];
+    let mut depth = 0;
+    for device in devices {
+        let next = match device.parent() {
+            None => 0,
+            Some(parent) => ancestors[..depth]
+                .iter()
+                .position(|ancestor| *ancestor == Some(parent))
+                .map(|index| index + 1)
+                .ok_or(Invalid(
+                    "serial parent must precede its child in the same unit",
+                ))?,
+        };
+        let slot = ancestors
+            .get_mut(next)
+            .ok_or(Invalid("serial device depth limit reached"))?;
+        *slot = Some(device.id());
+        depth = next + 1;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{Command, Created, Editor, default_instrument_state};
+
+    #[test]
+    fn serial_membership_is_bounded_preorder_and_preserved_by_scalar_history() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        for _ in 0..9 {
+            editor
+                .execute(Command::InsertMainDevice {
+                    before: None,
+                    state: default_instrument_state().unwrap(),
+                })
+                .unwrap();
+        }
+        let mut snapshot = editor.project().snapshot();
+        for i in 1..8 {
+            snapshot.main_devices[i].parent = Some(snapshot.main_devices[i - 1].id);
+        }
+        let project = Project::from_snapshot(snapshot.clone()).unwrap();
+        assert_eq!(project.devices().count(), 9);
+        assert_eq!(project.device_roots().count(), 2);
+        assert_eq!(crate::returns::device_count(&project).unwrap(), 9);
+        let child = project.main_devices()[7].id();
+        let mut editor = Editor::new(project, 8).unwrap();
+        let before = editor.project().snapshot();
+        editor
+            .execute(Command::SetDeviceBypass {
+                device: child,
+                bypassed: true,
+            })
+            .unwrap();
+        assert_eq!(
+            editor
+                .project()
+                .device(child)
+                .unwrap()
+                .parent()
+                .unwrap()
+                .value(),
+            before.main_devices[6].id
+        );
+        assert!(editor.undo());
+        assert_eq!(editor.project().snapshot(), before);
+        assert!(editor.redo());
+        let authored = editor.project().snapshot();
+        // A partial removal/copy cannot orphan or silently drop the suffix.
+        let root = editor.project().main_devices()[0].id();
+        assert!(editor.execute(Command::RemoveDevice(root)).is_err());
+        assert_eq!(editor.project().snapshot(), authored);
+        assert!(
+            editor
+                .project()
+                .capture_devices(
+                    crate::DeviceChainOwner::Main,
+                    &crate::DeviceSelectionIds::new(&[root]).unwrap()
+                )
+                .is_err()
+        );
+
+        let mut bad = snapshot.clone();
+        bad.main_devices[8].parent = Some(bad.main_devices[7].id);
+        assert!(Project::from_snapshot(bad).is_err(), "depth nine");
+        for parent in [0, u64::MAX, snapshot.main_devices[8].id] {
+            let mut bad = snapshot.clone();
+            bad.main_devices[1].parent = Some(parent);
+            assert!(
+                Project::from_snapshot(bad).is_err(),
+                "missing, self/future parent"
+            );
+        }
+        let mut bad = snapshot;
+        bad.main_devices[2].parent = None;
+        bad.main_devices[3].parent = Some(bad.main_devices[0].id);
+        assert!(
+            Project::from_snapshot(bad).is_err(),
+            "a closed unit cannot resume"
+        );
+    }
 
     #[test]
     fn canonical_roots_include_all_owners_and_count_shared_sources_once() {
