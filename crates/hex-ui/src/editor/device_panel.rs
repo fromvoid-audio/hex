@@ -74,6 +74,7 @@ mod snapshot;
 pub(super) mod spectrum_display;
 mod utility_panel;
 pub(super) use send_controls::finalize_send_controls_for_track;
+pub(super) use send_controls::pending_send;
 pub(super) use send_controls::return_send_numeric_control;
 
 const DEVICE_PANEL_BORDER_WIDTH: f32 = 1.0;

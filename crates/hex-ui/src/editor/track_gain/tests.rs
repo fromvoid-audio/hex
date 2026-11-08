@@ -53,7 +53,7 @@ fn actor_fixture_with_environment(
     actor_fixture_in_mode(cx, environment, hex_session::DocumentAudioMode::Resident)
 }
 
-fn actor_fixture_in_mode(
+pub(in crate::editor) fn actor_fixture_in_mode(
     cx: &mut TestAppContext,
     environment: Arc<super::super::test_environment::Environment>,
     mode: hex_session::DocumentAudioMode,
