@@ -61,6 +61,7 @@ pub(super) struct ClipDrag {
     pub(super) viewport_length: u64,
     pub(super) scroll: super::drag_autoscroll::DragScroll,
     pub(super) snap_grid: SnapGrid,
+    /// Command bypasses both original-position capture and the move grid.
     pub(super) snap_modifier: Rc<Cell<bool>>,
     pub(super) copy_modifier: Rc<Cell<bool>>,
     pub(super) preview: Rc<Cell<Option<DropPreview>>>,
@@ -402,6 +403,17 @@ pub(super) fn drop_start(
     Some(pointer_frame.saturating_sub(grab_offset))
 }
 
+// Window-space radius, independent of timeline zoom or audio/MIDI units.
+const ORIGINAL_POSITION_SNAP_PIXELS: f64 = 8.0;
+
+fn near_original_anchor(frame: u64, original: u64, viewport: Viewport, width: f32) -> bool {
+    width.is_finite()
+        && width > 0.0
+        && viewport.length > 0
+        && frame.abs_diff(original) as f64 / viewport.length as f64 * f64::from(width)
+            <= ORIGINAL_POSITION_SNAP_PIXELS
+}
+
 fn candidate_position(
     project: &Project,
     drag: &ClipDrag,
@@ -409,13 +421,24 @@ fn candidate_position(
     pointer_x: f32,
     lane: LaneBounds,
 ) -> Option<ClipPosition> {
+    let viewport = drag.viewport();
+    let bypass = drag.snap_modifier.get();
+    let grid = if bypass {
+        SnapGrid::Off
+    } else {
+        drag.snap_grid
+    };
     match drag.position {
-        ClipPosition::Audio { duration, .. } => {
+        ClipPosition::Audio {
+            start: original,
+            duration,
+        } => {
+            let original_end = original.checked_add(duration)?;
             let start = drop_start(
                 pointer_x,
                 lane,
-                drag.viewport().start,
-                drag.viewport().length,
+                viewport.start,
+                viewport.length,
                 drag.grab_offset.get()?,
             )?;
             let edge = drag.snap_edge.get()?;
@@ -423,18 +446,14 @@ fn candidate_position(
                 ClipSnapEdge::Leading => start,
                 ClipSnapEdge::Trailing => start.checked_add(duration)?,
             };
-            let anchor = drag
-                .snap_grid
-                .with_platform_modifier(drag.snap_modifier.get())
-                .snap_frame(
-                    project,
-                    anchor,
-                    Viewport {
-                        start: drag.viewport().start,
-                        length: drag.viewport().length,
-                    },
-                    lane.width,
-                )?;
+            let original_anchor = match edge {
+                ClipSnapEdge::Leading => original,
+                ClipSnapEdge::Trailing => original_end,
+            };
+            if !bypass && near_original_anchor(anchor, original_anchor, viewport, lane.width) {
+                return Some(drag.position);
+            }
+            let anchor = grid.snap_frame(project, anchor, viewport, lane.width)?;
             let start = match edge {
                 ClipSnapEdge::Leading => anchor,
                 ClipSnapEdge::Trailing => anchor.saturating_sub(duration),
@@ -442,8 +461,13 @@ fn candidate_position(
             start.checked_add(duration)?;
             Some(ClipPosition::Audio { start, duration })
         }
-        ClipPosition::Midi { length, .. } => {
-            if drag.scroll.get().viewport.is_none()
+        ClipPosition::Midi {
+            start: original,
+            length,
+        } => {
+            let original_end = BeatTime::from_raw(original.raw().checked_add(length.raw())?);
+            if !bypass
+                && drag.scroll.get().viewport.is_none()
                 && target_track == Some(drag.source_track)
                 && drag.capture.get().is_some_and(|mut capture| {
                     capture.update(pointer_x).is_some() && !capture.displaced(0.5)
@@ -451,13 +475,7 @@ fn candidate_position(
             {
                 return Some(drag.position);
             }
-            let pointer_frame = drop_start(
-                pointer_x,
-                lane,
-                drag.viewport().start,
-                drag.viewport().length,
-                0,
-            )?;
+            let pointer_frame = drop_start(pointer_x, lane, viewport.start, viewport.length, 0)?;
             let pointer_beat = project.tempo_map().frame_to_beat(pointer_frame).ok()?;
             let offset = drag.grab_offset.get()?;
             let start = BeatTime::from_raw(pointer_beat.raw().saturating_sub(offset));
@@ -468,18 +486,23 @@ fn candidate_position(
                     BeatTime::from_raw(start.raw().checked_add(length.raw())?)
                 }
             };
-            let anchor = drag
-                .snap_grid
-                .with_platform_modifier(drag.snap_modifier.get())
-                .snap_beat(
-                    project,
-                    anchor,
-                    Viewport {
-                        start: drag.viewport().start,
-                        length: drag.viewport().length,
-                    },
+            let original_anchor = match edge {
+                ClipSnapEdge::Leading => original,
+                ClipSnapEdge::Trailing => original_end,
+            };
+            if !bypass
+                && near_original_anchor(
+                    project.tempo_map().beat_to_frame(anchor).ok()?,
+                    project.tempo_map().beat_to_frame(original_anchor).ok()?,
+                    viewport,
                     lane.width,
-                )?;
+                )
+            {
+                // Preserve Q32.32 directly: a frame round trip can erase a
+                // subframe original even when the pointer has not moved.
+                return Some(drag.position);
+            }
+            let anchor = grid.snap_beat(project, anchor, viewport, lane.width)?;
             let start = match edge {
                 ClipSnapEdge::Leading => anchor,
                 ClipSnapEdge::Trailing => {
@@ -1807,6 +1830,99 @@ mod tests {
     use hex_project::{BeatTime, Command, Created, Editor, Project, Tempo, TrackId, TrimEdge};
     use std::{cell::Cell, rc::Rc};
 
+    #[test]
+    fn off_grid_original_anchor_precedes_grid_for_cross_track_moves() {
+        let lane = LaneBounds {
+            left: 0.0,
+            width: 480.0,
+            top: 0.0,
+            height: 44.0,
+        };
+        for edge in [super::ClipSnapEdge::Leading, super::ClipSnapEdge::Trailing] {
+            let (mut editor, source, target, clip) = fixture();
+            editor
+                .execute(Command::MoveClip {
+                    clip,
+                    track: source,
+                    start: 15_137,
+                })
+                .unwrap();
+            let mut payload = drag(source, clip);
+            payload.position = ClipPosition::Audio {
+                start: 15_137,
+                duration: 100,
+            };
+            payload.viewport_length = 48_000;
+            payload.grab_offset.set(Some(0));
+            payload.snap_grid = SnapGrid::Quarter;
+            payload.snap_edge.set(Some(edge));
+            assert_eq!(
+                candidate_position(editor.project(), &payload, Some(target), 153.37, lane),
+                Some(payload.position)
+            );
+
+            let (mut editor, source, target, clip) = midi_fixture();
+            let start = BeatTime::from_raw(BeatTime::ONE.raw() * 4 + 137);
+            editor
+                .execute(Command::MoveMidiClip {
+                    clip,
+                    track: source,
+                    start,
+                })
+                .unwrap();
+            let rounded = editor
+                .project()
+                .tempo_map()
+                .frame_to_beat(editor.project().tempo_map().beat_to_frame(start).unwrap())
+                .unwrap();
+            assert_ne!(rounded, start, "fixture contains a subframe beat position");
+            let mut payload = midi_drag(source, clip);
+            payload.position = ClipPosition::Midi {
+                start,
+                length: BeatTime::from_quarters(4).unwrap(),
+            };
+            payload.grab_offset.set(Some(0));
+            payload.snap_edge.set(Some(edge));
+            assert_eq!(
+                candidate_position(editor.project(), &payload, Some(target), 161.0, lane),
+                Some(payload.position)
+            );
+        }
+    }
+
+    #[test]
+    fn origin_capture_refuses_overflowing_captured_extents() {
+        let lane = LaneBounds {
+            left: 0.0,
+            width: 480.0,
+            top: 0.0,
+            height: 44.0,
+        };
+        let (editor, source, target, clip) = fixture();
+        let mut payload = drag(source, clip);
+        payload.position = ClipPosition::Audio {
+            start: u64::MAX,
+            duration: 100,
+        };
+        payload.viewport_start = u64::MAX;
+        payload.viewport_length = 1;
+        payload.grab_offset.set(Some(0));
+        assert_eq!(
+            candidate_position(editor.project(), &payload, Some(target), 0.0, lane),
+            None
+        );
+        let (editor, source, target, clip) = midi_fixture();
+        let mut payload = midi_drag(source, clip);
+        payload.position = ClipPosition::Midi {
+            start: BeatTime::from_raw(u64::MAX),
+            length: BeatTime::ONE,
+        };
+        assert_eq!(
+            candidate_position(editor.project(), &payload, Some(target), 0.0, lane),
+            None
+        );
+    }
+
     fn fixture() -> (Editor, TrackId, TrackId, hex_project::ClipId) {
         let mut editor = Editor::new(Project::new(48_000).expect("project"), 16).expect("editor");
         let Created::Track(source) = editor
@@ -2146,7 +2262,16 @@ mod tests {
                 duration: 100
             })
         );
+        // The original is only 0.4 px from zero and now outranks the grid.
         payload.snap_modifier.set(false);
+        assert_eq!(
+            candidate_position(editor.project(), &payload, Some(source), 0.0, lane),
+            Some(ClipPosition::Audio {
+                start: 40,
+                duration: 100
+            })
+        );
+        payload.snap_modifier.set(true);
         assert_eq!(
             candidate_position(editor.project(), &payload, Some(source), 0.0, lane),
             Some(ClipPosition::Audio {

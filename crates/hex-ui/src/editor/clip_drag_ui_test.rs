@@ -3110,26 +3110,26 @@ fn assert_drag_handoff_with_pending_request(
     copy: bool,
     pending: bool,
 ) {
-    assert_drag_handoff_at_grab(cx, midi, vertical, copy, pending, None);
+    assert_drag_handoff_at_grab(cx, midi, vertical, copy, pending, None, None);
 }
 
 #[gpui::test]
 fn initial_left_third_keeps_the_move_start_on_grid(cx: &mut TestAppContext) {
     for midi in [false, true] {
-        assert_drag_handoff_at_grab(cx, &[midi], false, false, false, Some(1.0 / 3.0));
+        assert_drag_handoff_at_grab(cx, &[midi], false, false, false, Some(1.0 / 3.0), None);
     }
 }
 
 #[gpui::test]
 fn initial_two_thirds_boundary_snaps_the_move_end(cx: &mut TestAppContext) {
     for midi in [false, true] {
-        assert_drag_handoff_at_grab(cx, &[midi], false, false, false, Some(2.0 / 3.0));
+        assert_drag_handoff_at_grab(cx, &[midi], false, false, false, Some(2.0 / 3.0), None);
     }
 }
 
 #[gpui::test]
 fn initial_right_third_retains_one_snap_delta_for_mixed_group_copy(cx: &mut TestAppContext) {
-    assert_drag_handoff_at_grab(cx, &[false, true], true, true, false, Some(5.0 / 6.0));
+    assert_drag_handoff_at_grab(cx, &[false, true], true, true, false, Some(5.0 / 6.0), None);
 }
 
 #[gpui::test]
@@ -3214,6 +3214,170 @@ fn cropped_clip_move_chooses_from_the_full_audio_and_midi_span(cx: &mut TestAppC
     }
 }
 
+#[derive(Clone, Copy)]
+struct OriginProbe {
+    dx: f32,
+    grid: super::musical_time::SnapGrid,
+    bypass: bool,
+    viewport_length: u64,
+}
+impl Default for OriginProbe {
+    fn default() -> Self {
+        Self {
+            dx: 2.0,
+            grid: super::musical_time::SnapGrid::Quarter,
+            bypass: false,
+            viewport_length: 384_000,
+        }
+    }
+}
+impl OriginProbe {
+    fn preserves_origin(self) -> bool {
+        !self.bypass && self.dx.abs() <= 8.0
+    }
+}
+
+fn assert_audio_origin_window(cx: &mut TestAppContext, viewport_length: u64) {
+    // A fixed frame radius cannot satisfy both zooms' near/far pixel pairs.
+    for dx in [7.0, 9.0] {
+        assert_drag_handoff_at_grab(
+            cx,
+            &[false],
+            true,
+            false,
+            false,
+            Some(1.0 / 3.0),
+            Some(OriginProbe {
+                dx,
+                viewport_length,
+                ..Default::default()
+            }),
+        );
+    }
+}
+#[gpui::test]
+fn audio_origin_capture_uses_window_distance_at_close_zoom(cx: &mut TestAppContext) {
+    assert_audio_origin_window(cx, 192_000);
+}
+#[gpui::test]
+fn audio_origin_capture_uses_window_distance_at_wide_zoom(cx: &mut TestAppContext) {
+    assert_audio_origin_window(cx, 384_000);
+}
+#[gpui::test]
+fn midi_origin_capture_is_beat_exact_at_both_edges(cx: &mut TestAppContext) {
+    for grab in [1.0 / 3.0, 5.0 / 6.0] {
+        assert_drag_handoff_at_grab(
+            cx,
+            &[true],
+            true,
+            false,
+            false,
+            Some(grab),
+            Some(OriginProbe::default()),
+        );
+    }
+}
+#[gpui::test]
+fn origin_capture_still_applies_with_the_grid_off(cx: &mut TestAppContext) {
+    for midi in [false, true] {
+        assert_drag_handoff_at_grab(
+            cx,
+            &[midi],
+            true,
+            false,
+            false,
+            Some(1.0 / 3.0),
+            Some(OriginProbe {
+                grid: super::musical_time::SnapGrid::Off,
+                ..Default::default()
+            }),
+        );
+    }
+}
+#[gpui::test]
+fn command_bypasses_audio_origin_and_both_grid_settings(cx: &mut TestAppContext) {
+    for grid in [
+        super::musical_time::SnapGrid::Quarter,
+        super::musical_time::SnapGrid::Off,
+    ] {
+        assert_drag_handoff_at_grab(
+            cx,
+            &[false],
+            true,
+            false,
+            false,
+            Some(1.0 / 3.0),
+            Some(OriginProbe {
+                grid,
+                bypass: true,
+                ..Default::default()
+            }),
+        );
+    }
+}
+#[gpui::test]
+fn command_bypasses_midi_origin_and_both_grid_settings(cx: &mut TestAppContext) {
+    for grid in [
+        super::musical_time::SnapGrid::Quarter,
+        super::musical_time::SnapGrid::Off,
+    ] {
+        assert_drag_handoff_at_grab(
+            cx,
+            &[true],
+            true,
+            false,
+            false,
+            Some(1.0 / 3.0),
+            Some(OriginProbe {
+                grid,
+                bypass: true,
+                ..Default::default()
+            }),
+        );
+    }
+}
+#[gpui::test]
+fn outside_origin_capture_returns_to_the_edge_grid(cx: &mut TestAppContext) {
+    for midi in [false, true] {
+        assert_drag_handoff_at_grab(
+            cx,
+            &[midi],
+            true,
+            false,
+            false,
+            Some(5.0 / 6.0),
+            Some(OriginProbe {
+                dx: 20.0,
+                ..Default::default()
+            }),
+        );
+    }
+}
+#[gpui::test]
+fn origin_capture_keeps_one_delta_for_mixed_group_move(cx: &mut TestAppContext) {
+    assert_drag_handoff_at_grab(
+        cx,
+        &[false, true],
+        true,
+        false,
+        false,
+        Some(5.0 / 6.0),
+        Some(OriginProbe::default()),
+    );
+}
+#[gpui::test]
+fn origin_capture_keeps_mixed_copy_paint_through_a_queued_ack(cx: &mut TestAppContext) {
+    assert_drag_handoff_at_grab(
+        cx,
+        &[false, true],
+        true,
+        true,
+        true,
+        Some(5.0 / 6.0),
+        Some(OriginProbe::default()),
+    );
+}
+
 fn assert_drag_handoff_at_grab(
     cx: &mut TestAppContext,
     midi: &[bool],
@@ -3221,6 +3385,7 @@ fn assert_drag_handoff_at_grab(
     copy: bool,
     pending: bool,
     grab_fraction: Option<f32>,
+    origin: Option<OriginProbe>,
 ) {
     use hex_session::service::Request;
     let (_files, handle, editor) = upper_rail_owned_fixture(cx);
@@ -3321,6 +3486,41 @@ fn assert_drag_handoff_at_grab(
         };
         clips.push(clip);
     }
+    if origin.is_some() {
+        for (clip, midi) in clips.iter().zip(midi) {
+            let command = editor.read_with(&visual, |v, _| {
+                let project = &v.state.as_ref().unwrap().project;
+                if *midi {
+                    let item = project.midi_clip(*clip).unwrap();
+                    Command::MoveMidiClip {
+                        clip: *clip,
+                        track: project
+                            .tracks()
+                            .iter()
+                            .find(|t| t.midi_clips().iter().any(|c| c.id() == *clip))
+                            .unwrap()
+                            .id(),
+                        start: BeatTime::from_raw(
+                            item.start().raw() + BeatTime::ONE.raw() / 3 + 137,
+                        ),
+                    }
+                } else {
+                    let item = project.clip(*clip).unwrap();
+                    Command::MoveClip {
+                        clip: *clip,
+                        track: project
+                            .tracks()
+                            .iter()
+                            .find(|t| t.clips().iter().any(|c| c.id() == *clip))
+                            .unwrap()
+                            .id(),
+                        start: item.start() + 15_137,
+                    }
+                }
+            });
+            edit(command, &mut visual);
+        }
+    }
     for (i, clip) in clips.iter().enumerate() {
         let header = visual
             .debug_bounds(selector(format!("clip-name-{}", clip.value())))
@@ -3340,6 +3540,17 @@ fn assert_drag_handoff_at_grab(
             view.snap_grid = super::musical_time::SnapGrid::Quarter;
             cx.notify();
         });
+    }
+    if let Some(probe) = origin {
+        editor.update(&mut visual, |view, cx| {
+            view.snap_grid = probe.grid;
+            view.viewport = Some(super::viewport::Viewport {
+                start: 0,
+                length: probe.viewport_length,
+            });
+            cx.notify();
+        });
+        visual.run_until_parked();
     }
     let anchor = clips[0]; // Deliberately drag the non-primary member of a group.
     let move_bounds = visual
@@ -3380,10 +3591,14 @@ fn assert_drag_handoff_at_grab(
         Modifiers::default(),
     );
     let lane = editor.read_with(&visual, |v, _| v.drag_lanes[&tracks[usize::from(vertical)]]);
-    let end = point(down.x + px(120.0), px(lane.top + lane.height * 0.5));
+    let end = point(
+        down.x + px(origin.map_or(120.0, |probe| probe.dx)),
+        px(lane.top + lane.height * 0.5),
+    );
     visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
     let release_modifiers = Modifiers {
         alt: copy,
+        platform: origin.is_some_and(|probe| probe.bypass),
         ..Default::default()
     };
     visual.simulate_modifiers_change(release_modifiers);
@@ -3406,6 +3621,21 @@ fn assert_drag_handoff_at_grab(
                 drag.position, drag.capture.get(), drag.grab_offset.get()
             );
             let placed = drag.preview.get().unwrap().position;
+            if let Some(probe) = origin {
+                if probe.preserves_origin() { assert_eq!(placed, drag.position, "captured typed origin"); }
+                else { assert_ne!(placed, drag.position, "free or out-of-capture movement"); }
+                if probe.bypass {
+                    let (original, actual) = match (drag.position, placed) {
+                        (ClipPosition::Audio { start: original, .. }, ClipPosition::Audio { start: actual, .. }) => (original, actual),
+                        (ClipPosition::Midi { start: original, .. }, ClipPosition::Midi { start: actual, .. }) => (view.state.as_ref().unwrap().project.tempo_map().beat_to_frame(original).unwrap(), view.state.as_ref().unwrap().project.tempo_map().beat_to_frame(actual).unwrap()),
+                        _ => panic!("clip kind changed"),
+                    };
+                    let expected = original as f64 + f64::from(probe.dx) * drag.viewport().length as f64 / f64::from(lane.width);
+                    assert!((actual as f64 - expected).abs() <= 2.0, "command is free: actual={actual}, expected={expected}");
+                }
+                if probe.bypass || matches!(probe.grid, super::musical_time::SnapGrid::Off) { return; }
+                if probe.preserves_origin() { return; }
+            }
             match (drag.position, placed) {
                 (
                     ClipPosition::Audio { duration, .. },
@@ -3617,6 +3847,26 @@ fn assert_drag_handoff_at_grab(
         assert!((f32::from(actual.top() - held.top())).abs() <= 1.0);
         assert!((f32::from(actual.size.width - held.size.width)).abs() <= 1.0);
         assert!(visual.rendered_background(canonical).is_some());
+    }
+    if origin.is_some_and(OriginProbe::preserves_origin) {
+        editor.read_with(&visual, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            for ((original, current), midi) in clips.iter().zip(&canonical_ids).zip(midi) {
+                if *midi {
+                    assert_eq!(
+                        project.midi_clip(*current).unwrap().start(),
+                        before.midi_clip(*original).unwrap().start(),
+                        "group MIDI origin stays Q32.32 exact"
+                    );
+                } else {
+                    assert_eq!(
+                        project.clip(*current).unwrap().start(),
+                        before.clip(*original).unwrap().start(),
+                        "group audio origin stays frame exact"
+                    );
+                }
+            }
+        });
     }
     let committed = expected.project().snapshot();
     visual.simulate_keystrokes("cmd-z");
