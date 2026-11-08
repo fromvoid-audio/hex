@@ -343,10 +343,11 @@ impl EditorView {
                 );
             let mixer = div()
                 .debug_selector(move || format!("console-return-mixer-{}", id.value()))
-                .h(px(70.0))
+                .h(px(super::console_mixer::height(page.range.len())))
                 .flex_shrink_0()
                 .flex()
-                .items_center()
+                .items_end()
+                .pb(px(6.0))
                 .px(px(6.0))
                 .gap(px(6.0))
                 .border_t_1()
