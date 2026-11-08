@@ -179,7 +179,7 @@ pub(super) struct Lane {
     failed: Option<Failed>,
     failed_copy: RecoveryCopyWorker,
     copy_destination: Option<PendingCopy>,
-    verified_plugin_copy: Option<(PathBuf, RecoveryCopyReceipt)>,
+    verified_plugin_copy: Option<VerifiedPluginCopy>,
 }
 
 struct Failed {
@@ -190,7 +190,38 @@ struct Failed {
 
 enum PendingCopy {
     Checkpoint(PathBuf),
-    Plugin(PathBuf),
+    Plugin {
+        path: PathBuf,
+        observations: Vec<super::PluginParameterObservation>,
+    },
+}
+
+struct VerifiedPluginCopy {
+    path: PathBuf,
+    receipt: RecoveryCopyReceipt,
+    observations: Vec<super::PluginParameterObservation>,
+}
+
+fn same_plugin_observation(
+    left: &super::PluginParameterObservation,
+    right: &super::PluginParameterObservation,
+) -> bool {
+    use super::PluginParameterObservation::{Delivered, Restored};
+    if left != right {
+        return false;
+    }
+    match (left, right) {
+        (Delivered(a), Delivered(b)) | (Restored(a), Restored(b)) => {
+            match (a.application.value, b.application.value) {
+                (
+                    super::automation_draft::Vst3ApplicationValue::Value(a),
+                    super::automation_draft::Vst3ApplicationValue::Value(b),
+                ) => a.to_bits() == b.to_bits(),
+                _ => true,
+            }
+        }
+        _ => true,
+    }
 }
 
 struct Active {
@@ -240,6 +271,7 @@ impl Lane {
             .ok_or("no failed device automation custody is available")?;
         let destination = super::recovery::absolute_document_path(destination)?;
         let copy_path = destination.clone();
+        let copied_observations = observations.clone();
         self.failed_copy
             .start_with_receipt(&failed.outcome, move |outcome| {
                 copy_failed_plugin_with_receipt_on_control(
@@ -251,11 +283,42 @@ impl Lane {
                     max_events,
                     scope,
                     source,
-                    &observations,
+                    &copied_observations,
                 )
             })?;
-        self.copy_destination = Some(PendingCopy::Plugin(destination));
+        self.copy_destination = Some(PendingCopy::Plugin {
+            path: destination,
+            observations,
+        });
         Ok(Step::Progress(DeviceAutomationTakeProgress::Pending))
+    }
+
+    pub(super) fn inspect_failed_plugin_copy(
+        &self,
+        scope: DeviceAutomationTakeScope,
+        observations: &[super::PluginParameterObservation],
+    ) -> Result<Step, String> {
+        self.failed_source(scope)?;
+        if self.copy_destination.is_some() {
+            return Err("automation recovery copy is still pending".into());
+        }
+        let copy = self
+            .verified_plugin_copy
+            .as_ref()
+            .ok_or("no verified VST3 recovery copy is available")?;
+        if copy.observations.len() != observations.len()
+            || !copy
+                .observations
+                .iter()
+                .zip(observations)
+                .all(|(a, b)| same_plugin_observation(a, b))
+        {
+            return Err("retained VST3 observations changed after recovery copy".into());
+        }
+        Ok(Step::Progress(DeviceAutomationTakeProgress::VerifiedCopy {
+            path: copy.path.clone(),
+            receipt: copy.receipt,
+        }))
     }
 
     pub(super) fn path(&self) -> Option<&Path> {
@@ -332,7 +395,6 @@ impl Lane {
             action,
             DeviceAutomationTakeAction::CopyFailed { .. }
                 | DeviceAutomationTakeAction::PollFailedCopy
-                | DeviceAutomationTakeAction::InspectFailedPluginCopy
         ) {
             let failed = self
                 .failed
@@ -380,8 +442,18 @@ impl Lane {
                         (PendingCopy::Checkpoint(destination), None) => {
                             Ok(Step::Progress(Progress::Retained(destination)))
                         }
-                        (PendingCopy::Plugin(destination), Some(receipt)) => {
-                            self.verified_plugin_copy = Some((destination.clone(), receipt));
+                        (
+                            PendingCopy::Plugin {
+                                path: destination,
+                                observations,
+                            },
+                            Some(receipt),
+                        ) => {
+                            self.verified_plugin_copy = Some(VerifiedPluginCopy {
+                                path: destination.clone(),
+                                receipt,
+                                observations,
+                            });
                             Ok(Step::Progress(Progress::VerifiedCopy {
                                 path: destination,
                                 receipt,
@@ -389,16 +461,6 @@ impl Lane {
                         }
                         _ => Err("automation recovery copy receipt is inconsistent".into()),
                     }
-                }
-                DeviceAutomationTakeAction::InspectFailedPluginCopy => {
-                    let (path, receipt) = self
-                        .verified_plugin_copy
-                        .as_ref()
-                        .ok_or("no verified VST3 recovery copy is available")?;
-                    Ok(Step::Progress(Progress::VerifiedCopy {
-                        path: path.clone(),
-                        receipt: *receipt,
-                    }))
                 }
                 _ => Err("invalid automation recovery action".into()),
             };
