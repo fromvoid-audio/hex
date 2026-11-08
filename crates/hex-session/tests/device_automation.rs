@@ -34,7 +34,7 @@ fn unsupported_envelope_refuses_before_canonical_commit_and_preserves_history() 
     let error = session
         .command(Command::ReplaceDeviceAutomation {
             device,
-            parameter: ParameterId::new(8).unwrap(),
+            parameter: ParameterId::new(13).unwrap(),
             points: vec![AutomationPoint {
                 beat: BeatTime::ZERO,
                 value: AutomationValue::new(0.25).unwrap(),

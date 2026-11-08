@@ -578,7 +578,7 @@ fn routing_warm_fade_matches_independent_canonical_branches_with_live_links() {
             .unwrap()
     );
     assert!(
-        !crate::limiter::DEFINITION
+        crate::limiter::DEFINITION
             .supports_parameter_automation(&s, MODE)
             .unwrap()
     );

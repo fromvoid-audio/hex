@@ -553,6 +553,10 @@ fn limiter_lookahead_retains_maximum_pdc_across_owners_reading_and_seek() {
 fn limiter_routing_retains_maximum_pdc_across_owners_reading_and_seek() {
     limiter_structural_values(hex_devices::limiter::parameter::ROUTING, 2, 24);
 }
+#[test]
+fn limiter_mode_retains_maximum_pdc_across_owners_reading_and_seek() {
+    limiter_structural_values(hex_devices::limiter::parameter::MODE, 3, 43);
+}
 fn limiter_structural_values(
     parameter: hex_lattice_contract::ParameterId,
     choices: u32,

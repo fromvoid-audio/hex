@@ -189,22 +189,41 @@ fn limiter_routing_publishes_queued_audio_at_fixed_latency_without_callback_allo
 -> Result<(), Box<dyn Error>> {
     limiter_publication_case(LimiterPublication::Routing)
 }
+#[test]
+fn limiter_mode_publishes_queued_audio_at_fixed_latency_without_callback_allocations()
+-> Result<(), Box<dyn Error>> {
+    limiter_publication_case(LimiterPublication::Mode)
+}
 #[derive(Clone, Copy)]
 enum LimiterPublication {
     Original,
     Additional,
     Lookahead,
     Routing,
+    Mode,
 }
 fn limiter_publication_case(case: LimiterPublication) -> Result<(), Box<dyn Error>> {
     let original = matches!(case, LimiterPublication::Original);
     let lookahead = matches!(case, LimiterPublication::Lookahead);
     let routing = matches!(case, LimiterPublication::Routing);
-    let structural = lookahead || routing;
-    let latency = if routing { 144 } else { 288 };
+    let mode = matches!(case, LimiterPublication::Mode);
+    let structural = lookahead || routing || mode;
+    let latency = if mode {
+        103
+    } else if routing {
+        144
+    } else {
+        288
+    };
     const BLOCK: usize = 1024;
     use hex_devices::limiter::{DEFINITION as D, parameter as p};
-    let structural_parameter = if routing { p::ROUTING } else { p::LOOKAHEAD };
+    let structural_parameter = if mode {
+        p::MODE
+    } else if routing {
+        p::ROUTING
+    } else {
+        p::LOOKAHEAD
+    };
     use hex_lattice_contract::NativeDeviceMetadata;
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
     let Created::Imported { track, asset, .. } =
@@ -334,7 +353,7 @@ fn limiter_publication_case(case: LimiterPublication) -> Result<(), Box<dyn Erro
     assert!(editor.redo());
     assert_eq!(editor.project().snapshot(), authored);
     let path = std::env::temp_dir().join(format!(
-        "hex-limiter-automation-{}-{original}-{lookahead}-{routing}.hex",
+        "hex-limiter-automation-{}-{original}-{lookahead}-{routing}-{mode}.hex",
         std::process::id()
     ));
     hex_storage::save_new(&path, editor.project())?;
@@ -452,7 +471,7 @@ fn limiter_first_structural_target_assignment_applies_during_playback() -> Resul
 {
     use hex_devices::limiter::{DEFINITION as D, parameter as p};
     use hex_lattice_contract::NativeDeviceMetadata;
-    for parameter in [p::LOOKAHEAD, p::ROUTING] {
+    for parameter in [p::LOOKAHEAD, p::ROUTING, p::MODE] {
         let mut editor = Editor::new(Project::new(RATE)?, 8)?;
         let Created::Imported { track, asset, .. } =
             editor.execute(Command::ImportPreparedAudioTrack {
