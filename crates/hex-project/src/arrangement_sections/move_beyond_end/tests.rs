@@ -33,6 +33,7 @@ fn first_last_and_sole_moves_preserve_music_and_match_preview_in_one_history_edg
         }
         let mut editor = Editor::new(project, 8).unwrap();
         let before = editor.project().snapshot();
+        let original_audio_id = editor.project().tracks()[0].clips()[0].id();
         let edit = command(section, beat(12));
         assert!(edit.requires_section_publication());
         let preview = editor
@@ -83,7 +84,7 @@ fn first_last_and_sole_moves_preserve_music_and_match_preview_in_one_history_edg
         assert_eq!(project.assets().count(), 1);
         let audio = project.tracks()[0].clips();
         assert_eq!(audio.len(), 1);
-        assert_eq!(audio[0].id().value(), before.tracks[0].clips[0].id);
+        assert_eq!(audio[0].id(), original_audio_id);
         assert_eq!(audio[0].start(), if mode == 1 { 0 } else { 48_000 });
         let midi = project.tracks()[1].midi_clips();
         assert_eq!(midi.len(), 3);
