@@ -797,6 +797,40 @@ mod window_tests {
             assert!(!view.automation_close_preflight.frozen())
         });
         assert_eq!(cx.windows().len(), 1);
+        editor.update(cx, |view, cx| {
+            let revision = view.state.as_ref().unwrap().revision;
+            view.automation_close_preflight.state = PreflightState::Waiting {
+                request: 1000,
+                quit: false,
+                generation: view.project_generation,
+                revision,
+                deadline: Instant::now(),
+            };
+            assert!(view.tick_automation_close(cx));
+            assert!(!view.automation_close_preflight.frozen());
+            view.automation_close_preflight
+                .observe(1000, true, view.project_generation, revision);
+            assert!(
+                !view.automation_close_preflight.frozen(),
+                "late safe response stays retired"
+            );
+            view.automation_close_preflight.state = PreflightState::Waiting {
+                request: 1001,
+                quit: false,
+                generation: view.project_generation,
+                revision,
+                deadline: Instant::now() + Duration::from_secs(1),
+            };
+            view.automation_close_preflight
+                .observe(1001, false, view.project_generation, revision);
+            view.tick_automation_close(cx);
+        });
+        settle_close(cx);
+        assert!(!cx.has_pending_prompt());
+        editor.read_with(cx, |view, _| {
+            assert!(!view.automation_close_preflight.frozen())
+        });
+        assert_eq!(cx.windows().len(), 1);
     }
 
     fn click_custom_close(visual: &mut VisualTestContext) {
@@ -833,6 +867,7 @@ mod window_tests {
         visual.run_until_parked();
         click_custom_close(&mut visual);
         visual.run_until_parked();
+        settle_close(cx);
         assert!(cx.windows().is_empty());
     }
 
@@ -1015,20 +1050,24 @@ mod window_tests {
         settle_close(cx);
         assert_eq!(cx.windows().len(), 1);
         editor.read_with(cx, |view, _| {
-            assert!(view.state.as_ref().is_some_and(|state| !state.unsaved));
-            let draft = view.device_gesture.snapshot().expect("cancel keeps draft");
-            assert_eq!(
-                draft.target,
-                hex_session::device_gesture::GestureTarget::DeviceParameter {
-                    device,
-                    parameter: hex_session::device_gesture::ParameterId::new(1)
-                        .expect("gain parameter"),
-                }
+            assert!(view.state.as_ref().is_some_and(|state| state.unsaved));
+            assert!(
+                view.device_gesture.snapshot().is_none(),
+                "close finalized the draft"
             );
-            assert_eq!(
-                draft.value,
-                hex_session::device_gesture::ParameterValue::Float(2.0)
-            );
+            view.service.submit(Request::Undo).unwrap();
+        });
+        let undone = next_editor_service_event(&editor, cx);
+        assert!(undone.error.is_none());
+        assert_eq!(undone.state.project, device_event.state.project);
+        editor.update(cx, |view, _| {
+            view.receive(undone);
+            view.service.submit(Request::Redo).unwrap();
+        });
+        let redone = next_editor_service_event(&editor, cx);
+        assert!(redone.error.is_none());
+        editor.update(cx, |view, _| {
+            view.receive(redone);
         });
         cx.update_window(handle, |_, window, cx| {
             editor.update(cx, |view, cx| {
@@ -1236,7 +1275,6 @@ mod window_tests {
         let (_, editor) = dirty_replaced_window(cx);
         assert!(cx.simulate_should_quit());
         settle_close(cx);
-        settle_close(cx);
         assert!(cx.has_pending_prompt());
         assert!(cx.quit_request_pending());
         assert!(cx.quit_replies().is_empty(), "no answer before the prompt");
@@ -1249,7 +1287,6 @@ mod window_tests {
 
         assert!(cx.simulate_should_quit());
         settle_close(cx);
-        settle_close(cx);
         cx.simulate_prompt_answer("discard");
         settle_close(cx);
         assert_eq!(cx.quit_replies(), [false, true]);
@@ -1259,7 +1296,7 @@ mod window_tests {
     #[gpui::test]
     fn os_quit_of_a_clean_project_terminates_at_once(cx: &mut TestAppContext) {
         cx.update(install_quit_gate);
-        let (handle, editor) = dirty_replaced_window(cx);
+        let (_, editor) = dirty_replaced_window(cx);
         mark_clean(&editor, cx);
         assert!(cx.simulate_should_quit());
         settle_close(cx);
@@ -1270,8 +1307,7 @@ mod window_tests {
             view.service.submit(Request::Undo),
             Err(hex_session::service::SubmitError::Closed(_))
         )));
-        cx.update_window(handle, |_, window, _| window.remove_window())
-            .expect("remove test window");
+        assert!(cx.windows().is_empty());
     }
 
     #[gpui::test]
