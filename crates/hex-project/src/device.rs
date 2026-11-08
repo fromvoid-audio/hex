@@ -134,6 +134,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             Ok(crate::Created::None)
         }
         Command::ReplaceDeviceStateWithIdentityReservation {
+            automation,
             device,
             expected_state,
             expected_variant,
@@ -158,7 +159,10 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             let next = expected_next_id
                 .checked_add(reserved_ids)
                 .ok_or(Invalid("project identity space exhausted"))?;
-            project.edit_device(device, |d| d.replace_state(state))?;
+            project.edit_device(device, |d| match automation {
+                Some(change) => d.replace_state_and_automation(state, change),
+                None => d.replace_state(state),
+            })?;
             project.next_id = next;
             Ok(crate::Created::None)
         }
@@ -647,6 +651,7 @@ mod tests {
         let track = track_id(&mut editor, "track");
         let device = device_id(&mut editor, track);
         let command = Command::ReplaceDeviceStateWithIdentityReservation {
+            automation: None,
             device,
             expected_state: editor.project().device(device).unwrap().state().clone(),
             expected_variant: crate::DeviceVariant::A,
@@ -684,6 +689,7 @@ mod tests {
         let entry = editor.project().device(device).unwrap();
         editor
             .execute(Command::ReplaceDeviceStateWithIdentityReservation {
+                automation: None,
                 device,
                 expected_state: entry.state().clone(),
                 expected_variant: entry.active_variant(),
@@ -715,6 +721,7 @@ mod tests {
         let expected = editor.project().device(device).unwrap().state().clone();
         let first = editor.project().next_identity();
         let command = Command::ReplaceDeviceStateWithIdentityReservation {
+            automation: None,
             device,
             expected_state: expected.clone(),
             expected_variant: crate::DeviceVariant::A,
@@ -736,6 +743,7 @@ mod tests {
         assert!(
             editor
                 .execute(Command::ReplaceDeviceStateWithIdentityReservation {
+                    automation: None,
                     device,
                     expected_state: expected,
                     expected_variant: crate::DeviceVariant::A,

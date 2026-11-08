@@ -612,6 +612,7 @@ fn submit(
     };
     view.enqueue_device_barrier(Request::Edit(
         Command::ReplaceDeviceStateWithIdentityReservation {
+            automation: None,
             device,
             expected_state: expected,
             expected_variant,
