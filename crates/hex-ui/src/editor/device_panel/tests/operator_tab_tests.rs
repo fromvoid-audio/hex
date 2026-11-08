@@ -47,10 +47,32 @@ fn operator_focus_paints_sections_without_mouse_motion_and_keeps_detail_dark(
     }
     // Amount -> filter toggle, then its selector and two dials -> routing.
     // Focus paints without a pointer event or forced draw.
-    for (title, tabs) in [("filter", 1), ("global", 4)] {
-        for _ in 0..tabs {
+    for (title, parameter) in [
+        ("filter", Some(20001)),
+        ("feedback", Some(81)),
+        ("global", None),
+    ] {
+        let target = editor.read_with(cx, |view, app| match parameter {
+            Some(parameter) => match &view.device_panel.controls[&ParameterKey {
+                device,
+                parameter: hex_lattice_contract::ParameterId::from_static(parameter),
+            }] {
+                ParameterControl::Bool { entity, .. } => entity.focus_handle(app),
+                ParameterControl::Float { entity, .. } => entity.focus_handle(app),
+                _ => panic!("working control focus"),
+            },
+            None => view.device_panel.operator_previews[&device]
+                .routing_focus
+                .clone()
+                .unwrap(),
+        });
+        for _ in 0..16 {
             visual.simulate_keystrokes("tab");
+            if focused(&mut visual) == target {
+                break;
+            }
         }
+        assert_eq!(focused(&mut visual), target, "{title} is reachable by tab");
         assert_eq!(
             visual.rendered_background(row(title)),
             background(device_layout_style().surface),
