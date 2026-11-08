@@ -234,12 +234,19 @@ pub(super) fn disable(view: &mut EditorView, device: DeviceId, cx: &mut Context<
         initial.push((id, current));
         disabled.push((id, ParameterValue::Bool(false)));
     }
-    let result = DeviceParameterSnapshot::new(&initial).and_then(|initial| {
-        let disabled = DeviceParameterSnapshot::new(&disabled)?;
-        view.device_gesture
-            .begin_snapshot(view.project_generation, device, initial)?;
-        view.device_gesture.finish_snapshot(disabled)
-    });
+    let result = DeviceParameterSnapshot::new(&initial)
+        .map_err(|_| "eq8 group parameters unavailable")
+        .and_then(|initial| {
+            let disabled = DeviceParameterSnapshot::new(&disabled)
+                .map_err(|_| "eq8 group parameters unavailable")?;
+            view.device_gesture
+                .begin_snapshot(view.project_generation, device, initial)?;
+            let result = view.device_gesture.finish_snapshot(disabled);
+            if result.is_err() {
+                let _ = view.cancel_device_gesture();
+            }
+            result
+        });
     if let Err(error) = result {
         view.device_panel.message = Some(error.into());
     }
