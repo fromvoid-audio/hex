@@ -380,6 +380,7 @@ impl EditorView {
                 && view.pending_open_path.is_none()
                 && !view.save_dialog_open
                 && !view.close_prompt_open
+                && !view.automation_close_preflight.blocks_update_approval()
                 && !window.is_pointer_dragging()
                 && !view.gain_recorder.blocks_edits()
                 && !view.midi_recorder.blocks_edits();

@@ -1207,6 +1207,7 @@ impl EditorView {
             .worker_requests_pending
             .saturating_add(self.pending_requests.len());
         let mut visible_change = self.poll_audio_recovery() || logging_changed;
+        visible_change |= self.tick_automation_close(cx);
         if let Ok(view) = self.service.try_solo_view() {
             visible_change |= self.observe_solo_view(view);
         }
@@ -1272,6 +1273,7 @@ impl EditorView {
                     visible_change = true;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    visible_change |= self.automation_close_disconnected(cx);
                     if self.state.is_none() {
                         let reason = self
                             .service
@@ -2371,6 +2373,7 @@ impl EditorView {
         }
         self.document_format_upgrade_required = event.document_format_upgrade_required;
         self.recovery_failure = event.recovery_failure.clone();
+        self.observe_automation_close(&event);
         let sampler_edit_complete = event.sampler_edit_complete;
         self.plugin_effect_complete(&event);
         self.native_automation_take_completion(&event);

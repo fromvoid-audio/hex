@@ -2094,6 +2094,12 @@ fn knob_event(
     };
     let value = PluginParameterValue::new(normalized)?;
     let mut drag = drag.borrow_mut();
+    if view.automation_close_preflight.frozen()
+        && (event.phase == NumericEventPhase::Begin
+            || (event.phase == NumericEventPhase::Commit && event.gesture.is_none()))
+    {
+        return Err("close is pending · automation recording is unavailable");
+    }
     if event.phase == NumericEventPhase::Begin {
         let key = view.device_gesture.begin_plugin(origin)?;
         *drag = Some((event.gesture.clone(), key));
