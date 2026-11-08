@@ -74,6 +74,22 @@ pub struct DeadlineMiss {
     pub worker_phase: DeadlineWorkerPhase,
 }
 
+/// The callback's last accepted state within its copied transport quantum.
+/// This observation grants no graph, worker, quiescence or reclamation authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommittedQuantumState {
+    Closed,
+    OpenUnprogrammed,
+    OpenProgram(NonZeroU64),
+}
+
+/// A coherent diagnostic snapshot from the original constructor-paired callback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommittedQuantum {
+    pub binding: Binding,
+    pub state: CommittedQuantumState,
+}
+
 struct Revocation {
     binding: Binding,
     revoked: AtomicBool,
@@ -83,6 +99,9 @@ struct Revocation {
     processed_prefix: AtomicU64,
     missed_reply: AtomicU64,
     missed_phase: AtomicU8,
+    quantum_serial: AtomicU64,
+    quantum_program: AtomicU64,
+    quantum_state: AtomicU8,
 }
 impl Revocation {
     const REPORTED: u8 = 1 << 7;
@@ -97,6 +116,9 @@ impl Revocation {
             processed_prefix: AtomicU64::new(0),
             missed_reply: AtomicU64::new(0),
             missed_phase: AtomicU8::new(0),
+            quantum_serial: AtomicU64::new(0),
+            quantum_program: AtomicU64::new(0),
+            quantum_state: AtomicU8::new(0),
         }
     }
 
@@ -106,6 +128,29 @@ impl Revocation {
 
     fn is_revoked(&self) -> bool {
         self.revoked.load(Acquire)
+    }
+
+    // The callback is the sole publisher. Exhaustion permanently makes this
+    // optional observation unavailable; it never changes transport behavior.
+    fn publish_quantum(&self, quantum: CommittedQuantumState) {
+        use std::sync::atomic::Ordering::SeqCst;
+        let serial = self.quantum_serial.load(SeqCst);
+        let Some(next) = serial.checked_add(2) else {
+            self.quantum_serial.store(u64::MAX, SeqCst);
+            return;
+        };
+        if serial & 1 != 0 {
+            return;
+        }
+        self.quantum_serial.store(serial + 1, SeqCst);
+        let (state, key) = match quantum {
+            CommittedQuantumState::Closed => (1, 0),
+            CommittedQuantumState::OpenUnprogrammed => (2, 0),
+            CommittedQuantumState::OpenProgram(key) => (3, key.get()),
+        };
+        self.quantum_program.store(key, SeqCst);
+        self.quantum_state.store(state, SeqCst);
+        self.quantum_serial.store(next, SeqCst);
     }
 
     fn record_callback_fault(&self, fault: Fault) {
@@ -426,6 +471,31 @@ pub struct ReceivedProgram {
     pub program: Option<NonZeroU64>,
 }
 impl Control {
+    /// Read one bounded snapshot of the exact paired callback's most recently
+    /// accepted quantum. None means no observation, contention, exhaustion, or
+    /// revocation. A copied binding is not proof of any graph installation.
+    pub fn committed_quantum(&self) -> Option<CommittedQuantum> {
+        use std::sync::atomic::Ordering::SeqCst;
+        if self.revoked.is_revoked() {
+            return None;
+        }
+        let before = self.revoked.quantum_serial.load(SeqCst);
+        if before == 0 || before & 1 != 0 {
+            return None;
+        }
+        let key = self.revoked.quantum_program.load(SeqCst);
+        let state = match self.revoked.quantum_state.load(SeqCst) {
+            1 => CommittedQuantumState::Closed,
+            2 => CommittedQuantumState::OpenUnprogrammed,
+            3 => CommittedQuantumState::OpenProgram(NonZeroU64::new(key)?),
+            _ => return None,
+        };
+        (before == self.revoked.quantum_serial.load(SeqCst) && !self.revoked.is_revoked())
+            .then_some(CommittedQuantum {
+                binding: self.revoked.binding,
+                state,
+            })
+    }
     pub fn revoke(&self) {
         self.revoked.revoke();
     }
@@ -641,6 +711,7 @@ pub struct Callback {
     state: State,
     staged: Option<Stage>,
     accepted_manual: Option<AcceptedManualParameter>,
+    committed_quantum: Option<CommittedQuantumState>,
     // Only the prefix below the staged position is read. Rejection permanently
     // revokes the endpoint, so origin scratch does not need a rollback copy.
     authored_origins: AuthoredOrigins,
@@ -733,6 +804,7 @@ fn channel_with_policy(
             },
             staged: None,
             accepted_manual: None,
+            committed_quantum: None,
             authored_origins: AuthoredOrigins::default(),
         },
         Worker {
@@ -1254,6 +1326,18 @@ impl Callback {
         }
         self.state = stage.state;
         self.accepted_manual = stage.manual;
+        let quantum = if self.state.position.is_multiple_of(u64::from(self.quantum)) {
+            CommittedQuantumState::Closed
+        } else if let Some(key) = self.authored_origins.program {
+            CommittedQuantumState::OpenProgram(key)
+        } else {
+            CommittedQuantumState::OpenUnprogrammed
+        };
+        // Identical observations carry no additional receipt or authority.
+        if self.committed_quantum != Some(quantum) {
+            self.revoked.publish_quantum(quantum);
+            self.committed_quantum = Some(quantum);
+        }
         Ok(())
     }
 

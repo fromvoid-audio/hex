@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 pub(crate) fn authored_states(project: &Project) -> impl Iterator<Item = &NativeDeviceState> {
     project
-        .device_roots()
+        .devices()
         .flat_map(hex_project::Device::authored_states)
 }
 

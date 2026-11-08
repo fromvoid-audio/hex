@@ -29,6 +29,7 @@ fn fixture_duration(duration: u64) -> Project {
     let id = snapshot.next_id;
     snapshot.next_id += 1;
     snapshot.tracks[0].instrument = Some(DeviceSnapshot {
+        parent: None,
         automation: Vec::new(),
         comparison: None,
         id,

@@ -45,6 +45,7 @@ pub(crate) mod return_feeds;
 pub(crate) mod routing;
 pub(crate) mod sample_rate_mode;
 pub(crate) mod sampler_crossfade;
+pub(crate) mod serial_units;
 pub(crate) mod session_audio_loops;
 pub(crate) mod sidechain;
 pub(crate) mod track_groups;
@@ -1222,6 +1223,7 @@ fn device_dto_into_snapshot(device: DeviceDtoV14) -> Result<DeviceSnapshot, Stor
         .with_output_gain_millidb(device.output_gain_millidb)
         .map_err(|_| StorageError::Invalid("invalid device output gain"))?;
     Ok(DeviceSnapshot {
+        parent: None,
         automation: Vec::new(),
         id: device.id,
         bypassed: device.bypassed,

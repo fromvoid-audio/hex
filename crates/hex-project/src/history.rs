@@ -305,6 +305,7 @@ impl Editor {
         if alias_changed {
             Project::from_snapshot(candidate.snapshot())?;
         }
+        candidate.validate_serial_units()?;
         candidate.validate_source_bindings()?;
         candidate.validate_track_hierarchy()?;
         candidate.validate_changed_midi_occupancy(&self.project)?;
@@ -457,6 +458,7 @@ impl Editor {
                 Project::from_snapshot(candidate.snapshot())?;
             }
         }
+        candidate.validate_serial_units()?;
         candidate.validate_source_bindings()?;
         candidate.validate_track_hierarchy()?;
         candidate.validate_changed_midi_occupancy(&self.project)?;

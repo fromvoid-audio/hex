@@ -224,6 +224,7 @@ impl MutableInstrumentTrackRuntime {
         clock: Option<&dyn NativeInstrumentClock>,
         resources: &dyn hex_lattice::DeviceResources,
         lookup: &mut VolumeLookup<'_>,
+        automation: Option<&dyn hex_lattice::NativeParameterAutomation>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
         self.process_volume_scope(
             Some(track),
@@ -236,6 +237,7 @@ impl MutableInstrumentTrackRuntime {
             clock,
             resources,
             lookup,
+            automation,
         )
     }
 
@@ -250,6 +252,7 @@ impl MutableInstrumentTrackRuntime {
         clock: Option<&dyn NativeInstrumentClock>,
         resources: &dyn hex_lattice::DeviceResources,
         lookup: &mut VolumeLookup<'_>,
+        automation: Option<&dyn hex_lattice::NativeParameterAutomation>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
         self.process_volume_scope(
             None,
@@ -262,6 +265,7 @@ impl MutableInstrumentTrackRuntime {
             clock,
             resources,
             lookup,
+            automation,
         )
     }
 
@@ -278,6 +282,7 @@ impl MutableInstrumentTrackRuntime {
         clock: Option<&dyn NativeInstrumentClock>,
         resources: &dyn hex_lattice::DeviceResources,
         lookup: &mut VolumeLookup<'_>,
+        automation: Option<&dyn hex_lattice::NativeParameterAutomation>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
         let mut offset = 0;
         while offset < frames.len() {
@@ -288,6 +293,9 @@ impl MutableInstrumentTrackRuntime {
                 .checked_add(offset as u64)
                 .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
             let mut count = frames.len() - offset;
+            if automation.is_some() {
+                count = count.min(hex_lattice::MAX_INSTRUMENT_AUTOMATION_FRAMES);
+            }
             // Positive progress, at most one iteration per requested frame.
             // Split at an onset so every new voice's original ramp covers the
             // complete borrowed host segment, without extrapolated endpoints.
@@ -318,6 +326,8 @@ impl MutableInstrumentTrackRuntime {
                 return Err(MutableInstrumentRuntimeError::InvalidSourceSpan);
             }
             let shifted = clock.map(|clock| OffsetClock { clock, offset });
+            let shifted_values =
+                automation.map(|values| automation::OffsetValues { values, offset });
             self.process_segment_inner(
                 track,
                 performance,
@@ -329,6 +339,9 @@ impl MutableInstrumentTrackRuntime {
                 shifted.as_ref().map(|c| c as &dyn NativeInstrumentClock),
                 resources,
                 Some(lookup),
+                shifted_values
+                    .as_ref()
+                    .map(|values| values as &dyn hex_lattice::NativeParameterAutomation),
             )?;
             offset += count;
         }

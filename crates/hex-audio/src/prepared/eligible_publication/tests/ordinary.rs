@@ -1880,6 +1880,7 @@ fn compensated_demand_retries_a_smaller_window_at_page_capacity() {
     snapshot.tracks[0]
         .devices
         .push(hex_project::DeviceSnapshot {
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id,

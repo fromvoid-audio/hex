@@ -1,5 +1,6 @@
 mod compensated;
 mod computer_keyboard;
+mod instrument_automation;
 mod shared_source;
 mod source_live;
 use super::capture::CaptureSink;
@@ -1566,6 +1567,7 @@ impl SessionPlayback {
                             render_output,
                             &timing,
                             true,
+                            None,
                         )?;
                     }
                     render_mutable_instrument_chunk(
@@ -2499,6 +2501,7 @@ fn process_mutable_tail<T: MidiTiming + ?Sized>(
                 Some(&clock),
                 &hex_lattice::EMPTY_DEVICE_RESOURCES,
                 None,
+                None,
             )
             .map_err(crate::mutable_instrument::MutableInstrumentRuntimeError::render_error);
     }
@@ -2742,6 +2745,21 @@ fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?
             .is_some_and(|(_, _, prepared)| prepared.volume_program().is_some()),
         _ => false,
     };
+    let parameter_context = instrument_automation::SourceAutomation::new(
+        revision,
+        index,
+        instrument_automation::Origin {
+            arrangement: Some(arrangement_frame),
+            performance: performance_frame,
+            pass: arrangement_loop_pass,
+            running: true,
+        },
+        output.len(),
+    )?;
+    let parameter_block = parameter_context.block();
+    let parameter_values = parameter_block
+        .as_ref()
+        .map(|values| values as &dyn hex_lattice::NativeParameterAutomation);
     let clock = InstrumentClock {
         timing,
         start: performance_frame,
@@ -2758,6 +2776,7 @@ fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?
                 events,
                 Some(&clock),
                 resources,
+                parameter_values,
             )
             .map_err(crate::mutable_instrument::MutableInstrumentRuntimeError::render_error);
     }
@@ -2912,6 +2931,7 @@ fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?
             Some(&clock),
             resources,
             &mut lookup,
+            parameter_values,
         )
         .map_err(crate::mutable_instrument::MutableInstrumentRuntimeError::render_error)
 }

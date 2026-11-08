@@ -8,6 +8,7 @@
 //! retain their own ingress/capture acknowledgements, never another instrument.
 
 pub(crate) mod authored_gate;
+mod automation;
 mod live;
 #[cfg(test)]
 mod steal_tests;
@@ -803,6 +804,7 @@ impl MutableInstrumentTrackRuntime {
             events,
             clock,
             &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            None,
         )
     }
     #[allow(clippy::too_many_arguments)]
@@ -817,6 +819,7 @@ impl MutableInstrumentTrackRuntime {
         events: &mut Vec<NativeInstrumentEvent>,
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
         resources: &dyn hex_lattice::DeviceResources,
+        automation: Option<&dyn hex_lattice::NativeParameterAutomation>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
         self.process_segment_inner(
             Some(track),
@@ -829,6 +832,7 @@ impl MutableInstrumentTrackRuntime {
             clock,
             resources,
             None,
+            automation,
         )
     }
 
@@ -845,6 +849,7 @@ impl MutableInstrumentTrackRuntime {
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
         resources: &dyn hex_lattice::DeviceResources,
         volume: Option<&mut VolumeLookup<'_>>,
+        automation: Option<&dyn hex_lattice::NativeParameterAutomation>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
         self.process_segment_inner(
             None,
@@ -857,6 +862,7 @@ impl MutableInstrumentTrackRuntime {
             clock,
             resources,
             volume,
+            automation,
         )
     }
 
@@ -873,7 +879,9 @@ impl MutableInstrumentTrackRuntime {
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
         resources: &dyn hex_lattice::DeviceResources,
         volume: Option<&mut VolumeLookup<'_>>,
+        automation: Option<&dyn hex_lattice::NativeParameterAutomation>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
+        automation::validate_width(automation, frames.len())?;
         let width =
             u64::try_from(frames.len()).map_err(|_| MutableInstrumentRuntimeError::Arithmetic)?;
         events.clear();
@@ -943,17 +951,28 @@ impl MutableInstrumentTrackRuntime {
             .resources
             .as_ref()
             .map_or(resources, |lease| lease.resources());
-        match gains {
-            Some(gains) => self.pair.process_block_with_clock_and_occurrence_gains(
+        if let Some(values) = automation {
+            self.pair.process_block_with_clock_and_automation(
                 events,
                 frames,
                 clock,
-                gains.as_slice(),
+                gains.as_ref().map_or(&[], |gains| gains.as_slice()),
+                values,
                 resources,
-            ),
-            None => self
-                .pair
-                .process_block_with_clock(events, frames, clock, resources),
+            )
+        } else {
+            match gains {
+                Some(gains) => self.pair.process_block_with_clock_and_occurrence_gains(
+                    events,
+                    frames,
+                    clock,
+                    gains.as_slice(),
+                    resources,
+                ),
+                None => self
+                    .pair
+                    .process_block_with_clock(events, frames, clock, resources),
+            }
         }
         .map_err(map_runtime_error)?;
         if let Some(live) = &mut self.live {

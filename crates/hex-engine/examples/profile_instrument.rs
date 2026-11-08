@@ -105,6 +105,7 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
             soloed: false,
             devices: vec![
                 DeviceSnapshot {
+                    parent: None,
                     automation: Vec::new(),
                     comparison: None,
                     id: prefix_id,
@@ -112,6 +113,7 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
                     state: utility_state.clone(),
                 },
                 DeviceSnapshot {
+                    parent: None,
                     automation: Vec::new(),
                     comparison: None,
                     id: suffix_id,
@@ -120,6 +122,7 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
                 },
             ],
             instrument: Some(hex_project::DeviceSnapshot {
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: instrument_id,
