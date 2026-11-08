@@ -523,3 +523,53 @@ fn effective_kind_and_bank_history_survive_equivalent_and_shadowed_base_retarget
         expected[0]
     );
 }
+
+#[test]
+fn genuine_bank_changes_reset_history_and_kind_changes_keep_canonical_ramps() {
+    let (mut state, _) = fixture();
+    state.mode = 1;
+    state.nodes[0].bank = 1;
+    let factory = PreparedEq::new(state.clone(), 48000).unwrap();
+    let mut source = factory.create_runtime();
+    source.process_block(&mut [[0.5, -0.25]; 32], &R);
+    state.nodes[0].bank = 2;
+    let factory = PreparedEq::new(state, 48000).unwrap();
+    let mut candidate = factory.create_runtime();
+    candidate.copy_history_from(source.as_ref());
+    let mut fresh = factory.create_runtime();
+    let mut actual = [[0.5, -0.25]; 64];
+    let mut expected = actual;
+    candidate.process_block(&mut actual, &R);
+    fresh.process_block(&mut expected, &R);
+    assert_eq!(actual, expected);
+
+    let (state, _) = fixture();
+    let id = state.nodes[0].id.parameter(NodeParameter::Kind).unwrap();
+    let mut source = PreparedEq::new(state.clone(), 48000)
+        .unwrap()
+        .create_runtime();
+    source.process_block(&mut [[0.5, -0.25]; 32], &R);
+    let mut candidate = PreparedEq::automated(state.clone(), 48000, &[id])
+        .unwrap()
+        .create_runtime();
+    candidate.copy_history_from(source.as_ref());
+    let mut canonical = state;
+    canonical.nodes[0].kind = NodeKind::Notch;
+    let mut reference = PreparedEq::new(canonical, 48000).unwrap().create_runtime();
+    reference.copy_history_from(source.as_ref());
+    let mut actual = [[0.5, -0.25]; 64];
+    let mut expected = actual;
+    candidate
+        .process_block_with_automation(
+            &mut actual,
+            None,
+            &Held {
+                id: [id],
+                value: Some(ParameterValue::Choice(5)),
+            },
+            &R,
+        )
+        .unwrap();
+    reference.process_block(&mut expected, &R);
+    assert_eq!(actual, expected);
+}
