@@ -367,6 +367,116 @@ fn failed_plugin_copy_preserves_originals_and_real_restoration() {
 }
 
 #[test]
+fn recovery_copy_receipt_refuses_replaced_damaged_or_incomplete_files() {
+    let (files, scope, source, outcome) = failed_copy_fixture();
+    let original = std::fs::read(&outcome.path).unwrap();
+    let retained = outcome.retained[0].events().to_vec();
+    let delivered = point(scope, source, 16, Vst3ApplicationValue::Value(0.75));
+    let mut restored = point(scope, source, 24, Vst3ApplicationValue::Restored);
+    restored.sequence = delivered.sequence;
+    let limits = DraftReadLimits {
+        max_source_bytes: 65536,
+    };
+    let finished = files.0.join("receipt-finished");
+    let receipt = copy_failed_plugin_with_receipt_on_control(
+        &outcome,
+        &finished,
+        limits,
+        3,
+        scope,
+        source,
+        &[
+            Observation::Delivered(delivered),
+            Observation::Restored(restored),
+        ],
+    )
+    .unwrap();
+    assert_eq!(receipt.events(), 3);
+    assert_eq!(
+        receipt.terminal(),
+        DraftTerminal::Finished(restored.application.origin)
+    );
+    receipt.verify_on_control(&finished, limits, 3).unwrap();
+    assert!(receipt.verify_on_control(&finished, limits, 2).is_err());
+
+    let interrupted = files.0.join("receipt-interrupted");
+    let interrupted_receipt = copy_failed_plugin_with_receipt_on_control(
+        &outcome,
+        &interrupted,
+        limits,
+        3,
+        scope,
+        source,
+        &[Observation::Delivered(delivered)],
+    )
+    .unwrap();
+    assert_eq!(interrupted_receipt.terminal(), DraftTerminal::Interrupted);
+    interrupted_receipt
+        .verify_on_control(&interrupted, limits, 3)
+        .unwrap();
+    assert!(receipt.verify_on_control(&interrupted, limits, 3).is_err());
+
+    let mut changed = delivered;
+    changed.application.value = Vst3ApplicationValue::Value(0.625);
+    let replacement = files.0.join("receipt-replacement");
+    copy_failed_plugin_with_receipt_on_control(
+        &outcome,
+        &replacement,
+        limits,
+        3,
+        scope,
+        source,
+        &[
+            Observation::Delivered(changed),
+            Observation::Restored(restored),
+        ],
+    )
+    .unwrap();
+    assert!(receipt.verify_on_control(&replacement, limits, 3).is_err());
+
+    let mut reader = DraftReader::open(&finished, limits).unwrap();
+    let different_header = files.0.join("receipt-valid-other-header");
+    let mut stamp = reader.provenance();
+    stamp.gesture_serial += 1;
+    let mut writer = hex_storage::automation_draft::DraftWriter::create_with_clock(
+        &different_header,
+        reader.source(),
+        reader.target(),
+        stamp,
+        reader.capture_clock().unwrap(),
+    )
+    .unwrap();
+    let mut page = [None; 3];
+    assert_eq!(reader.read_events(0, &mut page).unwrap(), 3);
+    writer.append(&page.map(Option::unwrap)).unwrap();
+    writer.finish(receipt.terminal()).unwrap();
+    drop(writer);
+    drop(reader);
+    assert!(
+        receipt
+            .verify_on_control(&different_header, limits, 3)
+            .is_err()
+    );
+
+    let bytes = std::fs::read(&finished).unwrap();
+    let appended = files.0.join("receipt-appended");
+    let mut bad = bytes.clone();
+    bad.push(0);
+    std::fs::write(&appended, &bad).unwrap();
+    assert!(receipt.verify_on_control(&appended, limits, 3).is_err());
+    let truncated = files.0.join("receipt-truncated");
+    std::fs::write(&truncated, &bytes[..bytes.len() - 1]).unwrap();
+    assert!(receipt.verify_on_control(&truncated, limits, 3).is_err());
+    let wrong_header = files.0.join("receipt-header");
+    let mut bad = bytes;
+    bad[0] ^= 1;
+    std::fs::write(&wrong_header, &bad).unwrap();
+    assert!(receipt.verify_on_control(&wrong_header, limits, 3).is_err());
+    assert_eq!(std::fs::read(&outcome.path).unwrap(), original);
+    assert_eq!(outcome.retained[0].events(), retained);
+}
+
+#[test]
 fn failed_plugin_copy_refuses_bad_custody_and_never_invents_an_end() {
     let (files, scope, source, outcome) = failed_copy_fixture();
     let original = std::fs::read(&outcome.path).unwrap();
