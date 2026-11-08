@@ -46,6 +46,7 @@ mod operator_selector_keys_ui_tests;
 mod operator_tab_tests;
 mod operator_tuning_ui_tests;
 mod operator_voice_ui_tests;
+mod operator_waveform_editor_tests;
 mod overdrive_ui_tests;
 mod parameter_rows_tests;
 mod rattle_ui_tests;
@@ -1927,7 +1928,7 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
             .contains(&waveform_preview.size.width)
     );
     open_operator_options(&mut visual, instrument_id);
-    assert_eq!(waveform_preview.size.height, px(86.0));
+    assert_eq!(waveform_preview.size.height, px(48.0));
     let ratio = hex_lattice_contract::ParameterId::from_static(1);
     enter_typed_value(&mut visual, instrument_id, ratio, "invalid");
     let fix_selector =

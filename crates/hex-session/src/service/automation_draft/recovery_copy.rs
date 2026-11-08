@@ -2,7 +2,9 @@
 use super::{
     AppliedEvent, DraftPrefixIdentity, DraftTerminal, DraftWorkerOutcome, EVENTS_PER_BATCH,
 };
-use hex_storage::automation_draft::{DraftOutcome, DraftReadLimits, DraftReader, DraftWriter};
+use hex_storage::automation_draft::{
+    CompletedAutomationTake, DraftOutcome, DraftReadLimits, DraftReader, DraftWriter,
+};
 use std::path::Path;
 
 /// Identity of the verified copy, not permission to release the original custody.
@@ -34,6 +36,28 @@ impl RecoveryCopyReceipt {
         }
         let mut reader = DraftReader::open_bounded(path, limits, max_events)
             .map_err(|error| error.to_string())?;
+        self.verify_reader(&mut reader)
+    }
+
+    /// Verify and prepare a finished take from the same locked reader. This is
+    /// not permission to release the original custody or commit an edit.
+    pub fn open_completed_on_control(
+        self,
+        path: &Path,
+        limits: DraftReadLimits,
+        max_events: u64,
+    ) -> Result<CompletedAutomationTake, String> {
+        if self.events() > max_events {
+            return Err("automation recovery receipt exceeds budget".into());
+        }
+        let mut reader = DraftReader::open_bounded(path, limits, max_events)
+            .map_err(|error| error.to_string())?;
+        self.verify_reader(&mut reader)?;
+        let completed = reader.into_completed().map_err(|error| error.to_string())?;
+        CompletedAutomationTake::from_completed_on_control(completed)
+    }
+
+    fn verify_reader(self, reader: &mut DraftReader) -> Result<(), String> {
         let expected = match self.terminal {
             DraftTerminal::Finished(clock) => DraftOutcome::Finished(clock),
             DraftTerminal::Aborted(reason) => DraftOutcome::Aborted(reason),

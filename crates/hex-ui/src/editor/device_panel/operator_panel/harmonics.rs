@@ -322,6 +322,24 @@ pub(super) fn graph(
     (painter, overview)
 }
 
+#[cfg(all(test, feature = "ui-test-support"))]
+pub(in crate::editor::device_panel) fn displayed_cycle(
+    view: &EditorView,
+    device: DeviceId,
+    operator: usize,
+) -> Option<&[[f32; 2]; 256]> {
+    Some(
+        &view
+            .device_panel
+            .operator_harmonics
+            .get(&(device, operator))?
+            .overview
+            .points
+            .as_ref()?
+            .points,
+    )
+}
+
 fn overview(view: &mut EditorView, key: Key, input: OverviewInput) -> Div {
     let Some(control) = view.device_panel.operator_harmonics.get_mut(&key) else {
         return div();
