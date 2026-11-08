@@ -3709,6 +3709,7 @@ impl Callback {
                     self.status.render_fault_record.clear();
                     self.status.render_fault.store(false, Release);
                     self.status.stream_source_changed.store(false, Release);
+                    self.status.stream_read_failed.store(false, Release);
                     self.status.applied_source.publish(None);
                     self.status.applied_revision.store(revision, Release);
                     self.status.publication_pending.store(false, Release);
@@ -4667,6 +4668,7 @@ impl Callback {
                     play_applied: false,
                     readiness_refused: false,
                     source_changed: false,
+                    read_failed: false,
                     fault: None,
                     action_rejection: None,
                     action_applied: None,
