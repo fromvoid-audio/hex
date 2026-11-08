@@ -7,6 +7,7 @@
 use hex_lattice::{NativeDeviceDefinition, PreparedProcessorFactory, StereoMatrix};
 use hex_lattice_contract::{DeviceContractError, NativeDeviceState};
 use std::sync::Arc;
+mod automation;
 mod state;
 use state::decode;
 pub use state::{STATE_VERSION, TYPE_ID, parameter};
@@ -17,6 +18,23 @@ mod tests;
 pub struct LimiterDefinition;
 pub static DEFINITION: LimiterDefinition = LimiterDefinition;
 impl NativeDeviceDefinition for LimiterDefinition {
+    fn supports_parameter_automation(
+        &self,
+        state: &NativeDeviceState,
+        id: hex_lattice_contract::ParameterId,
+    ) -> Result<bool, DeviceContractError> {
+        decode(state)?;
+        Ok(automation::slot(id).is_some())
+    }
+    fn prepare_automated_runtime_instance(
+        &self,
+        _identity: hex_lattice::ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+        ids: &[hex_lattice_contract::ParameterId],
+    ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
+        automation::prepare(state, context, ids)
+    }
     fn prepare_matrix(
         &self,
         state: &NativeDeviceState,
