@@ -110,6 +110,104 @@ fn failed_copy_fixture() -> (
 }
 
 #[test]
+fn failed_plugin_copy_preserves_terminal_already_admitted_by_writer() {
+    use crate::service::automation_draft::tests::injected_failed_writer_with_terminal;
+    use hex_storage::automation_draft::{DraftTarget, DraftWriter};
+
+    let (files, session, scope, source) = fixture();
+    let DeviceCaptureTarget::Vst3(target) = scope.target else {
+        panic!("foreign")
+    };
+    let path = files.0.join("admitted-terminal-source");
+    let writer = DraftWriter::create_with_clock(
+        &path,
+        session.project(),
+        DraftTarget::Device {
+            device: target.device,
+            target: hex_project::DeviceAutomationTarget::Vst3 {
+                parameter: target.parameter,
+            },
+        },
+        scope.stamp,
+        source.capture_clock(session.project()),
+    )
+    .unwrap();
+    let event = AppliedEvent {
+        sequence: 1,
+        performance_frame: 8,
+        content_frame: 0,
+        loop_pass: 0,
+        value: hex_project::AutomationValue::new(0.5).unwrap(),
+    };
+    let restored = point(scope, source, 24, Vst3ApplicationValue::Restored);
+    let terminal = DraftTerminal::Finished(restored.application.origin);
+    let outcome = injected_failed_writer_with_terminal(writer, event, terminal);
+    assert_eq!(outcome.requested_terminal, terminal);
+    let original = std::fs::read(&path).unwrap();
+    let output = files.0.join("admitted-terminal-copy");
+    let limits = DraftReadLimits {
+        max_source_bytes: 65536,
+    };
+    assert_eq!(
+        copy_failed_plugin_on_control(&outcome, &output, limits, 1, scope, source, &[]).unwrap(),
+        terminal
+    );
+    let reader = DraftReader::open(output, limits).unwrap();
+    assert_eq!(
+        reader.outcome(),
+        DraftOutcome::Finished(restored.application.origin)
+    );
+    assert_eq!(reader.progress().durable_events, 1);
+    assert!(
+        copy_failed_plugin_on_control(
+            &outcome,
+            &files.0.join("after-terminal"),
+            limits,
+            2,
+            scope,
+            source,
+            &[Observation::Delivered(point(
+                scope,
+                source,
+                32,
+                Vst3ApplicationValue::Value(0.75),
+            ))],
+        )
+        .is_err()
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert_eq!(outcome.retained[0].events(), &[event]);
+
+    let aborted_path = files.0.join("admitted-abort-source");
+    let writer = DraftWriter::create_with_clock(
+        &aborted_path,
+        session.project(),
+        DraftTarget::Device {
+            device: target.device,
+            target: hex_project::DeviceAutomationTarget::Vst3 {
+                parameter: target.parameter,
+            },
+        },
+        scope.stamp,
+        source.capture_clock(session.project()),
+    )
+    .unwrap();
+    let aborted = DraftTerminal::Aborted(DraftAbortReason::Cancelled);
+    let outcome = injected_failed_writer_with_terminal(writer, event, aborted);
+    let original = std::fs::read(&aborted_path).unwrap();
+    let output = files.0.join("admitted-abort-copy");
+    assert_eq!(
+        copy_failed_plugin_on_control(&outcome, &output, limits, 1, scope, source, &[]).unwrap(),
+        aborted
+    );
+    assert_eq!(
+        DraftReader::open(output, limits).unwrap().outcome(),
+        DraftOutcome::Aborted(DraftAbortReason::Cancelled)
+    );
+    assert_eq!(std::fs::read(aborted_path).unwrap(), original);
+}
+
+#[test]
 fn failed_plugin_copy_uses_enabled_project_loop_without_section_override() {
     use crate::service::automation_draft::tests::failed_outcome;
     use hex_storage::automation_draft::{DraftTarget, DraftWriter};

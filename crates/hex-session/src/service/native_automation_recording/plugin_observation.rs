@@ -53,10 +53,16 @@ pub fn copy_failed_plugin_on_control(
             }
             let tail = prepare_failed_plugin_continuation(scope, source, previous, observations)
                 .map_err(str::to_owned)?;
-            Ok((
-                tail.events().collect(),
-                tail.terminal().unwrap_or(DraftTerminal::Interrupted),
-            ))
+            let terminal = match outcome.requested_terminal {
+                DraftTerminal::Interrupted => tail.terminal().unwrap_or(DraftTerminal::Interrupted),
+                terminal => {
+                    if !observations.is_empty() {
+                        return Err("plugin observation follows admitted terminal".into());
+                    }
+                    terminal
+                }
+            };
+            Ok((tail.events().collect(), terminal))
         },
     )
 }
