@@ -76,7 +76,9 @@ pub fn commit_owned_numeric_edit(
         || view.device_gesture.has_pending_terminal()
         || (matches!(
             target,
-            GestureTarget::MainGain | GestureTarget::ReturnGain { .. }
+            GestureTarget::MainGain
+                | GestureTarget::ReturnGain { .. }
+                | GestureTarget::ReturnSend { .. }
         ) && view.document_audio_mode != hex_session::DocumentAudioMode::Resident)
     {
         let command = match target {
