@@ -1,4 +1,5 @@
-//! Direct real-provider allocation scopes. Host publication is a later slice.
+//! Direct real-provider allocation scopes for lookahead/routing layouts.
+//! Routing host publication is a later slice.
 //! Construction, expected-output rendering and reclamation stay outside scopes.
 use allocation_counter::{AllocationInfo, measure};
 use hex_devices::limiter::{DEFINITION as D, LimiterDefinition, parameter::*};
@@ -6,13 +7,14 @@ use hex_lattice::{
     EMPTY_DEVICE_RESOURCES as R, NativeParameterAutomation, PreparedOwnedProcessorRuntime,
 };
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterId, ParameterValue};
-const IDS: [ParameterId; 10] = [
+const IDS: [ParameterId; 11] = [
     GAIN,
     CEILING,
     RELEASE,
     AUTO_RELEASE,
     LINK,
     LOOKAHEAD,
+    ROUTING,
     MAXIMIZE,
     THRESHOLD,
     OUTPUT,
@@ -29,10 +31,11 @@ impl NativeParameterAutomation for Values {
     fn value_at(&self, id: ParameterId, offset: usize) -> Option<ParameterValue> {
         let i = self.start + offset;
         Some(match id {
-            LOOKAHEAD => ParameterValue::Choice(if self.bad && offset == 17 {
-                3
+            LOOKAHEAD => ParameterValue::Choice((i / 17 % 3) as u32),
+            ROUTING => ParameterValue::Choice(if self.bad && offset == 17 {
+                2
             } else {
-                (i / 17 % 3) as u32
+                (i / 29 % 2) as u32
             }),
             GAIN => ParameterValue::Float(-12.0 + (i % 41) as f32 * 0.6),
             CEILING => ParameterValue::Float(-24.0 + (i % 29) as f32 * 0.8),
@@ -59,7 +62,7 @@ fn zero(info: AllocationInfo) {
     );
 }
 #[test]
-fn limiter_lookahead_real_provider_transitions_rollback_bypass_and_tail_allocate_nothing() {
+fn limiter_structural_real_provider_transitions_rollback_bypass_and_tail_allocate_nothing() {
     for (rate, mode, route) in [(8000, 0, 0), (48000, 1, 1), (192000, 2, 1)] {
         let mut s = D.default_state().unwrap();
         for (id, value) in [(MODE, mode), (ROUTING, route)] {
@@ -68,7 +71,7 @@ fn limiter_lookahead_real_provider_transitions_rollback_bypass_and_tail_allocate
                 .unwrap();
         }
         let factory =
-            LimiterDefinition::prepare_owned_lookahead_for_parameters(&s, rate, &IDS).unwrap();
+            LimiterDefinition::prepare_owned_structural_for_parameters(&s, rate, &IDS).unwrap();
         let latency = factory.algorithmic_latency_frames().unwrap() as usize;
         let frames = (latency * 3 + 256 * 3).div_ceil(32) * 32;
         let mut actual = factory.create_runtime().unwrap();

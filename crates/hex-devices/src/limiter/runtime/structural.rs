@@ -1,6 +1,7 @@
-//! Owned lookahead transitions at one immutable, control-declared latency.
+//! Owned lookahead/routing transitions at one immutable, control-declared latency.
 //!
-//! Three configurations are prepared on control for fixed mode/routing. Only
+//! Six configurations are prepared on control for fixed mode. Exact eligibility
+//! selects immutable capacity, latency, padding and final-stage reservation. Only
 //! two branches render: the current branch and a reset successor. The successor
 //! warms for the declared latency, then receives one 256-frame linear fade.
 //! Gain-ramp positions survive its reset; detector/release history starts fresh.
@@ -30,7 +31,7 @@ use hex_lattice_contract::{
     ParameterId, ParameterSemantics, ParameterSmoothing,
 };
 use std::{any::Any, mem::size_of};
-const COUNT: usize = 10;
+const COUNT: usize = 11;
 const FADE: u32 = 256;
 const BINDINGS: [Binding<Settings>; COUNT] = {
     let [
@@ -66,14 +67,30 @@ const BINDINGS: [Binding<Settings>; COUNT] = {
                 Ok(())
             },
         ),
+        Binding::choice(
+            super::super::state::DESCRIPTORS[6],
+            ParameterSemantics {
+                smoothing: ParameterSmoothing::DeviceManaged,
+                change_impact: ParameterChangeImpact::Structural,
+                ..CHOICE_ENVELOPE
+            },
+            |s| s.choice(ROUTING),
+            |s, v| {
+                if v > 1 {
+                    return Err(Error::InvalidParameterValue);
+                }
+                s.0[6] = v as f32;
+                Ok(())
+            },
+        ),
         maximize,
         threshold,
         output,
         ms_link,
     ]
 };
-pub(in crate::limiter) fn semantics() -> ParameterSemantics {
-    BINDINGS[5].semantics
+pub(in crate::limiter) fn semantics(id: ParameterId) -> Option<ParameterSemantics> {
+    slot(id).map(|i| BINDINGS[i].semantics)
 }
 fn slot(id: ParameterId) -> Option<usize> {
     BINDINGS.binary_search_by_key(&id, |b| b.descriptor.id).ok()
@@ -101,22 +118,60 @@ impl Look {
         }
     }
 }
-/// Control-prepared ten-control factory. Each created owner retains its own
-/// immutable configurations and both histories, independent of factory life.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Routing {
+    LeftRight,
+    MidSide,
+}
+impl Routing {
+    fn new(value: u32) -> Result<Self, Error> {
+        match value {
+            0 => Ok(Self::LeftRight),
+            1 => Ok(Self::MidSide),
+            _ => Err(Error::InvalidParameterValue),
+        }
+    }
+    fn index(self) -> usize {
+        match self {
+            Self::LeftRight => 0,
+            Self::MidSide => 1,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Layout {
+    look: Look,
+    routing: Routing,
+}
+impl Layout {
+    fn from_settings(settings: Settings) -> Result<Self, Error> {
+        Ok(Self {
+            look: Look::new(settings.choice(LOOKAHEAD))?,
+            routing: Routing::new(settings.choice(ROUTING))?,
+        })
+    }
+    fn index(self) -> usize {
+        self.routing.index() * 3 + self.look.index()
+    }
+}
+/// Control-prepared lookahead/routing factory with exact structural eligibility.
+/// Each created owner retains its configurations and both histories, independent
+/// of factory life.
 /// This constructor alone grants no host metadata/publication capability.
 #[derive(Clone, Copy)]
-pub struct PreparedLookahead {
+pub struct PreparedStructuralLimiter {
     settings: Settings,
-    configurations: [Config; 3],
-    padding: [usize; 3],
-    base: Look,
+    configurations: [Config; 6],
+    padding: [usize; 6],
+    base: Layout,
     admitted: [bool; COUNT],
     capacity: usize,
     pad_capacity: usize,
+    reserve_final_stage: bool,
     latency: u32,
     bytes: usize,
 }
-impl PreparedLookahead {
+impl PreparedStructuralLimiter {
     pub(in crate::limiter) fn new(
         state: &NativeDeviceState,
         rate: u32,
@@ -125,6 +180,7 @@ impl PreparedLookahead {
         state.require_asset_free_processing()?;
         if !(8000..=192000).contains(&rate)
             || ids.is_empty()
+            || ids.len() > COUNT
             || ids.windows(2).any(|w| w[0] >= w[1])
         {
             return Err(Error::InvalidParameterValue);
@@ -134,35 +190,57 @@ impl PreparedLookahead {
         for &id in ids {
             admitted[slot(id).ok_or(Error::UnsupportedProcessingClass)?] = true;
         }
-        if !admitted[5] {
+        if !admitted[5] && !admitted[6] {
             return Err(Error::UnsupportedProcessingClass);
         }
-        let base = Look::new(settings.choice(LOOKAHEAD))?;
-        let configurations: [Config; 3] = std::array::from_fn(|look| {
+        let base = Layout::from_settings(settings)?;
+        let configurations: [Config; 6] = std::array::from_fn(|index| {
             let mut s = settings;
-            s.0[5] = look as f32;
+            s.0[5] = (index % 3) as f32;
+            s.0[6] = (index / 3) as f32;
             Config::new(s, rate)
         });
-        let latency = configurations[2].latency();
+        let enabled = |config: &Config| {
+            (admitted[5] || config.settings.choice(LOOKAHEAD) == settings.choice(LOOKAHEAD))
+                && (admitted[6] || config.settings.choice(ROUTING) == settings.choice(ROUTING))
+        };
+        let latency = configurations
+            .iter()
+            .filter(|c| enabled(c))
+            .map(|c| c.latency())
+            .max()
+            .ok_or(Error::RuntimeBudgetExceeded)?;
         if latency == 0 || latency > hex_lattice::MAX_RESERVED_BYPASS_FRAMES {
             return Err(Error::RuntimeBudgetExceeded);
         }
-        let mut padding = [0; 3];
+        let capacity = configurations
+            .iter()
+            .filter(|c| enabled(c))
+            .map(|c| c.delay)
+            .max()
+            .and_then(|n| n.checked_add(1))
+            .ok_or(Error::RuntimeBudgetExceeded)?;
+        let reserve_final_stage = configurations.iter().any(|c| enabled(c) && c.mid_side);
+        let mut padding = [0usize; 6];
         for (pad, config) in padding.iter_mut().zip(configurations) {
-            *pad = usize::try_from(
-                latency
-                    .checked_sub(config.latency())
-                    .ok_or(Error::RuntimeBudgetExceeded)?,
-            )
-            .map_err(|_| Error::RuntimeBudgetExceeded)?;
+            if enabled(&config) {
+                *pad = usize::try_from(
+                    latency
+                        .checked_sub(config.latency())
+                        .ok_or(Error::RuntimeBudgetExceeded)?,
+                )
+                .map_err(|_| Error::RuntimeBudgetExceeded)?;
+            }
         }
-        let capacity = configurations[2].delay + 1;
-        let pad_capacity = padding[0]
-            .checked_add(1)
+        let pad_capacity = padding
+            .iter()
+            .copied()
+            .max()
+            .and_then(|n| n.checked_add(1))
             .ok_or(Error::RuntimeBudgetExceeded)?;
         let history_bytes = capacity
             .checked_mul(size_of::<Sample>() + 2 * size_of::<Peak>())
-            .and_then(|n| n.checked_mul(if configurations[0].mid_side { 2 } else { 1 }))
+            .and_then(|n| n.checked_mul(if reserve_final_stage { 2 } else { 1 }))
             .ok_or(Error::RuntimeBudgetExceeded)?;
         let bytes = pad_capacity
             .checked_mul(size_of::<[f64; 2]>())
@@ -178,15 +256,21 @@ impl PreparedLookahead {
             admitted,
             capacity,
             pad_capacity,
+            reserve_final_stage,
             latency,
             bytes,
         })
     }
-    fn config(&self, look: Look) -> &Config {
-        &self.configurations[look.index()]
+    fn config(&self, layout: Layout) -> &Config {
+        &self.configurations[layout.index()]
+    }
+    fn parameters(&self, layout: Layout, mut settings: Settings) -> Parameters {
+        let config = self.config(layout);
+        settings.0[5..8].copy_from_slice(&config.settings.0[5..8]);
+        Parameters::new(settings, config.rate)
     }
 }
-impl PreparedOwnedProcessorRuntime for PreparedLookahead {
+impl PreparedOwnedProcessorRuntime for PreparedStructuralLimiter {
     fn reserved_bypass_latency_frames(&self) -> Option<u32> {
         Some(self.latency)
     }
@@ -199,7 +283,7 @@ impl PreparedOwnedProcessorRuntime for PreparedLookahead {
             .map(|i| BINDINGS[i].descriptor)
     }
     fn runtime_version(&self) -> u32 {
-        1
+        2
     }
     fn declared_pair_bytes(&self) -> usize {
         self.bytes
@@ -270,13 +354,13 @@ struct Branch {
     padding: Padding,
 }
 impl Branch {
-    fn new(p: &PreparedLookahead) -> Result<Self, Error> {
+    fn new(p: &PreparedStructuralLimiter) -> Result<Self, Error> {
         Ok(Self {
             history: History::with_capacity(
                 *p.config(p.base),
                 [false; scalar::COUNT],
                 p.capacity,
-                p.config(p.base).mid_side,
+                p.reserve_final_stage,
             )?,
             padding: Padding::new(p.pad_capacity)?,
         })
@@ -287,25 +371,25 @@ impl Branch {
     }
     fn reset(
         &mut self,
-        p: &PreparedLookahead,
-        look: Look,
+        p: &PreparedStructuralLimiter,
+        layout: Layout,
         settings: Settings,
         gain: f64,
         output: f64,
     ) {
-        self.history.reset(*p.config(look));
+        self.history.reset(*p.config(layout));
         self.padding.reset();
         self.history.gain = gain;
         self.history.output = output;
-        self.history.parameters = Parameters::new(settings, p.config(look).rate);
+        self.history.parameters = p.parameters(layout, settings);
     }
-    fn render(&mut self, p: &PreparedLookahead, look: Look, input: [f64; 2]) -> Record {
-        let signal = self.padding.process(input, p.padding[look.index()]);
+    fn render(&mut self, p: &PreparedStructuralLimiter, layout: Layout, input: [f64; 2]) -> Record {
+        let signal = self.padding.process(input, p.padding[layout.index()]);
         let mut frame = [0.0; 2];
         let mut stats = BlockStats::new();
         self.history.meter.clipped = false;
         PlainRuntime::process_signal(
-            p.config(look),
+            p.config(layout),
             &mut self.history,
             signal,
             &mut frame,
@@ -337,19 +421,19 @@ enum Phase {
 struct State {
     controls: Controls<Settings, COUNT>,
     branches: [Branch; 2],
-    looks: [Look; 2],
+    layouts: [Layout; 2],
     active: usize,
     phase: Phase,
-    pending: Option<Look>,
+    pending: Option<Layout>,
     pristine: bool,
     meter: DynamicsMeter,
 }
 impl State {
-    fn new(p: &PreparedLookahead) -> Result<Self, Error> {
+    fn new(p: &PreparedStructuralLimiter) -> Result<Self, Error> {
         Ok(Self {
             controls: Controls::new(p.settings, p.admitted),
             branches: [Branch::new(p)?, Branch::new(p)?],
-            looks: [p.base; 2],
+            layouts: [p.base; 2],
             active: 0,
             phase: Phase::Stable,
             pending: None,
@@ -359,7 +443,7 @@ impl State {
     }
     fn copy_from(&mut self, old: &Self) {
         self.controls = old.controls;
-        self.looks = old.looks;
+        self.layouts = old.layouts;
         self.active = old.active;
         self.phase = old.phase;
         self.pending = old.pending;
@@ -370,60 +454,74 @@ impl State {
             self.branches[1 - old.active].copy_from(&old.branches[1 - old.active]);
         }
     }
-    fn start(&mut self, p: &PreparedLookahead, look: Look, settings: Settings) {
+    fn start(&mut self, p: &PreparedStructuralLimiter, layout: Layout, settings: Settings) {
         let next = 1 - self.active;
         let gain = self.branches[self.active].history.gain;
         let output = self.branches[self.active].history.output;
-        self.branches[next].reset(p, look, settings, gain, output);
-        self.looks[next] = look;
+        self.branches[next].reset(p, layout, settings, gain, output);
+        self.layouts[next] = layout;
         self.phase = Phase::Warming(p.latency);
     }
     fn targets(
         &mut self,
-        p: &PreparedLookahead,
+        p: &PreparedStructuralLimiter,
         settings: Settings,
-        look: Look,
+        layout: Layout,
         scalars_changed: bool,
     ) {
         if scalars_changed {
-            let parameters = Parameters::new(settings, p.config(look).rate);
+            let parameters = p.parameters(self.layouts[self.active], settings);
             self.branches[self.active].history.parameters = parameters;
             if self.phase != Phase::Stable {
-                self.branches[1 - self.active].history.parameters = parameters;
+                let next = 1 - self.active;
+                // Mode/rate are fixed: only link differs between these layouts.
+                let mut parameters = parameters;
+                parameters.link =
+                    f64::from(settings.value(if p.config(self.layouts[next]).mid_side {
+                        LINK_MID_SIDE
+                    } else {
+                        LINK
+                    }));
+                self.branches[next].history.parameters = parameters;
             }
         }
         if self.pristine {
-            if look != self.looks[self.active] {
+            if layout != self.layouts[self.active] {
                 let gain = self.branches[self.active].history.gain;
                 let output = self.branches[self.active].history.output;
-                self.branches[self.active].reset(p, look, settings, gain, output);
-                self.looks[self.active] = look;
+                self.branches[self.active].reset(p, layout, settings, gain, output);
+                self.layouts[self.active] = layout;
             }
         } else if self.phase == Phase::Stable {
-            if look != self.looks[self.active] {
-                self.start(p, look, settings);
+            if layout != self.layouts[self.active] {
+                self.start(p, layout, settings);
             }
         } else {
-            self.pending = (look != self.looks[1 - self.active]).then_some(look);
+            self.pending = (layout != self.layouts[1 - self.active]).then_some(layout);
         }
     }
-    fn frame(&mut self, p: &PreparedLookahead, frame: &mut StereoFrame, stats: &mut BlockStats) {
+    fn frame(
+        &mut self,
+        p: &PreparedStructuralLimiter,
+        frame: &mut StereoFrame,
+        stats: &mut BlockStats,
+    ) {
         self.pristine = false;
         let signal = PlainRuntime::prepare_input(
-            p.config(self.looks[self.active]),
+            p.config(self.layouts[self.active]),
             &mut self.branches[self.active].history,
             *frame,
             stats,
         );
         let gain = self.branches[self.active].history.gain;
         let output = self.branches[self.active].history.output;
-        let old = self.branches[self.active].render(p, self.looks[self.active], signal);
+        let old = self.branches[self.active].render(p, self.layouts[self.active], signal);
         let mut record = old;
         if self.phase != Phase::Stable {
             let next = 1 - self.active;
             self.branches[next].history.gain = gain;
             self.branches[next].history.output = output;
-            let new = self.branches[next].render(p, self.looks[next], signal);
+            let new = self.branches[next].render(p, self.layouts[next], signal);
             match self.phase {
                 Phase::Warming(left) => {
                     self.phase = if left == 1 {
@@ -445,10 +543,10 @@ impl State {
                     if position + 1 == FADE {
                         self.active = next;
                         self.phase = Phase::Stable;
-                        if let Some(look) = self.pending.take()
-                            && look != self.looks[next]
+                        if let Some(layout) = self.pending.take()
+                            && layout != self.layouts[next]
                         {
-                            self.start(p, look, *self.controls.effective_ref());
+                            self.start(p, layout, *self.controls.effective_ref());
                         }
                     } else {
                         self.phase = Phase::Fading(position + 1);
@@ -467,7 +565,7 @@ impl State {
         self.branches[self.active].quiet()
             && (self.phase == Phase::Stable || self.branches[1 - self.active].quiet())
     }
-    fn reset(&mut self, p: &PreparedLookahead) {
+    fn reset(&mut self, p: &PreparedStructuralLimiter) {
         for branch in &mut self.branches {
             branch.reset(
                 p,
@@ -478,7 +576,7 @@ impl State {
             );
         }
         self.controls.reset();
-        self.looks = [p.base; 2];
+        self.layouts = [p.base; 2];
         self.active = 0;
         self.phase = Phase::Stable;
         self.pending = None;
@@ -492,10 +590,10 @@ impl State {
     }
 }
 fn scalar_change(a: &Settings, b: &Settings) -> bool {
-    a.0[..5] != b.0[..5] || a.0[6..] != b.0[6..]
+    a.0[..5] != b.0[..5] || a.0[7..] != b.0[7..]
 }
 struct Runtime {
-    prepared: PreparedLookahead,
+    prepared: PreparedStructuralLimiter,
     primary: State,
     scratch: State,
     open: bool,
@@ -541,10 +639,10 @@ impl Runtime {
                 .sample(&BINDINGS, &mut map, values, offset)?
             {
                 let settings = *next.effective_ref();
-                let look = Look::new(settings.choice(LOOKAHEAD))?;
+                let layout = Layout::from_settings(settings)?;
                 let changed = scalar_change(&settings, self.scratch.controls.effective_ref());
                 self.scratch
-                    .targets(&self.prepared, settings, look, changed);
+                    .targets(&self.prepared, settings, layout, changed);
                 self.scratch.controls.install(next);
             }
             let dry = *frame;
@@ -641,7 +739,14 @@ impl OwnedProcessorRuntime for Runtime {
                 && self.prepared.capacity == old.prepared.capacity
                 && self.prepared.pad_capacity == old.prepared.pad_capacity
                 && self.prepared.settings.choice(MODE) == old.prepared.settings.choice(MODE)
-                && self.prepared.settings.choice(ROUTING) == old.prepared.settings.choice(ROUTING)
+                && self.prepared.reserve_final_stage == old.prepared.reserve_final_stage
+                && self.prepared.admitted[5..7] == old.prepared.admitted[5..7]
+                && (self.prepared.admitted[5]
+                    || self.prepared.settings.choice(LOOKAHEAD)
+                        == old.prepared.settings.choice(LOOKAHEAD))
+                && (self.prepared.admitted[6]
+                    || self.prepared.settings.choice(ROUTING)
+                        == old.prepared.settings.choice(ROUTING))
                 && self.prepared.config(self.prepared.base).rate
                     == old.prepared.config(old.prepared.base).rate
         })
