@@ -67,7 +67,17 @@ fn beyond_end_move_and_copy_keep_gap_selection_music_and_exact_pending_ack(
             let gap = &p.display.markers[gap_index];
             assert_eq!(
                 (gap.start, gap.end, gap.color),
-                (beat(if copy { 12 } else { 4 }), beat(14), appearance.1)
+                (
+                    beat(if copy {
+                        12
+                    } else if source_index == 0 {
+                        8
+                    } else {
+                        4
+                    }),
+                    beat(14),
+                    appearance.1
+                )
             );
             let layout = v.arrangement_rows_state().unwrap().project.snapshot();
             assert_eq!(layout.tracks[0].id, before.tracks[0].id);

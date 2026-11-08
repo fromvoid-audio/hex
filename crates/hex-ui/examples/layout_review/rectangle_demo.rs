@@ -2056,7 +2056,7 @@ mod tests {
         let area = visual.debug_bounds("section-copy-area").unwrap();
         let first = visual.debug_bounds("section-copy-rectangle-0").unwrap();
         let down = point(first.center().x, first.top() + px(5.0));
-        let dest = point(area.left() + area.size.width * 0.95, down.y);
+        let dest = point(area.left() + area.size.width * 0.88, down.y);
         let alt = Modifiers {
             alt: true,
             ..Modifiers::default()
@@ -2474,7 +2474,7 @@ mod tests {
             view.section_fixture.as_ref().unwrap().project().snapshot()
         });
         visual.simulate_mouse_down(at(0.3), MouseButton::Left, Modifiers::default());
-        visual.simulate_mouse_move(at(0.95), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(at(0.88), MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(outside, MouseButton::Left, alt);
         visual.simulate_keystrokes("escape");
         view.read_with(cx, |view, _| {
@@ -2487,14 +2487,14 @@ mod tests {
         });
         for accept in [false, true] {
             visual.simulate_mouse_down(at(0.3), MouseButton::Left, Modifiers::default());
-            visual.simulate_mouse_move(at(0.95), MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(at(0.88), MouseButton::Left, Modifiers::default());
             visual.simulate_mouse_move(outside, MouseButton::Left, Modifiers::default());
             visual.simulate_modifiers_change(alt);
             let expected = view.read_with(cx, |view, _| {
                 let fixture = view.section_fixture.as_ref().unwrap();
                 let id = fixture.project().arrangement_sections()[0].id();
                 let bounds = view.bounds.unwrap();
-                let position = (f32::from(at(0.95).x) - f32::from(bounds.left()))
+                let position = (f32::from(at(0.88).x) - f32::from(bounds.left()))
                     / f32::from(bounds.size.width);
                 fixture
                     .plan(id, RectanglePart::Body, position, true, false)
@@ -3097,6 +3097,88 @@ mod tests {
                 visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
                 view.read_with(cx, |view, _| assert!(view.capture.is_none()));
             }
+        }
+    }
+    #[gpui::test]
+    fn beyond_end_drag_retains_gap_and_selection_through_pending_paints(cx: &mut TestAppContext) {
+        for copy in [false, true] {
+            let handle = cx
+                .add_window(|_, cx| RectangleDemo::new(Kind::Section, "section-beyond".into(), cx));
+            let view = handle.root(cx).unwrap();
+            let mut visual = VisualTestContext::from_window(*handle, cx);
+            visual.update(|window, _| window.activate_window());
+            visual.run_until_parked();
+            let area = visual.debug_bounds("section-beyond-area").unwrap();
+            let last = visual.debug_bounds("section-beyond-rectangle-1").unwrap();
+            let from = point(last.center().x, last.top() + px(5.0));
+            let to = point(area.left() + area.size.width * 0.97, from.y);
+            let modifiers = Modifiers {
+                alt: copy,
+                ..Modifiers::default()
+            };
+            let before = view.read_with(cx, |v, _| {
+                v.section_fixture.as_ref().unwrap().project().snapshot()
+            });
+            visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(to, MouseButton::Left, modifiers);
+            visual.run_until_parked();
+            let appearance = view.read_with(cx, |v, _| {
+                assert!(matches!(
+                    v.section_command,
+                    Some(
+                        Command::MoveArrangementSectionBeyondEnd { .. }
+                            | Command::AppendArrangementSectionCopy { .. }
+                    )
+                ));
+                v.section_gap_appearance.clone().unwrap()
+            });
+            visual.simulate_mouse_up(to, MouseButton::Left, modifiers);
+            visual.run_until_parked();
+            let index = view.read_with(cx, |v, _| {
+                let Some(Pending::Section { sections, .. }) = v.pending.as_ref() else {
+                    panic!("pending section move/copy")
+                };
+                assert_eq!(
+                    v.section_fixture.as_ref().unwrap().project().snapshot(),
+                    before
+                );
+                let selected: Vec<_> = sections
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, m)| v.section_selected(m))
+                    .collect();
+                assert_eq!(selected.len(), 1);
+                let gap = sections.iter().find(|m| m.name() == appearance.0).unwrap();
+                assert_eq!(gap.color(), appearance.1);
+                assert!(!v.section_selected(gap));
+                assert!(gap.end() > BeatTime::from_quarters(9).unwrap());
+                selected[0].0
+            });
+            let selector = Box::leak(format!("section-beyond-rectangle-{index}").into_boxed_str());
+            let frozen = visual.debug_bounds(selector).unwrap();
+            for _ in 0..3 {
+                visual.update(|window, _| window.refresh());
+                visual.run_until_parked();
+                assert_eq!(visual.debug_bounds(selector).unwrap(), frozen);
+            }
+            view.update(cx, |v, cx| v.settle(true, cx));
+            visual.run_until_parked();
+            assert_eq!(visual.debug_bounds(selector).unwrap(), frozen);
+            view.read_with(cx, |v, _| {
+                assert!(v.pending.is_none());
+                let project = v.section_fixture.as_ref().unwrap().project();
+                assert_eq!(
+                    project.arrangement_sections().len(),
+                    if copy { 4 } else { 3 }
+                );
+                let selected = v.selection_primary.unwrap();
+                assert_eq!(selected, index);
+                assert_eq!(v.selected, [selected]);
+                assert_ne!(
+                    project.arrangement_sections()[selected].name(),
+                    appearance.0
+                );
+            });
         }
     }
 }

@@ -2729,7 +2729,7 @@ pub(super) mod tests {
             let before =
                 editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
             let (from, to) =
-                editor.read_with(cx, |view, _| (position(view, 2), position(view, 13)));
+                editor.read_with(cx, |view, _| (position(view, 2), position(view, 12)));
             let copy = Modifiers {
                 alt: true,
                 ..Modifiers::default()
@@ -3439,7 +3439,7 @@ pub(super) mod tests {
         let (handle, editor, _) = fixture(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
-        let (down, to) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 13)));
+        let (down, to) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 12)));
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
