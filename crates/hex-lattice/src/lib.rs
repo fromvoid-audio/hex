@@ -876,6 +876,10 @@ impl NativeInstrumentClock for OffsetClock<'_> {
 /// operates on `scratch` and `commit_block` is called only after the entire
 /// containing block succeeds. Construction and final destruction are control
 /// side responsibilities.
+/// Modulation advances per processed frame, including bypass. Detached output
+/// tails hold their last effective controls. `reset` retriggers sources at their
+/// prepared initial phase/rate; graph handoff matches source IDs within a stable
+/// device owner/id/type/rate independently of the provider's DSP layout version.
 pub struct NativeRuntimeChain {
     entries: Vec<RuntimeEntry>,
     stateful_count: usize,
