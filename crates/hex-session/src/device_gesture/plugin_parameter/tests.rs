@@ -130,6 +130,7 @@ fn hostless_begin_refuses_without_canonical_or_gesture_mutation() {
     let before = session.project().clone();
     let mut machine = GestureMachine::default();
     let request = GestureRequest::BeginPlugin {
+        recording: false,
         key: GestureKey {
             generation: 9,
             token: 1,
@@ -193,7 +194,11 @@ fn canonical_rebase_revalidates_plugin_without_replaying_input_or_fabricating_a_
         machine
             .handle_prepared(
                 &mut session,
-                GestureRequest::BeginPlugin { key, origin },
+                GestureRequest::BeginPlugin {
+                    key,
+                    origin,
+                    recording: false
+                },
                 Some(&prepared),
                 9,
                 |_, _| Ok(None)
@@ -297,7 +302,11 @@ fn plugin_preview_then_captured_commit_is_one_model_history_edge() {
         }
     };
     for request in [
-        GestureRequest::BeginPlugin { key, origin },
+        GestureRequest::BeginPlugin {
+            key,
+            origin,
+            recording: false,
+        },
         GestureRequest::ChangePlugin {
             key,
             sequence: 1,
@@ -422,7 +431,11 @@ fn end_at_initial_restores_without_a_counter_only_history_edit_and_replacement_r
         machine
             .handle_prepared(
                 &mut session,
-                GestureRequest::BeginPlugin { key, origin },
+                GestureRequest::BeginPlugin {
+                    key,
+                    origin,
+                    recording: false
+                },
                 Some(&prepared),
                 9,
                 &mut prepare
@@ -449,7 +462,11 @@ fn end_at_initial_restores_without_a_counter_only_history_edit_and_replacement_r
         machine
             .handle_prepared(
                 &mut session,
-                GestureRequest::BeginPlugin { key, origin },
+                GestureRequest::BeginPlugin {
+                    key,
+                    origin,
+                    recording: false
+                },
                 Some(&prepared),
                 9,
                 |_, _| Ok(None)
@@ -478,4 +495,126 @@ fn end_at_initial_restores_without_a_counter_only_history_edit_and_replacement_r
     );
     assert!(!refused.ack.accepted);
     assert_eq!(session.project(), &replaced);
+}
+
+#[test]
+fn recorded_return_to_initial_preserves_the_trajectory_terminal() {
+    for recording in [false, true] {
+        let (mut session, origin, prepared) = fixture();
+        let before = session.project().clone();
+        let mut client = GestureClient::default();
+        let key = if recording {
+            client.begin_plugin_recording(origin).unwrap()
+        } else {
+            client.begin_plugin(origin).unwrap()
+        };
+        let mut machine = GestureMachine::default();
+        let mut observed = Vec::new();
+        for step in 0..3 {
+            match step {
+                1 => {
+                    client.change_plugin(value(0.75)).unwrap();
+                }
+                2 => client.finish_plugin(origin.initial).unwrap(),
+                _ => {}
+            }
+            let request = client.next_request().unwrap();
+            client.mark_submitted();
+            let outcome = machine.handle_prepared(
+                &mut session,
+                request,
+                Some(&prepared),
+                9,
+                |session, operation| {
+                    let GesturePreparation::Plugin(operation) = operation else {
+                        panic!("plugin")
+                    };
+                    observed.push(operation);
+                    Ok(matches!(operation, PluginGesturePreparation::Commit(_))
+                        .then(|| (Arc::new(session.project().clone()), Arc::clone(&prepared))))
+                },
+            );
+            assert!(outcome.ack.accepted, "{:?}", outcome.ack.reason);
+            assert!(client.acknowledge(&outcome.ack));
+        }
+        assert!(
+            matches!(observed.first(), Some(PluginGesturePreparation::Begin { recording: actual, .. }) if *actual == recording)
+        );
+        if recording {
+            assert!(
+                matches!(observed.last(), Some(PluginGesturePreparation::Commit(snapshot)) if snapshot.key == key && snapshot.sequence == 2 && snapshot.plugin_value == Some(origin.initial))
+            );
+        } else {
+            assert!(
+                matches!(observed.last(), Some(PluginGesturePreparation::Restore { snapshot, .. }) if snapshot.key == key && snapshot.sequence == 2)
+            );
+        }
+        assert!(machine.snapshot().is_none());
+        assert!(client.snapshot().is_none());
+        assert_eq!(
+            session.project(),
+            &before,
+            "protocol oracle creates no history itself"
+        );
+    }
+}
+
+#[test]
+fn refused_recorded_return_keeps_the_exact_final_preview_until_cancel() {
+    let (mut session, origin, prepared) = fixture();
+    let before = session.project().clone();
+    let mut client = GestureClient::default();
+    let key = client.begin_plugin_recording(origin).unwrap();
+    let mut machine = GestureMachine::default();
+    for step in 0..3 {
+        match step {
+            1 => {
+                client.change_plugin(value(0.75)).unwrap();
+            }
+            2 => client.finish_plugin(origin.initial).unwrap(),
+            _ => {}
+        }
+        let request = client.next_request().unwrap();
+        client.mark_submitted();
+        let outcome =
+            machine.handle_prepared(&mut session, request, Some(&prepared), 9, |_, operation| {
+                match operation {
+                    GesturePreparation::Plugin(PluginGesturePreparation::Commit(_)) => Err(
+                        SessionError::NativeAudio("writer still owns the recorded take".into()),
+                    ),
+                    GesturePreparation::Plugin(PluginGesturePreparation::Restore { .. }) => {
+                        panic!("recorded trajectory must reach commit")
+                    }
+                    _ => Ok(None),
+                }
+            });
+        if step < 2 {
+            assert!(outcome.ack.accepted);
+            assert!(client.acknowledge(&outcome.ack));
+        } else {
+            assert!(!outcome.ack.accepted && outcome.ack.preview_retained);
+            assert_eq!(
+                machine.snapshot().unwrap().plugin_value,
+                Some(origin.initial)
+            );
+            assert_eq!(machine.snapshot().unwrap().sequence, 2);
+            let mut stale = outcome.ack.clone();
+            stale.key.token += 1;
+            assert!(!client.acknowledge_with_snapshot(&stale, machine.snapshot()));
+            assert!(client.acknowledge_with_snapshot(&outcome.ack, machine.snapshot()));
+            assert!(client.is_recovery_pending());
+        }
+    }
+    client.cancel().unwrap();
+    let request = client.next_request().unwrap();
+    assert_eq!(request.key(), key);
+    let cancelled = machine.handle_prepared(&mut session, request, Some(&prepared), 9, |_, operation| {
+        assert!(matches!(operation, GesturePreparation::Plugin(PluginGesturePreparation::Restore { snapshot, .. }) if snapshot.key == key && snapshot.plugin_value == Some(origin.initial)));
+        Ok(None)
+    });
+    assert!(cancelled.ack.accepted);
+    assert!(client.acknowledge(&cancelled.ack));
+    assert!(machine.snapshot().is_none());
+    assert!(client.snapshot().is_none());
+    assert_eq!(session.project(), &before);
 }
