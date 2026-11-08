@@ -1466,16 +1466,7 @@ impl EditorView {
                     cx.notify();
                 }),
             ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))])
-            .children([self.midi_button(
-                if self.midi_audition.enabled { "a+" } else { "a" },
-                "toggle note audition · selection plays up to 17 notes · computer and hardware input take priority",
-                cx.listener(|v, _, window, cx| {
-                    v.midi_audition.enabled = !v.midi_audition.enabled;
-                    v.cancel_midi_audition();
-                    v.midi_focus.focus(window);
-                    cx.notify();
-                }),
-            ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))])
+            .children([self.midi_audition_button(cx)])
             .children([self.midi_button(
                 if self.midi_step.enabled { "st" } else { "s" },
                 "toggle step entry · enable computer keyboard with m · hold notes and press right · no notes inserts a rest",
@@ -2083,6 +2074,43 @@ impl EditorView {
             .absolute()
             .size_full(),
         )
+    }
+
+    fn midi_audition_button(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        const HINT: &str = "toggle note audition · selection plays up to 17 notes · computer and hardware input take priority";
+        let mut style = theme::action_style();
+        if self.midi_audition.enabled {
+            let control = theme::control_style();
+            style.background = control.accent;
+            style.text = control.accent_text;
+            style.hover_background = control.accent;
+            style.hover_text = Some(control.accent_text);
+        }
+        let ink = style.text;
+        hex_widgets::action_surface(style)
+            .id(HINT)
+            .debug_selector(|| HINT.into())
+            .w(px(25.0))
+            .h(px(22.0))
+            .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+            .children([gpui::svg()
+                .path("icons/midi/audition.svg")
+                .size(px(14.0))
+                .text_color(rgb(ink))
+                .debug_selector(|| "midi-audition-speaker".into())])
+            .tooltip(|_, cx| {
+                cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
+                    description: HINT.into(),
+                })
+                .into()
+            })
+            .on_click(cx.listener(|v, _, window, cx| {
+                v.midi_audition.enabled = !v.midi_audition.enabled;
+                v.cancel_midi_audition();
+                v.midi_focus.focus(window);
+                cx.notify();
+            }))
     }
 
     pub(super) fn midi_button(

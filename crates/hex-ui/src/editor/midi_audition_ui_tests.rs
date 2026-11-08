@@ -70,12 +70,19 @@ fn click_chord_and_marquee_prepare_once_with_exact_velocities_but_disabled_paint
 ) {
     let (mut visual, editor, _environment, _) = authored(cx);
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    let button_bounds = visual.debug_bounds(AUDITION).unwrap();
+    assert!(visual.debug_bounds("midi-audition-speaker").is_some());
+    let disabled_fill = visual.rendered_background(AUDITION).unwrap();
     let a = position(&mut visual, &editor, 1.125, 60);
     let b = position(&mut visual, &editor, 3.125, 64);
     visual.simulate_click(a, Modifiers::default());
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| assert!(v.computer_keyboard.input.is_none()));
     toggle(&mut visual);
+    assert_eq!(visual.debug_bounds(AUDITION), Some(button_bounds));
+    assert_ne!(visual.rendered_background(AUDITION), Some(disabled_fill));
+    assert!(visual.debug_bounds("midi-audition-speaker").is_some());
+    editor.read_with(&visual, |v, _| assert!(v.midi_audition.enabled));
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert!(
@@ -148,6 +155,8 @@ fn click_chord_and_marquee_prepare_once_with_exact_velocities_but_disabled_paint
     });
     toggle(&mut visual);
     pump(&editor, &mut visual);
+    assert_eq!(visual.debug_bounds(AUDITION), Some(button_bounds));
+    editor.read_with(&visual, |v, _| assert!(!v.midi_audition.enabled));
     assert!(chord.is_cancelled());
     editor.read_with(&visual, |v, _| {
         assert!(v.computer_keyboard.input.is_none());
