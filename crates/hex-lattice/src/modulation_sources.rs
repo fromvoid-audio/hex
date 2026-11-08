@@ -351,6 +351,9 @@ mod tests {
         bank.begin();
         assert!(bank.render_chunk(9).is_err());
         assert!(bank.reset(prepared.id, 0.0).is_err());
+        assert!(bank.retarget(source(2, 100.0, 0.0)).is_err());
+        let mut replacement = ModulationLfoBank::new(&[prepared], 8).unwrap();
+        assert!(replacement.inherit_committed(&bank).is_err());
         bank.render_chunk(2).unwrap();
         assert_eq!(bank.samples(prepared.id).unwrap(), &[0.0, 1.0]);
         assert!(bank.render_chunk(9).is_err());
