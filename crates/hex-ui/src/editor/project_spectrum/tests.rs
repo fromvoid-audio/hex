@@ -494,6 +494,9 @@ fn browser_and_spectrum_share_columns_in_both_workspaces(cx: &mut TestAppContext
             visual.run_until_parked();
             let toolbar = visual.debug_bounds("editor-toolbar").unwrap();
             let browser = visual.debug_bounds("resize-browser-hit-region").unwrap();
+            let reported_browser_width =
+                visual.update(|window, cx| editor.read(cx).browser_content_width(window));
+            assert_eq!(browser.size.width, px(reported_browser_width));
             let spectrum = visual.debug_bounds("project-spectrum").unwrap();
             let plot = visual.debug_bounds("project-spectrum-plot").unwrap();
             assert_eq!(plot.top(), spectrum.top(), "no reserved title row");
@@ -516,6 +519,15 @@ fn browser_and_spectrum_share_columns_in_both_workspaces(cx: &mut TestAppContext
                 .unwrap()
                 .center();
             visual.simulate_click(toggle, Modifiers::default());
+            assert_eq!(
+                visual
+                    .debug_bounds("resize-browser-hit-region")
+                    .unwrap()
+                    .size
+                    .width,
+                px(36.0),
+                "collapsed rail includes its rounded surround"
+            );
             let expanded = visual.debug_bounds("project-spectrum").unwrap();
             assert!(expanded.size.width > spectrum.size.width);
             assert_eq!(expanded.top(), spectrum.top());
