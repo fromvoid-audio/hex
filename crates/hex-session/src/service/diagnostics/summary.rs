@@ -549,6 +549,9 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("splice_device_automation_touch"; ["device" => device.value(), "target" => target, "span_count" => spans.len()]; omitted="")
         }
+        Command::ReplaceDeviceModulation { device, modulation } => {
+            describe!("replace_device_modulation"; ["device" => device.value(), "source_count" => modulation.sources().len(), "route_count" => modulation.routes().len()]; omitted="")
+        }
         Command::ReplaceDeviceAutomationTarget {
             device,
             target,

@@ -33,6 +33,7 @@ fn project_with_gates(
             .expect("gate threshold")
     };
     snapshot.tracks[0].devices.push(DeviceSnapshot {
+        modulation: Default::default(),
         parent: None,
         automation: Vec::new(),
         comparison: None,
@@ -50,6 +51,7 @@ fn project_with_gates(
         gain: 0.75,
         muted: false,
         devices: vec![DeviceSnapshot {
+            modulation: Default::default(),
             parent: None,
             automation: Vec::new(),
             comparison: None,

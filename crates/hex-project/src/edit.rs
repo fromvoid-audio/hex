@@ -414,6 +414,11 @@ pub enum Command {
         vst3_class: Option<[u8; 16]>,
         spans: Vec<crate::DeviceAutomationTouchSpan>,
     },
+    /// Replace a complete validated module/route bank in one history edge.
+    ReplaceDeviceModulation {
+        device: DeviceId,
+        modulation: crate::DeviceModulation,
+    },
     ReplaceDeviceAutomationTarget {
         device: DeviceId,
         target: hex_lattice_contract::DeviceAutomationTarget,
@@ -2177,6 +2182,9 @@ impl Project {
                 vst3_class,
                 spans,
             } => self.splice_device_automation_touch(device, target, vst3_class, spans),
+            Command::ReplaceDeviceModulation { device, modulation } => {
+                self.replace_device_modulation(device, modulation)
+            }
             Command::ReplaceDeviceAutomationTarget {
                 device,
                 target,
