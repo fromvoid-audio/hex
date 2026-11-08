@@ -102,3 +102,93 @@ fn real_fm4_carrier_processing_rollbacks_and_reset_allocate_and_free_nothing() {
     );
     assert!(frames.iter().flatten().any(|sample| *sample != 0.0));
 }
+
+#[test]
+fn real_fm4_retune_retargets_actual_voice_history_without_allocations_or_frees() {
+    use hex_lattice::InstrumentHistoryRetargetPreparation;
+    let tuning = TuningTable::default();
+    let retuned = TuningTable::new(tuning.frequencies().map(|frequency| frequency * 1.01)).unwrap();
+    let state = FM4_DEFINITION.default_state().unwrap();
+    let prepare = |tuning| {
+        FM4_DEFINITION
+            .prepare_carrier_runtime(
+                &state,
+                &DevicePreparationContext {
+                    sample_rate: 48000,
+                    tuning,
+                    resources: &EMPTY_DEVICE_RESOURCES,
+                },
+            )
+            .unwrap()
+    };
+    let source = prepare(&tuning);
+    let target = prepare(&retuned);
+    let limits = NativeInstrumentRuntimeLimits {
+        max_pair_bytes: 2 * 1024 * 1024,
+        max_events_per_block: 259,
+        max_active_occurrences: 64,
+        max_tail_frames: 48000 * 120,
+    };
+    let mut source_pair = NativeInstrumentRuntimePair::new(source.as_ref(), limits).unwrap();
+    let mut target_pair = NativeInstrumentRuntimePair::new(target.as_ref(), limits).unwrap();
+    let InstrumentHistoryRetargetPreparation::Prepared(proof) =
+        target.prepare_history_retarget_target().unwrap()
+    else {
+        panic!("fm4 target proof");
+    };
+    let events = std::array::from_fn::<_, 64, _>(|index| NativeInstrumentEvent::NoteOn {
+        frame_offset: 0,
+        occurrence_id: index as u64 + 1,
+        pitch: 48,
+        velocity: 100,
+    });
+    let mut frames = [[0.0; 2]; 512];
+    source_pair.begin_block();
+    source_pair
+        .process_block_with_clock_and_automation(
+            &events,
+            &mut frames,
+            None,
+            &[],
+            &Values,
+            &EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
+    source_pair.commit_block();
+    let mut results = [Ok(()); 3];
+    let counts = allocation_counter::measure(|| {
+        results[0] = target_pair.retarget_from(&source_pair, proof.as_ref());
+        target_pair.begin_block();
+        results[1] = target_pair.process_block_with_clock_and_automation(
+            &[],
+            &mut frames,
+            None,
+            &[],
+            &Values,
+            &EMPTY_DEVICE_RESOURCES,
+        );
+        target_pair.rollback_block();
+        target_pair.begin_block();
+        results[2] = target_pair.process_block_with_clock_and_automation(
+            &[],
+            &mut frames,
+            None,
+            &[],
+            &Values,
+            &EMPTY_DEVICE_RESOURCES,
+        );
+        target_pair.commit_block();
+        target_pair.reset();
+    });
+    assert_eq!(results, [Ok(()); 3]);
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert!(frames.iter().flatten().any(|sample| *sample != 0.0));
+}
