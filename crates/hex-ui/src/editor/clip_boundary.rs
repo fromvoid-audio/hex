@@ -217,6 +217,9 @@ pub(super) struct Backdrop {
 
 /// Wide canonical clips use one background owner outside their content mask.
 /// Their transparent layout borders still define the same content/hit bounds.
+/// Callers reserve `header_height` for title content and keep body/grid paint
+/// below it; passive titles and badges must also leave the upper-right cut clear.
+/// This owner paints the background contour, not a GPU mask for arbitrary children.
 /// Narrow intervals keep the legacy lane-anchored boundary path.
 pub(super) fn backdrop_shell(
     body: impl gpui::IntoElement,
@@ -362,4 +365,4 @@ fn paint_backdrop(bounds: gpui::Bounds<gpui::Pixels>, style: &Backdrop, window: 
 
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "clip_border_ui_test.rs"]
-mod tests;
+pub(super) mod tests;
