@@ -185,3 +185,132 @@ fn missing_damaged_cancelled_and_interrupted_takes_are_not_adopted() {
         assert_eq!(session.project(), &before);
     }
 }
+
+#[test]
+fn verified_vst3_recovery_prepares_one_edit_and_refuses_changed_custody() {
+    use crate::service::native_automation_recording::tests::failed_lane_for_test;
+
+    let (files, mut session, scope, source) = fixture();
+    let original_path = files.0.join("failed-original");
+    let lane = failed_lane_for_test(&session, scope, source, &original_path, end());
+    let failed = lane.failed.as_ref().unwrap();
+    let original = std::fs::read(&original_path).unwrap();
+    let copy = files.0.join("verified-copy");
+    let limits = DraftReadLimits {
+        max_source_bytes: 65536,
+    };
+    let receipt = copy_failed_plugin_with_receipt_on_control(
+        &failed.outcome,
+        &copy,
+        limits,
+        2,
+        scope,
+        source,
+        &[],
+    )
+    .unwrap();
+    let before = session.project().clone();
+    assert!(
+        prepare_verified_vst3_recovery_on_control(&session, None, scope, &copy, receipt, 0)
+            .is_err()
+    );
+    let DeviceCaptureTarget::Vst3(target) = scope.target else {
+        panic!("foreign");
+    };
+    for wrong in [
+        DeviceAutomationTakeScope {
+            stamp: DraftProvenance {
+                gesture_serial: 2,
+                ..scope.stamp
+            },
+            ..scope
+        },
+        DeviceAutomationTakeScope {
+            target: DeviceCaptureTarget::Vst3(Vst3CaptureTarget {
+                parameter: 1,
+                ..target
+            }),
+            ..scope
+        },
+        DeviceAutomationTakeScope {
+            target: DeviceCaptureTarget::Vst3(Vst3CaptureTarget {
+                class: [8; 16],
+                ..target
+            }),
+            ..scope
+        },
+    ] {
+        assert!(
+            prepare_verified_vst3_recovery_on_control(&session, None, wrong, &copy, receipt, 2)
+                .is_err()
+        );
+    }
+    let mut changed = std::fs::read(&copy).unwrap();
+    changed.push(0);
+    let damaged = files.0.join("damaged-copy");
+    std::fs::write(&damaged, changed).unwrap();
+    assert!(
+        prepare_verified_vst3_recovery_on_control(&session, None, scope, &damaged, receipt, 2)
+            .is_err()
+    );
+    let replacement = files.0.join("valid-replacement");
+    write(&replacement, &session, scope, end());
+    assert!(
+        prepare_verified_vst3_recovery_on_control(&session, None, scope, &replacement, receipt, 2)
+            .is_err()
+    );
+    assert_eq!(session.project(), &before);
+    let command =
+        prepare_verified_vst3_recovery_on_control(&session, None, scope, &copy, receipt, 2)
+            .unwrap();
+    session.editor.execute(command).unwrap();
+    let after = session.project().clone();
+    assert_ne!(after, before);
+    assert!(
+        prepare_verified_vst3_recovery_on_control(&session, None, scope, &copy, receipt, 2)
+            .is_err()
+    );
+    assert!(session.editor.undo());
+    assert_eq!(session.project(), &before);
+    assert!(session.editor.redo());
+    assert_eq!(session.project(), &after);
+    assert_eq!(std::fs::read(&original_path).unwrap(), original);
+    assert!(lane.failed.is_some());
+}
+
+#[test]
+fn verified_vst3_recovery_never_prepares_interrupted_or_cancelled_takes() {
+    use crate::service::native_automation_recording::tests::failed_lane_for_test;
+
+    let (files, session, scope, source) = fixture();
+    let before = session.project().clone();
+    for (index, terminal) in [
+        DraftTerminal::Interrupted,
+        DraftTerminal::Aborted(DraftAbortReason::Cancelled),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let original = files.0.join(format!("failed-{index}"));
+        let lane = failed_lane_for_test(&session, scope, source, &original, terminal);
+        let copy = files.0.join(format!("copy-{index}"));
+        let receipt = copy_failed_plugin_with_receipt_on_control(
+            &lane.failed.as_ref().unwrap().outcome,
+            &copy,
+            DraftReadLimits {
+                max_source_bytes: 65536,
+            },
+            2,
+            scope,
+            source,
+            &[],
+        )
+        .unwrap();
+        assert!(
+            prepare_verified_vst3_recovery_on_control(&session, None, scope, &copy, receipt, 2)
+                .is_err()
+        );
+        assert!(lane.failed.is_some());
+        assert_eq!(session.project(), &before);
+    }
+}
