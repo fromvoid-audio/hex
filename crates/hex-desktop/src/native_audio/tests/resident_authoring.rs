@@ -901,9 +901,14 @@ fn clip_loop_resize_publishes_native_pcm_with_retained_preview_root_and_exact_hi
         applied = revision;
         assert_eq!(metadata.context.editor_revision, resized.state.revision);
         let peaks = &resized.state.audio_clip_waveforms[&clip];
-        assert_eq!(peaks.waveform.source_frames, 624);
+        assert_eq!(peaks.waveform.source_frames(), 624);
         assert_eq!(
-            peaks.preview_root.as_ref().unwrap().waveform.source_frames,
+            peaks
+                .preview_root
+                .as_ref()
+                .unwrap()
+                .waveform
+                .source_frames(),
             112
         );
         // The real callback starts at frame129, beyond the first boundary80,

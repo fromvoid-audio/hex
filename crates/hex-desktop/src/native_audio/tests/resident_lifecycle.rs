@@ -871,11 +871,11 @@ fn ordinary_default_drop_grows_beyond_pcm_allowance_and_reaches_real_native_publ
     );
     assert_eq!(second.state.waveforms.len(), 2);
     for waveform in second.state.waveforms.values() {
-        assert_eq!(waveform.source_frames, 4);
-        assert_eq!(waveform.bins.len(), 4);
+        assert_eq!(waveform.source_frames(), 4);
+        assert_eq!(waveform.bins().len(), 4);
         assert!(
             waveform
-                .bins
+                .bins()
                 .iter()
                 .flatten()
                 .all(|peak| peak.min == 0.25 && peak.max == 0.25)
@@ -1029,9 +1029,9 @@ fn ordinary_default_drop_grows_beyond_pcm_allowance_and_reaches_real_native_publ
     assert_eq!(reopened.state.project.as_ref(), &persisted);
     assert_eq!(reopened.state.waveforms.len(), 16);
     assert!(reopened.state.waveforms.values().all(|waveform| {
-        waveform.source_frames == 4
+        waveform.source_frames() == 4
             && waveform
-                .bins
+                .bins()
                 .iter()
                 .flatten()
                 .all(|peak| peak.min == 0.25 && peak.max == 0.25)
@@ -1284,7 +1284,7 @@ fn ordinary_mixed_original_sampler_and_file_sources_save_reopen_without_decoding
             .values()
             .next()
             .unwrap()
-            .source_frames,
+            .source_frames(),
         12_288
     );
     assert!(

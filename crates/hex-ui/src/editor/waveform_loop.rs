@@ -47,7 +47,7 @@ pub(super) fn loop_waveform_view(
                 .original
                 .source_offset()
                 .checked_add(request.original.source_length())?,
-            |source| source.source_frames as u64,
+            |source| source.source_frames() as u64,
         );
         let repeated = preview_audio_view_resize(
             request.original,
@@ -126,7 +126,7 @@ fn accepted_loop_source(request: WaveformPreview<'_>) -> Option<(Arc<CachedWavef
             let (_, length, offset, _) = old.projected_domain(request.tempo).ok()?;
             if accepted.offset != offset
                 || accepted.length != request.original.duration()
-                || accepted.waveform.source_frames as u64 != length
+                || accepted.waveform.source_frames() as u64 != length
             {
                 return None;
             }
@@ -206,7 +206,7 @@ impl LoopProjection {
             )
         } else {
             let ranges =
-                timeline_source_ranges_at(&self.original, 0, range, waveform.source_frames);
+                timeline_source_ranges_at(&self.original, 0, range, waveform.source_frames());
             aggregate_ranges(waveform, ranges.as_slice())
         }
     }

@@ -65,7 +65,7 @@ fn prefix_waveform_view(
     let source_end = original
         .source_offset()
         .checked_add(original.source_length())?;
-    let asset_frames = asset.map_or(source_end, |wave| wave.source_frames as u64);
+    let asset_frames = asset.map_or(source_end, |wave| wave.source_frames() as u64);
     let origin = if let Some(old) = original.audio_edit() {
         if !matches!(old.domain.clock, hex_project::AudioDomainClock::Frames(_)) {
             return None;
@@ -129,7 +129,7 @@ fn prefix_waveform_view(
         let accepted = prepared?;
         if accepted.offset != offset
             || accepted.length != original.duration()
-            || accepted.waveform.source_frames as u64 != length
+            || accepted.waveform.source_frames() as u64 != length
             || accepted.preview_root.is_some()
         {
             return None;
@@ -221,7 +221,7 @@ fn preview_waveform_view_cached_inner(
             let prepared = prepared?;
             if prepared.offset != 0
                 || prepared.length != original.duration()
-                || u64::try_from(prepared.waveform.source_frames).ok()? != original.duration()
+                || u64::try_from(prepared.waveform.source_frames()).ok()? != original.duration()
                 || before.window.reversed != after.window.reversed
             {
                 return None;
@@ -288,7 +288,7 @@ fn preview_waveform_view_cached_inner(
         let prepared = prepared?;
         if origin != old_origin
             || length != old_length
-            || u64::try_from(prepared.waveform.source_frames).ok()? != length
+            || u64::try_from(prepared.waveform.source_frames()).ok()? != length
             || prepared.offset != old_offset
             || prepared.length != original.duration()
             || offset >= end
@@ -445,7 +445,7 @@ pub(super) fn waveform_source_segment_gain_view_cached(
 }
 
 pub(super) fn waveform_summary_view(waveform: Arc<CachedWaveform>, ink: u32) -> Div {
-    let end = u64::try_from(waveform.source_frames).unwrap_or(u64::MAX);
+    let end = u64::try_from(waveform.source_frames()).unwrap_or(u64::MAX);
     waveform_source_segment_view(waveform, 0, 0, end, ink)
 }
 

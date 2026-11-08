@@ -244,8 +244,16 @@ fn waveform_from_source(
     let peaks =
         summarize_peaks_cancellable(&source, BROWSER_PREVIEW_BINS.min(playback_len), cancel)
             .map_err(PreviewFailure::from_import)?;
-    let waveform =
-        Waveform::from_peaks(playback_len, peaks.bins).map_err(PreviewFailure::from_import)?;
+    let identical_channels = peaks.has_identical_channels();
+    let waveform = Waveform::from_peaks(playback_len, peaks.into_bins())
+        .map_err(PreviewFailure::from_import)?;
+    let waveform = if identical_channels {
+        waveform
+            .with_identical_channels()
+            .map_err(PreviewFailure::from_import)?
+    } else {
+        waveform
+    };
     if cancel.load(Ordering::Relaxed) {
         return Err(PreviewFailure::Cancelled);
     }

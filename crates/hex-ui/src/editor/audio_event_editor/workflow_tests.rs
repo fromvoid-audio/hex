@@ -810,8 +810,8 @@ fn cut_publishes_clipboard_on_ack_and_paste_survives_save_reopen_with_original_m
             .as_ref()
             .unwrap()
             .waveform;
-        assert_eq!(waveform.source_frames, 24_000);
-        assert!(waveform.bins.len() <= 1_024);
+        assert_eq!(waveform.source_frames(), 24_000);
+        assert!(waveform.bins().len() <= 1_024);
         assert_eq!(
             waveform.peaks_for_frames(0, 24_000),
             Some(
