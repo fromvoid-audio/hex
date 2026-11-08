@@ -131,6 +131,7 @@ impl Project {
             chain.insert(
                 end,
                 Device {
+                    modulation: Default::default(),
                     id,
                     parent: Some(parent),
                     state,
