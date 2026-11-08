@@ -6,17 +6,8 @@ use std::{collections::BTreeMap, sync::Arc};
 
 pub use crate::midi_compile::midi_events;
 
-/// Retain live revision refusal while offline serial effects qualify.
-/// Unbound retained source definitions remain metadata, not active effects.
-pub(crate) fn refuse_serial_effect_units(project: &hex_project::Project) -> Result<(), Invalid> {
-    if crate::device_automation::effect_devices(project).any(|device| device.parent().is_some()) {
-        return Err(Invalid("serial device units are not prepared"));
-    }
-    Ok(())
-}
-
-/// Offline unit admission uses the caller's actual effect registry. Live revision
-/// admission remains guarded until handoff and callback contracts are qualified.
+/// Unit admission uses the caller's actual effect registry. Live revisions
+/// compile Arrangement and Session together before canonical publication.
 fn validate_serial_effect_units(
     project: &hex_project::Project,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,

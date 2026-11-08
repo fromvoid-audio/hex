@@ -31,6 +31,7 @@ mod parallel_render_profile;
 mod pitch_multiplier_allocations;
 mod return_feed_allocations;
 mod routed_midi_allocations;
+mod serial_effect_units;
 mod session_audio_loop_allocations;
 mod session_silence_effect_allocations;
 mod shared_source_allocations;

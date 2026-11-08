@@ -155,6 +155,11 @@ pub enum DeviceAutomationTakeAction {
     AdoptFailedPluginCopy {
         max_events: u64,
     },
+    /// Explicitly keep the verified copy instead of adopting its trajectory.
+    /// Release original memory custody only after revalidation; keep both files.
+    KeepFailedPluginCopy {
+        max_events: u64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -185,6 +190,8 @@ pub enum DeviceAutomationTakeProgress {
         path: PathBuf,
         receipt: RecoveryCopyReceipt,
     },
+    /// Original memory custody was resolved by keeping the verified durable copy.
+    CopyKept(PathBuf),
     Refused,
 }
 
@@ -557,7 +564,8 @@ impl Lane {
             | DeviceAutomationTakeAction::CopyFailedPlugin { .. }
             | DeviceAutomationTakeAction::PollFailedCopy
             | DeviceAutomationTakeAction::InspectFailedPluginCopy
-            | DeviceAutomationTakeAction::AdoptFailedPluginCopy { .. } => {
+            | DeviceAutomationTakeAction::AdoptFailedPluginCopy { .. }
+            | DeviceAutomationTakeAction::KeepFailedPluginCopy { .. } => {
                 return Err("invalid active automation recovery action".into());
             }
             DeviceAutomationTakeAction::Begin => {
