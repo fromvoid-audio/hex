@@ -696,7 +696,7 @@ fn confirmed_point_survives_output_close_while_sdk_ack_is_pending() {
 fn recorded_touch_admission_and_exclusive_restoration_use_actual_output() {
     const CASE: &str = "HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE";
     if std::env::var_os(CASE).is_none() {
-        for case in ["touch", "touch_empty", "touch_commit"] {
+        for case in ["touch", "touch_empty", "touch_commit", "touch_control_lag"] {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
@@ -1891,7 +1891,10 @@ fn verify_instrument_takeover(
             );
         }
     }
-    if matches!(case.as_str(), "touch" | "touch_stress") {
+    if matches!(
+        case.as_str(),
+        "touch" | "touch_stress" | "touch_control_lag"
+    ) {
         return;
     }
     client.begin_plugin(query(h, 14)).unwrap();

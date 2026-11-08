@@ -779,7 +779,13 @@ impl ResidentHarness {
             inner.plugins.catalog = catalog;
             inner.plugins.facts_gate = facts_gate;
             inner.plugins.progress = Some(Arc::clone(&plugin_progress));
-            inner.plugins.completed = Some(Arc::clone(&plugin_completed));
+            // This optional Session-poll diagnostic can lag actual DSP replies.
+            // The continuity driver must work without it as a processing clock.
+            if std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").as_deref()
+                != Ok("touch_control_lag")
+            {
+                inner.plugins.completed = Some(Arc::clone(&plugin_completed));
+            }
             inner.plugins.queued = Some(Arc::clone(&plugin_queued));
             inner.plugins.records = Some(Arc::clone(&plugin_records));
         }
