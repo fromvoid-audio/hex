@@ -2345,6 +2345,10 @@ mod tests {
             inventory.mutable_instruments[0].factory.as_ref(),
         )
         .unwrap();
+        inventory.instrument_automation_storage_bytes = program
+            .as_ref()
+            .and_then(|program| program.values.storage_bytes())
+            .unwrap();
         inventory.mutable_instruments[0].automation = program;
         inventory.instrument_automation_indices[0] = Some(0);
         assert!(std::ptr::eq(
