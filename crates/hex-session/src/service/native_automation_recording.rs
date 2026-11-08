@@ -3,6 +3,7 @@
 //! The disk worker seals the file independently of callback and UI lifetimes.
 use super::Session;
 mod plugin_observation;
+mod recovery;
 use super::automation_draft::{
     DeviceDraftInput, DraftProvenance, DraftWorker, DraftWorkerOutcome, Vst3CaptureTarget,
     Vst3ParameterApplication,
@@ -12,6 +13,7 @@ use hex_engine::{AudioSourceContext, NativeParameterApplication, NativeParameter
 use hex_storage::automation_draft::{
     CaptureClock, DraftAbortReason, DraftReadLimits, DraftTerminal,
 };
+pub(super) use recovery::recover_sealed;
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -52,6 +54,30 @@ impl DeviceAutomationTakeScope {
         AudioSourceContext {
             project_generation: self.stamp.project_generation,
             editor_revision: self.stamp.editor_revision,
+        }
+    }
+}
+
+/// Publication needs the native preparation identity or foreign confirmation,
+/// not the historical live worker binding embedded in a capture receipt.
+#[derive(Clone, Copy)]
+pub(super) enum TakePublication {
+    Native(NativeParameterInputTarget),
+    Vst3,
+}
+impl TakePublication {
+    pub(super) fn native(self) -> Option<NativeParameterInputTarget> {
+        match self {
+            Self::Native(target) => Some(target),
+            Self::Vst3 => None,
+        }
+    }
+}
+impl From<DeviceCaptureTarget> for TakePublication {
+    fn from(target: DeviceCaptureTarget) -> Self {
+        match target {
+            DeviceCaptureTarget::Native(target) => Self::Native(target),
+            DeviceCaptureTarget::Vst3(_) => Self::Vst3,
         }
     }
 }

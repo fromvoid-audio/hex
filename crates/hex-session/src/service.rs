@@ -290,6 +290,10 @@ pub struct Event {
     pub sampler_edit_complete: Option<u64>,
     /// At most two exact terminals: a refused new request and an invalidated pending one.
     pub plugin_effect_complete: Vec<PluginEffectCompletion>,
+    /// This response consumed a read-only parameter query or continuation.
+    /// Its request completion never acknowledges an editor mutation. Canonical
+    /// state and unrelated completions still follow the normal ordered contract.
+    pub plugin_parameter_observation: bool,
     pub plugin_parameters: Option<PluginParameterResult>,
     pub computer_keyboard_complete: Option<u64>,
     /// Exact terminal for a retained MIDI take commit, including refusal.
@@ -661,6 +665,16 @@ pub enum Request {
         request_id: u64,
         scope: DeviceAutomationTakeScope,
         action: DeviceAutomationTakeAction,
+    },
+    /// Recover one completed device take without reconstructing its old worker.
+    /// Current context fences publication; expected target/provenance bind only
+    /// the immutable file. Every path echoes request_id through take completion.
+    RecoverDeviceAutomationTake {
+        request_id: u64,
+        context: hex_engine::AudioSourceContext,
+        target: hex_storage::automation_draft::DraftTarget,
+        expected: automation_draft::DraftProvenance,
+        path: PathBuf,
     },
     ArmNativeParameterRecording {
         project_generation: u64,
@@ -2359,6 +2373,7 @@ fn run_worker(
                 sampler_load_complete: None,
                 sampler_edit_complete: None,
                 plugin_effect_complete: Vec::new(),
+                plugin_parameter_observation: false,
                 plugin_parameters: None,
                 computer_keyboard_complete: None,
                 midi_take_complete: None,
@@ -2401,6 +2416,7 @@ fn run_worker(
             sampler_load_complete: None,
             sampler_edit_complete: None,
             plugin_effect_complete: Vec::new(),
+            plugin_parameter_observation: false,
             plugin_parameters: None,
             computer_keyboard_complete: None,
             midi_take_complete: None,
@@ -2698,6 +2714,10 @@ fn run_worker(
                 | Request::ContinueStoppedPlaybackRestore
         );
         let mut plugin_effect_complete = Vec::new();
+        let plugin_parameter_observation = matches!(
+            &request,
+            Request::QueryPluginParameters(_) | Request::ContinuePluginParameters
+        );
         let mut plugin_parameters = None;
         let mut sampler_edit_complete = None;
         if matches!(
@@ -2805,6 +2825,48 @@ fn run_worker(
         let mut device_automation_take_complete = None;
         let mut adopted_device_draft = None;
         let resolved_edit = match &request {
+            Request::RecoverDeviceAutomationTake {
+                request_id,
+                context,
+                target,
+                expected,
+                path,
+            } => {
+                let current = hex_engine::AudioSourceContext {
+                    project_generation,
+                    editor_revision: revision,
+                };
+                let result = if *context != current
+                    || pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                    || native_automation_take.busy()
+                    || plugin_recording.pending()
+                    || session.audio_mode() != DocumentAudioMode::Resident
+                    || !events.resident_publication_enabled()
+                {
+                    Err("sealed recovery requires the idle current resident source".into())
+                } else {
+                    native_automation_recording::recover_sealed(
+                        &session,
+                        media_base.as_deref(),
+                        *target,
+                        *expected,
+                        path,
+                    )
+                };
+                device_automation_take_complete = Some(DeviceAutomationTakeCompletion {
+                    request_id: *request_id,
+                    progress: DeviceAutomationTakeProgress::Refused,
+                });
+                Some(match result {
+                    Ok((command, publication)) => {
+                        adopted_device_draft = Some((path.clone(), publication));
+                        Ok(*command)
+                    }
+                    Err(reason) => Err(reason),
+                })
+            }
             Request::DeviceAutomationTake {
                 request_id,
                 scope,
@@ -2864,7 +2926,7 @@ fn run_worker(
                         None
                     }
                     Ok(Step::Commit(command, path)) => {
-                        adopted_device_draft = Some((path, scope.target));
+                        adopted_device_draft = Some((path, scope.target.into()));
                         Some(Ok(*command))
                     }
                     Err(reason) => Some(Err(reason)),
@@ -3670,6 +3732,7 @@ fn run_worker(
                     | Request::SamplerEdit(_)
                     | Request::ContinueSamplerEdit
                     | Request::DeviceAutomationTake { .. }
+                    | Request::RecoverDeviceAutomationTake { .. }
                     | Request::InsertPluginEffect(_)
                     | Request::ContinuePluginEffect
                     | Request::TogglePluginEditor { .. }
@@ -6246,7 +6309,8 @@ fn run_worker(
                         }
                     }
                 }
-                Request::DeviceAutomationTake { .. } => {}
+                Request::DeviceAutomationTake { .. }
+                | Request::RecoverDeviceAutomationTake { .. } => {}
                 Request::ArmNativeParameterRecording {
                     project_generation: expected_generation,
                     revision: expected_revision,
@@ -8314,6 +8378,7 @@ fn run_worker(
                 sampler_load_complete,
                 sampler_edit_complete,
                 plugin_effect_complete,
+                plugin_parameter_observation,
                 plugin_parameters,
                 computer_keyboard_complete,
                 midi_take_complete,

@@ -155,6 +155,14 @@ pub struct DraftProgress {
     pub durable_terminal: Option<DraftTerminal>,
 }
 
+/// Integrity identity of a writer's sync-acknowledged event prefix, including its header.
+/// This detects accidental replacement or damage; it is not an authentication mechanism.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DraftPrefixIdentity {
+    events: u64,
+    chain: [u8; 32],
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct DraftReadLimits {
     /// Checked against the framed length before source allocation or decoding.
@@ -220,6 +228,7 @@ pub struct DraftWriter {
     progress: DraftProgress,
     previous: Option<AppliedEvent>,
     chain: [u8; 32],
+    durable_chain: [u8; 32],
     failed: bool,
 }
 
@@ -362,6 +371,7 @@ impl DraftWriter {
                 progress: DraftProgress::default(),
                 previous: None,
                 chain,
+                durable_chain: chain,
                 failed: false,
             })
         })();
@@ -378,6 +388,14 @@ impl DraftWriter {
     }
     pub fn progress(&self) -> DraftProgress {
         self.progress
+    }
+
+    /// Identity advances only when the event prefix has been sync-acknowledged.
+    pub fn durable_prefix_identity(&self) -> DraftPrefixIdentity {
+        DraftPrefixIdentity {
+            events: self.progress.durable_events,
+            chain: self.durable_chain,
+        }
     }
 
     pub fn append(&mut self, events: &[AppliedEvent]) -> Result<DraftProgress, DraftError> {
@@ -427,6 +445,7 @@ impl DraftWriter {
                 return Err(error.into());
             }
             self.progress.durable_events = accepted;
+            self.durable_chain = self.chain;
             Ok(())
         })();
         result
@@ -536,14 +555,33 @@ impl DraftReader {
     /// prefix. Header damage/future versions refuse before exposing source state.
     pub fn open(path: impl AsRef<Path>, limits: DraftReadLimits) -> Result<Self, DraftError> {
         let path = path.as_ref();
-        Self::open_inner(path, limits).map_err(|source| DraftError {
+        Self::open_inner(path, limits, None).map_err(|source| DraftError {
             path: path.to_path_buf(),
             progress: DraftProgress::default(),
             published: true,
             source: Box::new(source),
         })
     }
-    fn open_inner(path: &Path, limits: DraftReadLimits) -> Result<Self, StorageError> {
+    /// Accept a validated prefix of at most `max_events`, inspecting one further
+    /// record to detect excess events, a terminal, or a damaged tail.
+    pub fn open_bounded(
+        path: impl AsRef<Path>,
+        limits: DraftReadLimits,
+        max_events: u64,
+    ) -> Result<Self, DraftError> {
+        let path = path.as_ref();
+        Self::open_inner(path, limits, Some(max_events)).map_err(|source| DraftError {
+            path: path.to_path_buf(),
+            progress: DraftProgress::default(),
+            published: true,
+            source: Box::new(source),
+        })
+    }
+    fn open_inner(
+        path: &Path,
+        limits: DraftReadLimits,
+        max_events: Option<u64>,
+    ) -> Result<Self, StorageError> {
         let metadata = fs::symlink_metadata(path)?;
         if !metadata.is_file() || metadata.file_type().is_symlink() {
             return Err(StorageError::Invalid(
@@ -655,6 +693,11 @@ impl DraftReader {
             }
             match decode_record(&record) {
                 Ok(Record::Event(event)) if validate_event(previous, event).is_ok() => {
+                    if max_events.is_some_and(|max| reader.records.progress.durable_events >= max) {
+                        return Err(StorageError::Invalid(
+                            "automation draft exceeds caller event budget; preserve original file",
+                        ));
+                    }
                     let Some(count) = reader.records.progress.durable_events.checked_add(1) else {
                         reader.outcome = DraftOutcome::Damaged {
                             reason: DraftDamage::InvalidRecord,
@@ -720,6 +763,37 @@ impl DraftReader {
     }
     pub fn path(&self) -> &Path {
         &self.records.path
+    }
+    /// Revalidate and compare the writer's acknowledged prefix under the reader lock.
+    /// Work is proportional to the identity's event count and bounded by the opened prefix.
+    pub fn matches_prefix(&mut self, identity: DraftPrefixIdentity) -> Result<bool, DraftError> {
+        let result = (|| -> Result<bool, StorageError> {
+            if identity.events > self.records.progress.durable_events {
+                return Ok(false);
+            }
+            self.records
+                .file
+                .seek(SeekFrom::Start(self.records.records_start))?;
+            let mut chain = self.records.header_chain;
+            let mut previous = None;
+            for _ in 0..identity.events {
+                let mut record = [0; RECORD_BYTES];
+                self.records.file.read_exact(&mut record)?;
+                if !valid_hash(&record, chain) {
+                    return Err(StorageError::Invalid(
+                        "automation draft prefix integrity changed",
+                    ));
+                }
+                let Record::Event(event) = decode_record(&record)? else {
+                    return Err(StorageError::Invalid("automation draft prefix changed"));
+                };
+                validate_event(previous, event)?;
+                previous = Some(event);
+                chain.copy_from_slice(&record[PAYLOAD_BYTES..]);
+            }
+            Ok(chain == identity.chain)
+        })();
+        result.map_err(|source| self.error(source))
     }
     /// Compare complete strict canonical project encoding, not volatile identity.
     pub fn source_matches(&self, source: &Project) -> Result<bool, DraftError> {

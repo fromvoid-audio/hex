@@ -22,7 +22,9 @@
 //! controller-port changes, hardware held-note display) therefore wait at most
 //! one [`IDLE_INTERVAL`] (100 ms) while idle. Every worker *response* is
 //! solicited: its request keeps `worker_requests_pending` non-zero, so the poll
-//! stays at 16 ms until the response arrives. Live notes, monitoring and audio
+//! stays at 16 ms until the response arrives. Read-only parameter queries use
+//! their panel's pending read instead of the mutation counter, so they cannot
+//! block editor gestures or add a pending-edit status badge. Live notes, monitoring and audio
 //! rendering do not depend on this poll.
 use super::EditorView;
 use gpui::{Context, Task, Window};
@@ -217,6 +219,7 @@ impl EditorView {
         actual_playing
             || self.play_intent.desired_playing(actual_playing)
             || self.edit_pending()
+            || super::device_panel::vst3_parameters::query_pending(self)
             || self.transport_pending()
     }
 
