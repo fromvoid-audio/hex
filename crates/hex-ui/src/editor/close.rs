@@ -10,6 +10,7 @@ use std::time::Duration;
 pub(super) struct AutomationClosePreflight {
     state: PreflightState,
     window: Option<gpui::AnyWindowHandle>,
+    update: Option<u64>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -58,6 +59,19 @@ impl AutomationClosePreflight {
     }
     pub(super) fn blocks_update_approval(&self) -> bool {
         self.frozen() && !matches!(self.state, PreflightState::Held { .. })
+    }
+    pub(super) fn awaiting_update(&self) -> bool {
+        self.update.is_some() && self.blocks_update_approval()
+    }
+    pub(super) fn update_safe(&self, id: u64) -> bool {
+        matches!(self.state, PreflightState::Held { .. })
+            && self.update.is_none_or(|expected| expected == id)
+    }
+    pub(super) fn cancel_update(&mut self, id: u64) {
+        if self.update == Some(id) {
+            self.update = None;
+            self.state = PreflightState::Idle;
+        }
     }
 
     fn observe(
@@ -195,6 +209,36 @@ pub(super) fn requires_close_confirmation(
 }
 
 impl EditorView {
+    fn release_automation_close(&mut self, cx: &Context<Self>) {
+        let update = self.automation_close_preflight.update.take();
+        self.automation_close_preflight.state = PreflightState::Idle;
+        if let Some(id) = update {
+            self.cancel_update(id, cx);
+        }
+    }
+
+    pub(super) fn begin_update_automation_close(
+        &mut self,
+        id: u64,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        if self.automation_close_preflight.frozen() {
+            return Err("another close decision is pending");
+        }
+        let deadline = std::time::Instant::now()
+            .checked_add(Duration::from_secs(5))
+            .ok_or("automation safety deadline unavailable")?;
+        self.automation_close_preflight.update = Some(id);
+        self.automation_close_preflight.window = Some(window.window_handle());
+        self.automation_close_preflight.state = PreflightState::Draining {
+            quit: false,
+            deadline,
+        };
+        self.wake_poll();
+        cx.notify();
+        Ok(())
+    }
     pub(super) fn request_window_close(
         &mut self,
         window: &mut Window,
@@ -271,7 +315,7 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) {
         let Some(revision) = self.state.as_ref().map(|state| state.revision) else {
-            self.automation_close_preflight.state = PreflightState::Idle;
+            self.release_automation_close(cx);
             self.error = Some("project is still loading".into());
             if quit {
                 quit_refused(cx);
@@ -280,7 +324,7 @@ impl EditorView {
             return;
         };
         let Ok(request) = self.native_automation_recorder.reserve_request() else {
-            self.automation_close_preflight.state = PreflightState::Idle;
+            self.release_automation_close(cx);
             self.error = Some("automation request limit reached".into());
             if quit {
                 quit_refused(cx);
@@ -304,7 +348,7 @@ impl EditorView {
             )
             .is_err()
         {
-            self.automation_close_preflight.state = PreflightState::Idle;
+            self.release_automation_close(cx);
             self.error = Some("automation safety check unavailable · close cancelled".into());
             if quit {
                 quit_refused(cx);
@@ -334,7 +378,7 @@ impl EditorView {
         | PreflightState::Waiting { quit, deadline, .. } = self.automation_close_preflight.state
             && std::time::Instant::now() >= deadline
         {
-            self.automation_close_preflight.state = PreflightState::Idle;
+            self.release_automation_close(cx);
             self.error = Some("automation safety check timed out · close cancelled".into());
             if quit {
                 quit_refused(cx);
@@ -360,7 +404,7 @@ impl EditorView {
         } = self.automation_close_preflight.state
         {
             let Some(handle) = self.automation_close_preflight.window else {
-                self.automation_close_preflight.state = PreflightState::Idle;
+                self.release_automation_close(cx);
                 if quit {
                     quit_refused(cx);
                 }
@@ -387,7 +431,7 @@ impl EditorView {
                 {
                     let _ = cx.update(|cx| {
                         error_editor.update(cx, |view, cx| {
-                            view.automation_close_preflight.state = PreflightState::Idle;
+                            view.release_automation_close(cx);
                             view.error = Some("close window unavailable · close cancelled".into());
                             cx.notify();
                         });
@@ -404,7 +448,7 @@ impl EditorView {
             && !self.close_prompt_open
             && !self.update_preparing()
         {
-            self.automation_close_preflight.state = PreflightState::Idle;
+            self.release_automation_close(cx);
             if quit {
                 quit_refused(cx);
             }
@@ -420,7 +464,7 @@ impl EditorView {
             | PreflightState::Dispatching { quit, .. } => quit,
             _ => return false,
         };
-        self.automation_close_preflight.state = PreflightState::Idle;
+        self.release_automation_close(cx);
         self.error = Some("project worker stopped · close cancelled".into());
         if quit {
             quit_refused(cx);
@@ -458,7 +502,7 @@ impl EditorView {
             && !self.native_automation_recorder.busy()
             && !self.device_gesture_pending();
         if !valid {
-            self.automation_close_preflight.state = PreflightState::Idle;
+            self.release_automation_close(cx);
             self.error = Some(
                 "automation take needs recovery or pending work changed · close cancelled".into(),
             );
@@ -469,6 +513,11 @@ impl EditorView {
             return;
         }
         self.automation_close_preflight.state = PreflightState::Held { quit };
+        if self.automation_close_preflight.update.is_some() {
+            self.reconcile_update_ready(window, cx);
+            cx.notify();
+            return;
+        }
         if self.requires_close_confirmation(cx) {
             self.show_close_prompt(window, cx, quit);
         } else if self.prepare_update_quit(false, cx) {
@@ -567,7 +616,7 @@ impl EditorView {
                             view.shutdown_service_for_quit(cx);
                         }
                     } else {
-                        view.automation_close_preflight.state = PreflightState::Idle;
+                        view.release_automation_close(cx);
                         if quit {
                             quit_refused(cx);
                         }
@@ -629,6 +678,22 @@ mod tests {
         gate.state = PreflightState::Idle;
         gate.observe(7, true, 2, 3);
         assert!(!gate.frozen());
+    }
+
+    #[test]
+    fn update_readiness_belongs_to_one_update_and_cancellation_releases_it() {
+        let mut gate = AutomationClosePreflight {
+            update: Some(7),
+            state: PreflightState::Held { quit: false },
+            ..Default::default()
+        };
+        assert!(gate.update_safe(7));
+        assert!(!gate.update_safe(8));
+        gate.cancel_update(8);
+        assert!(gate.frozen());
+        gate.cancel_update(7);
+        assert!(!gate.frozen());
+        assert!(!gate.update_safe(7));
     }
 
     #[test]
