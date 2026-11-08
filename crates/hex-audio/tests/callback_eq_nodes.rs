@@ -85,12 +85,16 @@ fn every_node_field_first_assignment_reading_deletion_undo_bypass_and_shutdown_a
             reserved_ids: 1,
         })?;
         let parameter = node_id.parameter(field)?;
-        let mut patched = settings.clone();
-        patched.node_mut(node_id)?.set(field, target(field))?;
+        let patched = hex_lattice_contract::NativeDeviceMetadata::patch_parameter(
+            &hex_devices::eq::EQ_DEFINITION,
+            &settings.encode()?,
+            parameter,
+            target(field),
+        )?;
         let mut canonical = Editor::new(e.project().clone(), 4)?;
         canonical.execute(Command::ReplaceDeviceState {
             device,
-            state: patched.encode()?,
+            state: patched,
         })?;
         let mut raw = Editor::new(e.project().clone(), 4)?;
         raw.execute(Command::ReplaceDeviceState {

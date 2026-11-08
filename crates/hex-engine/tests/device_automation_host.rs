@@ -770,14 +770,15 @@ fn flexible_eq_nodes_reach_all_owners_renderers_base_and_seek() {
             let mut base = fixture_owner(EQ_TYPE_ID, 1024, owner);
             state(&mut base, settings.encode().unwrap());
             let base_pcm = render(&base, true, 1024, 17);
-            let mut patched = settings.clone();
-            patched
-                .node_mut(node_id)
-                .unwrap()
-                .set(field, value)
-                .unwrap();
+            let patched = hex_lattice_contract::NativeDeviceMetadata::patch_parameter(
+                &hex_devices::eq::EQ_DEFINITION,
+                &settings.encode().unwrap(),
+                parameter,
+                value,
+            )
+            .unwrap();
             let mut canonical = fixture_owner(EQ_TYPE_ID, 1024, owner);
-            state(&mut canonical, patched.encode().unwrap());
+            state(&mut canonical, patched);
             let expected = render(&canonical, true, 1024, 31);
             let mut actual = fixture_owner(EQ_TYPE_ID, 1024, owner);
             state(&mut actual, settings.encode().unwrap());
