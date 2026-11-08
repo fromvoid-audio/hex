@@ -1568,6 +1568,12 @@ impl EditorView {
             .text_color(rgb(name_text))
             .flex()
             .items_center()
+            .children(track_selected.then(|| {
+                super::track_header::selection_marker(format!(
+                    "selected-track-marker-{}",
+                    track_id.value()
+                ))
+            }))
             .children((hierarchy_indent > 0.0).then(|| {
                 div()
                     .w(px(hierarchy_indent))

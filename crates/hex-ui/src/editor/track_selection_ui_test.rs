@@ -85,6 +85,15 @@ fn track_headers_toggle_range_and_render_explicit_members_including_empty_tracks
     });
     for id in [source, empty] {
         let name = Box::leak(format!("track-name-{}", id.value()).into_boxed_str());
+        let marker = visual
+            .debug_bounds(Box::leak(
+                format!("selected-track-marker-{}", id.value()).into_boxed_str(),
+            ))
+            .expect("selected member has a compact inset");
+        let name_bounds = visual.debug_bounds(name).unwrap();
+        assert!(name_bounds.contains(&marker.center()));
+        assert_eq!(marker.size.width, gpui::px(4.5));
+        assert_eq!(marker.size.height, gpui::px(15.0));
         assert!(
             visual
                 .rendered_border(name)
@@ -100,6 +109,13 @@ fn track_headers_toggle_range_and_render_explicit_members_including_empty_tracks
     );
     visual.run_until_parked();
     editor.read_with(cx, |view, _| assert_eq!(view.selected_track_ids(), [empty]));
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("selected-track-marker-{}", source.value()).into_boxed_str()
+            ))
+            .is_none()
+    );
     visual.simulate_click(
         last,
         Modifiers {
@@ -109,7 +125,24 @@ fn track_headers_toggle_range_and_render_explicit_members_including_empty_tracks
     );
     visual.run_until_parked();
     editor.read_with(cx, |view, _| assert!(view.selected_track_ids().is_empty()));
+    for id in [source, empty] {
+        assert!(
+            visual
+                .debug_bounds(Box::leak(
+                    format!("selected-track-marker-{}", id.value()).into_boxed_str()
+                ))
+                .is_none()
+        );
+    }
     visual.simulate_keystrokes("up");
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("selected-track-marker-{}", source.value()).into_boxed_str()
+            ))
+            .is_some()
+    );
     editor.read_with(cx, |view, _| {
         assert_eq!(view.selected_track_ids(), [source]);
         assert_eq!(
