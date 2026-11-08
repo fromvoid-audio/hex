@@ -21,8 +21,8 @@ pub static DEFINITION: LimiterDefinition = LimiterDefinition;
 impl LimiterDefinition {
     /// Prepare an exact owned lookahead/routing union at fixed maximum latency.
     /// Requires at least one structural target plus optional value controls.
-    /// Native metadata currently grants only lookahead; low-level routing
-    /// preparation transfers no host capability, source lease or custody.
+    /// Native metadata grants lookahead/routing; preparation transfers no
+    /// source lease or resource custody.
     pub fn prepare_owned_structural_for_parameters(
         state: &NativeDeviceState,
         rate: u32,
@@ -38,7 +38,8 @@ impl NativeDeviceDefinition for LimiterDefinition {
         id: hex_lattice_contract::ParameterId,
     ) -> Result<bool, DeviceContractError> {
         decode(state)?;
-        Ok(id == parameter::LOOKAHEAD || automation::slot(id).is_some())
+        Ok(matches!(id, parameter::LOOKAHEAD | parameter::ROUTING)
+            || automation::slot(id).is_some())
     }
     fn prepare_automated_runtime_instance(
         &self,

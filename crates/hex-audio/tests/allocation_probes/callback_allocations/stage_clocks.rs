@@ -184,17 +184,27 @@ fn limiter_lookahead_publishes_queued_audio_at_fixed_latency_without_callback_al
 -> Result<(), Box<dyn Error>> {
     limiter_publication_case(LimiterPublication::Lookahead)
 }
+#[test]
+fn limiter_routing_publishes_queued_audio_at_fixed_latency_without_callback_allocations()
+-> Result<(), Box<dyn Error>> {
+    limiter_publication_case(LimiterPublication::Routing)
+}
 #[derive(Clone, Copy)]
 enum LimiterPublication {
     Original,
     Additional,
     Lookahead,
+    Routing,
 }
 fn limiter_publication_case(case: LimiterPublication) -> Result<(), Box<dyn Error>> {
     let original = matches!(case, LimiterPublication::Original);
     let lookahead = matches!(case, LimiterPublication::Lookahead);
+    let routing = matches!(case, LimiterPublication::Routing);
+    let structural = lookahead || routing;
+    let latency = if routing { 144 } else { 288 };
     const BLOCK: usize = 1024;
     use hex_devices::limiter::{DEFINITION as D, parameter as p};
+    let structural_parameter = if routing { p::ROUTING } else { p::LOOKAHEAD };
     use hex_lattice_contract::NativeDeviceMetadata;
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
     let Created::Imported { track, asset, .. } =
@@ -212,7 +222,7 @@ fn limiter_publication_case(case: LimiterPublication) -> Result<(), Box<dyn Erro
     let Created::Device(device) = editor.execute(Command::InsertDevice {
         track,
         before: None,
-        state: if lookahead {
+        state: if structural {
             D.patch_parameter(&D.default_state()?, p::RELEASE, ParameterValue::Float(1.0))?
         } else {
             D.default_state()?
@@ -221,10 +231,10 @@ fn limiter_publication_case(case: LimiterPublication) -> Result<(), Box<dyn Erro
     else {
         return Err("limiter".into());
     };
-    if lookahead {
+    if structural {
         editor.execute(Command::ReplaceDeviceAutomation {
             device,
-            parameter: p::LOOKAHEAD,
+            parameter: structural_parameter,
             points: vec![AutomationPoint {
                 beat: BeatTime::ZERO,
                 value: AutomationValue::new(0.0)?,
@@ -238,7 +248,7 @@ fn limiter_publication_case(case: LimiterPublication) -> Result<(), Box<dyn Erro
             RATE,
             (0..BLOCK * 12)
                 .map(|i| {
-                    if lookahead && i % 400 < 5 {
+                    if structural && i % 400 < 5 {
                         [2.0, -1.0]
                     } else {
                         [0.1, -0.05]
@@ -255,8 +265,8 @@ fn limiter_publication_case(case: LimiterPublication) -> Result<(), Box<dyn Erro
             Arc::clone(&table),
             None,
         )?);
-        if lookahead && project.device(device).is_some() {
-            assert_eq!(revision.arrangement().main_latency_frames(), 288);
+        if structural && project.device(device).is_some() {
+            assert_eq!(revision.arrangement().main_latency_frames(), latency as u32);
         }
         Ok(revision)
     };
@@ -275,8 +285,8 @@ fn limiter_publication_case(case: LimiterPublication) -> Result<(), Box<dyn Erro
     measured_block(&mut callback, &mut out);
     measured_block(&mut old_callback, &mut old_out);
     assert_eq!(out, old_out);
-    let original_lanes: &[_] = if lookahead {
-        &[(p::LOOKAHEAD, 1.0, 1.0)]
+    let original_lanes: &[_] = if structural {
+        &[(structural_parameter, 1.0, 1.0)]
     } else if original {
         &[
             (p::GAIN, 0.5, 0.75),
@@ -286,7 +296,7 @@ fn limiter_publication_case(case: LimiterPublication) -> Result<(), Box<dyn Erro
     } else {
         &[]
     };
-    let extra_lanes: &[_] = if original || lookahead {
+    let extra_lanes: &[_] = if original || structural {
         &[]
     } else {
         &[
@@ -324,7 +334,7 @@ fn limiter_publication_case(case: LimiterPublication) -> Result<(), Box<dyn Erro
     assert!(editor.redo());
     assert_eq!(editor.project().snapshot(), authored);
     let path = std::env::temp_dir().join(format!(
-        "hex-limiter-automation-{}-{original}-{lookahead}.hex",
+        "hex-limiter-automation-{}-{original}-{lookahead}-{routing}.hex",
         std::process::id()
     ));
     hex_storage::save_new(&path, editor.project())?;
@@ -341,14 +351,14 @@ fn limiter_publication_case(case: LimiterPublication) -> Result<(), Box<dyn Erro
         control.status.applied_revision.load(Ordering::Acquire),
         revision
     );
-    if lookahead {
+    if structural {
         assert_eq!(
-            &out[..288],
-            &old_out[..288],
+            &out[..latency],
+            &old_out[..latency],
             "queued old output survives warm-up"
         );
     }
-    if !original && !lookahead {
+    if !original && !structural {
         // Boolean lanes step at their authored endpoint. Cross that content
         // point before judging whether the maximize controls became audible.
         measured_block(&mut callback, &mut out);
@@ -398,7 +408,7 @@ fn limiter_publication_case(case: LimiterPublication) -> Result<(), Box<dyn Erro
         let base = old_out.last().ok_or("missing base output")?[0];
         match selection {
             AutomationReadSelection::Base => assert!((actual - base).abs() < 2e-4),
-            AutomationReadSelection::Authored if lookahead => assert!(
+            AutomationReadSelection::Authored if structural => assert!(
                 out.iter()
                     .zip(&old_out)
                     .any(|(a, b)| (a[0] - b[0]).abs() > 1e-3)
@@ -434,5 +444,88 @@ fn limiter_publication_case(case: LimiterPublication) -> Result<(), Box<dyn Erro
     old_control.request_shutdown();
     measured_shutdown(&mut old_callback, &mut old_out);
     old_control.reclaim();
+    Ok(())
+}
+
+#[test]
+fn limiter_first_structural_target_assignment_applies_during_playback() -> Result<(), Box<dyn Error>>
+{
+    use hex_devices::limiter::{DEFINITION as D, parameter as p};
+    use hex_lattice_contract::NativeDeviceMetadata;
+    for parameter in [p::LOOKAHEAD, p::ROUTING] {
+        let mut editor = Editor::new(Project::new(RATE)?, 8)?;
+        let Created::Imported { track, asset, .. } =
+            editor.execute(Command::ImportPreparedAudioTrack {
+                name: "first structural".into(),
+                path: "memory/first-structural.wav".into(),
+                source_sample_rate: RATE,
+                source_frames: 8192,
+                playback_frames: 8192,
+                conversion_version: hex_project::IDENTITY_CONVERSION,
+            })?
+        else {
+            return Err("track".into());
+        };
+        let Created::Device(device) = editor.execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: D.default_state()?,
+        })?
+        else {
+            return Err("limiter".into());
+        };
+        let media = BTreeMap::from([(asset, Audio::new(RATE, vec![[0.2, -0.1]; 8192])?)]);
+        let table = Arc::new(SineTable::new());
+        let prepare = |project: &Project| -> Result<_, Box<dyn Error>> {
+            Ok(Playback::try_from_prepared_with_session(Arc::new(
+                PreparedRevision::prepare(project, &media, Arc::clone(&table), None)?,
+            ))?)
+        };
+        let (mut control, mut callback) = prepared::channel(RATE)?;
+        control
+            .publish_with_policy_and_context_generation(
+                prepare(editor.project())?,
+                prepared::PublicationPolicy::InstallFreshRuntime,
+                7,
+            )
+            .map_err(|_| "initial publication")?;
+        control.command(PlaybackCommand::Play).map_err(|_| "play")?;
+        let mut output = [[0.0; 2]; 1024];
+        measured_block(&mut callback, &mut output);
+        assert!(output.iter().flatten().any(|v| v.abs() > 0.0));
+        editor.execute(Command::ReplaceDeviceAutomation {
+            device,
+            parameter,
+            points: vec![AutomationPoint {
+                beat: BeatTime::ZERO,
+                value: AutomationValue::new(1.0)?,
+                outgoing: AutomationInterpolation::Step,
+            }],
+        })?;
+        let revision = control
+            .publish_with_policy_and_context_generation(
+                prepare(editor.project())?,
+                prepared::PublicationPolicy::InheritRuntime,
+                7,
+            )
+            .map_err(|_| "first envelope publication")?;
+        let before = control.status.position.load(Ordering::Acquire);
+        measured_block(&mut callback, &mut output);
+        assert_eq!(
+            control.status.position.load(Ordering::Acquire),
+            before + 1024
+        );
+        assert_eq!(
+            control.status.applied_revision.load(Ordering::Acquire),
+            revision,
+            "first structural envelope: {:?}",
+            control.status.rejected_revision()
+        );
+        assert!(control.status.playing.load(Ordering::Acquire));
+        assert!(output.iter().flatten().all(|v| v.is_finite()));
+        control.request_shutdown();
+        measured_shutdown(&mut callback, &mut output);
+        control.reclaim();
+    }
     Ok(())
 }
