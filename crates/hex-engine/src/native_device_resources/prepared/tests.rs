@@ -723,12 +723,12 @@ fn registered_sampler_fixture(streamed: bool, shared: bool) {
             .unwrap()
             .prepare_note(60, 127)
             .unwrap();
-        // Seeks start mutable voices empty: the held sampler note retriggers at
-        // the destination, while the analytic vector note and the frame-anchored
-        // audio clip keep their authored positions (the Play-from law).
+        // Interactive Play-from starts both mutable sampler and FM4 voices
+        // empty at the destination. The frame-anchored audio clip keeps its
+        // authored position; no instrument prefix history is replayed.
         for (age, actual) in sought_pcm.into_iter().enumerate() {
             let sampler = derivative[age];
-            let vector = vector.sample(age as u64 + 3, 8000, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            let vector = vector.sample(age as u64, 8000, &hex_lattice::EMPTY_DEVICE_RESOURCES);
             let audio = derivative[age + 3];
             for lane in 0..2 {
                 assert!((actual[lane] - (sampler[lane] + vector[lane] + audio[lane])).abs() < 1e-6);
