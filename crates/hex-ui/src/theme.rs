@@ -25,6 +25,23 @@ pub(crate) fn control_style() -> hex_widgets::ControlStyle {
     device_style(DeviceStyleRole::Control)
 }
 
+/// Workspace outlines stay visible above graphite surfaces without changing the
+/// darker borders used by meters and controls. Custom palette roles still apply.
+pub(crate) fn workspace_panel_style() -> hex_widgets::PanelStyle {
+    hex_widgets::PanelStyle {
+        surface: color(PaletteRole::Surface),
+        border: mix(
+            color(PaletteRole::Background),
+            color(PaletteRole::Text),
+            0.15,
+        ),
+    }
+}
+
+pub(crate) fn workspace_gutter_fill() -> u32 {
+    mix(color(PaletteRole::Background), 0x000000, 0.33)
+}
+
 /// Shared product colors for all sample-level meters; widgets own no palette.
 pub(crate) fn meter_colors() -> hex_widgets::MeterColors {
     hex_widgets::MeterColors {
@@ -138,8 +155,23 @@ pub(crate) const TIME_SELECTION_OPACITY: f32 = 0.42;
 /// Move-destination ranges stay quieter than the committed selection.
 pub(crate) const TIME_SELECTION_PREVIEW_OPACITY: f32 = 0.2;
 
-/// Explicit track membership stays quieter than time/clip selection overlays.
-pub(crate) const TRACK_SELECTION_OPACITY: f32 = 0.06;
+/// Pale cyan distinguishes explicit track membership on the graphite workspace.
+/// Keep an explicitly customized secondary color instead of imposing that hue.
+pub(crate) fn track_selection_fill() -> u32 {
+    let secondary = color(PaletteRole::Secondary);
+    if secondary
+        == hex_preferences::ThemePreferences::default()
+            .secondary
+            .packed()
+    {
+        0xa4ccd7
+    } else {
+        secondary
+    }
+}
+
+/// Track membership paints below clips, independently of the brighter time band.
+pub(crate) const TRACK_SELECTION_OPACITY: f32 = 0.28;
 
 /// Editable palette roles used throughout the native UI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -673,6 +705,26 @@ pub(crate) fn section_focus_ink(identity: hex_project::ElementColor) -> u32 {
     (element_colors(identity).accent << 8) | u32::from(SECTION_FOCUS_HATCH.alpha)
 }
 
+/// Marker-only edits stay near-hollow across identities and selected states.
+pub(crate) const SECTION_MARKER_ONLY_OUTLINE_DEVICE_PX: f32 = 2.0;
+
+pub(crate) fn section_marker_only_colors(
+    identity: hex_project::ElementColor,
+    selected: bool,
+) -> (u32, u32) {
+    (
+        arrangement_clip_body_fill(
+            mix(
+                color(PaletteRole::Surface),
+                element_colors(identity).muted,
+                0.08,
+            ),
+            selected,
+        ),
+        color(PaletteRole::Primary),
+    )
+}
+
 /// Restrained Main section surfaces share the clip body selection lift and
 /// primary outline. Unselected identity and hover remain unchanged.
 pub(crate) fn section_colors(
@@ -830,6 +882,10 @@ mod tests {
         assert_eq!(color(PaletteRole::Text), defaults.text.packed());
         assert_eq!(color(PaletteRole::Primary), defaults.primary.packed());
         assert_eq!(color(PaletteRole::Secondary), defaults.secondary.packed());
+        assert_eq!(track_selection_fill(), 0xa4ccd7);
+        assert_eq!(workspace_panel_style().surface, 0x202020);
+        assert_eq!(workspace_panel_style().border, 0x363636);
+        assert_eq!(workspace_gutter_fill(), 0x121212);
         assert_eq!(color(PaletteRole::ClipOutline), 0x000000);
         assert!(colors_are_legible(defaults));
         assert!(contrast_ratio(color(PaletteRole::ClipFill), color(PaletteRole::ClipText)) >= 4.5);

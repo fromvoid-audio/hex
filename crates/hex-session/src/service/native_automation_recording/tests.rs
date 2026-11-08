@@ -134,6 +134,151 @@ pub(super) fn poll(
         std::thread::yield_now();
     }
 }
+
+#[test]
+fn failed_lane_retains_original_custody_through_copy_refusal_and_retry() {
+    use crate::service::automation_draft::{AppliedEvent, tests::injected_failed_writer};
+    let (files, session, scope, source) = fixture();
+    let DeviceCaptureTarget::Vst3(target) = scope.target else {
+        panic!("vst3 target")
+    };
+    let path = files.0.join("failed.hex-automation-draft");
+    let writer = hex_storage::automation_draft::DraftWriter::create_with_clock(
+        &path,
+        session.project(),
+        hex_storage::automation_draft::DraftTarget::Device {
+            device: target.device,
+            target: hex_project::DeviceAutomationTarget::Vst3 {
+                parameter: target.parameter,
+            },
+        },
+        scope.stamp,
+        CaptureClock {
+            sample_rate: 48000,
+            loop_region: None,
+        },
+    )
+    .unwrap();
+    let event = AppliedEvent {
+        sequence: 1,
+        performance_frame: 8,
+        content_frame: 0,
+        loop_pass: 0,
+        value: hex_project::AutomationValue::new(0.5).unwrap(),
+    };
+    let outcome = injected_failed_writer(writer, event);
+    assert!(outcome.failure.is_some());
+    let original = std::fs::read(&path).unwrap();
+    let mut lane = Lane {
+        failed: Some(Failed {
+            scope,
+            outcome: Arc::new(outcome),
+        }),
+        ..Lane::default()
+    };
+    let current = scope.context();
+    assert!(
+        lane.receive(
+            &session,
+            None,
+            current,
+            scope,
+            &DeviceAutomationTakeAction::PollFailedCopy
+        )
+        .is_err()
+    );
+    let mut wrong_scope = scope;
+    wrong_scope.stamp.gesture_serial += 1;
+    let destination = files.0.join("copy.hex-automation-draft");
+    std::fs::write(&destination, b"existing").unwrap();
+    let start = DeviceAutomationTakeAction::CopyFailed {
+        destination: destination.clone(),
+        max_events: 1,
+    };
+    assert!(
+        lane.receive(&session, None, current, wrong_scope, &start)
+            .is_err()
+    );
+    assert!(
+        lane.receive(
+            &session,
+            None,
+            current,
+            scope,
+            &DeviceAutomationTakeAction::CopyFailed {
+                destination: destination.clone(),
+                max_events: hex_project::MAX_DEVICE_AUTOMATION_POINTS as u64 + 1
+            }
+        )
+        .is_err()
+    );
+    assert!(matches!(
+        lane.receive(&session, None, current, scope, &start)
+            .unwrap(),
+        Step::Progress(DeviceAutomationTakeProgress::Pending)
+    ));
+    assert!(
+        lane.receive(&session, None, current, scope, &start)
+            .is_err()
+    );
+    let wait = |lane: &mut Lane| {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let result = lane.receive(
+                &session,
+                None,
+                current,
+                scope,
+                &DeviceAutomationTakeAction::PollFailedCopy,
+            );
+            if !matches!(
+                result,
+                Ok(Step::Progress(DeviceAutomationTakeProgress::Pending))
+            ) {
+                break result;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    assert!(wait(&mut lane).is_err());
+    assert_eq!(std::fs::read(&destination).unwrap(), b"existing");
+    let retry = files.0.join("retry.hex-automation-draft");
+    let start = DeviceAutomationTakeAction::CopyFailed {
+        destination: retry.clone(),
+        max_events: 1,
+    };
+    lane.receive(&session, None, current, scope, &start)
+        .unwrap();
+    assert!(
+        matches!(wait(&mut lane).unwrap(), Step::Progress(DeviceAutomationTakeProgress::Retained(path)) if path == retry)
+    );
+    assert!(
+        lane.receive(
+            &session,
+            None,
+            current,
+            scope,
+            &DeviceAutomationTakeAction::PollFailedCopy
+        )
+        .is_err()
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert_eq!(
+        lane.failed.as_ref().unwrap().outcome.retained[0].events(),
+        &[event]
+    );
+    assert!(lane.begin(&session, None, scope, source, &files.0).is_err());
+    let reader = DraftReader::open(
+        &retry,
+        DraftReadLimits {
+            max_source_bytes: 64 * 1024,
+        },
+    )
+    .unwrap();
+    assert_eq!(reader.outcome(), DraftOutcome::Interrupted);
+    assert_eq!(reader.progress().durable_events, 1);
+}
 #[test]
 fn foreign_take_uses_one_worker_and_prepares_one_class_bound_history_edit() {
     let (files, mut session, scope, source) = fixture();

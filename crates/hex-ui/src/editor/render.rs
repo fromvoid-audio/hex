@@ -594,45 +594,7 @@ impl Render for EditorView {
         self.drag_layout_generation = self.drag_layout_generation.wrapping_add(1);
         let clip_view = self.clip_detail_view(window, cx);
         self.reconcile_device_comparison_menu(window, cx);
-        let workspace_content = if self.mode == super::EditorMode::Session {
-            div()
-                .flex_1()
-                .min_h_0()
-                .flex()
-                .flex_col()
-                .child(self.project_spectrum_panel(window, cx))
-                .child(self.session_grid(window, cx))
-                .child(clip_view)
-                .child(self.mixer_strip(cx, true))
-                .child(self.routing_controls(cx))
-        } else {
-            div()
-                .flex_1()
-                .min_h_0()
-                .flex()
-                .flex_col()
-                .child(self.project_spectrum_panel(window, cx))
-                .child(self.arrangement(window, cx))
-                .child(clip_view)
-                .child(self.mixer_strip(cx, false))
-                .child(self.routing_controls(cx))
-        };
-        let workspace = div()
-            .flex_1()
-            .min_h_0()
-            .flex()
-            .child(
-                self.browser_view(window, cx)
-                    .debug_selector(|| "resize-browser-hit-region".to_owned())
-                    .capture_any_mouse_up(cx.listener(|view, event: &MouseUpEvent, window, cx| {
-                        if view.finish_trim_pointer_release(event, true, window, cx) {
-                            cx.stop_active_drag(window);
-                            cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
-                            cx.stop_propagation();
-                        }
-                    })),
-            )
-            .child(workspace_content.flex_1().min_w_0());
+        let workspace = self.render_workspace(window, cx, clip_view);
         self.restore_clip_control_focus(window, cx);
         let modifier_entity = cx.entity();
         let console_drag_entity = cx.entity();
@@ -763,6 +725,8 @@ impl Render for EditorView {
             }))
             .on_modifiers_changed(move |event, window, cx| {
                 modifier_entity.update(cx, |view, cx| {
+                    // Section hover paint follows modifiers even without pointer motion.
+                    cx.notify();
                     view.tuning.shift = event.modifiers.shift;
                     if view.option_held != event.modifiers.alt {
                         view.option_held = event.modifiers.alt;
@@ -1390,7 +1354,9 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &CopyTimeSelection, window, cx| {
-                view.copy_time_selection(false, window);
+                if !view.copy_section(window) {
+                    view.copy_time_selection(false, window);
+                }
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &CutTimeSelection, window, cx| {
@@ -1398,7 +1364,9 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &PasteTimeSelection, window, cx| {
-                view.paste_time_selection(window);
+                if !view.paste_section(window) {
+                    view.paste_time_selection(window);
+                }
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &InsertTimeSelection, window, cx| {

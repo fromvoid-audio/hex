@@ -185,6 +185,15 @@ pub enum Command {
         target: crate::SectionId,
         after: bool,
     },
+    /// Copy a complete song section at an absolute beat at/after the final marker.
+    /// A nonempty gap receives the supplied validated marker name/color. The
+    /// original song remains; copy and gap share one preparation/history edge.
+    AppendArrangementSectionCopy {
+        section: crate::SectionId,
+        start: crate::BeatTime,
+        gap_name: String,
+        gap_color: crate::ElementColor,
+    },
     /// Split marker metadata at a strict interior beat, preserving all music.
     /// The left marker retains its ID; the right gets a fresh ID and the same
     /// name/color. One validated command owns both adjoining positive ranges.
@@ -1980,6 +1989,7 @@ impl Project {
             | Command::DeleteArrangementSection(_)
             | Command::DuplicateArrangementSection(_)
             | Command::DuplicateArrangementSectionAt { .. }
+            | Command::AppendArrangementSectionCopy { .. }
             | Command::SplitArrangementSection { .. }
             | Command::MergeArrangementSections(_)) => {
                 crate::arrangement_sections::apply(self, command)
@@ -3320,6 +3330,7 @@ impl Command {
                 | Self::DeleteArrangementSection(_)
                 | Self::DuplicateArrangementSection(_)
                 | Self::DuplicateArrangementSectionAt { .. }
+                | Self::AppendArrangementSectionCopy { .. }
         )
     }
 }

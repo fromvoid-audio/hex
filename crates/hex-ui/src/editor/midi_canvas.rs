@@ -1155,41 +1155,31 @@ impl EditorView {
                             ) else {
                                 return;
                             };
-                            if event.modifiers.shift {
-                                view.cancel_midi_audition();
-                                view.clear_midi_time_selection();
-                                view.midi_time_selection.cancel();
-                                view.midi_marker = Some(local_beat.raw());
-                                if let Some(marquee) = view
-                                    .midi_marquee_context(rendered_context.bounds)
-                                    .and_then(|context| {
-                                        super::midi_selection::Marquee::begin(
-                                            context,
-                                            [x, y],
-                                            true,
-                                            &view.midi_selection,
-                                        )
-                                    })
-                                    && view.capture_midi_marquee_pointer(
-                                        &marquee,
-                                        super::midi_marquee::Surface::Piano(std::sync::Arc::clone(
-                                            &event_scene,
-                                        )),
-                                        window,
-                                        view_cx,
+                            view.cancel_midi_audition();
+                            view.clear_midi_time_selection();
+                            view.midi_time_selection.cancel();
+                            view.midi_marker = Some(local_beat.raw());
+                            if let Some(marquee) = view
+                                .midi_marquee_context(rendered_context.bounds)
+                                .and_then(|context| {
+                                    super::midi_selection::Marquee::begin(
+                                        context,
+                                        [x, y],
+                                        event.modifiers.shift,
+                                        &view.midi_selection,
                                     )
-                                {
-                                    view.midi_marquee = Some(marquee);
-                                    view_cx.stop_propagation();
-                                }
-                            } else {
-                                view.begin_midi_grid_time_selection(
-                                    rendered_context.bounds,
-                                    f32::from(event.position.x),
-                                    event.modifiers.platform,
+                                })
+                                && view.capture_midi_marquee_pointer(
+                                    &marquee,
+                                    super::midi_marquee::Surface::Piano(std::sync::Arc::clone(
+                                        &event_scene,
+                                    )),
                                     window,
                                     view_cx,
-                                );
+                                )
+                            {
+                                view.midi_marquee = Some(marquee);
+                                view_cx.stop_propagation();
                             }
                             view_cx.notify();
                             return;

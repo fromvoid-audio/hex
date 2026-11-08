@@ -83,7 +83,6 @@ impl EditorView {
     ) -> Div {
         super::track_gain::retire_stale(self, cx);
         let mut row = div()
-            .debug_selector(|| "console-mixer-row".into())
             .h(px(height(returns.range.len())))
             .flex_shrink_0()
             .flex()
@@ -241,33 +240,36 @@ impl EditorView {
                 );
             row = row.child(column);
         }
-        row.child(div().flex_1().min_w(px(12.0)))
-            .child(div().w(px(returns.width())).flex_shrink_0())
-            .child(
+        let main = div()
+            .debug_selector(|| "console-main-mixer-column".into())
+            .w(px(scene_width))
+            .h_full()
+            .flex_shrink_0()
+            .flex()
+            .items_end()
+            .pb(px(6.0))
+            .gap(px(4.0))
+            .px(px(6.0))
+            .border_l_1()
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+            .children([
                 div()
-                    .debug_selector(|| "console-main-mixer-column".into())
-                    .w(px(scene_width))
-                    .h_full()
-                    .flex_shrink_0()
+                    .flex_1()
+                    .min_w_0()
                     .flex()
-                    .items_end()
-                    .pb(px(6.0))
+                    .flex_col()
                     .gap(px(4.0))
-                    .px(px(6.0))
-                    .border_l_1()
-                    .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-                    .children([
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(px(4.0))
-                            .child(self.main_track_controls(cx))
-                            .child(self.sample_arm_button(super::sample_recorder::Arm::Main, cx)),
-                        super::track_meters::render_main(self.track_meters.main_level(), 50.0),
-                    ]),
-            )
+                    .child(self.main_track_controls(cx))
+                    .child(self.sample_arm_button(super::sample_recorder::Arm::Main, cx)),
+                super::track_meters::render_main(self.track_meters.main_level(), 50.0),
+            ]);
+        super::console_columns::pinned_row(
+            row.child(div().flex_1().min_w(px(12.0))),
+            returns.width(),
+            main,
+            height(returns.range.len()),
+        )
+        .debug_selector(|| "console-mixer-row".into())
     }
 }
 
