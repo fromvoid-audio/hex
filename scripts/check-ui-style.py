@@ -17,6 +17,8 @@ widgets = (
     # Main's arrangement map paints cached geometry without text.
     'super::arrangement_map::view(', 'super::arrangement_map::section(',
     'self.section_launch_action(',
+    # Marker-only section feedback is a text-free shared paint component.
+    'crate::section_surface::marker_only_overlay(',
     # Meter insertion action normalizes its caption in the owning component.
     'device_add::button(',
     'device_picker::render(',

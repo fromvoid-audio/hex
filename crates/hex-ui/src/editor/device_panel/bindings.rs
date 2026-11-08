@@ -193,6 +193,7 @@ pub(super) enum ControlPresentation {
     CompactDial,
     MicroDial,
     FilledSlider,
+    FilledVerticalSlider,
     InlineValue,
     MeterFader,
     ChoiceDial,
@@ -419,6 +420,7 @@ pub(super) fn render_parameter(
                 ),
                 ControlPresentation::MeterFader => (60.0, 154.0),
                 ControlPresentation::FilledSlider => (60.0, 18.0),
+                ControlPresentation::FilledVerticalSlider => (12.0, 32.0),
                 _ => (136.0, 26.0),
             };
             div().w(px(width)).h(px(height)).child(entity.clone())
@@ -649,6 +651,9 @@ fn create_parameter_control(
                 ControlPresentation::InlineValue => NumericControlPresentation::InlineValue,
                 ControlPresentation::MeterFader => NumericControlPresentation::MeterFader,
                 ControlPresentation::FilledSlider => NumericControlPresentation::FilledSlider,
+                ControlPresentation::FilledVerticalSlider => {
+                    NumericControlPresentation::FilledVerticalSlider
+                }
                 _ => NumericControlPresentation::HorizontalSlider,
             };
             let config = NumericControlConfig::new(

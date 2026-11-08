@@ -107,7 +107,8 @@ pub(super) fn default_preferences_path() -> PathBuf {
 fn clamped_panel_width(requested: f32, window_width: f32) -> f32 {
     requested.clamp(
         MIN_WIDTH,
-        (window_width - MIN_WORKSPACE_WIDTH - 4.0).max(MIN_WIDTH),
+        (window_width - MIN_WORKSPACE_WIDTH - 4.0 - 2.0 * hex_widgets::PANEL_FRAME_INSET)
+            .max(MIN_WIDTH),
     )
 }
 
@@ -1489,13 +1490,14 @@ impl EditorView {
     }
 
     pub(super) fn browser_content_width(&self, window: &Window) -> f32 {
-        if !self.browser.open {
+        let content = if !self.browser.open {
             COLLAPSED_WIDTH
         } else {
             let base =
                 clamped_panel_width(self.browser.width, f32::from(window.bounds().size.width));
             base + self.browser.layout.editor_width(base) + 4.0
-        }
+        };
+        content + 2.0 * hex_widgets::PANEL_FRAME_INSET
     }
 
     pub(super) fn browser_key_context(&self, window: &Window, cx: &App) -> &'static str {
@@ -1891,6 +1893,14 @@ impl EditorView {
     }
 
     pub(super) fn browser_view(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
+        let width = self.browser_content_width(window);
+        let content = self.browser_content_view(window, cx);
+        hex_widgets::panel_frame(theme::workspace_panel_style(), content)
+            .w(px(width))
+            .flex_shrink_0()
+    }
+
+    fn browser_content_view(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
         self.browser.scrollbar.begin_render();
         if !self.browser.open {
             let rail = div()
@@ -1902,8 +1912,6 @@ impl EditorView {
                 .pt_1()
                 .gap_1()
                 .bg(rgb(theme::color(theme::PaletteRole::Surface)))
-                .border_r_1()
-                .border_color(rgb(theme::color(theme::PaletteRole::Border)))
                 .child(self.browser_icon(
                     "▤",
                     "open browser · cmd+alt+b",
@@ -2028,9 +2036,7 @@ impl EditorView {
             .min_h_0()
             .flex()
             .flex_col()
-            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
-            .border_r_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Border)));
+            .bg(rgb(theme::color(theme::PaletteRole::Surface)));
         let toolbar = self.browser_toolbar(cx);
         if section == BrowserSection::Samples {
             panel = panel.child(self.sample_filters(cx));
@@ -2888,7 +2894,7 @@ mod tests {
     #[test]
     fn browser_width_preserves_minimum_workspace_and_panel() {
         assert_eq!(clamped_panel_width(280.0, 1_240.0), 280.0);
-        assert_eq!(clamped_panel_width(500.0, 880.0), 316.0);
+        assert_eq!(clamped_panel_width(500.0, 880.0), 308.0);
         assert_eq!(clamped_panel_width(100.0, 880.0), MIN_WIDTH);
     }
 

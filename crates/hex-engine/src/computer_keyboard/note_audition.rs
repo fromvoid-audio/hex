@@ -57,6 +57,29 @@ impl ComputerKeyboardInput {
         self.audition = Some(bank);
         Ok(self)
     }
+    /// Snapshot the one-shot gate for a transactional foreign instrument ledger.
+    pub(crate) fn foreign_audition_gate(&self) -> Option<(u64, bool, bool)> {
+        self.audition.as_ref().map(|bank| {
+            (
+                bank.gate_frames,
+                bank.started.load(Acquire),
+                bank.finished.load(Acquire),
+            )
+        })
+    }
+
+    /// Publish gate progress only after the foreign audio transaction commits.
+    pub(crate) fn commit_foreign_audition_gate(&self, started: bool, finished: bool) {
+        if let Some(bank) = &self.audition {
+            if started {
+                bank.started.store(true, Release);
+            }
+            if finished {
+                bank.finished.store(true, Release);
+            }
+        }
+    }
+
     pub fn is_note_audition(&self) -> bool {
         self.audition.is_some()
     }

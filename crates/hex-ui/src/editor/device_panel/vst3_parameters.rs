@@ -1390,7 +1390,7 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
             let _ = control.set_external_value(value, cx);
         });
     }
-    let name = row.map_or("last touch", |row| row.name.as_str());
+    let name = row.map(|row| row.name.as_str());
     let value = row.map(|row| row.value.as_str()).unwrap_or("");
     let retry = panel.cache_error.is_some() || panel.retry_count > MAX_AUTOMATIC_RETRIES;
     let field = if retry {
@@ -1428,11 +1428,15 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
         .gap_0()
         .child(
             div()
-                .debug_selector(|| "vst3-last-touch-label".to_string())
                 .w(px(80.0))
+                .h(px(20.0))
                 .min_w_0()
                 .truncate()
-                .child(theme::text(hex_session::service::text::verbatim(name))),
+                .when_some(name, |label, name| {
+                    label
+                        .debug_selector(|| "vst3-last-touch-label".to_string())
+                        .child(theme::text(hex_session::service::text::verbatim(name)))
+                }),
         )
         .child(field);
     let control = follow.or_else(|| panel.placeholder_knob.clone());
@@ -1565,51 +1569,64 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
                                         let row_editor = editor.clone();
                                         Some(
                                             div()
-                                                .id(("vst3-parameter", row.id))
-                                                .debug_selector(move || {
-                                                    format!("vst3-parameter-row-{row_id}")
-                                                })
-                                                .h(px(hex_widgets::MICRO_DIAL_HEIGHT + 4.0))
+                                                .h(px(hex_widgets::MICRO_DIAL_HEIGHT + 8.0))
                                                 .w_full()
-                                                .min_w_0()
-                                                .py(px(2.0))
-                                                .flex()
-                                                .items_center()
-                                                .gap_2()
-                                                .text_xs()
-                                                .child(div().flex_1().min_w_0().truncate().child(
-                                                    theme::text(
-                                                        hex_session::service::text::verbatim(
-                                                            &row.name,
+                                                .child(
+                                                    hex_widgets::device_section(
+                                                        theme::device_style(
+                                                            crate::theme::DeviceStyleRole::Layout,
                                                         ),
-                                                    ),
-                                                ))
-                                                .children(knob)
-                                                .when(row.automation_class.is_some(), |item| {
-                                                    item.on_mouse_down(
-                                                        gpui::MouseButton::Right,
-                                                        move |event, window, app| {
-                                                            let _ = row_editor.update(
-                                                                app,
-                                                                |view, cx| {
-                                                                    if show_automation_menu(
-                                                                        view,
-                                                                        device,
-                                                                        query,
-                                                                        row_id,
-                                                                        event.position,
-                                                                        window,
-                                                                        cx,
-                                                                    ) {
-                                                                        cx.stop_propagation();
-                                                                    }
-                                                                },
-                                                            );
-                                                        },
+                                                        hex_widgets::DeviceSectionSurface::Rail,
                                                     )
-                                                })
-                                                .when(!row.editable, |item| {
-                                                    item.child(
+                                                    .id(("vst3-parameter", row.id))
+                                                    .debug_selector(move || {
+                                                        format!("vst3-parameter-row-{row_id}")
+                                                    })
+                                                    .h(px(hex_widgets::MICRO_DIAL_HEIGHT + 4.0))
+                                                    .w_full()
+                                                    .min_w_0()
+                                                    .py(px(2.0))
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap_2()
+                                                    .text_xs()
+                                                    .child(
+                                                        div()
+                                                            .flex_1()
+                                                            .min_w_0()
+                                                            .truncate()
+                                                            .child(theme::text(
+                                                            hex_session::service::text::verbatim(
+                                                                &row.name,
+                                                            ),
+                                                        )),
+                                                    )
+                                                    .children(knob)
+                                                    .when(row.automation_class.is_some(), |item| {
+                                                        item.on_mouse_down(
+                                                            gpui::MouseButton::Right,
+                                                            move |event, window, app| {
+                                                                let _ = row_editor.update(
+                                                                    app,
+                                                                    |view, cx| {
+                                                                        if show_automation_menu(
+                                                                            view,
+                                                                            device,
+                                                                            query,
+                                                                            row_id,
+                                                                            event.position,
+                                                                            window,
+                                                                            cx,
+                                                                        ) {
+                                                                            cx.stop_propagation();
+                                                                        }
+                                                                    },
+                                                                );
+                                                            },
+                                                        )
+                                                    })
+                                                    .when(!row.editable, |item| {
+                                                        item.child(
                                                         div()
                                                             .max_w(px(92.0))
                                                             .truncate()
@@ -1619,7 +1636,8 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
                                                             ),
                                                         )),
                                                     )
-                                                }),
+                                                    }),
+                                                ),
                                         )
                                     })
                                     .collect::<Vec<_>>()
@@ -1803,7 +1821,7 @@ fn placeholder_knob(
     let spec = NumericSpec::new(0.0, 1.0, 0.5, NumericScale::Linear, 3, None::<&str>).ok()?;
     let config = NumericControlConfig::new(
         format!("vst3-follow-placeholder-{}", device.value()),
-        theme::text("last touch"),
+        theme::text(""),
         NumericControlPresentation::MicroDial,
         spec,
         0.5,
@@ -2311,11 +2329,22 @@ mod tests {
         };
         visual.run_until_parked();
         let baseline = bounds(&mut visual);
+        let value_bounds = visual.debug_bounds("vst3-last-touch-value").unwrap();
+        assert!(
+            visual.debug_bounds("vst3-last-touch-label").is_none(),
+            "the empty last-touch label must not paint placeholder text"
+        );
+        for selector in ["vst3-parameter-row-7", "vst3-parameter-row-8"] {
+            assert!(
+                visual.rendered_border(selector).is_some(),
+                "each parameter needs a section"
+            );
+        }
         assert_eq!(baseline[0][3], 56.0);
         assert_eq!(baseline[2][3], hex_widgets::MICRO_DIAL_HEIGHT,);
         assert!(baseline[4][3] >= hex_widgets::MICRO_DIAL_HEIGHT);
         assert!(baseline[5][3] >= hex_widgets::MICRO_DIAL_HEIGHT);
-        assert!(baseline[5][1] >= baseline[4][1] + baseline[4][3]);
+        assert!(baseline[5][1] >= baseline[4][1] + baseline[4][3] + 4.0);
         assert!(visual.debug_bounds("vst3-last-touched-knob").is_some());
         let placeholder =
             Box::leak(format!("vst3-follow-placeholder-{}-knob", device.value()).into_boxed_str());
@@ -2491,8 +2520,16 @@ mod tests {
             });
             visual.run_until_parked();
             assert_eq!(bounds(&mut visual), baseline);
+            if touched.is_some() {
+                assert!(visual.debug_bounds("vst3-last-touch-label").is_some());
+            }
             if error.is_some() {
                 assert!(visual.debug_bounds("vst3-parameter-retry").is_some());
+            } else {
+                assert_eq!(
+                    visual.debug_bounds("vst3-last-touch-value"),
+                    Some(value_bounds)
+                );
             }
         }
         editor.update(&mut visual, |view, cx| {

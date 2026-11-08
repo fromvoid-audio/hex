@@ -243,10 +243,8 @@ impl ForeignArrangement {
                 "vst3 computer keyboard target is unavailable",
             ));
         }
-        if root.is_note_audition() || root.ordered_keys.is_some() {
-            return Err(crate::Invalid(
-                "vst3 monitoring does not support recording or note audition",
-            ));
+        if root.ordered_keys.is_some() {
+            return Err(crate::Invalid("vst3 monitoring does not support recording"));
         }
         self.keyboard = Some(live_keys::Input {
             track,
@@ -394,10 +392,15 @@ impl ForeignArrangement {
                         candidate.committed.hardware.disconnect();
                     }
                 } else {
-                    // A stopped reset has no held gates, but the retained
-                    // worker still needs monotonically increasing note IDs.
+                    // Restart arrangement history while retaining worker note IDs.
                     candidate.committed.next_id = donor.committed.next_id;
                     candidate.committed.quantum_offset = donor.committed.quantum_offset;
+                    // The retained worker still owns monitor notes even when the
+                    // arrangement clock restarts. Preserve them to release safely.
+                    candidate.committed.live = donor.committed.live;
+                    if !same_keyboard {
+                        candidate.committed.live.disconnect();
+                    }
                     candidate
                         .committed
                         .hardware
@@ -429,6 +432,13 @@ impl ForeignArrangement {
         self.hardware_batch.commit(self.keyboard.as_ref());
         for generator in self.generators.iter_mut().flatten() {
             std::mem::swap(&mut generator.committed, &mut generator.scratch);
+            if let Some(input) = self
+                .keyboard
+                .as_ref()
+                .filter(|input| !input.detached && input.track == generator.track)
+            {
+                generator.committed.live.commit_audition(input);
+            }
         }
     }
 
@@ -587,6 +597,7 @@ impl ForeignArrangement {
                 .stage(keyboard, &mut ledger.next_id, events)
                 .map_err(|error| error.render_error())?;
         }
+        ledger.live.advance_audition();
         if (self.hardware_batch.has_events() && keyboard.is_some()) || ledger.hardware.held() {
             ledger
                 .hardware

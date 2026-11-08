@@ -401,6 +401,18 @@ pub(super) fn reorder_after(
     let preview = project.preview_section_reorder_after(section, after)?;
     reorder_preview(project, preview)
 }
+/// Control-side composition for a validated absolute append destination.
+pub(super) fn reorder_at(
+    project: &mut Project,
+    section: SectionId,
+    insertion: BeatTime,
+) -> Result<Created, Invalid> {
+    let source = project
+        .arrangement_section(section)
+        .ok_or(Invalid("arrangement section no longer exists"))?;
+    let preview = project.preview_section_reorder_at(source, insertion)?;
+    reorder_preview(project, preview)
+}
 fn reorder_preview(
     project: &mut Project,
     preview: SectionReorderPreview,
