@@ -71,6 +71,10 @@ struct Prepared {
     tuning: TuningTable,
 }
 impl PreparedNativeInstrument for Prepared {
+    fn validate_event_note(&self, pitch: u8, velocity: u8) -> Result<(), Error> {
+        self.inline.prepare_note(pitch, velocity).map(|_| ())
+    }
+
     fn algorithmic_latency_frames(&self) -> Option<u32> {
         self.inline.algorithmic_latency_frames()
     }
