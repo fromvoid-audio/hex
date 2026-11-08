@@ -968,6 +968,7 @@ impl ResidentHarness {
             }
         }
     }
+    #[track_caller]
     pub(super) fn next(&mut self) -> Event {
         let end = Instant::now() + Duration::from_secs(10);
         loop {

@@ -1666,7 +1666,7 @@ fn verify_instrument_takeover(
         applied = h.applied(applied).0;
     }
     let peak = |h: &ResidentHarness| {
-        (0..4)
+        let peak = (0..4)
             .map(|_| {
                 render_completed_block(h)
                     .into_iter()
@@ -1675,7 +1675,9 @@ fn verify_instrument_takeover(
                     .fold(0.0, f32::max)
             })
             .last()
-            .unwrap()
+            .unwrap();
+        println!("instrument peak: case={case} peak={peak}");
+        peak
     };
     if playing {
         h.audio
