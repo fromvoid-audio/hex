@@ -417,6 +417,56 @@ mod retained_tests {
         );
     }
     #[test]
+    fn full_constant_base_program_stages_without_callback_allocation_or_drop() {
+        let project = hex_project::Project::new(8000).unwrap();
+        let capabilities = (0..MAX_PARAMETER_POINTS as u32)
+            .map(|id| hex_engine::foreign_automation::ParameterCapability {
+                id,
+                steps: 0,
+                normalized_base_bits: (f64::from(id) / MAX_PARAMETER_POINTS as f64).to_bits(),
+            })
+            .collect::<Vec<_>>();
+        let program = hex_engine::foreign_automation::Program::prepare(
+            &[],
+            [1; 16],
+            &capabilities,
+            project.tempo_map(),
+            hex_engine::foreign_automation::QuantumProfile::for_arrangement_instrument(8, None),
+        )
+        .unwrap()
+        .unwrap();
+        let binding = ForeignProcessorBinding {
+            root: 1,
+            instance: 2,
+            graph: 3,
+            epoch: 4,
+        };
+        let bytes = program.backing_bytes().unwrap();
+        let program =
+            PreparedForeignAutomation::new(binding, NonZeroU64::new(1).unwrap(), program, bytes)
+                .unwrap();
+        let (_control, mut callback, mut worker) = channel(binding, 8).unwrap();
+        stage(&mut callback, 8, 0, &program);
+        let request = worker.receive_request().unwrap().unwrap();
+        assert_eq!(request.parameter_capacity, 0);
+        assert_eq!(
+            request.block.parameters.as_slice().len(),
+            MAX_PARAMETER_POINTS
+        );
+        for (point, expected) in request
+            .block
+            .parameters
+            .as_slice()
+            .iter()
+            .zip(&capabilities)
+        {
+            assert_eq!((point.frame, point.id), (0, expected.id));
+            assert_eq!(point.normalized.to_bits(), expected.normalized_base_bits);
+        }
+        worker.complete(request.block).unwrap();
+    }
+
+    #[test]
     fn borrowed_versions_finish_the_old_quantum_after_original_graph_owners_drop() {
         let binding = ForeignProcessorBinding {
             root: 1,
