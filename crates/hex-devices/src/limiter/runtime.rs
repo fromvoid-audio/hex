@@ -57,7 +57,7 @@ use hex_lattice::{
     DynamicsMeter, OutputTail, OwnedProcessorRuntime, PreparedOwnedProcessorRuntime, StereoFrame,
 };
 use hex_lattice_contract::DeviceContractError;
-use std::any::Any;
+use std::{any::Any, sync::OnceLock};
 
 const TAPS: usize = 32;
 const PHASES: usize = 32;
@@ -190,7 +190,7 @@ impl Stage {
         s.input_next = (s.input_next + 1) % TAPS;
         let mut detector = sample.signal.map(f64::abs);
         if config.true_peak {
-            for phase in &config.reconstruction {
+            for phase in config.reconstruction {
                 let mut bound = [0.0; 2];
                 for (tap, coefficient) in phase.iter().enumerate() {
                     let input = s.input[(s.input_next + tap) % TAPS];
@@ -352,29 +352,13 @@ impl Parameters {
         }
     }
 }
-#[derive(Clone, Copy)]
-struct Config {
-    rate: u32,
-    settings: Settings,
-    parameters: Parameters,
-    guard_release_coefficient: f64,
-    attack_coefficient: f64,
-    attack_window_inverse: f64,
-    antimodulation_coefficient: f64,
-    program_coefficient: f64,
-    true_peak: bool,
-    soft_clip: bool,
-    mid_side: bool,
-    delay: usize,
-    reconstruction: [[f64; TAPS]; PHASES],
-}
-impl Config {
-    fn new(settings: Settings, rate: u32) -> Self {
-        let true_peak = settings.choice(MODE) == 2;
-        let lookahead = [1.5, 3.0, 6.0][settings.choice(LOOKAHEAD) as usize];
-        let delay = (lookahead * f64::from(rate) / 1000.0).ceil() as usize
-            + if true_peak { TAPS - 1 } else { 0 };
-        let reconstruction = std::array::from_fn(|phase| {
+/// Fixed program data, independent of rate, state and layout. Config preparation
+/// initializes this on control; callback processing reads only its stored static
+/// reference, without touching OnceLock. No host resource custody is transferred.
+fn reconstruction_coefficients() -> &'static [[f64; TAPS]; PHASES] {
+    static COEFFICIENTS: OnceLock<[[f64; TAPS]; PHASES]> = OnceLock::new();
+    COEFFICIENTS.get_or_init(|| {
+        std::array::from_fn(|phase| {
             let position = (TAPS / 2 - 1) as f64 + phase as f64 / PHASES as f64;
             let mut coefficients = std::array::from_fn(|tap| {
                 let distance = position - tap as f64;
@@ -393,7 +377,33 @@ impl Config {
                 *c /= sum;
             }
             coefficients
-        });
+        })
+    })
+}
+
+#[derive(Clone, Copy)]
+struct Config {
+    rate: u32,
+    settings: Settings,
+    parameters: Parameters,
+    guard_release_coefficient: f64,
+    attack_coefficient: f64,
+    attack_window_inverse: f64,
+    antimodulation_coefficient: f64,
+    program_coefficient: f64,
+    true_peak: bool,
+    soft_clip: bool,
+    mid_side: bool,
+    delay: usize,
+    reconstruction: &'static [[f64; TAPS]; PHASES],
+}
+impl Config {
+    fn new(settings: Settings, rate: u32) -> Self {
+        let true_peak = settings.choice(MODE) == 2;
+        let lookahead = [1.5, 3.0, 6.0][settings.choice(LOOKAHEAD) as usize];
+        let delay = (lookahead * f64::from(rate) / 1000.0).ceil() as usize
+            + if true_peak { TAPS - 1 } else { 0 };
+        let reconstruction = reconstruction_coefficients();
         Self {
             rate,
             settings,
@@ -456,7 +466,7 @@ impl PreparedOwnedProcessorRuntime for Factory {
         Some(self.config.latency())
     }
     fn runtime_version(&self) -> u32 {
-        1
+        2
     }
     fn declared_pair_bytes(&self) -> usize {
         std::mem::size_of::<Runtime>()
