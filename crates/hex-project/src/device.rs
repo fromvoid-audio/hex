@@ -1,3 +1,80 @@
+//! Canonical device identity and provider state; preparation stays outside the model.
+//!
+//! # Serial host-unit extension contract
+//!
+//! This is the selected extension boundary, not a claim that nested devices are
+//! implemented. `Device` and `DeviceSnapshot` are currently flat; the engine's
+//! `compile::prepare_source_instruments` also refuses multi-device sources.
+//! Parallel Audio Rack branches and reusable modulation remain separate owners.
+//!
+//! A serial unit is one existing `Device` followed by an owned, ordered list of
+//! child `Device` units. Keep that suffix in the canonical model, not in opaque
+//! provider payloads, a UI tree, or a second Rack registry. Signal order is
+//! processor then children in preorder, followed by the next sibling. This does
+//! not introduce parallel branches, another instrument position or MIDI routing.
+//! Session/engine provider admission permits compatible effects as children;
+//! additional generators and unsupported provider resources must refuse.
+//!
+//! Each authored node has one globally unique `DeviceId`. Moves within an owner
+//! preserve the entire subtree and identities; copies reserve fresh identities
+//! and remap internal references atomically. Reject self/descendant insertion,
+//! duplicate/missing identities, stale anchors and unsupported owner transfers.
+//! A retained-source definition is counted once, never once per track binding.
+//! Its immutable binding views must still be replaced together by
+//! `Project::edit_device` / `edit_source_device`, not mutated independently.
+//!
+//! Bound depth to eight nodes including the root. Count every descendant against
+//! the existing owning-chain and global device budgets: 64 local/Main/Return
+//! effect nodes, or 65 nodes in a source including its designated instrument.
+//! Do not raise those budgets by nesting. Validate depth, counts, identity ranges
+//! and checked payload/resource quotes before allocation or partial mutation.
+//! Provider-internal Rack resources retain their own admission/accounting; they
+//! are not extra free capacity hidden in a serial node.
+//!
+//! Existing state/bypass/comparison/automation queries, clipboard, snapshot and
+//! edit paths must share a bounded canonical traversal/location contract. Extend
+//! `DeviceChainOwner` only with real supported owners/child destinations. Do not
+//! make unrelated callers decode a provider payload to locate a child. A first
+//! model/storage increment must include an engine refusal gate for unsupported
+//! nonempty units; silently preparing only the parent is never an intermediate
+//! implementation. Allocate a fresh storage schema at implementation time,
+//! preserve earlier flat snapshots as empty suffixes, and refuse future/malformed
+//! trees without rewriting source files. The current storage ceiling is owned by
+//! `hex-storage`, not by this module or an assumed next schema number.
+//!
+//! Authored `bypassed` remains local to each node. Effective bypass includes all
+//! ancestors: an effect unit passes its dry input around the entire suffix; an
+//! instrument unit produces no source output. Child switches/settings remain
+//! authored and recover when the ancestor is enabled. Flattened preparation may
+//! reuse existing serial processors and bypass machinery, but must propagate
+//! that effective state, PDC, stable parameter targets and resource custody.
+//! Preparation/publication is all-or-nothing through the existing session,
+//! engine and audio candidate owners; callbacks acquire no new tree ownership.
+//!
+//! NativeSource processing is a distinct runtime increment. The singleton-only
+//! binding and preparation guards must not be relaxed merely because children
+//! are now representable. The complete source unit must run once for its merged
+//! MIDI contributors and deliver audio only to its explicit receiver; local track
+//! processing stays separate. Cover Arrangement and Session together before
+//! admitting a bound instrument's nonempty suffix.
+//!
+//! Portable presets capture the authored unit: provider states, each node's
+//! A/B bank, host gains, authored power, children and supported host macros,
+//! modulators and mappings. Song automation, source/track bindings, receiver,
+//! transport and live DSP instances are not portable unit state. Internal targets
+//! use relative identities remapped on insertion; unavailable external mappings
+//! refuse rather than silently retarget. Asset references in every provider/A/B
+//! variant need retained media capture and destination remapping, reusing the
+//! clipboard/resource owners, not temporary original-project IDs or file paths.
+//!
+//! The existing preset schemas 1/2 stay state-only operations: loading one into
+//! an existing unit must retain its children, host gains and power as today's
+//! state replacement does. Fresh legacy insertion creates an ordinary empty
+//! suffix. A new full-unit envelope uses a new schema and explicit structural
+//! replacement, preserving the target root identity and allocating new child
+//! identities in one prepared history transaction. Reuse DeviceInitialization
+//! and worker preset/default publication; do not apply children piecemeal or
+//! claim future modulation/provider capabilities from an empty serialized stub.
 use crate::{Command, DeviceId, Invalid, Project, TrackId};
 use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
 

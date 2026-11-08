@@ -2949,6 +2949,13 @@ fn run_worker(
                         *max_events,
                         gesture_active,
                     )
+                } else if matches!(action, DeviceAutomationTakeAction::InspectFailedPluginCopy) {
+                    plugin_recording::inspect_failed_copy(
+                        &plugin_recording,
+                        &native_automation_take,
+                        *scope,
+                        gesture_active,
+                    )
                 } else if gesture_active && matches!(action, DeviceAutomationTakeAction::Poll) {
                     // A take must never finalize somebody else's active edit.
                     Ok(Step::Progress(DeviceAutomationTakeProgress::Pending))
