@@ -1348,7 +1348,10 @@ fn live_vst3_pointer_drag_reaches_native_device_during_playback(cx: &mut gpui::T
         assert!(view(cx).error.is_none(), "{:?}", view(cx).error);
         visual.debug_bounds(knob).is_some()
     });
-    click(&mut visual, "play or pause · space");
+    click(
+        &mut visual,
+        "play or pause · space · right-click for history playback",
+    );
     for _ in 0..3 {
         render();
     }

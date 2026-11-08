@@ -1433,7 +1433,7 @@ mod tests {
             exposed.extend([74 + operator, 78 + operator]);
         }
         exposed.extend([61]);
-        exposed.extend(600..=612);
+        exposed.extend(600..=616);
         exposed.extend(620..=639);
         exposed.extend(82..=388);
         exposed.extend(20_001..=20_007);
@@ -1463,7 +1463,7 @@ mod tests {
             exposed, actual,
             "panel inventory matches registered metadata"
         );
-        assert_eq!(exposed.len(), 428);
+        assert_eq!(exposed.len(), 432);
         assert_eq!(exposed.first(), Some(&1));
         assert_eq!(exposed.last(), Some(&20_007));
         for diagonal in [13, 18, 23, 28] {

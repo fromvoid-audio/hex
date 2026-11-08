@@ -8,6 +8,8 @@ use crate::{BeatTime, Created, Device, DeviceId, Invalid, Project};
 pub use hex_lattice_contract::DeviceAutomationTarget;
 use hex_lattice_contract::ParameterId;
 
+mod replacement;
+pub use replacement::DeviceAutomationReplacement;
 mod touch;
 pub use touch::{
     DeviceAutomationTouchSpan, DeviceAutomationTouchStep, MAX_DEVICE_AUTOMATION_TOUCH_SPANS,

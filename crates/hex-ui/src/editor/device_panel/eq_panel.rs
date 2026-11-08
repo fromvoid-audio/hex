@@ -21,6 +21,7 @@ use hex_widgets::{
 mod axes;
 mod gestures;
 mod group_move;
+mod state_edit;
 use group_move::{frequency_from_x, q_from_y};
 mod node_geometry;
 use node_geometry::{creation_kind, node_position};
@@ -603,6 +604,17 @@ fn submit(
     else {
         return;
     };
+    let Some(entry) = project.device(device) else {
+        return;
+    };
+    let (state, automation) = match state_edit::prepare(entry, &expected, state) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            view.device_panel.message = Some(format!("eq edit refused · {error}"));
+            cx.notify();
+            return;
+        }
+    };
     let reserved_ids = if reserve == 0 {
         0
     } else {
@@ -612,6 +624,7 @@ fn submit(
     };
     view.enqueue_device_barrier(Request::Edit(
         Command::ReplaceDeviceStateWithIdentityReservation {
+            automation,
             device,
             expected_state: expected,
             expected_variant,

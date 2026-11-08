@@ -16,13 +16,15 @@
 use super::{Session, recovery};
 use hex_storage::automation_draft::DraftWriter;
 mod native_device;
+mod recovery_copy;
 pub use hex_storage::automation_draft::{
-    AppliedEvent, DraftAbortReason, DraftClock, DraftProgress, DraftProvenance, DraftTarget,
-    DraftTerminal,
+    AppliedEvent, DraftAbortReason, DraftClock, DraftPrefixIdentity, DraftProgress,
+    DraftProvenance, DraftTarget, DraftTerminal,
 };
 pub use native_device::{
     DeviceDraftInput, Vst3ApplicationValue, Vst3CaptureTarget, Vst3ParameterApplication,
 };
+pub use recovery_copy::copy_failed_on_control;
 use std::{
     collections::VecDeque,
     path::{Path, PathBuf},
@@ -222,6 +224,8 @@ pub struct DraftWorkerOutcome {
     pub path: PathBuf,
     pub admitted_events: u64,
     pub progress: DraftProgress,
+    /// Exact header and last sync-acknowledged event chain, retained after writer failure.
+    pub durable_prefix: DraftPrefixIdentity,
     pub requested_terminal: DraftTerminal,
     pub failure: Option<String>,
     /// At most three original batches, including any partially written/synced batch.
@@ -378,6 +382,7 @@ fn spawn_with_start(
                 failure = Some(error.to_string());
             }
             let progress = writer.progress();
+            let durable_prefix = writer.durable_prefix_identity();
             let path = writer.path().to_path_buf();
             // Release the exclusive file lock before publishing a completed observation.
             drop(writer);
@@ -392,6 +397,7 @@ fn spawn_with_start(
                 path,
                 admitted_events: state.accepted_events,
                 progress,
+                durable_prefix,
                 requested_terminal: terminal,
                 failure,
                 retained,
