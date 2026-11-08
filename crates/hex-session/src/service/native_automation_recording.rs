@@ -87,7 +87,7 @@ impl From<DeviceCaptureTarget> for TakePublication {
 
 /// Copied observation of the applied and playing resident output. The
 /// callback still checks the actual source and epoch when admitting Begin.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeviceAutomationSource {
     pub target: DeviceCaptureTarget,
     pub sample_rate: u32,
@@ -133,6 +133,12 @@ pub enum DeviceAutomationTakeAction {
     Poll,
     /// Start a non-adoptable checkpoint of the retained failed writer custody.
     CopyFailed {
+        destination: PathBuf,
+        max_events: u64,
+    },
+    /// Copy failed VST3 custody together with the quiesced SDK observations.
+    /// Session obtains observations from their owner rather than the caller.
+    CopyFailedPlugin {
         destination: PathBuf,
         max_events: u64,
     },
@@ -186,6 +192,59 @@ pub(super) enum Step {
 }
 
 impl Lane {
+    pub(super) fn failed_source(
+        &self,
+        scope: DeviceAutomationTakeScope,
+    ) -> Result<DeviceAutomationSource, String> {
+        let failed = self
+            .failed
+            .as_ref()
+            .ok_or("no failed device automation custody is available")?;
+        if failed.scope != scope || !failed.source.matches(scope) {
+            return Err("device automation recovery belongs to another take".into());
+        }
+        Ok(failed.source)
+    }
+
+    pub(super) fn copy_failed_plugin(
+        &mut self,
+        scope: DeviceAutomationTakeScope,
+        destination: &Path,
+        max_events: u64,
+        observations: Vec<super::PluginParameterObservation>,
+    ) -> Result<Step, String> {
+        let source = self.failed_source(scope)?;
+        if !matches!(scope.target, DeviceCaptureTarget::Vst3(_))
+            || max_events > hex_project::MAX_DEVICE_AUTOMATION_POINTS as u64
+            || observations.len() > 3
+        {
+            return Err("invalid VST3 recovery target or budget".into());
+        }
+        let failed = self
+            .failed
+            .as_ref()
+            .ok_or("no failed device automation custody is available")?;
+        let destination = super::recovery::absolute_document_path(destination)?;
+        let copy_path = destination.clone();
+        self.failed_copy
+            .start_with(&failed.outcome, move |outcome| {
+                copy_failed_plugin_on_control(
+                    outcome,
+                    &copy_path,
+                    DraftReadLimits {
+                        max_source_bytes: hex_storage::MAX_PROJECT_DOCUMENT_BYTES as u64,
+                    },
+                    max_events,
+                    scope,
+                    source,
+                    &observations,
+                )
+                .map(|_| ())
+            })?;
+        self.copy_destination = Some(destination);
+        Ok(Step::Progress(DeviceAutomationTakeProgress::Pending))
+    }
+
     pub(super) fn path(&self) -> Option<&Path> {
         self.active.as_ref().map(|active| active.input.path())
     }
@@ -321,6 +380,7 @@ impl Lane {
         while active.input.poll().is_some() {}
         let progress = match action {
             DeviceAutomationTakeAction::CopyFailed { .. }
+            | DeviceAutomationTakeAction::CopyFailedPlugin { .. }
             | DeviceAutomationTakeAction::PollFailedCopy => {
                 return Err("invalid active automation recovery action".into());
             }

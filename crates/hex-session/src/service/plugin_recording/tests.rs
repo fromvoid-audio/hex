@@ -102,6 +102,216 @@ fn active(scope: DeviceAutomationTakeScope, source: DeviceAutomationSource) -> S
         ..State::default()
     }
 }
+
+#[test]
+fn failed_recovery_snapshots_only_quiescent_original_observations() {
+    let (_files, _session, scope, source) = fixture();
+    let mut state = active(scope, source);
+    assert!(state.failed_observations(scope, source).is_err());
+    let mut failed = state.active.take().unwrap();
+    failed.pending = Some(DeviceAutomationTakeAction::PluginObservation(Box::new(
+        PluginParameterObservation::Delivered(delivery(
+            scope,
+            source,
+            8,
+            Vst3ApplicationValue::Value(0.5),
+        )),
+    )));
+    failed.failed_observations = [
+        Some(PluginParameterObservation::Delivered(delivery(
+            scope,
+            source,
+            16,
+            Vst3ApplicationValue::Value(0.75),
+        ))),
+        Some(PluginParameterObservation::Restored(delivery(
+            scope,
+            source,
+            24,
+            Vst3ApplicationValue::Restored,
+        ))),
+    ];
+    state.failed = Some(failed);
+    assert!(state.failed_observations(scope, source).is_err());
+    state.failed.as_mut().unwrap().ended = true;
+    for _ in 0..2 {
+        let observations = state.failed_observations(scope, source).unwrap();
+        assert!(
+            matches!(observations.as_slice(), [PluginParameterObservation::Delivered(a), PluginParameterObservation::Delivered(b), PluginParameterObservation::Restored(c)] if a.sequence == 8 && b.sequence == 16 && c.sequence == 24)
+        );
+        assert!(state.failed.as_ref().unwrap().pending.is_some());
+        assert!(
+            state
+                .failed
+                .as_ref()
+                .unwrap()
+                .failed_observations
+                .iter()
+                .all(Option::is_some)
+        );
+    }
+    let mut wrong_scope = scope;
+    wrong_scope.stamp.gesture_serial += 1;
+    assert!(state.failed_observations(wrong_scope, source).is_err());
+    let mut wrong_source = source;
+    wrong_source.transport_epoch += 1;
+    assert!(state.failed_observations(scope, wrong_source).is_err());
+    state.failed.as_mut().unwrap().failed_observations[0] = None;
+    assert!(state.failed_observations(scope, source).is_err());
+    state.failed.as_mut().unwrap().failed_observations = [None, None];
+    state.failed.as_mut().unwrap().pending = Some(DeviceAutomationTakeAction::Interrupt);
+    assert!(state.failed_observations(scope, source).is_err());
+    state.failed.as_mut().unwrap().pending = None;
+    assert!(state.failed_observations(scope, source).unwrap().is_empty());
+    assert!(state.failed.is_some());
+}
+
+#[test]
+fn failed_recovery_dispatch_copies_receipts_without_releasing_custody() {
+    use crate::service::native_automation_recording::tests::failed_lane_for_test;
+    use hex_storage::automation_draft::{DraftOutcome, DraftReadLimits, DraftReader};
+
+    let (files, session, scope, source) = fixture();
+    let original_path = files.0.join("worker-original");
+    let mut lane = failed_lane_for_test(
+        &session,
+        scope,
+        source,
+        &original_path,
+        hex_storage::automation_draft::DraftTerminal::Interrupted,
+    );
+    let original = std::fs::read(&original_path).unwrap();
+    let mut state = active(scope, source);
+    let mut failed = state.active.take().unwrap();
+    failed.ended = true;
+    failed.pending = Some(DeviceAutomationTakeAction::PluginObservation(Box::new(
+        PluginParameterObservation::Delivered(delivery(
+            scope,
+            source,
+            8,
+            Vst3ApplicationValue::Value(0.5),
+        )),
+    )));
+    let delivered = delivery(scope, source, 16, Vst3ApplicationValue::Value(0.75));
+    let mut restored = delivery(scope, source, 24, Vst3ApplicationValue::Restored);
+    restored.sequence = delivered.sequence;
+    failed.failed_observations = [
+        Some(PluginParameterObservation::Delivered(delivered)),
+        Some(PluginParameterObservation::Restored(restored)),
+    ];
+    state.failed = Some(failed);
+    let output = files.0.join("worker-copy");
+    assert!(start_failed_copy(&state, &mut lane, scope, &output, 3, true).is_err());
+    assert!(matches!(
+        start_failed_copy(&state, &mut lane, scope, &output, 3, false).unwrap(),
+        Step::Progress(DeviceAutomationTakeProgress::Pending)
+    ));
+    assert!(start_failed_copy(&state, &mut lane, scope, &output, 3, false).is_err());
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match lane
+            .receive(
+                &session,
+                None,
+                scope.context(),
+                scope,
+                &DeviceAutomationTakeAction::PollFailedCopy,
+            )
+            .unwrap()
+        {
+            Step::Progress(DeviceAutomationTakeProgress::Pending) => {
+                assert!(Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+            Step::Progress(DeviceAutomationTakeProgress::Retained(path)) => {
+                assert_eq!(path, output);
+                break;
+            }
+            _ => panic!("unexpected recovery result"),
+        }
+    }
+    let reader = DraftReader::open(
+        &output,
+        DraftReadLimits {
+            max_source_bytes: 65536,
+        },
+    )
+    .unwrap();
+    assert_eq!(reader.progress().durable_events, 3);
+    assert_eq!(
+        reader.outcome(),
+        DraftOutcome::Finished(restored.application.origin)
+    );
+    assert_eq!(std::fs::read(original_path).unwrap(), original);
+    let failed = state.failed.as_ref().unwrap();
+    assert!(failed.pending.is_some());
+    assert!(failed.failed_observations.iter().all(Option::is_some));
+    assert!(lane.begin(&session, None, scope, source, &files.0).is_err());
+}
+
+#[test]
+fn failed_recovery_dispatch_preserves_already_admitted_terminal_without_late_receipts() {
+    use crate::service::native_automation_recording::tests::failed_lane_for_test;
+    use hex_storage::automation_draft::{
+        DraftClock, DraftOutcome, DraftReadLimits, DraftReader, DraftTerminal,
+    };
+
+    let (files, session, scope, source) = fixture();
+    let original_path = files.0.join("admitted-original");
+    let end = DraftClock {
+        performance_frame: 32,
+        content_frame: 24,
+        loop_pass: 0,
+    };
+    let mut lane = failed_lane_for_test(
+        &session,
+        scope,
+        source,
+        &original_path,
+        DraftTerminal::Finished(end),
+    );
+    let original = std::fs::read(&original_path).unwrap();
+    let state = State::default();
+    let output = files.0.join("admitted-copy");
+    assert!(matches!(
+        start_failed_copy(&state, &mut lane, scope, &output, 1, false).unwrap(),
+        Step::Progress(DeviceAutomationTakeProgress::Pending)
+    ));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match lane
+            .receive(
+                &session,
+                None,
+                scope.context(),
+                scope,
+                &DeviceAutomationTakeAction::PollFailedCopy,
+            )
+            .unwrap()
+        {
+            Step::Progress(DeviceAutomationTakeProgress::Pending) => {
+                assert!(Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+            Step::Progress(DeviceAutomationTakeProgress::Retained(path)) => {
+                assert_eq!(path, output);
+                break;
+            }
+            _ => panic!("unexpected recovery result"),
+        }
+    }
+    let reader = DraftReader::open(
+        &output,
+        DraftReadLimits {
+            max_source_bytes: 65536,
+        },
+    )
+    .unwrap();
+    assert_eq!(reader.outcome(), DraftOutcome::Finished(end));
+    assert_eq!(reader.progress().durable_events, 1);
+    assert_eq!(std::fs::read(original_path).unwrap(), original);
+    assert!(lane.begin(&session, None, scope, source, &files.0).is_err());
+}
 #[test]
 fn original_points_and_restoration_reach_the_shared_writer_before_terminal_is_ready() {
     let (files, session, scope, source) = fixture();
