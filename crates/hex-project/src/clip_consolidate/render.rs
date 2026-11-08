@@ -8,9 +8,9 @@ use crate::{
 use std::collections::BTreeSet;
 
 impl Project {
-    /// Resolve only grouping commands which need rendered source custody.
-    /// Ordinary leaves (including ordinary looped clips) and neutral groups keep
-    /// the existing non-destructive event path. A pure query never changes IDs.
+    /// Resolve the legacy explicit rendered-group intent. Interactive grouping
+    /// uses the canonical non-destructive edit path so its sources remain editable.
+    /// This pure query never changes IDs.
     pub fn audio_group_render_target(
         &self,
         command: &Command,
@@ -79,6 +79,28 @@ pub(crate) fn plan(
     let first = project
         .clip(clips[0])
         .ok_or(Invalid("selected audio clip no longer exists"))?;
+    // Rendering a processed group cannot retain muted constituent sources.
+    // Refuse rather than replace editable inactive material with silence.
+    for id in clips {
+        let clip = project
+            .clip(*id)
+            .ok_or(Invalid("selected audio clip no longer exists"))?;
+        let events = clip.audio_events();
+        if events.events.iter().any(|event| !event.active)
+            || events.sources.iter().any(|source| {
+                source
+                    .clip
+                    .audio_events()
+                    .events
+                    .iter()
+                    .any(|event| !event.active)
+            })
+        {
+            return Err(Invalid(
+                "processed audio grouping cannot retain inactive events; keep the clips separate",
+            ));
+        }
+    }
     let owner = project
         .tracks()
         .iter()

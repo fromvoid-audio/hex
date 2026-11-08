@@ -143,12 +143,11 @@ impl EditorView {
         self.clip_selection.anchor = Some((track, clip));
         self.clip_selection.scope = Some((self.project_generation, state.revision));
         self.selected_track = Some(track);
-        self.retained_clip_detail = None;
         self.selected_clip = Some(clip);
         self.midi_selection.clear();
         self.midi_note_gesture = None;
         self.midi_group_gesture = None;
-        self.piano_beat_start = hex_project::BeatTime::ZERO;
+        self.piano_beat_start = 0;
         self.midi_hit_cycle = None;
         true
     }
@@ -195,14 +194,18 @@ impl EditorView {
             return;
         }
         // A deliberate whole-clip header click supersedes an unrelated time
-        // rectangle; body gestures retain their separate range-copy contract.
+        // rectangle and a cursor placed inside the clip; body gestures retain
+        // their separate range-copy contract.
         self.time_selection = None;
+        self.edit_cursor_in_selected_clip = None;
+        self.loop_start_over_clip = None;
         self.time_selection_project_scope = false;
         let mut next_focus = None;
         if let Some(state) = &self.state {
             selection.select(&state.project, track, clip, modifiers);
             if modifiers.shift
-                && self.arrangement_focus.enabled
+                && (self.arrangement_focus.projection.enabled
+                    || self.arrangement_focus.projection.filtering())
                 && self.mode == super::EditorMode::Arrangement
             {
                 selection.apply_members(
@@ -338,7 +341,10 @@ mod tests {
                     paints.push((
                         id,
                         prefix,
-                        crate::theme::clip_fill(track.color(), flavor, members.contains(&id)),
+                        crate::theme::arrangement_clip_body_fill(
+                            crate::theme::clip_fill(track.color(), flavor, false),
+                            members.contains(&id),
+                        ),
                     ));
                 }
             }

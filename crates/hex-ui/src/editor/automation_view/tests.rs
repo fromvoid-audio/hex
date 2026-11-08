@@ -184,6 +184,12 @@ fn foreground_curve_owns_pointer_and_released_marker_until_exact_worker_terminal
     let track = editor.read_with(&visual, |v, _| {
         v.state.as_ref().unwrap().project.tracks()[1].id()
     });
+    // Foreground editing requires an explicit parameter selection; A assigns none.
+    editor.update(&mut visual, |v, cx| {
+        v.gain_lane.track = Some(track);
+        cx.notify();
+    });
+    visual.run_until_parked();
     let plot = visual
         .debug_bounds(selector("arrangement-automation-plot", track.value()))
         .unwrap();
@@ -330,6 +336,11 @@ fn automation_key_preserves_typing_midi_and_held_edits(cx: &mut TestAppContext) 
     let track = editor.read_with(&visual, |v, _| {
         v.state.as_ref().unwrap().project.tracks()[0].id()
     });
+    editor.update(&mut visual, |v, cx| {
+        v.gain_lane.track = Some(track);
+        cx.notify();
+    });
+    visual.run_until_parked();
     let plot = visual
         .debug_bounds(selector("arrangement-automation-plot", track.value()))
         .unwrap();
@@ -364,7 +375,7 @@ fn next_event(
     editor: &gpui::Entity<EditorView>,
     visual: &mut VisualTestContext,
 ) -> hex_session::service::Event {
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         if let Some(event) = editor.update(&mut *visual, |v, _| v.service.try_event().ok()) {
             return event;
@@ -386,19 +397,30 @@ fn earlier_completion_cannot_retire_released_gain_preview_and_own_refusal_does(
     let track = editor.read_with(&visual, |v, _| {
         v.state.as_ref().unwrap().project.tracks()[0].id()
     });
+    editor.update(&mut visual, |v, cx| {
+        v.gain_lane.track = Some(track);
+        cx.notify();
+    });
+    visual.run_until_parked();
     let plot = visual
         .debug_bounds(selector("arrangement-automation-plot", track.value()))
         .unwrap();
     let at = point(plot.center().x, plot.top() + plot.size.height * 0.25);
     visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
     let draft = editor.read_with(&visual, |v, _| v.gain_lane.draft.unwrap().point);
+    // Inject an independently admitted worker edit after the draft starts. The
+    // UI rejects new edits here; this models a stale canonical snapshot so the
+    // FIFO receipt and refusal paths remain covered despite that admission rule.
     editor.update(&mut visual, |v, _| {
-        assert!(v.enqueue(hex_session::service::Request::Edit(
-            hex_project::Command::RenameTrack {
-                track,
-                name: "renamed".into()
-            }
-        )))
+        v.service
+            .submit(hex_session::service::Request::Edit(
+                hex_project::Command::RenameTrack {
+                    track,
+                    name: "renamed".into(),
+                },
+            ))
+            .unwrap();
+        v.worker_requests_pending += 1;
     });
     visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
     let marker =
@@ -439,7 +461,7 @@ fn earlier_completion_cannot_retire_released_gain_preview_and_own_refusal_does(
 }
 
 #[gpui::test]
-fn a_and_toolbar_share_global_layers_and_visible_mode_indicator(cx: &mut TestAppContext) {
+fn a_and_toolbar_share_global_layers_without_assigning_parameters(cx: &mut TestAppContext) {
     let (handle, editor, audio, midi, _files) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
@@ -494,7 +516,8 @@ fn a_and_toolbar_share_global_layers_and_visible_mode_indicator(cx: &mut TestApp
         assert!(
             visual
                 .debug_bounds(selector("arrangement-automation-plot", track.value()))
-                .is_some()
+                .is_none(),
+            "entering automation view never assigns a parameter"
         );
     }
     // A toolbar change must immediately be the state A observes on the next key.

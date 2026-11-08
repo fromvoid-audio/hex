@@ -64,7 +64,7 @@ fn limiter_compact_panel_fits_track_and_return_and_keeps_edits_undoable(cx: &mut
             .expect("limiter body");
         assert_eq!(
             frame.size.width,
-            px(limiter_panel::FRAME_WIDTH + gain_meters::WIDTH)
+            px(limiter_panel::FRAME_WIDTH + device_meter::WIDTH)
         );
         assert_eq!(frame.size.height, px(DEVICE_FRAME_HEIGHT));
         for parameter in [1, 2, 3, 4, 5, 6, 7, 8, 9] {
@@ -94,6 +94,89 @@ fn limiter_compact_panel_fits_track_and_return_and_keeps_edits_undoable(cx: &mut
         cx.notify();
     });
     visual.run_until_parked();
+    let bounds = |visual: &mut VisualTestContext, suffix: &str| {
+        visual
+            .debug_bounds(Box::leak(
+                format!("device-{}-parameter-{suffix}", device.value()).into_boxed_str(),
+            ))
+            .unwrap()
+    };
+    let input = bounds(&mut visual, "1");
+    let ceiling = bounds(&mut visual, "2");
+    let release = bounds(&mut visual, "3");
+    let lookahead = bounds(&mut visual, "6-knob");
+    assert!(input.right() < ceiling.left());
+    assert!(release.top() > input.bottom());
+    assert!(lookahead.left() > ceiling.right());
+    for suffix in [
+        "8-option-0",
+        "8-option-1",
+        "8-option-2",
+        "7-option-0",
+        "7-option-1",
+    ] {
+        bounds(&mut visual, suffix);
+    }
+    enter_typed_value(
+        &mut visual,
+        device,
+        hex_lattice_contract::ParameterId::from_static(2),
+        "-6",
+    );
+    visual.simulate_keystrokes("enter");
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view.device_gesture.snapshot().is_none()
+    });
+    visual.run_until_parked();
+    let start = bounds(&mut visual, "2-slider-thumb").center();
+    let end = point(start.x, start.y + px(15.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view.device_gesture.snapshot().is_none()
+    });
+    editor.read_with(cx, |view, _| {
+        let state = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .state();
+        let ParameterValue::Float(value) = hex_engine::native_device_parameter(
+            state,
+            hex_lattice_contract::ParameterId::from_static(2),
+        )
+        .unwrap() else {
+            panic!("ceiling")
+        };
+        assert!(
+            (value + 9.0).abs() < 0.01,
+            "triangle edits the real ceiling"
+        );
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+    });
+    visual.run_until_parked();
+    let key = ParameterKey {
+        device,
+        parameter: hex_lattice_contract::ParameterId::from_static(2),
+    };
+    editor.read_with(cx, |view, app| {
+        let Some(ParameterControl::Float { entity, .. }) = view.device_panel.controls.get(&key)
+        else {
+            panic!("ceiling entity")
+        };
+        assert_eq!(entity.read(app).value(), -6.0);
+    });
     enter_typed_value(
         &mut visual,
         device,
@@ -163,7 +246,8 @@ fn limiter_compact_panel_fits_track_and_return_and_keeps_edits_undoable(cx: &mut
             format!("device-{}-parameter-7", device.value()).into_boxed_str(),
         ))
         .unwrap();
-    visual.simulate_click(routing.center(), Modifiers::default());
+    // Both routing options are always visible; there is no dropdown.
+    assert!(routing.size.width > px(0.0));
     visual.run_until_parked();
     let ms = visual
         .debug_bounds(Box::leak(
@@ -232,4 +316,76 @@ fn limiter_compact_panel_fits_track_and_return_and_keeps_edits_undoable(cx: &mut
         );
         assert!(view.device_gesture.snapshot().is_none());
     });
+}
+
+#[gpui::test]
+fn limiter_ceiling_keeps_released_triangle_and_readout_during_delayed_ack(cx: &mut TestAppContext) {
+    let (project, track, _, _) = crate::editor::clip_drag_ui_test::midi_project();
+    let mut controller = Editor::new(project, 8).unwrap();
+    let state = hex_engine::default_native_device_state(
+        hex_lattice_contract::DeviceTypeId::from_static("hex.limiter"),
+    )
+    .unwrap();
+    controller
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state,
+        })
+        .unwrap();
+    let device = controller.project().track(track).unwrap().devices()[0].id();
+    // The fixture deliberately does not tick the service: terminal responses remain
+    // outstanding while completed repaints expose any stale canonical geometry.
+    let (handle, editor) = crate::editor::clip_drag_ui_test::editor_window(
+        cx,
+        controller.project().clone(),
+        Arc::default(),
+    );
+    editor.update(cx, |view, cx| {
+        view.selected_track = Some(track);
+        view.device_panel_active = true;
+        view.clip_view_open = true;
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let selector =
+        Box::leak(format!("device-{}-parameter-2-slider-thumb", device.value()).into_boxed_str());
+    let initial = visual.debug_bounds(selector).unwrap();
+    let start = initial.center();
+    let end = point(start.x, start.y + px(24.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    visual.run_until_parked();
+    let preview = visual.debug_bounds(selector).unwrap();
+    assert!(preview.top() > initial.top());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    for _ in 0..3 {
+        editor.update(cx, |_, cx| cx.notify());
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds(selector).unwrap(), preview);
+        editor.read_with(cx, |view, app| {
+            let key = ParameterKey {
+                device,
+                parameter: hex_lattice_contract::ParameterId::from_static(2),
+            };
+            let Some(ParameterControl::Float { entity, .. }) = view.device_panel.controls.get(&key)
+            else {
+                panic!("ceiling")
+            };
+            assert!((entity.read(app).value() + 5.1).abs() < 0.01);
+            let canonical = view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .unwrap()
+                .state();
+            assert_eq!(
+                hex_engine::native_device_parameter(canonical, key.parameter).unwrap(),
+                ParameterValue::Float(-0.3)
+            );
+        });
+    }
 }

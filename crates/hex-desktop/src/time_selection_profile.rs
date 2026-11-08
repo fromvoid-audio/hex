@@ -50,7 +50,8 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), S
     let completed = Arc::new(AtomicBool::new(false));
     let run_completed = completed.clone();
     let quit_completed = completed.clone();
-    Application::new().run(move |cx| {
+    let application = Application::new().with_assets(hex_ui::assets::HexAssets);
+    application.run(move |cx| {
         // macOS terminate: does not return from Application::run. Publication must
         // finish first; an external quit before that must never report exit zero.
         cx.on_app_quit(move |_| {

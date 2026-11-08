@@ -456,12 +456,16 @@ impl Command {
             | Self::SetSessionMidiClipSource { clip, .. }
             | Self::SetMidiClipSource { clip, .. }
             | Self::ReplaceMidiClipVolume { clip, .. }
+            | Self::SetMidiClipGain { clip, .. }
             | Self::AddMidiNote { clip, .. }
             | Self::AddMidiNotes { clip, .. }
+            | Self::SetMidiNotesActive { clip, .. }
             | Self::EditMidiNotes { clip, .. }
             | Self::EditMidiNotesWithSourceExtent { clip, .. }
             | Self::DuplicateMidiSourceRange { clip, .. }
             | Self::UpdateMidiNotes { clip, .. }
+            | Self::UpdateMidiNotesWithSourceExtent { clip, .. }
+            | Self::UpdateMidiNotesWithSourcePrefix { clip, .. }
             | Self::RemoveMidiNotes { clip, .. } => ClipCommandScope::FocusedSource { clip: *clip },
             Self::ConvertMidiClipToAudio { clip, .. }
             | Self::SplitClip { clip, .. }
@@ -521,11 +525,14 @@ impl Command {
             | Self::GroupClips(_)
             | Self::DuplicateClips(_)
             | Self::DuplicateAliasClips(_)
+            | Self::DuplicateAliasClipsAt { .. }
+            | Self::DuplicateAliasClipToNewTrack { .. }
             | Self::MakeClipsUnique(_)
             | Self::ApplyClipSettingsToAliases(_)
             | Self::DuplicateSessionCell { .. }
             | Self::ReverseClips(_) => ClipCommandScope::Explicit,
-            Self::AddArrangementSection { .. }
+            Self::InitializeDevice(_)
+            | Self::AddArrangementSection { .. }
             | Self::SetArrangementSectionRange { .. }
             | Self::MoveArrangementSectionMarker { .. }
             | Self::ResizeArrangementSectionMarker { .. }
@@ -540,11 +547,16 @@ impl Command {
             | Self::DeleteArrangementSection(_)
             | Self::DuplicateArrangementSection(_)
             | Self::DuplicateArrangementSectionAt { .. }
+            | Self::AppendArrangementSectionCopy { .. }
+            | Self::MoveArrangementSectionBeyondEnd { .. }
+            | Self::ReplaceArrangementSection { .. }
             | Self::SplitArrangementSection { .. }
             | Self::MergeArrangementSections(_)
             | Self::SetTuning(..)
             | Self::SetTrackColor { .. }
             | Self::InsertTrackWithDevice { .. }
+            | Self::InsertDefaultTrackWithDevice { .. }
+            | Self::InsertDefaultTrackWithDeviceAndGain { .. }
             | Self::SpliceGainTouch { .. }
             | Self::SpliceGainTouchBatch { .. }
             | Self::ReplaceTrackGainEnvelope { .. }
@@ -554,23 +566,32 @@ impl Command {
             | Self::ClearTrackGainEnvelope { .. }
             | Self::SetRouting(..)
             | Self::SetAudioFeed { .. }
+            | Self::SetSidechain { .. }
             | Self::SetMidiSource { .. }
             | Self::SetReturnFeed { .. }
             | Self::InsertMainDevice { .. }
             | Self::MoveMainDevice { .. }
             | Self::InsertDevice { .. }
             | Self::InsertInstrument { .. }
+            | Self::LoadInstrument { .. }
             | Self::RemoveInstrument { .. }
             | Self::RemoveDevice(..)
             | Self::MoveDevice { .. }
             | Self::MoveTrackDevice { .. }
+            | Self::SpliceDeviceAutomationTouch { .. }
+            | Self::ReplaceDeviceAutomationTarget { .. }
             | Self::ReplaceDeviceAutomation { .. }
+            | Self::ManualDeviceEdit { .. }
+            | Self::SetDeviceAutomationReadSelection { .. }
+            | Self::ReenableDeviceAutomation
             | Self::ReplaceDeviceState { .. }
             | Self::ReplaceDeviceStateWithIdentityReservation { .. }
             | Self::SetDeviceBypass { .. }
+            | Self::ToggleDeviceBypass { .. }
             | Self::CompareDevice { .. }
             | Self::ReplaceDeviceComparison { .. }
             | Self::AddReturnTrack { .. }
+            | Self::AddReturnTrackWithGain { .. }
             | Self::RemoveReturnTrack(..)
             | Self::RenameReturnTrack { .. }
             | Self::ReturnGain { .. }
@@ -584,9 +605,13 @@ impl Command {
             | Self::DuplicateTracks { .. }
             | Self::AddTrack { .. }
             | Self::InsertTrack { .. }
+            | Self::InsertDefaultTrack { .. }
+            | Self::InsertDefaultTrackWithGain { .. }
             | Self::MoveTrackBefore { .. }
             | Self::MoveTracksBefore { .. }
             | Self::PasteTracks { .. }
+            | Self::PasteDevices { .. }
+            | Self::RemoveDevices { .. }
             | Self::ImportAudioTrack { .. }
             | Self::CommitArrangementBounce { .. }
             | Self::ImportPreparedAudioTrack { .. }
@@ -594,10 +619,13 @@ impl Command {
             | Self::ImportPreparedAudioClip { .. }
             | Self::ImportPreparedAudioClipWithOverwrite { .. }
             | Self::ImportPreparedSessionAudioClip { .. }
+            | Self::ImportExistingAudio { .. }
             | Self::RemoveTrack(..)
             | Self::RemoveTracks(..)
+            | Self::SetTrackTags { .. }
             | Self::RenameTrack { .. }
             | Self::Gain { .. }
+            | Self::SetTrackGains { .. }
             | Self::Balance { .. }
             | Self::MasterGain { .. }
             | Self::SetProjectTempo { .. }
@@ -605,6 +633,7 @@ impl Command {
             | Self::SetMeterPoint { .. }
             | Self::Mute { .. }
             | Self::ToggleSolo { .. }
+            | Self::ToggleSoloTracks { .. }
             | Self::SetLoopRegion { .. }
             | Self::ToggleLoopRegion
             | Self::ClearLoopRegion
@@ -613,6 +642,7 @@ impl Command {
             | Self::ImportDeviceAssetIntoEmptyInstrument { .. }
             | Self::ImportDeviceAssetReplacingInstrument { .. }
             | Self::RemoveAsset(..)
+            | Self::RelinkAssets(..)
             | Self::PlaceClip { .. }
             | Self::GainBy { .. }
             | Self::BalanceBy { .. }

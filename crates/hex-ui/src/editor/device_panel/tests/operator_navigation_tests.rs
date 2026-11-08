@@ -1,6 +1,4 @@
 use super::*;
-use gpui::Focusable;
-use operator_panel::preview::{Field, Switch};
 
 pub(super) fn operator_fixture() -> (Service, Arc<ViewState>, TrackId, DeviceId) {
     let (service, _, track, _, _, _) = actor_utility_fixture();
@@ -286,6 +284,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
     visual.update(|window, _| window.activate_window());
     visual.simulate_resize(size(px(1440.0), px(540.0)));
     visual.run_until_parked();
+    open_operator_options(&mut visual, device);
     let envelope = tab_bounds(&mut visual, device, "envelope", "amp env");
     let oscillator = tab_bounds(&mut visual, device, "oscillator", "osc");
     let rail = visual
@@ -311,7 +310,13 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
         tab_bounds(&mut visual, device, "oscillator", "osc"),
         oscillator
     );
-    assert_eq!(lfo_link_bounds(&mut visual, device), lfo);
+    assert_eq!(
+        lfo_link_bounds(&mut visual, device),
+        Bounds {
+            origin: lfo.origin + point(px(120.0), px(0.0)),
+            ..lfo
+        }
+    );
     for parameter in 82..=92 {
         assert!(
             visual
@@ -356,7 +361,14 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
                         == ParameterValue::Bool(false)
                 })
         });
-        // Badges now make a canonical enable edit as well as selecting context.
+        let background = super::operator_context_selection_tests::row_background(
+            &mut visual,
+            device,
+            operator as usize,
+        );
+        visual.simulate_click(background, Modifiers::default());
+        visual.run_until_parked();
+        // Power edits and explicit row selection are independent.
         // Undo that edit before testing that subsequent navigation preserves sound.
         editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
         pump_until(&editor, cx, |view| {
@@ -410,7 +422,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
         assert!(
             visual
                 .debug_bounds(selector(format!(
-                    "device-{}-parameter-{}-knob",
+                    "device-{}-parameter-{}-value",
                     device.value(),
                     63 + operator * 3
                 )))
@@ -430,25 +442,6 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             view.worker_requests_pending == 0 && view.pending_requests.is_empty()
         });
     }
-    {
-        let switch = Switch::Pitch.index();
-        let bounds = visual
-            .debug_bounds(selector(format!(
-                "operator-preview-{}-toggle-{switch}",
-                device.value()
-            )))
-            .unwrap();
-        visual.simulate_click(bounds.center(), Modifiers::default());
-        visual.run_until_parked();
-        assert_eq!(
-            tab_bounds(&mut visual, device, "envelope", "amp env"),
-            envelope
-        );
-        assert_eq!(
-            tab_bounds(&mut visual, device, "oscillator", "osc"),
-            oscillator
-        );
-    }
     assert!(
         visual
             .debug_bounds(selector(format!(
@@ -457,16 +450,20 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             )))
             .is_none()
     );
-    // Click the Time tile rather than the icon, then activate the rail by keyboard.
-    let time = visual
+    // Select the optional global context explicitly through its background.
+    let global = visual
         .debug_bounds(selector(format!(
-            "operator-preview-{}-{}",
-            device.value(),
-            Field::Time as usize
+            "operator-preview-row-{}-global",
+            device.value()
         )))
         .unwrap();
+    let routing = visual
+        .debug_bounds(Box::leak(
+            format!("operator-preview-{}-route-link", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
     visual.simulate_click(
-        point(time.center().x, time.origin.y + px(3.0)),
+        point(routing.right() + px(2.0), global.center().y),
         Modifiers::default(),
     );
     visual.run_until_parked();
@@ -483,7 +480,10 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
                 device.value()
             )))
             .unwrap(),
-        rail
+        Bounds {
+            origin: rail.origin + point(px(120.0), px(0.0)),
+            ..rail
+        }
     );
     assert!(
         visual
@@ -503,11 +503,15 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
     );
     let shell = visual
         .debug_bounds(selector(format!(
-            "device-{}-parameter-1-knob",
+            "device-{}-parameter-1-slider",
             device.value()
         )))
         .unwrap();
     visual.simulate_click(shell.center(), Modifiers::default());
+    visual.simulate_keystrokes("escape");
+    let background =
+        super::operator_context_selection_tests::row_background(&mut visual, device, 0);
+    visual.simulate_click(background, Modifiers::default());
     visual.run_until_parked();
     assert_eq!(
         tab_bounds(&mut visual, device, "envelope", "amp env"),
@@ -520,12 +524,12 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
     visual.simulate_click(envelope.center(), Modifiers::default());
     let fine = visual
         .debug_bounds(selector(format!(
-            "operator-preview-{}-{}-knob",
-            device.value(),
-            Field::FineB as usize
+            "device-{}-parameter-610-slider",
+            device.value()
         )))
         .unwrap();
     visual.simulate_click(fine.center(), Modifiers::default());
+    visual.simulate_keystrokes("escape");
     tab_to_routing(&mut visual, &editor, device);
     assert!(
         visual.update(|window, app| editor.read_with(app, |view, _| view
@@ -542,8 +546,22 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.device_panel.operator_pages[&device].page,
-            operator_panel::OperatorPage::Routing,
-            "focused routing activation takes precedence over session launch"
+            operator_panel::OperatorPage::Envelope,
+            "focused routing picker preserves envelope context"
+        );
+    });
+    visual.simulate_keystrokes("escape");
+    visual.simulate_keystrokes("alt-enter");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.device_panel.operator_pages[&device].page,
+            operator_panel::OperatorPage::Routing
+        );
+        assert!(
+            view.device_panel.operator_previews[&device]
+                .routing_popup
+                .is_none()
         );
     });
     visual.simulate_click(shell.center(), Modifiers::default());
@@ -551,12 +569,30 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
     visual.simulate_click(envelope.center(), Modifiers::default());
     visual.simulate_click(fine.center(), Modifiers::default());
     tab_to_routing(&mut visual, &editor, device);
+    let page_before_space = editor.update(&mut visual, |view, _| {
+        view.last_transport_command = None;
+        view.device_panel.operator_pages[&device].page
+    });
     visual.simulate_keystrokes("space");
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.device_panel.operator_pages[&device].page,
-            operator_panel::OperatorPage::Routing
+            page_before_space
+        );
+        assert!(view.last_transport_command.is_none());
+        assert!(
+            view.device_panel.operator_previews[&device]
+                .routing_popup
+                .is_some()
+        );
+    });
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.device_panel.operator_pages[&device].page,
+            page_before_space
         );
         assert_eq!(
             view.state
@@ -571,160 +607,5 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             &original,
             "navigation and selection preserve canonical sound state"
         );
-    });
-}
-
-#[gpui::test]
-fn operator_fine_pointer_focus_and_keyboard_follow_stable_owner(cx: &mut TestAppContext) {
-    cx.update(hex_widgets::bind_numeric_control_keys);
-    let (service, state, track, device) = operator_fixture();
-    let revision = state.revision;
-    let original = state
-        .project
-        .track(track)
-        .unwrap()
-        .instrument()
-        .unwrap()
-        .state()
-        .clone();
-    let (handle, editor) = actor_editor_window(cx, service, state, track);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.update(|window, _| window.activate_window());
-    visual.run_until_parked();
-    for (operator, field) in [
-        (1, Field::FineB),
-        (2, Field::FineC),
-        (3, Field::FineD),
-        (0, Field::FineA),
-    ] {
-        let fine = visual
-            .debug_bounds(selector(format!(
-                "operator-preview-{}-{}-knob",
-                device.value(),
-                field as usize
-            )))
-            .unwrap();
-        visual.simulate_click(fine.center(), Modifiers::default());
-        visual.run_until_parked();
-        editor.read_with(cx, |view, _| {
-            assert_eq!(
-                view.device_panel.operator_pages[&device].selected_operator, operator,
-                "clicking fine must select its oscillator"
-            );
-            assert_eq!(
-                view.device_panel.operator_pages[&device].page,
-                operator_panel::OperatorPage::Envelope
-            );
-        });
-    }
-    let fine_b = editor.read_with(cx, |view, _| {
-        view.device_panel.operator_previews[&device].controls
-            [&operator_panel::preview::Field::FineB]
-            .entity
-            .clone()
-    });
-
-    visual.update(|window, app| fine_b.focus_handle(app).focus(window));
-    visual.run_until_parked();
-    editor.read_with(cx, |view, _| {
-        assert_eq!(
-            view.device_panel.operator_pages[&device].selected_operator, 1,
-            "keyboard focus selects B without editing its value"
-        )
-    });
-    editor.update(cx, |view, cx| {
-        view.device_panel
-            .operator_pages
-            .get_mut(&device)
-            .unwrap()
-            .page = operator_panel::OperatorPage::Routing;
-        cx.notify();
-    });
-    visual.run_until_parked();
-    visual.simulate_keystrokes("up");
-    visual.run_until_parked();
-    editor.read_with(cx, |view, _| {
-        assert_eq!(
-            view.device_panel.operator_pages[&device].selected_operator,
-            1
-        );
-        assert_eq!(
-            view.device_panel.operator_pages[&device].page,
-            operator_panel::OperatorPage::Oscillator
-        );
-        assert_eq!(view.state.as_ref().unwrap().revision, revision);
-        assert_eq!(
-            view.state
-                .as_ref()
-                .unwrap()
-                .project
-                .track(track)
-                .unwrap()
-                .instrument()
-                .unwrap()
-                .state(),
-            &original
-        );
-        assert!(
-            view.device_gesture.snapshot().is_none(),
-            "fine remains honest view-only state"
-        );
-    });
-    let value = visual
-        .debug_bounds(selector(format!(
-            "operator-preview-{}-{}-value",
-            device.value(),
-            Field::FineB as usize
-        )))
-        .unwrap();
-    visual.simulate_click(value.center(), Modifiers::default());
-    visual.simulate_keystrokes("cmd-a");
-    visual.simulate_input("12");
-    visual.simulate_keystrokes("enter");
-    visual.run_until_parked();
-    editor.read_with(cx, |view, _| {
-        assert_eq!(
-            view.device_panel.operator_previews[&device].values[Field::FineB as usize],
-            12.0
-        )
-    });
-    // Keep a cached entity alive across owner/generation changes: neither focus
-    // nor its keyboard Begin may select a stale/reused instrument context.
-    editor.update(cx, |view, cx| {
-        view.selected_track = None;
-        cx.notify();
-    });
-    visual.run_until_parked();
-    visual.update(|window, app| fine_b.focus_handle(app).focus(window));
-    visual.simulate_keystrokes("up");
-    visual.run_until_parked();
-    editor.read_with(cx, |view, _| {
-        assert_eq!(
-            view.device_panel.operator_previews[&device].values[Field::FineB as usize],
-            12.0,
-            "hidden owner cannot receive stale numeric input"
-        )
-    });
-    editor.update(cx, |view, cx| {
-        view.selected_track = Some(track);
-        view.project_generation += 1;
-        view.device_panel.operator_pages.clear();
-        cx.notify();
-    });
-    visual.run_until_parked();
-    visual.update(|window, app| fine_b.focus_handle(app).focus(window));
-    visual.simulate_keystrokes("up");
-    visual.run_until_parked();
-    editor.read_with(cx, |view, _| {
-        assert_eq!(
-            view.device_panel
-                .operator_pages
-                .get(&device)
-                .copied()
-                .unwrap_or_default()
-                .selected_operator,
-            0,
-            "old generation cannot select reused ids"
-        )
     });
 }

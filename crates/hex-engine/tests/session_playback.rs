@@ -121,6 +121,16 @@ fn fixture_with_session_note_duration(
             velocity: 96,
         })
         .expect("Session note");
+    if let Some(position) = multi_tempo_at {
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: beat(position),
+                tempo: Tempo::new(90_000_000).expect("tempo"),
+            })
+            .expect("tempo marker");
+    }
+    // The loop is given in frames, so set it after the tempo marker: a tempo
+    // edit keeps an existing loop brace on its beats and would move its end.
     if let Some((start, end)) = loop_region {
         editor
             .execute(Command::SetLoopRegion {
@@ -129,14 +139,6 @@ fn fixture_with_session_note_duration(
                 enabled: true,
             })
             .expect("loop region");
-    }
-    if let Some(position) = multi_tempo_at {
-        editor
-            .execute(Command::SetTempoPoint {
-                beat: beat(position),
-                tempo: Tempo::new(90_000_000).expect("tempo"),
-            })
-            .expect("tempo marker");
     }
     let revision = Arc::new(
         PreparedRevision::prepare(
@@ -737,6 +739,263 @@ fn four_quarter_launch_replaces_pending_action_per_track_and_exact_boundary_is_i
             clip: fixture.session_clip
         })
     );
+}
+
+#[test]
+fn compensated_arrangement_midi_matches_single_frame_through_loop_wraps() {
+    let fixture = fixture(Some((0, 257)), None);
+    let mut editor = Editor::new(fixture.project, 16).expect("editor");
+    let clip = editor.project().track(fixture.track).unwrap().midi_clips()[0].id();
+    let volume = hex_project::MidiClipVolume::new(
+        vec![
+            hex_project::MidiClipVolumePoint::linear(
+                BeatTime::ZERO,
+                hex_project::MidiClipGain::new(0.25).unwrap(),
+            ),
+            hex_project::MidiClipVolumePoint::linear(
+                beat(4),
+                hex_project::MidiClipGain::new(1.0).unwrap(),
+            ),
+        ],
+        beat(8),
+    )
+    .unwrap();
+    editor
+        .execute(Command::ReplaceMidiClipVolume { clip, volume })
+        .unwrap();
+    let limiter = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.limiter"),
+    )
+    .expect("limiter state");
+    editor
+        .execute(Command::InsertDevice {
+            track: fixture.track,
+            before: None,
+            state: limiter,
+        })
+        .expect("track limiter");
+    let revision = Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .expect("revision"),
+    );
+    let render = |partition| {
+        let mut playback = SessionPlayback::new(Arc::clone(&revision)).expect("playback");
+        playback.apply(SessionPlaybackCommand::Play).expect("play");
+        let mut output = [[0.0; 2]; 1024];
+        for chunk in output.chunks_mut(partition) {
+            playback.render(chunk).expect("render");
+        }
+        (
+            output,
+            playback.performance_frame(),
+            playback.arrangement_frame(),
+        )
+    };
+    let expected = render(1);
+    assert!(audible(&expected.0));
+    assert_eq!((expected.1, expected.2), (1024, 253));
+    for partition in [17, 64, 256, 512] {
+        assert_eq!(render(partition), expected, "partition {partition}");
+    }
+}
+
+#[test]
+fn compensated_arrangement_midi_capture_matches_single_frame() {
+    let fixture = fixture(None, None);
+    let mut editor = Editor::new(fixture.project, 16).unwrap();
+    let limiter = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.limiter"),
+    )
+    .unwrap();
+    editor
+        .execute(Command::InsertDevice {
+            track: fixture.track,
+            before: None,
+            state: limiter,
+        })
+        .unwrap();
+    let revision = Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let render = |partition| {
+        let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        let plan = playback
+            .output_capture_plan(
+                &[hex_engine::session_playback::OutputCaptureId::Track(
+                    fixture.track,
+                )],
+                partition,
+            )
+            .unwrap();
+        let mut output = [[0.0; 2]; 512];
+        let mut captured = output;
+        for (chunk, captured_chunk) in output
+            .chunks_mut(partition)
+            .zip(captured.chunks_mut(partition))
+        {
+            let mut buffers: [&mut [hex_engine::Frame]; 1] = [captured_chunk];
+            let mut capture = hex_engine::session_playback::OutputCapture::new(&plan, &mut buffers);
+            playback.render_with_capture(chunk, &mut capture).unwrap();
+        }
+        (
+            output,
+            captured,
+            playback.performance_frame(),
+            playback.arrangement_frame(),
+        )
+    };
+    let expected = render(1);
+    assert!(audible(&expected.0));
+    assert!(audible(&expected.1));
+    for partition in [17, 64, 256, 512] {
+        assert_eq!(render(partition), expected, "partition {partition}");
+    }
+}
+
+#[test]
+fn compensated_session_midi_matches_single_frame_across_tempo_and_relaunch() {
+    let fixture = fixture(Some((0, 48_013)), Some(1));
+    let mut editor = Editor::new(fixture.project, 16).unwrap();
+    let volume = hex_project::MidiClipVolume::new(
+        vec![
+            hex_project::MidiClipVolumePoint::linear(
+                BeatTime::ZERO,
+                hex_project::MidiClipGain::new(0.25).unwrap(),
+            ),
+            hex_project::MidiClipVolumePoint::linear(
+                beat(4),
+                hex_project::MidiClipGain::new(1.0).unwrap(),
+            ),
+        ],
+        beat(4),
+    )
+    .unwrap();
+    editor
+        .execute(Command::ReplaceMidiClipVolume {
+            clip: fixture.session_clip,
+            volume,
+        })
+        .unwrap();
+    let limiter = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.limiter"),
+    )
+    .unwrap();
+    editor
+        .execute(Command::InsertDevice {
+            track: fixture.track,
+            before: None,
+            state: limiter,
+        })
+        .unwrap();
+    let revision = Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let render = |partition| {
+        let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        playback
+            .apply(SessionPlaybackCommand::Seek(23_990))
+            .unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        let launch = SessionPlaybackCommand::LaunchClip {
+            clip: fixture.session_clip,
+            quantization: LaunchQuantization::Immediate,
+        };
+        playback.apply(launch).unwrap();
+        let mut output = [[0.0; 2]; 1024];
+        for half in output.chunks_mut(512) {
+            for chunk in half.chunks_mut(partition) {
+                playback.render(chunk).unwrap();
+            }
+            playback.apply(launch).unwrap();
+        }
+        (
+            output,
+            playback.performance_frame(),
+            playback.arrangement_frame(),
+        )
+    };
+    let expected = render(1);
+    assert!(audible(&expected.0));
+    for partition in [17, 64, 256, 512] {
+        assert_eq!(render(partition), expected, "partition {partition}");
+    }
+}
+
+#[test]
+fn compensated_pending_launch_crosses_its_boundary_at_the_same_sample_for_each_partition() {
+    let fixture = fixture(None, None);
+    let mut editor = Editor::new(fixture.project, 16).expect("editor");
+    let limiter = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.limiter"),
+    )
+    .expect("limiter state");
+    editor
+        .execute(Command::InsertDevice {
+            track: fixture.track,
+            before: None,
+            state: limiter,
+        })
+        .expect("track limiter");
+    let revision = Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .expect("prepared revision"),
+    );
+    let render = |partition| {
+        let mut playback = SessionPlayback::new(Arc::clone(&revision)).expect("kernel");
+        playback
+            .apply(SessionPlaybackCommand::Seek(95_990))
+            .expect("seek");
+        playback.apply(SessionPlaybackCommand::Play).expect("play");
+        playback
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip: fixture.session_clip,
+                quantization: LaunchQuantization::FourQuarter,
+            })
+            .expect("queue launch");
+        let mut output = [[0.0; 2]; 512];
+        for block in output.chunks_mut(partition) {
+            playback.render(block).expect("render");
+        }
+        assert_eq!(
+            playback.owner(fixture.track),
+            Some(SessionPlaybackOwner::Session {
+                clip: fixture.session_clip
+            })
+        );
+        output
+    };
+    let expected = render(1);
+    assert!(audible(&expected));
+    for partition in [17, 64, 256, 512] {
+        assert_eq!(render(partition), expected);
+    }
 }
 
 #[test]
@@ -1790,6 +2049,15 @@ fn offset_one_frame_arrangement_loop_prepares_and_renders_session_source() {
 #[test]
 fn four_quarter_launch_quantization_uses_the_repeated_tempo_across_a_seam() {
     let fixture = fixture(Some((0, 48_000)), Some(1));
+    // Premise: the 48 000-frame loop crosses the beat-1 tempo seam, so one pass
+    // is 1.75 beats and the fourth beat falls 0.5 beats into the third pass.
+    assert_eq!(
+        fixture
+            .project
+            .loop_region()
+            .map(|region| (region.start(), region.end())),
+        Some((0, 48_000))
+    );
     let mut playback = SessionPlayback::new(Arc::clone(&fixture.revision)).expect("kernel");
     playback.apply(SessionPlaybackCommand::Play).expect("play");
     let mut prefix = vec![[0.0; 2]; 47_999];

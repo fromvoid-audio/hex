@@ -130,17 +130,24 @@ impl DomainSources {
     }
     /// Definitions reopen independently on the source worker. The complete
     /// captured fingerprint/format remains expected; no silent byte refresh.
+    /// Each carries the session's already-verified page manifest, so a rebuild
+    /// reopens an unchanged file from its header pages instead of re-hashing
+    /// it. A changed length/mtime falls back to a full re-hash, which must
+    /// still match the captured fingerprint.
     pub(super) fn definitions(&self) -> Result<Vec<hex_stream::SourceDefinition>, String> {
         let mut definitions = Vec::new();
         definitions
             .try_reserve_exact(self.members.len())
             .map_err(|_| "could not reserve source definitions")?;
         for member in &self.members {
-            definitions.push(hex_stream::SourceDefinition::new(
-                member.file.path().to_path_buf(),
-                member.metadata.clone(),
-                member.file.reader_limits(),
-            ));
+            definitions.push(
+                hex_stream::SourceDefinition::new(
+                    member.file.path().to_path_buf(),
+                    member.metadata.clone(),
+                    member.file.reader_limits(),
+                )
+                .with_verified_manifest(member.file.verified_manifest().clone()),
+            );
         }
         Ok(definitions)
     }

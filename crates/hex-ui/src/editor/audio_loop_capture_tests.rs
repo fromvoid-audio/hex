@@ -81,173 +81,224 @@ fn open(cx: &mut TestAppContext, start_edge: bool) -> Fixture {
     }
 }
 #[gpui::test]
-fn audio_loop_edges_capture_input_independently_of_pending_receipt(cx: &mut TestAppContext) {
-    for start_edge in [true, false] {
-        let cx = &mut cx.new_app();
-        let Fixture {
-            mut visual,
-            editor,
-            actions,
-            start,
-            width,
-            clip,
-            ..
-        } = open(cx, start_edge);
-        let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
-        let outside = point(px(640.), px(10.));
-        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
-        assert!(editor.read_with(&visual, |v, _| v.clip_loop_held()));
-        visual.simulate_mouse_down(outside, MouseButton::Right, Modifiers::default());
-        visual.simulate_event(ScrollWheelEvent {
-            position: outside,
-            delta: ScrollDelta::Lines(point(0., 1.)),
-            ..Default::default()
-        });
-        assert_eq!(
-            actions.get(),
-            0,
-            "audio loop handles must isolate input before motion"
-        );
-        let moved = start + point(width * if start_edge { 0.125 } else { -0.125 }, px(0.));
-        visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
-        visual.run_until_parked();
-        assert_eq!(
-            visual.rendered_cursor_style(),
-            Some(if start_edge {
-                CursorStyle::ResizeLeft
-            } else {
-                CursorStyle::ResizeRight
-            })
-        );
-        let preview = editor.read_with(&visual, |v, _| {
-            v.clip_loop.audio_gesture.as_ref().unwrap().preview
-        });
-        visual.simulate_mouse_up(
-            point(moved.x, px(10.)),
-            MouseButton::Left,
-            Modifiers::default(),
-        );
-        let terminal = crate::editor::clip_editor_loop_ui_tests::hold(&editor, &mut visual);
-        assert!(
-            terminal.request_complete && terminal.error.is_none(),
-            "{:?}",
-            terminal.error
-        );
-        visual.simulate_mouse_up(outside, MouseButton::Right, Modifiers::default());
-        for _ in 0..3 {
-            editor.update(&mut visual, |_, cx| cx.notify());
-            visual.run_until_parked();
-            editor.read_with(&visual, |v, _| {
-                assert!(!v.clip_loop_held());
-                let root = v.pending_clip_loop_audio(clip).unwrap().audio_event_root();
-                assert_eq!((root.view_start, root.view_end), preview);
-                assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
-            });
-        }
-        assert_eq!(actions.get(), 0);
-        assert!(!visual.update(|w, _| w.is_pointer_dragging()));
-        visual.simulate_mouse_move(outside, None, Modifiers::default());
-        visual.run_until_parked();
-        assert_eq!(visual.rendered_cursor_style(), Some(CursorStyle::Crosshair));
-        visual.simulate_mouse_down(outside, MouseButton::Right, Modifiers::default());
-        assert_eq!(
-            actions.get(),
-            1,
-            "pending clip-loop edit cannot hold pointer input"
-        );
-        editor.update(&mut visual, |v, cx| {
-            v.receive(terminal);
-            cx.notify();
-        });
-        visual.run_until_parked();
-        assert!(editor.read_with(&visual, |v, _| v.pending_clip_loop_audio(clip).is_none()));
-    }
+fn audio_loop_start_edge_keeps_input_and_pending_receipt_separate(cx: &mut TestAppContext) {
+    assert_audio_loop_receipt(cx, true);
 }
+
 #[gpui::test]
-fn audio_loop_capture_loss_cannot_commit_or_leak_late_up(cx: &mut TestAppContext) {
-    for (start_edge, loss) in [
-        (true, "button"),
-        (false, "button"),
-        (true, "focus"),
-        (true, "invalid"),
-        (true, "escape"),
-        (true, "geometry"),
-        (true, "generation"),
-        (true, "hidden"),
-        (true, "source"),
-    ] {
-        let cx = &mut cx.new_app();
-        let Fixture {
-            mut visual,
-            editor,
-            actions,
-            start,
-            width,
-            ..
-        } = open(cx, start_edge);
-        let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
-        let outside = point(px(640.), px(10.));
-        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
-        let moved = start + point(width * if start_edge { 0.125 } else { -0.125 }, px(0.));
-        visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+fn audio_loop_end_edge_keeps_input_and_pending_receipt_separate(cx: &mut TestAppContext) {
+    assert_audio_loop_receipt(cx, false);
+}
+
+fn assert_audio_loop_receipt(cx: &mut TestAppContext, start_edge: bool) {
+    let cx = &mut cx.new_app();
+    let Fixture {
+        mut visual,
+        editor,
+        actions,
+        start,
+        width,
+        clip,
+        ..
+    } = open(cx, start_edge);
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    let outside = point(px(640.), px(10.));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    assert!(editor.read_with(&visual, |v, _| v.clip_loop_held()));
+    visual.simulate_mouse_down(outside, MouseButton::Right, Modifiers::default());
+    visual.simulate_event(ScrollWheelEvent {
+        position: outside,
+        delta: ScrollDelta::Lines(point(0., 1.)),
+        ..Default::default()
+    });
+    assert_eq!(
+        actions.get(),
+        0,
+        "audio loop handles must isolate input before motion"
+    );
+    let moved = start + point(width * if start_edge { 0.125 } else { -0.125 }, px(0.));
+    visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        visual.rendered_cursor_style(),
+        Some(if start_edge {
+            CursorStyle::ResizeLeft
+        } else {
+            CursorStyle::ResizeRight
+        })
+    );
+    let preview = editor.read_with(&visual, |v, _| {
+        v.clip_loop.audio_gesture.as_ref().unwrap().preview
+    });
+    visual.simulate_mouse_up(
+        point(moved.x, px(10.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    let terminal = crate::editor::clip_editor_loop_ui_tests::hold(&editor, &mut visual);
+    assert!(
+        terminal.request_complete && terminal.error.is_none(),
+        "{:?}",
+        terminal.error
+    );
+    visual.simulate_mouse_up(outside, MouseButton::Right, Modifiers::default());
+    for _ in 0..3 {
+        editor.update(&mut visual, |_, cx| cx.notify());
         visual.run_until_parked();
-        match loss {
-            "button" => visual.simulate_mouse_move(outside, None, Modifiers::default()),
-            "invalid" => visual.simulate_mouse_move(
-                point(moved.x, px(f32::NAN)),
-                MouseButton::Left,
-                Modifiers::default(),
-            ),
-            "escape" => visual.simulate_keystrokes("escape"),
-            "geometry" => visual.simulate_resize(gpui::size(px(1100.), px(750.))),
-            "generation" => editor.update(&mut visual, |v, cx| {
-                v.project_generation += 1;
-                cx.notify();
-            }),
-            "hidden" => editor.update(&mut visual, |v, cx| {
-                v.clip_view_open = false;
-                cx.notify();
-            }),
-            "source" => editor.update(&mut visual, |v, cx| {
-                v.audio_event_editor.source_view = true;
-                cx.notify();
-            }),
-            "focus" => visual.update(|w, cx| {
-                editor.update(cx, |v, cx| v.search_browser(w, cx));
-                w.dispatch_input(
-                    gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
-                        position: outside,
-                        button: MouseButton::Left,
-                        modifiers: Modifiers::default(),
-                        click_count: 1,
-                    }),
-                    cx,
-                );
-            }),
-            _ => unreachable!(),
-        }
-        visual.run_until_parked();
-        if loss != "focus" {
-            visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
-        }
-        visual.run_until_parked();
-        assert_eq!(actions.get(), 0, "edge={start_edge} loss={loss}");
-        if loss == "geometry" {
-            let ruler = visual.debug_bounds("audio-loop-ruler").unwrap();
-            let marker = visual.debug_bounds("audio-loop-start-marker").unwrap();
-            assert!(
-                (marker.left() - ruler.left()).abs() < px(1.),
-                "cancelled geometry must repaint canonical loop bounds"
-            );
-        }
         editor.read_with(&visual, |v, _| {
-            assert!(!v.clip_loop_held(), "edge={start_edge} loss={loss}");
-            assert!(!v.edit_pending(), "edge={start_edge} loss={loss}");
-            assert!(v.pending_requests.is_empty());
-            assert_eq!(v.worker_requests_pending, 0);
+            assert!(!v.clip_loop_held());
+            let root = v.pending_clip_loop_audio(clip).unwrap().audio_event_root();
+            assert_eq!((root.view_start, root.view_end), preview);
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         });
     }
+    assert_eq!(actions.get(), 0);
+    assert!(!visual.update(|w, _| w.is_pointer_dragging()));
+    visual.simulate_mouse_move(outside, None, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(visual.rendered_cursor_style(), Some(CursorStyle::Crosshair));
+    visual.simulate_mouse_down(outside, MouseButton::Right, Modifiers::default());
+    assert_eq!(
+        actions.get(),
+        1,
+        "pending clip-loop edit cannot hold pointer input"
+    );
+    editor.update(&mut visual, |v, cx| {
+        v.receive(terminal);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(editor.read_with(&visual, |v, _| v.pending_clip_loop_audio(clip).is_none()));
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Loss {
+    Button,
+    Focus,
+    Invalid,
+    Escape,
+    Geometry,
+    Generation,
+    Hidden,
+    Source,
+}
+
+#[gpui::test]
+fn audio_loop_start_button_loss_cannot_commit_or_leak_late_up(cx: &mut TestAppContext) {
+    assert_audio_loop_loss(cx, true, Loss::Button);
+}
+
+#[gpui::test]
+fn audio_loop_end_button_loss_cannot_commit_or_leak_late_up(cx: &mut TestAppContext) {
+    assert_audio_loop_loss(cx, false, Loss::Button);
+}
+
+#[gpui::test]
+fn audio_loop_focus_loss_cannot_commit_or_leak_late_up(cx: &mut TestAppContext) {
+    assert_audio_loop_loss(cx, true, Loss::Focus);
+}
+
+#[gpui::test]
+fn audio_loop_invalid_loss_cannot_commit_or_leak_late_up(cx: &mut TestAppContext) {
+    assert_audio_loop_loss(cx, true, Loss::Invalid);
+}
+
+#[gpui::test]
+fn audio_loop_escape_loss_cannot_commit_or_leak_late_up(cx: &mut TestAppContext) {
+    assert_audio_loop_loss(cx, true, Loss::Escape);
+}
+
+#[gpui::test]
+fn audio_loop_geometry_loss_cannot_commit_or_leak_late_up(cx: &mut TestAppContext) {
+    assert_audio_loop_loss(cx, true, Loss::Geometry);
+}
+
+#[gpui::test]
+fn audio_loop_generation_loss_cannot_commit_or_leak_late_up(cx: &mut TestAppContext) {
+    assert_audio_loop_loss(cx, true, Loss::Generation);
+}
+
+#[gpui::test]
+fn audio_loop_hidden_loss_cannot_commit_or_leak_late_up(cx: &mut TestAppContext) {
+    assert_audio_loop_loss(cx, true, Loss::Hidden);
+}
+
+#[gpui::test]
+fn audio_loop_source_loss_cannot_commit_or_leak_late_up(cx: &mut TestAppContext) {
+    assert_audio_loop_loss(cx, true, Loss::Source);
+}
+
+fn assert_audio_loop_loss(cx: &mut TestAppContext, start_edge: bool, loss: Loss) {
+    let cx = &mut cx.new_app();
+    let Fixture {
+        mut visual,
+        editor,
+        actions,
+        start,
+        width,
+        ..
+    } = open(cx, start_edge);
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    let outside = point(px(640.), px(10.));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    let moved = start + point(width * if start_edge { 0.125 } else { -0.125 }, px(0.));
+    visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    match loss {
+        Loss::Button => visual.simulate_mouse_move(outside, None, Modifiers::default()),
+        Loss::Invalid => visual.simulate_mouse_move(
+            point(moved.x, px(f32::NAN)),
+            MouseButton::Left,
+            Modifiers::default(),
+        ),
+        Loss::Escape => visual.simulate_keystrokes("escape"),
+        Loss::Geometry => visual.simulate_resize(gpui::size(px(1100.), px(750.))),
+        Loss::Generation => editor.update(&mut visual, |v, cx| {
+            v.project_generation += 1;
+            cx.notify();
+        }),
+        Loss::Hidden => editor.update(&mut visual, |v, cx| {
+            v.clip_view_open = false;
+            cx.notify();
+        }),
+        Loss::Source => editor.update(&mut visual, |v, cx| {
+            v.audio_event_editor.source_view = true;
+            cx.notify();
+        }),
+        Loss::Focus => visual.update(|w, cx| {
+            editor.update(cx, |v, cx| v.search_browser(w, cx));
+            w.dispatch_input(
+                gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                    position: outside,
+                    button: MouseButton::Left,
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                }),
+                cx,
+            );
+        }),
+    }
+    visual.run_until_parked();
+    if !matches!(loss, Loss::Focus) {
+        visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
+    }
+    visual.run_until_parked();
+    assert_eq!(actions.get(), 0, "edge={start_edge} loss={loss:?}");
+    if matches!(loss, Loss::Geometry) {
+        let ruler = visual.debug_bounds("audio-loop-ruler").unwrap();
+        let marker = visual.debug_bounds("audio-loop-start-marker").unwrap();
+        assert!(
+            (marker.left() - ruler.left()).abs() < px(1.),
+            "cancelled geometry must repaint canonical loop bounds"
+        );
+    }
+    editor.read_with(&visual, |v, _| {
+        assert!(!v.clip_loop_held(), "edge={start_edge} loss={loss:?}");
+        assert!(!v.edit_pending(), "edge={start_edge} loss={loss:?}");
+        assert!(v.pending_requests.is_empty());
+        assert_eq!(v.worker_requests_pending, 0);
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+    });
 }
 
 /// Real retained-root preview; setup/cancellation and worker admission excluded.

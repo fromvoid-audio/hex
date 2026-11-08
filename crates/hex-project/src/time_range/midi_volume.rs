@@ -15,6 +15,7 @@ struct FramePoint {
 #[derive(Clone, Debug, Default)]
 pub(super) struct FrameVolume {
     points: Vec<FramePoint>,
+    clip_gain: crate::ClipGain,
 }
 fn boundary(points: &mut BTreeSet<u64>, value: u64) -> Result<(), Invalid> {
     if !points.contains(&value) && points.len() == MAX_MIDI_VOLUME_POINTS_PER_CLIP {
@@ -31,7 +32,10 @@ impl FrameVolume {
         end_frame: u64,
     ) -> Result<Self, Invalid> {
         if clip.volume().points().is_empty() {
-            return Ok(Self::default());
+            return Ok(Self {
+                clip_gain: clip.volume().clip_gain(),
+                ..Self::default()
+            });
         }
         let clip_end = BeatTime::from_raw(
             clip.start()
@@ -110,7 +114,10 @@ impl FrameVolume {
                 points.push(point);
             }
         }
-        Ok(Self { points })
+        Ok(Self {
+            points,
+            clip_gain: clip.volume().clip_gain(),
+        })
     }
     pub(super) fn paste(
         &self,
@@ -119,7 +126,7 @@ impl FrameVolume {
         end_frame: u64,
     ) -> Result<MidiClipVolume, Invalid> {
         if self.points.is_empty() {
-            return Ok(MidiClipVolume::default());
+            return Ok(MidiClipVolume::default().with_clip_gain(self.clip_gain));
         }
         let start = tempo.frame_to_beat(start_frame)?;
         let end = tempo.frame_to_beat(end_frame)?;
@@ -181,6 +188,7 @@ impl FrameVolume {
             }
         }
         MidiClipVolume::new(points, BeatTime::from_raw(length))
+            .map(|v| v.with_clip_gain(self.clip_gain))
     }
     fn gain(&self, frame: u64, before: bool) -> Result<MidiClipGain, Invalid> {
         let index = self.points.partition_point(|point| point.frame < frame);

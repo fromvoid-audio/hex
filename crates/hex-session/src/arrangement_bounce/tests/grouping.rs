@@ -56,6 +56,7 @@ fn audio_fixture(rate: u32) -> (Folder, Session, TrackId, ClipId, ClipId, Vec<Pa
             source_audio: audio.clone(),
             waveform: waveform::summarize(&audio, length).unwrap(),
             audio,
+            file_identity: None,
         };
         let (created, _) = s.import_prepared_revision(prepared, None).unwrap();
         let Created::Imported { track: t, clip, .. } = created else {
@@ -99,6 +100,85 @@ fn close(a: &[hex_engine::Frame], b: &[hex_engine::Frame]) {
             assert!((a[c] - b[c]).abs() < 2e-6, "frame {i}: {a:?}/{b:?}");
         }
     }
+}
+
+#[test]
+fn nested_group_reopens_with_the_same_sound_and_reactivates_its_source() {
+    let (folder, mut session, _, group, extra, _) = audio_fixture(48_000);
+    let inner_event = session.project().clip(group).unwrap().audio_events().events[1].id;
+    let set_active = |active| Command::EditAudioEvents {
+        clip: group,
+        operation: hex_project::AudioEventEdit::SetActive {
+            events: vec![inner_event],
+            active,
+        },
+    };
+    session.command(set_active(false)).unwrap();
+    let muted = pcm(session.compile_prepared_revision(None).unwrap(), 440);
+    session.command(set_active(true)).unwrap();
+    let active = pcm(session.compile_prepared_revision(None).unwrap(), 440);
+    assert_ne!(active, muted);
+    session.command(set_active(false)).unwrap();
+    let Created::Clip(outer) = session
+        .command(Command::GroupClips(vec![group, extra]))
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    close(
+        &pcm(session.compile_prepared_revision(None).unwrap(), 440),
+        &muted,
+    );
+    let path = folder.0.join("nested.hex");
+    hex_storage::save_new(&path, session.project()).unwrap();
+    let loaded = hex_storage::load(&path).unwrap();
+    let audio = loaded
+        .assets()
+        .map(|asset| {
+            (
+                asset.id(),
+                hex_media::decode_wav_file(
+                    asset.path(),
+                    hex_media::Limits::new(1024 * 1024, 100_000),
+                )
+                .unwrap(),
+            )
+        })
+        .collect();
+    let mut reopened = Session::from_loaded(loaded, 32, 100_000, audio).unwrap();
+    close(
+        &pcm(reopened.compile_prepared_revision(None).unwrap(), 440),
+        &muted,
+    );
+    let source = reopened
+        .project()
+        .clip(outer)
+        .unwrap()
+        .audio_events()
+        .sources
+        .iter()
+        .find(|root| root.clip.has_retained_audio_roots())
+        .unwrap()
+        .id;
+    reopened
+        .command(Command::EditAudioEvents {
+            clip: outer,
+            operation: hex_project::AudioEventEdit::SetRetainedPathActive {
+                sources: vec![source],
+                events: vec![inner_event],
+                active: true,
+            },
+        })
+        .unwrap();
+    close(
+        &pcm(reopened.compile_prepared_revision(None).unwrap(), 440),
+        &active,
+    );
+    assert!(reopened.undo());
+    close(
+        &pcm(reopened.compile_prepared_revision(None).unwrap(), 440),
+        &muted,
+    );
 }
 #[test]
 fn looping_group_render_preserves_partial_edges_direction_gaps_processing_history_and_storage() {
@@ -257,9 +337,15 @@ fn grouping_final_preparation_failure_removes_unpublished_render_and_preserves_c
         },
         |session, prepared, files| {
             session
-                .adopt_arrangement_bounce_using(captured, true, files, prepared, None, |_| {
-                    Err::<(), _>(SessionError::Invalid("injected final refusal"))
-                })
+                .adopt_arrangement_bounce_using(
+                    captured,
+                    true,
+                    hex_project::BounceAdoption::NewTracks,
+                    files,
+                    prepared,
+                    None,
+                    |_| Err::<(), _>(SessionError::Invalid("injected final refusal")),
+                )
                 .map(|_| ())
                 .map_err(|e| e.to_string())
         },

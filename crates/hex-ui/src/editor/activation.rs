@@ -40,6 +40,13 @@ impl EditorView {
         {
             return false;
         }
+        if self.audio_event_focus.is_focused(window) {
+            let handled = self.event_toggle_active();
+            if handled {
+                cx.notify();
+            }
+            return handled;
+        }
         let command = match self.activation_command(window) {
             Ok(Some(command)) => command,
             Ok(None) => return false,
@@ -49,7 +56,17 @@ impl EditorView {
                 return true;
             }
         };
-        if self.edit_pending()
+        if self.activation_gesture_blocked() {
+            self.error = Some("finish the current edit before changing activation".into());
+        } else if self.enqueue(Request::Edit(command)) {
+            self.duplicate_intent.cancel_chain();
+        }
+        cx.notify();
+        true
+    }
+
+    pub(super) fn activation_gesture_blocked(&self) -> bool {
+        self.edit_pending()
             || self.arrangement_pan.is_some()
             || self.scrub_active()
             || self.time_selection_gesture.is_some()
@@ -64,19 +81,46 @@ impl EditorView {
             || self.loop_rail_gesture.is_some()
             || self.sections.held()
             || self.section_install_pending()
-        {
-            self.error = Some("finish the current edit before changing activation".into());
-        } else if self.enqueue(Request::Edit(command)) {
-            self.duplicate_intent.cancel_chain();
-        }
-        cx.notify();
-        true
+            || self.midi_note_gesture.is_some()
+            || self.midi_group_gesture.is_some()
+            || self.midi_stroke.is_some()
+            || self.midi_time_selection.gesture.is_some()
+            || self.midi_ruler.held()
+            || self.midi_velocity.gesture.is_some()
     }
 
     fn activation_command(&self, window: &Window) -> Result<Option<Command>, String> {
         let Some(state) = &self.state else {
             return Ok(None);
         };
+        if self.midi_focus.is_focused(window) {
+            let Some(clip) = self.detail_midi_clip_data() else {
+                return Ok(None);
+            };
+            let selected = self.midi_selection.ids();
+            if selected.is_empty() {
+                return Ok(None);
+            }
+            let source = state
+                .project
+                .midi_source(clip)
+                .ok_or("selected midi source is unavailable")?;
+            let mut remaining: std::collections::BTreeSet<_> = selected.iter().copied().collect();
+            let mut any_active = false;
+            for note in source.notes() {
+                if remaining.remove(&note.id()) {
+                    any_active |= note.active();
+                }
+            }
+            if !remaining.is_empty() {
+                return Err("selected midi note no longer exists".into());
+            }
+            return Ok(Some(Command::SetMidiNotesActive {
+                clip,
+                notes: selected.to_vec(),
+                active: !any_active,
+            }));
+        }
         if let Some(target) = self.focused_header_target(window) {
             return match target {
                 Target::Track(track) => {

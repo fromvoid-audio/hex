@@ -63,6 +63,7 @@ fn current_crossfade_roundtrip_and_historical_disjoint_migration_are_complete() 
     // Schema51 changes only overlap admission; the retained frozen50 writer
     // has the identical field layout. This disjoint document remains valid50.
     let mut old: serde_json::Value = serde_json::from_slice(&disjoint).unwrap();
+    common::remove_empty_host_automation(&mut old);
     common::remove_empty_aliases(&mut old);
     old["version"] = 50.into();
     let bytes = serde_json::to_vec(&old).unwrap();
@@ -87,6 +88,7 @@ fn current_crossfade_roundtrip_and_historical_disjoint_migration_are_complete() 
     assert_eq!(value["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     assert_eq!(hex_storage::decode(&encoded).unwrap().snapshot(), after);
     // Relabeling cannot smuggle the newly valid overlap into an old schema.
+    common::remove_empty_host_automation(&mut value);
     common::remove_empty_aliases(&mut value);
     value["version"] = 50.into();
     assert!(

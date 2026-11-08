@@ -7,6 +7,7 @@ fn beat(n: u64) -> BeatTime {
 }
 fn note(start: u64, duration: u64, pitch: u8, velocity: u8) -> MidiNoteInsert {
     MidiNoteInsert {
+        active: true,
         start: beat(start),
         duration: beat(duration),
         pitch,
@@ -78,6 +79,31 @@ fn history_cycle(editor: &mut Editor, before: &Project) {
         .unwrap();
     assert_eq!(editor.project(), &after);
     assert_eq!(Project::from_snapshot(after.snapshot()).unwrap(), after);
+}
+
+#[test]
+fn duplicating_a_source_range_preserves_inactive_notes_and_history() {
+    let (mut editor, clip) = fixture();
+    editor
+        .execute(Command::AddMidiNotes {
+            clip,
+            notes: vec![note(0, 1, 60, 100)],
+        })
+        .unwrap();
+    let id = editor.project().midi_source(clip).unwrap().notes()[0].id();
+    editor
+        .execute(Command::SetMidiNotesActive {
+            clip,
+            notes: vec![id],
+            active: false,
+        })
+        .unwrap();
+    let before = editor.project().clone();
+    editor.execute(command(clip, 0, 2)).unwrap();
+    let notes = editor.project().midi_source(clip).unwrap().notes();
+    assert_eq!(notes.len(), 2);
+    assert!(notes.iter().all(|note| !note.active()));
+    history_cycle(&mut editor, &before);
 }
 #[test]
 fn partial_boundaries_fresh_stored_order_and_repeated_range_preserve_source_fields() {
@@ -352,6 +378,7 @@ fn malformed_overflow_failed_prepare_and_note_capacity_are_atomic() {
     source.source_length_raw = beat(MAX_NOTES as u64 + 1).raw();
     source.notes = (0..MAX_NOTES)
         .map(|i| MidiNoteSnapshot {
+            active: true,
             id: first + i as u64,
             start_raw: beat(i as u64).raw(),
             duration_raw: BeatTime::ONE.raw() / 4,

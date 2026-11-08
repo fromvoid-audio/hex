@@ -85,6 +85,7 @@ impl From<Note> for MidiNoteSnapshot {
     fn from(note: Note) -> Self {
         Self {
             id: note.id,
+            active: true,
             start_raw: note.start_raw,
             duration_raw: note.duration_raw,
             pitch: note.pitch,
@@ -148,6 +149,7 @@ pub(crate) fn require_legacy_compatible(project: &Project) -> Result<(), Storage
 fn neutral(content: &AudioClipContent) -> Arc<AudioClipContent> {
     Arc::new(AudioClipContent {
         events: None,
+        musical_event_source: None,
         source_offset: content.source_offset,
         source_length: content.source_length,
         clock: content.clock,
@@ -156,6 +158,8 @@ fn neutral(content: &AudioClipContent) -> Arc<AudioClipContent> {
         warp: None,
         warp_enabled: false,
         source_gain: Vec::new(),
+        // Placeholder only; the representative carries the shared law.
+        warp_resampler: hex_project::WarpResampler::implied(content.pitch_cents, false),
     })
 }
 fn representatives(
@@ -272,8 +276,10 @@ pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
 }
 
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
-    let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
-    let mut value: Value = serde_json::from_slice(bytes)?;
+    decode_value(super::audio_events::parse_unique(bytes)?)
+}
+/// Decode an envelope parsed once by [`super::audio_events::parse_unique`].
+pub(crate) fn decode_value(mut value: Value) -> Result<Project, StorageError> {
     let object = object_mut(&mut value)?;
     if object.get("version").and_then(Value::as_u64) != Some(52) {
         return Err(StorageError::Invalid("invalid clip alias version"));
@@ -315,7 +321,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         )?;
     }
     object_mut(&mut value)?.insert("version".into(), 51.into());
-    let core = super::crossfades::decode(&serde_json::to_vec(&value)?)?;
+    let core = super::crossfades::decode_value(value)?;
     let mut snapshot = core.snapshot();
     let mut decoded = Vec::new();
     for (id, source) in by_source {

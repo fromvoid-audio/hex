@@ -1,5 +1,9 @@
 //! Optimistic existing-project replacement with one validated recovery generation.
-use crate::{FileToken, StorageError, decode, encode, files::read_document};
+use crate::{
+    FileToken, StorageError, decode, encode,
+    extended_attributes::{self, MetadataWarning},
+    files::read_document,
+};
 use hex_project::Project;
 use std::{
     fs::{self, File, OpenOptions, Permissions},
@@ -15,6 +19,10 @@ const RECOVERY_HEADER_BYTES: usize = 24;
 const MAX_COMPONENT_BYTES: usize = 255;
 const RECOVERY_SUFFIX: &str = ".hex-recovery";
 const MAX_TEMP_ATTEMPTS: usize = 32;
+/// In-place saves never follow a symbolic link, so a project opened through one
+/// can only be saved to a new regular file.
+const SYMLINK_TARGET_REFUSAL: &str = "project file is a symbolic link, so hex cannot replace it \
+     in place. use save as to save it as a regular file";
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 /// Validated previous contents available for explicit recovery.
@@ -40,6 +48,60 @@ pub struct ReplaceOutcome {
     pub recovery_path: PathBuf,
     pub token: FileToken,
     pub warning: Option<ReplaceWarning>,
+    /// Extended attributes (such as Finder tags) of the replaced file that could
+    /// not be carried onto the new one. The project itself was saved.
+    pub metadata_warnings: Vec<MetadataWarning>,
+}
+
+/// Encoded snapshot bound to the target and token used for its compatibility
+/// check. Publishing consumes it and repeats the normal optimistic checks.
+pub struct PreparedReplacement<'a> {
+    target: &'a Path,
+    expected: &'a FileToken,
+    bytes: Vec<u8>,
+    requires_confirmation: bool,
+}
+
+/// Encode once and compare the actual output against an older reader's limit.
+/// This does not touch the target or its recovery files.
+pub fn prepare_replacement_within<'a>(
+    target: &'a Path,
+    expected: &'a FileToken,
+    project: &Project,
+    limit: usize,
+) -> Result<PreparedReplacement<'a>, StorageError> {
+    let bytes = encode(project)?;
+    let requires_confirmation = expected.requires_schema_upgrade_for(project)
+        || (expected.0.len() <= limit && bytes.len() > limit);
+    Ok(PreparedReplacement {
+        target,
+        expected,
+        bytes,
+        requires_confirmation,
+    })
+}
+
+impl PreparedReplacement<'_> {
+    /// Whether the caller must obtain consent before replacing this document.
+    pub fn requires_confirmation(&self) -> bool {
+        self.requires_confirmation
+    }
+
+    /// Publish this exact snapshot using the bound token and target. As with
+    /// [`replace_existing`], the caller is responsible for obtaining consent.
+    pub fn publish(self) -> Result<ReplaceOutcome, StorageError> {
+        replace_encoded_with_hooks(
+            self.target,
+            self.expected,
+            || Ok(self.bytes),
+            sync_parent,
+            sync_parent,
+            || Ok(()),
+            |source, destination| {
+                extended_attributes::copy(source, destination, extended_attributes::Limits::DEFAULT)
+            },
+        )
+    }
 }
 
 /// Return the deterministic hidden recovery sidecar path for a UTF-8 target name.
@@ -77,15 +139,50 @@ pub fn load_recovery(target: impl AsRef<Path>) -> Result<RecoveryDocument, Stora
 /// The old bytes are copied into a validated, target-bound sidecar before the target
 /// is atomically renamed. This narrows accidental-overwrite risk but is not a
 /// filesystem compare-and-swap: an uncooperative writer can race the final check.
+///
+/// The new file keeps the old permission mode and, best effort, its extended
+/// attributes such as Finder tags; attributes changed after they are copied and
+/// before the rename are not carried over. A failed attribute copy never fails
+/// the save and is reported in [`ReplaceOutcome::metadata_warnings`]. Owner,
+/// group, macOS ACLs, creation date and extra hard links are not preserved; see
+/// `extended_attributes` for the exact limits.
 pub fn replace_existing(
     target: impl AsRef<Path>,
     expected: &FileToken,
     project: &Project,
 ) -> Result<ReplaceOutcome, StorageError> {
     let target = target.as_ref();
-    replace_with_hooks(target, expected, project, sync_parent, sync_parent, || {
-        Ok(())
-    })
+    replace_with_hooks(
+        target,
+        expected,
+        project,
+        sync_parent,
+        sync_parent,
+        || Ok(()),
+        |source, destination| {
+            extended_attributes::copy(source, destination, extended_attributes::Limits::DEFAULT)
+        },
+    )
+}
+
+/// Replace an existing project the user explicitly chose to overwrite, such as
+/// Save As onto an existing name after the OS replace prompt. Only a file that
+/// currently loads as a valid hex project is replaced, through
+/// [`replace_existing`], so its bytes become the recovery generation. Anything
+/// else (another format, a newer hex schema, a symbolic link) is refused and
+/// left untouched.
+pub fn replace_confirmed(
+    target: impl AsRef<Path>,
+    project: &Project,
+) -> Result<ReplaceOutcome, StorageError> {
+    let target = target.as_ref();
+    let (_, token) = crate::load_with_token(target).map_err(|error| match error {
+        StorageError::Io(error) => StorageError::Io(error),
+        _ => StorageError::Invalid(
+            "save as can only replace an existing hex project this version can open; choose another name",
+        ),
+    })?;
+    replace_existing(target, &token, project)
 }
 
 fn replace_with_hooks(
@@ -95,22 +192,62 @@ fn replace_with_hooks(
     sync_recovery_directory: impl FnOnce(&Path) -> io::Result<()>,
     sync_project_directory: impl FnOnce(&Path) -> io::Result<()>,
     before_project_rename: impl FnOnce() -> io::Result<()>,
+    copy_metadata: impl FnOnce(&Path, &Path) -> Vec<MetadataWarning>,
+) -> Result<ReplaceOutcome, StorageError> {
+    replace_encoded_with_hooks(
+        target,
+        expected,
+        || encode(project),
+        sync_recovery_directory,
+        sync_project_directory,
+        before_project_rename,
+        copy_metadata,
+    )
+}
+
+fn replace_encoded_with_hooks(
+    target: &Path,
+    expected: &FileToken,
+    encode_project: impl FnOnce() -> Result<Vec<u8>, StorageError>,
+    sync_recovery_directory: impl FnOnce(&Path) -> io::Result<()>,
+    sync_project_directory: impl FnOnce(&Path) -> io::Result<()>,
+    before_project_rename: impl FnOnce() -> io::Result<()>,
+    copy_metadata: impl FnOnce(&Path, &Path) -> Vec<MetadataWarning>,
 ) -> Result<ReplaceOutcome, StorageError> {
     let basename = target_basename(target)?;
     let recovery = recovery_path(target)?;
     let target_permissions = check_target(target, expected)?;
-    let old_recovery = inspect_recovery(&recovery, &basename)?;
-    let new_bytes = encode(project)?;
-    let envelope = encode_envelope(&basename, &expected.0)?;
     let parent = target_parent(target);
+    let old_recovery = match inspect_recovery(&recovery, &basename)? {
+        SidecarState::Absent => None,
+        SidecarState::Owned(bytes) => Some(bytes),
+        // A case-only or Unicode-normalization rename makes this path resolve to
+        // the sidecar of the old name. Preserve it and start a fresh generation.
+        SidecarState::Foreign { stored_basename } => {
+            set_aside_recovery(&recovery, &parent, &stored_basename)?;
+            None
+        }
+    };
+    let new_bytes = encode_project()?;
+    let envelope = encode_envelope(&basename, &expected.0)?;
 
     let mut project_temp = prepare_temp(&parent, &new_bytes, Some(target_permissions.clone()))?;
+    // Best effort: lost attributes are reported, never a reason to refuse the save.
+    let metadata_warnings = copy_metadata(target, &project_temp.path);
     let mut recovery_temp = prepare_temp(&parent, &envelope, Some(target_permissions.clone()))?;
 
     // Refresh both paths before committing the recovery copy. A valid prior
     // generation may be rolled; anything unrecognized remains untouched.
     check_target_permissions(target, expected, &target_permissions)?;
-    let current_recovery = inspect_recovery(&recovery, &basename)?;
+    let current_recovery = match inspect_recovery(&recovery, &basename)? {
+        SidecarState::Absent => None,
+        SidecarState::Owned(bytes) => Some(bytes),
+        SidecarState::Foreign { .. } => {
+            return Err(StorageError::Invalid(
+                "recovery sidecar changed during project replacement",
+            ));
+        }
+    };
     if current_recovery.as_deref() != old_recovery.as_deref() {
         return Err(StorageError::Invalid(
             "recovery sidecar changed during project replacement",
@@ -155,11 +292,14 @@ fn replace_with_hooks(
             operation: "synchronize the project directory",
             source,
         });
+    // Best effort: leaked temporaries never fail a committed replacement.
+    let _ = crate::temporaries::sweep_stale_temporaries(&parent);
     Ok(ReplaceOutcome {
         path: target.to_path_buf(),
         recovery_path: recovery,
         token,
         warning,
+        metadata_warnings,
     })
 }
 
@@ -190,9 +330,7 @@ fn check_target(path: &Path, expected: &FileToken) -> Result<Permissions, Storag
         Err(error) => return Err(error.into()),
     };
     if metadata.file_type().is_symlink() {
-        return Err(StorageError::Invalid(
-            "project replacement refuses symbolic-link targets",
-        ));
+        return Err(StorageError::Invalid(SYMLINK_TARGET_REFUSAL));
     }
     if !metadata.is_file() {
         return Err(StorageError::Invalid(
@@ -233,14 +371,27 @@ fn same_basic_permissions(left: &Permissions, right: &Permissions) -> bool {
     }
 }
 
-fn inspect_recovery(path: &Path, basename: &str) -> Result<Option<Vec<u8>>, StorageError> {
+/// What occupies a project's recovery sidecar path.
+enum SidecarState {
+    Absent,
+    /// A recognized envelope bound to this exact target name.
+    Owned(Vec<u8>),
+    /// A recognized envelope bound to another target name, such as the pre-rename
+    /// name after a case-only rename on a case-insensitive volume.
+    Foreign {
+        stored_basename: String,
+    },
+}
+
+fn inspect_recovery(path: &Path, basename: &str) -> Result<SidecarState, StorageError> {
     match fs::symlink_metadata(path) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(SidecarState::Absent),
         Err(error) => Err(error.into()),
         Ok(metadata) => {
             if metadata.file_type().is_symlink() {
                 return Err(StorageError::Invalid(
-                    "recovery sidecar is a symbolic link; refusing replacement",
+                    "recovery sidecar is a symbolic link; refusing replacement. use save as to save \
+                     under a new name",
                 ));
             }
             if !metadata.is_file() {
@@ -249,10 +400,53 @@ fn inspect_recovery(path: &Path, basename: &str) -> Result<Option<Vec<u8>>, Stor
                 ));
             }
             let bytes = read_document(path)?;
-            let _ = decode_envelope(&bytes, basename)?;
-            Ok(Some(bytes))
+            // Recognizing the framing and bound name is enough to own a
+            // generation. Its payload is never decoded here: decoding cost a
+            // full project parse per save, and a payload that a stricter build
+            // no longer accepts must not block saving the project it backs up.
+            // Unrecognized or future-framed files are still refused untouched.
+            let (stored_basename, _payload) = parse_envelope(&bytes)?;
+            if stored_basename == basename {
+                Ok(SidecarState::Owned(bytes))
+            } else {
+                Ok(SidecarState::Foreign {
+                    stored_basename: stored_basename.to_owned(),
+                })
+            }
         }
     }
+}
+
+/// Move a validated foreign sidecar to an unused `.moved-N` name, never replacing
+/// an existing file, so its previous project stays available for manual recovery.
+fn set_aside_recovery(
+    recovery: &Path,
+    parent: &Path,
+    stored_basename: &str,
+) -> Result<(), StorageError> {
+    for attempt in 1..=MAX_TEMP_ATTEMPTS {
+        let name = format!(".{stored_basename}{RECOVERY_SUFFIX}.moved-{attempt}");
+        if name.len() > MAX_COMPONENT_BYTES {
+            return Err(StorageError::Invalid(
+                "recovery sidecar of a renamed project cannot be set aside; use save as",
+            ));
+        }
+        let destination = parent.join(name);
+        match crate::publication::publish_new(recovery, &destination) {
+            Ok(published) => {
+                if published.staging_remains() {
+                    fs::remove_file(recovery)?;
+                }
+                sync_parent(parent)?;
+                return Ok(());
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(StorageError::Invalid(
+        "no free name to set aside the recovery sidecar of a renamed project; use save as",
+    ))
 }
 
 fn read_recovery_file(path: &Path) -> Result<Vec<u8>, StorageError> {
@@ -293,6 +487,18 @@ pub(crate) fn decode_envelope(
     bytes: &[u8],
     expected_basename: &str,
 ) -> Result<(Project, FileToken), StorageError> {
+    let (basename, payload) = parse_envelope(bytes)?;
+    if basename != expected_basename {
+        return Err(StorageError::Invalid(
+            "recovery sidecar belongs to a different project target; use save as",
+        ));
+    }
+    let project = decode(payload)?;
+    Ok((project, FileToken::from_validated_bytes(Arc::from(payload))))
+}
+
+/// Validate envelope framing and return its bound target name and payload.
+pub(crate) fn parse_envelope(bytes: &[u8]) -> Result<(&str, &[u8]), StorageError> {
     if bytes.len() < RECOVERY_HEADER_BYTES {
         return Err(StorageError::Invalid("invalid recovery envelope length"));
     }
@@ -336,14 +542,7 @@ pub(crate) fn decode_envelope(
     let basename_end = RECOVERY_HEADER_BYTES + basename_length;
     let basename = std::str::from_utf8(&bytes[RECOVERY_HEADER_BYTES..basename_end])
         .map_err(|_| StorageError::Invalid("recovery target name is not utf-8"))?;
-    if basename != expected_basename {
-        return Err(StorageError::Invalid(
-            "recovery sidecar belongs to a different project target",
-        ));
-    }
-    let payload = &bytes[basename_end..];
-    let project = decode(payload)?;
-    Ok((project, FileToken::from_validated_bytes(Arc::from(payload))))
+    Ok((basename, &bytes[basename_end..]))
 }
 
 pub(crate) struct Temporary {
@@ -373,6 +572,7 @@ pub(crate) fn prepare_temp(
     let mut created = None;
     for _ in 0..MAX_TEMP_ATTEMPTS {
         let id = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+        // `crate::temporaries` sweeps this exact pattern once it is stale.
         let path = parent.join(format!(".hex-r-{}-{id}", std::process::id()));
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
@@ -423,8 +623,10 @@ fn publish_recovery(
             }
             Err(error) => return Err(error.into()),
         }
-        fs::hard_link(&temporary.path, recovery)?;
-        if let Err(source) = fs::remove_file(&temporary.path) {
+        let published = crate::publication::publish_new(&temporary.path, recovery)?;
+        if published.staging_remains()
+            && let Err(source) = fs::remove_file(&temporary.path)
+        {
             return Err(StorageError::RecoveryBackupPublished {
                 path: target.to_path_buf(),
                 recovery_path: recovery.to_path_buf(),
@@ -510,6 +712,49 @@ mod tests {
     }
 
     #[test]
+    fn prepared_replacement_publishes_checked_snapshot_and_recovery() {
+        let directory = TestDir::new();
+        let target = directory.0.join("prepared.hex");
+        let previous = project(48_000);
+        let snapshot = project(44_100);
+        save_new(&target, &previous).unwrap();
+        let (_, token) = load_with_token(&target).unwrap();
+        let bytes = encode(&snapshot).unwrap();
+        let prepared =
+            prepare_replacement_within(&target, &token, &snapshot, bytes.len() - 1).unwrap();
+        assert_eq!(
+            prepared.requires_confirmation(),
+            token
+                .requires_save_confirmation_within(&snapshot, bytes.len() - 1)
+                .unwrap()
+        );
+        drop(snapshot);
+        let outcome = prepared.publish().unwrap();
+        assert_eq!(fs::read(&target).unwrap(), bytes);
+        outcome.token.check_unchanged(&target).unwrap();
+        assert_eq!(load_recovery(&target).unwrap().project, previous);
+    }
+
+    #[test]
+    fn prepared_replacement_refuses_changed_target_without_recovery() {
+        let directory = TestDir::new();
+        let target = directory.0.join("prepared-conflict.hex");
+        save_new(&target, &project(48_000)).unwrap();
+        let (_, token) = load_with_token(&target).unwrap();
+        let replacement = project(44_100);
+        let prepared =
+            prepare_replacement_within(&target, &token, &replacement, usize::MAX).unwrap();
+        let external = encode(&project(96_000)).unwrap();
+        fs::write(&target, &external).unwrap();
+        assert!(matches!(
+            prepared.publish(),
+            Err(StorageError::Conflict { .. })
+        ));
+        assert_eq!(fs::read(&target).unwrap(), external);
+        assert!(!recovery_path(&target).unwrap().exists());
+    }
+
+    #[test]
     fn repeated_replacement_retains_only_the_most_recent_prior_generation() {
         let directory = TestDir::new();
         let target = directory.0.join("roll.hex");
@@ -544,16 +789,57 @@ mod tests {
         changed.push(b'\n');
         fs::write(&target, &changed).expect("external formatting edit");
 
-        assert!(matches!(
-            replace_existing(&target, &token, &project(44_100)),
-            Err(StorageError::Conflict { path }) if path == target
-        ));
+        let conflict = replace_existing(&target, &token, &project(44_100));
+        assert!(matches!(&conflict, Err(StorageError::Conflict { path }) if *path == target));
+        let message = conflict
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        let message = crate::text::plain(&message);
+        assert!(message.starts_with(&format!(
+            "project changed outside hex at {}",
+            target.display()
+        )));
+        for step in ["use save as", "reopen the original", "compare"] {
+            assert!(message.contains(step), "{message:?} must name {step:?}");
+        }
+        let app_text = message.replace(&target.display().to_string(), "");
+        assert_eq!(app_text, app_text.to_lowercase());
         assert_eq!(
             fs::read(&target).expect("unchanged external content"),
             changed
         );
         assert!(!recovery_path(&target).expect("sidecar path").exists());
         assert_eq!(fs::read_dir(&directory.0).expect("list files").count(), 1);
+    }
+
+    #[test]
+    fn undecodable_payload_in_a_recognized_sidecar_does_not_block_save() {
+        let directory = TestDir::new();
+        let target = directory.0.join("strict.hex");
+        let previous = project(48_000);
+        save_new(&target, &previous).expect("initial project");
+        let (_, token) = load_with_token(&target).expect("token");
+        let sidecar = recovery_path(&target).expect("sidecar path");
+        let foreign = encode_envelope("other.hex", b"{\"version\":1}").expect("envelope");
+        fs::write(&sidecar, &foreign).expect("undecodable foreign generation");
+        replace_existing(&target, &token, &project(44_100)).expect("save past foreign");
+        let moved = directory.0.join(".other.hex.hex-recovery.moved-1");
+        assert_eq!(fs::read(moved).expect("set aside"), foreign);
+
+        let (_, token) = load_with_token(&target).expect("token");
+        let previous_bytes = token.0.to_vec();
+        fs::write(
+            &sidecar,
+            encode_envelope("strict.hex", b"not a project").expect("envelope"),
+        )
+        .expect("undecodable owned generation");
+        let replacement = project(96_000);
+        replace_existing(&target, &token, &replacement).expect("save past owned");
+        assert_eq!(load(&target).expect("saved"), replacement);
+        let recovered = load_recovery(&target).expect("fresh generation");
+        assert_eq!(recovered.token.0.as_ref(), previous_bytes);
+        assert_eq!(recovered.project, project(44_100));
     }
 
     #[test]
@@ -604,7 +890,7 @@ mod tests {
     }
 
     #[test]
-    fn unrelated_target_binding_and_long_sidecar_name_are_refused() {
+    fn foreign_bound_sidecar_is_set_aside_and_long_sidecar_name_is_refused() {
         let directory = TestDir::new();
         let target = directory.0.join("target.hex");
         let original = project(48_000);
@@ -612,17 +898,87 @@ mod tests {
         let (_, token) = load_with_token(&target).expect("token");
         let envelope = encode_envelope("other.hex", &token.0).expect("valid envelope");
         let sidecar = recovery_path(&target).expect("sidecar path");
-        fs::write(&sidecar, envelope).expect("foreign recovery fixture");
-        assert!(replace_existing(&target, &token, &project(44_100)).is_err());
-        assert_eq!(load(&target).expect("target unchanged"), original);
-        fs::remove_file(&sidecar).expect("remove fixture");
+        fs::write(&sidecar, &envelope).expect("foreign recovery fixture");
+        let replacement = project(44_100);
+        replace_existing(&target, &token, &replacement).expect("foreign sidecar set aside");
+        assert_eq!(load(&target).expect("replaced target"), replacement);
+        assert_eq!(
+            load_recovery(&target).expect("fresh generation").project,
+            original
+        );
+        let moved = directory.0.join(".other.hex.hex-recovery.moved-1");
+        assert_eq!(
+            fs::read(&moved).expect("preserved foreign sidecar"),
+            envelope
+        );
+        let (_, token) = load_with_token(&target).expect("token after replacement");
+        let original_bytes = token.0.to_vec();
 
         let too_long = directory.0.join(format!("{}.hex", "x".repeat(245)));
         assert!(matches!(
             recovery_path(&too_long),
             Err(StorageError::Io(error)) if error.kind() == io::ErrorKind::InvalidInput
         ));
-        assert_eq!(load(&target).expect("target unchanged"), original);
+        assert_eq!(fs::read(&target).expect("target unchanged"), original_bytes);
+    }
+
+    /// True when `renamed` resolves to the existing file `original` in `directory`.
+    #[cfg(unix)]
+    fn names_fold(directory: &Path, original: &str, renamed: &str) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        let (Ok(left), Ok(right)) = (
+            fs::metadata(directory.join(original)),
+            fs::metadata(directory.join(renamed)),
+        ) else {
+            return false;
+        };
+        left.ino() == right.ino()
+    }
+
+    #[cfg(unix)]
+    fn rename_by_equivalent_name_keeps_saving(original: &str, renamed: &str) {
+        let directory = TestDir::new();
+        let old_target = directory.0.join(original);
+        let first = project(48_000);
+        let second = project(44_100);
+        save_new(&old_target, &first).expect("initial project");
+        let (_, token) = load_with_token(&old_target).expect("first token");
+        replace_existing(&old_target, &token, &second).expect("sidecar bound to old name");
+        if !names_fold(&directory.0, original, renamed) {
+            eprintln!("skipped: temp volume does not fold {original:?} and {renamed:?}");
+            return;
+        }
+        let old_sidecar = fs::read(recovery_path(&old_target).expect("old sidecar path"))
+            .expect("old sidecar bytes");
+
+        let new_target = directory.0.join(renamed);
+        fs::rename(&old_target, &new_target).expect("equivalent-name rename");
+        let (_, token) = load_with_token(&new_target).expect("token after rename");
+        let third = project(96_000);
+        replace_existing(&new_target, &token, &third).expect("save after rename");
+
+        assert_eq!(load(&new_target).expect("saved project"), third);
+        assert_eq!(
+            load_recovery(&new_target).expect("fresh sidecar").project,
+            second
+        );
+        let moved = directory
+            .0
+            .join(format!(".{original}{RECOVERY_SUFFIX}.moved-1"));
+        assert_eq!(fs::read(moved).expect("old sidecar preserved"), old_sidecar);
+        assert_eq!(fs::read_dir(&directory.0).expect("list files").count(), 3);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn case_only_rename_sets_aside_old_sidecar_and_saves() {
+        rename_by_equivalent_name_keeps_saving("song.hex", "Song.hex");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn normalization_only_rename_sets_aside_old_sidecar_and_saves() {
+        rename_by_equivalent_name_keeps_saving("caf\u{e9}.hex", "cafe\u{301}.hex");
     }
 
     #[test]
@@ -639,6 +995,7 @@ mod tests {
             |_| Ok(()),
             |_| Ok(()),
             || Err(io::Error::other("injected precommit failure")),
+            |_, _| Vec::new(),
         )
         .expect_err("injected failure");
         assert!(matches!(
@@ -651,6 +1008,71 @@ mod tests {
             load_recovery(&target).expect("duplicate recovery").project,
             previous
         );
+    }
+
+    #[test]
+    fn recovery_directory_sync_failure_preserves_original_and_allows_retry() {
+        let directory = TestDir::new();
+        let target = directory.0.join("recovery-sync.hex");
+        let sidecar = recovery_path(&target).expect("sidecar path");
+        let previous = project(48_000);
+        let replacement = project(44_100);
+        save_new(&target, &previous).expect("initial project");
+        let (_, token) = load_with_token(&target).expect("original token");
+        let original_bytes = fs::read(&target).expect("original bytes");
+
+        let error = replace_with_hooks(
+            &target,
+            &token,
+            &replacement,
+            |parent| {
+                assert_eq!(parent, directory.0);
+                Err(io::Error::other("injected recovery sync failure"))
+            },
+            |_| panic!("project directory sync must not run before commit"),
+            || panic!("project rename must not run after recovery sync failure"),
+            |_, _| Vec::new(),
+        )
+        .expect_err("recovery directory sync fails");
+        assert!(matches!(
+            error,
+            StorageError::RecoveryBackupPublished {
+                path, recovery_path, operation: "synchronize the recovery directory", source,
+            } if path == target && recovery_path == sidecar
+                && source.to_string() == "injected recovery sync failure"
+        ));
+        assert_eq!(fs::read(&target).expect("original file"), original_bytes);
+        token
+            .check_unchanged(&target)
+            .expect("original token remains valid");
+        let recovered = load_recovery(&target).expect("published recovery is valid");
+        assert_eq!(recovered.project, previous);
+        assert_eq!(recovered.token.0.as_ref(), original_bytes);
+        let recovery_bytes = fs::read(&sidecar).expect("published recovery bytes");
+        let mut paths: Vec<_> = fs::read_dir(&directory.0)
+            .expect("list files after failure")
+            .map(|entry| entry.expect("directory entry").path())
+            .collect();
+        paths.sort();
+        let mut expected_paths = vec![target.clone(), sidecar.clone()];
+        expected_paths.sort();
+        assert_eq!(paths, expected_paths, "temporary files are removed");
+
+        let outcome = replace_existing(&target, &token, &replacement).expect("normal retry");
+        assert!(outcome.warning.is_none());
+        assert_eq!(load(&target).expect("replacement after retry"), replacement);
+        outcome.token.check_unchanged(&target).expect("new token");
+        assert_eq!(
+            fs::read(&sidecar).expect("recovery after retry"),
+            recovery_bytes
+        );
+        assert_eq!(
+            load_recovery(&target)
+                .expect("recovery after retry")
+                .project,
+            previous
+        );
+        assert_eq!(fs::read_dir(&directory.0).expect("list files").count(), 2);
     }
 
     #[test]
@@ -668,6 +1090,7 @@ mod tests {
             |_| Ok(()),
             |_| Err(io::Error::other("injected directory sync failure")),
             || Ok(()),
+            |_, _| Vec::new(),
         )
         .expect("commit returns an outcome with a warning");
 
@@ -702,12 +1125,17 @@ mod tests {
         save_new(&actual, &original).expect("actual project");
         std::os::unix::fs::symlink(&actual, &target_link).expect("target symlink");
         let (_, token) = load_with_token(&target_link).expect("token from linked load");
+        let refused = replace_existing(&target_link, &token, &project(44_100));
         assert!(matches!(
-            replace_existing(&target_link, &token, &project(44_100)),
-            Err(StorageError::Invalid(
-                "project replacement refuses symbolic-link targets"
-            ))
+            &refused,
+            Err(StorageError::Invalid(reason)) if *reason == SYMLINK_TARGET_REFUSAL
         ));
+        let message = refused
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(message.contains("symbolic link") && message.contains("use save as"));
+        assert_eq!(message, message.to_lowercase());
         assert_eq!(fs::read_link(&target_link).expect("link stays"), actual);
         assert_eq!(load(&actual).expect("real target unchanged"), original);
 
@@ -718,7 +1146,9 @@ mod tests {
         std::os::unix::fs::symlink("external", &sidecar).expect("sidecar symlink");
         assert!(matches!(
             replace_existing(&normal, &normal_token, &project(44_100)),
-            Err(StorageError::Invalid(reason)) if reason.contains("recovery sidecar is a symbolic link")
+            Err(StorageError::Invalid(reason))
+                if reason.contains("recovery sidecar is a symbolic link")
+                    && reason.contains("use save as")
         ));
         assert_eq!(
             fs::read_link(&sidecar).expect("sidecar link stays"),
@@ -755,5 +1185,69 @@ mod tests {
             & 0o777;
         assert_eq!(target_mode, 0o600);
         assert_eq!(recovery_mode, 0o600);
+    }
+
+    #[test]
+    fn metadata_copy_failure_is_reported_and_leaves_the_saved_project_intact() {
+        let directory = TestDir::new();
+        let target = directory.0.join("metadata.hex");
+        let previous = project(48_000);
+        let replacement = project(44_100);
+        save_new(&target, &previous).expect("initial project");
+        let (_, token) = load_with_token(&target).expect("token");
+        let outcome = replace_with_hooks(
+            &target,
+            &token,
+            &replacement,
+            |_| Ok(()),
+            |_| Ok(()),
+            || Ok(()),
+            |source, staging| {
+                assert_eq!(source, target);
+                assert_ne!(staging, target);
+                vec![MetadataWarning {
+                    attribute: Some("injected".to_owned()),
+                    operation: "write a file attribute",
+                    source: io::Error::other("injected metadata failure"),
+                }]
+            },
+        )
+        .expect("save succeeds despite metadata failure");
+        assert!(outcome.warning.is_none());
+        assert_eq!(outcome.metadata_warnings.len(), 1);
+        assert_eq!(load(&target).expect("replacement saved"), replacement);
+        outcome.token.check_unchanged(&target).expect("new token");
+        assert_eq!(load_recovery(&target).expect("recovery").project, previous);
+        assert_eq!(fs::read_dir(&directory.0).expect("list files").count(), 2);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn saved_over_project_keeps_finder_tags_and_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        const TAGS: &str = "com.apple.metadata:_kMDItemUserTags";
+        let directory = TestDir::new();
+        let target = directory.0.join("tagged.hex");
+        save_new(&target, &project(48_000)).expect("initial project");
+        fs::set_permissions(&target, Permissions::from_mode(0o640)).expect("set mode");
+        rustix::fs::lsetxattr(&target, TAGS, b"tag", rustix::fs::XattrFlags::empty())
+            .expect("tag project");
+        let (_, token) = load_with_token(&target).expect("token");
+
+        let outcome = replace_existing(&target, &token, &project(44_100)).expect("replace");
+        assert!(
+            outcome.metadata_warnings.is_empty(),
+            "{:?}",
+            outcome.metadata_warnings
+        );
+        let mut value = [0u8; 16];
+        let length = rustix::fs::lgetxattr(&target, TAGS, &mut value[..]).expect("tag kept");
+        assert_eq!(&value[..length], b"tag");
+        let mode = fs::metadata(&target)
+            .expect("metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o640);
     }
 }

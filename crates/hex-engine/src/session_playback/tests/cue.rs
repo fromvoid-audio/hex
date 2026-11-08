@@ -11,6 +11,7 @@ fn cue_project() -> Project {
     };
     clip.source.notes.extend([
         MidiNoteSnapshot {
+            active: true,
             id: 1_000_008,
             start_raw: 10 * Q,
             duration_raw: Q,
@@ -19,6 +20,7 @@ fn cue_project() -> Project {
             velocity: 93,
         },
         MidiNoteSnapshot {
+            active: true,
             id: 1_000_009,
             start_raw: 11 * Q,
             duration_raw: Q / 2,

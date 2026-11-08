@@ -4,7 +4,7 @@
 //! report counts, with at most eight IDs where the typed selection allows it.
 use super::{Description, FirstIds, Parameter, Snapshot};
 use crate::service::Request;
-use hex_project::Command;
+use hex_project::{Command, ExistingAudioPlacement};
 macro_rules! describe {
     ($kind:literal; [$($key:literal => $value:expr),*]; omitted=$omitted:literal) => {{
         let mut description = Description::new($kind);
@@ -207,8 +207,30 @@ pub(super) fn created(value: &hex_project::Created) -> Description {
 
 pub(super) fn command(value: &Command) -> Description {
     match value {
+        Command::InitializeDevice(initialization) => {
+            let mut description = describe!("initialize_device"; ["comparison_present" => initialization.comparison().is_some()]; omitted="comparison");
+            description.nested("creation", command(initialization.command()));
+            description
+        }
         Command::DuplicateAliasClips(value0) => {
             describe!("duplicate_alias_clips"; ["value0_count" => value0.len()]; omitted="")
+        }
+        Command::DuplicateAliasClipsAt {
+            clips,
+            anchor,
+            track,
+            ..
+        } => {
+            describe!("duplicate_alias_clips_at"; ["clips_count" => clips.len(), "anchor" => anchor.value(), "track" => track.value()]; omitted="position")
+        }
+        Command::DuplicateAliasClipToNewTrack {
+            clip,
+            name,
+            before_track,
+            initial_gain,
+            ..
+        } => {
+            describe!("duplicate_alias_clip_to_new_track"; ["clip" => clip.value(), "name_bytes" => name.len(), "has_before_track" => before_track.is_some(), "initial_gain" => initial_gain]; omitted="position")
         }
         Command::MakeClipsUnique(value0) => {
             describe!("make_clips_unique"; ["value0_count" => value0.len()]; omitted="")
@@ -258,9 +280,12 @@ pub(super) fn command(value: &Command) -> Description {
             describe!("duplicate_tracks"; ["tracks_count" => tracks.ids().len(), "tracks_first_ids" => FirstIds(tracks.ids()), "without_clips" => without_clips]; omitted="")
         }
         Command::CommitArrangementBounce {
-            in_place, files, ..
+            in_place,
+            adoption,
+            files,
+            ..
         } => {
-            describe!("commit_arrangement_bounce"; ["in_place" => in_place, "files_count" => files.len()]; omitted="target")
+            describe!("commit_arrangement_bounce"; ["in_place" => in_place, "adoption" => adoption, "files_count" => files.len()]; omitted="target")
         }
         Command::SetClipActive { clip, active } => {
             describe!("set_clip_active"; ["clip" => clip.value(), "active" => active]; omitted="")
@@ -334,6 +359,29 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("duplicate_arrangement_section_at"; ["section" => section.value(), "target" => target.value(), "after" => after]; omitted="")
         }
+        Command::AppendArrangementSectionCopy {
+            section,
+            start,
+            gap_name,
+            ..
+        } => {
+            describe!("append_arrangement_section_copy"; ["section" => section.value(), "start_beats_q32" => start.raw(), "gap_name_redacted_bytes" => gap_name.len()]; omitted="gap_color")
+        }
+        Command::MoveArrangementSectionBeyondEnd {
+            section,
+            start,
+            gap_name,
+            ..
+        } => {
+            describe!("move_arrangement_section_beyond_end"; ["section" => section.value(), "start_beats_q32" => start.raw(), "gap_name_redacted_bytes" => gap_name.len()]; omitted="gap_color")
+        }
+        Command::ReplaceArrangementSection {
+            source,
+            target,
+            copy,
+        } => {
+            describe!("replace_arrangement_section"; ["source" => source.value(), "target" => target.value(), "copy" => copy]; omitted="")
+        }
         Command::SplitArrangementSection { section, at } => {
             describe!("split_arrangement_section"; ["section" => section.value(), "at_beats_q32" => at.raw()]; omitted="")
         }
@@ -373,6 +421,23 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("insert_track_with_device"; ["name_redacted_bytes" => name.len(), "before_track" => before_track.map(|id| id.value()), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="slot")
         }
+        Command::InsertDefaultTrackWithDevice {
+            before_track,
+            state,
+            device_name,
+            ..
+        } => {
+            describe!("insert_default_track_with_device"; ["before_track" => before_track.map(|id| id.value()), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len(), "device_name_redacted_bytes" => device_name.len()]; omitted="slot")
+        }
+        Command::InsertDefaultTrackWithDeviceAndGain {
+            before_track,
+            state,
+            device_name,
+            gain,
+            ..
+        } => {
+            describe!("insert_default_track_with_device_and_gain"; ["before_track" => before_track.map(|id| id.value()), "state_type" => state.type_id().as_str(), "device_name_redacted_bytes" => device_name.len(), "gain" => gain]; omitted="slot,state")
+        }
         Command::SpliceGainTouch {
             track,
             expected_epoch,
@@ -410,6 +475,9 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("set_audio_feed"; ["destination" => destination.value(), "gain" => gain]; omitted="source")
         }
+        Command::SetSidechain { device, source } => {
+            describe!("set_sidechain"; ["device" => device.value(), "source" => source.map(|id| id.value())]; omitted="")
+        }
         Command::SetMidiSource {
             destination,
             source,
@@ -436,6 +504,14 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("insert_device"; ["track" => track.value(), "before" => before.map(|id| id.value()), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="")
         }
+        Command::LoadInstrument {
+            track,
+            replacing,
+            state,
+            device_name,
+        } => {
+            describe!("load_instrument"; ["track" => track.value(), "replacing" => replacing.map(|id| id.value()), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len(), "device_name_redacted_bytes" => device_name.len()]; omitted="")
+        }
         Command::InsertInstrument { track, state } => {
             describe!("insert_instrument"; ["track" => track.value(), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="")
         }
@@ -459,12 +535,44 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("move_track_device"; ["device" => device.value(), "track" => track.value(), "before" => before.map(|id| id.value())]; omitted="")
         }
+        Command::SpliceDeviceAutomationTouch {
+            device,
+            target,
+            spans,
+            ..
+        } => {
+            describe!("splice_device_automation_touch"; ["device" => device.value(), "target" => target, "span_count" => spans.len()]; omitted="")
+        }
+        Command::ReplaceDeviceAutomationTarget {
+            device,
+            target,
+            points,
+        } => {
+            describe!("replace_device_automation_target"; ["device" => device.value(), "target" => target, "points_count" => points.len()]; omitted="")
+        }
         Command::ReplaceDeviceAutomation {
             device,
             parameter,
             points,
         } => {
             describe!("replace_device_automation"; ["device" => device.value(), "parameter" => parameter.value(), "points_count" => points.len()]; omitted="")
+        }
+        Command::ManualDeviceEdit {
+            device,
+            state,
+            targets,
+        } => {
+            describe!("manual_device_edit"; ["device" => device.value(), "state_type" => state.type_id().as_str(), "state_payload_bytes" => state.payload().len(), "targets_count" => targets.len()]; omitted="")
+        }
+        Command::SetDeviceAutomationReadSelection {
+            device,
+            target,
+            selection,
+        } => {
+            describe!("device_automation_read_selection"; ["device" => device.value(), "target" => target, "selection" => format!("{selection:?}")]; omitted="")
+        }
+        Command::ReenableDeviceAutomation => {
+            describe!("reenable_device_automation"; []; omitted="")
         }
         Command::ReplaceDeviceState { device, state } => {
             describe!("replace_device_state"; ["device" => device.value(), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="")
@@ -482,6 +590,9 @@ pub(super) fn command(value: &Command) -> Description {
         Command::SetDeviceBypass { device, bypassed } => {
             describe!("set_device_bypass"; ["device" => device.value(), "bypassed" => bypassed]; omitted="")
         }
+        Command::ToggleDeviceBypass { device } => {
+            describe!("toggle_device_bypass"; ["device" => device.value()]; omitted="")
+        }
         Command::CompareDevice { device, .. } => {
             describe!("compare_device"; ["device" => device.value()]; omitted="expected,action")
         }
@@ -494,6 +605,9 @@ pub(super) fn command(value: &Command) -> Description {
         }
         Command::AddReturnTrack { name } => {
             describe!("add_return_track"; ["name_redacted_bytes" => name.len()]; omitted="")
+        }
+        Command::AddReturnTrackWithGain { name, gain } => {
+            describe!("add_return_track_with_gain"; ["name_redacted_bytes" => name.len(), "gain" => gain]; omitted="")
         }
         Command::RemoveReturnTrack(value0) => {
             describe!("remove_return_track"; ["value0" => value0.value()]; omitted="")
@@ -531,6 +645,10 @@ pub(super) fn command(value: &Command) -> Description {
         Command::PasteTimeRange { track, frame, .. } => {
             describe!("paste_time_range"; ["track" => track.value(), "frame" => frame]; omitted="clipboard")
         }
+        Command::RemoveDevices { .. } => describe!("remove_devices"; []; omitted="owner,selected"),
+        Command::PasteDevices { .. } => {
+            describe!("paste_devices"; []; omitted="clipboard,owner,before")
+        }
         Command::PasteTracks { .. } => {
             describe!("paste_tracks"; []; omitted="clipboard,destination")
         }
@@ -559,6 +677,12 @@ pub(super) fn command(value: &Command) -> Description {
         }
         Command::AddTrack { name } => {
             describe!("add_track"; ["name_redacted_bytes" => name.len()]; omitted="")
+        }
+        Command::InsertDefaultTrack { before_track } => {
+            describe!("insert_default_track"; ["before_track" => before_track.map(|id| id.value())]; omitted="")
+        }
+        Command::InsertDefaultTrackWithGain { before_track, gain } => {
+            describe!("insert_default_track_with_gain"; ["before_track" => before_track.map(|id| id.value()), "gain" => gain]; omitted="")
         }
         Command::InsertTrack { name, before_track } => {
             describe!("insert_track"; ["name_redacted_bytes" => name.len(), "before_track" => before_track.map(|id| id.value())]; omitted="")
@@ -629,6 +753,31 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("import_prepared_session_audio_clip"; ["track" => track.value(), "scene" => scene.value(), "name_redacted_bytes" => name.len(), "path_redacted_bytes" => path.as_os_str().len(), "source_sample_rate" => source_sample_rate, "source_frames" => source_frames, "playback_frames" => playback_frames, "conversion_version" => conversion_version, "source_start" => source_start, "source_end" => source_end]; omitted="")
         }
+        Command::ImportExistingAudio { asset, placement } => match placement {
+            ExistingAudioPlacement::NewTrack {
+                name,
+                before_track,
+                start,
+            } => {
+                describe!("import_existing_audio_track_at"; ["asset" => asset.value(), "name_redacted_bytes" => name.len(), "before_track" => before_track.map(|id| id.value()), "start" => start]; omitted="")
+            }
+            ExistingAudioPlacement::Clip {
+                track,
+                start,
+                overwrite,
+            } => {
+                describe!("import_existing_audio_clip"; ["asset" => asset.value(), "track" => track.value(), "start" => start, "overwrite" => overwrite]; omitted="")
+            }
+            ExistingAudioPlacement::Session {
+                track,
+                scene,
+                name,
+                source_start,
+                source_end,
+            } => {
+                describe!("import_existing_session_audio_clip"; ["asset" => asset.value(), "track" => track.value(), "scene" => scene.value(), "name_redacted_bytes" => name.len(), "source_start" => source_start, "source_end" => source_end]; omitted="")
+            }
+        },
         Command::MoveTrackBefore { track, before } => {
             describe!("move_track_before"; ["track" => track.value(), "before" => before.map(|id| id.value())]; omitted="")
         }
@@ -641,11 +790,17 @@ pub(super) fn command(value: &Command) -> Description {
         Command::RemoveTracks(value0) => {
             describe!("remove_tracks"; ["value0_count" => value0.len()]; omitted="")
         }
+        Command::SetTrackTags { track, tags } => {
+            describe!("set_track_tags"; ["track" => track.value(), "tags_count" => tags.len()]; omitted="tag_text")
+        }
         Command::RenameTrack { track, name } => {
             describe!("rename_track"; ["track" => track.value(), "name_redacted_bytes" => name.len()]; omitted="")
         }
         Command::Gain { track, gain } => {
             describe!("gain"; ["track" => track.value(), "gain" => gain]; omitted="")
+        }
+        Command::SetTrackGains { gains } => {
+            describe!("set_track_gains"; ["tracks_count" => gains.len()]; omitted="gains")
         }
         Command::Balance { track, balance } => {
             describe!("balance"; ["track" => track.value(), "balance" => balance]; omitted="")
@@ -660,6 +815,9 @@ pub(super) fn command(value: &Command) -> Description {
         }
         Command::Mute { track, muted } => {
             describe!("mute"; ["track" => track.value(), "muted" => muted]; omitted="")
+        }
+        Command::ToggleSoloTracks { tracks, exclusive } => {
+            describe!("toggle_solo_tracks"; ["tracks_count" => tracks.ids().len(), "tracks_first_ids" => FirstIds(tracks.ids()), "exclusive" => exclusive]; omitted="")
         }
         Command::ToggleSolo { track, exclusive } => {
             describe!("toggle_solo"; ["track" => track.value(), "exclusive" => exclusive]; omitted="")
@@ -708,6 +866,9 @@ pub(super) fn command(value: &Command) -> Description {
             ..
         } => {
             describe!("import_device_asset_replacing_instrument"; ["track" => track.value(), "device" => device.value(), "expected_state_type" => expected_state.type_id().as_str(), "expected_state_state_version" => expected_state.state_version(), "expected_state_payload_bytes" => expected_state.payload().len(), "path_redacted_bytes" => path.as_os_str().len(), "sample_rate" => sample_rate, "frames" => frames, "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="source_slot")
+        }
+        Command::RelinkAssets(relinks) => {
+            describe!("relink_assets"; ["count" => relinks.len()]; omitted="paths")
         }
         Command::RemoveAsset(value0) => {
             describe!("remove_asset"; ["value0" => value0.value()]; omitted="")
@@ -772,8 +933,9 @@ pub(super) fn command(value: &Command) -> Description {
             name,
             before_track,
             start,
+            initial_gain,
         } => {
-            describe!("move_clip_to_new_track"; ["clip" => clip.value(), "name_redacted_bytes" => name.len(), "before_track" => before_track.map(|id| id.value()), "start" => start]; omitted="")
+            describe!("move_clip_to_new_track"; ["clip" => clip.value(), "name_redacted_bytes" => name.len(), "before_track" => before_track.map(|id| id.value()), "start" => start, "initial_gain" => initial_gain]; omitted="")
         }
         Command::CopyClipTo { clip, track, start } => {
             describe!("copy_clip_to"; ["clip" => clip.value(), "track" => track.value(), "start" => start]; omitted="")
@@ -783,8 +945,9 @@ pub(super) fn command(value: &Command) -> Description {
             name,
             before_track,
             start,
+            initial_gain,
         } => {
-            describe!("copy_clip_to_new_track"; ["clip" => clip.value(), "name_redacted_bytes" => name.len(), "before_track" => before_track.map(|id| id.value()), "start" => start]; omitted="")
+            describe!("copy_clip_to_new_track"; ["clip" => clip.value(), "name_redacted_bytes" => name.len(), "before_track" => before_track.map(|id| id.value()), "start" => start, "initial_gain" => initial_gain]; omitted="")
         }
         Command::TrimClip {
             clip,
@@ -913,16 +1076,18 @@ pub(super) fn command(value: &Command) -> Description {
         Command::CopyArrangementAudioClipToNewSessionTrack {
             source,
             before_track,
+            initial_gain,
             ..
         } => {
-            describe!("copy_arrangement_audio_clip_to_new_session_track"; ["source" => source.value(), "before_track" => before_track.map(|id| id.value())]; omitted="scene")
+            describe!("copy_arrangement_audio_clip_to_new_session_track"; ["source" => source.value(), "before_track" => before_track.map(|id| id.value()), "initial_gain" => initial_gain]; omitted="scene")
         }
         Command::CopyArrangementMidiToNewSessionTrack {
             source,
             before_track,
+            initial_gain,
             ..
         } => {
-            describe!("copy_arrangement_midi_to_new_session_track"; ["source" => source.value(), "before_track" => before_track.map(|id| id.value())]; omitted="scene")
+            describe!("copy_arrangement_midi_to_new_session_track"; ["source" => source.value(), "before_track" => before_track.map(|id| id.value()), "initial_gain" => initial_gain]; omitted="scene")
         }
         Command::MoveSessionCell {
             from_track,
@@ -1016,6 +1181,9 @@ pub(super) fn command(value: &Command) -> Description {
         Command::ReplaceMidiClipVolume { clip, .. } => {
             describe!("replace_midi_clip_volume"; ["clip" => clip.value()]; omitted="volume")
         }
+        Command::SetMidiClipGain { clip, gain } => {
+            describe!("set_midi_clip_gain"; ["clip" => clip.value(), "millidb" => gain.millidb()]; omitted="")
+        }
         Command::AddMidiNote {
             clip,
             start,
@@ -1056,8 +1224,25 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("update_midi_note"; ["note" => note.value(), "start_beats_q32" => start.raw(), "duration_beats_q32" => duration.raw(), "pitch" => pitch, "channel" => channel, "velocity" => velocity]; omitted="")
         }
+        Command::UpdateMidiNotesWithSourcePrefix {
+            clip,
+            prefix,
+            notes,
+        } => {
+            describe!("update_midi_notes_with_source_prefix"; ["clip" => clip.value(),"prefix_beats_q32" => prefix.raw(),"notes_count" => notes.len()]; omitted="note_data")
+        }
+        Command::UpdateMidiNotesWithSourceExtent { clip, notes } => {
+            describe!("update_midi_notes_with_source_extent"; ["clip" => clip.value(), "notes_count" => notes.len()]; omitted="")
+        }
         Command::UpdateMidiNotes { clip, notes } => {
             describe!("update_midi_notes"; ["clip" => clip.value(), "notes_count" => notes.len()]; omitted="")
+        }
+        Command::SetMidiNotesActive {
+            clip,
+            notes,
+            active,
+        } => {
+            describe!("set_midi_notes_active"; ["clip" => clip.value(), "notes_count" => notes.len(), "active" => active]; omitted="")
         }
         Command::RemoveMidiNote(value0) => {
             describe!("remove_midi_note"; ["value0" => value0.value()]; omitted="")
@@ -1076,8 +1261,9 @@ pub(super) fn command(value: &Command) -> Description {
             name,
             before_track,
             start,
+            initial_gain,
         } => {
-            describe!("move_midi_clip_to_new_track"; ["clip" => clip.value(), "name_redacted_bytes" => name.len(), "before_track" => before_track.map(|id| id.value()), "start_beats_q32" => start.raw()]; omitted="")
+            describe!("move_midi_clip_to_new_track"; ["clip" => clip.value(), "name_redacted_bytes" => name.len(), "before_track" => before_track.map(|id| id.value()), "start_beats_q32" => start.raw(), "initial_gain" => initial_gain]; omitted="")
         }
         Command::CopyMidiClipTo { clip, track, start } => {
             describe!("copy_midi_clip_to"; ["clip" => clip.value(), "track" => track.value(), "start_beats_q32" => start.raw()]; omitted="")
@@ -1087,8 +1273,9 @@ pub(super) fn command(value: &Command) -> Description {
             name,
             before_track,
             start,
+            initial_gain,
         } => {
-            describe!("copy_midi_clip_to_new_track"; ["clip" => clip.value(), "name_redacted_bytes" => name.len(), "before_track" => before_track.map(|id| id.value()), "start_beats_q32" => start.raw()]; omitted="")
+            describe!("copy_midi_clip_to_new_track"; ["clip" => clip.value(), "name_redacted_bytes" => name.len(), "before_track" => before_track.map(|id| id.value()), "start_beats_q32" => start.raw(), "initial_gain" => initial_gain]; omitted="")
         }
         Command::RemoveMidiClip(value0) => {
             describe!("remove_midi_clip"; ["value0" => value0.value()]; omitted="")
@@ -1101,6 +1288,16 @@ pub(super) fn command(value: &Command) -> Description {
 
 pub(super) fn request(value: &Request) -> Description {
     match value {
+        Request::PaintMidiClip(intent) => {
+            describe!("paint_midi_clip"; ["project_generation" => intent.project_generation, "revision" => intent.revision, "track" => intent.track.value(), "start" => intent.start.raw(), "length" => intent.length.raw()]; omitted="")
+        }
+        Request::DeviceClipboard {
+            project_generation,
+            revision,
+            ..
+        } => {
+            describe!("device_clipboard"; ["project_generation" => project_generation, "revision" => revision]; omitted="action")
+        }
         Request::TrackClipboard {
             project_generation,
             revision,
@@ -1117,6 +1314,14 @@ pub(super) fn request(value: &Request) -> Description {
             before,
         } => {
             describe!("reorder_tracks"; ["project_generation" => project_generation, "revision" => revision, "tracks_count" => tracks.ids().len(), "tracks_first_ids" => FirstIds(tracks.ids()), "before" => before.map(|id| id.value())]; omitted="")
+        }
+        Request::ReparentTracks {
+            project_generation,
+            revision,
+            tracks,
+            destination,
+        } => {
+            describe!("reparent_tracks"; ["project_generation" => project_generation, "revision" => revision, "tracks_count" => tracks.ids().len(), "tracks_first_ids" => FirstIds(tracks.ids()), "parent" => destination.parent_group.map(|id| id.value()), "before" => destination.before.map(|id| id.value())]; omitted="")
         }
         Request::EditArrangementSection {
             project_generation,
@@ -1210,6 +1415,9 @@ pub(super) fn request(value: &Request) -> Description {
         Request::SaveDevicePreset { path, .. } => {
             describe!("save_device_preset"; ["path_redacted_bytes" => path.as_os_str().len()]; omitted="owner")
         }
+        Request::SaveDeviceDefault { root, .. } => {
+            describe!("save_device_default"; ["root_redacted_bytes" => root.as_os_str().len()]; omitted="owner")
+        }
         Request::LoadDevicePreset { path, .. } => {
             describe!("load_device_preset"; ["path_redacted_bytes" => path.as_os_str().len()]; omitted="owner")
         }
@@ -1217,12 +1425,26 @@ pub(super) fn request(value: &Request) -> Description {
             project_generation,
             revision,
             type_id,
+            new_track_gain,
             ..
         } => {
-            describe!("insert_browser_instrument_track"; ["project_generation" => project_generation, "revision" => revision, "type_id" => type_id.as_str()]; omitted="class")
+            describe!("insert_browser_instrument_track"; ["project_generation" => project_generation, "revision" => revision, "type_id" => type_id.as_str(), "new_track_gain" => new_track_gain]; omitted="class")
         }
         Request::InsertPluginEffect(_) => describe!("insert_plugin_effect"; []; omitted="value0"),
         Request::ContinuePluginEffect => describe!("continue_plugin_effect"; []; omitted=""),
+        Request::TogglePluginEditor {
+            project_generation,
+            device,
+        } => {
+            describe!("toggle_plugin_editor"; ["project_generation" => project_generation, "device" => device.value()]; omitted="")
+        }
+        Request::ContinuePluginEditor => describe!("continue_plugin_editor"; []; omitted=""),
+        Request::QueryPluginParameters(query) => {
+            describe!("query_plugin_parameters"; ["device" => query.device.value(), "request_id" => query.request_id]; omitted="")
+        }
+        Request::ContinuePluginParameters => {
+            describe!("continue_plugin_parameters"; []; omitted="")
+        }
         Request::ContinuePluginStateRestore => {
             describe!("continue_plugin_state_restore"; []; omitted="")
         }
@@ -1242,18 +1464,20 @@ pub(super) fn request(value: &Request) -> Description {
             project_generation,
             revision,
             type_id,
+            new_track_gain,
             ..
         } => {
-            describe!("drop_browser_device_on_arrangement"; ["project_generation" => project_generation, "revision" => revision, "type_id" => type_id.as_str()]; omitted="class,destination")
+            describe!("drop_browser_device_on_arrangement"; ["project_generation" => project_generation, "revision" => revision, "type_id" => type_id.as_str(), "new_track_gain" => new_track_gain]; omitted="class,destination")
         }
         Request::CopyArrangementClipToConsoleTrack {
             project_generation,
             revision,
             source,
             before_track,
+            initial_gain,
             ..
         } => {
-            describe!("copy_arrangement_clip_to_console_track"; ["project_generation" => project_generation, "revision" => revision, "source" => source.value(), "before_track" => before_track.map(|id| id.value())]; omitted="scene")
+            describe!("copy_arrangement_clip_to_console_track"; ["project_generation" => project_generation, "revision" => revision, "source" => source.value(), "before_track" => before_track.map(|id| id.value()), "initial_gain" => initial_gain]; omitted="scene")
         }
         Request::CommitMidiTake {
             request_id,
@@ -1264,6 +1488,28 @@ pub(super) fn request(value: &Request) -> Description {
             ..
         } => {
             describe!("commit_midi_take"; ["request_id" => request_id, "project_generation" => project_generation, "revision" => revision, "notes_count" => notes.len(), "stop_frame" => stop_frame]; omitted="binding")
+        }
+        Request::DeviceAutomationTake {
+            request_id,
+            scope,
+            action: _,
+        } => {
+            describe!("device_automation_take"; ["request_id" => request_id, "gesture_serial" => scope.stamp.gesture_serial]; omitted="delivery data")
+        }
+        Request::RecoverDeviceAutomationTake {
+            request_id,
+            context,
+            expected,
+            ..
+        } => {
+            describe!("recover_device_automation_take"; ["request_id" => request_id, "project_generation" => context.project_generation, "revision" => context.editor_revision, "gesture_serial" => expected.gesture_serial]; omitted="path and captured source")
+        }
+        Request::ArmNativeParameterRecording {
+            project_generation,
+            revision,
+            target,
+        } => {
+            describe!("arm_native_parameter_recording"; ["project_generation" => project_generation, "revision" => revision, "armed" => target.is_some()]; omitted="")
         }
         Request::ArmGainRecording {
             project_generation,
@@ -1281,6 +1527,23 @@ pub(super) fn request(value: &Request) -> Description {
             let mut description = describe!("gain_lane"; ["project_generation" => project_generation, "revision" => revision, "track" => track.value()]; omitted="");
             description.nested("edit", self::gain_lane(edit));
             description
+        }
+        Request::DeviceAutomation {
+            project_generation,
+            revision,
+            device,
+            target,
+            points,
+            ..
+        } => {
+            describe!("device_automation"; ["project_generation" => project_generation, "revision" => revision, "device" => device.value(), "target" => target, "points_count" => points.len()]; omitted="")
+        }
+        Request::DeviceAutomationControl {
+            project_generation,
+            revision,
+            edit,
+        } => {
+            describe!("device_automation_control"; ["project_generation" => project_generation, "revision" => revision, "edit" => format!("{edit:?}")]; omitted="")
         }
         Request::DeviceGesture(value0) => {
             let mut description = describe!("device_gesture"; []; omitted="");
@@ -1381,6 +1644,12 @@ pub(super) fn request(value: &Request) -> Description {
         } => {
             describe!("set_device_parameter"; ["device" => device.value(), "parameter" => parameter.value(), "value" => Parameter(value)]; omitted="")
         }
+        Request::RelinkMedia(relinks) => {
+            describe!("relink_media"; ["count" => relinks.len()]; omitted="paths")
+        }
+        Request::RecoverTruncatedImport(_) => {
+            describe!("recover_truncated_import"; []; omitted="request")
+        }
         Request::Import(value0) => {
             describe!("import"; ["value0_redacted_bytes" => value0.as_os_str().len()]; omitted="")
         }
@@ -1417,8 +1686,27 @@ pub(super) fn request(value: &Request) -> Description {
         } => {
             describe!("import_to_new_track"; ["path_redacted_bytes" => path.as_os_str().len(), "before_track" => before_track.map(|id| id.value()), "start" => start]; omitted="")
         }
+        Request::ImportToNewTrackWithGain {
+            path,
+            before_track,
+            start,
+            gain,
+        } => {
+            describe!("import_to_new_track_with_gain"; ["path_redacted_bytes" => path.as_os_str().len(), "before_track" => before_track.map(|id| id.value()), "start" => start, "gain" => gain]; omitted="")
+        }
         Request::ImportToSession { path, track, scene } => {
             describe!("import_to_session"; ["path_redacted_bytes" => path.as_os_str().len(), "track" => track.value(), "scene" => scene.value()]; omitted="")
+        }
+        Request::ChangeProjectSampleRate {
+            project_generation,
+            revision,
+            choice,
+        } => {
+            let fixed = match choice {
+                super::super::ProjectSampleRate::Fixed(rate) => Some(rate),
+                super::super::ProjectSampleRate::FollowInterface => None,
+            };
+            describe!("change_project_sample_rate"; ["project_generation" => project_generation, "revision" => revision, "fixed_rate" => fixed]; omitted="")
         }
         Request::NewWithAudioMode { reservation, .. } => {
             describe!("new_with_audio_mode"; ["reservation_present" => reservation.is_some()]; omitted="mode")
@@ -1439,9 +1727,10 @@ pub(super) fn request(value: &Request) -> Description {
             project_generation,
             revision,
             in_place,
+            adoption,
             ..
         } => {
-            describe!("bounce_arrangement"; ["project_generation" => project_generation, "revision" => revision, "in_place" => in_place]; omitted="target,control")
+            describe!("bounce_arrangement"; ["project_generation" => project_generation, "revision" => revision, "in_place" => in_place, "adoption" => adoption]; omitted="target,control")
         }
         Request::ConvertClip {
             project_generation,
@@ -1477,6 +1766,7 @@ pub(super) fn request(value: &Request) -> Description {
         Request::RestorePlayback { generation } => {
             describe!("restore_playback"; ["generation" => generation]; omitted="")
         }
+        Request::RepublishPausedPlayback => describe!("republish_paused_playback"; []; omitted=""),
         Request::RestoreStoppedPlayback => describe!("restore_stopped_playback"; []; omitted=""),
         Request::ContinueStoppedPlaybackRestore => {
             describe!("continue_stopped_playback_restore"; []; omitted="")
@@ -1488,16 +1778,41 @@ pub(super) fn request(value: &Request) -> Description {
             path,
             start,
             frames,
+            format,
             overwrite,
             ..
         } => {
-            describe!("export_range"; ["path_redacted_bytes" => path.as_os_str().len(), "start" => start, "frames" => frames, "overwrite" => overwrite]; omitted="signal,control")
+            describe!("export_range"; ["path_redacted_bytes" => path.as_os_str().len(), "start" => start, "frames" => frames, "format" => format, "overwrite" => overwrite]; omitted="signal,control")
         }
     }
 }
 
 pub(super) fn gesture(value: &crate::device_gesture::GestureRequest) -> Description {
     match value {
+        crate::device_gesture::GestureRequest::BeginPlugin { key, origin, .. } => {
+            describe!("begin_plugin"; ["key_generation" => key.generation, "key_token" => key.token,
+                "device" => origin.device.value(), "parameter" => origin.parameter,
+                "normalized" => origin.initial.normalized(),
+                "project_generation" => origin.context.project_generation,
+                "editor_revision" => origin.context.editor_revision,
+                "page_first" => origin.page_first, "metadata_revision" => origin.metadata_revision]; omitted="")
+        }
+        crate::device_gesture::GestureRequest::ChangePlugin {
+            key,
+            sequence,
+            value,
+        } => {
+            describe!("change_plugin"; ["key_generation" => key.generation, "key_token" => key.token,
+                "sequence" => sequence, "normalized" => value.normalized()]; omitted="")
+        }
+        crate::device_gesture::GestureRequest::CommitPlugin {
+            key,
+            sequence,
+            value,
+        } => {
+            describe!("commit_plugin"; ["key_generation" => key.generation, "key_token" => key.token,
+                "sequence" => sequence, "normalized" => value.normalized()]; omitted="")
+        }
         crate::device_gesture::GestureRequest::Begin { key, target } => {
             let mut description = describe!("begin"; ["key_generation" => key.generation, "key_token" => key.token]; omitted="");
             description.nested("target", self::gesture_target(target));
@@ -1518,18 +1833,23 @@ pub(super) fn gesture(value: &crate::device_gesture::GestureRequest) -> Descript
             describe!("change_pair"; ["key_generation" => key.generation, "key_token" => key.token, "sequence" => sequence, "value_first" => Parameter(&value.first), "value_second" => Parameter(&value.second)]; omitted="")
         }
         crate::device_gesture::GestureRequest::Commit {
+            manual_edit,
             key,
             sequence,
             value,
         } => {
-            describe!("commit"; ["key_generation" => key.generation, "key_token" => key.token, "sequence" => sequence, "value" => Parameter(value)]; omitted="")
+            describe!("commit"; ["key_generation" => key.generation, "key_token" => key.token, "sequence" => sequence, "manual_edit" => manual_edit, "value" => Parameter(value)]; omitted="")
         }
         crate::device_gesture::GestureRequest::CommitPair {
+            manual_edit,
             key,
             sequence,
             value,
         } => {
-            describe!("commit_pair"; ["key_generation" => key.generation, "key_token" => key.token, "sequence" => sequence, "value_first" => Parameter(&value.first), "value_second" => Parameter(&value.second)]; omitted="")
+            describe!("commit_pair"; ["key_generation" => key.generation, "key_token" => key.token, "sequence" => sequence, "manual_edit" => manual_edit, "value_first" => Parameter(&value.first), "value_second" => Parameter(&value.second)]; omitted="")
+        }
+        crate::device_gesture::GestureRequest::BeginTrackGains { key, group } => {
+            describe!("begin_track_gains"; ["key_generation" => key.generation, "key_token" => key.token, "anchor" => group.anchor().value(), "tracks_count" => group.len()]; omitted="gains")
         }
         crate::device_gesture::GestureRequest::BeginSnapshot {
             key,
@@ -1539,18 +1859,20 @@ pub(super) fn gesture(value: &crate::device_gesture::GestureRequest) -> Descript
             describe!("begin_snapshot"; ["key_generation" => key.generation, "key_token" => key.token, "device" => device.value(), "snapshot_count" => snapshot.entries().len(), "snapshot" => Snapshot(snapshot)]; omitted="")
         }
         crate::device_gesture::GestureRequest::ChangeSnapshot {
+            touched_parameters,
             key,
             sequence,
             snapshot,
         } => {
-            describe!("change_snapshot"; ["key_generation" => key.generation, "key_token" => key.token, "sequence" => sequence, "snapshot_count" => snapshot.entries().len(), "snapshot" => Snapshot(snapshot)]; omitted="")
+            describe!("change_snapshot"; ["key_generation" => key.generation, "key_token" => key.token, "sequence" => sequence, "snapshot_count" => snapshot.entries().len(), "touched_count" => touched_parameters.len(), "snapshot" => Snapshot(snapshot)]; omitted="")
         }
         crate::device_gesture::GestureRequest::CommitSnapshot {
+            touched_parameters,
             key,
             sequence,
             snapshot,
         } => {
-            describe!("commit_snapshot"; ["key_generation" => key.generation, "key_token" => key.token, "sequence" => sequence, "snapshot_count" => snapshot.entries().len(), "snapshot" => Snapshot(snapshot)]; omitted="")
+            describe!("commit_snapshot"; ["key_generation" => key.generation, "key_token" => key.token, "sequence" => sequence, "snapshot_count" => snapshot.entries().len(), "touched_count" => touched_parameters.len(), "snapshot" => Snapshot(snapshot)]; omitted="")
         }
         crate::device_gesture::GestureRequest::BeginEqCreation { key, device, .. } => {
             describe!("begin_eq_creation"; ["key_generation" => key.generation, "key_token" => key.token, "device" => device.value()]; omitted="snapshot")
@@ -1569,9 +1891,16 @@ pub(super) fn gesture(value: &crate::device_gesture::GestureRequest) -> Descript
 
 pub(super) fn gesture_target(value: &crate::device_gesture::GestureTarget) -> Description {
     match value {
+        crate::device_gesture::GestureTarget::PluginParameter { device, parameter } => {
+            describe!("plugin_parameter"; ["device" => device.value(), "parameter" => parameter]; omitted="")
+        }
         crate::device_gesture::GestureTarget::TrackGain { track } => {
             describe!("track_gain"; ["track" => track.value()]; omitted="")
         }
+        crate::device_gesture::GestureTarget::TrackGains { track } => {
+            describe!("track_gains"; ["anchor" => track.value()]; omitted="")
+        }
+        crate::device_gesture::GestureTarget::MainGain => describe!("main_gain"; []; omitted=""),
         crate::device_gesture::GestureTarget::TrackBalance { track } => {
             describe!("track_balance"; ["track" => track.value()]; omitted="")
         }
@@ -1599,6 +1928,137 @@ pub(super) fn gesture_target(value: &crate::device_gesture::GestureTarget) -> De
             return_track,
         } => {
             describe!("return_send"; ["track" => track.value(), "return_track" => return_track.value()]; omitted="")
+        }
+    }
+}
+
+#[cfg(test)]
+mod default_tests {
+    use super::*;
+
+    #[test]
+    fn initialized_device_projection_preserves_kind_without_names_or_bank_payloads() {
+        let secret = "秘密の音🎵";
+        let type_id = hex_lattice_contract::DeviceTypeId::from_static("test.device");
+        let state =
+            hex_lattice_contract::NativeDeviceState::new(type_id, 1, secret.as_bytes().to_vec())
+                .unwrap();
+        let initialization = hex_project::DeviceInitialization::new(
+            Command::InsertDefaultTrackWithDevice {
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: state.clone(),
+                device_name: secret.into(),
+            },
+            Some(hex_project::DeviceComparison::new(
+                hex_project::DeviceVariant::B,
+                state,
+            )),
+        )
+        .unwrap();
+        let description = command(&Command::InitializeDevice(Box::new(initialization)));
+        assert_eq!(description.name, "initialize_device");
+        let details = description.details.text;
+        assert!(details.contains("creation=insert_default_track_with_device"));
+        assert!(details.contains("comparison_present=true"));
+        assert!(details.contains("state_payload_bytes="));
+        assert!(!details.contains(secret));
+        assert!(!details.contains("秘密"));
+    }
+
+    #[test]
+    fn device_default_projection_redacts_the_configured_data_folder() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 1).unwrap();
+        let hex_project::Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "fixture".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        let class = hex_engine::NativeDeviceClass::Effect;
+        let type_id = hex_lattice_contract::DeviceTypeId::from_static("hex.utility");
+        let state = hex_engine::default_native_device_state_for_class(class, type_id).unwrap();
+        let hex_project::Created::Device(device) = editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state,
+            })
+            .unwrap()
+        else {
+            panic!("device");
+        };
+        let root = std::path::PathBuf::from("/private/秘密の既定🎵");
+        let description = request(&Request::SaveDeviceDefault {
+            owner: crate::service::preset::Owner {
+                project_generation: 3,
+                revision: 7,
+                device,
+                class,
+                type_id,
+            },
+            root: root.clone(),
+        });
+        assert_eq!(description.name, "save_device_default");
+        let details = description.details.text;
+        assert!(details.contains(&format!("root_redacted_bytes={}", root.as_os_str().len())));
+        assert!(!details.contains("秘密"));
+        assert!(!details.contains("/private/"));
+    }
+}
+
+#[cfg(test)]
+mod append_tests {
+    use super::*;
+
+    #[test]
+    fn absolute_placement_gap_names_are_redacted() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 1).unwrap();
+        let hex_project::Created::ArrangementSection(section) = editor
+            .execute(Command::AddArrangementSection {
+                name: "source".into(),
+                color: hex_project::ElementColor::Blue,
+                start: hex_project::BeatTime::ZERO,
+                end: hex_project::BeatTime::from_quarters(4).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("source");
+        };
+        let start = hex_project::BeatTime::from_quarters(8).unwrap();
+        for (edit, name) in [
+            (
+                Command::AppendArrangementSectionCopy {
+                    section,
+                    start,
+                    gap_name: "private secret gap".into(),
+                    gap_color: hex_project::ElementColor::Rose,
+                },
+                "append_arrangement_section_copy",
+            ),
+            (
+                Command::MoveArrangementSectionBeyondEnd {
+                    section,
+                    start,
+                    gap_name: "private secret gap".into(),
+                    gap_color: hex_project::ElementColor::Rose,
+                },
+                "move_arrangement_section_beyond_end",
+            ),
+        ] {
+            let description = command(&edit);
+            assert_eq!(description.name, name);
+            assert!(
+                description
+                    .details
+                    .text
+                    .contains("gap_name_redacted_bytes=")
+            );
+            assert!(!description.details.text.contains("private secret"));
         }
     }
 }

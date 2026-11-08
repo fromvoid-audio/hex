@@ -40,6 +40,9 @@ pub(super) struct ClipAliasAction {
 
 #[derive(Clone)]
 pub(super) enum EditorContextAction {
+    HistoryPlayback(super::history_playback::MenuAction),
+    Tags(super::track_tags::Action),
+    Automation(super::device_automation::Action),
     ClipAlias(ClipAliasAction),
     Section(super::arrangement_sections::MenuAction),
     BounceTrack {
@@ -52,11 +55,17 @@ pub(super) enum EditorContextAction {
         revision: u64,
         action: hex_session::service::TrackClipboardAction,
     },
+    TrackGroup {
+        generation: u64,
+        revision: u64,
+        command: Command,
+    },
     LoadFirstSampler(super::sampler_load::Target),
     CancelSamplerLoad {
         request_id: u64,
     },
     RemoveBrowserSource(super::browser::BrowserSection),
+    RelocateBrowserPlace(std::path::PathBuf),
     AdaptiveGrid {
         generation: u64,
         density: super::musical_time::AdaptiveGridDensity,
@@ -84,6 +93,7 @@ pub(super) enum EditorContextAction {
     },
     UtilityMode(UtilityModeAction),
     DeviceComparison(super::device_comparison::Intent),
+    DevicePreset(super::device_preset::Intent),
     RenameTrackName {
         generation: u64,
         revision: u64,
@@ -131,6 +141,7 @@ impl EditorView {
         let focus = cx.focus_handle();
         window.focus(&focus);
         self.context_menu = Some(PopupMenu {
+            scroll: gpui::ScrollHandle::new(),
             icon_grid: None,
             position,
             selected: 0,
@@ -169,6 +180,7 @@ impl EditorView {
         let focus = cx.focus_handle();
         window.focus(&focus);
         self.context_menu = Some(PopupMenu {
+            scroll: gpui::ScrollHandle::new(),
             icon_grid: None,
             position,
             selected: 0,
@@ -203,6 +215,48 @@ impl EditorView {
         };
         if let Some(tracks) = after_track.and_then(|id| self.track_membership(Some(id))) {
             use hex_session::service::TrackClipboardAction as Action;
+            if let Some(menu) = &mut self.context_menu {
+                menu.items.push(MenuItem {
+                    label: "group tracks",
+                    swatch: None,
+                    checked: false,
+                    action: EditorContextAction::TrackGroup {
+                        generation,
+                        revision,
+                        command: Command::GroupTracks {
+                            tracks: tracks.clone(),
+                            name: "group".into(),
+                        },
+                    },
+                });
+                if let Some(track) = after_track.filter(|id| {
+                    state
+                        .project
+                        .track(*id)
+                        .is_some_and(|track| track.is_group())
+                }) {
+                    menu.items.push(MenuItem {
+                        label: "ungroup tracks",
+                        swatch: None,
+                        checked: false,
+                        action: EditorContextAction::TrackGroup {
+                            generation,
+                            revision,
+                            command: Command::UngroupTrack(track),
+                        },
+                    });
+                    menu.items.push(MenuItem {
+                        label: "delete group and tracks",
+                        swatch: None,
+                        checked: false,
+                        action: EditorContextAction::TrackGroup {
+                            generation,
+                            revision,
+                            command: Command::RemoveTrack(track),
+                        },
+                    });
+                }
+            }
             let choices = [
                 ("cut tracks · cmd+x", Action::Cut(tracks.clone())),
                 ("copy tracks · cmd+c", Action::Copy(tracks.clone())),
@@ -267,6 +321,21 @@ impl EditorView {
                     track,
                 },
             });
+        }
+        if let Some(track) = after_track {
+            if let Some(menu) = &mut self.context_menu {
+                menu.items.push(MenuItem {
+                    label: "edit tags · comma separated",
+                    swatch: None,
+                    checked: false,
+                    action: EditorContextAction::Tags(super::track_tags::Action::Edit {
+                        generation,
+                        revision,
+                        track,
+                    }),
+                });
+            }
+            self.append_automation_menu(device_panel::DevicePanelOwner::Track(track));
         }
         self.append_adaptive_grid_choices();
         cx.notify();
@@ -339,6 +408,7 @@ impl EditorView {
         }
         let revision = state.revision;
         self.open_track_context_menu(position, None, window, cx);
+        self.append_automation_menu(device_panel::DevicePanelOwner::Return(id));
         if let Some(menu) = &mut self.context_menu {
             menu.items.push(MenuItem {
                 label: "rename track · cmd+r",
@@ -383,6 +453,7 @@ impl EditorView {
         window.focus(&focus);
         let target = flavor.toggled();
         self.context_menu = Some(PopupMenu {
+            scroll: gpui::ScrollHandle::new(),
             icon_grid: None,
             position,
             selected: 0,
@@ -451,6 +522,29 @@ impl EditorView {
         cx.notify();
     }
 
+    pub(super) fn append_utility_mode_choice(&mut self, device: DeviceId, mid_side: bool) {
+        let Some(owner) = self.device_panel.owner else {
+            return;
+        };
+        if let Some(menu) = &mut self.context_menu {
+            menu.items.push(MenuItem {
+                label: if mid_side {
+                    "switch to width"
+                } else {
+                    "switch to mid/side"
+                },
+                swatch: None,
+                checked: false,
+                action: EditorContextAction::UtilityMode(UtilityModeAction {
+                    generation: self.project_generation,
+                    owner,
+                    device,
+                    mid_side: !mid_side,
+                }),
+            });
+        }
+    }
+
     pub(super) fn open_utility_mode_context_menu(
         &mut self,
         position: Point<Pixels>,
@@ -479,6 +573,7 @@ impl EditorView {
             ("switch to mid/side", true)
         };
         self.context_menu = Some(PopupMenu {
+            scroll: gpui::ScrollHandle::new(),
             icon_grid: None,
             position,
             items: vec![MenuItem {
@@ -514,6 +609,13 @@ impl EditorView {
     ) {
         self.dismiss_context_menu(window, cx);
         match action {
+            EditorContextAction::HistoryPlayback(action) => {
+                self.history_playback_menu_action(action, cx)
+            }
+            EditorContextAction::Tags(action) => self.perform_tag_action(action, window, cx),
+            EditorContextAction::Automation(action) => {
+                self.automation_menu_action(action, window, cx)
+            }
             EditorContextAction::ClipAlias(target) => {
                 if !self.clip_alias_menu_current(&target) || self.edit_pending() {
                     return;
@@ -583,6 +685,9 @@ impl EditorView {
             EditorContextAction::RemoveBrowserSource(source) => {
                 self.remove_browser_source(source, window, cx);
             }
+            EditorContextAction::RelocateBrowserPlace(path) => {
+                self.prompt_relocate_browser_place(path, cx);
+            }
             EditorContextAction::AdaptiveGrid {
                 generation,
                 density,
@@ -594,6 +699,9 @@ impl EditorView {
             }
             EditorContextAction::DeviceComparison(target) => {
                 self.perform_device_comparison(target, cx)
+            }
+            EditorContextAction::DevicePreset(target) => {
+                self.perform_device_preset_action(target, cx)
             }
             EditorContextAction::BounceTrack {
                 generation,
@@ -608,6 +716,11 @@ impl EditorView {
                 revision,
                 action,
             } => self.start_track_clipboard(generation, revision, action),
+            EditorContextAction::TrackGroup {
+                generation,
+                revision,
+                command,
+            } => self.perform_track_group(generation, revision, command, window, cx),
             EditorContextAction::PlaceIcon { path, id } => {
                 self.set_browser_place_icon(path, id, cx)
             }
@@ -667,13 +780,24 @@ impl EditorView {
                     cx.notify();
                     return;
                 }
-                device_panel::enqueue_return_edit(
+                let gain = match self.track_defaults.captured_gain() {
+                    Ok(gain) => gain,
+                    Err(error) => {
+                        self.error = Some(error.into());
+                        cx.notify();
+                        return;
+                    }
+                };
+                if device_panel::enqueue_return_edit(
                     self,
-                    Command::AddReturnTrack {
+                    Command::AddReturnTrackWithGain {
                         name: format!("return {}", count + 1),
+                        gain,
                     },
                     cx,
-                );
+                ) {
+                    self.error = None;
+                }
                 cx.notify();
             }
             EditorContextAction::InsertTrack(action) => {
@@ -691,11 +815,7 @@ impl EditorView {
                     cx.notify();
                     return;
                 }
-                let name = format!("track {}", state.project.tracks().len() + 1);
-                self.enqueue(Request::Edit(Command::InsertTrack {
-                    name,
-                    before_track: action.before_track,
-                }));
+                self.insert_default_track(action.before_track);
                 cx.notify();
             }
             EditorContextAction::UtilityMode(action) => {
@@ -730,6 +850,42 @@ impl EditorView {
         }
     }
 
+    pub(super) fn perform_track_group(
+        &mut self,
+        generation: u64,
+        revision: u64,
+        command: Command,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.track_name.is_editing()
+            || self.clip_name_edit.is_some()
+            || self.track_reorder_active()
+            || self.track_resize_active()
+            || self.active_clip_drag.is_some()
+            || self.active_trim_drag.is_some()
+            || self.active_midi_trim_drag.is_some()
+            || self.active_fade_drag.is_some()
+            || self.time_selection_gesture.is_some()
+        {
+            self.error = Some("finish the current edit before changing tracks".into());
+            cx.notify();
+            return;
+        }
+        if generation == self.project_generation
+            && self
+                .state
+                .as_ref()
+                .is_some_and(|state| state.revision == revision)
+            && !self.edit_pending()
+            && device_panel::finalize_controls(self, cx)
+        {
+            self.focus.focus(window);
+            self.enqueue(Request::Edit(command));
+            cx.notify();
+        }
+    }
+
     fn navigate_context_menu(&mut self, forward: bool, cx: &mut Context<Self>) {
         if let Some(menu) = &mut self.context_menu {
             let count = menu.items.len();
@@ -739,6 +895,9 @@ impl EditorView {
                 } else {
                     (menu.selected + count - 1) % count
                 };
+                if menu.icon_grid.is_none() {
+                    menu.scroll.scroll_to_item(menu.selected);
+                }
             }
             cx.notify();
         }
@@ -761,6 +920,11 @@ impl EditorView {
     ) -> Option<Div> {
         if self.context_menu.as_ref().is_some_and(|menu| {
             menu.items.iter().any(|item| match &item.action {
+                EditorContextAction::HistoryPlayback(action) => {
+                    !self.history_playback_menu_current(action)
+                }
+                EditorContextAction::Tags(action) => action.stale(self),
+                EditorContextAction::Automation(action) => self.automation_action_stale(action),
                 EditorContextAction::ClipAlias(target) => !self.clip_alias_menu_current(target),
                 EditorContextAction::Section(action) => self.section_menu_stale(action),
                 EditorContextAction::LoadFirstSampler(target) => {
@@ -772,11 +936,17 @@ impl EditorView {
                 EditorContextAction::DeviceComparison(target) => {
                     !super::device_comparison::current(self, target)
                 }
+                EditorContextAction::DevicePreset(target) => {
+                    !super::device_preset::current(self, target)
+                }
                 EditorContextAction::PlaceIcon { path, .. } => {
                     !self.browser_place_icon_assignable(path)
                 }
                 EditorContextAction::RemoveBrowserSource(source) => {
                     !self.browser_source_removable(source)
+                }
+                EditorContextAction::RelocateBrowserPlace(path) => {
+                    !self.browser_place_relocatable(path)
                 }
                 EditorContextAction::BounceTrack {
                     generation,
@@ -789,6 +959,11 @@ impl EditorView {
                         })
                 }
                 EditorContextAction::TrackClipboard {
+                    generation,
+                    revision,
+                    ..
+                }
+                | EditorContextAction::TrackGroup {
                     generation,
                     revision,
                     ..
@@ -864,15 +1039,45 @@ impl EditorView {
             return None;
         }
         self.context_menu.as_ref().map(|menu| {
-            crate::context_menu::popup(
+            if !menu
+                .items
+                .iter()
+                .any(|item| matches!(item.action, EditorContextAction::Automation(_)))
+            {
+                return crate::context_menu::popup(
+                    menu,
+                    window,
+                    cx,
+                    Self::select_context_item,
+                    Self::dismiss_context_menu,
+                    Self::navigate_context_menu,
+                );
+            }
+            crate::context_menu::popup_with_labels(
                 menu,
                 window,
                 cx,
                 Self::select_context_item,
                 Self::dismiss_context_menu,
                 Self::navigate_context_menu,
+                context_item_label,
             )
         })
+    }
+}
+
+pub(super) fn context_item_label(item: &MenuItem<EditorContextAction>) -> gpui::SharedString {
+    match &item.action {
+        EditorContextAction::Tags(action) => action.label(),
+        EditorContextAction::Automation(super::device_automation::Action::Show(entry, _))
+            if item.label == "parameter" =>
+        {
+            entry.label.clone()
+        }
+        EditorContextAction::Automation(super::device_automation::Action::Device {
+            label, ..
+        }) => label.clone(),
+        _ => item.label.into(),
     }
 }
 
@@ -929,6 +1134,133 @@ mod tests {
     use super::*;
     use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
     use std::sync::Arc;
+
+    #[gpui::test]
+    fn stale_group_delete_action_cannot_remove_newer_project_tracks(cx: &mut TestAppContext) {
+        use super::super::track_reorder_ui_test::{live_tracks, receive};
+        use hex_project::TrackSelectionIds;
+        let (mut visual, editor, ids) = live_tracks(cx, 1, false);
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::GroupTracks {
+                tracks: TrackSelectionIds::new(&ids).unwrap(),
+                name: "group".into(),
+            })))
+        });
+        receive(&mut visual, &editor);
+        let group = editor.read_with(&visual, |view, _| {
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .tracks()
+                .iter()
+                .find(|track| track.is_group())
+                .unwrap()
+                .id()
+        });
+        let action = visual.update(|window, cx| {
+            editor.update(cx, |view, cx| {
+                view.open_track_context_menu(point(px(100.0), px(100.0)), Some(group), window, cx);
+                view.context_menu
+                    .as_ref()
+                    .unwrap()
+                    .items
+                    .iter()
+                    .find(|item| item.label == "delete group and tracks")
+                    .unwrap()
+                    .action
+                    .clone()
+            })
+        });
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::AddTrack {
+                name: "newer track".into()
+            })))
+        });
+        receive(&mut visual, &editor);
+        let before = editor.read_with(&visual, |view, _| {
+            view.state.as_ref().unwrap().project.snapshot()
+        });
+        visual.update(|window, cx| {
+            editor.update(cx, |view, cx| view.select_context_item(action, window, cx))
+        });
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+            assert_eq!(view.worker_requests_pending, 0);
+        });
+    }
+
+    #[gpui::test]
+    fn stale_group_action_cannot_edit_newer_project(cx: &mut TestAppContext) {
+        use super::super::track_reorder_ui_test::{live_tracks, receive};
+        let (mut visual, editor, ids) = live_tracks(cx, 1, false);
+        let action = visual.update(|window, cx| {
+            editor.update(cx, |view, cx| {
+                view.open_track_context_menu(point(px(100.0), px(100.0)), Some(ids[0]), window, cx);
+                view.context_menu
+                    .as_ref()
+                    .unwrap()
+                    .items
+                    .iter()
+                    .find(|item| item.label == "group tracks")
+                    .unwrap()
+                    .action
+                    .clone()
+            })
+        });
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::AddTrack {
+                name: "newer track".into()
+            })))
+        });
+        receive(&mut visual, &editor);
+        let revision = editor.read_with(&visual, |view, _| view.state.as_ref().unwrap().revision);
+        visual.update(|window, cx| {
+            editor.update(cx, |view, cx| view.select_context_item(action, window, cx))
+        });
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().revision, revision);
+            assert!(!view.state.as_ref().unwrap().project.has_group_tracks());
+            assert_eq!(view.worker_requests_pending, 0);
+        });
+    }
+
+    #[gpui::test]
+    fn group_action_refuses_during_track_name_edit(cx: &mut TestAppContext) {
+        use super::super::track_reorder_ui_test::{bounds, live_tracks};
+        let (mut visual, editor, ids) = live_tracks(cx, 1, false);
+        let action = visual.update(|window, cx| {
+            editor.update(cx, |view, cx| {
+                view.open_track_context_menu(point(px(100.0), px(100.0)), Some(ids[0]), window, cx);
+                view.context_menu
+                    .as_ref()
+                    .unwrap()
+                    .items
+                    .iter()
+                    .find(|item| item.label == "group tracks")
+                    .unwrap()
+                    .action
+                    .clone()
+            })
+        });
+        visual.simulate_keystrokes("escape");
+        let at = bounds(&mut visual, ids[0]).center();
+        visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+        visual.simulate_keystrokes("cmd-r");
+        visual.run_until_parked();
+        assert!(editor.read_with(&visual, |view, _| view.track_name.is_editing()));
+        visual.update(|window, cx| {
+            editor.update(cx, |view, cx| view.select_context_item(action, window, cx))
+        });
+        editor.read_with(&visual, |view, _| {
+            assert!(view.track_name.is_editing());
+            assert!(!view.state.as_ref().unwrap().project.has_group_tracks());
+            assert_eq!(view.worker_requests_pending, 0);
+        });
+    }
 
     #[gpui::test]
     fn clip_right_click_toggles_flavor_without_track_insertion(cx: &mut TestAppContext) {
@@ -1107,7 +1439,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn track_header_offers_nine_non_gray_swatches_and_stale_clip_action_is_ignored(
+    fn track_header_offers_eight_non_blue_swatches_and_stale_clip_action_is_ignored(
         cx: &mut TestAppContext,
     ) {
         let (project, track, _, clip) = audio_project();
@@ -1137,7 +1469,7 @@ mod tests {
                     .iter()
                     .filter(|item| item.swatch.is_some())
                     .count(),
-                9
+                8
             );
             let choices: Vec<_> = menu
                 .items
@@ -1147,8 +1479,9 @@ mod tests {
                     _ => None,
                 })
                 .collect();
-            assert_eq!(choices, ElementColor::ALL[1..]);
+            assert_eq!(choices, ElementColor::TRACK_CHOICES);
             assert!(!choices.contains(&ElementColor::Gray));
+            assert!(!choices.contains(&ElementColor::Blue));
             // Color and density are independent checkmark groups in one popup.
             let checked_colors: Vec<_> = menu
                 .items
@@ -1238,7 +1571,7 @@ mod tests {
         visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
         editor.read_with(cx, |view, _| {
             assert!(view.context_menu.is_none());
-            assert!(matches!(view.last_enqueued_edit, Some(Command::InsertTrack { before_track: Some(anchor), .. }) if anchor == target));
+            assert!(matches!(view.last_enqueued_edit, Some(Command::InsertDefaultTrackWithGain { before_track: Some(anchor), .. }) if anchor == target));
         });
     }
 
@@ -1282,7 +1615,7 @@ mod tests {
             assert!(view.context_menu.is_none());
             assert!(matches!(
                 view.last_enqueued_edit,
-                Some(Command::InsertTrack {
+                Some(Command::InsertDefaultTrackWithGain {
                     before_track: None,
                     ..
                 })
@@ -1507,86 +1840,147 @@ mod tests {
             }
         }
     }
-    #[gpui::test]
-    fn track_menu_inserts_return_with_real_history_and_saved_routing(cx: &mut TestAppContext) {
+    fn track_menu_inserts_return_with_real_history_and_saved_routing(
+        cx: &mut TestAppContext,
+        mode: super::super::EditorMode,
+    ) {
         use crate::editor::midi_canvas::creation_tests::{fixture, pump};
-        for mode in [
+        let (mut visual, editor, environment, _) = fixture(cx);
+        editor.update(&mut visual, |view, cx| {
+            view.mode = mode;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        editor.update(&mut visual, |view, _| {
+            view.track_defaults.set_test_state(0.5, false, true)
+        });
+        let original = editor.read_with(&visual, |view, _| {
+            view.state.as_ref().unwrap().project.clone()
+        });
+        let track = original.tracks()[0].id();
+        let prefix = if mode == super::super::EditorMode::Arrangement {
+            "arrangement-track-header"
+        } else {
+            "session-track"
+        };
+        let header = visual
+            .debug_bounds(Box::leak(
+                format!("{prefix}-{}", track.value()).into_boxed_str(),
+            ))
+            .unwrap();
+        visual.simulate_mouse_down(header.center(), MouseButton::Right, Modifiers::default());
+        visual.simulate_mouse_up(header.center(), MouseButton::Right, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            let menu = view.context_menu.as_ref().unwrap();
+            assert_eq!(menu.items[0].label, "insert track");
+            assert_eq!(menu.items[1].label, "insert return track");
+            assert!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .return_tracks()
+                    .is_empty()
+            );
+        });
+        visual.simulate_keystrokes("down enter");
+        editor.update(&mut visual, |view, _| {
+            view.track_defaults.set_test_state(0.25, false, true)
+        });
+        pump(&editor, &mut visual);
+        let inserted = editor.read_with(&visual, |view, _| {
+            let p = &view.state.as_ref().unwrap().project;
+            assert_eq!(p.tracks(), original.tracks());
+            assert_eq!(p.return_tracks().len(), 1);
+            assert_eq!(p.return_tracks()[0].name(), "return 1");
+            assert_eq!(p.return_tracks()[0].gain(), 0.5);
+            assert!(p.return_tracks()[0].devices().is_empty());
+            assert!(view.context_menu.is_none());
+            p.clone()
+        });
+        editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            let mut expected = original.snapshot();
+            expected.next_id = inserted.snapshot().next_id;
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), expected);
+        });
+        editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Redo)));
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project, inserted)
+        });
+        let path = environment.root().join("return-menu.hex");
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::SaveNew(path.clone())))
+        });
+        pump(&editor, &mut visual);
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Open(path)))
+        });
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project, inserted)
+        });
+    }
+
+    #[gpui::test]
+    fn track_menu_return_arrangement(cx: &mut TestAppContext) {
+        track_menu_inserts_return_with_real_history_and_saved_routing(
+            cx,
             super::super::EditorMode::Arrangement,
+        );
+    }
+
+    #[gpui::test]
+    fn track_menu_return_session(cx: &mut TestAppContext) {
+        track_menu_inserts_return_with_real_history_and_saved_routing(
+            cx,
             super::super::EditorMode::Session,
-        ] {
-            let (mut visual, editor, environment, _) = fixture(cx);
-            editor.update(&mut visual, |view, cx| {
-                view.mode = mode;
-                cx.notify();
-            });
+        );
+    }
+    #[gpui::test]
+    fn return_menu_refuses_unavailable_defaults_without_an_edit(cx: &mut TestAppContext) {
+        use crate::editor::midi_canvas::creation_tests::fixture;
+        for loading in [true, false] {
+            let (mut visual, editor, _environment, _) = fixture(cx);
             visual.run_until_parked();
-            let original = editor.read_with(&visual, |view, _| {
+            editor.update(&mut visual, |view, _| {
+                view.track_defaults.set_test_state(0.5, loading, false)
+            });
+            let before = editor.read_with(&visual, |view, _| {
                 view.state.as_ref().unwrap().project.clone()
             });
-            let track = original.tracks()[0].id();
-            let prefix = if mode == super::super::EditorMode::Arrangement {
-                "arrangement-track-header"
-            } else {
-                "session-track"
-            };
-            let header = visual
-                .debug_bounds(Box::leak(
-                    format!("{prefix}-{}", track.value()).into_boxed_str(),
-                ))
-                .unwrap();
-            visual.simulate_mouse_down(header.center(), MouseButton::Right, Modifiers::default());
-            visual.simulate_mouse_up(header.center(), MouseButton::Right, Modifiers::default());
-            visual.run_until_parked();
-            editor.read_with(&visual, |view, _| {
-                let menu = view.context_menu.as_ref().unwrap();
-                assert_eq!(menu.items[0].label, "insert track");
-                assert_eq!(menu.items[1].label, "insert return track");
-                assert!(
-                    view.state
+            let action = visual.update(|window, cx| {
+                editor.update(cx, |view, cx| {
+                    view.open_track_context_menu(point(px(600.0), px(100.0)), None, window, cx);
+                    view.context_menu
                         .as_ref()
                         .unwrap()
-                        .project
-                        .return_tracks()
-                        .is_empty()
-                );
+                        .items
+                        .iter()
+                        .find(|item| item.label == "insert return track")
+                        .unwrap()
+                        .action
+                        .clone()
+                })
             });
-            visual.simulate_keystrokes("down enter");
-            pump(&editor, &mut visual);
-            let inserted = editor.read_with(&visual, |view, _| {
-                let p = &view.state.as_ref().unwrap().project;
-                assert_eq!(p.tracks(), original.tracks());
-                assert_eq!(p.return_tracks().len(), 1);
-                assert_eq!(p.return_tracks()[0].name(), "return 1");
-                assert!(p.return_tracks()[0].devices().is_empty());
-                assert!(view.context_menu.is_none());
-                p.clone()
+            visual.update(|window, cx| {
+                editor.update(cx, |view, cx| view.select_context_item(action, window, cx))
             });
-            editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
-            pump(&editor, &mut visual);
             editor.read_with(&visual, |view, _| {
-                let mut expected = original.snapshot();
-                expected.next_id = inserted.snapshot().next_id;
-                assert_eq!(view.state.as_ref().unwrap().project.snapshot(), expected);
-            });
-            editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Redo)));
-            pump(&editor, &mut visual);
-            editor.read_with(&visual, |view, _| {
-                assert_eq!(view.state.as_ref().unwrap().project, inserted)
-            });
-            let path = environment.root().join("return-menu.hex");
-            editor.update(&mut visual, |view, _| {
-                assert!(view.enqueue(Request::SaveNew(path.clone())))
-            });
-            pump(&editor, &mut visual);
-            editor.update(&mut visual, |view, _| {
-                assert!(view.enqueue(Request::Open(path)))
-            });
-            pump(&editor, &mut visual);
-            editor.read_with(&visual, |view, _| {
-                assert_eq!(view.state.as_ref().unwrap().project, inserted)
+                assert!(view.error.as_deref().unwrap().contains(if loading {
+                    "loading"
+                } else {
+                    "open settings"
+                }));
+                assert_eq!(view.worker_requests_pending, 0);
+                assert_eq!(view.state.as_ref().unwrap().project, before);
             });
         }
     }
+
     #[gpui::test]
     fn return_insertion_refuses_stale_menu_and_capacity_consumed_after_open(
         cx: &mut TestAppContext,

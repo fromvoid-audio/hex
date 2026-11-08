@@ -87,6 +87,7 @@ impl ClipAliases {
                                 .iter()
                                 .map(|note| MidiNoteSnapshot {
                                     id: note.id.value(),
+                                    active: note.active,
                                     start_raw: note.start.raw(),
                                     duration_raw: note.duration.raw(),
                                     pitch: note.pitch,
@@ -124,10 +125,19 @@ impl ClipAliases {
         for source in snapshot.sources {
             crate::snapshot::insert_id(source.id, ids, max_id)?;
             let content = match source.content {
-                AliasContentSnapshot::Audio { asset, content } => Content::Audio {
-                    asset: AssetId(asset),
-                    content,
-                },
+                AliasContentSnapshot::Audio { asset, content } => {
+                    if matches!(content.clock, crate::AudioDomainClock::Frames(length)
+                        if length > crate::MAX_AUDIO_DOMAIN_FRAMES)
+                    {
+                        return Err(Invalid(
+                            "linked audio exceeds the supported frame event extent",
+                        ));
+                    }
+                    Content::Audio {
+                        asset: AssetId(asset),
+                        content,
+                    }
+                }
                 AliasContentSnapshot::ConsoleAudio { asset } => {
                     Content::ConsoleAudio(AssetId(asset))
                 }
@@ -161,6 +171,7 @@ impl ClipAliases {
                         )?;
                         compiled.push(MidiNote {
                             id: NoteId(note.id),
+                            active: note.active,
                             start,
                             duration,
                             pitch: note.pitch,

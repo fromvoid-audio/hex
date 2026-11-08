@@ -31,6 +31,7 @@ pub(super) fn insertions(
             return Err("invalid midi copy note");
         }
         result.push(MidiNoteInsert {
+            active: note.active,
             start: BeatTime::from_raw(start),
             duration: BeatTime::from_raw(note.duration),
             pitch: note.pitch,
@@ -93,6 +94,7 @@ impl EditorView {
                 let mut notes = capture_selected_notes(
                     source.notes().iter().map(|note| GroupNote {
                         id: note.id(),
+                        active: note.active(),
                         start: note.start().raw(),
                         duration: note.duration().raw(),
                         pitch: note.pitch(),

@@ -10,12 +10,17 @@ use super::{
 };
 use hex_project::{ClipId, Command, MidiNoteInsert, MidiSourceIdentity, Project};
 use hex_session::service::{Event, Request};
+use std::sync::Arc;
 
 pub(super) enum Frozen {
     Single(NoteGesture),
+    /// Keyboard edits retain ordinary canonical paint until their exact ACK;
+    /// this retains only the source-origin adjustment, never held pointer input.
+    OriginNudge,
     Group(GroupGesture),
-    Volume(hex_project::MidiClipVolume),
     Creation(MidiNoteInsert),
+    Velocity(super::midi_velocity::Gesture),
+    Stroke(Arc<super::midi_stroke::StrokePreview>),
 }
 
 pub(super) struct Pending {
@@ -27,7 +32,7 @@ pub(super) struct Pending {
     preview: Frozen,
 }
 
-fn source_identity(project: &Project, clip: ClipId) -> Option<MidiSourceIdentity> {
+pub(super) fn source_identity(project: &Project, clip: ClipId) -> Option<MidiSourceIdentity> {
     project
         .midi_clip(clip)
         .map(|clip| clip.source_identity())
@@ -83,8 +88,36 @@ impl Pending {
             (
                 Command::UpdateMidiNotes { clip, notes },
                 Request::Edit(Command::UpdateMidiNotes { clip: c, notes: n }),
+            )
+            | (
+                Command::UpdateMidiNotesWithSourceExtent { clip, notes },
+                Request::Edit(Command::UpdateMidiNotesWithSourceExtent { clip: c, notes: n }),
             ) => (clip, notes) == (c, n),
             (
+                Command::UpdateMidiNotesWithSourcePrefix {
+                    clip,
+                    prefix,
+                    notes,
+                },
+                Request::Edit(Command::UpdateMidiNotesWithSourcePrefix {
+                    clip: c,
+                    prefix: p,
+                    notes: n,
+                }),
+            ) => (clip, prefix, notes) == (c, p, n),
+            (
+                Command::EditMidiNotes {
+                    clip,
+                    remove,
+                    insert,
+                },
+                Request::Edit(Command::EditMidiNotes {
+                    clip: c,
+                    remove: r,
+                    insert: i,
+                }),
+            )
+            | (
                 Command::EditMidiNotesWithSourceExtent {
                     clip,
                     remove,
@@ -96,10 +129,6 @@ impl Pending {
                     insert: i,
                 }),
             ) => (clip, remove, insert) == (c, r, i),
-            (
-                Command::ReplaceMidiClipVolume { clip, volume },
-                Request::Edit(Command::ReplaceMidiClipVolume { clip: c, volume: v }),
-            ) => (clip, volume) == (c, v),
             _ => false,
         }
     }
@@ -167,14 +196,6 @@ impl EditorView {
         })
     }
 
-    pub(super) fn pending_midi_volume(&self, clip: ClipId) -> Option<hex_project::MidiClipVolume> {
-        let pending = self.pending_midi_drag.as_ref()?;
-        let Frozen::Volume(volume) = &pending.preview else {
-            return None;
-        };
-        (pending.clip == clip && pending.displayed(self)).then(|| volume.clone())
-    }
-
     /// Held input and accepted display custody are distinct. Only the existing
     /// ordinary receipt/source owner can retire a released creation preview.
     pub(super) fn displayed_midi_creation(&self) -> Option<MidiNoteInsert> {
@@ -185,6 +206,36 @@ impl EditorView {
             };
             pending.displayed(self).then_some(*note)
         })
+    }
+
+    /// Released velocity values follow source/receipt custody, independent of
+    /// later selection, focus or viewport changes. This never owns input.
+    pub(super) fn pending_midi_velocity(
+        &self,
+        clip: ClipId,
+    ) -> Option<&super::midi_velocity::Gesture> {
+        let pending = self.pending_midi_drag.as_ref()?;
+        let Frozen::Velocity(gesture) = &pending.preview else {
+            return None;
+        };
+        (pending.clip == clip && pending.displayed(self)).then_some(gesture)
+    }
+
+    /// Freeze only the immutable display payload, not the working stroke's
+    /// baseline index, traversal caches or editable action map.
+    pub(super) fn displayed_midi_stroke_preview(
+        &self,
+    ) -> Option<Arc<super::midi_stroke::StrokePreview>> {
+        self.midi_stroke
+            .as_ref()
+            .map(|stroke| stroke.shared_preview())
+            .or_else(|| {
+                let pending = self.pending_midi_drag.as_ref()?;
+                let Frozen::Stroke(preview) = &pending.preview else {
+                    return None;
+                };
+                pending.displayed(self).then(|| Arc::clone(preview))
+            })
     }
 
     pub(super) fn pending_midi_drag_matches(&self, request: &Request) -> bool {
@@ -203,15 +254,41 @@ impl EditorView {
     /// success and refusal replace pending paint with the terminal's canonical
     /// snapshot atomically; earlier completions and background events do not.
     pub(super) fn midi_drag_request_complete(&mut self, event: &Event) {
-        if let Some(pending) = self.pending_midi_drag.as_mut()
-            && pending.receipt.observe(
+        let disposition = self.pending_midi_drag.as_mut().map(|pending| {
+            pending.receipt.observe(
                 self.project_generation,
                 event.project_replaced,
                 event.request_complete,
-            ) != Disposition::Waiting
-        {
-            self.retire_pending_midi_drag();
+            )
+        });
+        if disposition == Some(Disposition::Waiting) || disposition.is_none() {
+            return;
         }
+        if disposition == Some(Disposition::Terminal)
+            && event.error.is_none()
+            && let Some(pending) = self.pending_midi_drag.as_ref()
+            && let Command::UpdateMidiNotesWithSourcePrefix { clip, prefix, .. } = pending.command
+            && pending.source_current(self)
+            && self
+                .state
+                .as_ref()
+                .and_then(|old| old.project.midi_source(clip))
+                .zip(event.state.project.midi_source(clip))
+                .is_some_and(|(old, new)| {
+                    old.source_start().raw().checked_add(prefix.raw())
+                        == Some(new.source_start().raw())
+                })
+            && let Some(source) = source_identity(&event.state.project, clip)
+        {
+            self.midi_origin_history.record_prefix(
+                self.project_generation,
+                clip,
+                &pending.source,
+                &source,
+                prefix.raw(),
+            );
+        }
+        self.retire_pending_midi_drag();
     }
 
     pub(super) fn retire_pending_midi_drag(&mut self) -> bool {

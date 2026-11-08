@@ -122,7 +122,7 @@ impl AudioCandidateReservationQuote {
             .compiler_workspace_bytes
             .checked_add(workspace)
             .ok_or(AudioStorageError::Overflow)?;
-        if effect_payloads {
+        if effect_payloads || project.has_group_tracks() {
             quote.metadata_data_bytes = quote
                 .metadata_data_bytes
                 .checked_add(crate::compensation::MAX_COMPENSATION_BYTES)
@@ -131,6 +131,8 @@ impl AudioCandidateReservationQuote {
                 .compiler_workspace_bytes
                 .checked_add(crate::compensation::MAX_COMPENSATION_BYTES)
                 .ok_or(AudioStorageError::Overflow)?;
+        }
+        if effect_payloads {
             let mut payloads = 0usize;
             let mut largest = 0;
             for device in project
@@ -154,7 +156,21 @@ impl AudioCandidateReservationQuote {
                 .checked_add(largest)
                 .ok_or(AudioStorageError::Overflow)?;
         }
-        // Cardinalities cannot describe spare capacity retained by canonical
+        if effect_payloads {
+            let (bytes, rows) = crate::foreign_automation::candidate::quote(project)?;
+            quote.metadata_data_bytes = quote
+                .metadata_data_bytes
+                .checked_add(bytes)
+                .ok_or(AudioStorageError::Overflow)?;
+            quote.data_rows = quote
+                .data_rows
+                .checked_add(rows)
+                .ok_or(AudioStorageError::Overflow)?;
+            quote.handle_rows = quote
+                .handle_rows
+                .checked_add(rows.checked_mul(2).ok_or(AudioStorageError::Overflow)?)
+                .ok_or(AudioStorageError::Overflow)?;
+        } // Cardinalities cannot describe spare capacity retained by canonical
         // sources. Quote the actual two owning identity tokens per Console clip.
         let canonical_bytes =
             crate::session_inventory::audio_assembly::current_midi::canonical_source_metadata_bytes(
@@ -222,6 +238,11 @@ impl AudioCandidateReservationQuote {
         quote.compiler_workspace_bytes = quote
             .compiler_workspace_bytes
             .checked_add(crate::audio_preparation::transformed::workspace_ceiling()?)
+            .and_then(|bytes| bytes.checked_add(crate::compensation::MAX_COMPENSATION_BYTES))
+            .ok_or(AudioStorageError::Overflow)?;
+        quote.metadata_data_bytes = quote
+            .metadata_data_bytes
+            .checked_add(crate::compensation::MAX_COMPENSATION_BYTES)
             .ok_or(AudioStorageError::Overflow)?;
         Ok(quote)
     }
@@ -340,7 +361,9 @@ impl Counts {
                 .ok_or(AudioStorageError::Overflow)?;
         }
         let (rows, handles) = match kind {
-            Kind::Fixed => (256usize, 128usize),
+            // Includes the fixed MIDI span Box under the Session owner; its
+            // former inline payload remains under the same runtime ceiling.
+            Kind::Fixed => (257usize, 128usize),
             Kind::Source => (8, 8),
             Kind::PreparedSource => (4, 2),
             Kind::Scene => (8, 4),

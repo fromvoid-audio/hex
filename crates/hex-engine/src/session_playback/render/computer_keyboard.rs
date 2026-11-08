@@ -2,6 +2,40 @@
 use super::*;
 
 impl SessionPlayback {
+    pub(crate) fn prepare_foreign_keyboard(
+        &mut self,
+        track: hex_project::TrackId,
+        input: Arc<crate::computer_keyboard::ComputerKeyboardInput>,
+    ) -> Result<(), crate::Invalid> {
+        if self.computer_keyboard.is_some() {
+            return Err(crate::Invalid("a computer keyboard is already prepared"));
+        }
+        self.foreign_arrangement.attach_keyboard(track, input)?;
+        if self.validate_candidate_runtime_storage(0).is_err() {
+            self.foreign_arrangement.remove_keyboard_on_control();
+            return Err(crate::Invalid(
+                "computer keyboard exceeds graph storage budget",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn shares_foreign_keyboard(&self, previous: &Self) -> bool {
+        self.foreign_arrangement
+            .shares_keyboard(&previous.foreign_arrangement)
+    }
+
+    pub(crate) fn detach_foreign_keyboard(&mut self) {
+        self.foreign_arrangement.detach_keyboard();
+    }
+
+    pub(crate) fn cancel_foreign_keyboard(
+        &self,
+        priority_stop: Option<&crate::computer_keyboard::KeyboardActivationClock>,
+    ) {
+        self.foreign_arrangement.cancel_keyboard(priority_stop);
+    }
+
     pub(super) fn render_stopped_main_tails(
         &mut self,
         output: &mut [Frame],
@@ -147,15 +181,17 @@ impl SessionPlayback {
                     offset,
                     observer,
                     capture,
-                    None,
+                    sources,
                     foreign,
+                    None,
+                    None,
                 )?;
                 if drain_edit_tails {
                     self.return_effect_tails
                         .render_chunk(chunk, offset, capture, foreign)?;
                 }
                 self.compensation
-                    .as_ref()
+                    .as_mut()
                     .ok_or(SessionPlaybackError::DeviceRuntime)?
                     .process_main_with_foreign(
                         &mut self.main_chain,
@@ -163,6 +199,8 @@ impl SessionPlayback {
                         offset,
                         foreign,
                         observer,
+                        None,
+                        None,
                     )
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                 let tail_clock = crate::effect_clock::ArrangementEffectClock::session(
@@ -300,7 +338,15 @@ impl SessionPlayback {
                         .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                 }
                 for (frame_index, frame) in frames.iter_mut().enumerate() {
-                    let mixed = track.mix_at(self.arrangement_frame).apply_frame(*frame);
+                    let mix = track.mix_at(self.arrangement_frame);
+                    let fader = &mut self.track_fader_scratch[index];
+                    let mix = if track.has_gain_automation() {
+                        fader.follow(mix.channel_gain());
+                        mix
+                    } else {
+                        mix.with_channel_gain(fader.next())
+                    };
+                    let mixed = mix.apply_frame(*frame);
                     *frame = mixed;
                     chunk[frame_index][0] += mixed[0];
                     chunk[frame_index][1] += mixed[1];
@@ -324,12 +370,13 @@ impl SessionPlayback {
                 observer,
                 capture,
                 &mut hex_lattice::RefuseForeign,
+                None,
             )?;
             if drain_edit_tails {
                 self.return_effect_tails
                     .render_chunk(chunk, offset, capture, foreign)?;
             }
-            self.render_detached_tails(self.performance_frame, chunk, offset, capture)?;
+            self.render_detached_tails(self.performance_frame, chunk, offset, capture, None)?;
             self.advance_paused_analytic_releases(count)?;
             offset = end;
         }

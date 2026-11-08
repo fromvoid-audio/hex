@@ -4,13 +4,26 @@ use super::super::{
     test_environment::Environment,
 };
 use super::*;
-use gpui::{Entity, Modifiers, ScrollDelta, ScrollWheelEvent, TestAppContext, VisualTestContext};
-use hex_project::{BeatTime, ClipId, MidiNoteInsert};
-use hex_session::service::{Event, Service};
-use std::{
-    path::Path,
-    time::{Duration, Instant},
+use gpui::{
+    Entity, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, MouseUpEvent, ScrollDelta,
+    ScrollWheelEvent, TestAppContext, VisualTestContext,
 };
+use hex_project::{BeatTime, ClipId, Command, MidiNoteInsert};
+use hex_session::service::{Event, Request, Service};
+use std::{path::Path, time::Instant};
+
+fn time_key(visual: &mut VisualTestContext, down: bool) {
+    let keystroke = Keystroke::parse("2").unwrap();
+    if down {
+        visual.simulate_event(KeyDownEvent {
+            keystroke,
+            is_held: false,
+        });
+    } else {
+        visual.simulate_event(KeyUpEvent { keystroke });
+    }
+    visual.run_until_parked();
+}
 
 fn setup(
     cx: &mut TestAppContext,
@@ -35,6 +48,7 @@ fn setup(
     ]
     .into_iter()
     .map(|(pitch, start, velocity)| MidiNoteInsert {
+        active: true,
         start: BeatTime::from_raw(start),
         duration: BeatTime::from_raw(BeatTime::ONE.raw() / 4),
         pitch,
@@ -48,7 +62,7 @@ fn setup(
     pump(&editor, &mut visual);
     editor.update(&mut visual, |view, cx| {
         view.midi_selection.clear();
-        view.piano_beat_start = BeatTime::ZERO;
+        view.piano_beat_start = 0;
         view.piano_beat_span = BeatTime::from_quarters(4).unwrap();
         cx.notify();
     });
@@ -326,19 +340,22 @@ fn velocity_resize_collapse_and_wheel_keep_note_space_and_time_alignment(cx: &mu
         );
         assert_eq!(
             view.midi_velocity.scene.as_ref().unwrap().key.start,
-            view.piano_beat_start.raw()
+            view.piano_beat_start
         );
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
     });
 }
 fn next(service: &Service) -> Event {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             assert!(event.error.is_none(), "{:?}", event.error);
             return event;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            std::time::Instant::now() < until,
+            "next: hang guard expired"
+        );
         std::thread::yield_now();
     }
 }
@@ -572,10 +589,9 @@ fn lane_at(
     )
 }
 fn painted_time_in_lane(visual: &mut VisualTestContext) {
-    let color: gpui::Background =
-        gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Secondary)))
-            .opacity(theme::TIME_SELECTION_OPACITY)
-            .into();
+    let color: gpui::Background = gpui::Hsla::from(rgb(theme::time_selection_fill()))
+        .opacity(theme::TIME_SELECTION_OPACITY)
+        .into();
     assert!(
         visual
             .rendered_filled_quads("midi-velocity-lane")
@@ -590,7 +606,7 @@ fn velocity_empty_drag_shares_time_range_and_duplicate_destination_after_ack(
     let (mut visual, editor, _environment, clip) = setup(cx);
     for (start, span, reverse) in [(0.0, 4.0, false), (0.25, 2.0, true)] {
         editor.update(&mut visual, |v, cx| {
-            v.piano_beat_start = BeatTime::from_raw((start * BeatTime::ONE.raw() as f32) as u64);
+            v.piano_beat_start = i128::from((start * BeatTime::ONE.raw() as f32) as u64);
             v.piano_beat_span = BeatTime::from_raw((span * BeatTime::ONE.raw() as f32) as u64);
             cx.notify();
         });
@@ -610,11 +626,13 @@ fn velocity_empty_drag_shares_time_range_and_duplicate_destination_after_ack(
             span,
             2.0,
         );
+        time_key(&mut visual, true);
         visual.simulate_mouse_down(first, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(last, Some(MouseButton::Left), Modifiers::default());
         visual.run_until_parked();
         painted_time_in_lane(&mut visual);
         visual.simulate_mouse_up(last, MouseButton::Left, Modifiers::default());
+        time_key(&mut visual, false);
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| {
             assert_eq!(
@@ -657,6 +675,48 @@ fn velocity_empty_drag_shares_time_range_and_duplicate_destination_after_ack(
         });
     }
 }
+#[gpui::test]
+fn velocity_empty_drag_replaces_selection_with_marquee_hits(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, clip) = setup(cx);
+    let ids = editor.update(&mut visual, |view, cx| {
+        let ids = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .midi_source(clip)
+            .unwrap()
+            .notes()
+            .iter()
+            .map(|note| note.id())
+            .collect::<Vec<_>>();
+        view.midi_selection.set_single(ids[0]);
+        cx.notify();
+        ids
+    });
+    visual.run_until_parked();
+    let first = lane_at(&mut visual, 0.85, 0.0, 4.0, 2.0);
+    let last = lane_at(&mut visual, 1.15, 0.0, 4.0, 54.0);
+    visual.simulate_mouse_down(first, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(last, Some(MouseButton::Left), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(view.midi_velocity.marquee.is_some());
+        assert!(!view.midi_velocity_time_selection_active());
+        assert!(!view.midi_selection.contains(ids[0]));
+        assert!(view.midi_selection.contains(ids[1]));
+        assert!(view.midi_selection.contains(ids[2]));
+    });
+    visual.simulate_mouse_up(last, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(view.midi_velocity.marquee.is_none());
+        assert!(!view.midi_selection.contains(ids[0]));
+        assert!(view.midi_selection.contains(ids[1]));
+        assert!(view.midi_selection.contains(ids[2]));
+    });
+}
+
 #[gpui::test]
 fn velocity_shift_marquee_highlights_both_views_and_selects_hidden_pitch_for_group_edit(
     cx: &mut TestAppContext,
@@ -814,6 +874,9 @@ fn velocity_range_and_marquee_cancel_on_escape_blur_resize_and_stale_view(cx: &m
             };
             let first = lane_at(&mut visual, 0.85, 0.0, 4.0, 2.0);
             let last = lane_at(&mut visual, 1.15, 0.0, 4.0, 54.0);
+            if !shift {
+                time_key(&mut visual, true);
+            }
             visual.simulate_mouse_down(first, MouseButton::Left, modifiers);
             visual.simulate_mouse_move(last, Some(MouseButton::Left), modifiers);
             visual.run_until_parked();
@@ -850,12 +913,15 @@ fn velocity_range_and_marquee_cancel_on_escape_blur_resize_and_stale_view(cx: &m
                         .read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
                 }
                 _ => editor.update(&mut visual, |v, cx| {
-                    v.piano_beat_start = BeatTime::ONE;
+                    v.piano_beat_start = i128::from(BeatTime::ONE.raw());
                     cx.notify();
                 }),
             }
             visual.run_until_parked();
             visual.simulate_mouse_up(last, MouseButton::Left, modifiers);
+            if !shift {
+                time_key(&mut visual, false);
+            }
             visual.run_until_parked();
             editor.read_with(&visual, |v, _| {
                 assert!(v.midi_velocity.marquee.is_none());
@@ -873,7 +939,7 @@ fn velocity_range_and_marquee_cancel_on_escape_blur_resize_and_stale_view(cx: &m
             });
             editor.update(&mut visual, |v, cx| {
                 v.selected_clip = Some(clip);
-                v.piano_beat_start = BeatTime::ZERO;
+                v.piano_beat_start = 0;
                 cx.notify();
             });
             visual.simulate_resize(gpui::size(px(1280.0), px(800.0)));
@@ -897,9 +963,11 @@ fn velocity_stationary_click_outside_release_and_collapse_keep_capture_bounded(
     });
     let bounds = visual.debug_bounds("midi-velocity-lane").unwrap();
     let outside = bounds.bottom_right() + point(px(40.0), px(20.0));
+    time_key(&mut visual, true);
     visual.simulate_mouse_down(first, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(outside, Some(MouseButton::Left), Modifiers::default());
     visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
+    time_key(&mut visual, false);
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
         assert_eq!(
@@ -914,33 +982,37 @@ fn velocity_stationary_click_outside_release_and_collapse_keep_capture_bounded(
         };
         let first = lane_at(&mut visual, 0.85, 0.0, 4.0, 2.0);
         let last = lane_at(&mut visual, 1.15, 0.0, 4.0, 54.0);
+        if !shift {
+            time_key(&mut visual, true);
+        }
         visual.simulate_mouse_down(first, MouseButton::Left, modifiers);
         visual.simulate_mouse_move(last, Some(MouseButton::Left), modifiers);
         visual.run_until_parked();
         let toggle = visual.debug_bounds("midi-velocity-toggle").unwrap();
         visual.simulate_mouse_down(toggle.center(), MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
-        if !shift {
-            // Held time selection owns even repeated presses. Collapse becomes
-            // available after explicit cancellation and its trailing release.
-            editor.read_with(&visual, |v, _| {
-                assert!(v.midi_velocity.open);
+        // Both captured selection owners block a repeated press on collapse.
+        editor.read_with(&visual, |v, _| {
+            assert!(v.midi_velocity.open);
+            if shift {
+                assert!(v.midi_velocity.marquee.is_some());
+            } else {
                 assert!(v.midi_velocity_time_selection_active());
-            });
-            visual.simulate_keystrokes("escape");
-            visual.simulate_mouse_up(last, MouseButton::Left, modifiers);
-            visual.simulate_click(toggle.center(), Modifiers::default());
-            visual.run_until_parked();
+            }
+        });
+        visual.simulate_keystrokes("escape");
+        visual.simulate_mouse_up(last, MouseButton::Left, modifiers);
+        if !shift {
+            time_key(&mut visual, false);
         }
+        visual.simulate_click(toggle.center(), Modifiers::default());
+        visual.run_until_parked();
         editor.read_with(&visual, |v, _| {
             assert!(!v.midi_velocity.open);
             assert!(v.midi_velocity.marquee.is_none());
             assert!(!v.midi_velocity_time_selection_active());
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         });
-        if shift {
-            visual.simulate_mouse_up(last, MouseButton::Left, modifiers);
-        }
         let toggle = visual.debug_bounds("midi-velocity-toggle").unwrap();
         visual.simulate_click(toggle.center(), Modifiers::default());
         visual.run_until_parked();
@@ -952,6 +1024,7 @@ fn externally_collapsed_velocity_lane_retires_held_time_selection(cx: &mut TestA
     let (mut visual, editor, _environment, _) = setup(cx);
     let first = lane_at(&mut visual, 0.25, 0., 4., 2.);
     let last = lane_at(&mut visual, 1.5, 0., 4., 2.);
+    time_key(&mut visual, true);
     visual.simulate_mouse_down(first, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(last, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(last, MouseButton::Left, Modifiers::default());
@@ -973,6 +1046,7 @@ fn externally_collapsed_velocity_lane_retires_held_time_selection(cx: &mut TestA
     visual.run_until_parked();
     assert!(!visual.update(|w, _| w.is_pointer_dragging()));
     visual.simulate_mouse_up(first, MouseButton::Left, Modifiers::default());
+    time_key(&mut visual, false);
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
         assert!(!v.midi_velocity_time_selection_active());
@@ -986,3 +1060,6 @@ fn externally_collapsed_velocity_lane_retires_held_time_selection(cx: &mut TestA
         );
     });
 }
+
+#[path = "midi_velocity_preview_ui_tests.rs"]
+mod preview_tests;

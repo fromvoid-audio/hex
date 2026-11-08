@@ -68,12 +68,14 @@ fn every_control_and_combined_configuration_match_the_original_static_law() {
         let factory = UtilityDefinition::prepare_owned_automated_filter(&base, 48_000).unwrap();
         let mut runtime = factory.create_runtime();
         let mut actual = input.clone();
-        runtime.process_block_with_automation(
-            &mut actual,
-            None,
-            &Values::new(values),
-            &hex_lattice::EMPTY_DEVICE_RESOURCES,
-        );
+        runtime
+            .process_block_with_automation(
+                &mut actual,
+                None,
+                &Values::new(values),
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
         assert_eq!(actual, static_render(&target, &input));
         assert_eq!(
             UTILITY_DEFINITION.default_state().unwrap(),
@@ -123,12 +125,14 @@ fn borrowed_program_timing_bypass_and_missing_content_origin_are_explicit() {
     let mut runtime = factory.create_runtime();
     let block = program.block(Some(&Clock), 5);
     let mut audible = [[0.01, 0.02]; 5];
-    runtime.process_block_with_automation(
-        &mut audible,
-        Some(&Clock),
-        &block,
-        &hex_lattice::EMPTY_DEVICE_RESOURCES,
-    );
+    runtime
+        .process_block_with_automation(
+            &mut audible,
+            Some(&Clock),
+            &block,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
     for (offset, actual) in audible.iter().enumerate() {
         let value = block.value_at(descriptor.id, offset).unwrap();
         let state = UTILITY_DEFINITION
@@ -137,21 +141,25 @@ fn borrowed_program_timing_bypass_and_missing_content_origin_are_explicit() {
         assert_eq!(*actual, static_render(&state, &[[0.01, 0.02]])[0]);
     }
     let mut dry = [[0.01, 0.02]; 5];
-    runtime.process_bypassed_block_with_automation(
-        &mut dry,
-        Some(&Clock),
-        &block,
-        &hex_lattice::EMPTY_DEVICE_RESOURCES,
-    );
+    runtime
+        .process_bypassed_block_with_automation(
+            &mut dry,
+            Some(&Clock),
+            &block,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
     assert_eq!(dry, [[0.01, 0.02]; 5]);
     let mut restored = [[0.01, 0.02]; 5];
     let missing = program.block(None, 5);
-    runtime.process_block_with_automation(
-        &mut restored,
-        None,
-        &missing,
-        &hex_lattice::EMPTY_DEVICE_RESOURCES,
-    );
+    runtime
+        .process_block_with_automation(
+            &mut restored,
+            None,
+            &missing,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
     assert_eq!(
         restored,
         static_render(&base, &[[0.01, 0.02]; 5]).as_slice()
@@ -169,28 +177,34 @@ fn speculative_copy_retains_effective_filter_settings_and_replays_identically() 
         (parameter::BASS_MONO_CUTOFF, ParameterValue::Float(193.0)),
     ]);
     let mut first = signal();
-    primary.process_block_with_automation(
-        &mut first,
-        None,
-        &controls,
-        &hex_lattice::EMPTY_DEVICE_RESOURCES,
-    );
+    primary
+        .process_block_with_automation(
+            &mut first,
+            None,
+            &controls,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
     scratch.copy_history_from(primary.as_ref());
     let mut speculative = signal();
-    scratch.process_block_with_automation(
-        &mut speculative,
-        None,
-        &controls,
-        &hex_lattice::EMPTY_DEVICE_RESOURCES,
-    );
+    scratch
+        .process_block_with_automation(
+            &mut speculative,
+            None,
+            &controls,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
     scratch.copy_history_from(primary.as_ref());
     let mut retry = signal();
-    scratch.process_block_with_automation(
-        &mut retry,
-        None,
-        &controls,
-        &hex_lattice::EMPTY_DEVICE_RESOURCES,
-    );
+    scratch
+        .process_block_with_automation(
+            &mut retry,
+            None,
+            &controls,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
     assert_eq!(retry, speculative);
     // Ordinary processing after tail detachment freezes the complete effective law.
     let mut frozen = signal();
@@ -245,7 +259,7 @@ fn registry_shared_automation_requires_explicit_factory_and_current_parameter_su
             )
             .is_err()
     );
-    let unsupported = crate::saturator::SATURATOR_DEFINITION
+    let unsupported = crate::compressor::COMPRESSOR_DEFINITION
         .default_state()
         .unwrap();
     assert!(
@@ -254,7 +268,7 @@ fn registry_shared_automation_requires_explicit_factory_and_current_parameter_su
                 identity,
                 &unsupported,
                 &context,
-                &[crate::saturator::parameter::DRIVE]
+                &[crate::compressor::parameter::THRESHOLD]
             )
             .is_err()
     );
@@ -273,13 +287,7 @@ fn scoped_gain_only_filters_skip_safely_and_enableable_lanes_keep_dormant_histor
     assert!(!gain_factory.supports_parameter_automation(parameter::DC_REMOVE));
     assert!(!gain_factory.supports_parameter_automation(parameter::BASS_MONO));
     let unadmitted = Values::new(vec![(parameter::DC_REMOVE, ParameterValue::Bool(true))]);
-    assert!(
-        gain_factory
-            .1
-            .unwrap()
-            .configuration(Some(&unadmitted), 0, 48_000, None)
-            .is_err()
-    );
+    assert!(gain_factory.1.unwrap().resolve(&unadmitted).is_err());
     let descriptor = *DESCRIPTORS
         .iter()
         .find(|d| d.id == parameter::DC_REMOVE)
@@ -329,12 +337,14 @@ fn scoped_gain_only_filters_skip_safely_and_enableable_lanes_keep_dormant_histor
     let mut skipped = gain_factory.create_runtime();
     let mut first = signal();
     let gain = Values::new(vec![(parameter::GAIN, ParameterValue::Float(1.0))]);
-    skipped.process_block_with_automation(
-        &mut first,
-        None,
-        &gain,
-        &hex_lattice::EMPTY_DEVICE_RESOURCES,
-    );
+    skipped
+        .process_block_with_automation(
+            &mut first,
+            None,
+            &gain,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
     assert_eq!(first, signal());
     let modes = [parameter::DC_REMOVE, parameter::BASS_MONO];
     let mode_factory =
@@ -355,20 +365,19 @@ fn scoped_gain_only_filters_skip_safely_and_enableable_lanes_keep_dormant_histor
     let mut enabled = mode_factory.create_runtime();
     enabled.copy_history_from(skipped.as_ref());
     let mut actual = signal();
-    enabled.process_block_with_automation(
-        &mut actual,
-        None,
-        &on,
-        &hex_lattice::EMPTY_DEVICE_RESOURCES,
-    );
+    enabled
+        .process_block_with_automation(&mut actual, None, &on, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+        .unwrap();
     let mut fresh = mode_factory.create_runtime();
     let mut expected = signal();
-    fresh.process_block_with_automation(
-        &mut expected,
-        None,
-        &on,
-        &hex_lattice::EMPTY_DEVICE_RESOURCES,
-    );
+    fresh
+        .process_block_with_automation(
+            &mut expected,
+            None,
+            &on,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
     assert_eq!(
         actual, expected,
         "newly enabled modes cannot revive histories from before a skipped span"
@@ -380,21 +389,217 @@ fn scoped_gain_only_filters_skip_safely_and_enableable_lanes_keep_dormant_histor
     for values in [&off, &on, &off, &on] {
         let mut actual = signal();
         let mut expected = signal();
-        eligible.process_block_with_automation(
-            &mut actual,
-            None,
-            values,
-            &hex_lattice::EMPTY_DEVICE_RESOURCES,
-        );
-        conservative.process_block_with_automation(
-            &mut expected,
-            None,
-            values,
-            &hex_lattice::EMPTY_DEVICE_RESOURCES,
-        );
+        eligible
+            .process_block_with_automation(
+                &mut actual,
+                None,
+                values,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+        conservative
+            .process_block_with_automation(
+                &mut expected,
+                None,
+                values,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
         assert_eq!(
             actual, expected,
             "admitted enable lanes retain their complete dormant history"
         );
+    }
+}
+
+#[test]
+fn binding_preserves_disabled_mid_side_balance_and_automation_uses_latent_value() {
+    let base = UTILITY_DEFINITION.default_state().unwrap();
+    let latent = UTILITY_DEFINITION
+        .patch_parameter(
+            &base,
+            parameter::MID_SIDE_BALANCE,
+            ParameterValue::Float(0.75),
+        )
+        .unwrap();
+    assert_eq!(
+        UTILITY_DEFINITION
+            .read_parameter(&latent, parameter::MID_SIDE_ENABLED)
+            .unwrap(),
+        ParameterValue::Bool(false)
+    );
+    assert_eq!(
+        UTILITY_DEFINITION
+            .read_parameter(&latent, parameter::MID_SIDE_BALANCE)
+            .unwrap(),
+        ParameterValue::Float(0.75)
+    );
+    let mut runtime = UtilityDefinition::prepare_owned_automated_filter(&latent, 48_000)
+        .unwrap()
+        .create_runtime();
+    let enabled = Values::new(vec![(
+        parameter::MID_SIDE_ENABLED,
+        ParameterValue::Bool(true),
+    )]);
+    let input = signal();
+    let mut actual = input.clone();
+    runtime
+        .process_block_with_automation(
+            &mut actual,
+            None,
+            &enabled,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
+    let expected = UTILITY_DEFINITION
+        .patch_parameter(
+            &latent,
+            parameter::MID_SIDE_ENABLED,
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    assert_eq!(actual, static_render(&expected, &input));
+}
+#[test]
+fn copied_effective_cache_never_hides_changed_base_or_removed_lane() {
+    let base = UTILITY_DEFINITION.default_state().unwrap();
+    let input = signal();
+    let both = Values::new(vec![
+        (parameter::GAIN, ParameterValue::Float(2.0)),
+        (parameter::WIDTH, ParameterValue::Float(3.0)),
+    ]);
+    let gain = Values::new(vec![(parameter::GAIN, ParameterValue::Float(2.0))]);
+    let mut previous = UtilityDefinition::prepare_owned_automated_filter(&base, 48_000)
+        .unwrap()
+        .create_runtime();
+    let mut old = input.clone();
+    previous
+        .process_block_with_automation(&mut old, None, &both, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+        .unwrap();
+    for changed_base in [false, true] {
+        let new_base = if changed_base {
+            UTILITY_DEFINITION
+                .patch_parameter(&base, parameter::WIDTH, ParameterValue::Float(2.0))
+                .unwrap()
+        } else {
+            base.clone()
+        };
+        let mut candidate = UtilityDefinition::prepare_owned_automated_filter(&new_base, 48_000)
+            .unwrap()
+            .create_runtime();
+        candidate.copy_history_from(previous.as_ref());
+        let mut actual = input.clone();
+        candidate
+            .process_block_with_automation(
+                &mut actual,
+                None,
+                &gain,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+        let expected = UTILITY_DEFINITION
+            .patch_parameter(&new_base, parameter::GAIN, ParameterValue::Float(2.0))
+            .unwrap();
+        assert_eq!(actual, static_render(&expected, &input));
+    }
+}
+#[test]
+fn failed_derived_configuration_keeps_controls_cache_atomic_for_same_value_retry() {
+    let base = UTILITY_DEFINITION.default_state().unwrap();
+    let mut automation = UtilityDefinition::prepare_owned_automated_filter(&base, 48_000)
+        .unwrap()
+        .1
+        .unwrap();
+    let values = Values::new(vec![(parameter::GAIN, ParameterValue::Float(2.0))]);
+    let mut resolved = automation.resolve(&values).unwrap();
+    assert!(
+        automation
+            .configuration(Some((&values, &mut resolved)), 0, 0, None)
+            .is_err()
+    );
+    assert_eq!(
+        automation.controls.effective().settings(),
+        decode_state(&base).unwrap()
+    );
+    let (matrix, _) = automation
+        .configuration(Some((&values, &mut resolved)), 0, 48_000, None)
+        .unwrap();
+    let expected = UTILITY_DEFINITION
+        .patch_parameter(&base, parameter::GAIN, ParameterValue::Float(2.0))
+        .unwrap();
+    assert_eq!(
+        matrix,
+        UTILITY_DEFINITION.prepare_effect_matrix(&expected).unwrap()
+    );
+}
+
+#[test]
+fn bypass_advances_the_same_filter_and_automated_control_history() {
+    let base = UTILITY_DEFINITION.default_state().unwrap();
+    let factory = UtilityDefinition::prepare_owned_automated_filter(&base, 48_000).unwrap();
+    let values = |muted| {
+        Values::new(vec![
+            (parameter::MUTE, ParameterValue::Bool(muted)),
+            (parameter::DC_REMOVE, ParameterValue::Bool(true)),
+            (parameter::BASS_MONO, ParameterValue::Bool(true)),
+        ])
+    };
+    let unmuted = values(false);
+    for muted in [false, true] {
+        let values = values(muted);
+        let mut active = factory.create_runtime();
+        let mut bypassed = factory.create_runtime();
+        let input = signal();
+        // Seed an audible residual before the automation can mute the output.
+        for runtime in [&mut active, &mut bypassed] {
+            let mut warmup = input.clone();
+            runtime
+                .process_block_with_automation(
+                    &mut warmup,
+                    None,
+                    &unmuted,
+                    &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                )
+                .unwrap();
+            assert!(!runtime.is_quiescent());
+        }
+        let mut wet = input.clone();
+        let mut dry = input.clone();
+        active
+            .process_block_with_automation(
+                &mut wet,
+                None,
+                &values,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+        bypassed
+            .process_bypassed_block_with_automation(
+                &mut dry,
+                None,
+                &values,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+        assert_eq!(dry, input);
+        let mut after_active = signal();
+        let mut after_bypass = after_active.clone();
+        active
+            .process_block_with_automation(
+                &mut after_active,
+                None,
+                &unmuted,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+        bypassed
+            .process_block_with_automation(
+                &mut after_bypass,
+                None,
+                &unmuted,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+        assert_eq!(after_bypass, after_active);
     }
 }

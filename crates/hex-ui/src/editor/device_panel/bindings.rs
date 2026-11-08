@@ -1,18 +1,17 @@
 //! Persistent host bindings shared by specialized and descriptor-driven panels.
 //! Session gestures, canonical edits and app lifecycle remain with their owners.
+use super::super::native_automation_recording::automation_target;
 use super::gesture_adapter::{
-    NumericGestureLease, dispatch_bound_numeric_gesture, owns_numeric_gesture,
+    NumericGestureLease, dispatch_bound_numeric_gesture, owns_native_automation,
+    owns_numeric_gesture,
 };
 use super::*;
 use std::{cell::Cell, rc::Rc};
 
-pub(super) type NumericBeginHook =
-    Box<dyn Fn(&mut EditorView, &mut Context<EditorView>, ParameterKey)>;
 pub(super) struct BindingPolicy {
     pub(super) tab_navigation: bool,
     pub(super) toggle_appearance: ToggleAppearance,
     pub(super) choice_order: Option<Vec<u32>>,
-    pub(super) numeric_begin: Option<NumericBeginHook>,
 }
 
 pub(super) type BindingPolicyFactory = fn(
@@ -86,11 +85,20 @@ impl CapturedBinding {
         if device.state().type_id() != self.identity.type_id {
             return false;
         }
-        if self.key.parameter == hex_engine::DEVICE_INPUT_GAIN.id {
-            return self.descriptor == hex_engine::DEVICE_INPUT_GAIN;
-        }
-        if self.key.parameter == hex_engine::DEVICE_OUTPUT_GAIN.id {
-            return self.descriptor == hex_engine::DEVICE_OUTPUT_GAIN;
+        // Reserved trims are owned by the host and are absent from the
+        // provider descriptor inventory.
+        let kind = automation_target(self.key.parameter);
+        if matches!(
+            kind,
+            hex_lattice_contract::DeviceAutomationTarget::HostInputGain
+                | hex_lattice_contract::DeviceAutomationTarget::HostOutputGain
+        ) {
+            return hex_engine::native_parameter_input_target(
+                &state.project,
+                self.key.device,
+                kind,
+            )
+            .is_ok();
         }
         if let Some((class, cached_state, cached_view)) =
             view.device_panel.views.get(&self.key.device)
@@ -184,10 +192,14 @@ pub(super) enum ControlPresentation {
     Standard,
     CompactDial,
     MicroDial,
+    FilledSlider,
+    FilledVerticalSlider,
     InlineValue,
-    DeviceMeters,
+    MeterFader,
+    ChoiceDial,
     CompactButton,
     CompactSelector,
+    CompactConfirmSelector,
     CompactWideSelector,
     CompactSegments { columns: usize },
 }
@@ -203,6 +215,24 @@ pub(crate) fn effective_parameter_value(
     key: ParameterKey,
     canonical_value: ParameterValue,
 ) -> ParameterValue {
+    parameter_display_override(view, key).unwrap_or(canonical_value)
+}
+
+/// The in-flight gesture value, else the admitted manual value awaiting its
+/// barrier. Bound controls and automation lanes share this display source.
+pub(crate) fn parameter_display_override(
+    view: &mut EditorView,
+    key: ParameterKey,
+) -> Option<ParameterValue> {
+    if let Some(value) = view
+        .native_automation_recorder
+        .value(GestureTarget::DeviceParameter {
+            device: key.device,
+            parameter: key.parameter,
+        })
+    {
+        return Some(value);
+    }
     let gesture_value = view
         .device_gesture
         .snapshot()
@@ -244,13 +274,7 @@ pub(crate) fn effective_parameter_value(
     {
         view.device_panel.pending_values.remove(&key);
     }
-    gesture_value.unwrap_or_else(|| {
-        view.device_panel
-            .pending_values
-            .get(&key)
-            .copied()
-            .unwrap_or(canonical_value)
-    })
+    gesture_value.or_else(|| view.device_panel.pending_values.get(&key).copied())
 }
 
 pub(super) fn render_parameter(
@@ -337,24 +361,24 @@ pub(super) fn render_parameter(
             })
             .unwrap_or(false)
     });
-    match view.device_panel.controls.get(&key) {
+    let rendered = match view.device_panel.controls.get(&key) {
         Some(ParameterControl::Float { entity, .. }) => {
             if let ParameterValue::Float(value) = value {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
-                    if let ParameterValue::Float(canonical) = parameter.value {
-                        if let Ok(value) = control.accessibility_value(f64::from(canonical)) {
-                            control.set_accessibility_binding(
-                                gpui::AccessibilityBinding {
-                                    name: theme::text(descriptor.label),
-                                    revision,
-                                    value,
-                                    pending,
-                                    guard: guard.clone(),
-                                },
-                                cx,
-                            );
-                        }
+                    if let ParameterValue::Float(canonical) = parameter.value
+                        && let Ok(value) = control.accessibility_value(f64::from(canonical))
+                    {
+                        control.set_accessibility_binding(
+                            gpui::AccessibilityBinding {
+                                name: theme::text(descriptor.label),
+                                revision,
+                                value,
+                                pending,
+                                guard: guard.clone(),
+                            },
+                            cx,
+                        );
                     }
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(tab_navigation, cx);
@@ -363,19 +387,19 @@ pub(super) fn render_parameter(
             } else {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
-                    if let ParameterValue::Float(canonical) = parameter.value {
-                        if let Ok(value) = control.accessibility_value(f64::from(canonical)) {
-                            control.set_accessibility_binding(
-                                gpui::AccessibilityBinding {
-                                    name: theme::text(descriptor.label),
-                                    revision,
-                                    value,
-                                    pending,
-                                    guard: guard.clone(),
-                                },
-                                cx,
-                            );
-                        }
+                    if let ParameterValue::Float(canonical) = parameter.value
+                        && let Ok(value) = control.accessibility_value(f64::from(canonical))
+                    {
+                        control.set_accessibility_binding(
+                            gpui::AccessibilityBinding {
+                                name: theme::text(descriptor.label),
+                                revision,
+                                value,
+                                pending,
+                                guard: guard.clone(),
+                            },
+                            cx,
+                        );
                     }
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(tab_navigation, cx);
@@ -394,7 +418,9 @@ pub(super) fn render_parameter(
                     hex_widgets::INLINE_VALUE_WIDTH,
                     hex_widgets::INLINE_VALUE_HEIGHT,
                 ),
-                ControlPresentation::DeviceMeters => (10.0, DEVICE_FRAME_HEIGHT),
+                ControlPresentation::MeterFader => (60.0, 154.0),
+                ControlPresentation::FilledSlider => (60.0, 18.0),
+                ControlPresentation::FilledVerticalSlider => (12.0, 32.0),
                 _ => (136.0, 26.0),
             };
             div().w(px(width)).h(px(height)).child(entity.clone())
@@ -468,6 +494,10 @@ pub(super) fn render_parameter(
                     }
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(tab_navigation, cx);
+                    control.set_confirm_on_enter(
+                        presentation == ControlPresentation::CompactConfirmSelector,
+                        cx,
+                    );
                     if let Some(index) = values.iter().position(|candidate| *candidate == value) {
                         let _ = control.set_selected(index, cx);
                     }
@@ -494,10 +524,16 @@ pub(super) fn render_parameter(
                     }
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(tab_navigation, cx);
+                    control.set_confirm_on_enter(
+                        presentation == ControlPresentation::CompactConfirmSelector,
+                        cx,
+                    );
                 });
             }
             let (width, height) = match presentation {
-                ControlPresentation::CompactSelector => (64.0, 14.0),
+                ControlPresentation::ChoiceDial => (64.0, 52.0),
+                ControlPresentation::CompactSelector
+                | ControlPresentation::CompactConfirmSelector => (64.0, 14.0),
                 ControlPresentation::CompactWideSelector => (120.0, 14.0),
                 ControlPresentation::CompactSegments { columns } => (
                     64.0,
@@ -508,7 +544,34 @@ pub(super) fn render_parameter(
             div().w(px(width)).h(px(height)).child(entity.clone())
         }
         None => unsupported_parameter(descriptor.label),
-    }
+    };
+    let menu_binding = CapturedBinding {
+        generation,
+        owner: view.device_panel.owner,
+        key,
+        identity,
+        descriptor,
+    };
+    rendered.capture_any_mouse_down(cx.listener(
+        move |view, event: &gpui::MouseDownEvent, window, cx| {
+            if event.button == gpui::MouseButton::Right
+                && menu_binding.current(view, false)
+                && view
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.revision == revision)
+                && view.open_parameter_automation_menu(
+                    event.position,
+                    key.device,
+                    automation_target(key.parameter),
+                    window,
+                    cx,
+                )
+            {
+                cx.stop_propagation();
+            }
+        },
+    ))
 }
 
 fn create_parameter_control(
@@ -539,7 +602,6 @@ fn create_parameter_control(
         tab_navigation,
         toggle_appearance,
         choice_order,
-        numeric_begin,
     } = policy(view, key, identity, descriptor, presentation, display);
     let style = parameter_style(presentation);
     let ControlText {
@@ -562,7 +624,13 @@ fn create_parameter_control(
                     NumericScale::LinearAmplitudeDecibels
                 }
                 ParameterPresentation::Logarithmic => NumericScale::Logarithmic,
-                ParameterPresentation::Linear if min < 0.0 && max > 0.0 => NumericScale::Bipolar,
+                ParameterPresentation::Linear
+                    if min < 0.0
+                        && max > 0.0
+                        && presentation != ControlPresentation::FilledSlider =>
+                {
+                    NumericScale::Bipolar
+                }
                 ParameterPresentation::Linear => NumericScale::Linear,
             };
             let mut spec = NumericSpec::new_f32(
@@ -581,7 +649,11 @@ fn create_parameter_control(
                 ControlPresentation::CompactDial => NumericControlPresentation::CompactDial,
                 ControlPresentation::MicroDial => NumericControlPresentation::MicroDial,
                 ControlPresentation::InlineValue => NumericControlPresentation::InlineValue,
-                ControlPresentation::DeviceMeters => NumericControlPresentation::DeviceMeters,
+                ControlPresentation::MeterFader => NumericControlPresentation::MeterFader,
+                ControlPresentation::FilledSlider => NumericControlPresentation::FilledSlider,
+                ControlPresentation::FilledVerticalSlider => {
+                    NumericControlPresentation::FilledVerticalSlider
+                }
                 _ => NumericControlPresentation::HorizontalSlider,
             };
             let config = NumericControlConfig::new(
@@ -601,6 +673,7 @@ fn create_parameter_control(
                 },
             );
             let entity = cx.new(|control_cx| NumericControl::from_config(control_cx, config));
+            entity.update(cx, |control, _| control.set_commit_unchanged_text(true));
             let target = GestureTarget::DeviceParameter {
                 device: key.device,
                 parameter: key.parameter,
@@ -622,15 +695,27 @@ fn create_parameter_control(
                     if !is_current(view) {
                         return;
                     }
-                    if event.phase == NumericEventPhase::Begin
-                        && let Some(hook) = numeric_begin.as_ref()
-                    {
-                        hook(view, cx, key);
-                    }
-                    if !is_current(view) {
-                        return;
+                    if event.phase == NumericEventPhase::Begin {
+                        view.remember_automation_parameter(
+                            key.device,
+                            automation_target(key.parameter),
+                        );
                     }
                     let value = ParameterValue::Float(event.value as f32);
+                    if event.phase == NumericEventPhase::Commit
+                        && event_lease.get().is_none()
+                        && view.device_gesture.snapshot().is_none()
+                    {
+                        let result = view
+                            .begin_device_gesture(target, value)
+                            .and_then(|_| view.change_device_gesture(value))
+                            .and_then(|_| view.finish_device_gesture(value));
+                        if let Err(error) = result {
+                            view.error = Some(error.into());
+                        }
+                        cx.notify();
+                        return;
+                    }
                     if let Err(error) = dispatch_bound_numeric_gesture(
                         view,
                         target,
@@ -704,13 +789,11 @@ fn create_parameter_control(
                     }
                     return;
                 }
+                view.remember_automation_parameter(key.device, automation_target(key.parameter));
                 let value = ParameterValue::Bool(event.checked);
                 view.device_panel.pending_values.insert(target, value);
-                if !view.enqueue_device_barrier(Request::SetDeviceParameter {
-                    device: target.device,
-                    parameter: target.parameter,
-                    value,
-                }) {
+                if !view.manual_device_parameter_request(target.device, target.parameter, value)
+                        .is_ok_and(|request| view.enqueue_device_barrier(request)) {
                     view.device_panel.pending_values.remove(&target);
                 }
                 cx.notify();
@@ -742,9 +825,13 @@ fn create_parameter_control(
                 .map(|index| theme::text(labels[*index as usize]));
             let appearance = if matches!(
                 presentation,
-                ControlPresentation::CompactSelector | ControlPresentation::CompactWideSelector
+                ControlPresentation::CompactSelector
+                    | ControlPresentation::CompactConfirmSelector
+                    | ControlPresentation::CompactWideSelector
             ) {
                 SelectorAppearance::CompactSelector
+            } else if presentation == ControlPresentation::ChoiceDial {
+                SelectorAppearance::CompactDial
             } else {
                 SelectorAppearance::Standard
             };
@@ -770,13 +857,11 @@ fn create_parameter_control(
                     if !finalize_controls(view, cx) {
                         return;
                     }
+                    view.remember_automation_parameter(key.device, automation_target(key.parameter));
                     let value = ParameterValue::Choice(value);
                     view.device_panel.pending_values.insert(target, value);
-                    if !view.enqueue_device_barrier(Request::SetDeviceParameter {
-                        device: target.device,
-                        parameter: target.parameter,
-                        value,
-                    }) {
+                    if !view.manual_device_parameter_request(target.device, target.parameter, value)
+                        .is_ok_and(|request| view.enqueue_device_barrier(request)) {
                         view.device_panel.pending_values.remove(&target);
                     }
                     cx.notify();
@@ -851,12 +936,15 @@ pub(super) fn cancel_control(
             device: key.device,
             parameter: key.parameter,
         };
+        let owns_native = owns_native_automation(view, target, lease);
         let owns = owns_numeric_gesture(view, target, lease);
         // Revoke before local cancellation can enqueue a subscription event.
         lease.set(None);
         delivery_fence.set(delivery_fence.get().wrapping_add(1).max(1));
         entity.update(cx, |control, cx| control.cancel(cx));
-        if owns {
+        if owns_native {
+            view.cancel_native_automation_touch();
+        } else if owns {
             let _ = view.cancel_device_gesture();
         }
     }

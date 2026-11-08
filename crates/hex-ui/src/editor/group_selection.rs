@@ -32,61 +32,37 @@ impl EditorView {
             let Some(revision) = self.state.as_ref().map(|state| state.revision) else {
                 return;
             };
-            if self
-                .enqueue_rendered_audio_group(&hex_project::Command::GroupTimeRange(range.clone()))
-            {
-                return;
-            }
-            self.enqueue(Request::GroupTimeRange {
+            self.prepare_group_selection(true);
+            if !self.enqueue(Request::GroupTimeRange {
                 project_generation: self.project_generation,
                 revision,
                 range,
-            });
+            }) {
+                self.retire_group_selection();
+            }
             return;
         }
         let clips = self.selected_clip_ids();
         if clips.len() < 2 {
+            // A section span is the only grouping selection: merge it rather
+            // than dropping `g` when the stricter section-focus test fails.
+            if !self.merge_section_span_selection() {
+                self.error =
+                    Some("select two or more clips, sections or a time range to group".into());
+            }
             return;
         }
         let Some(revision) = self.state.as_ref().map(|state| state.revision) else {
             return;
         };
-        if self.enqueue_rendered_audio_group(&hex_project::Command::GroupClips(clips.clone())) {
-            return;
-        }
-        self.enqueue(Request::GroupClips {
+        self.prepare_group_selection(false);
+        if !self.enqueue(Request::GroupClips {
             project_generation: self.project_generation,
             revision,
             clips,
-        });
-    }
-    /// Use the ordinary cancellable worker bounce lane only when leaf event
-    /// flattening cannot preserve an already processed/repeated group.
-    fn enqueue_rendered_audio_group(&mut self, command: &hex_project::Command) -> bool {
-        let Some(state) = &self.state else {
-            return false;
-        };
-        let target = match state.project.audio_group_render_target(command) {
-            Ok(Some(target)) => target,
-            Ok(None) => return false,
-            Err(reason) => {
-                self.error = Some(reason.to_string().into());
-                return true;
-            }
-        };
-        let before = Selection::capture(self);
-        let control = hex_session::service::ExportControl::default();
-        if self.enqueue(Request::BounceArrangement {
-            project_generation: self.project_generation,
-            revision: state.revision,
-            target,
-            in_place: true,
-            control: control.clone(),
         }) {
-            self.rendered_group_selection.pending = Some((control.clone(), before));
-            self.bounce_control = Some(control);
+            self.retire_group_selection();
         }
-        true
     }
 }
 
@@ -99,7 +75,7 @@ mod ui_tests;
 // Canonical history has a maximum of 128 entries, so older receipts can expire.
 #[derive(Default)]
 pub(super) struct SelectionHistory {
-    pending: Option<(hex_session::service::ExportControl, Selection)>,
+    pending: Option<(super::pending_edit::Receipt, bool, Selection)>,
     receipts: std::collections::VecDeque<(hex_project::ClipId, Selection)>,
 }
 #[derive(Clone)]
@@ -134,29 +110,62 @@ impl Selection {
     }
 }
 impl EditorView {
-    pub(super) fn reconcile_rendered_group_selection(
-        &mut self,
-        event: &hex_session::service::Event,
-    ) {
+    fn prepare_group_selection(&mut self, time_range: bool) {
+        self.group_selection_history.pending = Some((
+            super::pending_edit::Receipt::new(self.project_generation),
+            time_range,
+            Selection::capture(self),
+        ));
+    }
+    pub(super) fn pending_group_selection_matches(&self, request: &Request) -> bool {
+        self.group_selection_history
+            .pending
+            .as_ref()
+            .is_some_and(|(receipt, range, _)| {
+                receipt.is_queued()
+                    && matches!(
+                        (range, request),
+                        (true, Request::GroupTimeRange { .. })
+                            | (false, Request::GroupClips { .. })
+                    )
+            })
+    }
+    pub(super) fn group_selection_submitted(&mut self) {
+        if let Some((receipt, _, _)) = &mut self.group_selection_history.pending {
+            receipt.submitted(self.worker_requests_pending);
+        }
+    }
+    pub(super) fn retire_group_selection(&mut self) {
+        self.group_selection_history.pending = None;
+    }
+    pub(super) fn reconcile_group_selection(&mut self, event: &hex_session::service::Event) {
         if event.project_replaced {
-            self.rendered_group_selection = SelectionHistory::default();
+            self.group_selection_history = SelectionHistory::default();
             return;
         }
-        if let Some((control, _)) = &self.rendered_group_selection.pending
-            && event
-                .bounce_complete
-                .as_ref()
-                .is_some_and(|done| control.same_job(done))
-            && let Some((_, before)) = self.rendered_group_selection.pending.take()
-            && event.error.is_none()
-            && let Some(hex_project::Created::Clip(result)) = event.created
-        {
-            let receipts = &mut self.rendered_group_selection.receipts;
-            if receipts.len() == 128 {
-                receipts.pop_front();
+        if let Some((receipt, _, _)) = &mut self.group_selection_history.pending {
+            let disposition = receipt.observe(
+                self.project_generation,
+                event.project_replaced,
+                event.request_complete,
+            );
+            if disposition != super::pending_edit::Disposition::Waiting {
+                let Some((_, _, before)) = self.group_selection_history.pending.take() else {
+                    return;
+                };
+                if disposition == super::pending_edit::Disposition::Terminal
+                    && event.error.is_none()
+                    && let Some(hex_project::Created::Clip(result)) = event.created
+                    && !before.ids.contains(&result)
+                {
+                    let receipts = &mut self.group_selection_history.receipts;
+                    if receipts.len() == 128 {
+                        receipts.pop_front();
+                    }
+                    receipts.push_back((result, before));
+                }
+                return;
             }
-            receipts.push_back((result, before));
-            return;
         }
         let Some(old) = &self.state else {
             return;
@@ -165,38 +174,38 @@ impl EditorView {
             return;
         }
         let project = &event.state.project;
-        let selection = self
-            .rendered_group_selection
-            .receipts
-            .iter()
-            .rev()
-            .find_map(|(result, before)| {
-                let was_present = old.project.clip(*result).is_some();
-                let present = project.clip(*result).is_some();
-                if was_present
-                    && !present
-                    && self.selected_clip == Some(*result)
-                    && self.selected_clip_ids() == [*result]
-                    && self.time_selection == before.time
-                    && before.ids.iter().all(|id| project.clip(*id).is_some())
-                {
-                    Some(before.clone())
-                } else if !was_present && present && before.matches(self) {
-                    let track = project
-                        .tracks()
-                        .iter()
-                        .find(|t| t.clips().iter().any(|c| c.id() == *result))?
-                        .id();
-                    let mut after = before.clone();
-                    after.track = Some(track);
-                    after.primary = Some(*result);
-                    after.clips.only(track, *result);
-                    after.ids = vec![*result];
-                    Some(after)
-                } else {
-                    None
-                }
-            });
+        let selection =
+            self.group_selection_history
+                .receipts
+                .iter()
+                .rev()
+                .find_map(|(result, before)| {
+                    let was_present = old.project.clip(*result).is_some();
+                    let present = project.clip(*result).is_some();
+                    if was_present
+                        && !present
+                        && self.selected_clip == Some(*result)
+                        && self.selected_clip_ids() == [*result]
+                        && self.time_selection == before.time
+                        && before.ids.iter().all(|id| project.clip(*id).is_some())
+                    {
+                        Some(before.clone())
+                    } else if !was_present && present && before.matches(self) {
+                        let track = project
+                            .tracks()
+                            .iter()
+                            .find(|t| t.clips().iter().any(|c| c.id() == *result))?
+                            .id();
+                        let mut after = before.clone();
+                        after.track = Some(track);
+                        after.primary = Some(*result);
+                        after.clips.only(track, *result);
+                        after.ids = vec![*result];
+                        Some(after)
+                    } else {
+                        None
+                    }
+                });
         if let Some(selection) = selection {
             selection.install(self);
         }

@@ -1,7 +1,7 @@
-//! Browser-only header destinations capture the painted TrackId, independent of
+//! Header destinations capture the painted TrackId, independent of
 //! device-panel selection. Existing worker stamps and prepare-before-commit own
-//! insertion/history. Effects append; an instrument is accepted only on an empty
-//! chain because InsertInstrument's existing contract inserts at its front.
+//! insertion/history. Browser effects append; browser instruments replace the
+//! existing instrument or precede effects. Option-drag copies use clipboard edits.
 use super::{
     EditorView,
     drag::{NativeDeviceDrag, NativeDeviceDragSource},
@@ -13,14 +13,17 @@ use hex_project::TrackId;
 use hex_session::service::{NativeDeviceDropSource, Request};
 
 impl EditorView {
-    fn header_device_source(
+    // A validated plugin effect uses the separate asynchronous insertion path;
+    // native devices return their existing typed request.
+    fn header_device_request(
         &self,
         drag: &NativeDeviceDrag,
         generation: u64,
         revision: Option<u64>,
         track: TrackId,
+        copy: bool,
         cx: &App,
-    ) -> Result<NativeDeviceDropSource, &'static str> {
+    ) -> Result<Option<Request>, &'static str> {
         if generation != drag.project_generation
             || revision != Some(drag.revision)
             || !self.native_device_drag_is_current(drag)
@@ -36,6 +39,50 @@ impl EditorView {
         {
             return Err("device drop canceled · project or source changed");
         }
+        if let NativeDeviceDragSource::PluginEffect(selection) = &drag.source {
+            self.check_device_append_target(track, cx)?;
+            if self.pending_plugin_effect.is_some() {
+                return Err("wait for the pending vst3 insertion");
+            }
+            if selection.role != hex_plugin_catalog::PluginRole::Effect {
+                return Err("drop a vst3 effect on the track header");
+            }
+            return Ok(None);
+        }
+        let NativeDeviceDragSource::Browser { class, type_id } = drag.source else {
+            self.check_device_append_target(track, cx)?;
+            if copy {
+                return self
+                    .duplicate_device_drag_request(
+                        drag,
+                        hex_project::DeviceChainOwner::Track(track),
+                        None,
+                    )
+                    .map(Some);
+            }
+            return Err("hold option to copy devices onto a track");
+        };
+        if class != NativeDeviceClass::Instrument {
+            return self
+                .browser_device_append_request(track, class, type_id, cx)
+                .map(Some);
+        }
+        let target = self.check_device_append_target(track, cx)?;
+        Ok(Some(Request::DropNativeDevice {
+            project_generation: generation,
+            revision: drag.revision,
+            source: NativeDeviceDropSource::Browser { class, type_id },
+            track,
+            before: None,
+            replace: target.instrument().map(hex_project::Device::id),
+        }))
+    }
+
+    fn check_device_append_target(
+        &self,
+        track: TrackId,
+        cx: &App,
+    ) -> Result<&hex_project::Track, &'static str> {
         if self.save_dialog_open
             || self.export_dialog_open
             || self.export_pending
@@ -51,14 +98,22 @@ impl EditorView {
         {
             return Err("finish pending edits before dropping a device");
         }
-        let NativeDeviceDragSource::Browser { class, type_id } = drag.source else {
-            return Err("track headers accept devices from the browser");
-        };
         let target = self
             .state
             .as_ref()
             .and_then(|state| state.project.track(track))
             .ok_or("device drop target is no longer available")?;
+        Ok(target)
+    }
+
+    pub(super) fn browser_device_append_request(
+        &self,
+        track: TrackId,
+        class: NativeDeviceClass,
+        type_id: hex_lattice_contract::DeviceTypeId,
+        cx: &App,
+    ) -> Result<Request, &'static str> {
+        let target = self.check_device_append_target(track, cx)?;
         if class == NativeDeviceClass::Instrument {
             if target.instrument().is_some() {
                 return Err(
@@ -69,7 +124,18 @@ impl EditorView {
                 return Err("header instrument drop requires an empty device chain");
             }
         }
-        Ok(NativeDeviceDropSource::Browser { class, type_id })
+        let state = self
+            .state
+            .as_ref()
+            .ok_or("device drop target is no longer available")?;
+        Ok(Request::DropNativeDevice {
+            project_generation: self.project_generation,
+            revision: state.revision,
+            source: NativeDeviceDropSource::Browser { class, type_id },
+            track,
+            before: None,
+            replace: None,
+        })
     }
 
     pub(super) fn device_drop_header(
@@ -82,10 +148,17 @@ impl EditorView {
         let revision = self.state.as_ref().map(|state| state.revision);
         let owner = cx.entity();
         header
-            .drag_over::<NativeDeviceDrag>(move |style, drag, _, cx| {
+            .drag_over::<NativeDeviceDrag>(move |style, drag, window, cx| {
                 let valid = owner
                     .read(cx)
-                    .header_device_source(drag, generation, revision, track, cx)
+                    .header_device_request(
+                        drag,
+                        generation,
+                        revision,
+                        track,
+                        window.modifiers().alt,
+                        cx,
+                    )
                     .is_ok();
                 let role = if valid {
                     theme::PaletteRole::Secondary
@@ -100,21 +173,33 @@ impl EditorView {
             .on_drop(
                 cx.listener(move |view, drag: &NativeDeviceDrag, window, cx| {
                     cx.stop_propagation();
-                    let source = view.header_device_source(drag, generation, revision, track, cx);
+                    let request = view.header_device_request(
+                        drag,
+                        generation,
+                        revision,
+                        track,
+                        window.modifiers().alt,
+                        cx,
+                    );
                     view.clear_native_device_drag(drag);
                     cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
-                    match source {
-                        Ok(source) => {
-                            if view.enqueue_device_barrier(Request::DropNativeDevice {
-                                project_generation: drag.project_generation,
-                                revision: drag.revision,
-                                source,
-                                track,
-                                before: None,
-                                replace: None,
-                            }) {
+                    match request {
+                        Ok(Some(request)) => {
+                            if view.enqueue_device_barrier(request) {
                                 view.error = None;
                                 view.status = "adding device to track".into();
+                            }
+                        }
+                        Ok(None) => {
+                            if let NativeDeviceDragSource::PluginEffect(selection) = &drag.source {
+                                view.insert_plugin_effect(
+                                    selection,
+                                    hex_session::service::PluginEffectDestination::Track(track),
+                                    None,
+                                    cx,
+                                );
+                            } else {
+                                view.error = Some("device drop source changed".into());
                             }
                         }
                         Err(reason) => view.error = Some(reason.into()),

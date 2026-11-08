@@ -6,12 +6,14 @@ use crate::operator_waveform::{
 };
 mod context;
 mod feedback;
+mod keytrack;
 mod retarget;
 mod tuning;
 pub use context::{PreparedOperatorConfiguration, PreparedOperatorNote};
 pub use feedback::PreparedOperatorFeedbackVoice;
 pub(crate) use retarget::OperatorFeedbackRetargetFrame;
 pub use retarget::{OperatorFeedbackParameters, PreparedOperatorFeedbackRetarget};
+pub(crate) use tuning::FINE_LIMIT_HZ;
 pub use tuning::OperatorTuning;
 
 /// Original immutable acyclic FM note, not a registered native device.
@@ -119,12 +121,17 @@ impl PreparedOperatorFm4 {
         {
             return Err(Invalid("invalid operator amplitude velocity amount"));
         }
-        let steps = tuning::prepared_steps(
-            sample_rate,
-            pitch,
-            &oscillators.map(|oscillator| oscillator.ratio),
-            &tuning,
-        )?;
+        let mut amplitude_velocity_scales =
+            amplitude_velocity_scales(amplitude_velocity, f64::from(velocity) / 127.0);
+        let steps = silence_unrepresentable(
+            tuning::prepared_steps(
+                sample_rate,
+                pitch,
+                &oscillators.map(|oscillator| oscillator.ratio),
+                &tuning,
+            )?,
+            &mut amplitude_velocity_scales,
+        );
         let core = PreparedFmCore {
             configuration: super::PreparedFmConfiguration::new(oscillators, routing),
             steps,
@@ -148,8 +155,6 @@ impl PreparedOperatorFm4 {
         } else {
             None
         };
-        let amplitude_velocity_scales =
-            amplitude_velocity_scales(amplitude_velocity, f64::from(velocity) / 127.0);
         Ok(Self {
             core,
             envelopes: PreparedOperatorEnvelopes::new(sample_rate, envelopes)?,
@@ -202,6 +207,21 @@ pub(super) fn amplitude_velocity_scales(
 ) -> [f32; OPERATORS] {
     let velocity = normalized_velocity as f32;
     amounts.map(|amount| 1.0 - amount + amount * velocity)
+}
+
+/// Resolve per-note steps. A silenced oscillator keeps a legal stand-in step
+/// and a zero amplitude scale, so every sampling, feedback and filter path
+/// leaves it out of the note while the remaining oscillators still render.
+pub(super) fn silence_unrepresentable(
+    steps: tuning::NoteSteps,
+    amplitude_scales: &mut [f32; OPERATORS],
+) -> [u64; OPERATORS] {
+    std::array::from_fn(|index| {
+        steps[index].unwrap_or_else(|| {
+            amplitude_scales[index] = 0.0;
+            tuning::SILENCED_STEP
+        })
+    })
 }
 
 pub(super) fn scale_operator_amplitudes(

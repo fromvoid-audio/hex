@@ -55,6 +55,7 @@ impl<'a, 'definitions> AudioCandidateEffects<'a, 'definitions> {
         resources: &crate::native_device_resources::PreparedDeviceResources,
         scan_frames: u64,
         cancel: &std::sync::atomic::AtomicBool,
+        native_input: Option<crate::NativeParameterInputTarget>,
     ) -> Result<crate::PreparedRevision, crate::Invalid> {
         crate::PreparedRevision::prepare_with_device_resources_and_effect_registry(
             project,
@@ -66,6 +67,7 @@ impl<'a, 'definitions> AudioCandidateEffects<'a, 'definitions> {
             scan_frames,
             cancel,
             self.registry,
+            native_input,
         )
     }
     /// Same ordinary resource preparation with verified file-source metadata.
@@ -82,10 +84,11 @@ impl<'a, 'definitions> AudioCandidateEffects<'a, 'definitions> {
         resources: &crate::native_device_resources::PreparedDeviceResources,
         scan_frames: u64,
         cancel: &std::sync::atomic::AtomicBool,
+        native_input: Option<crate::NativeParameterInputTarget>,
     ) -> Result<crate::PreparedRevision, crate::Invalid> {
         crate::PreparedRevision::prepare_with_prepared_audio_sources_device_resources_and_effect_registry(
             project, sources, generation, table, previous, transforms, resources,
-            scan_frames, cancel, self.registry,
+            scan_frames, cancel, self.registry, native_input,
         )
     }
     pub fn quote(
@@ -97,6 +100,69 @@ impl<'a, 'definitions> AudioCandidateEffects<'a, 'definitions> {
             project,
             sources,
             self.registry,
+        )
+    }
+    /// Add only the armed slot/growth delta to the existing complete caller quote.
+    /// Existing device row envelopes already reserve each automation vector family.
+    pub fn quote_with_native_parameter_input(
+        &self,
+        project: &Project,
+        sources: usize,
+        input: crate::device_automation::NativeParameterInputTarget,
+    ) -> Result<super::AudioCandidateReservationQuote, AudioStorageError> {
+        if crate::device_automation::native_parameter_input_target(
+            project,
+            input.device(),
+            input.target(),
+        )
+        .map_err(|_| AudioStorageError::UnsupportedGraph)?
+            != input
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        let device = project
+            .device(input.device())
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        let retained = crate::device_automation::quote_with_input(device, Some(input))?
+            .checked_sub(crate::device_automation::quote(device)?)
+            .ok_or(AudioStorageError::Overflow)?;
+        let growth =
+            crate::device_automation::input_construction_growth_overlap(device, Some(input))?;
+        let mut quote = self.quote(project, sources)?;
+        // The optional runtime Box adds one exact exclusive DATA row; it is
+        // not an independently transferable processor or shared HANDLE.
+        quote.data_rows = quote
+            .data_rows
+            .checked_add(1)
+            .ok_or(AudioStorageError::Overflow)?;
+        quote.metadata_data_bytes = quote
+            .metadata_data_bytes
+            .checked_add(crate::SessionPlayback::native_parameter_input_state_bytes())
+            .and_then(|bytes| bytes.checked_add(retained))
+            .ok_or(AudioStorageError::Overflow)?;
+        quote.compiler_workspace_bytes = quote
+            .compiler_workspace_bytes
+            .checked_add(growth)
+            .ok_or(AudioStorageError::Overflow)?;
+        Ok(quote)
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_with_native_parameter_input(
+        &self,
+        destination: &mut AudioCandidatePreparation,
+        project: &Project,
+        source_generation: u64,
+        context: crate::AudioSourceContext,
+        sampler: Option<(u64, &std::sync::atomic::AtomicBool)>,
+        input: crate::device_automation::NativeParameterInputTarget,
+    ) -> Result<(), AudioStorageError> {
+        destination.prepare_with_effect_registry_and_native_parameter_input_on_control(
+            project,
+            source_generation,
+            context,
+            self.registry,
+            sampler,
+            input,
         )
     }
     pub fn prepare(
@@ -317,7 +383,7 @@ impl AudioCandidatePreparation {
         source_generation: u64,
         context: crate::AudioSourceContext,
     ) -> Result<(), AudioStorageError> {
-        self.prepare_with_sampler(project, source_generation, context, None, None)
+        self.prepare_with_sampler(project, source_generation, context, None, None, None)
     }
     /// Explicit closed native CURRENT construction from already copied original
     /// PCM. Generic audio-only preparation still refuses resourceful graphs.
@@ -335,6 +401,7 @@ impl AudioCandidatePreparation {
             context,
             Some((hash_frames, cancel)),
             None,
+            None,
         )
     }
     /// Closed effect metadata preparation. Definitions are borrowed only for
@@ -348,8 +415,37 @@ impl AudioCandidatePreparation {
         effects: &hex_lattice::NativeDeviceRegistry<'_>,
         sampler: Option<(u64, &std::sync::atomic::AtomicBool)>,
     ) -> Result<(), AudioStorageError> {
-        self.prepare_with_sampler(project, source_generation, context, sampler, Some(effects))
+        self.prepare_with_sampler(
+            project,
+            source_generation,
+            context,
+            sampler,
+            Some(effects),
+            None,
+        )
     }
+    /// Prepare one transient native input through the same original-bank custody.
+    /// No authored points, provider owner or publication authority are fabricated.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_with_effect_registry_and_native_parameter_input_on_control(
+        &mut self,
+        project: &Project,
+        source_generation: u64,
+        context: crate::AudioSourceContext,
+        effects: &hex_lattice::NativeDeviceRegistry<'_>,
+        sampler: Option<(u64, &std::sync::atomic::AtomicBool)>,
+        input: crate::device_automation::NativeParameterInputTarget,
+    ) -> Result<(), AudioStorageError> {
+        self.prepare_with_sampler(
+            project,
+            source_generation,
+            context,
+            sampler,
+            Some(effects),
+            Some(input),
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
     fn prepare_with_sampler(
         &mut self,
         project: &Project,
@@ -357,7 +453,11 @@ impl AudioCandidatePreparation {
         context: crate::AudioSourceContext,
         sampler: Option<(u64, &std::sync::atomic::AtomicBool)>,
         effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
+        native_input: Option<crate::device_automation::NativeParameterInputTarget>,
     ) -> Result<(), AudioStorageError> {
+        if native_input.is_some() && effects.is_none() {
+            return Err(AudioStorageError::UnsupportedGraph);
+        }
         if self.failed
             || self.cleaning
             || self.complete
@@ -380,14 +480,26 @@ impl AudioCandidatePreparation {
         if self.token.is_none() {
             self.token = Some(
                 if let Some(effects) = effects {
-                    custody.begin_effect_revision_in_place_on_control(
-                        project,
-                        source_generation,
-                        context,
-                        &mut self.bank,
-                        sampler,
-                        effects,
-                    )
+                    if native_input.is_some() {
+                        custody.begin_effect_revision_with_input_in_place_on_control(
+                            project,
+                            source_generation,
+                            context,
+                            &mut self.bank,
+                            sampler,
+                            effects,
+                            native_input,
+                        )
+                    } else {
+                        custody.begin_effect_revision_in_place_on_control(
+                            project,
+                            source_generation,
+                            context,
+                            &mut self.bank,
+                            sampler,
+                            effects,
+                        )
+                    }
                 } else {
                     match sampler {
                         Some((work, cancel)) => custody.begin_current_sampler_in_place_on_control(
@@ -621,6 +733,94 @@ mod tests {
         assert_ne!(copy.frames().as_ptr(), original);
         assert_eq!(copy.frames(), audio.frames());
         Some((project, cell))
+    }
+    #[test]
+    fn armed_native_state_box_is_quoted_and_observed_once_in_closed_custody() {
+        use hex_lattice_contract::{DeviceAutomationTarget, NativeDeviceMetadata};
+        use hex_project::{Command, Created, Editor};
+        let mut editor =
+            Editor::new(crate::audio_preparation::candidate_test_project(), 8).unwrap();
+        let track = editor.project().tracks()[0].id();
+        let Created::Device(device) = editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: hex_devices::utility::UTILITY_DEFINITION
+                    .default_state()
+                    .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("native device fixture")
+        };
+        let project = editor.project();
+        let asset = project.assets().next().unwrap().id();
+        let input = crate::native_parameter_input_target(
+            project,
+            device,
+            DeviceAutomationTarget::HostInputGain,
+        )
+        .unwrap();
+        let registry = hex_devices::native_registry().unwrap();
+        let effects = AudioCandidateEffects::new(&registry);
+        let context = crate::AudioSourceContext {
+            project_generation: 2,
+            editor_revision: 8,
+        };
+        let prepare = |armed| {
+            let quote = if armed {
+                effects
+                    .quote_with_native_parameter_input(project, 1, input)
+                    .unwrap()
+            } else {
+                effects.quote(project, 1).unwrap()
+            };
+            let limits = quote.storage_reservation(65536).unwrap();
+            let mut cell = AudioCandidatePreparation::try_new_on_control(1, limits).unwrap();
+            cell.copy_resident_source_on_control(
+                asset,
+                &crate::Audio::new(48000, vec![[0.25; 2]; 8]).unwrap(),
+            )
+            .unwrap();
+            if armed {
+                effects
+                    .prepare_with_native_parameter_input(
+                        &mut cell, project, 11, context, None, input,
+                    )
+                    .unwrap();
+            } else {
+                effects
+                    .prepare(&mut cell, project, 11, context, None)
+                    .unwrap();
+            }
+            let summary = cell
+                .owner_on_control()
+                .unwrap()
+                .seal_constructor_on_control(crate::AudioStorageLedgerReservation {
+                    data_rows: quote.data_rows,
+                    handle_rows: quote.handle_rows,
+                    root_rows: 1,
+                    max_retained_bytes: limits.max_prepared_data_bytes,
+                    max_construction_peak_bytes: limits.max_construction_data_bytes,
+                })
+                .unwrap();
+            assert!(summary.data.data_allocations <= quote.data_rows);
+            assert!(summary.data.retained_bytes <= limits.max_prepared_data_bytes);
+            cell.cleanup_on_control().unwrap();
+            (quote, summary)
+        };
+        // Host arming adds no provider/curve vector: its sole new DATA backing
+        // is the control-created runtime state and the corresponding ledger row.
+        let (plain_quote, plain) = prepare(false);
+        let (armed_quote, armed) = prepare(true);
+        let bytes = crate::SessionPlayback::native_parameter_input_state_bytes();
+        assert_eq!(armed_quote.data_rows, plain_quote.data_rows + 1);
+        assert_eq!(
+            armed_quote.metadata_data_bytes,
+            plain_quote.metadata_data_bytes + bytes
+        );
+        assert_eq!(armed.data.data_allocations, plain.data.data_allocations + 1);
+        assert_eq!(armed.data.data_bytes, plain.data.data_bytes + bytes);
     }
     #[test]
     fn persistent_collection_refusal_retry_and_original_owner_cleanup_are_control_side() {

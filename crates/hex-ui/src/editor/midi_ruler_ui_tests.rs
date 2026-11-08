@@ -7,29 +7,44 @@ use crate::editor::{
 use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext};
 use hex_project::{BeatTime, Command, MidiNoteInsert};
 use hex_session::service::{Event, Service};
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::sync::Arc;
 fn beat(n: u64) -> BeatTime {
     BeatTime::from_quarters(n).unwrap()
 }
-fn marker_at(visual: &mut VisualTestContext, fraction: f32) -> gpui::Point<gpui::Pixels> {
-    let b = visual.debug_bounds("midi-source-ruler").unwrap();
-    point(
-        b.origin.x + px(1.0) + (b.size.width - px(2.0)) * fraction,
-        b.origin.y + px(13.0),
+// Test coordinates and paint expectations use the completed content box,
+// including the shared strip's actual border rather than the old one-point frame.
+pub(super) fn content_bounds(
+    visual: &mut VisualTestContext,
+    selector: &'static str,
+) -> gpui::Bounds<gpui::Pixels> {
+    let bounds = visual.debug_bounds(selector).unwrap();
+    let (_, border, _) = visual.rendered_border(selector).unwrap();
+    let scale = gpui::ScaledPixels::from(visual.update(|window, _| window.scale_factor()));
+    gpui::Bounds::new(
+        point(
+            bounds.left() + px(border.left / scale),
+            bounds.top() + px(border.top / scale),
+        ),
+        gpui::size(
+            bounds.size.width - px((border.left + border.right) / scale),
+            bounds.size.height - px((border.top + border.bottom) / scale),
+        ),
     )
 }
+fn marker_at(visual: &mut VisualTestContext, fraction: f32) -> gpui::Point<gpui::Pixels> {
+    let b = content_bounds(visual, "midi-source-ruler");
+    point(b.origin.x + b.size.width * fraction, b.origin.y + px(13.0))
+}
 fn assert_marker(visual: &mut VisualTestContext, fraction: f32) {
-    let bounds = visual.debug_bounds("midi-source-ruler").unwrap();
+    let bounds = content_bounds(visual, "midi-source-ruler");
     let scale = gpui::ScaledPixels::from(visual.update(|window, _| window.scale_factor()));
     let primary: gpui::Background = rgb(theme::color(theme::PaletteRole::Primary)).into();
+    let highlighted: gpui::Background = rgb(theme::color(theme::PaletteRole::Text)).into();
     let quads: Vec<_> = visual
         .rendered_filled_quads("midi-source-ruler")
         .into_iter()
         .filter(|(b, c)| {
-            c == &primary
+            (c == &primary || c == &highlighted)
                 && (b.size.width / scale - 1.0).abs() < 0.01
                 && b.size.height / scale > 10.0
         })
@@ -39,8 +54,7 @@ fn assert_marker(visual: &mut VisualTestContext, fraction: f32) {
         1,
         "one persisted/preview playback-start witness"
     );
-    let expected =
-        f32::from(bounds.origin.x) + 1.0 + (f32::from(bounds.size.width) - 2.0) * fraction;
+    let expected = f32::from(bounds.origin.x) + f32::from(bounds.size.width) * fraction;
     assert!((quads[0].0.origin.x / scale - expected).abs() < 0.05);
 }
 fn drag(visual: &mut VisualTestContext, from: f32, to: f32) {
@@ -51,13 +65,16 @@ fn drag(visual: &mut VisualTestContext, from: f32, to: f32) {
     visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
 }
 pub(super) fn next(service: &Service) -> Event {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             assert!(event.error.is_none(), "{:?}", event.error);
             return event;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            std::time::Instant::now() < until,
+            "next: hang guard expired"
+        );
         std::thread::yield_now();
     }
 }
@@ -113,6 +130,7 @@ fn marker_drag_at_nonzero_arrangement_placement_acks_once_and_preserves_other_st
             clip,
             notes: vec![
                 MidiNoteInsert {
+                    active: true,
                     start: beat(0),
                     duration: beat(1),
                     pitch: 60,
@@ -120,6 +138,7 @@ fn marker_drag_at_nonzero_arrangement_placement_acks_once_and_preserves_other_st
                     velocity: 37
                 },
                 MidiNoteInsert {
+                    active: true,
                     start: beat(2),
                     duration: beat(1),
                     pitch: 64,
@@ -222,6 +241,92 @@ fn marker_drag_at_nonzero_arrangement_placement_acks_once_and_preserves_other_st
     );
 }
 #[gpui::test]
+fn one_shot_marker_drag_moves_the_arrangement_region_and_keeps_notes_at_their_song_beats(
+    cx: &mut TestAppContext,
+) {
+    let (mut visual, editor, environment, clip) = fixture(cx);
+    for command in [
+        Command::MoveMidiClip {
+            clip,
+            track: editor.read_with(&visual, |v, _| v.selected_track.unwrap()),
+            start: beat(8),
+        },
+        Command::AddMidiNotes {
+            clip,
+            notes: [(0, 60), (2, 64)]
+                .map(|(start, pitch)| MidiNoteInsert {
+                    active: true,
+                    start: beat(start),
+                    duration: beat(1),
+                    pitch,
+                    channel: 0,
+                    velocity: 90,
+                })
+                .to_vec(),
+        },
+    ] {
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(command)))
+        });
+        pump(&editor, &mut visual);
+    }
+    let song_frame = |v: &EditorView, pitch: u8| {
+        let project = &v.state.as_ref().unwrap().project;
+        hex_engine::midi_compile::midi_events(project)
+            .unwrap()
+            .iter()
+            .find(|event| event.pitch == pitch)
+            .map(|event| event.frame)
+    };
+    let (before, note) = editor.read_with(&visual, |v, _| {
+        (
+            v.state.as_ref().unwrap().project.snapshot(),
+            song_frame(v, 64),
+        )
+    });
+    drag(&mut visual, 0.0, 0.5);
+    pump(&editor, &mut visual);
+    let after = editor.read_with(&visual, |v, _| {
+        let state = v.state.as_ref().unwrap();
+        let arrangement = state.project.midi_clip(clip).unwrap();
+        assert_eq!(arrangement.source_start(), beat(2));
+        assert_eq!(
+            (arrangement.start(), arrangement.arrangement_length()),
+            (beat(10), beat(2)),
+            "the region starts at the marker and keeps its end"
+        );
+        assert_eq!(song_frame(v, 64), note, "the note keeps its song time");
+        assert_eq!(
+            song_frame(v, 60),
+            None,
+            "material before the marker is outside"
+        );
+        assert!(matches!(
+            v.last_enqueued_edit,
+            Some(Command::ResizeMidiClipView {
+                operation: hex_project::MidiViewResizeOperation::PlayStart { .. },
+                ..
+            })
+        ));
+        state.project.snapshot()
+    });
+    assert_marker(&mut visual, 0.5);
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+    });
+    visual.simulate_keystrokes("cmd-shift-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after)
+    });
+    assert_eq!(
+        roundtrip(&editor, &mut visual, &environment).snapshot(),
+        after
+    );
+}
+#[gpui::test]
 fn session_marker_uses_its_own_source_and_blank_click_and_unchanged_drag_are_noops(
     cx: &mut TestAppContext,
 ) {
@@ -304,7 +409,7 @@ fn marker_cancels_on_escape_focus_viewport_competing_ack_and_clip_retirement(
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
     for cancel in 0..5 {
         editor.update(&mut visual, |v, cx| {
-            v.piano_beat_start = BeatTime::ZERO;
+            v.piano_beat_start = 0;
             v.piano_beat_span = beat(4);
             cx.notify();
         });
@@ -402,4 +507,64 @@ fn stale_rendered_generation_cannot_capture_a_start_marker(cx: &mut TestAppConte
         assert!(!editor.read(cx).edit_pending());
     });
     visual.run_until_parked();
+}
+
+#[gpui::test]
+fn saved_start_marker_lights_up_only_at_its_grab_target_without_editing(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, _clip) = fixture(cx);
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    let marker = marker_at(&mut visual, 0.0);
+    visual.simulate_mouse_move(marker, None, Modifiers::default());
+    visual.run_until_parked();
+    let text: gpui::Background = rgb(theme::color(theme::PaletteRole::Text)).into();
+    let scale = gpui::ScaledPixels::from(visual.update(|window, _| window.scale_factor()));
+    assert!(
+        visual
+            .rendered_filled_quads("midi-source-ruler")
+            .into_iter()
+            .any(|(bounds, color)| color == text
+                && (bounds.size.width / scale - 1.0).abs() < 0.01
+                && bounds.size.height / scale > 10.0),
+        "hover must visibly light up the saved start marker"
+    );
+    assert_eq!(
+        visual.rendered_cursor_style(),
+        Some(gpui::CursorStyle::ResizeLeftRight)
+    );
+    let away = marker_at(&mut visual, 0.75);
+    visual.simulate_mouse_move(away, None, Modifiers::default());
+    visual.run_until_parked();
+    assert_marker(&mut visual, 0.0);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+    });
+}
+
+#[gpui::test]
+fn held_two_at_saved_start_selects_time_without_moving_midi_start(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, _clip) = fixture(cx);
+    visual.update(|window, cx| editor.read(cx).midi_focus.focus(window));
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    let down = marker_at(&mut visual, 0.0);
+    let up = marker_at(&mut visual, 0.25);
+    let key = gpui::Keystroke::parse("2").unwrap();
+    visual.simulate_event(gpui::KeyDownEvent {
+        keystroke: key.clone(),
+        is_held: false,
+    });
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |v, _| {
+        assert!(
+            !v.midi_ruler.held(),
+            "held 2 owns time selection at the marker"
+        )
+    });
+    visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+    visual.simulate_event(gpui::KeyUpEvent { keystroke: key });
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert!(v.midi_time_selection_bounds().is_some_and(|(a, b)| a < b));
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+    });
 }

@@ -1,4 +1,4 @@
-use crate::{StorageError, decode, encode};
+use crate::{ReplaceWarning, StorageError, decode, encode};
 use hex_project::Project;
 use std::{
     fs::{self, File, OpenOptions},
@@ -18,7 +18,7 @@ pub fn load(path: impl AsRef<Path>) -> Result<Project, StorageError> {
 /// Opaque exact-byte content snapshot, shared cheaply between owners.
 /// This is a content check, not a filesystem lock, identity or overwrite permit.
 #[derive(Clone)]
-pub struct FileToken(pub(super) Arc<[u8]>, bool);
+pub struct FileToken(pub(super) Arc<[u8]>, Option<u32>);
 
 impl std::fmt::Debug for FileToken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -29,11 +29,24 @@ impl std::fmt::Debug for FileToken {
 }
 
 impl FileToken {
-    /// True when saving would replace an older schema with the current format.
+    /// True when the file is older than [`crate::CURRENT_SCHEMA_VERSION`], so
+    /// saving any project over it writes a format older readers cannot open.
     /// Tokens are constructed only after validated decoding or current encoding;
     /// an unexpected header conservatively requires confirmation too.
     pub fn requires_format_upgrade(&self) -> bool {
-        self.1
+        self.1.is_none_or(|version| {
+            !(crate::CURRENT_SCHEMA_VERSION..=crate::NEWEST_SCHEMA_VERSION).contains(&version)
+        })
+    }
+
+    /// True when saving `project` writes a newer schema than this file's, for
+    /// example adding sinc v2 media to a schema63 file. Compares the actual
+    /// saved formats, not application versions.
+    pub fn requires_schema_upgrade_for(&self, project: &Project) -> bool {
+        self.requires_format_upgrade()
+            || self
+                .1
+                .is_none_or(|version| version < crate::schema_version_for(project))
     }
 
     /// Control-side preflight for replacing a file an older reader could open.
@@ -41,9 +54,19 @@ impl FileToken {
     /// reader compatibility just as a schema upgrade does. Already-large files
     /// do not acquire a new compatibility loss on subsequent saves.
     pub fn requires_save_confirmation(&self, project: &Project) -> Result<bool, StorageError> {
-        Ok(self.requires_format_upgrade()
-            || (self.0.len() <= crate::LEGACY_READER_DOCUMENT_BYTES
-                && encode(project)?.len() > crate::LEGACY_READER_DOCUMENT_BYTES))
+        self.requires_save_confirmation_within(project, crate::LEGACY_READER_DOCUMENT_BYTES)
+    }
+
+    /// The same preflight against an explicit older-reader ceiling. Production
+    /// uses [`crate::LEGACY_READER_DOCUMENT_BYTES`]; callers may pass a smaller
+    /// ceiling to exercise their consent flow without encoding 8 MiB documents.
+    pub fn requires_save_confirmation_within(
+        &self,
+        project: &Project,
+        limit: usize,
+    ) -> Result<bool, StorageError> {
+        Ok(self.requires_schema_upgrade_for(project)
+            || (self.0.len() <= limit && encode(project)?.len() > limit))
     }
 
     pub(super) fn from_validated_bytes(bytes: Arc<[u8]>) -> Self {
@@ -51,10 +74,10 @@ impl FileToken {
         struct Header {
             version: u32,
         }
-        let upgrade = serde_json::from_slice::<Header>(&bytes).map_or(true, |header| {
-            header.version != crate::CURRENT_SCHEMA_VERSION
-        });
-        Self(bytes, upgrade)
+        let version = serde_json::from_slice::<Header>(&bytes)
+            .ok()
+            .map(|header| header.version);
+        Self(bytes, version)
     }
 
     /// Compare the current document with the captured bytes without modifying it.
@@ -80,12 +103,41 @@ pub fn load_with_token(path: impl AsRef<Path>) -> Result<(Project, FileToken), S
     Ok((project, FileToken::from_validated_bytes(bytes.into())))
 }
 
+/// Read a project document or recovery sidecar of at most
+/// [`crate::MAX_PROJECT_DOCUMENT_BYTES`] plus [`ENVELOPE_HEADROOM`].
 pub(super) fn read_document(path: &Path) -> Result<Vec<u8>, StorageError> {
-    read_bytes(File::open(path)?)
+    read_bounded(path, crate::MAX_PROJECT_DOCUMENT_BYTES + ENVELOPE_HEADROOM)
 }
 
-/// Grow owned I/O buffers fallibly without an arbitrary document-size ceiling.
-/// Read in chunks rather than trusting filesystem metadata or framed lengths.
+/// Recovery sidecars frame a document with a header and its target file name.
+const ENVELOPE_HEADROOM: usize = 64 * 1024;
+
+/// Refuse oversized files from metadata before reading, then read at most one
+/// byte past `limit`, so a file growing after the check is refused too.
+fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, StorageError> {
+    let file = File::open(path)?;
+    let too_large = || {
+        std::io::Error::new(
+            std::io::ErrorKind::FileTooLarge,
+            format!(
+                "{} exceeds the {} mib project document limit",
+                crate::text::verbatim(path.display()),
+                limit / (1024 * 1024)
+            ),
+        )
+    };
+    let limit_u64 = u64::try_from(limit).map_err(|_| too_large())?;
+    if file.metadata()?.len() > limit_u64 {
+        return Err(too_large().into());
+    }
+    let bytes = read_bytes(file.take(limit_u64.saturating_add(1)))?;
+    if bytes.len() > limit {
+        return Err(too_large().into());
+    }
+    Ok(bytes)
+}
+
+/// Grow owned I/O buffers fallibly in chunks; callers bound the reader.
 fn read_bytes(mut reader: impl Read) -> Result<Vec<u8>, StorageError> {
     let mut bytes = Vec::new();
     let mut chunk = [0_u8; 64 * 1024];
@@ -110,7 +162,10 @@ impl Drop for Temporary {
 }
 
 /// Create a complete new project without overwriting another file. Failed writes
-/// cannot expose partial JSON at the target path; old targets always remain intact.
+/// do not leave partial JSON at the target path; old targets always remain intact.
+/// Volumes without hard links or exclusive rename publish an exclusive synced
+/// copy instead, where only a crash during that copy can leave an incomplete
+/// new file (see `crate::publication`).
 /// A failure after linking reports `PublishedButNotDurable`; the complete target
 /// is retained and callers must not treat that error as absence of a saved file.
 pub fn save_new(path: impl AsRef<Path>, project: &Project) -> Result<(), StorageError> {
@@ -123,6 +178,40 @@ pub fn save_new_with_token(
     path: impl AsRef<Path>,
     project: &Project,
 ) -> Result<FileToken, StorageError> {
+    durable_token(save_with_finish(
+        path.as_ref(),
+        project,
+        finish_publication,
+    )?)
+}
+
+fn durable_token(outcome: SaveNewOutcome) -> Result<FileToken, StorageError> {
+    match outcome.warning {
+        None => Ok(outcome.token),
+        Some(warning) => Err(StorageError::PublishedButNotDurable {
+            path: outcome.path,
+            operation: warning.operation,
+            source: warning.source,
+        }),
+    }
+}
+
+/// A new project that is complete and visible at `path`. `warning` reports a
+/// failed temporary cleanup or directory sync after publication; the token
+/// still matches the published bytes, so callers can bind the document.
+#[derive(Debug)]
+pub struct SaveNewOutcome {
+    pub path: PathBuf,
+    pub token: FileToken,
+    pub warning: Option<ReplaceWarning>,
+}
+
+/// Create a new project like [`save_new_with_token`], but return a published
+/// file with its token and durability warning instead of an error.
+pub fn save_new_with_outcome(
+    path: impl AsRef<Path>,
+    project: &Project,
+) -> Result<SaveNewOutcome, StorageError> {
     save_with_finish(path.as_ref(), project, finish_publication)
 }
 
@@ -132,12 +221,20 @@ fn save_with_finish(
     path: &Path,
     project: &Project,
     finish: impl FnOnce(&Path, &Path) -> Result<(), FinishError>,
-) -> Result<FileToken, StorageError> {
+) -> Result<SaveNewOutcome, StorageError> {
     if path.file_name().is_none() {
         return Err(StorageError::Invalid("project target needs a filename"));
     }
+    // Every later save and checkpoint derives sibling names from this one, so
+    // admit only a name they can all use. Callers preflight with
+    // `project_name::check` for a message naming the file.
+    if crate::project_name::check(path).is_err() {
+        return Err(StorageError::Invalid(
+            "project name is too long to keep recovery files beside it; choose a shorter name",
+        ));
+    }
     // Refuse known collisions before serialization or temporary-file work. The
-    // final hard link still enforces create-new atomically against races.
+    // final publication still refuses an existing destination against races.
     match fs::symlink_metadata(path) {
         Ok(_) => {
             return Err(std::io::Error::new(
@@ -157,6 +254,7 @@ fn save_with_finish(
     let mut temporary = None;
     for _ in 0..32 {
         let id = NEXT_TEMP.fetch_add(1, Relaxed);
+        // `crate::temporaries` sweeps this exact pattern once it is stale.
         let candidate = parent.join(format!(".hex-pending-{}-{id}", std::process::id()));
         match OpenOptions::new()
             .write(true)
@@ -177,21 +275,26 @@ fn save_with_finish(
     file.write_all(&bytes)?;
     file.sync_all()?;
     drop(file);
-    fs::hard_link(&temporary.0, path)?;
-    finish(&temporary.0, path).map_err(|(operation, source)| {
-        StorageError::PublishedButNotDurable {
-            path: path.to_path_buf(),
-            operation,
-            source,
-        }
-    })?;
-    Ok(FileToken::from_validated_bytes(Arc::from(bytes)))
+    crate::publication::publish_new(&temporary.0, path)?;
+    let warning = finish(&temporary.0, path)
+        .err()
+        .map(|(operation, source)| ReplaceWarning { operation, source });
+    // Best effort: leaked temporaries never fail a completed save.
+    let _ = crate::temporaries::sweep_stale_temporaries(parent);
+    Ok(SaveNewOutcome {
+        path: path.to_path_buf(),
+        token: FileToken::from_validated_bytes(Arc::from(bytes)),
+        warning,
+    })
 }
 
-fn finish_publication(temporary: &Path, path: &Path) -> Result<(), FinishError> {
+pub(crate) fn finish_publication(temporary: &Path, path: &Path) -> Result<(), FinishError> {
     // Attempt directory sync even when temporary cleanup failed. Neither step
     // may roll back a destination that has already been published.
-    let cleanup_error = fs::remove_file(temporary).err();
+    // An exclusive-rename publication already consumed the staging name.
+    let cleanup_error = fs::remove_file(temporary)
+        .err()
+        .filter(|error| error.kind() != std::io::ErrorKind::NotFound);
     #[cfg(unix)]
     let sync_error = {
         let parent = path
@@ -233,6 +336,36 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn sparse_multi_gigabyte_file_is_refused_before_reading() {
+        let dir = TestDir::new();
+        let path = dir.0.join("huge.hex");
+        let file = File::create(&path).expect("sparse fixture");
+        file.set_len(4 << 30).expect("sparse length");
+        drop(file);
+        let started = std::time::Instant::now();
+        let Err(StorageError::Io(error)) = load(&path) else {
+            panic!("oversized document must be refused as a file error");
+        };
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert_eq!(error.kind(), std::io::ErrorKind::FileTooLarge);
+        let message = error.to_string();
+        assert!(message.contains("huge.hex") && message.contains("512 mib"));
+        assert_eq!(fs::metadata(&path).expect("kept").len(), 4 << 30);
+    }
+
+    #[test]
+    fn bounded_read_accepts_the_limit_and_refuses_one_byte_more() {
+        let dir = TestDir::new();
+        let path = dir.0.join("bounded.hex");
+        fs::write(&path, [b'x'; 16]).expect("fixture");
+        assert_eq!(read_bounded(&path, 16).expect("at limit").len(), 16);
+        let Err(StorageError::Io(error)) = read_bounded(&path, 15) else {
+            panic!("one byte over the limit must be refused");
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::FileTooLarge);
     }
 
     #[test]
@@ -600,7 +733,7 @@ mod tests {
         let dir = TestDir::new();
         let path = dir.0.join("saved.hex");
         let project = Project::new(48_000).expect("project");
-        let error = save_with_finish(&path, &project, |temporary, destination| {
+        let outcome = save_with_finish(&path, &project, |temporary, destination| {
             assert_eq!(load(destination).expect("published document"), project);
             fs::remove_file(temporary).expect("cleanup succeeds");
             Err((
@@ -608,7 +741,17 @@ mod tests {
                 std::io::Error::other("injected sync failure"),
             ))
         })
-        .expect_err("durability failure must be explicit");
+        .expect("published outcome");
+        let warning = outcome.warning.as_ref().expect("durability warning");
+        assert_eq!(warning.operation, "synchronize the project directory");
+        // The returned token adopts the published file, so a session can bind
+        // it and the next replacement succeeds.
+        outcome
+            .token
+            .check_unchanged(&path)
+            .expect("adoptable token");
+        let token = outcome.token.clone();
+        let error = durable_token(outcome).expect_err("durability failure must be explicit");
         assert!(
             matches!(&error, StorageError::PublishedButNotDurable { path: saved, .. } if saved == &path)
         );
@@ -625,6 +768,65 @@ mod tests {
         assert!(
             matches!(save_new(&path, &project), Err(StorageError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists)
         );
+        let replacement = Project::new(44_100).expect("replacement");
+        crate::replace_existing(&path, &token, &replacement).expect("next save");
+        assert_eq!(load(&path).expect("replaced"), replacement);
+    }
+
+    /// Regression for #3915: exFAT/FAT/SMB volumes refuse hard links, which
+    /// used to fail Save As and the first overwrite's recovery sidecar.
+    #[cfg(unix)]
+    #[test]
+    fn volumes_without_hard_links_save_overwrite_and_recover() {
+        use crate::publication::simulate::{Volume, volume};
+        for capability in [
+            Volume::NoHardLinks(libc::ENOTSUP),
+            Volume::NoHardLinks(libc::EPERM),
+            Volume::NoAtomicCreate,
+        ] {
+            let dir = TestDir::new();
+            let _volume = volume(capability);
+            let path = dir.0.join("usb.hex");
+            let first = Project::new(48_000).expect("project");
+            let token = save_new_with_token(&path, &first).expect("save as");
+            assert_eq!(load(&path).expect("complete project"), first);
+            assert!(
+                matches!(save_new(&path, &first), Err(StorageError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists)
+            );
+            assert_eq!(load(&path).expect("untouched project"), first);
+            let second = Project::new(44_100).expect("replacement");
+            crate::replace_existing(&path, &token, &second).expect("first overwrite");
+            assert_eq!(load(&path).expect("replaced"), second);
+            let recovery = crate::load_recovery(&path).expect("recovery sidecar");
+            assert_eq!(recovery.project, first);
+            // Only the project and its sidecar remain: no staging leftovers.
+            assert_eq!(fs::read_dir(&dir.0).expect("directory").count(), 2);
+        }
+    }
+
+    #[test]
+    fn confirmed_replacement_only_overwrites_a_valid_project_and_keeps_recovery() {
+        let dir = TestDir::new();
+        let path = dir.0.join("existing.hex");
+        let previous = Project::new(48_000).expect("project");
+        save_new(&path, &previous).expect("existing project");
+        let replacement = Project::new(44_100).expect("replacement");
+        let outcome = crate::replace_confirmed(&path, &replacement).expect("confirmed save as");
+        assert_eq!(load(&path).expect("replaced"), replacement);
+        outcome.token.check_unchanged(&path).expect("bound token");
+        assert_eq!(
+            crate::load_recovery(&path).expect("recovery").project,
+            previous
+        );
+
+        let other = dir.0.join("notes.hex");
+        fs::write(&other, b"not a hex project").expect("foreign file");
+        assert!(matches!(
+            crate::replace_confirmed(&other, &replacement),
+            Err(StorageError::Invalid(reason)) if reason.contains("choose another name")
+        ));
+        assert_eq!(fs::read(&other).expect("untouched"), b"not a hex project");
+        assert!(!crate::recovery_path(&other).expect("sidecar path").exists());
     }
 
     #[cfg(unix)]

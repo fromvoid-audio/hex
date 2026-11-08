@@ -2,7 +2,8 @@
 //! native APIs, streaming, worker publication and physical output deadlines.
 use hex_devices::utility::{MAX_UTILITY_GAIN, UTILITY_DEFINITION, UTILITY_TYPE_ID, parameter};
 use hex_engine::{Audio, PreparedRevision, SessionPlayback, SessionPlaybackCommand, SineTable};
-use hex_lattice_contract::NativeDeviceMetadata;
+use hex_lattice::{NativeTransientOperation, NativeTransientValue, PreparedNativeProcessor};
+use hex_lattice_contract::{DeviceAutomationTarget, NativeDeviceMetadata, ParameterValue};
 use hex_project::{
     AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, Command, Created, Editor,
     Project,
@@ -23,8 +24,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     const BLOCKS: usize = 256;
     let frames = (WARMUP + BLOCKS) * BLOCK;
     let audio = Audio::new(RATE, vec![[0.125, -0.25]; frames])?;
-    for mode in ["static", "gain_curve", "all_curves"] {
-        let automated = mode != "static";
+    for mode in [
+        "static",
+        "armed_idle",
+        "armed_held",
+        "gain_curve",
+        "all_curves",
+    ] {
+        let automated = matches!(mode, "gain_curve" | "all_curves");
+        let armed = matches!(mode, "armed_idle" | "armed_held");
+        let mut first_device = None;
         let mut editor = Editor::new(Project::new(RATE)?, 4)?;
         let mut media = BTreeMap::new();
         for index in 0..tracks {
@@ -49,6 +58,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             else {
                 return Err("unexpected device result".into());
             };
+            first_device.get_or_insert(device);
             if mode == "all_curves" {
                 let state = UTILITY_DEFINITION.default_state()?;
                 for descriptor in UTILITY_DEFINITION.descriptors() {
@@ -92,14 +102,70 @@ fn main() -> Result<(), Box<dyn Error>> {
                 })?;
             }
         }
-        let revision = Arc::new(PreparedRevision::prepare(
-            editor.project(),
-            &media,
-            Arc::new(SineTable::new()),
-            None,
-        )?);
+        let revision = Arc::new(if armed {
+            PreparedRevision::prepare_for_native_parameter_input(
+                editor.project(),
+                &media,
+                Arc::new(SineTable::new()),
+                None,
+                first_device.ok_or("armed profile requires a device")?,
+                DeviceAutomationTarget::Parameter(parameter::GAIN),
+            )?
+        } else {
+            PreparedRevision::prepare(editor.project(), &media, Arc::new(SineTable::new()), None)?
+        });
+        // Control-side layout accounting, outside warmup and measured scopes.
+        // Exact flat backing and concrete twin payloads; this deliberately does
+        // not claim complete graph/asset/allocator resident memory.
+        let lanes = if mode == "all_curves" {
+            14
+        } else {
+            usize::from(automated)
+        };
+        let points = if mode == "all_curves" {
+            15
+        } else if automated {
+            2
+        } else {
+            0
+        };
+        let program_bytes =
+            hex_lattice::PreparedParameterAutomation::quoted_storage_bytes(lanes, points)
+                .ok_or("program storage overflow")?;
+        let state = UTILITY_DEFINITION.default_state()?;
+        let pair_bytes = if automated || armed {
+            hex_devices::utility::UtilityDefinition::prepare_owned_automated_filter(&state, RATE)?
+                .declared_runtime_bytes()
+                .checked_mul(2)
+                .ok_or("runtime storage overflow")?
+        } else {
+            0
+        };
+        println!(
+            "layout mode={mode} authored_lanes_per_device={lanes} authored_points_per_device={points} authored_program_backing_per_device={program_bytes} concrete_runtime_pair_bytes={pair_bytes} runtime_pairs={} armed_provider_slots={} armed_program_backing={}",
+            if automated {
+                tracks
+            } else {
+                usize::from(armed)
+            },
+            usize::from(armed),
+            if armed {
+                hex_lattice::PreparedParameterAutomation::quoted_storage_bytes(1, 0)
+                    .ok_or("armed program storage overflow")?
+            } else {
+                0
+            },
+        );
         let mut playback = SessionPlayback::new(revision)?;
         playback.apply(SessionPlaybackCommand::Play)?;
+        if mode == "armed_held" {
+            playback.set_native_parameter_input(NativeTransientOperation::Set(
+                NativeTransientValue::Parameter {
+                    id: parameter::GAIN,
+                    value: ParameterValue::Float(1.0),
+                },
+            ))?;
+        }
         let mut block = [[0.0; 2]; BLOCK];
         for _ in 0..WARMUP {
             playback.render(&mut block)?;

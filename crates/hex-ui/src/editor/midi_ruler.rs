@@ -12,7 +12,7 @@ use super::{
 use crate::theme;
 use gpui::{
     Bounds, Context as ViewContext, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    PathBuilder, ScrollWheelEvent, canvas, div, fill, point, prelude::*, px, relative, rgb, size,
+    PathBuilder, ScrollWheelEvent, canvas, div, fill, point, prelude::*, px, rgb, size,
 };
 use hex_project::ClipId;
 use hex_session::service::Request;
@@ -26,6 +26,7 @@ pub(super) use time_selection::State as TimeSelection;
 #[derive(Default)]
 pub(super) struct State {
     gesture: Option<Gesture>,
+    marker_hovered: bool,
 }
 impl State {
     pub(super) fn held(&self) -> bool {
@@ -41,7 +42,10 @@ struct Context {
     revision: u64,
     clip: ClipId,
     values: SourceValues,
-    start: u64,
+    // A forward one-shot Arrangement region begins at its start marker, so
+    // the marker stays inside song time and before the region end.
+    play_start_region: bool,
+    start: i128,
     span: u64,
     grid: MidiGrid,
     bounds: CanvasBounds,
@@ -57,15 +61,16 @@ impl Context {
     fn valid(self) -> bool {
         self.bounds.is_valid()
             && self.span > 0
-            && self.start.checked_add(self.span).is_some()
+            && self.start == super::midi_scene::clamp_start(self.start, self.span)
+            && self.start.checked_add(i128::from(self.span)).is_some()
             && self.values.source_length > 0
             && self.values.loop_start < self.values.loop_end
             && self.values.loop_end <= self.values.source_length
             && self.values.source_start < self.exclusive_end()
     }
     fn x(self, beat: u64) -> Option<f32> {
-        let offset = beat.checked_sub(self.start)?;
-        (offset <= self.span)
+        let offset = i128::from(beat).checked_sub(self.start)?;
+        (offset >= 0 && offset <= i128::from(self.span))
             .then(|| self.bounds.x + (offset as f64 / self.span as f64) as f32 * self.bounds.width)
     }
 }
@@ -127,9 +132,21 @@ impl Gesture {
             };
             match self.handle {
                 Handle::Start => {
-                    let last = self.context.exclusive_end() - 1;
+                    let mut first = 0;
+                    let mut last = self.context.exclusive_end() - 1;
+                    if self.context.play_start_region {
+                        first = original
+                            .source_start
+                            .saturating_sub(original.arrangement_start);
+                        last = last.min(
+                            original
+                                .source_start
+                                .saturating_add(original.arrangement_length)
+                                .saturating_sub(1),
+                        );
+                    }
                     let last = grid.step_raw().map_or(last, |step| last / step * step);
-                    next.source_start = moved(original.source_start).min(last);
+                    next.source_start = moved(original.source_start).min(last).max(first);
                 }
                 Handle::LoopStart => {
                     next.loop_start =
@@ -198,7 +215,9 @@ impl EditorView {
                     clip.arrangement_length().raw()
                 }),
             ),
-            start: self.piano_beat_start.raw(),
+            play_start_region: arrangement
+                .is_some_and(|clip| !clip.looping() && clip.content_view().is_none()),
+            start: self.piano_beat_start,
             span: self.piano_beat_span.raw(),
             grid: self.midi_snap_grid,
             bounds,
@@ -219,7 +238,8 @@ impl EditorView {
         window: &mut gpui::Window,
         cx: &mut ViewContext<Self>,
     ) -> bool {
-        if !x.is_finite()
+        if self.time_selection_key_held
+            || !x.is_finite()
             || self.midi_ruler_context(context.bounds) != Some(context)
             || context
                 .x(context.values.source_start)
@@ -371,7 +391,7 @@ impl EditorView {
         self.commit_midi_clip_loop(gesture.context.clip, changed);
     }
     pub(super) fn midi_source_ruler(&mut self, cx: &mut ViewContext<Self>) -> Div {
-        let start = self.piano_beat_start.raw();
+        let start = self.piano_beat_start;
         let span = self.piano_beat_span.raw().max(1);
         let marker = self
             .midi_ruler
@@ -394,18 +414,14 @@ impl EditorView {
             .gesture
             .is_some_and(|gesture| gesture.handle == Handle::Start);
         let time_selection = self.midi_time_selection_bounds();
+        let start_marker_enabled = !self.time_selection_key_held;
         let entity = cx.entity();
-        let mut ruler = div()
+        let mut ruler = super::timeline_strip::ruler_surface()
             .id("midi-source-ruler")
             .debug_selector(|| "midi-source-ruler".into())
-            .relative()
             .h_full()
             .flex_1()
             .min_w_0()
-            .overflow_hidden()
-            .border_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
             .track_focus(&self.midi_focus)
             .key_context("hex_midi")
             .tooltip(|_, cx| {
@@ -416,48 +432,39 @@ impl EditorView {
                 })
                 .into()
             });
-        let mut step = self
-            .midi_snap_grid
-            .step_raw()
-            .unwrap_or(hex_project::BeatTime::ONE.raw())
-            .max(1);
-        while span / step > 8 {
-            step = step.saturating_mul(2);
-        }
-        let first = start.div_ceil(step);
-        for index in 0..=8_u64 {
+        let step = super::midi_viewport_grid::ruler_step(
+            span,
+            self.midi_snap_grid
+                .step_raw()
+                .unwrap_or(hex_project::BeatTime::ONE.raw()),
+        );
+        let step = i128::from(step);
+        let first = -(-start).div_euclid(step);
+        for index in 0..=8_i128 {
             let Some(raw) = first
                 .checked_add(index)
                 .and_then(|value| value.checked_mul(step))
             else {
                 break;
             };
-            let Some(offset) = raw.checked_sub(start).filter(|offset| *offset <= span) else {
+            let Some(offset) = raw
+                .checked_sub(start)
+                .filter(|offset| *offset >= 0 && *offset <= i128::from(span))
+            else {
                 break;
             };
             let fraction = (offset as f64 / span as f64) as f32;
-            ruler = ruler.child(
-                div()
-                    .absolute()
-                    .left(relative(fraction))
-                    .top_0()
-                    .pl(px(3.0))
-                    .max_w(px(64.0))
-                    .truncate()
-                    .text_size(px(8.0))
-                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                    .child(theme::text(format!(
-                        "{:.2}b",
-                        raw as f64 / hex_project::BeatTime::ONE.raw() as f64
-                    ))),
-            );
+            ruler = ruler.children(super::timeline_strip::ruler_tick(
+                fraction,
+                format!(
+                    "{:.2}b",
+                    raw as f64 / hex_project::BeatTime::ONE.raw() as f64
+                ),
+                raw % i128::from(super::midi_viewport_grid::ACCENT_PERIOD) == 0,
+                false,
+                false,
+            ));
         }
-        ruler = ruler.children(self.arrange_midi_highlights(
-            start,
-            span,
-            0.0,
-            "arrange-reflected-ruler-range",
-        ));
         ruler = ruler.child(
             canvas(
                 |bounds, window, _| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
@@ -467,9 +474,9 @@ impl EditorView {
                         return;
                     }
                     if let Some((first, last)) = time_selection {
-                        let end = start.saturating_add(span);
-                        let first = first.max(start);
-                        let last = last.min(end);
+                        let end = start.saturating_add(i128::from(span));
+                        let first = i128::from(first).max(start);
+                        let last = i128::from(last).min(end);
                         if first < last {
                             let left =
                                 b.x + ((first - start) as f64 / span as f64) as f32 * b.width;
@@ -480,17 +487,26 @@ impl EditorView {
                                     point(px(left), bounds.origin.y),
                                     size(px(right - left), px(b.height)),
                                 ),
-                                gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Secondary)))
+                                gpui::Hsla::from(rgb(theme::time_selection_fill()))
                                     .opacity(theme::TIME_SELECTION_OPACITY),
                             ));
                         }
                     }
                     if let Some(marker) = marker
-                        .and_then(|marker| marker.checked_sub(start))
-                        .filter(|offset| *offset <= span)
+                        .and_then(|marker| i128::from(marker).checked_sub(start))
+                        .filter(|offset| *offset >= 0 && *offset <= i128::from(span))
                     {
                         let x =
                             bounds.origin.x + px((marker as f64 / span as f64) as f32 * b.width);
+                        let hovered = start_marker_enabled
+                            && hitbox.is_hovered(window)
+                            && !window.is_pointer_dragging()
+                            && (f32::from(window.mouse_position().x - x)).abs() <= 7.0;
+                        let marker_color = rgb(theme::color(if active || hovered {
+                            theme::PaletteRole::Text
+                        } else {
+                            theme::PaletteRole::Primary
+                        }));
                         let y = bounds.origin.y + px(10.0);
                         let mut path = PathBuilder::fill();
                         path.move_to(point(x - px(5.0), y));
@@ -498,19 +514,41 @@ impl EditorView {
                         path.line_to(point(x, y + px(6.0)));
                         path.close();
                         if let Ok(path) = path.build() {
-                            window.paint_path(path, rgb(theme::color(theme::PaletteRole::Primary)));
+                            window.paint_path(path, marker_color);
                         }
                         window.paint_quad(fill(
                             Bounds::new(point(x, bounds.origin.y), size(px(1.0), px(b.height))),
-                            rgb(theme::color(theme::PaletteRole::Primary)),
+                            marker_color,
                         ));
-                        if active
-                            || (hitbox.is_hovered(window)
-                                && (f32::from(window.mouse_position().x - x)).abs() <= 7.0)
-                        {
+                        if active || hovered {
                             window.set_cursor_style(gpui::CursorStyle::ResizeLeftRight, &hitbox);
+                        } else if !start_marker_enabled {
+                            window.set_cursor_style(gpui::CursorStyle::IBeam, &hitbox);
                         }
                     }
+                    let hover_entity = entity.clone();
+                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                        if !phase.bubble() {
+                            return;
+                        }
+                        let hovered = !window.is_pointer_dragging()
+                            && bounds.contains(&event.position)
+                            && marker
+                                .and_then(|at| i128::from(at).checked_sub(start))
+                                .filter(|at| *at >= 0 && *at <= i128::from(span))
+                                .is_some_and(|at| {
+                                    let x = bounds.left()
+                                        + bounds.size.width * (at as f64 / span as f64) as f32;
+                                    (f32::from(event.position.x - x)).abs() <= 7.0
+                                });
+                        hover_entity.update(cx, |view, cx| {
+                            let hovered = hovered && !view.time_selection_key_held;
+                            if view.midi_ruler.marker_hovered != hovered {
+                                view.midi_ruler.marker_hovered = hovered;
+                                cx.notify();
+                            }
+                        });
+                    });
                     entity
                         .read(cx)
                         .renew_midi_ruler_capture(b, entity.entity_id(), window);
@@ -573,7 +611,7 @@ impl EditorView {
             )
             .size_full(),
         );
-        let source_row=div().h(px(18.0)).flex_shrink_0().flex()
+        let source_row=div().h(px(super::timeline_strip::RULER_HEIGHT)).flex_shrink_0().flex()
             .child(div().id("midi-source-ruler-label").w(px(38.0)).flex_shrink_0().text_size(px(8.0)).child(theme::text("start"))
                 .tooltip(|_,cx|cx.new(|_|super::transport::MiniTooltip { kind: crate::tooltips::Kind::control("clip start"), description:"drag start marker · drag blank ruler to select time · cmd+d duplicate · hold cmd/control to invert snap · no seek".into() }).into()))
             .children([ruler]);
@@ -624,6 +662,7 @@ mod geometry_tests {
                 0,
                 4 * BeatTime::ONE.raw(),
             ),
+            play_start_region: false,
             start: 0,
             span: 4 * BeatTime::ONE.raw(),
             grid: MidiGrid::Sixteenth,
@@ -689,7 +728,7 @@ mod geometry_tests {
         for invalid in [
             Context { span: 0, ..c },
             Context {
-                start: u64::MAX,
+                start: i128::from(u64::MAX),
                 span: 1,
                 ..c
             },

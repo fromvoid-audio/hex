@@ -2,14 +2,21 @@
 //!
 //! Owns six validated controls, a v1 little-endian float codec, control-prepared
 //! coefficients, inline runtime history and a static pre-filter response query.
-//! The signal path is a two-pole high/low band-pass, four-times interpolated tanh
-//! drive with two anti-alias poles, a tone low-pass and stereo-linked envelope
-//! compensation. Dynamics blends compressed output toward the input envelope.
+//! The signal path is a two-pole high/low band-pass, an 8x polyphase-FIR
+//! oversampled tanh drive with first-order antiderivative anti-aliasing (see
+//! `crate::oversampling`), a tone low-pass and stereo-linked envelope compensation.
+//! Dynamics blends compressed output toward the input envelope. The stage
+//! declares 11 frames of latency; the dry path and the envelope's input peak
+//! are delayed by the same 11 frames so mix and dynamics stay aligned.
 //! Compatible revisions inherit history and ramp coefficients/gains over 5 ms;
-//! reset clears history, bypass advances it, and rate changes refuse inheritance.
+//! reset clears history and rate changes refuse inheritance. Host bypass keeps
+//! the same 11-frame latency and advances the ordinary wet filter/envelope/tail
+//! history behind its bounded aligned dry ramp.
 //! No callback allocation, resources, host-contract changes or project-schema
 //! changes are needed. This is an independent implementation; the supplied image
 //! establishes controls/defaults, not measured Ableton transfer functions or parity.
+
+mod automation;
 
 use hex_lattice::{
     NativeDeviceDefinition, NativeProcessorRuntime, OutputTail, PreparedNativeProcessor,
@@ -21,10 +28,26 @@ use hex_lattice_contract::{
 };
 use std::any::Any;
 
+use crate::oversampling::{Kernel, LATENCY_FRAMES, Oversampler, Shaper};
+
+/// Overdrive's transfer: tanh, with the overflow-free ln(cosh) antiderivative.
+struct Tanh;
+impl Shaper for Tanh {
+    fn tag(&self) -> u8 {
+        1
+    }
+    fn value(&self, x: f64) -> f64 {
+        x.tanh()
+    }
+    fn antiderivative(&self, x: f64) -> f64 {
+        let a = x.abs();
+        a + (-2.0 * a).exp().ln_1p() - std::f64::consts::LN_2
+    }
+}
+
 pub const OVERDRIVE_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.overdrive");
 pub const OVERDRIVE_STATE_VERSION: u32 = 1;
 const STATE_BYTES: usize = 24;
-const OVERSAMPLE: usize = 4;
 const FLOOR: f64 = 1.0e-20;
 
 pub mod parameter {
@@ -111,8 +134,66 @@ const DESCRIPTORS: &[ParameterDescriptor] = &[
     ),
 ];
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 struct Settings([f32; 6]);
+const BINDINGS: [crate::parameter_binding::Binding<Settings>; 6] = [
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[0],
+        hex_lattice_contract::ParameterSemantics {
+            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+            normalization: hex_lattice_contract::ParameterNormalization::PositiveLogarithmic,
+            ..crate::parameter_binding::SCALAR_ENVELOPE
+        },
+        |c| c.0[0],
+        |c, v| c.0[0] = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[1],
+        hex_lattice_contract::ParameterSemantics {
+            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+            ..crate::parameter_binding::SCALAR_ENVELOPE
+        },
+        |c| c.0[1],
+        |c, v| c.0[1] = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[2],
+        hex_lattice_contract::ParameterSemantics {
+            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+            ..crate::parameter_binding::SCALAR_ENVELOPE
+        },
+        |c| c.0[2],
+        |c, v| c.0[2] = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[3],
+        hex_lattice_contract::ParameterSemantics {
+            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+            ..crate::parameter_binding::SCALAR_ENVELOPE
+        },
+        |c| c.0[3],
+        |c, v| c.0[3] = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[4],
+        hex_lattice_contract::ParameterSemantics {
+            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+            ..crate::parameter_binding::SCALAR_ENVELOPE
+        },
+        |c| c.0[4],
+        |c, v| c.0[4] = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[5],
+        hex_lattice_contract::ParameterSemantics {
+            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+            ..crate::parameter_binding::SCALAR_ENVELOPE
+        },
+        |c| c.0[5],
+        |c, v| c.0[5] = v,
+    ),
+];
+
 impl Default for Settings {
     fn default() -> Self {
         Self([1_250.0, 6.5, 0.5, 0.5, 0.5, 0.5])
@@ -190,7 +271,7 @@ impl NativeDeviceMetadata for OverdriveDefinition {
         state: &NativeDeviceState,
         id: ParameterId,
     ) -> Result<ParameterValue, DeviceContractError> {
-        Ok(ParameterValue::Float(decode(state)?.0[index(id)?]))
+        Ok(crate::parameter_binding::binding(&BINDINGS, id)?.read(&decode(state)?))
     }
     fn patch_parameter(
         &self,
@@ -199,12 +280,7 @@ impl NativeDeviceMetadata for OverdriveDefinition {
         value: ParameterValue,
     ) -> Result<NativeDeviceState, DeviceContractError> {
         let mut settings = decode(state)?;
-        let i = index(id)?;
-        DESCRIPTORS[i].validate(value)?;
-        let ParameterValue::Float(value) = value else {
-            return Err(DeviceContractError::InvalidParameterValue);
-        };
-        settings.0[i] = value;
+        crate::parameter_binding::binding(&BINDINGS, id)?.write(&mut settings, value)?;
         encode(settings)
     }
     fn parameter_semantics_for_state(
@@ -212,26 +288,10 @@ impl NativeDeviceMetadata for OverdriveDefinition {
         state: &NativeDeviceState,
         id: ParameterId,
     ) -> Result<Option<hex_lattice_contract::ParameterSemantics>, DeviceContractError> {
-        use hex_lattice_contract::{
-            ParameterAccess as A, ParameterAutomation as E, ParameterChangeImpact as I,
-            ParameterModulation as M, ParameterNormalization as N, ParameterSemantics,
-            ParameterSmoothing as S, ParameterStepping as T,
-        };
         decode(state)?;
-        index(id)?;
-        Ok(Some(ParameterSemantics {
-            access: A::ReadWrite,
-            normalization: if id == parameter::FREQUENCY {
-                N::PositiveLogarithmic
-            } else {
-                N::Linear
-            },
-            stepping: T::Continuous,
-            automation: E::Unsupported,
-            modulation: M::Unsupported,
-            smoothing: S::DeviceManaged,
-            change_impact: I::ValueOnly,
-        }))
+        Ok(Some(
+            crate::parameter_binding::binding(&BINDINGS, id)?.semantics,
+        ))
     }
 }
 
@@ -253,7 +313,8 @@ fn band_poles(settings: Settings, rate: u32) -> [f64; 2] {
         pole((center * spread).clamp(20.0, rate * 0.45), rate),
     ]
 }
-// All transcendental coefficient/gain work happens on control, not per sample.
+// Static targets are prepared on control. Authored changes convert only their
+// changed coefficient groups at delivery; held values reuse these targets.
 fn targets(settings: Settings, rate: u32) -> [f64; 6] {
     let [hp, lp] = band_poles(settings, rate);
     [
@@ -270,6 +331,33 @@ fn targets(settings: Settings, rate: u32) -> [f64; 6] {
 }
 
 impl NativeDeviceDefinition for OverdriveDefinition {
+    fn supports_parameter_automation(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+    ) -> Result<bool, DeviceContractError> {
+        decode(state)?;
+        Ok(crate::parameter_binding::binding(&BINDINGS, id)
+            .is_ok_and(|b| b.declares_arrangement_automation()))
+    }
+    fn prepare_automated_runtime_instance(
+        &self,
+        _identity: hex_lattice::ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+        parameters: &[ParameterId],
+    ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
+        Ok(hex_lattice::PreparedRuntimeDevice {
+            matrix: StereoMatrix::identity(),
+            processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(
+                std::sync::Arc::new(PreparedOverdrive::new(
+                    state,
+                    context.sample_rate,
+                    parameters,
+                )?),
+            )),
+        })
+    }
     fn prepare_matrix(
         &self,
         state: &NativeDeviceState,
@@ -289,18 +377,37 @@ impl NativeDeviceDefinition for OverdriveDefinition {
         state: &NativeDeviceState,
         context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
-        validate_rate(context.sample_rate)?;
-        Ok(Some(Box::new(PreparedOverdrive {
-            targets: targets(decode(state)?, context.sample_rate),
-            rate: context.sample_rate,
-        })))
+        Ok(Some(Box::new(PreparedOverdrive::new(
+            state,
+            context.sample_rate,
+            &[],
+        )?)))
     }
 }
 struct PreparedOverdrive {
+    settings: Settings,
+    admitted: [bool; 6],
     targets: [f64; 6],
     rate: u32,
+    kernel: Kernel,
 }
 impl PreparedNativeProcessor for PreparedOverdrive {
+    fn supports_parameter_automation(&self, id: ParameterId) -> bool {
+        self.supports(id)
+    }
+    fn parameter_automation_descriptor(&self, id: ParameterId) -> Option<ParameterDescriptor> {
+        crate::parameter_binding::binding(&BINDINGS, id)
+            .ok()
+            .filter(|_| self.supports(id))
+            .map(|b| b.descriptor)
+    }
+    // Keep the exact 11-frame dry delay and ordinary wet processing (including
+    // automation, noise/filter/envelope state and finite-tail guards) warm.
+    // The host owns the bounded dry history and transactional bypass ramp.
+    fn supports_latency_aligned_bypass(&self) -> bool {
+        true
+    }
+
     fn runtime_version(&self) -> u32 {
         1
     }
@@ -309,6 +416,8 @@ impl PreparedNativeProcessor for PreparedOverdrive {
     }
     fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
         Box::new(OverdriveRuntime {
+            base_targets: self.targets,
+            controls: crate::parameter_binding::Controls::new(self.settings, self.admitted),
             targets: self.targets,
             current: self.targets,
             step: [0.0; 6],
@@ -318,12 +427,14 @@ impl PreparedNativeProcessor for PreparedOverdrive {
             envelope: [0.0; 2],
             attack: (-1.0 / (0.001 * f64::from(self.rate))).exp(),
             release: (-1.0 / (0.080 * f64::from(self.rate))).exp(),
-            anti_alias: pole(0.45, OVERSAMPLE as f64),
+            kernel: self.kernel,
+            delay: [[0.0; 3]; LATENCY_FRAMES],
+            delay_index: 0,
             silent_frames: 0,
         })
     }
     fn algorithmic_latency_frames(&self) -> Option<u32> {
-        Some(0)
+        Some(LATENCY_FRAMES as u32)
     }
     fn output_tail(&self) -> OutputTail {
         OutputTail::Finite {
@@ -336,8 +447,7 @@ impl PreparedNativeProcessor for PreparedOverdrive {
 struct Channel {
     high: [f64; 2],
     low: [f64; 2],
-    previous: f64,
-    alias: [f64; 2],
+    oversampler: Oversampler,
     tone: f64,
 }
 fn quiet(value: f64) -> f64 {
@@ -358,22 +468,15 @@ impl Channel {
         }
         sample
     }
-    fn distort(&mut self, input: f64, drive: f64, anti_alias: f64, tone: f64) -> f64 {
-        let mut sample = 0.0;
-        for sub in 1..=OVERSAMPLE {
-            let interpolated =
-                self.previous + (input - self.previous) * sub as f64 / OVERSAMPLE as f64;
-            sample = (interpolated * drive).tanh();
-            for state in &mut self.alias {
-                sample = lowpass(sample, state, anti_alias);
-            }
-        }
-        self.previous = input;
+    fn distort(&mut self, input: f64, drive: f64, kernel: &Kernel, tone: f64) -> f64 {
+        let sample = self.oversampler.process(input, drive, kernel, &Tanh);
         lowpass(sample, &mut self.tone, tone)
     }
 }
 
 struct OverdriveRuntime {
+    base_targets: [f64; 6],
+    controls: crate::parameter_binding::Controls<Settings, 6>,
     targets: [f64; 6],
     current: [f64; 6],
     step: [f64; 6],
@@ -383,13 +486,18 @@ struct OverdriveRuntime {
     envelope: [f64; 2],
     attack: f64,
     release: f64,
-    anti_alias: f64,
+    kernel: Kernel,
+    /// Dry left/right and input band peak, delayed by the oversampler latency.
+    delay: [[f64; 3]; LATENCY_FRAMES],
+    delay_index: usize,
     silent_frames: u32,
 }
 impl OverdriveRuntime {
     fn clear_history(&mut self) {
         self.channels = [Channel::default(); 2];
         self.envelope = [0.0; 2];
+        self.delay = [[0.0; 3]; LATENCY_FRAMES];
+        self.delay_index = 0;
     }
     fn frame(&mut self, frame: &mut StereoFrame) {
         if self.remaining > 0 {
@@ -418,14 +526,21 @@ impl OverdriveRuntime {
             self.silent_frames = 0;
         }
         let [hp, lp, drive, tone, dynamics, mix] = self.current;
-        let dry = frame.map(f64::from);
+        let input = frame.map(f64::from);
         let mut wet = [0.0; 2];
-        let mut band_peak = 0.0_f64;
+        let mut input_peak = 0.0_f64;
         for (i, channel) in self.channels.iter_mut().enumerate() {
-            let band = channel.band(dry[i], hp, lp);
-            band_peak = band_peak.max(band.abs());
-            wet[i] = channel.distort(band, drive, self.anti_alias, tone);
+            let band = channel.band(input[i], hp, lp);
+            input_peak = input_peak.max(band.abs());
+            wet[i] = channel.distort(band, drive, &self.kernel, tone);
         }
+        // Align the dry path and the envelope's input peak with the wet path.
+        let [dry_left, dry_right, band_peak] = std::mem::replace(
+            &mut self.delay[self.delay_index],
+            [input[0], input[1], input_peak],
+        );
+        self.delay_index = (self.delay_index + 1) % LATENCY_FRAMES;
+        let dry = [dry_left, dry_right];
         let wet_peak = wet[0].abs().max(wet[1].abs());
         for (envelope, peak) in self.envelope.iter_mut().zip([band_peak, wet_peak]) {
             let p = if peak > *envelope {
@@ -441,21 +556,47 @@ impl OverdriveRuntime {
             1.0
         };
         let gain = 1.0 + dynamics * (restore - 1.0);
-        // Keep the zero-mix endpoint bit-exact while still advancing histories.
-        if mix != 0.0 {
-            for i in 0..2 {
-                frame[i] = (dry[i] * (1.0 - mix) + wet[i] * gain * mix) as f32;
-            }
+        // Keep the zero-mix endpoint bit-exact (delayed by the declared
+        // latency) while still advancing histories.
+        for i in 0..2 {
+            frame[i] = if mix == 0.0 {
+                dry[i] as f32
+            } else {
+                (dry[i] * (1.0 - mix) + wet[i] * gain * mix) as f32
+            };
         }
     }
 }
 impl NativeProcessorRuntime for OverdriveRuntime {
+    fn supports_parameter_automation(&self, id: ParameterId) -> bool {
+        self.controls.supports(&BINDINGS, id)
+    }
+    fn process_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        values: &dyn hex_lattice::NativeParameterAutomation,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        self.process_automated(frames, values, false)
+    }
+    fn process_bypassed_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        values: &dyn hex_lattice::NativeParameterAutomation,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        self.process_automated(frames, values, true)
+    }
     fn process_block(&mut self, frames: &mut [StereoFrame], _: &dyn hex_lattice::DeviceResources) {
         for frame in frames {
             self.frame(frame);
         }
     }
     fn reset(&mut self) {
+        self.controls.reset();
+        self.targets = self.base_targets;
         self.clear_history();
         self.current = self.targets;
         self.step = [0.0; 6];
@@ -464,12 +605,9 @@ impl NativeProcessorRuntime for OverdriveRuntime {
     }
     fn is_quiescent(&self) -> bool {
         self.channels.iter().all(|c| {
-            c.high == [0.0; 2]
-                && c.low == [0.0; 2]
-                && c.previous == 0.0
-                && c.alias == [0.0; 2]
-                && c.tone == 0.0
+            c.high == [0.0; 2] && c.low == [0.0; 2] && c.oversampler.is_quiescent() && c.tone == 0.0
         }) && self.envelope == [0.0; 2]
+            && self.delay.iter().flatten().all(|v| *v == 0.0)
     }
     fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
         previous
@@ -487,7 +625,19 @@ impl NativeProcessorRuntime for OverdriveRuntime {
         };
         self.channels = previous.channels;
         self.envelope = previous.envelope;
+        self.delay = previous.delay;
+        self.delay_index = previous.delay_index;
         self.silent_frames = previous.silent_frames;
+        if BINDINGS
+            .iter()
+            .any(|b| self.controls.supports(&BINDINGS, b.descriptor.id))
+            && BINDINGS
+                .iter()
+                .any(|b| previous.controls.supports(&BINDINGS, b.descriptor.id))
+        {
+            self.controls.inherit(&previous.controls);
+            self.targets = previous.targets;
+        }
         self.current = previous.current;
         self.step = previous.step;
         self.remaining = previous.remaining;

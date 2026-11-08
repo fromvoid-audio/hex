@@ -14,6 +14,8 @@
 //! playback always follows the existing loop interval. Source edits preserve that policy.
 //! Strict note edits remain inside the source; the explicit authoring command may grow
 //! extent to inserted note ends in the same transaction, without moving placement or loops.
+//! A split retains finite source windows when materializing a clipped sub-frame
+//! gate would lose its provenance; playable edges and authored notes remain intact.
 //! Copy-on-write identity tokens retain the actual source, preventing address reuse from making
 //! stale prepared artifacts appear current. The project Editor owns atomic history, not this view.
 use crate::edit::{Command, MidiNoteUpdate};
@@ -75,6 +77,9 @@ impl std::ops::DerefMut for MidiSource {
 /// Holding the token prevents source-address reuse while cached artifacts use it.
 #[derive(Debug, Clone)]
 pub struct MidiSourceIdentity(Arc<MidiSource>);
+#[path = "midi_source_weak_identity.rs"]
+mod view_identity;
+pub use view_identity::MidiSourceWeakIdentity;
 impl MidiSourceIdentity {
     pub(crate) fn of(source: &Arc<MidiSource>) -> Self {
         Self(Arc::clone(source))
@@ -501,6 +506,7 @@ impl std::ops::DerefMut for MidiClip {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiNote {
     pub(crate) id: NoteId,
+    pub(crate) active: bool,
     pub(crate) start: BeatTime,
     pub(crate) duration: BeatTime,
     pub(crate) pitch: u8,
@@ -510,6 +516,9 @@ pub struct MidiNote {
 impl MidiNote {
     pub fn id(&self) -> NoteId {
         self.id
+    }
+    pub fn active(&self) -> bool {
+        self.active
     }
     pub fn start(&self) -> BeatTime {
         self.start
@@ -593,6 +602,24 @@ pub(crate) fn validate_source_boundary(
     Ok(())
 }
 
+/// Bounded preflight shared with the history proof and sampler no-op gate.
+pub(crate) fn extended_update_source_length(
+    current: BeatTime,
+    updates: &[MidiNoteUpdate],
+) -> Result<BeatTime, Invalid> {
+    if updates.is_empty() || updates.len() > MAX_NOTES {
+        return Err(Invalid("invalid midi update batch size"));
+    }
+    updates.iter().try_fold(current, |length, update| {
+        let end = update
+            .start
+            .raw()
+            .checked_add(update.duration.raw())
+            .ok_or(Invalid("midi note end overflow"))?;
+        Ok(BeatTime::from_raw(length.raw().max(end)))
+    })
+}
+
 pub(crate) fn validate_note(
     start: BeatTime,
     duration: BeatTime,
@@ -624,6 +651,7 @@ pub(crate) fn validate_note(
 }
 
 pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, Invalid> {
+    let grow_source = matches!(&command, Command::UpdateMidiNotesWithSourceExtent { .. });
     match command {
         Command::ResizeMidiClipView { clip, operation } => {
             crate::midi_loop_resize::apply(project, clip, operation)
@@ -799,8 +827,34 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                     let kept_start = absolute_start.max(beat.raw());
                     let kept_end = absolute_end.min(end);
                     if kept_start < kept_end {
+                        // Materializing a clipped carry as a new authored note
+                        // loses the fact that its gate was clipped. A positive
+                        // sub-frame fragment would then be rejected as an
+                        // unplayable authored note. Retain the existing finite
+                        // source window instead, so playback can distinguish
+                        // the clipped occurrence without dropping its data.
+                        let clipped = kept_end - kept_start < note.duration.raw();
+                        if note.active
+                            && clipped
+                            && project
+                                .tempo_map()
+                                .beat_to_frame(BeatTime::from_raw(kept_start))?
+                                == project
+                                    .tempo_map()
+                                    .beat_to_frame(BeatTime::from_raw(kept_end))?
+                        {
+                            let mut retained = original.clone();
+                            let window_start = retained.playback_offset.raw();
+                            let window_end = window_start
+                                .checked_add(retained.length.raw())
+                                .ok_or(Invalid("midi split source window overflow"))?;
+                            retained.content_view =
+                                Some(crate::ContentWindow::new(window_start, window_end, false)?);
+                            return crate::clip_reverse::split_midi(project, track, retained, beat);
+                        }
                         notes.push(MidiNote {
                             id: NoteId(0),
+                            active: note.active,
                             start: BeatTime::from_raw(kept_start - beat.raw()),
                             duration: BeatTime::from_raw(kept_end - kept_start),
                             pitch: note.pitch,
@@ -933,6 +987,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 clip,
                 Vec::new(),
                 vec![crate::MidiNoteInsert {
+                    active: true,
                     start,
                     duration,
                     pitch,
@@ -985,16 +1040,22 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 },
             )
         }
-        Command::UpdateMidiNotes { clip, notes } => {
+        Command::UpdateMidiNotes { clip, notes }
+        | Command::UpdateMidiNotesWithSourceExtent { clip, notes } => {
             let target = project
                 .midi_source(clip)
                 .ok_or(Invalid("midi clip no longer exists"))?;
+            let source_length = if grow_source {
+                extended_update_source_length(target.source_length(), &notes)?
+            } else {
+                target.source_length()
+            };
             let indices = note_indices(target, notes.iter().map(|update| update.note))?;
             for update in &notes {
                 validate_note(
                     update.start,
                     update.duration,
-                    target.source_length,
+                    source_length,
                     update.pitch,
                     update.channel,
                     update.velocity,
@@ -1011,6 +1072,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             for update in &notes {
                 removed.push(update.note);
                 authored.push(crate::MidiNoteInsert {
+                    active: true,
                     start: update.start,
                     duration: update.duration,
                     pitch: update.pitch,
@@ -1027,6 +1089,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 *retained = *gate;
             }
             let target = project.midi_source_mut(clip)?;
+            target.source_length = source_length;
             for (index, update) in indices.into_iter().zip(notes) {
                 let note = target
                     .notes
@@ -1035,6 +1098,25 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 apply_note_update(note, update);
             }
             crate::midi_note_overwrite::retain_gates(target, &plan.retained)?;
+            Ok(Created::None)
+        }
+        Command::SetMidiNotesActive {
+            clip,
+            notes,
+            active,
+        } => {
+            let source = project
+                .midi_source(clip)
+                .ok_or(Invalid("midi clip no longer exists"))?;
+            let indices = note_indices(source, notes.iter().copied())?;
+            let source = project.midi_source_mut(clip)?;
+            for index in indices {
+                let note = source
+                    .notes
+                    .get_mut(index)
+                    .ok_or(Invalid("midi note no longer exists"))?;
+                note.active = active;
+            }
             Ok(Created::None)
         }
         Command::RemoveMidiNote(note) => {
@@ -1057,13 +1139,19 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             name,
             before_track,
             start,
+            initial_gain,
         } => {
             let length = project
                 .midi_clip(clip)
                 .ok_or(Invalid("midi clip no longer exists"))?
                 .length;
             validate_clip(start, length)?;
-            let track = super::edit::insert_track_before(project, name, before_track)?;
+            let track = super::edit::insert_track_before_with_gain(
+                project,
+                name,
+                before_track,
+                initial_gain,
+            )?;
             apply(project, Command::MoveMidiClip { clip, track, start })?;
             Ok(Created::Track(track))
         }
@@ -1384,6 +1472,7 @@ fn materialize_overwrite_ranges_inner(
                         .map_err(|_| Invalid("could not reserve midi overwrite notes"))?;
                     source.notes.push(MidiNote {
                         id: NoteId(0),
+                        active: note.active,
                         start: BeatTime::from_raw(kept_start - start),
                         duration: BeatTime::from_raw(kept_end - kept_start),
                         pitch: note.pitch,

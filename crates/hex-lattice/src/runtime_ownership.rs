@@ -22,6 +22,15 @@ pub(super) enum RuntimeOwnership {
     Foreign(ForeignRuntime),
 }
 impl RuntimeOwnership {
+    // The caller must retain the owner; this scalar does not provide custody.
+    pub(super) fn owned_identity(&self) -> Option<usize> {
+        match self {
+            Self::Owned(runtime) => {
+                Some(runtime.as_ref() as *const dyn OwnedProcessorRuntime as *const () as usize)
+            }
+            _ => None,
+        }
+    }
     pub(super) fn supports_parameter_automation(
         &self,
         parameter: hex_lattice_contract::ParameterId,
@@ -50,14 +59,14 @@ impl RuntimeOwnership {
                         clock,
                         automation,
                         &crate::EMPTY_DEVICE_RESOURCES,
-                    );
+                    )?;
                 } else {
                     scratch.process_block_with_automation(
                         frames,
                         clock,
                         automation,
                         &crate::EMPTY_DEVICE_RESOURCES,
-                    );
+                    )?;
                 }
             }
             Self::Owned(value) => {
@@ -67,14 +76,14 @@ impl RuntimeOwnership {
                         clock,
                         automation,
                         &crate::EMPTY_DEVICE_RESOURCES,
-                    );
+                    )?;
                 } else {
                     value.process_block_with_automation(
                         frames,
                         clock,
                         automation,
                         &crate::EMPTY_DEVICE_RESOURCES,
-                    );
+                    )?;
                 }
             }
             _ => return Err(DeviceContractError::UnsupportedProcessingClass),
@@ -167,6 +176,21 @@ impl RuntimeOwnership {
             _ => false,
         }
     }
+    pub(super) fn can_fork_timing_without_signal_history_from(&self, old: &Self) -> bool {
+        matches!((self, old), (Self::Owned(new), Self::Owned(old))
+            if new.can_fork_timing_without_signal_history_from(old.as_ref()))
+    }
+    pub(super) fn fork_timing_without_signal_history_from(&mut self, old: &Self) -> bool {
+        match (self, old) {
+            (Self::Owned(new), Self::Owned(old)) => {
+                new.fork_timing_without_signal_history_from(old.as_ref())
+            }
+            _ => false,
+        }
+    }
+    pub(super) fn can_split_tail_input_from(&self, old: &Self) -> bool {
+        matches!((self, old), (Self::Owned(new), Self::Owned(old)) if new.can_split_tail_input_from(old.as_ref()))
+    }
     pub(super) fn foreign_configuration_matches(&self, old: &Self) -> bool {
         match (self, old) {
             (Self::Foreign(new), Self::Foreign(old)) => new.prepared == old.prepared,
@@ -182,6 +206,32 @@ impl RuntimeOwnership {
             }
             (Self::Owned(new), Self::Owned(old)) => new.can_retarget_parameters_from(old.as_ref()),
             _ => false,
+        }
+    }
+    /// Whether this candidate must defer the handoff until `old`'s committed
+    /// live transitions drain (Pulse #4178). Legacy candidates answer for
+    /// both twins against the old committed (`primary`) runtime.
+    pub(super) fn transition_busy_from(&self, old: &Self) -> bool {
+        match (self, old) {
+            (Self::Legacy { primary, scratch }, Self::Legacy { primary: old, .. }) => {
+                primary.transition_busy_from(old.as_ref())
+                    || scratch.transition_busy_from(old.as_ref())
+            }
+            (Self::Owned(new), Self::Owned(old)) => new.transition_busy_from(old.as_ref()),
+            _ => false,
+        }
+    }
+    /// Settle pending live transitions while the graph renders nothing
+    /// (Pulse #4558). Legacy settles both twins; the next `begin` copies the
+    /// committed one anyway.
+    pub(super) fn settle_idle_transitions(&mut self) {
+        match self {
+            Self::Legacy { primary, scratch } => {
+                primary.settle_idle_transitions();
+                scratch.settle_idle_transitions();
+            }
+            Self::Owned(v) => v.settle_idle_transitions(),
+            Self::Foreign(_) | Self::Memoryless => {}
         }
     }
     pub(super) fn inherit_from(&mut self, old: &Self) {
@@ -214,8 +264,13 @@ impl RuntimeOwnership {
         }
     }
     pub(super) fn begin_output_tail(&mut self) {
-        if let Self::Owned(runtime) = self {
-            runtime.begin_output_tail();
+        match self {
+            Self::Legacy { primary, scratch } => {
+                primary.begin_output_tail();
+                scratch.begin_output_tail();
+            }
+            Self::Owned(runtime) => runtime.begin_output_tail(),
+            Self::Memoryless | Self::Foreign(_) => {}
         }
     }
     pub(super) fn begin(&mut self) {
@@ -258,6 +313,34 @@ impl RuntimeOwnership {
                 value.scratch_drained = false;
             }
             Self::Memoryless => {}
+        }
+    }
+
+    pub(super) fn process_auxiliary(
+        &mut self,
+        block: crate::StereoAuxiliaryBlock<'_>,
+        clock: Option<&dyn crate::NativeInstrumentClock>,
+        automation: Option<&dyn crate::NativeParameterAutomation>,
+        bypassed: bool,
+    ) -> Result<(), DeviceContractError> {
+        match self {
+            Self::Legacy { scratch, .. } => scratch.process_block_with_auxiliary(
+                block,
+                clock,
+                automation,
+                bypassed,
+                &crate::EMPTY_DEVICE_RESOURCES,
+            ),
+            Self::Owned(runtime) => runtime.process_block_with_auxiliary(
+                block,
+                clock,
+                automation,
+                bypassed,
+                &crate::EMPTY_DEVICE_RESOURCES,
+            ),
+            Self::Memoryless | Self::Foreign(_) => {
+                Err(DeviceContractError::UnsupportedProcessingClass)
+            }
         }
     }
 
@@ -389,5 +472,84 @@ impl RuntimeOwnership {
             }),
             Self::Memoryless | Self::Foreign(_) => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tail_notification_tests {
+    use super::*;
+    use std::{
+        any::Any,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
+    struct Notified {
+        count: Arc<AtomicUsize>,
+    }
+    impl NativeProcessorRuntime for Notified {
+        fn process_block(&mut self, _: &mut [crate::StereoFrame], _: &dyn crate::DeviceResources) {}
+        fn begin_output_tail(&mut self) {
+            self.count.fetch_add(1, Ordering::Relaxed);
+        }
+        fn reset(&mut self) {}
+        fn can_copy_history_from(&self, _: &dyn NativeProcessorRuntime) -> bool {
+            false
+        }
+        fn copy_history_from(&mut self, _: &dyn NativeProcessorRuntime) {}
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+    #[test]
+    fn legacy_tail_entry_notifies_each_transaction_twin_once() {
+        let a = Arc::new(AtomicUsize::new(0));
+        let b = Arc::new(AtomicUsize::new(0));
+        let mut runtime = RuntimeOwnership::Legacy {
+            primary: Box::new(Notified {
+                count: Arc::clone(&a),
+            }),
+            scratch: Box::new(Notified {
+                count: Arc::clone(&b),
+            }),
+        };
+        runtime.begin_output_tail();
+        assert_eq!(
+            [a.load(Ordering::Relaxed), b.load(Ordering::Relaxed)],
+            [1, 1]
+        );
+    }
+    struct Plain(f32);
+    impl NativeProcessorRuntime for Plain {
+        fn process_block(
+            &mut self,
+            frames: &mut [crate::StereoFrame],
+            _: &dyn crate::DeviceResources,
+        ) {
+            for frame in frames {
+                for sample in frame {
+                    *sample *= self.0;
+                }
+            }
+        }
+        fn reset(&mut self) {}
+        fn can_copy_history_from(&self, _: &dyn NativeProcessorRuntime) -> bool {
+            false
+        }
+        fn copy_history_from(&mut self, _: &dyn NativeProcessorRuntime) {}
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+    #[test]
+    fn default_legacy_notification_preserves_state_and_memoryless_stays_noop() {
+        let mut primary = Plain(0.25);
+        primary.begin_output_tail();
+        let mut frames = [[1.0; 2]];
+        primary.process_block(&mut frames, &crate::EMPTY_DEVICE_RESOURCES);
+        assert_eq!(frames, [[0.25; 2]]);
+        let mut memoryless = RuntimeOwnership::Memoryless;
+        memoryless.begin_output_tail();
     }
 }

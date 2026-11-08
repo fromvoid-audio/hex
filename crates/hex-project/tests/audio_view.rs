@@ -1,8 +1,8 @@
 //! Pure placement/snapshot laws, not Engine PCM or rendered-handle acceptance.
 use hex_project::{
     AudioDomainClock, AudioViewMode, AudioViewPlacement, AudioViewProjection,
-    AudioViewResizeOperation, BeatTime, ClipFade, ClipId, Command, Created, Editor, Project, Tempo,
-    TrimEdge, preview_audio_view_resize, preview_view_resize,
+    AudioViewResizeOperation, BeatTime, Clip, ClipFade, ClipId, Command, Created, Editor, Project,
+    Tempo, TrimEdge, preview_audio_view_resize, preview_view_resize,
 };
 const Q: u64 = 1 << 32;
 
@@ -267,6 +267,9 @@ fn frame_fixture(mode: AudioViewMode) -> (Editor, ClipId) {
     )
 }
 fn beat_fixture() -> (Editor, ClipId) {
+    beat_fixture_in(AudioViewMode::Repeat)
+}
+fn beat_fixture_in(mode: AudioViewMode) -> (Editor, ClipId) {
     let (mut e, id) = base(true);
     for (at, bpm) in [(3 * Q, 241_123_456), (5 * Q, 60_333_333)] {
         e.execute(Command::SetTempoPoint {
@@ -283,7 +286,7 @@ fn beat_fixture() -> (Editor, ClipId) {
     edit.view_end = 4 * Q;
     edit.timing = hex_project::AudioClipTiming::Musical(beat(Q));
     edit.placement = Some(AudioViewPlacement {
-        mode: AudioViewMode::Repeat,
+        mode,
         outer_length: AudioDomainClock::Beats(beat(7 * Q)),
         cycle_phase: Q / 2,
     });
@@ -1926,4 +1929,668 @@ fn global_tempo_freezes_repeated_crop_projection_then_translates_every_occurrenc
     };
     *reference_start_raw = i128::MIN;
     assert!(Project::from_snapshot(snapshot).is_err());
+}
+
+/// Every sampled project frame both placements cover reads the same root
+/// position: the material did not move, only the region around it.
+fn assert_material_fixed(old: &Clip, next: &Clip, tempo: &hex_project::TempoMap) {
+    let first = old.start().max(next.start());
+    let end = (old.start() + old.duration()).min(next.start() + next.duration());
+    assert!(first < end, "placements overlap");
+    let old = AudioViewProjection::new(old, tempo).unwrap();
+    let next = AudioViewProjection::new(next, tempo).unwrap();
+    for frame in (first..end).step_by(usize::try_from((end - first) / 61 + 1).unwrap()) {
+        assert_eq!(
+            next.root_position_for_frame(frame).unwrap(),
+            old.root_position_for_frame(frame).unwrap(),
+            "frame {frame}"
+        );
+    }
+}
+
+#[test]
+fn play_start_preserves_cycle_outer_span_and_history_in_both_clocks() {
+    for (mut editor, id, target) in [
+        {
+            let (e, id) = frame_fixture(AudioViewMode::Repeat);
+            (e, id, 26_000)
+        },
+        {
+            let (e, id) = beat_fixture();
+            (e, id, 3 * Q)
+        },
+    ] {
+        let before = editor.project().snapshot();
+        let clip = editor.project().clip(id).unwrap().clone();
+        let old = clip.audio_edit().unwrap().clone();
+        let operation = AudioViewResizeOperation::PlayStart { position: target };
+        let expected =
+            preview_audio_view_resize(&clip, editor.project().tempo_map(), 480_000, operation)
+                .unwrap();
+        editor
+            .execute(Command::ResizeAudioClipView {
+                clip: id,
+                operation,
+            })
+            .unwrap();
+        let next = editor.project().clip(id).unwrap();
+        assert_eq!(next, &expected);
+        assert_eq!(
+            (next.start(), next.duration()),
+            (clip.start(), clip.duration())
+        );
+        let root = next.audio_edit().unwrap();
+        assert_eq!(
+            (root.view_start, root.view_end),
+            (old.view_start, old.view_end)
+        );
+        assert_eq!(root.placement.unwrap().mode, old.placement.unwrap().mode);
+        assert_eq!(
+            root.placement.unwrap().outer_length,
+            old.placement.unwrap().outer_length
+        );
+        assert!(std::sync::Arc::ptr_eq(&root.domain, &old.domain));
+        let projection = AudioViewProjection::new(next, editor.project().tempo_map()).unwrap();
+        assert_eq!(projection.play_start_position().unwrap(), Some(target));
+        assert_eq!(
+            projection.root_position_for_frame(clip.start()).unwrap(),
+            Some(target)
+        );
+        let after = editor.project().snapshot();
+        assert!(editor.undo());
+        assert_eq!(editor.project().snapshot(), before);
+        assert!(editor.redo());
+        assert_eq!(editor.project().snapshot(), after);
+        for position in [old.view_start - 1, old.view_end, u64::MAX] {
+            assert!(
+                editor
+                    .execute(Command::ResizeAudioClipView {
+                        clip: id,
+                        operation: AudioViewResizeOperation::PlayStart { position }
+                    })
+                    .is_err()
+            );
+            assert_eq!(editor.project().snapshot(), after);
+        }
+    }
+}
+
+#[test]
+fn once_play_start_moves_its_region_start_and_keeps_material_in_place() {
+    let frozen = || {
+        let (mut e, id) = beat_fixture_in(AudioViewMode::Once);
+        e.execute(Command::SetProjectTempo {
+            tempo: Tempo::new(60_000_000).unwrap(),
+        })
+        .unwrap();
+        (e, id)
+    };
+    for (name, (mut editor, id), targets) in [
+        (
+            "frames",
+            frame_fixture(AudioViewMode::Once),
+            [26_000, 20_000],
+        ),
+        (
+            "musical",
+            beat_fixture_in(AudioViewMode::Once),
+            [3 * Q, 2 * Q],
+        ),
+        ("frozen", frozen(), [3 * Q, 2 * Q]),
+    ] {
+        for target in targets {
+            let tempo = editor.project().tempo_map().clone();
+            let before = editor.project().snapshot();
+            let clip = editor.project().clip(id).unwrap().clone();
+            let old = clip.audio_edit().unwrap().clone();
+            let operation = AudioViewResizeOperation::PlayStart { position: target };
+            let expected = preview_audio_view_resize(&clip, &tempo, 480_000, operation).unwrap();
+            editor
+                .execute(Command::ResizeAudioClipView {
+                    clip: id,
+                    operation,
+                })
+                .unwrap();
+            let next = editor.project().clip(id).unwrap().clone();
+            assert_eq!(next, expected, "{name}");
+            let moved_later = AudioViewProjection::new(&clip, &tempo)
+                .unwrap()
+                .play_start_position()
+                .unwrap()
+                < Some(target);
+            assert_eq!(next.start() > clip.start(), moved_later, "{name} {target}");
+            assert_eq!(
+                next.start() + next.duration(),
+                clip.start() + clip.duration(),
+                "the region end keeps its project time: {name}"
+            );
+            assert_material_fixed(&clip, &next, &tempo);
+            let root = next.audio_edit().unwrap();
+            assert_eq!(
+                (root.view_start, root.view_end, root.placement.unwrap().mode),
+                (old.view_start, old.view_end, AudioViewMode::Once)
+            );
+            assert!(std::sync::Arc::ptr_eq(&root.domain, &old.domain));
+            let projection = AudioViewProjection::new(&next, &tempo).unwrap();
+            let start = projection.play_start_position().unwrap().unwrap();
+            assert!(start.abs_diff(target) <= 1, "{name}: {start} {target}");
+            assert_eq!(
+                projection.root_position_for_frame(next.start()).unwrap(),
+                Some(start),
+                "playback begins at the marker: {name}"
+            );
+            let after = editor.project().snapshot();
+            assert!(editor.undo());
+            assert_eq!(editor.project().snapshot(), before);
+            assert!(editor.redo());
+            assert_eq!(editor.project().snapshot(), after);
+        }
+    }
+}
+
+#[test]
+fn once_play_start_at_project_start_refuses_to_cross_time_zero() {
+    let (mut editor, id) = frame_fixture(AudioViewMode::Once);
+    let before = editor.project().snapshot();
+    // The fixture region begins at frame zero with its marker at root 18_000.
+    assert!(
+        editor
+            .execute(Command::ResizeAudioClipView {
+                clip: id,
+                operation: AudioViewResizeOperation::PlayStart { position: 17_999 },
+            })
+            .is_err()
+    );
+    assert_eq!(editor.project().snapshot(), before);
+}
+
+#[test]
+fn ordinary_once_play_start_trims_its_region_and_keeps_media_crop() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { clip: id, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "source".into(),
+            path: "never-opened.wav".into(),
+            sample_rate: 48_000,
+            frames: 100,
+        })
+        .unwrap()
+    else {
+        panic!("import")
+    };
+    let plain = editor.project().snapshot();
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip: id,
+            operation: AudioViewResizeOperation::PlayStart { position: 0 },
+        })
+        .unwrap();
+    assert_eq!(
+        editor.project().snapshot(),
+        plain,
+        "same start must not promote or alter a raw clip"
+    );
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip: id,
+            operation: AudioViewResizeOperation::PlayStart { position: 40 },
+        })
+        .unwrap();
+    let clip = editor.project().clip(id).unwrap();
+    assert_eq!(
+        (
+            clip.start(),
+            clip.duration(),
+            clip.source_offset(),
+            clip.source_length(),
+            clip.looping()
+        ),
+        (40, 60, 0, 100, false)
+    );
+    let p = AudioViewProjection::new(clip, editor.project().tempo_map()).unwrap();
+    assert_eq!(p.root_position_for_frame(40).unwrap(), Some(40));
+    assert_eq!(p.root_position_for_frame(99).unwrap(), Some(99));
+    assert!(editor.undo());
+    assert_eq!(editor.project().snapshot(), plain);
+    assert!(editor.can_redo());
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip: id,
+            operation: AudioViewResizeOperation::PlayStart { position: 0 },
+        })
+        .unwrap();
+    assert!(editor.can_redo(), "no-op preserves redo");
+}
+
+#[test]
+fn frozen_play_start_keeps_original_processing_clock_and_exact_outer_frames() {
+    let (mut editor, id) = beat_fixture();
+    editor
+        .execute(Command::SetProjectTempo {
+            tempo: Tempo::new(60_000_000).unwrap(),
+        })
+        .unwrap();
+    let clip = editor.project().clip(id).unwrap().clone();
+    let old = clip.audio_edit().unwrap();
+    assert!(matches!(
+        old.timing,
+        hex_project::AudioClipTiming::Frozen { .. }
+    ));
+    let origin = old.processing_origin().unwrap();
+    let root_frame = old
+        .root_frame_at(3 * Q, editor.project().tempo_map())
+        .unwrap();
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip: id,
+            operation: AudioViewResizeOperation::PlayStart { position: 3 * Q },
+        })
+        .unwrap();
+    let next = editor.project().clip(id).unwrap();
+    assert_eq!(
+        (next.start(), next.duration()),
+        (clip.start(), clip.duration())
+    );
+    let root = next.audio_edit().unwrap();
+    assert_eq!(
+        root.processing_origin().unwrap(),
+        origin,
+        "moving start must not retime frozen source processing"
+    );
+    assert_eq!(
+        root.root_frame_at(3 * Q, editor.project().tempo_map())
+            .unwrap(),
+        root_frame
+    );
+}
+
+#[test]
+fn legacy_source_loop_start_refuses_without_inventing_an_outer_loop_or_changing_history() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { clip, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "native loop".into(),
+            path: "never-opened.wav".into(),
+            sample_rate: 48_000,
+            frames: 37,
+        })
+        .unwrap()
+    else {
+        panic!("import")
+    };
+    editor
+        .execute(Command::SetClipLooping {
+            clip,
+            looping: true,
+        })
+        .unwrap();
+    editor
+        .execute(Command::TrimClip {
+            clip,
+            start: 0,
+            duration: 96,
+            source_offset: 0,
+            source_length: 37,
+        })
+        .unwrap();
+    let before = editor.project().snapshot();
+    assert!(
+        editor
+            .execute(Command::ResizeAudioClipView {
+                clip,
+                operation: AudioViewResizeOperation::PlayStart { position: 10 }
+            })
+            .is_err()
+    );
+    assert_eq!(editor.project().snapshot(), before);
+    // Capture an explicit root cycle before editing that cycle's cursor.
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip,
+            operation: AudioViewResizeOperation::CycleRange {
+                start: 0,
+                end: 96,
+                looping: true,
+            },
+        })
+        .unwrap();
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip,
+            operation: AudioViewResizeOperation::PlayStart { position: 10 },
+        })
+        .unwrap();
+    let source = editor.project().clip(clip).unwrap();
+    assert_eq!(
+        (
+            source.source_length(),
+            source.source_phase(),
+            source.duration()
+        ),
+        (37, 0, 96)
+    );
+    assert_eq!(
+        source.audio_edit().unwrap().placement.unwrap().mode,
+        AudioViewMode::Repeat
+    );
+}
+
+#[test]
+fn musical_play_start_at_the_last_tick_retains_a_readable_first_quantum() {
+    for sample_rate in [44_100, 48_000, 96_000] {
+        for repeat in [false, true] {
+            let mut editor = Editor::new(Project::new(sample_rate).unwrap(), 16).unwrap();
+            let Created::Imported { clip: id, .. } = editor
+                .execute(Command::ImportAudioTrack {
+                    name: "last musical sample".into(),
+                    path: "never-opened.wav".into(),
+                    sample_rate,
+                    frames: u64::from(sample_rate) * 2,
+                })
+                .unwrap()
+            else {
+                panic!("audio")
+            };
+            editor
+                .execute(Command::SetTempoPoint {
+                    beat: BeatTime::from_quarters(2).unwrap(),
+                    tempo: Tempo::new(40_000_000).unwrap(),
+                })
+                .unwrap();
+            editor
+                .execute(Command::SetAudioClipMusical {
+                    clip: id,
+                    enabled: true,
+                })
+                .unwrap();
+            if repeat {
+                let root = editor.project().clip(id).unwrap().audio_event_root();
+                editor
+                    .execute(Command::ResizeAudioClipView {
+                        clip: id,
+                        operation: AudioViewResizeOperation::CycleRange {
+                            start: root.view_start,
+                            end: root.view_end,
+                            looping: true,
+                        },
+                    })
+                    .unwrap();
+            }
+            let before = editor.project().snapshot();
+            let clip = editor.project().clip(id).unwrap().clone();
+            let root = clip.audio_event_root();
+            let operation = AudioViewResizeOperation::PlayStart {
+                position: root.view_end - 1,
+            };
+            let preview = preview_audio_view_resize(
+                &clip,
+                editor.project().tempo_map(),
+                u64::from(sample_rate) * 2,
+                operation,
+            )
+            .unwrap();
+            editor
+                .execute(Command::ResizeAudioClipView {
+                    clip: id,
+                    operation,
+                })
+                .unwrap();
+            let next = editor.project().clip(id).unwrap();
+            assert_eq!(next, &preview);
+            assert_eq!(
+                next.start() + next.duration(),
+                clip.start() + clip.duration()
+            );
+            assert_eq!(next.start() == clip.start(), repeat);
+            let next_root = next.audio_event_root();
+            assert_eq!(
+                (next_root.view_start, next_root.view_end),
+                (root.view_start, root.view_end)
+            );
+            let projection = AudioViewProjection::new(next, editor.project().tempo_map()).unwrap();
+            assert!(
+                !projection.has_subframe_intro(),
+                "the requested start needs an actual first source quantum: {sample_rate}/{repeat}"
+            );
+            let start = projection.play_start_position().unwrap().unwrap();
+            assert_eq!(
+                projection.root_position_for_frame(next.start()).unwrap(),
+                Some(start)
+            );
+            let after = editor.project().snapshot();
+            editor
+                .execute(Command::ResizeAudioClipView {
+                    clip: id,
+                    operation,
+                })
+                .unwrap();
+            assert_eq!(editor.project().snapshot(), after);
+            assert!(editor.undo());
+            assert_eq!(editor.project().snapshot(), before);
+            assert!(editor.redo());
+            assert_eq!(editor.project().snapshot(), after);
+        }
+    }
+}
+
+#[test]
+fn reversed_frame_repeat_start_preserves_window_cycle_span_and_history() {
+    let (mut editor, id) = frame_fixture(AudioViewMode::Repeat);
+    editor.execute(Command::ReverseClips(vec![id])).unwrap();
+    let before = editor.project().snapshot();
+    let old = editor.project().clip(id).unwrap().clone();
+    let old_root = old.audio_edit().unwrap();
+    let old_content = old_root.content_view.unwrap();
+    assert!(old_content.window.reversed);
+    let target = 30_000;
+    let operation = AudioViewResizeOperation::PlayStart { position: target };
+    let preview =
+        preview_audio_view_resize(&old, editor.project().tempo_map(), 480_000, operation).unwrap();
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip: id,
+            operation,
+        })
+        .unwrap();
+    let next = editor.project().clip(id).unwrap();
+    assert_eq!(next, &preview);
+    let root = next.audio_edit().unwrap();
+    let content = root.content_view.unwrap();
+    assert_eq!(
+        (next.start(), next.duration()),
+        (old.start(), old.duration())
+    );
+    assert_eq!(
+        (root.view_start, root.view_end),
+        (old_root.view_start, old_root.view_end)
+    );
+    assert_eq!(content.window, old_content.window);
+    assert_eq!(
+        (
+            content.base_view_start,
+            content.base_view_end,
+            content.base_start_delta
+        ),
+        (
+            old_content.base_view_start,
+            old_content.base_view_end,
+            old_content.base_start_delta
+        )
+    );
+    assert_eq!(
+        content.base_placement.unwrap().outer_length,
+        old_content.base_placement.unwrap().outer_length
+    );
+    assert_eq!(
+        root.placement.unwrap().outer_length,
+        old_root.placement.unwrap().outer_length
+    );
+    assert!(std::sync::Arc::ptr_eq(&root.domain, &old_root.domain));
+    let projection = AudioViewProjection::new(next, editor.project().tempo_map()).unwrap();
+    assert_eq!(projection.play_start_position().unwrap(), Some(target));
+    let cycle = old_content.base_view_end - old_content.base_view_start;
+    for elapsed in [0, 1, 18_000, 18_001, 24_000, 47_999] {
+        let expected = old_content.base_view_start
+            + (target - old_content.base_view_start + cycle - elapsed % cycle) % cycle;
+        assert_eq!(
+            projection
+                .root_position_for_frame(next.start() + elapsed)
+                .unwrap(),
+            Some(expected)
+        );
+    }
+    // The resulting saved values already exist in the supported model: set
+    // the ordinary repeat cursor, then reflect its finite audible window.
+    let (mut equivalent, equivalent_id) = frame_fixture(AudioViewMode::Repeat);
+    equivalent
+        .execute(Command::ResizeAudioClipView {
+            clip: equivalent_id,
+            operation: AudioViewResizeOperation::PlayStart {
+                position: target + 1,
+            },
+        })
+        .unwrap();
+    equivalent
+        .execute(Command::ReverseClips(vec![equivalent_id]))
+        .unwrap();
+    assert_eq!(equivalent.project().clip(equivalent_id).unwrap(), next);
+    let after = editor.project().snapshot();
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip: id,
+            operation,
+        })
+        .unwrap();
+    assert_eq!(editor.project().snapshot(), after);
+    assert!(editor.undo());
+    assert_eq!(editor.project().snapshot(), before);
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), after);
+    for position in [
+        old_content.base_view_start - 1,
+        old_content.base_view_end,
+        u64::MAX,
+    ] {
+        assert!(
+            editor
+                .execute(Command::ResizeAudioClipView {
+                    clip: id,
+                    operation: AudioViewResizeOperation::PlayStart { position },
+                })
+                .is_err()
+        );
+        assert_eq!(editor.project().snapshot(), after);
+    }
+}
+
+#[test]
+fn leading_musical_once_keeps_the_cropped_read_across_a_tempo_change() {
+    for timing in ["live", "warped", "frozen"] {
+        let (mut editor, id) = beat_fixture_in(AudioViewMode::Once);
+        // The gate crosses the tempo point at beat 3, with the existing
+        // nonzero crop and phase placing the old read after that point.
+        let track = editor.project().tracks()[0].id();
+        let start = editor
+            .project()
+            .tempo_map()
+            .beat_to_frame(beat(4 * Q))
+            .unwrap();
+        editor
+            .execute(Command::MoveClip {
+                clip: id,
+                track,
+                start,
+            })
+            .unwrap();
+        if timing == "frozen" {
+            let mut snapshot = editor.project().snapshot();
+            let item = &mut snapshot.tracks[0].audio_clips_mut().unwrap()[0];
+            let edit = item.edit.as_mut().unwrap();
+            edit.timing = hex_project::AudioClipTiming::Frozen {
+                reference_start_raw: edit.reference_start_raw().unwrap(),
+                tempo: std::sync::Arc::new(editor.project().tempo_map().clone()),
+            };
+            editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 32).unwrap();
+            editor
+                .execute(Command::SetProjectTempo {
+                    tempo: Tempo::new(144_000_000).unwrap(),
+                })
+                .unwrap();
+        } else if timing == "warped" {
+            let settings = hex_project::default_audio_warp(
+                editor.project().clip(id).unwrap(),
+                editor.project().tempo_map(),
+                hex_project::WarpMode::RePitch,
+            )
+            .unwrap();
+            editor
+                .execute(Command::SetAudioClipWarp {
+                    clip: id,
+                    settings: Some(settings),
+                })
+                .unwrap();
+        }
+        let project = editor.project();
+        let tempo = project.tempo_map();
+        let clip = project.clip(id).unwrap();
+        let old = AudioViewProjection::new(clip, tempo).unwrap();
+        let occurrence = old.occurrence(0).unwrap();
+        assert!(
+            clip.with_musical_leading_silence(clip.start(), tempo)
+                .is_err()
+        );
+        assert!(clip.with_musical_leading_silence(u64::MAX, tempo).is_err());
+        for gate in [24_000, 0] {
+            let leading = clip.with_musical_leading_silence(gate, tempo).unwrap();
+            let projection = AudioViewProjection::new(&leading, tempo).unwrap();
+            assert_eq!(
+                projection.outer_frame_bounds(),
+                (gate, old.outer_frame_bounds().1)
+            );
+            assert_eq!(projection.occurrence_count(), 1);
+            let read = projection.occurrence(0).unwrap();
+            assert!(read.elapsed_start > 0);
+            assert_eq!(projection.root_position_for_frame(gate).unwrap(), None);
+            assert_eq!(
+                projection
+                    .root_ranges_for_frames(gate..read.destination_start)
+                    .unwrap(),
+                [None, None]
+            );
+            assert_eq!(
+                projection
+                    .root_position_for_frame(read.destination_start)
+                    .unwrap(),
+                old.root_position_for_frame(read.destination_start).unwrap()
+            );
+            assert_eq!(
+                projection
+                    .root_ranges_for_frames(gate..read.destination_end)
+                    .unwrap(),
+                old.root_ranges_for_frames(read.destination_start..read.destination_end)
+                    .unwrap()
+            );
+            assert_eq!(
+                hex_project::AudioViewOccurrence {
+                    elapsed_start: read.elapsed_start,
+                    elapsed_end: read.elapsed_start + occurrence.elapsed_end,
+                    ..occurrence
+                },
+                read
+            );
+            assert!(std::sync::Arc::ptr_eq(
+                &clip.audio_edit().unwrap().domain,
+                &leading.audio_edit().unwrap().domain
+            ));
+        }
+    }
+    let (editor, id) = frame_fixture(AudioViewMode::Once);
+    assert!(
+        editor
+            .project()
+            .clip(id)
+            .unwrap()
+            .with_musical_leading_silence(0, editor.project().tempo_map())
+            .is_err()
+    );
 }

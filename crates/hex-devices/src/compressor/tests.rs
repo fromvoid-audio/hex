@@ -462,10 +462,11 @@ fn mix_codec_rejects_legacy_nonfinite_and_preserves_host_metadata() {
             .patch_parameter(&original, parameter::DRY_WET, ParameterValue::Bool(true))
             .is_err()
     );
+    // v1 decodes (crate::state_migration_tests); its values are still validated.
     let legacy = NativeDeviceState::new(COMPRESSOR_TYPE_ID, 1, vec![0; 24]).unwrap();
     assert_eq!(
         registry.migrate_state(&legacy),
-        Err(DeviceContractError::UnsupportedStateVersion)
+        Err(DeviceContractError::InvalidParameterValue)
     );
     for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.1, 1.1] {
         let mut bytes = original.payload().to_vec();
@@ -901,12 +902,13 @@ fn rms_state_validation_invalid_frames_and_static_detector_preview_are_truthful(
                 .is_err()
         );
     }
+    // Older versions decode (crate::state_migration_tests); zero values stay invalid.
     for (version, len) in [(1, 24), (2, 28)] {
         assert_eq!(
             registry().migrate_state(
                 &NativeDeviceState::new(COMPRESSOR_TYPE_ID, version, vec![0; len]).unwrap()
             ),
-            Err(DeviceContractError::UnsupportedStateVersion)
+            Err(DeviceContractError::InvalidParameterValue)
         );
     }
     let rms = mode(&base, 1);
@@ -1270,4 +1272,218 @@ fn rms_floor_partition_history_retarget_invalid_frames_and_reset_remain_coherent
         runtime(&base, rate).process_block(&mut fresh, &hex_lattice::EMPTY_DEVICE_RESOURCES);
         assert_eq!(actual, fresh, "reset retains exact original Peak PCM");
     }
+}
+
+/// Historical states keep opening (Pulse #3956). Layouts come from commits
+/// d236adc6e (v1, 24 bytes) and 1ce92988b (v2, 28 bytes).
+#[test]
+fn compressor_v1_and_v2_states_migrate_with_their_original_behaviour() {
+    let state = |version, values: &[f32]| {
+        let payload = values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        NativeDeviceState::new(COMPRESSOR_TYPE_ID, version, payload).unwrap()
+    };
+    // The registry is the engine's path when a saved project is reopened.
+    let registry = crate::native_registry().unwrap();
+    let migrate = |old: &NativeDeviceState| {
+        let migrated = registry.migrate_state(old).unwrap();
+        assert_eq!(
+            registry.migrate_state(&migrated).unwrap(),
+            migrated,
+            "idempotent"
+        );
+        migrated
+    };
+    let read =
+        |state: &NativeDeviceState, id| COMPRESSOR_DEFINITION.read_parameter(state, id).unwrap();
+    let migrated = migrate(&state(1, &[-24.0, 4.0, 10.0, 120.0, 6.0, 2.0]));
+    assert_eq!(migrated.state_version(), COMPRESSOR_STATE_VERSION);
+    assert_eq!(
+        read(&migrated, parameter::THRESHOLD),
+        ParameterValue::Float(-24.0)
+    );
+    assert_eq!(
+        read(&migrated, parameter::MAKEUP),
+        ParameterValue::Float(2.0)
+    );
+    assert_eq!(
+        read(&migrated, parameter::DRY_WET),
+        ParameterValue::Float(1.0),
+        "v1 was fully wet"
+    );
+    assert_eq!(
+        read(&migrated, parameter::DETECTOR),
+        ParameterValue::Choice(0),
+        "v1/v2 were Peak"
+    );
+    let migrated = migrate(&state(2, &[-24.0, 4.0, 10.0, 120.0, 6.0, 2.0, 0.25]));
+    assert_eq!(
+        read(&migrated, parameter::DRY_WET),
+        ParameterValue::Float(0.25)
+    );
+    assert_eq!(
+        read(&migrated, parameter::DETECTOR),
+        ParameterValue::Choice(0)
+    );
+    for (version, length) in [(1, 28), (2, 24), (2, 32), (3, 28)] {
+        let malformed =
+            NativeDeviceState::new(COMPRESSOR_TYPE_ID, version, vec![0; length]).unwrap();
+        assert_eq!(
+            COMPRESSOR_DEFINITION.migrate_state(&malformed),
+            Err(DeviceContractError::MalformedState)
+        );
+    }
+    assert_eq!(
+        COMPRESSOR_DEFINITION.migrate_state(&state(4, &[0.0; 9])),
+        Err(DeviceContractError::UnsupportedStateVersion)
+    );
+}
+
+#[test]
+fn auxiliary_key_drives_both_channels_and_a_missing_key_is_silence() {
+    assert_eq!(
+        COMPRESSOR_DEFINITION.auxiliary_input(),
+        hex_lattice_contract::AuxiliaryInput::Stereo
+    );
+    let input = [[0.5, -0.125]; 256];
+    let key = [[0.0, 1.0]; 256];
+    for mode in [Detector::Peak, Detector::Rms] {
+        let state = encode(CompressorSettings {
+            detector: mode,
+            attack_ms: 0.1,
+            ..CompressorSettings::default()
+        })
+        .unwrap();
+        let mut processor = runtime(&state, 48_000);
+        let mut silence = [[1.0; 2]; 256];
+        let mut disconnected = input;
+        let block =
+            hex_lattice::StereoAuxiliaryBlock::new(&mut disconnected, None, &mut silence, 256)
+                .unwrap();
+        processor
+            .process_block_with_auxiliary(
+                block,
+                None,
+                None,
+                false,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+        assert_eq!(disconnected, input);
+
+        let mut wet = input;
+        let block = hex_lattice::StereoAuxiliaryBlock::new(&mut wet, Some(&key), &mut silence, 256)
+            .unwrap();
+        processor
+            .process_block_with_auxiliary(
+                block,
+                None,
+                None,
+                false,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+        assert!(wet[255][0] < input[255][0] * 0.7, "{mode:?}");
+        assert_eq!(wet[255][1], -wet[255][0] * 0.25);
+        assert_eq!(key, [[0.0, 1.0]; 256]);
+    }
+}
+
+#[test]
+fn auxiliary_bypass_advances_the_same_history_across_block_partitions() {
+    let state = COMPRESSOR_DEFINITION.default_state().unwrap();
+    let mut wet = runtime(&state, 48_000);
+    let mut bypassed = runtime(&state, 48_000);
+    let key = [[0.0, 1.0]; 128];
+    let dry = [[0.125, -0.25]; 128];
+    let mut scratch = [];
+    let mut main = dry;
+    let block =
+        hex_lattice::StereoAuxiliaryBlock::new(&mut main, Some(&key), &mut scratch, 128).unwrap();
+    wet.process_block_with_auxiliary(
+        block,
+        None,
+        None,
+        false,
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    )
+    .unwrap();
+
+    let mut dry_blocks = dry;
+    for (main, key) in dry_blocks.chunks_mut(19).zip(key.chunks(19)) {
+        let block =
+            hex_lattice::StereoAuxiliaryBlock::new(main, Some(key), &mut scratch, 128).unwrap();
+        bypassed
+            .process_block_with_auxiliary(
+                block,
+                None,
+                None,
+                true,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+    }
+    assert_eq!(dry_blocks, dry);
+    assert_ne!(main, dry);
+
+    let mut after_wet = dry;
+    let mut after_bypass = dry;
+    for (processor, main) in [
+        (&mut wet, &mut after_wet),
+        (&mut bypassed, &mut after_bypass),
+    ] {
+        let block =
+            hex_lattice::StereoAuxiliaryBlock::new(main, Some(&key), &mut scratch, 128).unwrap();
+        processor
+            .process_block_with_auxiliary(
+                block,
+                None,
+                None,
+                false,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+    }
+    assert_eq!(after_wet, after_bypass);
+}
+
+#[test]
+fn auxiliary_rejects_unprepared_automation_before_processing() {
+    struct ThresholdAutomation;
+
+    impl NativeParameterAutomation for ThresholdAutomation {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            &[parameter::THRESHOLD]
+        }
+
+        fn value_at(&self, _: ParameterId, _: usize) -> Option<ParameterValue> {
+            Some(ParameterValue::Float(-60.0))
+        }
+    }
+
+    let state = COMPRESSOR_DEFINITION.default_state().unwrap();
+    let mut processor = runtime(&state, 48_000);
+    let mut fresh = runtime(&state, 48_000);
+    let mut main = [[0.5, -0.25]; 128];
+    let dry = main;
+    let key = [[1.0, 0.0]; 128];
+    let mut scratch = [];
+    let block = StereoAuxiliaryBlock::new(&mut main, Some(&key), &mut scratch, 128).unwrap();
+    assert_eq!(
+        processor.process_block_with_auxiliary(
+            block,
+            None,
+            Some(&ThresholdAutomation),
+            false,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        ),
+        Err(DeviceContractError::UnknownParameter)
+    );
+    assert_eq!(main, dry);
+    let mut expected = dry;
+    processor.process_block(&mut main, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    fresh.process_block(&mut expected, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    assert_eq!(main, expected);
 }

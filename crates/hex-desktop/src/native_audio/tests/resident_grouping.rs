@@ -1,7 +1,7 @@
 //! Grouping through the production Session/native publication path. Only output
 //! device creation is substituted; callback allocation probes stay enabled.
-use super::resident_preview::ResidentHarness;
 use super::*;
+use super::{resident_lifecycle::finish_replacement, resident_preview::ResidentHarness};
 use hex_project::{Command, Created};
 
 fn replay(h: &mut ResidentHarness) -> Vec<hex_engine::Frame> {
@@ -23,7 +23,7 @@ fn replay(h: &mut ResidentHarness) -> Vec<hex_engine::Frame> {
 }
 #[test]
 fn resident_grouping_publishes_exact_pcm_with_atomic_refusal_history_and_reopen() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::with_frame_limit(32_768);
     assert!(h.next().error.is_none());
@@ -169,9 +169,7 @@ fn resident_grouping_publishes_exact_pcm_with_atomic_refusal_history_and_reopen(
     let reopened = h.run(Request::Open(saved));
     assert!(reopened.open_complete && reopened.project_replaced);
     assert_eq!(reopened.state.project, faded.state.project);
-    h.release_relinquished_output();
-    h.wait_fresh_output(old_output);
-    let (applied, _) = h.applied(0);
+    let applied = finish_replacement(&mut h, &reopened, old_output);
     assert_eq!(replay(&mut h), expected);
     let group = reopened
         .state
@@ -196,7 +194,7 @@ fn resident_grouping_publishes_exact_pcm_with_atomic_refusal_history_and_reopen(
         .preview_root
         .as_ref()
         .unwrap();
-    assert_eq!(preview.waveform.source_frames, 144);
+    assert_eq!(preview.waveform.source_frames(), 144);
     let mut repeated = expected.clone();
     for (index, frame) in repeated.iter_mut().take(200).enumerate() {
         *frame = expected[index % 144];
@@ -205,7 +203,7 @@ fn resident_grouping_publishes_exact_pcm_with_atomic_refusal_history_and_reopen(
     h.run(Request::Undo);
     let (applied, _) = h.applied(applied);
     assert_eq!(replay(&mut h), expected);
-    // Re-group a repeated retained root through the actual render/admission lane.
+    // Re-group a repeated retained root through the actual publication lane.
     let before_render = h.run(Request::Edit(Command::ResizeAudioClipView {
         clip: group,
         operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd { project_frame: 205 },
@@ -245,22 +243,25 @@ fn resident_grouping_publishes_exact_pcm_with_atomic_refusal_history_and_reopen(
     assert_eq!(refused.state.project, before_render.state.project);
     assert_eq!(refused.state.revision, before_render.state.revision);
     h.refuse.store(false, std::sync::atomic::Ordering::Release);
-    let rendered = h.run(request());
+    let regrouped = h.run(request());
     (applied, _) = h.applied(applied);
-    let Some(Created::Clip(result)) = rendered.created else {
+    let Some(Created::Clip(result)) = regrouped.created else {
         panic!("one clip")
     };
     assert_eq!(
-        rendered.state.project.track(track).unwrap().clips().len(),
+        regrouped.state.project.track(track).unwrap().clips().len(),
         1
     );
     assert!(
-        !rendered
+        regrouped
             .state
             .project
             .clip(result)
             .unwrap()
-            .has_retained_audio_roots()
+            .audio_events()
+            .sources
+            .iter()
+            .any(|root| root.clip.has_retained_audio_roots())
     );
     assert_eq!(replay(&mut h), expected);
     let undone = h.run(Request::Undo);
@@ -271,23 +272,21 @@ fn resident_grouping_publishes_exact_pcm_with_atomic_refusal_history_and_reopen(
     assert_eq!(replay(&mut h), expected);
     let redone = h.run(Request::Redo);
     h.applied(applied);
-    assert_eq!(redone.state.project, rendered.state.project);
+    assert_eq!(redone.state.project, regrouped.state.project);
     assert_eq!(replay(&mut h), expected);
-    let saved = files.0.join("rendered-group.hex");
+    let saved = files.0.join("nested-group.hex");
     h.run(Request::SaveNew(saved.clone()));
     let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
     let reopened = h.run(Request::Open(saved));
-    assert_eq!(reopened.state.project, rendered.state.project);
-    h.release_relinquished_output();
-    h.wait_fresh_output(old_output);
-    h.applied(0);
+    assert_eq!(reopened.state.project, regrouped.state.project);
+    finish_replacement(&mut h, &reopened, old_output);
     assert_eq!(replay(&mut h), expected);
 }
 
 #[test]
 fn resident_sampler_and_grouped_audio_retain_every_media_root_and_pcm() {
     use hex_project::BeatTime;
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::with_frame_limit(32_768);
     assert!(h.next().error.is_none());

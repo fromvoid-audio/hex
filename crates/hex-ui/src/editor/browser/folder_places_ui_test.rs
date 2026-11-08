@@ -3,7 +3,7 @@ use gpui::{AppContext, Empty, Modifiers, TestAppContext, VisualTestContext, poin
 use hex_session::service::Service;
 
 fn settle(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         visual.run_until_parked();
         let ready = editor.update(visual, |view, cx| {
@@ -126,7 +126,7 @@ fn folders_drag_to_places_persists_without_import_or_navigation(cx: &mut TestApp
     });
     let target = visual.debug_bounds("browser-place-0").unwrap().center();
     drag_row(visual, row, target);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         settle(&editor, visual);
         if editor.read_with(visual, |view, _| {
@@ -210,7 +210,7 @@ fn nested_folder_duplicate_preserves_icon_order_and_reopens(cx: &mut TestAppCont
         .center();
     visual.simulate_mouse_down(disclosure, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(disclosure, MouseButton::Left, Modifiers::default());
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         visual.run_until_parked();
         if editor.read_with(visual, |view, cx| {
@@ -220,13 +220,16 @@ fn nested_folder_duplicate_preserves_icon_order_and_reopens(cx: &mut TestAppCont
         }) {
             break;
         }
-        assert!(std::time::Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "nested_folder_duplicate_preserves_icon_order_and_reopens: hang guard expired"
+        );
         std::thread::yield_now();
     }
     let row = row_for(&editor, visual, &samples.join("outer/nested"));
     let target = visual.debug_bounds("browser-places-drop").unwrap().center();
     drag_row(visual, row, target);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         settle(&editor, visual);
         if editor.read_with(visual, |view, _| {
@@ -234,7 +237,10 @@ fn nested_folder_duplicate_preserves_icon_order_and_reopens(cx: &mut TestAppCont
         }) {
             break;
         }
-        assert!(std::time::Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "nested_folder_duplicate_preserves_icon_order_and_reopens: hang guard expired"
+        );
         std::thread::yield_now();
     }
     editor.update(visual, |view, cx| {
@@ -246,13 +252,16 @@ fn nested_folder_duplicate_preserves_icon_order_and_reopens(cx: &mut TestAppCont
     let target = visual.debug_bounds("browser-places-drop").unwrap().center();
     drag_row(visual, row, target);
     // Run the actual background directory check to completion, even for duplicates.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         visual.run_until_parked();
         if editor.read_with(visual, |view, _| !view.browser.folder_bookmark_pending) {
             break;
         }
-        assert!(std::time::Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "nested_folder_duplicate_preserves_icon_order_and_reopens: hang guard expired"
+        );
         std::thread::yield_now();
     }
     settle(&editor, visual);
@@ -339,7 +348,7 @@ fn cancelled_outside_stale_and_missing_folder_do_not_bookmark(cx: &mut TestAppCo
     let target = visual.debug_bounds("browser-places-drop").unwrap().center();
     visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         visual.run_until_parked();
         if editor.read_with(visual, |view, _| {
@@ -350,7 +359,10 @@ fn cancelled_outside_stale_and_missing_folder_do_not_bookmark(cx: &mut TestAppCo
         }) {
             break;
         }
-        assert!(std::time::Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "cancelled_outside_stale_and_missing_folder_do_not_bookmark: hang guard expired"
+        );
         std::thread::yield_now();
     }
     editor.read_with(visual, |view, _| {
@@ -406,13 +418,16 @@ fn file_drop_is_not_a_bookmark_and_malformed_preferences_remain_untouched(cx: &m
     std::fs::write(&path, b"malformed settings must survive").unwrap();
     editor.update(visual, |view, cx| view.start_browser_places_load(cx));
     // This reload uses the actual error completion, rather than editing writability.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         visual.run_until_parked();
         if editor.read_with(visual, |view, _| !view.browser.preferences_writable) {
             break;
         }
-        assert!(std::time::Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "file_drop_is_not_a_bookmark_and_malformed_preferences_remain_untouched: hang guard expired"
+        );
         std::thread::yield_now();
     }
     let row = row_for(&editor, visual, &samples.join("outer"));
@@ -477,9 +492,12 @@ fn bookmark_fixture_catalog_worker_retains_same_root_after_view_drop(cx: &mut Te
     assert!(gate.root_present_during_save.load(Ordering::Relaxed));
     visual.update(|_, _| {});
     assert!(weak.upgrade().is_none());
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     while root.exists() {
-        assert!(std::time::Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "bookmark_fixture_catalog_worker_retains_same_root_after_view_drop: hang guard expired"
+        );
         std::thread::yield_now();
     }
     visual.run_until_parked();
@@ -660,11 +678,117 @@ fn folder_validation_job_retains_root_after_view_and_caller_drop(cx: &mut TestAp
     assert!(gate.root_present_during_validation.load(Ordering::Relaxed));
     visual.update(|_, _| {});
     assert!(weak.upgrade().is_none());
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     while root.exists() {
         assert!(std::time::Instant::now() < deadline, "owned root cleanup");
         std::thread::yield_now();
     }
     visual.run_until_parked();
     assert!(!root.exists());
+}
+
+fn settle_catalog(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
+    let deadline = crate::test_wait::hang_deadline();
+    loop {
+        settle(editor, visual);
+        if editor.read_with(visual, |view, _| !view.browser.samples.history_loading()) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "sample catalog did not settle"
+        );
+        std::thread::yield_now();
+    }
+}
+
+#[gpui::test]
+fn moved_place_shows_missing_and_relocates_with_icon_order_and_samples(cx: &mut TestAppContext) {
+    let (handle, editor, environment, samples) = fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    let old = environment.root().join("library/drums");
+    let new = environment.root().join("moved/drums");
+    std::fs::create_dir_all(old.join("kicks")).unwrap();
+    std::fs::copy(samples.join("file.wav"), old.join("kicks/kick.wav")).unwrap();
+    settle_catalog(&editor, visual);
+    editor.update(visual, |view, cx| {
+        view.browser.places.push(old.clone());
+        view.queue_browser_places_save(cx);
+        view.refresh_sample_catalog(cx);
+    });
+    settle_catalog(&editor, visual);
+    editor.update(visual, |view, cx| {
+        view.set_browser_place_icon(old.clone(), Some("waveform"), cx);
+        view.select_browser_source(BrowserSection::Place(old.clone()), cx);
+    });
+    settle_catalog(&editor, visual);
+    let index = editor.read_with(visual, |view, _| {
+        assert!(!view.browser_place_missing(&old));
+        assert!(
+            view.browser
+                .samples
+                .catalog
+                .record(&old.join("kicks/kick.wav"))
+                .is_some_and(|record| record.fingerprint.is_some())
+        );
+        view.browser
+            .places
+            .iter()
+            .position(|place| *place == old)
+            .unwrap()
+    });
+
+    std::fs::create_dir_all(new.parent().unwrap()).unwrap();
+    std::fs::rename(&old, &new).unwrap();
+    editor.update(visual, |view, cx| view.refresh_sample_catalog(cx));
+    settle_catalog(&editor, visual);
+    editor.read_with(visual, |view, _| assert!(view.browser_place_missing(&old)));
+    let labels = visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            view.open_browser_place_icons(old.clone(), point(px(10.0), px(10.0)), window, cx);
+            view.context_menu
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .map(|item| item.label)
+                .collect::<Vec<_>>()
+        })
+    });
+    assert!(labels.contains(&"relocate…"));
+    editor.update(visual, |view, cx| {
+        view.context_menu = None;
+        // Relocating onto an existing place is refused without changes.
+        view.relocate_browser_place(old.clone(), samples.clone(), cx);
+        assert_eq!(view.browser.places[index], old);
+        view.relocate_browser_place(old.clone(), new.clone(), cx);
+    });
+    settle_catalog(&editor, visual);
+    editor.read_with(visual, |view, _| {
+        assert_eq!(view.browser.places[index], new);
+        assert!(!view.browser.places.contains(&old));
+        assert_eq!(
+            view.browser.place_icons.get(&new).map(String::as_str),
+            Some("waveform")
+        );
+        assert_eq!(view.browser.section, BrowserSection::Place(new.clone()));
+        assert!(!view.browser_place_missing(&new) && !view.browser_place_missing(&old));
+        let moved = new.join("kicks/kick.wav");
+        assert!(view.browser.samples.catalog.record(&moved).is_some());
+        assert!(
+            view.browser
+                .samples
+                .catalog
+                .entries()
+                .iter()
+                .all(|entry| !entry.path.starts_with(&old))
+        );
+    });
+    let saved = hex_preferences::load(&environment.root().join("config/browser.json")).unwrap();
+    assert!(saved.additional().contains(&new) && !saved.additional().contains(&old));
+    assert_eq!(saved.icon(&new), Some("waveform"));
+    assert!(
+        new.join("kicks/kick.wav").is_file() && !old.exists(),
+        "relocation never moves sample files"
+    );
 }

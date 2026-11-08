@@ -6,11 +6,18 @@ use std::sync::Arc;
 mod eq_creation;
 #[cfg(test)]
 mod eq_creation_tests;
+mod plugin_parameter;
 mod preparation;
 pub use eq_creation::EqNodeCreationSnapshot;
+pub use plugin_parameter::PluginGesturePreparation;
+pub use plugin_parameter::{PluginParameterOrigin, PluginParameterValue};
+#[cfg(test)]
+mod group_tests;
+#[cfg(test)]
+mod manual_tests;
 #[cfg(test)]
 mod snapshot_tests;
-pub(crate) use preparation::command_for_snapshot;
+pub(crate) use preparation::{command_for_snapshot, device_parameter_command, manual_device_edit};
 
 pub use hex_lattice_contract::{
     DeviceParameterSnapshot, DeviceTypeId, ParameterId, ParameterValue,
@@ -25,7 +32,12 @@ pub struct GestureKey {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GestureTarget {
+    MainGain,
     TrackGain {
+        track: TrackId,
+    },
+    /// One frozen cohort; the anchor supplies the scalar relative gesture value.
+    TrackGains {
         track: TrackId,
     },
     TrackBalance {
@@ -49,10 +61,82 @@ pub enum GestureTarget {
     EqNodeCreation {
         device: DeviceId,
     },
+    /// Raw provider identity, including zero; never a built-in ParameterId.
+    PluginParameter {
+        device: DeviceId,
+        parameter: u32,
+    },
     ReturnSend {
         track: TrackId,
         return_track: ReturnId,
     },
+}
+
+impl GestureTarget {
+    pub fn track_gain_anchor(self) -> Option<TrackId> {
+        match self {
+            Self::TrackGain { track } | Self::TrackGains { track } => Some(track),
+            _ => None,
+        }
+    }
+}
+
+/// Snapshot-edit intent indexed by the gesture's immutable ordered parameter domain.
+/// The client and worker require `same_parameters` before interpreting a mask;
+/// validation-only entries stay clear, and the union survives coalesced move-back.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TouchedParameters {
+    bits: u64,
+}
+const _: () = assert!(hex_lattice_contract::MAX_PARAMETER_SNAPSHOT_ENTRIES <= u64::BITS as usize);
+impl TouchedParameters {
+    pub fn is_empty(self) -> bool {
+        self.bits == 0
+    }
+    pub fn len(self) -> usize {
+        self.bits.count_ones() as usize
+    }
+    /// Resolve only against the same ordered domain validated for this gesture.
+    pub fn ids(
+        self,
+        domain: &DeviceParameterSnapshot,
+    ) -> Result<impl Iterator<Item = ParameterId> + '_, &'static str> {
+        self.validate_domain(domain)?;
+        Ok(domain
+            .entries()
+            .iter()
+            .enumerate()
+            .filter_map(move |(index, &(id, _))| (self.bits & (1_u64 << index) != 0).then_some(id)))
+    }
+    fn validate_domain(self, domain: &DeviceParameterSnapshot) -> Result<(), &'static str> {
+        let count = domain.entries().len();
+        if count < u64::BITS as usize && self.bits >> count != 0 {
+            return Err("snapshot touched parameter changed");
+        }
+        Ok(())
+    }
+    fn include_changed(
+        &mut self,
+        origin: DeviceParameterSnapshot,
+        value: DeviceParameterSnapshot,
+    ) -> Result<(), &'static str> {
+        if !origin.same_parameters(&value) {
+            return Err("snapshot gesture parameters changed");
+        }
+        for (index, (&(_, old), &(_, next))) in
+            origin.entries().iter().zip(value.entries()).enumerate()
+        {
+            if old != next {
+                self.bits |= 1_u64 << index;
+            }
+        }
+        Ok(())
+    }
+    fn merge(&mut self, other: Self, domain: DeviceParameterSnapshot) -> Result<(), &'static str> {
+        other.validate_domain(&domain)?;
+        self.bits |= other.bits;
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -61,8 +145,31 @@ pub struct ParameterPairValue {
     pub second: ParameterValue,
 }
 
+// The largest payload is a bounded 256-track control Begin (3,088 bytes).
+// Copy retains the existing coalescer/retry/terminal ownership without another
+// heap owner. The 32-slot worker FIFO bounds storage; callbacks never see it.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GestureRequest {
+    BeginTrackGains {
+        key: GestureKey,
+        group: hex_project::RelativeTrackGains,
+    },
+    BeginPlugin {
+        key: GestureKey,
+        origin: PluginParameterOrigin,
+        recording: bool,
+    },
+    ChangePlugin {
+        key: GestureKey,
+        sequence: u64,
+        value: PluginParameterValue,
+    },
+    CommitPlugin {
+        key: GestureKey,
+        sequence: u64,
+        value: PluginParameterValue,
+    },
     Begin {
         key: GestureKey,
         target: GestureTarget,
@@ -80,11 +187,15 @@ pub enum GestureRequest {
     Commit {
         key: GestureKey,
         sequence: u64,
+        /// An explicit update occurred, even if its value equals the base.
+        manual_edit: bool,
         value: ParameterValue,
     },
     CommitPair {
         key: GestureKey,
         sequence: u64,
+        /// An explicit update occurred, even if its value equals the base.
+        manual_edit: bool,
         value: ParameterPairValue,
     },
     BeginSnapshot {
@@ -93,11 +204,13 @@ pub enum GestureRequest {
         snapshot: DeviceParameterSnapshot,
     },
     ChangeSnapshot {
+        touched_parameters: TouchedParameters,
         key: GestureKey,
         sequence: u64,
         snapshot: DeviceParameterSnapshot,
     },
     CommitSnapshot {
+        touched_parameters: TouchedParameters,
         key: GestureKey,
         sequence: u64,
         snapshot: DeviceParameterSnapshot,
@@ -135,6 +248,9 @@ pub struct GestureAck {
     /// A refused native terminal kept the worker's last accepted overlay audible. Reconcile
     /// with the exact active snapshot from the same Event; never infer restoration or retry.
     pub preview_retained: bool,
+    /// Retire exact plugin display/input custody without claiming restoration.
+    /// Never combine with accepted or preview_retained.
+    pub source_lost: bool,
     pub key: GestureKey,
     pub phase: GesturePhase,
     pub sequence: u64,
@@ -144,6 +260,9 @@ pub struct GestureAck {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GestureSnapshot {
+    pub touched_parameters: TouchedParameters,
+    /// Accepted/explicit update intent; Begin alone never selects manual read.
+    pub manual_edit: bool,
     pub key: GestureKey,
     pub target: GestureTarget,
     pub sequence: u64,
@@ -151,6 +270,12 @@ pub struct GestureSnapshot {
     pub secondary_value: Option<ParameterValue>,
     pub parameters: Option<DeviceParameterSnapshot>,
     pub creation: Option<EqNodeCreationSnapshot>,
+    /// Frozen starting values only; current targets derive from `value`.
+    /// Control metadata, never a callback request or saved project field.
+    pub track_gains: Option<hex_project::RelativeTrackGains>,
+    /// Exact normalized plugin intent. The built-in scalar is unused for this
+    /// target, as it is for compound snapshots; never round this through f32.
+    pub plugin_value: Option<PluginParameterValue>,
 }
 
 /// UI-side coalescer. It owns one in-flight request, one replaceable transient,
@@ -159,6 +284,7 @@ pub struct GestureSnapshot {
 pub struct GestureClient {
     next_token: u64,
     active: Option<GestureSnapshot>,
+    origin_parameters: Option<DeviceParameterSnapshot>,
     in_flight: Option<GestureRequest>,
     submitted: bool,
     recovery_pending: bool,
@@ -174,6 +300,9 @@ impl GestureClient {
         target: GestureTarget,
         initial: ParameterValue,
     ) -> Result<GestureKey, &'static str> {
+        if matches!(target, GestureTarget::PluginParameter { .. }) {
+            return Err("plugin gesture requires its observed source context");
+        }
         if self.recovery_pending {
             if !self.has_pending_terminal() {
                 self.cancel()?;
@@ -189,6 +318,9 @@ impl GestureClient {
             token: self.next_token,
         };
         self.active = Some(GestureSnapshot {
+            track_gains: None,
+            touched_parameters: crate::device_gesture::TouchedParameters::default(),
+            manual_edit: false,
             key,
             target,
             sequence: 0,
@@ -196,8 +328,29 @@ impl GestureClient {
             secondary_value: None,
             parameters: None,
             creation: None,
+            plugin_value: None,
         });
+        self.origin_parameters = None;
         self.pending_begin = Some(GestureRequest::Begin { key, target });
+        Ok(key)
+    }
+
+    pub fn begin_track_gains(
+        &mut self,
+        generation: u64,
+        group: hex_project::RelativeTrackGains,
+    ) -> Result<GestureKey, &'static str> {
+        let key = self.begin(
+            generation,
+            GestureTarget::TrackGains {
+                track: group.anchor(),
+            },
+            ParameterValue::Float(group.anchor_gain()),
+        )?;
+        if let Some(active) = self.active.as_mut() {
+            active.track_gains = Some(group);
+        }
+        self.pending_begin = Some(GestureRequest::BeginTrackGains { key, group });
         Ok(key)
     }
 
@@ -232,6 +385,9 @@ impl GestureClient {
             second,
         };
         self.active = Some(GestureSnapshot {
+            track_gains: None,
+            touched_parameters: crate::device_gesture::TouchedParameters::default(),
+            manual_edit: false,
             key,
             target,
             sequence: 0,
@@ -239,7 +395,9 @@ impl GestureClient {
             secondary_value: Some(initial.second),
             parameters: None,
             creation: None,
+            plugin_value: None,
         });
+        self.origin_parameters = None;
         self.pending_begin = Some(GestureRequest::Begin { key, target });
         Ok(key)
     }
@@ -255,7 +413,11 @@ impl GestureClient {
             GestureTarget::DeviceParameterSnapshot { device },
             ParameterValue::Float(0.0),
         )?;
-        self.active.as_mut().unwrap().parameters = Some(initial);
+        self.origin_parameters = Some(initial);
+        self.active
+            .as_mut()
+            .ok_or("device snapshot gesture did not begin")?
+            .parameters = Some(initial);
         self.pending_begin = Some(GestureRequest::BeginSnapshot {
             key,
             device,
@@ -287,16 +449,23 @@ impl GestureClient {
         {
             return Err("snapshot gesture parameters changed");
         }
+        active.touched_parameters.include_changed(
+            self.origin_parameters.ok_or("snapshot origin is missing")?,
+            value,
+        )?;
+        active.manual_edit = !active.touched_parameters.is_empty();
         active.sequence = active.sequence.saturating_add(1).max(1);
         active.parameters = Some(value);
         let request = if terminal {
             GestureRequest::CommitSnapshot {
+                touched_parameters: active.touched_parameters,
                 key: active.key,
                 sequence: active.sequence,
                 snapshot: value,
             }
         } else {
             GestureRequest::ChangeSnapshot {
+                touched_parameters: active.touched_parameters,
                 key: active.key,
                 sequence: active.sequence,
                 snapshot: value,
@@ -323,9 +492,11 @@ impl GestureClient {
             GestureTarget::DeviceParameterPair { .. }
                 | GestureTarget::DeviceParameterSnapshot { .. }
                 | GestureTarget::EqNodeCreation { .. }
+                | GestureTarget::PluginParameter { .. }
         ) {
             return Err("active gesture requires paired values");
         }
+        snapshot.manual_edit = true;
         snapshot.sequence = snapshot.sequence.saturating_add(1).max(1);
         snapshot.value = value;
         snapshot.secondary_value = None;
@@ -347,6 +518,7 @@ impl GestureClient {
         if !matches!(snapshot.target, GestureTarget::DeviceParameterPair { .. }) {
             return Err("active gesture does not accept paired values");
         }
+        snapshot.manual_edit = true;
         snapshot.sequence = snapshot.sequence.saturating_add(1).max(1);
         snapshot.value = value.first;
         snapshot.secondary_value = Some(value.second);
@@ -370,14 +542,17 @@ impl GestureClient {
             GestureTarget::DeviceParameterPair { .. }
                 | GestureTarget::DeviceParameterSnapshot { .. }
                 | GestureTarget::EqNodeCreation { .. }
+                | GestureTarget::PluginParameter { .. }
         ) {
             return Err("active gesture requires paired values");
         }
+        snapshot.manual_edit |= snapshot.value != value;
         snapshot.sequence = snapshot.sequence.saturating_add(1).max(1);
         snapshot.value = value;
         snapshot.secondary_value = None;
         self.latest_change = None;
         self.terminal = Some(GestureRequest::Commit {
+            manual_edit: snapshot.manual_edit,
             key: snapshot.key,
             sequence: snapshot.sequence,
             value,
@@ -395,11 +570,14 @@ impl GestureClient {
         if !matches!(snapshot.target, GestureTarget::DeviceParameterPair { .. }) {
             return Err("active gesture does not accept paired values");
         }
+        snapshot.manual_edit |=
+            snapshot.value != value.first || snapshot.secondary_value != Some(value.second);
         snapshot.sequence = snapshot.sequence.saturating_add(1).max(1);
         snapshot.value = value.first;
         snapshot.secondary_value = Some(value.second);
         self.latest_change = None;
         self.terminal = Some(GestureRequest::CommitPair {
+            manual_edit: snapshot.manual_edit,
             key: snapshot.key,
             sequence: snapshot.sequence,
             value,
@@ -422,7 +600,9 @@ impl GestureClient {
     /// Finalize the currently authored overlay without dropping compound values.
     pub fn finish_current(&mut self) -> Result<(), &'static str> {
         let active = self.active.ok_or("no device gesture is active")?;
-        if let Some(creation) = active.creation {
+        if let Some(value) = active.plugin_value {
+            self.finish_plugin(value)
+        } else if let Some(creation) = active.creation {
             self.finish_eq_creation(creation)
         } else if let Some(parameters) = active.parameters {
             self.finish_snapshot(parameters)
@@ -461,6 +641,7 @@ impl GestureClient {
     }
 
     pub fn reset(&mut self) {
+        self.origin_parameters = None;
         self.recovery_pending = false;
         self.active = None;
         self.in_flight = None;
@@ -492,6 +673,18 @@ impl GestureClient {
             || request.sequence() != ack.sequence
         {
             return false;
+        }
+        if ack.source_lost {
+            if ack.accepted
+                || ack.preview_retained
+                || !self.active.is_some_and(|active| {
+                    matches!(active.target, GestureTarget::PluginParameter { .. })
+                })
+            {
+                return false;
+            }
+            self.reset();
+            return true;
         }
         let retained = if ack.preview_retained {
             if ack.accepted || !matches!(ack.phase, GesturePhase::Commit | GesturePhase::Cancel) {
@@ -537,6 +730,28 @@ impl GestureClient {
     /// A refused native terminal left an audible overlay which needs retry or Cancel.
     pub fn is_recovery_pending(&self) -> bool {
         self.recovery_pending
+    }
+
+    /// Borrowed cohort query: visible faders avoid copying the bounded control
+    /// snapshot or traversing project content on every repaint.
+    pub fn preview_track_gain(&self, generation: u64, track: TrackId) -> Option<f32> {
+        let active = self
+            .active
+            .as_ref()
+            .filter(|active| active.key.generation == generation)?;
+        let ParameterValue::Float(value) = active.value else {
+            return None;
+        };
+        match active.target {
+            GestureTarget::TrackGain { track: anchor } if anchor == track => Some(value),
+            GestureTarget::TrackGains { .. } => active
+                .track_gains
+                .as_ref()?
+                .gain_for(track, value)
+                .ok()
+                .flatten(),
+            _ => None,
+        }
     }
 
     pub fn snapshot(&self) -> Option<GestureSnapshot> {
@@ -599,6 +814,7 @@ mod client_tests {
     fn ack(request: GestureRequest, accepted: bool) -> GestureAck {
         GestureAck {
             preview_retained: false,
+            source_lost: false,
             key: request.key(),
             phase: request.phase(),
             sequence: request.sequence(),
@@ -709,6 +925,7 @@ mod client_tests {
         assert_eq!(
             terminal,
             GestureRequest::Commit {
+                manual_edit: true,
                 key: begin.key(),
                 sequence: 3,
                 value: ParameterValue::Float(4.0),
@@ -744,6 +961,7 @@ mod client_tests {
         assert_eq!(
             terminal,
             GestureRequest::Commit {
+                manual_edit: true,
                 key: begin.key(),
                 sequence: 1,
                 value: ParameterValue::Float(2.0),
@@ -765,6 +983,7 @@ mod client_tests {
         assert_eq!(client.next_request(), Some(begin));
         let wrong = GestureAck {
             preview_retained: false,
+            source_lost: false,
             key: GestureKey {
                 generation: 2,
                 token: 99,
@@ -832,6 +1051,7 @@ mod client_tests {
         assert_eq!(
             terminal,
             GestureRequest::CommitPair {
+                manual_edit: true,
                 key: begin.key(),
                 sequence: 3,
                 value: ParameterPairValue {
@@ -952,6 +1172,7 @@ mod client_tests {
         let committed = machine.handle(
             &mut session,
             GestureRequest::CommitPair {
+                manual_edit: true,
                 key,
                 sequence: 2,
                 value: ParameterPairValue {
@@ -1000,6 +1221,7 @@ pub(crate) struct GestureOutcome {
 /// this operation may advance its active snapshot or canonical history.
 #[derive(Clone, Copy)]
 pub(crate) enum GesturePreparation {
+    Plugin(PluginGesturePreparation),
     Preview(GestureSnapshot),
     Commit(GestureSnapshot),
     Restore,
@@ -1011,13 +1233,21 @@ struct Active {
     snapshot: GestureSnapshot,
     kind: ActiveKind,
     creation_origin: Option<hex_lattice_contract::NativeDeviceState>,
+    origin_parameters: Option<DeviceParameterSnapshot>,
+    state_origin: Option<hex_lattice_contract::NativeDeviceState>,
+    plugin_initial: Option<PluginParameterValue>,
 }
 
 #[derive(Clone, Copy)]
 enum ActiveKind {
+    Plugin {
+        recording: bool,
+    },
     TrackGain,
+    TrackGains,
     TrackBalance,
     ReturnGain,
+    MainGain,
     Device {
         class: NativeDeviceClass,
         type_id: DeviceTypeId,
@@ -1032,9 +1262,23 @@ pub(crate) struct GestureMachine {
 }
 
 impl GestureRequest {
+    fn manual_edit(self) -> bool {
+        match self {
+            Self::Change { .. } | Self::ChangePair { .. } | Self::ChangeSnapshot { .. } => true,
+            Self::Commit { manual_edit, .. } | Self::CommitPair { manual_edit, .. } => manual_edit,
+            Self::CommitSnapshot {
+                touched_parameters, ..
+            } => !touched_parameters.is_empty(),
+            _ => false,
+        }
+    }
     pub fn key(self) -> GestureKey {
         match self {
             Self::Begin { key, .. }
+            | Self::BeginTrackGains { key, .. }
+            | Self::BeginPlugin { key, .. }
+            | Self::ChangePlugin { key, .. }
+            | Self::CommitPlugin { key, .. }
             | Self::Change { key, .. }
             | Self::ChangePair { key, .. }
             | Self::Commit { key, .. }
@@ -1050,10 +1294,14 @@ impl GestureRequest {
     }
     pub fn phase(self) -> GesturePhase {
         match self {
-            Self::Begin { .. } | Self::BeginSnapshot { .. } | Self::BeginEqCreation { .. } => {
-                GesturePhase::Begin
-            }
+            Self::Begin { .. }
+            | Self::BeginTrackGains { .. }
+            | Self::BeginSnapshot { .. }
+            | Self::BeginEqCreation { .. }
+            | Self::BeginPlugin { .. } => GesturePhase::Begin,
             Self::Change { .. } => GesturePhase::Change,
+            Self::ChangePlugin { .. } => GesturePhase::Change,
+            Self::CommitPlugin { .. } => GesturePhase::Commit,
             Self::ChangePair { .. }
             | Self::ChangeSnapshot { .. }
             | Self::ChangeEqCreation { .. } => GesturePhase::Change,
@@ -1067,6 +1315,8 @@ impl GestureRequest {
     pub fn sequence(self) -> u64 {
         match self {
             Self::Change { sequence, .. }
+            | Self::ChangePlugin { sequence, .. }
+            | Self::CommitPlugin { sequence, .. }
             | Self::ChangePair { sequence, .. }
             | Self::Commit { sequence, .. }
             | Self::CommitPair { sequence, .. }
@@ -1127,6 +1377,7 @@ impl GestureMachine {
         let mut outcome = GestureOutcome {
             ack: GestureAck {
                 preview_retained: false,
+                source_lost: false,
                 key: request.key(),
                 phase: request.phase(),
                 sequence: request.sequence(),
@@ -1141,7 +1392,29 @@ impl GestureMachine {
         match result {
             Ok(()) => outcome.ack.accepted = true,
             Err(error) => {
-                outcome.ack.reason = Some(error.to_string().to_lowercase());
+                let source_lost = matches!(error, SessionError::PluginSourceLost(_));
+                // A recorded terminal may already have restored authored input
+                // before durable take publication refuses. Its completed SDK
+                // preview cannot be retained, and the source is still alive.
+                let recording_released = matches!(error, SessionError::PluginRecordingReleased(_))
+                    && matches!(request.phase(), GesturePhase::Commit | GesturePhase::Cancel)
+                    && self.active.as_ref().is_some_and(|active| {
+                        matches!(active.kind, ActiveKind::Plugin { recording: true })
+                    });
+                if (source_lost || recording_released)
+                    && self.snapshot().is_some_and(|active| {
+                        active.key == request.key()
+                            && matches!(active.target, GestureTarget::PluginParameter { .. })
+                    })
+                {
+                    self.active = None;
+                    outcome.playback = None;
+                    outcome.preview_project = None;
+                    outcome.ack.source_lost = source_lost;
+                }
+                outcome.ack.reason = Some(hex_storage::text::lowercase_outside_verbatim(
+                    &error.to_string(),
+                ));
                 // Native terminal refusal keeps the actual accepted overlay. The legacy
                 // adapter retains its existing retirement behavior; stale keys own neither.
                 if retain_terminal
@@ -1180,10 +1453,50 @@ impl GestureMachine {
             ));
         }
         match request {
+            GestureRequest::BeginPlugin { .. }
+            | GestureRequest::ChangePlugin { .. }
+            | GestureRequest::CommitPlugin { .. } => {
+                return self.apply_plugin(session, request, generation, outcome, prepare);
+            }
             GestureRequest::BeginEqCreation { .. }
             | GestureRequest::ChangeEqCreation { .. }
             | GestureRequest::CommitEqCreation { .. } => {
                 self.apply_eq_creation(session, request, outcome, prepare)?
+            }
+            GestureRequest::BeginTrackGains { group, .. } => {
+                if self.active.is_some()
+                    || self.last_key.is_some_and(|last| {
+                        last.generation == generation && key.token <= last.token
+                    })
+                {
+                    return Err(SessionError::Invalid(
+                        "selected gain gesture is active or stale",
+                    ));
+                }
+                group.validate_current(session.project())?;
+                self.active = Some(Active {
+                    snapshot: GestureSnapshot {
+                        touched_parameters: TouchedParameters::default(),
+                        manual_edit: false,
+                        key,
+                        target: GestureTarget::TrackGains {
+                            track: group.anchor(),
+                        },
+                        sequence: 0,
+                        value: ParameterValue::Float(group.anchor_gain()),
+                        secondary_value: None,
+                        parameters: None,
+                        creation: None,
+                        track_gains: Some(group),
+                        plugin_value: None,
+                    },
+                    kind: ActiveKind::TrackGains,
+                    creation_origin: None,
+                    origin_parameters: None,
+                    state_origin: None,
+                    plugin_initial: None,
+                });
+                self.last_key = Some(key);
             }
             GestureRequest::BeginSnapshot {
                 device, snapshot, ..
@@ -1215,6 +1528,9 @@ impl GestureMachine {
                 hex_engine::patch_native_device_snapshot_for_class(class, state, &snapshot)?;
                 self.active = Some(Active {
                     snapshot: GestureSnapshot {
+                        track_gains: None,
+                        touched_parameters: crate::device_gesture::TouchedParameters::default(),
+                        manual_edit: false,
                         key,
                         target: GestureTarget::DeviceParameterSnapshot { device },
                         sequence: 0,
@@ -1222,12 +1538,16 @@ impl GestureMachine {
                         secondary_value: None,
                         parameters: Some(initial),
                         creation: None,
+                        plugin_value: None,
                     },
                     kind: ActiveKind::Device {
                         class,
                         type_id: state.type_id(),
                     },
                     creation_origin: None,
+                    origin_parameters: Some(initial),
+                    state_origin: None,
+                    plugin_initial: None,
                 });
                 self.last_key = Some(key);
             }
@@ -1254,11 +1574,37 @@ impl GestureMachine {
                 let GestureTarget::DeviceParameterSnapshot { .. } = active.target else {
                     return Err(SessionError::Invalid("snapshot gesture target changed"));
                 };
+                let origin = self
+                    .active
+                    .as_ref()
+                    .and_then(|active| active.origin_parameters)
+                    .ok_or(SessionError::Invalid("snapshot origin is missing"))?;
+                if !origin.same_parameters(&snapshot) {
+                    return Err(SessionError::Invalid("snapshot gesture parameters changed"));
+                }
+                let mut touched = active.touched_parameters;
+                let requested_touched = match request {
+                    GestureRequest::ChangeSnapshot {
+                        touched_parameters, ..
+                    }
+                    | GestureRequest::CommitSnapshot {
+                        touched_parameters, ..
+                    } => touched_parameters,
+                    _ => TouchedParameters::default(),
+                };
+                touched
+                    .merge(requested_touched, origin)
+                    .map_err(SessionError::Invalid)?;
+                touched
+                    .include_changed(origin, snapshot)
+                    .map_err(SessionError::Invalid)?;
                 if terminal {
                     let before = session.project().clone();
                     let (_, prepared) = prepare(
                         session,
                         GesturePreparation::Commit(GestureSnapshot {
+                            manual_edit: !touched.is_empty(),
+                            touched_parameters: touched,
                             sequence,
                             parameters: Some(snapshot),
                             ..active
@@ -1272,6 +1618,8 @@ impl GestureMachine {
                     let (project, prepared) = prepare(
                         session,
                         GesturePreparation::Preview(GestureSnapshot {
+                            manual_edit: !touched.is_empty(),
+                            touched_parameters: touched,
                             sequence,
                             parameters: Some(snapshot),
                             ..active
@@ -1280,7 +1628,12 @@ impl GestureMachine {
                     .ok_or(SessionError::Invalid(
                         "gesture preview produced no revision",
                     ))?;
-                    let current = self.active.as_mut().unwrap();
+                    let current = self
+                        .active
+                        .as_mut()
+                        .ok_or(SessionError::Invalid("gesture ended during preview"))?;
+                    current.snapshot.manual_edit = !touched.is_empty();
+                    current.snapshot.touched_parameters = touched;
                     current.snapshot.sequence = sequence;
                     current.snapshot.parameters = Some(snapshot);
                     outcome.preview_project = Some(project);
@@ -1298,10 +1651,16 @@ impl GestureMachine {
                     return Err(SessionError::Invalid("device gesture token is stale"));
                 }
                 let (kind, value, secondary_value) = match target {
-                    GestureTarget::DeviceParameterSnapshot { .. }
+                    GestureTarget::TrackGains { .. }
+                    | GestureTarget::DeviceParameterSnapshot { .. }
                     | GestureTarget::EqNodeCreation { .. } => {
                         return Err(SessionError::Invalid(
                             "snapshot gesture requires initial parameters",
+                        ));
+                    }
+                    GestureTarget::PluginParameter { .. } => {
+                        return Err(SessionError::Invalid(
+                            "plugin gesture requires source context",
                         ));
                     }
                     GestureTarget::DeviceParameter { device, parameter } => {
@@ -1358,6 +1717,14 @@ impl GestureMachine {
                             Some(second_value),
                         )
                     }
+                    GestureTarget::MainGain => {
+                        require_resident_mix(session)?;
+                        (
+                            ActiveKind::MainGain,
+                            ParameterValue::Float(session.project().master_gain()),
+                            None,
+                        )
+                    }
                     GestureTarget::TrackBalance { track } => (
                         ActiveKind::TrackBalance,
                         ParameterValue::Float(static_track_balance(session, track)?),
@@ -1401,6 +1768,9 @@ impl GestureMachine {
                 };
                 self.active = Some(Active {
                     snapshot: GestureSnapshot {
+                        track_gains: None,
+                        touched_parameters: crate::device_gesture::TouchedParameters::default(),
+                        manual_edit: false,
                         key,
                         target,
                         sequence: 0,
@@ -1408,9 +1778,13 @@ impl GestureMachine {
                         secondary_value,
                         parameters: None,
                         creation: None,
+                        plugin_value: None,
                     },
                     kind,
                     creation_origin: None,
+                    origin_parameters: None,
+                    state_origin: None,
+                    plugin_initial: None,
                 });
                 self.last_key = Some(key);
             }
@@ -1418,12 +1792,18 @@ impl GestureMachine {
                 sequence, value, ..
             } => {
                 let active = self.checked_active(session, key)?;
+                if active.plugin_value.is_some() {
+                    return Err(SessionError::Invalid(
+                        "plugin gesture requires lossless values",
+                    ));
+                }
                 if sequence == 0 || sequence <= active.sequence {
                     return Err(SessionError::Invalid("device gesture update is stale"));
                 }
                 let (project, prepared) = prepare(
                     session,
                     GesturePreparation::Preview(GestureSnapshot {
+                        manual_edit: true,
                         sequence,
                         value,
                         ..active
@@ -1433,6 +1813,7 @@ impl GestureMachine {
                     "gesture preview produced no revision",
                 ))?;
                 if let Some(current) = self.active.as_mut() {
+                    current.snapshot.manual_edit = true;
                     current.snapshot.sequence = sequence;
                     current.snapshot.value = value;
                 }
@@ -1443,12 +1824,18 @@ impl GestureMachine {
                 sequence, value, ..
             } => {
                 let active = self.checked_active(session, key)?;
+                if active.plugin_value.is_some() {
+                    return Err(SessionError::Invalid(
+                        "plugin gesture requires lossless values",
+                    ));
+                }
                 if sequence == 0 || sequence <= active.sequence {
                     return Err(SessionError::Invalid("device gesture update is stale"));
                 }
                 let (project, prepared) = prepare(
                     session,
                     GesturePreparation::Preview(GestureSnapshot {
+                        manual_edit: true,
                         sequence,
                         value: value.first,
                         secondary_value: Some(value.second),
@@ -1459,6 +1846,7 @@ impl GestureMachine {
                     "gesture preview produced no revision",
                 ))?;
                 if let Some(current) = self.active.as_mut() {
+                    current.snapshot.manual_edit = true;
                     current.snapshot.sequence = sequence;
                     current.snapshot.value = value.first;
                     current.snapshot.secondary_value = Some(value.second);
@@ -1470,6 +1858,11 @@ impl GestureMachine {
                 sequence, value, ..
             } => {
                 let active = self.checked_active(session, key)?;
+                if active.plugin_value.is_some() {
+                    return Err(SessionError::Invalid(
+                        "plugin gesture requires lossless values",
+                    ));
+                }
                 if sequence == 0 || sequence < active.sequence {
                     return Err(SessionError::Invalid("device gesture commit is stale"));
                 }
@@ -1477,6 +1870,9 @@ impl GestureMachine {
                 let (_, prepared) = prepare(
                     session,
                     GesturePreparation::Commit(GestureSnapshot {
+                        manual_edit: active.manual_edit
+                            || request.manual_edit()
+                            || active.value != value,
                         sequence,
                         value,
                         ..active
@@ -1491,6 +1887,11 @@ impl GestureMachine {
                 sequence, value, ..
             } => {
                 let active = self.checked_active(session, key)?;
+                if active.plugin_value.is_some() {
+                    return Err(SessionError::Invalid(
+                        "plugin gesture requires lossless values",
+                    ));
+                }
                 if sequence == 0 || sequence < active.sequence {
                     return Err(SessionError::Invalid("device gesture commit is stale"));
                 }
@@ -1498,6 +1899,10 @@ impl GestureMachine {
                 let (_, prepared) = prepare(
                     session,
                     GesturePreparation::Commit(GestureSnapshot {
+                        manual_edit: active.manual_edit
+                            || request.manual_edit()
+                            || active.value != value.first
+                            || active.secondary_value != Some(value.second),
                         sequence,
                         value: value.first,
                         secondary_value: Some(value.second),
@@ -1510,8 +1915,20 @@ impl GestureMachine {
                 self.active = None;
             }
             GestureRequest::Cancel { .. } => {
-                self.checked_key(key)?;
-                let prepared = prepare(session, GesturePreparation::Restore)?;
+                let snapshot = self.checked_key(key)?;
+                let operation = if let Some(initial) = self
+                    .active
+                    .as_ref()
+                    .and_then(|active| active.plugin_initial)
+                {
+                    GesturePreparation::Plugin(PluginGesturePreparation::Restore {
+                        snapshot,
+                        initial,
+                    })
+                } else {
+                    GesturePreparation::Restore
+                };
+                let prepared = prepare(session, operation)?;
                 self.active = None;
                 outcome.playback = prepared.map(|(_, prepared)| prepared);
             }
@@ -1543,11 +1960,21 @@ impl GestureMachine {
                     ));
                 }
             }
+            (GestureTarget::MainGain, ActiveKind::MainGain) => {
+                require_resident_mix(session)?;
+            }
             (GestureTarget::TrackBalance { track }, ActiveKind::TrackBalance) => {
                 static_track_balance(session, track)?;
             }
             (GestureTarget::ReturnGain { return_track }, ActiveKind::ReturnGain) => {
                 static_return_gain(session, return_track)?;
+            }
+            (GestureTarget::TrackGains { track }, ActiveKind::TrackGains) => {
+                let group = snapshot
+                    .track_gains
+                    .filter(|group| group.anchor() == track)
+                    .ok_or(SessionError::Invalid("selected gain cohort changed"))?;
+                group.validate_current(session.project())?;
             }
             (GestureTarget::TrackGain { track }, ActiveKind::TrackGain) => {
                 static_track_gain(session, track)?;
@@ -1642,6 +2069,22 @@ impl GestureMachine {
                     return Err(SessionError::Invalid("return send target was removed"));
                 }
             }
+            (GestureTarget::PluginParameter { device, .. }, ActiveKind::Plugin { .. }) => {
+                let origin = active
+                    .state_origin
+                    .as_ref()
+                    .ok_or(SessionError::Invalid("plugin gesture origin is missing"))?;
+                if snapshot.plugin_value.is_none()
+                    || session
+                        .project()
+                        .device(device)
+                        .is_none_or(|device| !device.state().processing_eq(origin))
+                {
+                    return Err(SessionError::PluginSourceLost(
+                        "plugin gesture target was removed or replaced".into(),
+                    ));
+                }
+            }
             _ => return Err(SessionError::Invalid("numeric gesture target changed kind")),
         }
         Ok(snapshot)
@@ -1657,8 +2100,24 @@ impl GestureMachine {
         generation: u64,
     ) -> Option<GestureOutcome> {
         let active = self.snapshot()?;
+        if active.plugin_value.is_some() {
+            return self.rebase_prepared(session, previous, &mut |_, _| {
+                Err(SessionError::PluginSourceLost(
+                    "plugin gesture requires its original native host".into(),
+                ))
+            });
+        }
         let result = self.checked_active(session, active.key).and_then(|_| {
-            if active.creation.is_some() {
+            if active.track_gains.is_some()
+                || active.creation.is_some()
+                || active.manual_edit
+                    && matches!(
+                        active.target,
+                        GestureTarget::DeviceParameter { .. }
+                            | GestureTarget::DeviceParameterPair { .. }
+                            | GestureTarget::DeviceParameterSnapshot { .. }
+                    )
+            {
                 session.preview_mix_command(
                     command_for_snapshot(session, active)?,
                     previous.map(Arc::as_ref),
@@ -1691,6 +2150,7 @@ impl GestureMachine {
             Ok((project, prepared)) => Some(GestureOutcome {
                 ack: GestureAck {
                     preview_retained: false,
+                    source_lost: false,
                     key: active.key,
                     phase: GesturePhase::Change,
                     sequence: active.sequence,
@@ -1708,7 +2168,9 @@ impl GestureMachine {
                     previous,
                     generation,
                 );
-                result.ack.reason = Some(error.to_string().to_lowercase());
+                result.ack.reason = Some(hex_storage::text::lowercase_outside_verbatim(
+                    &error.to_string(),
+                ));
                 Some(result)
             }
         }
@@ -1721,28 +2183,68 @@ impl GestureMachine {
         prepare: &mut impl FnMut(&mut Session, GesturePreparation) -> PreparedGesture,
     ) -> Option<GestureOutcome> {
         let active = self.snapshot()?;
+        let plugin = active.plugin_value.is_some();
         let result = self
             .checked_active(session, active.key)
-            .and_then(|_| prepare(session, GesturePreparation::Preview(active)))
+            .and_then(|_| {
+                prepare(
+                    session,
+                    if plugin {
+                        GesturePreparation::Plugin(PluginGesturePreparation::Preview(active))
+                    } else {
+                        GesturePreparation::Preview(active)
+                    },
+                )
+            })
             .and_then(|prepared| {
-                prepared.ok_or(SessionError::Invalid(
-                    "gesture preview produced no revision",
-                ))
+                if prepared.is_none() && !plugin {
+                    Err(SessionError::Invalid(
+                        "gesture preview produced no revision",
+                    ))
+                } else {
+                    Ok(prepared)
+                }
             });
         match result {
-            Ok((project, prepared)) => Some(GestureOutcome {
-                ack: GestureAck {
-                    preview_retained: false,
-                    key: active.key,
-                    phase: GesturePhase::Change,
-                    sequence: active.sequence,
-                    accepted: true,
-                    reason: None,
-                },
-                playback: Some(prepared),
-                preview_project: Some(project),
-                canonical_changed: false,
-            }),
+            Ok(prepared) => {
+                let (project, playback) = match prepared {
+                    Some((project, playback)) => (Some(project), Some(playback)),
+                    None => (None, None),
+                };
+                Some(GestureOutcome {
+                    ack: GestureAck {
+                        preview_retained: false,
+                        source_lost: false,
+                        key: active.key,
+                        phase: GesturePhase::Change,
+                        sequence: active.sequence,
+                        accepted: true,
+                        reason: None,
+                    },
+                    playback,
+                    preview_project: (!plugin).then_some(project).flatten(),
+                    canonical_changed: false,
+                })
+            }
+            Err(error) if plugin && !matches!(error, SessionError::PluginSourceLost(_)) => {
+                // The independent canonical publication can retain this same
+                // native instance. A temporary validation refusal cannot erase
+                // its admitted SDK preview or pretend the source disappeared.
+                Some(GestureOutcome {
+                    ack: GestureAck {
+                        preview_retained: false,
+                        source_lost: false,
+                        key: active.key,
+                        phase: GesturePhase::Change,
+                        sequence: active.sequence,
+                        accepted: false,
+                        reason: Some(error.to_string()),
+                    },
+                    playback: None,
+                    preview_project: None,
+                    canonical_changed: false,
+                })
+            }
             Err(error) => {
                 // The caller has already accepted an independent canonical graph, so its normal
                 // publication retires this invalid overlay. Never claim that edit rolled back.
@@ -1750,6 +2252,7 @@ impl GestureMachine {
                 Some(GestureOutcome {
                     ack: GestureAck {
                         preview_retained: false,
+                        source_lost: plugin,
                         key: active.key,
                         phase: GesturePhase::Cancel,
                         sequence: 0,
@@ -1788,7 +2291,13 @@ impl GestureMachine {
 }
 
 fn terminal_request(active: GestureSnapshot) -> GestureRequest {
-    if let Some(snapshot) = active.creation {
+    if let Some(value) = active.plugin_value {
+        GestureRequest::CommitPlugin {
+            key: active.key,
+            sequence: active.sequence.max(1),
+            value,
+        }
+    } else if let Some(snapshot) = active.creation {
         GestureRequest::CommitEqCreation {
             key: active.key,
             sequence: active.sequence.max(1),
@@ -1796,12 +2305,14 @@ fn terminal_request(active: GestureSnapshot) -> GestureRequest {
         }
     } else if let Some(snapshot) = active.parameters {
         GestureRequest::CommitSnapshot {
+            touched_parameters: active.touched_parameters,
             key: active.key,
             sequence: active.sequence.max(1),
             snapshot,
         }
     } else if let Some(second) = active.secondary_value {
         GestureRequest::CommitPair {
+            manual_edit: active.manual_edit,
             key: active.key,
             sequence: active.sequence.max(1),
             value: ParameterPairValue {
@@ -1811,6 +2322,7 @@ fn terminal_request(active: GestureSnapshot) -> GestureRequest {
         }
     } else {
         GestureRequest::Commit {
+            manual_edit: active.manual_edit,
             key: active.key,
             sequence: active.sequence.max(1),
             value: active.value,
@@ -1823,8 +2335,19 @@ fn default_preparation(
     previous: Option<&Arc<PreparedRevision>>,
 ) -> PreparedGesture {
     match operation {
+        GesturePreparation::Plugin(_) => Err(SessionError::Invalid(
+            "plugin gestures require native host preparation",
+        )),
         GesturePreparation::Preview(active) => {
-            let prepared = if active.creation.is_some() {
+            let prepared = if active.track_gains.is_some()
+                || active.creation.is_some()
+                || active.manual_edit
+                    && matches!(
+                        active.target,
+                        GestureTarget::DeviceParameter { .. }
+                            | GestureTarget::DeviceParameterPair { .. }
+                            | GestureTarget::DeviceParameterSnapshot { .. }
+                    ) {
                 session.preview_mix_command(
                     command_for_snapshot(session, active)?,
                     previous.map(Arc::as_ref),
@@ -1855,7 +2378,15 @@ fn default_preparation(
             Ok(Some(prepared))
         }
         GesturePreparation::Commit(active) => {
-            let prepared = if active.creation.is_some() {
+            let prepared = if active.track_gains.is_some()
+                || active.creation.is_some()
+                || active.manual_edit
+                    && matches!(
+                        active.target,
+                        GestureTarget::DeviceParameter { .. }
+                            | GestureTarget::DeviceParameterPair { .. }
+                            | GestureTarget::DeviceParameterSnapshot { .. }
+                    ) {
                 session
                     .command_prepared_revision(
                         command_for_snapshot(session, active)?,
@@ -1900,6 +2431,12 @@ fn preview_target(
     previous: Option<&PreparedRevision>,
 ) -> Result<(Arc<Project>, Arc<PreparedRevision>), SessionError> {
     match target {
+        GestureTarget::MainGain => session.preview_mix_command(
+            hex_project::Command::MasterGain {
+                gain: mix_value(value, 0.0, 2.0)?,
+            },
+            previous,
+        ),
         GestureTarget::TrackBalance { track } => {
             session.preview_track_balance(track, mix_value(value, -1.0, 1.0)?, previous)
         }
@@ -1912,7 +2449,9 @@ fn preview_target(
         GestureTarget::DeviceParameter { device, parameter } => {
             session.preview_device_parameter(device, parameter, value, previous)
         }
-        GestureTarget::DeviceParameterPair { .. }
+        GestureTarget::TrackGains { .. }
+        | GestureTarget::DeviceParameterPair { .. }
+        | GestureTarget::PluginParameter { .. }
         | GestureTarget::DeviceParameterSnapshot { .. }
         | GestureTarget::EqNodeCreation { .. } => Err(SessionError::Invalid(
             "paired device gesture requires two values",
@@ -1931,6 +2470,14 @@ fn commit_target(
     previous: Option<&PreparedRevision>,
 ) -> Result<Arc<PreparedRevision>, SessionError> {
     match target {
+        GestureTarget::MainGain => session
+            .command_prepared_revision(
+                hex_project::Command::MasterGain {
+                    gain: mix_value(value, 0.0, 2.0)?,
+                },
+                previous,
+            )
+            .map(|(_, prepared)| prepared),
         GestureTarget::TrackBalance { track } => {
             session.commit_track_balance(track, mix_value(value, -1.0, 1.0)?, previous)
         }
@@ -1943,7 +2490,9 @@ fn commit_target(
         GestureTarget::DeviceParameter { device, parameter } => {
             session.commit_device_parameter(device, parameter, value, previous)
         }
-        GestureTarget::DeviceParameterPair { .. }
+        GestureTarget::TrackGains { .. }
+        | GestureTarget::DeviceParameterPair { .. }
+        | GestureTarget::PluginParameter { .. }
         | GestureTarget::DeviceParameterSnapshot { .. }
         | GestureTarget::EqNodeCreation { .. } => Err(SessionError::Invalid(
             "paired device gesture requires two values",

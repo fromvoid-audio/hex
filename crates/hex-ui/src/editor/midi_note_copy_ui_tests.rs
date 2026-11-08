@@ -35,6 +35,7 @@ fn authored(editor: &Entity<super::EditorView>, visual: &mut VisualTestContext, 
                 notes: [(0.5, 60, 37), (1.5, 64, 93)]
                     .into_iter()
                     .map(|(start, pitch, velocity)| MidiNoteInsert {
+                        active: true,
                         start: BeatTime::from_raw((start * BeatTime::ONE.raw() as f64) as u64),
                         duration: BeatTime::from_raw(BeatTime::ONE.raw() / 4),
                         pitch,
@@ -59,7 +60,7 @@ fn at(
             + point(
                 px(1.0)
                     + (roll.size.width - px(2.0))
-                        * ((beat * BeatTime::ONE.raw() as f64 - v.piano_beat_start.raw() as f64)
+                        * ((beat * BeatTime::ONE.raw() as f64 - v.piano_beat_start as f64)
                             / v.piano_beat_span.raw() as f64) as f32,
                 px(1.0)
                     + (roll.size.height - px(2.0))
@@ -67,6 +68,81 @@ fn at(
                         / f32::from(v.piano_pitch_rows),
             )
     })
+}
+
+#[gpui::test]
+fn note_activation_and_copy_keep_inactive_source_notes(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, clip) = fixture(cx);
+    authored(&editor, &mut visual, clip);
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_keystrokes("0");
+    pump(&editor, &mut visual);
+    assert!(
+        notes(&editor, &visual, clip)
+            .iter()
+            .all(|note| !note.active())
+    );
+    visual.run_until_parked();
+    let center = at(&editor, &mut visual, 0.625, 60);
+    let scale = visual.update(|window, _| window.scale_factor());
+    let x = f64::from(f32::from(center.x) * scale);
+    let y = f64::from(f32::from(center.y) * scale);
+    let muted: gpui::Background =
+        gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Muted)).into();
+    assert!(
+        visual
+            .rendered_filled_quads("midi-note-roll")
+            .iter()
+            .any(|(bounds, color)| {
+                *color == muted
+                    && f64::from(bounds.left()) <= x
+                    && x < f64::from(bounds.right())
+                    && f64::from(bounds.top()) <= y
+                    && y < f64::from(bounds.bottom())
+            }),
+        "inactive note has a muted fill at its visible center"
+    );
+    visual.simulate_keystrokes("cmd-d");
+    pump(&editor, &mut visual);
+    let copied = notes(&editor, &visual, clip);
+    assert_eq!(copied.len(), 4);
+    assert!(copied.iter().all(|note| !note.active()));
+    visual.simulate_keystrokes("0");
+    pump(&editor, &mut visual);
+    let after = notes(&editor, &visual, clip);
+    assert_eq!(after.iter().filter(|note| note.active()).count(), 2);
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    assert!(
+        notes(&editor, &visual, clip)
+            .iter()
+            .all(|note| !note.active())
+    );
+}
+
+#[gpui::test]
+fn note_activation_does_not_interrupt_a_held_note_gesture(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, clip) = fixture(cx);
+    authored(&editor, &mut visual, clip);
+    visual.simulate_keystrokes("cmd-a");
+    let down = at(&editor, &mut visual, 0.625, 60);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_keystrokes("0");
+    pump(&editor, &mut visual);
+    assert!(
+        notes(&editor, &visual, clip)
+            .iter()
+            .all(|note| note.active())
+    );
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    assert!(
+        notes(&editor, &visual, clip)
+            .iter()
+            .all(|note| note.active())
+    );
 }
 #[gpui::test]
 fn repeated_keyboard_copy_tracks_only_acknowledged_new_ids_and_roundtrips(cx: &mut TestAppContext) {
@@ -305,6 +381,7 @@ fn console_copy_keeps_arrangement_isolated_and_invalid_empty_requests_do_not_edi
             .clone();
         let sample = super::super::midi_group_drag::GroupNote {
             id: note.id(),
+            active: note.active(),
             start: note.start().raw(),
             duration: note.duration().raw(),
             pitch: note.pitch(),

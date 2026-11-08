@@ -451,7 +451,7 @@ fn registered_sampler_fixture(streamed: bool, shared: bool) {
                 8,
                 Some(true),
                 &mut |extent| {
-                    assert_eq!(extent.source, key);
+                    assert_eq!(extent.source, key.into());
                     Ok(())
                 },
             )
@@ -470,7 +470,7 @@ fn registered_sampler_fixture(streamed: bool, shared: bool) {
             .unwrap();
         assert_eq!(window.frames, 8);
         assert!(!extents.is_empty());
-        assert!(extents.iter().all(|extent| extent.source == key));
+        assert!(extents.iter().all(|extent| extent.source == key.into()));
         actual
             .stream_playback(context)
             .commit_stream_action(prepared)
@@ -723,25 +723,29 @@ fn registered_sampler_fixture(streamed: bool, shared: bool) {
             .unwrap()
             .prepare_note(60, 127)
             .unwrap();
-        for (offset, actual) in sought_pcm.into_iter().enumerate() {
-            let age = offset + 3;
-            let sample = derivative[age];
-            let vector = vector.sample(age as u64, 8000, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        // Seeks start mutable voices empty: the held sampler note retriggers at
+        // the destination, while the analytic vector note and the frame-anchored
+        // audio clip keep their authored positions (the Play-from law).
+        for (age, actual) in sought_pcm.into_iter().enumerate() {
+            let sampler = derivative[age];
+            let vector = vector.sample(age as u64 + 3, 8000, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            let audio = derivative[age + 3];
             for lane in 0..2 {
-                assert!((actual[lane] - (sample[lane] + vector[lane] + sample[lane])).abs() < 1e-6);
+                assert!((actual[lane] - (sampler[lane] + vector[lane] + audio[lane])).abs() < 1e-6);
             }
         }
-        assert!(
+        // No prefix replays, so the replay work budget does not bind.
+        let beyond_budget =
             SessionPlayback::prepare_interactive_arrangement_preroll_with_device_resources(
                 Arc::clone(&revision),
                 &resources,
                 3,
                 2,
                 true,
-                &cancel
+                &cancel,
             )
-            .is_err()
-        );
+            .unwrap();
+        assert_eq!(beyond_budget.arrangement_frame(), 3);
     }
     let mut playback =
         SessionPlayback::new_with_device_resources(Arc::clone(&revision), &resources).unwrap();

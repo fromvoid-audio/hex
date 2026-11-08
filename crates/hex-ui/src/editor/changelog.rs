@@ -168,20 +168,23 @@ impl State {
 
 pub(super) fn bind_keys(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("cmd-shift-l", OpenChangelog, None)]);
-    cx.bind_keys([
-        KeyBinding::new("enter", OpenChangelog, Some("hex_changelog_button")),
-        KeyBinding::new("space", OpenChangelog, Some("hex_changelog_button")),
-    ]);
+    cx.bind_keys([KeyBinding::new(
+        "enter",
+        OpenChangelog,
+        Some("hex_changelog_button"),
+    )]);
     cx.bind_keys([KeyBinding::new(
         "escape",
         CloseChangelog,
         Some("hex_changelog"),
     )]);
-    cx.bind_keys([
-        KeyBinding::new("enter", CloseChangelog, Some("hex_changelog_close")),
-        KeyBinding::new("space", CloseChangelog, Some("hex_changelog_close")),
-    ]);
-    // This reader must not dispatch document editing/transport keys behind it.
+    cx.bind_keys([KeyBinding::new(
+        "enter",
+        CloseChangelog,
+        Some("hex_changelog_close"),
+    )]);
+    // This reader must not dispatch document-editing keys behind it. Space
+    // remains the editor-wide transport shortcut.
     cx.bind_keys(
         [
             "cmd-f",
@@ -190,7 +193,6 @@ pub(super) fn bind_keys(cx: &mut App) {
             "cmd-,",
             "backspace",
             "delete",
-            "space",
             "cmd-z",
             "cmd-shift-z",
             "cmd-x",
@@ -404,7 +406,7 @@ impl EditorView {
                 .debug_selector(|| "changelog-overlay".into())
                 .absolute()
                 .inset_0()
-                .pt(px(super::header::TITLE_HEIGHT))
+                .pt(px(super::header::WINDOW_CONTROL_HEIGHT))
                 .flex()
                 .justify_center()
                 .bg(rgb(theme::color(PaletteRole::Background)))
@@ -621,32 +623,30 @@ mod ui_tests {
     }
 
     #[gpui::test]
-    fn toolbar_keyboard_entry_activates_with_enter_and_space_then_escape_restores_focus(
+    fn toolbar_keyboard_entry_activates_with_enter_then_escape_restores_focus(
         cx: &mut TestAppContext,
     ) {
         let (_directory, mut visual, editor) = fixture(cx);
-        for key in ["enter", "space"] {
-            editor.update_in(&mut visual, |view, window, _cx| view.focus.focus(window));
-            visual.update(|window, _| window.focus_next());
-            visual.run_until_parked();
-            assert_eq!(
-                visual.rendered_background("open-changelog"),
-                Some(gpui::Background::from(rgb(theme::color(
-                    PaletteRole::Hover
-                )))),
-                "toolbar keyboard focus is visible"
-            );
-            visual.simulate_keystrokes(key);
-            visual.run_until_parked();
-            assert!(visual.debug_bounds("changelog-notes").is_some());
-            editor.read_with(&visual, |view, _| assert!(view.changelog.open));
-            visual.simulate_keystrokes("escape");
-            visual.run_until_parked();
-            editor.update_in(&mut visual, |view, window, _cx| {
-                assert!(!view.changelog.open);
-                assert!(view.focus.is_focused(window));
-            });
-        }
+        editor.update_in(&mut visual, |view, window, _cx| view.focus.focus(window));
+        visual.update(|window, _| window.focus_next());
+        visual.run_until_parked();
+        assert_eq!(
+            visual.rendered_background("open-changelog"),
+            Some(gpui::Background::from(rgb(theme::color(
+                PaletteRole::Hover
+            )))),
+            "toolbar keyboard focus is visible"
+        );
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("changelog-notes").is_some());
+        editor.read_with(&visual, |view, _| assert!(view.changelog.open));
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        editor.update_in(&mut visual, |view, window, _cx| {
+            assert!(!view.changelog.open);
+            assert!(view.focus.is_focused(window));
+        });
     }
 
     #[gpui::test]
@@ -655,7 +655,7 @@ mod ui_tests {
     ) {
         let (_directory, mut visual, editor) = fixture(cx);
         let before = editor.read_with(&visual, |view, _| view.worker_requests_pending);
-        for (tab, activate) in [("tab", "enter"), ("shift-tab", "space")] {
+        for (tab, activate) in [("tab", "enter"), ("shift-tab", "enter")] {
             click(&mut visual, "open-changelog");
             visual.simulate_keystrokes(tab);
             visual.run_until_parked();
@@ -717,6 +717,10 @@ mod ui_tests {
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
             assert!(view.changelog.open);
+            assert_eq!(
+                view.last_transport_command,
+                Some(hex_engine::PlaybackCommand::PlayFrom(0))
+            );
             assert_eq!(
                 (
                     view.worker_requests_pending,

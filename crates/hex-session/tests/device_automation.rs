@@ -22,7 +22,7 @@ fn unsupported_envelope_refuses_before_canonical_commit_and_preserves_history() 
             track,
             before: None,
             state: hex_engine::default_native_device_state(DeviceTypeId::from_static(
-                "hex.saturator",
+                "hex.limiter",
             ))
             .unwrap(),
         })
@@ -34,7 +34,7 @@ fn unsupported_envelope_refuses_before_canonical_commit_and_preserves_history() 
     let error = session
         .command(Command::ReplaceDeviceAutomation {
             device,
-            parameter: ParameterId::new(1).unwrap(),
+            parameter: ParameterId::new(13).unwrap(),
             points: vec![AutomationPoint {
                 beat: BeatTime::ZERO,
                 value: AutomationValue::new(0.25).unwrap(),

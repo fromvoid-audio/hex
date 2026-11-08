@@ -61,6 +61,13 @@ fn fixture(cx: &mut TestAppContext, kind: &str) -> Fixture {
     let bounds = visual.debug_bounds("audio-events-waveform").unwrap();
     let event = visual.debug_bounds("audio-event-1").unwrap();
     let (down, cursor) = match kind {
+        "start" => (
+            visual
+                .debug_bounds("audio-play-start-handle")
+                .unwrap()
+                .center(),
+            CursorStyle::ResizeLeftRight,
+        ),
         "select" => (
             point(
                 bounds.left() + bounds.size.width * 0.25,
@@ -86,6 +93,10 @@ fn fixture(cx: &mut TestAppContext, kind: &str) -> Fixture {
         "trailing" => (
             point(event.right() - px(2.), event.center().y),
             CursorStyle::ResizeRightBracket,
+        ),
+        "gain" => (
+            visual.debug_bounds("audio-event-gain-1").unwrap().center(),
+            CursorStyle::ResizeUpDown,
         ),
         "fade" => (
             visual
@@ -118,7 +129,9 @@ fn fixture(cx: &mut TestAppContext, kind: &str) -> Fixture {
 }
 #[gpui::test]
 fn held_event_gestures_isolate_other_input_and_finish_outside(cx: &mut TestAppContext) {
-    for kind in ["select", "move", "range", "leading", "trailing", "fade"] {
+    for kind in [
+        "select", "move", "range", "leading", "trailing", "fade", "gain", "start",
+    ] {
         let Fixture {
             _files,
             mut visual,
@@ -138,12 +151,14 @@ fn held_event_gestures_isolate_other_input_and_finish_outside(cx: &mut TestAppCo
             assert!(
                 matches!(
                     (kind, gesture.kind),
-                    ("select", Kind::Select)
-                        | ("move", Kind::Move(_))
-                        | ("range", Kind::RangeMove { .. })
+                    ("start", Kind::PlayStart { .. })
+                        | ("select", Kind::Select)
+                        | ("move", Kind::Move(_) | Kind::FreeMove { .. })
+                        | ("range", Kind::RangeMove { .. } | Kind::FreeRangeMove { .. })
                         | ("leading", Kind::Leading(_))
                         | ("trailing", Kind::Trailing(_))
                         | ("fade", Kind::Fade(_))
+                        | ("gain", Kind::Gain { .. })
                 ),
                 "wrong fixture kind={kind}"
             );
@@ -172,7 +187,13 @@ fn held_event_gestures_isolate_other_input_and_finish_outside(cx: &mut TestAppCo
             assert!(v.audio_event_editor.gesture.is_none());
             if kind != "select" {
                 assert!(
-                    v.audio_event_editor.pending.is_some(),
+                    if kind == "start" {
+                        v.detail_clip_id()
+                            .and_then(|id| v.pending_clip_loop_audio(id))
+                            .is_some()
+                    } else {
+                        v.audio_event_editor.pending.is_some()
+                    },
                     "kind={kind} must hand off one frozen edit"
                 );
             }
@@ -182,7 +203,13 @@ fn held_event_gestures_isolate_other_input_and_finish_outside(cx: &mut TestAppCo
         }
         editor.read_with(&visual, |v, _| {
             if kind != "select" {
-                assert!(v.audio_event_editor.pending.is_some());
+                assert!(if kind == "start" {
+                    v.detail_clip_id()
+                        .and_then(|id| v.pending_clip_loop_audio(id))
+                        .is_some()
+                } else {
+                    v.audio_event_editor.pending.is_some()
+                });
             }
         });
         assert!(
@@ -193,7 +220,7 @@ fn held_event_gestures_isolate_other_input_and_finish_outside(cx: &mut TestAppCo
 }
 #[gpui::test]
 fn lost_event_pointers_never_commit_or_activate_late_release(cx: &mut TestAppContext) {
-    for kind in ["leading", "fade"] {
+    for kind in ["leading", "fade", "gain", "start"] {
         for loss in ["button", "focus", "generation", "hide", "escape", "invalid"] {
             let Fixture {
                 _files,
@@ -254,6 +281,11 @@ fn lost_event_pointers_never_commit_or_activate_late_release(cx: &mut TestAppCon
             editor.read_with(&visual, |v, _| {
                 assert!(v.audio_event_editor.gesture.is_none());
                 assert!(v.audio_event_editor.pending.is_none());
+                assert!(
+                    v.detail_clip_id()
+                        .and_then(|id| v.pending_clip_loop_audio(id))
+                        .is_none()
+                );
                 assert!(v.pending_requests.is_empty());
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
             });

@@ -263,6 +263,7 @@ impl Workspace {
         let focus = cx.focus_handle();
         focus.focus(window);
         self.menu = Some(PopupMenu {
+            scroll: Default::default(),
             position,
             icon_grid: grid.then(|| vec!["○", "△", "□", "+"]),
             items,
@@ -280,10 +281,10 @@ impl Workspace {
         self.dismiss(window, cx);
     }
     fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(menu) = self.menu.take() {
-            if let Some(focus) = menu.previous_focus {
-                focus.focus(window);
-            }
+        if let Some(menu) = self.menu.take()
+            && let Some(focus) = menu.previous_focus
+        {
+            focus.focus(window);
         }
         cx.notify();
     }
@@ -758,7 +759,7 @@ impl Workspace {
                             .bottom(px(8.0))
                             .left(gpui::relative(start))
                             .w(gpui::relative(end - start))
-                            .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                            .bg(rgb(theme::time_selection_fill()))
                             .opacity(theme::TIME_SELECTION_OPACITY),
                     );
                 for edge in [TimeMarkerEdge::Top, TimeMarkerEdge::Bottom] {

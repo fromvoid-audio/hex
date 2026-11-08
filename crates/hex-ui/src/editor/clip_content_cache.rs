@@ -29,6 +29,9 @@ struct ContentKey {
     lane: Option<LaneBounds>,
     drag_available: bool,
     fade_key_held: bool,
+    fade_handle_hover: Option<(ClipId, super::fade_handles::Handle)>,
+    option_held: bool,
+    time_selection_key_held: bool,
     automation_view: bool,
     focus_ranges: std::rc::Rc<[(u64, u64)]>,
 }
@@ -149,6 +152,7 @@ impl EditorView {
             && self.active_browser_audio_drag.is_none()
             && self.active_native_device_drag.is_none()
             && self.active_fade_drag.is_none()
+            && !self.clip_gain.held()
             && self.active_trim_drag.is_none()
             && self.active_midi_trim_drag.is_none()
             && self.time_range_move_gesture.is_none()
@@ -197,6 +201,11 @@ impl EditorView {
             selected_clips_epoch: self.clip_selection.epoch,
             lane: self.drag_lanes.get(&track.id()).copied(),
             fade_key_held: self.fade_key_held,
+            fade_handle_hover: self
+                .hovered_fade_handle
+                .and_then(|hover| hover.in_track(self.project_generation, track.id())),
+            option_held: self.option_held,
+            time_selection_key_held: self.time_selection_key_held,
             automation_view: self.automation_view.enabled,
             focus_ranges: self.arrangement_focus_ranges(),
             // Match clip_view admission, including physically held track sizing.

@@ -21,6 +21,7 @@ struct Pending {
     clip: ClipId,
     preview: Preview,
     receipt: Receipt,
+    start_camera: Option<super::audio_event_editor::PlayStartCamera>,
 }
 enum Preview {
     Audio { clip: Clip, edit: AudioEdit },
@@ -167,6 +168,7 @@ impl EditorView {
             generation: self.project_generation,
             clip,
             preview: Preview::Midi(values),
+            start_camera: None,
             receipt: Receipt::new(self.project_generation),
         });
         if !self.enqueue(Request::Edit(command)) {
@@ -205,9 +207,16 @@ impl EditorView {
             }
             None => return,
         };
+        let start_camera = match edit {
+            AudioEdit::Resize(AudioViewResizeOperation::PlayStart { position }) => {
+                self.audio_play_start_camera(clip, position)
+            }
+            _ => None,
+        };
         self.clip_loop.pending = Some(Pending {
             generation: self.project_generation,
             clip,
+            start_camera,
             preview: Preview::Audio {
                 clip: preview,
                 edit,
@@ -252,6 +261,13 @@ impl EditorView {
                     looping: actual,
                 }),
             ) => *clip == p.clip && looping == actual,
+            (
+                Preview::Midi(v),
+                Request::Edit(Command::ResizeMidiClipView {
+                    clip,
+                    operation: hex_project::MidiViewResizeOperation::PlayStart { source_start },
+                }),
+            ) => *clip == p.clip && source_start.raw() == v.source_start,
             (
                 Preview::Midi(v),
                 Request::Edit(Command::SetMidiClipSource {
@@ -305,14 +321,28 @@ impl EditorView {
         if event.project_replaced {
             self.cancel_audio_loop_gesture();
         }
-        if let Some(p) = &mut self.clip_loop.pending
-            && p.receipt.observe(
-                self.project_generation,
-                event.project_replaced,
-                event.request_complete,
-            ) != Disposition::Waiting
+        let disposition = self
+            .clip_loop
+            .pending
+            .as_mut()
+            .map_or(Disposition::Waiting, |p| {
+                p.receipt.observe(
+                    self.project_generation,
+                    event.project_replaced,
+                    event.request_complete,
+                )
+            });
+        if disposition != Disposition::Waiting
+            && let Some(pending) = self.clip_loop.pending.take()
+            && disposition == Disposition::Terminal
+            && let Some(camera) = pending.start_camera
         {
-            self.retire_pending_clip_loop();
+            self.install_audio_play_start_camera(
+                pending.clip,
+                pending.generation,
+                camera,
+                &event.state.project,
+            );
         }
     }
 }

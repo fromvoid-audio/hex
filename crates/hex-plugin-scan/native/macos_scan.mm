@@ -109,7 +109,7 @@ int main(int argc,char**) {
             auto image=ack.number(4); ack.end();
             if(admitted!=selected || admitted_info!=info_hash || binary_hash.size()!=64 || (image!=1 && image!=2) ||
                digest(member(root,@"Contents/Info.plist"),65536)!=info_hash || executable(module.bundle,root)!=selected ||
-               digest(member(root,string(selected)),16*1024*1024)!=binary_hash)
+               digest(member(root,string(selected)))!=binary_hash)
                 throw std::runtime_error("stale or changed executable admission");
             if(!CFBundleLoadExecutable(module.bundle)) throw std::runtime_error("native module load failed");
             module.loaded=true;

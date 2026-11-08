@@ -244,7 +244,7 @@ fn earlier_terminal_and_refusal_without_legacy_duplicate_flag_retire_only_owned_
         assert_eq!(v.worker_requests_pending, 2);
     });
     let receive = |editor: &Entity<EditorView>, visual: &mut VisualTestContext| {
-        let until = Instant::now() + Duration::from_secs(10);
+        let until = crate::test_wait::hang_deadline();
         loop {
             let event = editor.read_with(&*visual, |v, _| v.service.try_event().ok());
             if let Some(event) = event {
@@ -710,7 +710,15 @@ fn console_alias_duplicate_selects_committed_cell_and_repeats_in_order(cx: &mut 
             id
         });
         let marker = Box::leak(format!("clip-alias-{}", selected.value()).into_boxed_str());
-        assert!(visual.debug_bounds(marker).is_some());
+        let badge = visual.debug_bounds(marker).unwrap();
+        let surface = Box::leak(format!("console-clip-{}", selected.value()).into_boxed_str());
+        let surface = visual.debug_bounds(surface).unwrap();
+        assert!(badge.left() >= surface.left());
+        assert!(
+            badge.right() <= surface.right() - gpui::px(5.0),
+            "alias leaves the cut clear"
+        );
+        assert!(badge.top() >= surface.top() && badge.bottom() <= surface.bottom());
         visual.simulate_keystrokes("d");
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {

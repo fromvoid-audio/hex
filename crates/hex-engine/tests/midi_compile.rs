@@ -21,6 +21,88 @@ fn beat(num: u64, den: u64) -> BeatTime {
 fn setup() -> (Editor, hex_project::TrackId) {
     setup_at_rate(48_000)
 }
+
+#[test]
+fn grouping_mixed_clip_activation_keeps_scheduled_notes_and_inactive_content() {
+    let (mut editor, track) = setup();
+    let active = add_clip(&mut editor, track, BeatTime::ZERO, beat(2, 1));
+    let inactive = add_clip(&mut editor, track, beat(4, 1), beat(2, 1));
+    for (clip, pitch) in [(active, 60), (inactive, 67)] {
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: beat(1, 1),
+                pitch,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+    }
+    editor
+        .execute(Command::SetClipActive {
+            clip: inactive,
+            active: false,
+        })
+        .unwrap();
+    let notes = |project: &Project| {
+        midi_events(project)
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.frame, e.kind, e.pitch, e.channel, e.velocity))
+            .collect::<Vec<_>>()
+    };
+    let before = notes(editor.project());
+    let Created::Clip(group) = editor
+        .execute(Command::GroupClips(vec![active, inactive]))
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    assert_eq!(notes(editor.project()), before);
+    let grouped = editor.project().midi_clip(group).unwrap();
+    assert!(grouped.active());
+    assert_eq!(
+        grouped
+            .notes()
+            .iter()
+            .map(|note| note.active())
+            .collect::<Vec<_>>(),
+        vec![true, false]
+    );
+    assert!(editor.undo());
+    assert_eq!(notes(editor.project()), before);
+    assert!(editor.redo());
+    assert_eq!(notes(editor.project()), before);
+}
+
+#[test]
+fn inactive_subframe_note_does_not_prevent_midi_preparation() {
+    let (mut editor, track) = setup();
+    let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(1, 1));
+    let Created::Note(note) = editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_raw(1),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap()
+    else {
+        panic!("note")
+    };
+    editor
+        .execute(Command::SetMidiNotesActive {
+            clip,
+            notes: vec![note],
+            active: false,
+        })
+        .unwrap();
+    assert!(midi_events(editor.project()).unwrap().is_empty());
+    compile::project(editor.project(), &BTreeMap::new()).unwrap();
+}
 fn setup_at_rate(sample_rate: u32) -> (Editor, hex_project::TrackId) {
     let mut editor = Editor::new(Project::new(sample_rate).unwrap(), 16).unwrap();
     let track = match editor
@@ -502,6 +584,46 @@ fn zero_frame_note_is_explicitly_refused() {
         midi_events(editor.project()),
         Err(Invalid("midi note duration quantizes to zero frames"))
     );
+}
+
+#[test]
+fn loop_clamped_subframe_gate_is_skipped_without_rejecting_project() {
+    let (mut editor, track) = setup();
+    let clip = add_clip(&mut editor, track, BeatTime::ZERO, BeatTime::ONE);
+    editor
+        .execute(Command::SetMidiClipSource {
+            clip,
+            source_length: beat(2, 1),
+            source_start: BeatTime::ZERO,
+            loop_start: BeatTime::ZERO,
+            loop_end: BeatTime::ONE,
+            looping: true,
+            length: BeatTime::ONE,
+        })
+        .unwrap();
+    for (start, duration, pitch) in [
+        (BeatTime::ZERO, beat(1, 2), 60),
+        (
+            BeatTime::from_raw(BeatTime::ONE.raw() - 1),
+            BeatTime::from_raw(100),
+            72,
+        ),
+    ] {
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start,
+                duration,
+                pitch,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+    }
+    let events = midi_events(editor.project()).unwrap();
+    assert_eq!(events.len(), 2);
+    assert!(events.iter().all(|event| event.pitch == 60));
+    compile::project(editor.project(), &BTreeMap::new()).unwrap();
 }
 
 fn arrangement_source_window_editor(high_note_start: BeatTime) -> Editor {
@@ -1098,12 +1220,117 @@ fn instrument_render_is_partition_seek_pause_and_stop_invariant() {
     playing_graph.apply(PlaybackCommand::Play);
     let replacement_project = compile::project(editor.project(), &BTreeMap::new()).unwrap();
     let mut replacement = Playback::new(replacement_project);
-    replacement.inherit_transport(&playing_graph);
+    replacement.inherit_transport(&playing_graph).unwrap();
     assert_eq!(replacement.position(), 5_000);
     assert!(replacement.playing());
     let mut replacement_output = [[0.0; 2]; 128];
     replacement.render(&mut replacement_output).unwrap();
     assert_eq!(replacement_output, whole[5_000..5_128]);
+}
+
+#[test]
+fn sounding_note_does_not_survive_seek_or_stop_across_partitions() {
+    let (mut editor, track) = setup();
+    let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(1, 2));
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: beat(1, 2),
+            pitch: 69,
+            channel: 0,
+            velocity: 127,
+        })
+        .unwrap();
+    let project = compile::project(editor.project(), &BTreeMap::new()).unwrap();
+    let mut whole_playback = Playback::new(project.clone());
+    whole_playback.apply(PlaybackCommand::Play);
+    let mut whole = vec![[0.0; 2]; 14_400];
+    whole_playback.render(&mut whole).unwrap();
+
+    for block in [1_usize, 17, 64, 128, 512] {
+        // (destination, expected PCM after the transport moves away from a held note)
+        for (destination, expected) in [
+            (20_000_u64, vec![[0.0; 2]; 1_024]),
+            (5_000, whole[5_000..6_024].to_vec()),
+        ] {
+            let mut playback = Playback::new(project.clone());
+            playback.apply(PlaybackCommand::Play);
+            let mut held = vec![[0.0; 2]; 3_000];
+            for chunk in held.chunks_mut(block) {
+                playback.render(chunk).unwrap();
+            }
+            assert_eq!(held, whole[..3_000], "block {block}");
+            playback.apply(PlaybackCommand::Seek(destination));
+            let mut after = vec![[9.0; 2]; 1_024];
+            for chunk in after.chunks_mut(block) {
+                playback.render(chunk).unwrap();
+            }
+            assert_eq!(after, expected, "block {block} seek {destination}");
+        }
+        let mut playback = Playback::new(project.clone());
+        playback.apply(PlaybackCommand::Play);
+        let mut held = vec![[0.0; 2]; 3_000];
+        for chunk in held.chunks_mut(block) {
+            playback.render(chunk).unwrap();
+        }
+        playback.apply(PlaybackCommand::Stop);
+        playback.apply(PlaybackCommand::Seek(20_000));
+        playback.apply(PlaybackCommand::Play);
+        let mut after = vec![[9.0; 2]; 1_024];
+        for chunk in after.chunks_mut(block) {
+            playback.render(chunk).unwrap();
+        }
+        assert_eq!(after, vec![[0.0; 2]; 1_024], "block {block} stop");
+    }
+}
+
+#[test]
+fn pause_and_resume_of_a_sounding_note_is_partition_invariant() {
+    let (mut editor, track) = setup();
+    let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(1, 2));
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: beat(1, 2),
+            pitch: 69,
+            channel: 0,
+            velocity: 127,
+        })
+        .unwrap();
+    let project = compile::project(editor.project(), &BTreeMap::new()).unwrap();
+    let run = |block: usize| {
+        let mut playback = Playback::new(project.clone());
+        let render = |playback: &mut Playback, frames: usize| {
+            let mut output = vec![[9.0; 2]; frames];
+            for chunk in output.chunks_mut(block) {
+                playback.render(chunk).unwrap();
+            }
+            output
+        };
+        playback.apply(PlaybackCommand::Play);
+        let before = render(&mut playback, 3_000);
+        playback.apply(PlaybackCommand::Pause);
+        let paused_at = playback.position();
+        let paused = render(&mut playback, 500);
+        assert_eq!(playback.position(), paused_at, "block {block}");
+        playback.apply(PlaybackCommand::Play);
+        let resumed = render(&mut playback, 2_000);
+        (before, paused, resumed, paused_at)
+    };
+    let expected = run(128);
+    assert_eq!(expected.1, vec![[0.0; 2]; 500]);
+    let mut whole_playback = Playback::new(project.clone());
+    whole_playback.apply(PlaybackCommand::Play);
+    let mut whole = vec![[0.0; 2]; 5_000];
+    whole_playback.render(&mut whole).unwrap();
+    assert_eq!(expected.0, whole[..3_000]);
+    // Resume continues the same timeline position as an uninterrupted render.
+    assert_eq!(expected.2, whole[3_000..]);
+    for block in [1_usize, 17, 64, 512] {
+        assert_eq!(run(block), expected, "block {block}");
+    }
 }
 
 #[test]
@@ -1428,6 +1655,7 @@ fn maximum_valid_project_compiles_exactly_the_bounded_edge_count() {
     let frame_beat = beat(1, 24_000).raw();
     clips[0].notes = (0..hex_project::MAX_NOTES)
         .map(|index| MidiNoteSnapshot {
+            active: true,
             id: first_note + index as u64,
             start_raw: index as u64 * frame_beat,
             duration_raw: frame_beat,
@@ -1627,4 +1855,125 @@ fn frame_range_copy_keeps_a_touching_midi_source_exact() {
         "a clip ending in the cut's first frame has no frame overlap"
     );
     assert_eq!(midi_events(editor.project()).unwrap(), events);
+}
+
+#[test]
+fn arrangement_split_preserves_playability_of_a_subframe_carry() {
+    for (rate, bpm) in [
+        (44_100, 120_000_000),
+        (48_000, 120_000_000),
+        (44_100, 137_000_000),
+        (48_000, 137_000_000),
+    ] {
+        let (mut editor, track) = setup_at_rate(rate);
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: BeatTime::ZERO,
+                tempo: Tempo::new(bpm).unwrap(),
+            })
+            .unwrap();
+        let frame = editor
+            .project()
+            .tempo_map()
+            .beat_to_frame(BeatTime::ONE)
+            .unwrap();
+        let cut = editor.project().tempo_map().frame_to_beat(frame).unwrap();
+        let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(2, 1));
+        for (start, duration, pitch) in [
+            (BeatTime::ZERO, BeatTime::from_raw(cut.raw() + 1), 60),
+            (BeatTime::from_raw(cut.raw() + 100), beat(1, 64), 64),
+        ] {
+            editor
+                .execute(Command::AddMidiNote {
+                    clip,
+                    start,
+                    duration,
+                    pitch,
+                    channel: 0,
+                    velocity: 100,
+                })
+                .unwrap();
+        }
+        let edges = |project: &Project| {
+            midi_events(project)
+                .unwrap()
+                .into_iter()
+                .map(|event| {
+                    (
+                        event.frame,
+                        event.kind,
+                        event.pitch,
+                        event.channel,
+                        event.velocity,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let before = edges(editor.project());
+        editor
+            .execute(Command::SplitTracksAtFrame {
+                tracks: vec![track],
+                frame,
+            })
+            .unwrap();
+        assert_eq!(
+            edges(editor.project()),
+            before,
+            "the subframe carry adds no edges at {rate} Hz and {bpm} microbpm"
+        );
+        let after = editor.project().snapshot();
+        assert!(editor.undo());
+        assert_eq!(edges(editor.project()), before);
+        assert!(editor.redo());
+        assert_eq!(editor.project().snapshot(), after);
+        assert_eq!(edges(editor.project()), before);
+    }
+}
+
+#[test]
+fn subframe_carry_fallback_keeps_other_crossing_gates_balanced() {
+    let (mut editor, track) = setup();
+    let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(2, 1));
+    for (start, duration, pitch) in [
+        (
+            BeatTime::ZERO,
+            BeatTime::from_raw(BeatTime::ONE.raw() + 1),
+            60,
+        ),
+        (beat(3, 4), beat(1, 2), 70),
+    ] {
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start,
+                duration,
+                pitch,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+    }
+    let frame = editor
+        .project()
+        .tempo_map()
+        .beat_to_frame(BeatTime::ONE)
+        .unwrap();
+    editor
+        .execute(Command::SplitTracksAtFrame {
+            tracks: vec![track],
+            frame,
+        })
+        .unwrap();
+    let edges: Vec<_> = midi_events(editor.project())
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.pitch == 70)
+        .map(|event| (event.frame, event.kind))
+        .collect();
+    assert_eq!(edges.len(), 4);
+    assert_eq!(edges[0].1, MidiEventKind::NoteOn);
+    assert_eq!(edges[1], (frame, MidiEventKind::NoteOff));
+    assert_eq!(edges[2], (frame, MidiEventKind::NoteOn));
+    assert_eq!(edges[3].1, MidiEventKind::NoteOff);
+    assert!(edges[0].0 < frame && edges[3].0 > frame);
 }

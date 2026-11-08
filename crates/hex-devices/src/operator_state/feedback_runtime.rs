@@ -212,12 +212,11 @@ impl OperatorFeedbackRuntime {
     pub(super) fn filter_parameter_boundary(
         &self,
     ) -> Option<(crate::fm4::OperatorFeedbackParameters, u32)> {
-        self.retarget.map(|r| {
-            (
-                r.values_at(self.retarget_elapsed)
-                    .expect("validated shared ramp"),
-                r.frames() - self.retarget_elapsed,
-            )
+        // Elapsed never exceeds the ramp; an impossible overrun reports no
+        // boundary instead of panicking on the render/handoff path.
+        self.retarget.and_then(|r| {
+            let parameters = r.values_at(self.retarget_elapsed).ok()?;
+            Some((parameters, r.frames().checked_sub(self.retarget_elapsed)?))
         })
     }
 
@@ -813,6 +812,8 @@ pub(super) fn export_harmonic_history(
     };
     let spectrum = builtin_spectrum(&base)?;
     Some(Legacy {
+        fine_offsets: runtime.configuration.fine_offsets_hz(),
+        pitch_keytrack: runtime.configuration.pitch_keytrack_percent(),
         tuning: None,
         rate: runtime.sample_rate,
         companion: super::companion::Settings::default(),

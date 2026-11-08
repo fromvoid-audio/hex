@@ -61,6 +61,91 @@ impl AudioViewProjection<'_> {
         )
     }
 
+    /// Source-root position of one project frame in this finite placement.
+    /// Returns no position outside its half-open bounds or in exhausted Once
+    /// silence. Uses the retained root clock (not a media sample offset), with
+    /// live/frozen tempo, repeat phase and directed reads matching range queries.
+    /// Constant work, no allocation, DSP preparation or source custody transfer.
+    pub fn root_position_for_frame(&self, frame: u64) -> Result<Option<u64>, Invalid> {
+        if frame < self.placed_frames.0 || frame >= self.placed_frames.1 || self.count == 0 {
+            return Ok(None);
+        }
+        let elapsed = self.elapsed_at_frame(frame)?;
+        let leading = u64::try_from(self.first_read - self.start)
+            .map_err(|_| Invalid("audio leading extent exceeds placement"))?;
+        let audible_start = if self.has_subframe_intro() {
+            self.occurrence(0)?.elapsed_start
+        } else {
+            0
+        };
+        let read = match self.content {
+            Some((window, _, _)) => {
+                // A rounded endpoint may invert one raw tick past its finite
+                // window. It has no source quantum; never extrapolate a cursor.
+                if elapsed >= window.length()? {
+                    return Ok(None);
+                }
+                let read = window.read_position(elapsed)?;
+                if read < audible_start {
+                    return Ok(None);
+                }
+                read
+            }
+            None if leading > 0 => {
+                let occurrence = self.occurrence(0)?;
+                if !(occurrence.destination_start..occurrence.destination_end).contains(&frame) {
+                    return Ok(None);
+                }
+                elapsed.saturating_sub(leading)
+            }
+            None => elapsed.max(audible_start),
+        };
+        if let Some(edit) = self.clip.audio_edit().filter(|edit| {
+            edit.processing_projection.is_some()
+                && edit.placement.is_none()
+                && edit
+                    .content_view
+                    .is_none_or(|view| view.base_placement.is_none())
+        }) {
+            // A retained plain root reads its old output sample-for-sample,
+            // even when the destination tempo has equal duration but different
+            // interior timing. Directed reads first map back to that base.
+            let occurrence = self.occurrence(0)?;
+            let base = if self.content.is_some() {
+                self.base_frame_at_elapsed(read)?
+            } else {
+                frame
+            };
+            let offset = base
+                .checked_sub(occurrence.destination_start)
+                .ok_or(Invalid("audio playback precedes retained occurrence"))?;
+            let root_frame = occurrence
+                .root_start
+                .checked_add(offset)
+                .ok_or(Invalid("audio playback root frame overflow"))?;
+            return edit.root_position_at(root_frame, self.tempo).map(Some);
+        }
+        let end = self
+            .view_start
+            .checked_add(self.cycle)
+            .ok_or(Invalid("audio playback root end overflow"))?;
+        let placement = self.clip.audio_edit().and_then(|edit| {
+            edit.content_view
+                .map_or(edit.placement, |view| view.base_placement)
+        });
+        let looping = placement
+            .filter(|p| p.mode == AudioViewMode::Repeat)
+            .map(|_| (self.view_start, end));
+        let at = u128::from(self.phase) + u128::from(read);
+        Ok(
+            crate::source_ranges::source_ranges(at, at + 1, self.view_start, end, looping)?
+                .into_iter()
+                .flatten()
+                .next()
+                .map(|range| range.start),
+        )
+    }
+
     /// Source-root intervals visited by a half-open project-frame selection,
     /// intersected with this finite placement. Coordinates use `domain.clock`
     /// (frames or raw BeatTime), matching the audio-event editor, not original
@@ -75,8 +160,14 @@ impl AudioViewProjection<'_> {
         if range.start > range.end {
             return Err(Invalid("audio selection range is reversed"));
         }
-        let first = range.start.max(self.placed_frames.0);
-        let last = range.end.min(self.placed_frames.1);
+        let (read_start, read_end) = if self.first_read != self.start {
+            let read = self.occurrence(0)?;
+            (read.destination_start, read.destination_end)
+        } else {
+            self.placed_frames
+        };
+        let first = range.start.max(read_start);
+        let last = range.end.min(read_end);
         if first >= last || self.count == 0 {
             return Ok([None, None]);
         }
@@ -168,10 +259,10 @@ impl AudioViewProjection<'_> {
             } else {
                 frame
             };
-            Ok(raw.clamp(self.start, self.end))
+            Ok(raw.clamp(self.first_read, self.end))
         };
         let elapsed = |frame| -> Result<u128, Invalid> {
-            u128::try_from(position(frame)? - self.start)
+            u128::try_from(position(frame)? - self.first_read)
                 .map_err(|_| Invalid("audio selection clock overflow"))
         };
         let start = u128::from(self.phase) + elapsed(first)?.max(u128::from(audible_start));
@@ -236,6 +327,17 @@ mod tests {
         edit.validate(&clip, tempo, 200).unwrap();
         let projection = AudioViewProjection::new(&clip, tempo).unwrap();
         assert_eq!(projection.play_start_position().unwrap(), Some(30));
+        for (frame, expected) in [
+            (999, None),
+            (1000, Some(30)),
+            (1015, Some(45)),
+            (1030, Some(20)),
+            (1099, Some(49)),
+            (1100, None),
+            (u64::MAX, None),
+        ] {
+            assert_eq!(projection.root_position_for_frame(frame).unwrap(), expected);
+        }
         assert_eq!(
             projection.root_ranges_for_frames(1015..1035).unwrap(),
             [Some(20..25), Some(45..60)]
@@ -260,6 +362,8 @@ mod tests {
         clip.edit = Some(Arc::new(edit.clone()));
         edit.validate(&clip, tempo, 200).unwrap();
         let projection = AudioViewProjection::new(&clip, tempo).unwrap();
+        assert_eq!(projection.root_position_for_frame(1029).unwrap(), Some(59));
+        assert_eq!(projection.root_position_for_frame(1030).unwrap(), None);
         assert_eq!(
             projection.root_ranges_for_frames(1025..1060).unwrap(),
             [Some(55..60), None]
@@ -277,6 +381,7 @@ mod tests {
             base_placement: edit.placement,
             base_start_delta: 0,
             window: crate::ContentWindow::new(0, 100, true).unwrap(),
+            read_resampler: crate::WarpResampler::default(),
         });
         edit.view_start = 0;
         edit.view_end = 100;
@@ -290,6 +395,11 @@ mod tests {
                 .unwrap(),
             None
         );
+        let reversed = AudioViewProjection::new(&clip, tempo).unwrap();
+        assert_eq!(reversed.root_position_for_frame(1000).unwrap(), None);
+        assert_eq!(reversed.root_position_for_frame(1070).unwrap(), Some(59));
+        assert_eq!(reversed.root_position_for_frame(1071).unwrap(), Some(58));
+        assert_eq!(reversed.root_position_for_frame(1099).unwrap(), Some(30));
         edit.content_view.as_mut().unwrap().window.reversed = false;
         clip.edit = Some(Arc::new(edit));
         assert_eq!(
@@ -325,6 +435,14 @@ mod tests {
         assert_eq!(query(&editor), Some(0));
         editor.execute(Command::ReverseClips(vec![id])).unwrap();
         assert_eq!(query(&editor), Some(99));
+        let p = AudioViewProjection::new(
+            editor.project().clip(id).unwrap(),
+            editor.project().tempo_map(),
+        )
+        .unwrap();
+        assert_eq!(p.root_position_for_frame(1025).unwrap(), Some(74));
+        assert_eq!(p.root_position_for_frame(1099).unwrap(), Some(0));
+        assert_eq!(p.root_position_for_frame(1100).unwrap(), None);
         editor.execute(Command::ReverseClips(vec![id])).unwrap();
         assert_eq!(query(&editor), Some(0));
     }
@@ -355,6 +473,15 @@ mod tests {
         edit.validate(&clip, tempo, 192_000).unwrap();
         let projection = AudioViewProjection::new(&clip, tempo).unwrap();
         assert_eq!(projection.play_start_position().unwrap(), Some(b(3).raw()));
+        for (frame, expected) in [
+            (tempo.beat_to_frame(b(6)).unwrap(), b(5).raw()),
+            (tempo.beat_to_frame(b(7)).unwrap(), b(2).raw()),
+        ] {
+            assert_eq!(
+                projection.root_position_for_frame(frame).unwrap(),
+                Some(expected)
+            );
+        }
         assert_eq!(
             projection
                 .root_ranges_for_frames(
@@ -372,6 +499,14 @@ mod tests {
         let changed = TempoMap::constant(48_000, Tempo::new(90_000_000).unwrap()).unwrap();
         edit.validate(&clip, &changed, 192_000).unwrap();
         let projection = AudioViewProjection::new(&clip, &changed).unwrap();
+        assert_eq!(
+            projection.root_position_for_frame(548_000).unwrap(),
+            Some(b(5).raw())
+        );
+        assert_eq!(
+            projection.root_position_for_frame(572_000).unwrap(),
+            Some(b(2).raw())
+        );
         assert_eq!(
             projection.root_ranges_for_frames(548_000..596_000).unwrap(),
             [Some(b(2).raw()..b(3).raw()), Some(b(5).raw()..b(6).raw())]
@@ -421,15 +556,77 @@ mod tests {
                 .unwrap(),
             [Some(b(2).raw()..b(3).raw()), Some(b(5).raw()..b(6).raw())]
         );
+        assert_eq!(
+            projection
+                .root_position_for_frame(clip.start + 48_000)
+                .unwrap(),
+            Some(b(5).raw())
+        );
+        assert_eq!(
+            projection
+                .root_position_for_frame(clip.start + 72_000)
+                .unwrap(),
+            Some(b(2).raw())
+        );
         edit.placement.as_mut().unwrap().mode = AudioViewMode::Once;
         clip.edit = Some(Arc::new(edit.clone()));
         let projection = AudioViewProjection::new(&clip, &current).unwrap();
+        assert_eq!(
+            projection
+                .root_position_for_frame(clip.start + 72_000)
+                .unwrap(),
+            None
+        );
         assert_eq!(
             projection
                 .root_ranges_for_frames(clip.start + 72_000..clip.start + 144_000)
                 .unwrap(),
             [None, None]
         );
+        let gate = current.beat_to_frame(b(19)).unwrap();
+        let extended = clip.with_musical_leading_silence(gate, &current).unwrap();
+        extended
+            .audio_edit()
+            .unwrap()
+            .validate(&extended, &current, 192_000)
+            .unwrap();
+        let leading = AudioViewProjection::new(&extended, &current).unwrap();
+        assert_eq!(
+            leading.outer_frame_bounds(),
+            (gate, clip.start + clip.duration)
+        );
+        let old = projection.occurrence(0).unwrap();
+        let new = leading.occurrence(0).unwrap();
+        assert_eq!(
+            new,
+            AudioViewOccurrence {
+                elapsed_start: new.elapsed_start,
+                elapsed_end: old.elapsed_end + new.elapsed_start,
+                ..old
+            }
+        );
+        let gate = current.beat_to_frame(b(16)).unwrap();
+        let trimmed =
+            super::super::commands::trim_view(&clip, crate::TrimEdge::Left, gate, &current)
+                .unwrap();
+        trimmed
+            .audio_edit()
+            .unwrap()
+            .validate(&trimmed, &current, 192_000)
+            .unwrap();
+        let view = AudioViewProjection::new(&trimmed, &current).unwrap();
+        let read = view.occurrence(0).unwrap();
+        assert_eq!(
+            view.outer_frame_bounds(),
+            (gate, clip.start + clip.duration)
+        );
+        assert_eq!(
+            read.destination_start,
+            old.destination_start - old.root_start
+        );
+        assert_eq!(read.destination_end, old.destination_end);
+        assert_eq!(read.root_origin, old.root_origin);
+        assert_eq!(read.root_start, 0);
         edit.placement_end_offset = 1;
         clip.edit = Some(Arc::new(edit.clone()));
         assert!(
@@ -476,6 +673,10 @@ mod tests {
         clip.edit = Some(Arc::new(edit.clone()));
         edit.validate(&clip, &current, 72_000).unwrap();
         let projection = AudioViewProjection::new(&clip, &current).unwrap();
+        assert_eq!(
+            projection.root_position_for_frame(108_000).unwrap(),
+            Some(BeatTime::from_ratio(1, 4).unwrap().raw())
+        );
         assert_eq!(
             projection.root_ranges_for_frames(96_000..120_000).unwrap(),
             [Some(0..BeatTime::from_ratio(1, 2).unwrap().raw()), None]

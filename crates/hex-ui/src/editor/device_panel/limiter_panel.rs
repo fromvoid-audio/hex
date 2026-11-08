@@ -37,7 +37,6 @@ pub(super) fn render_body(
     let id = device.id();
     let maximize = effective(view, id, metadata, 9) == Some(ParameterValue::Bool(true));
     let mid_side = effective(view, id, metadata, 7) == Some(ParameterValue::Choice(1));
-    let soft_clip = effective(view, id, metadata, 8) == Some(ParameterValue::Choice(1));
     // Working-lane labels must match the audible routing, including during a
     // pending mode edit; an older l/r graph must not be presented as m/s.
     let audible_routing = view
@@ -57,8 +56,9 @@ pub(super) fn render_body(
             ParameterValue::Choice(routing) => Some(routing),
             _ => None,
         });
-    let reading = gain_meters::dynamics(view, device, audible_routing)
+    let reading = device_meter::dynamics(view, device, audible_routing)
         .filter(|_| audible_routing == Some(u32::from(mid_side)));
+    let input_level = reading.map_or(0.0, |reading| reading.post_input_peak);
     let identity = DeviceControlIdentity {
         class: NativeDeviceClass::Effect,
         type_id: metadata.type_id,
@@ -78,7 +78,13 @@ pub(super) fn render_body(
                     p,
                     presentation,
                     ControlText {
-                        label: None,
+                        label: match number {
+                            1 => Some("input"),
+                            4 => Some("auto"),
+                            9 => Some("maximize"),
+                            12 => Some("link"),
+                            _ => None,
+                        },
                         codec: matches!(number, 5 | 12)
                             .then_some(numeric_display::NumericDisplayCodec::Percent),
                     },
@@ -92,111 +98,177 @@ pub(super) fn render_body(
     );
     let threshold = control(
         if maximize { 10 } else { 2 },
-        ControlPresentation::InlineValue,
+        ControlPresentation::MeterFader,
     );
     let link = control(
         if mid_side { 12 } else { 5 },
-        ControlPresentation::CompactDial,
+        ControlPresentation::InlineValue,
     );
     let release = control(3, ControlPresentation::CompactDial);
     let auto = control(4, ControlPresentation::CompactButton);
     let maximize_control = control(9, ControlPresentation::CompactButton);
-    let mode = control(8, ControlPresentation::CompactWideSelector);
-    let routing = control(7, ControlPresentation::CompactSelector);
-    let lookahead = control(6, ControlPresentation::CompactSelector);
-    let muted = rgb(theme::color(theme::PaletteRole::Muted));
-    let mut meters = div().flex().gap(px(4.0)).flex_1().min_h_0();
-    for (lane, label) in (if mid_side { ["m", "s"] } else { ["l", "r"] })
-        .into_iter()
-        .enumerate()
+    let mode = control(8, ControlPresentation::CompactSegments { columns: 1 });
+    let routing = control(7, ControlPresentation::CompactSegments { columns: 2 });
+    let lookahead = control(6, ControlPresentation::ChoiceDial);
+    // The level well and triangle are one numeric entity: pending/acknowledged
+    // drafts and typed input follow the same receipt lifecycle, including refusal.
+    let ceiling_parameter = ParameterId::from_static(if maximize { 10 } else { 2 });
+    if let Some(ParameterControl::Float { entity, .. }) =
+        view.device_panel.controls.get(&ParameterKey {
+            device: id,
+            parameter: ceiling_parameter,
+        })
     {
-        let attenuation = reading.map_or(0.0, |r| r.reduction_db[lane]);
-        meters = meters.child(
+        let colors = theme::meter_colors();
+        entity.update(cx, |control, cx| {
+            control.set_meter_readout(
+                hex_widgets::DeviceMeterReadout {
+                    level: input_level,
+                    signal: colors.signal,
+                    clipping: colors.clipping,
+                },
+                cx,
+            )
+        });
+    }
+    let colors = theme::meter_colors();
+    let mut meters = div().flex().gap(px(2.0)).h_full();
+    for lane in 0..2 {
+        let amount = reading.map_or(0.0, |r| r.reduction_db[lane]);
+        let selector = format!("limiter-gr-{}-{lane}", id.value());
+        let field = hex_widgets::reduction_meter(
+            selector.into(),
+            amount / 24.0,
+            hex_widgets::LevelMeterStyle {
+                background: theme::color(theme::PaletteRole::Border),
+                fill: colors.near_peak,
+                above: colors.clipping,
+            },
+        );
+        meters = meters.child(div().w(px(14.0)).h_full().child(field));
+    }
+    let mut rows = div().relative().w(px(20.0)).h_full();
+    for db in [0, 3, 6, 12, 24] {
+        let fraction = db as f32 / 24.0;
+        rows = rows.child(
             div()
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap(px(2.0))
-                .child(theme::text(label))
-                .child(div().h(px(74.0)).w(px(9.0)).child(hex_widgets::level_meter(
-                    format!("limiter-gr-{}-{lane}", id.value()).into(),
-                    attenuation / 36.0,
-                    false,
-                    hex_widgets::LevelMeterStyle {
-                        background: theme::color(theme::PaletteRole::Border),
-                        fill: theme::meter_colors().signal,
-                        above: theme::meter_colors().clipping,
-                    },
-                )))
-                .child(theme::text(reading.map_or_else(
-                    || "—".to_owned(),
-                    |_| format!("{attenuation:.1}"),
-                ))),
+                .absolute()
+                .top(gpui::relative(fraction))
+                .mt(px(-fraction * 10.0))
+                .w_full()
+                .text_center()
+                .child(theme::text(db.to_string())),
         );
     }
+    let attenuation = reading.map(|r| r.reduction_db.into_iter().fold(0.0_f32, f32::max));
+    let center = div()
+        .flex()
+        .flex_col()
+        .items_center()
+        .w(px(72.0))
+        .h(px(154.0))
+        .gap(px(2.0))
+        .child(
+            div()
+                .h(px(14.0))
+                .text_color(rgb(colors.near_peak))
+                .child(theme::text(
+                    attenuation
+                        .filter(|v| *v > 0.0)
+                        .map_or_else(|| "gr".to_owned(), |v| format!("-{v:.1}")),
+                )),
+        )
+        .child(
+            div()
+                .debug_selector(move || format!("limiter-reduction-{}", id.value()))
+                .flex()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .gap(px(3.0))
+                .py(px(4.0))
+                .child(rows)
+                .child(meters),
+        )
+        .child(
+            div()
+                .h(px(18.0))
+                .flex()
+                .items_center()
+                .child(theme::text("link"))
+                .child(link),
+        );
     let display = crate::device_composition::plot(
         div()
             .flex()
-            .flex_col()
-            .items_center()
-            .gap(px(3.0))
             .h_full()
-            .debug_selector(move || format!("limiter-reduction-{}", id.value()))
-            .child(theme::text("reduction db"))
-            .child(meters)
-            .when(soft_clip, |d| {
-                d.child(
-                    div()
-                        .text_color(if reading.is_some_and(|r| r.clipped) {
-                            rgb(theme::meter_colors().clipping)
-                        } else {
-                            muted
-                        })
-                        .child(theme::text("soft clip")),
-                )
-            }),
+            .items_center()
+            .gap(px(2.0))
+            .child(threshold)
+            .child(center),
     );
     crate::device_composition::body()
         .text_size(px(8.0))
         .gap(px(3.0))
         .child(
             crate::device_composition::dense_rail(
-                crate::device_composition::rail_column()
-                    .child(gain)
-                    .child(link)
-                    .child(maximize_control),
+                div()
+                    .flex()
+                    .flex_col()
+                    .h_full()
+                    .justify_between()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(2.0))
+                            .child(gain)
+                            .child(maximize_control),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(2.0))
+                            .child(release)
+                            .child(auto),
+                    ),
             )
-            .w(px(65.0))
+            .w(px(68.0))
             .flex_shrink_0(),
         )
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(3.0))
-                .flex_1()
-                .min_w_0()
-                .h_full()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(3.0))
-                        .child(theme::text(if maximize { "threshold" } else { "ceiling" }))
-                        .child(threshold),
-                )
-                .child(display)
-                .child(mode),
-        )
+        .child(display)
         .child(
             crate::device_composition::dense_rail(
-                crate::device_composition::rail_column()
-                    .child(div().child(theme::text("lookahead")).child(lookahead))
-                    .child(routing)
-                    .child(release)
-                    .child(auto),
+                div()
+                    .flex()
+                    .flex_col()
+                    .h_full()
+                    .justify_between()
+                    .items_center()
+                    .child(lookahead)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(2.0))
+                            .child(theme::text("mode"))
+                            .child(mode),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(2.0))
+                            .child(theme::text("routing"))
+                            .child(routing),
+                    ),
             )
-            .w(px(66.0))
+            .w(px(70.0))
             .flex_shrink_0(),
         )
         .id(ElementId::Name(

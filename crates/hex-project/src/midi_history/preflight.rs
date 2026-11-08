@@ -21,9 +21,12 @@ impl Command {
                 | Self::DuplicateMidiSourceRange { .. }
                 | Self::UpdateMidiNote { .. }
                 | Self::UpdateMidiNotes { .. }
+                | Self::UpdateMidiNotesWithSourceExtent { .. }
+                | Self::SetMidiNotesActive { .. }
                 | Self::RemoveMidiNote(_)
                 | Self::RemoveMidiNotes { .. }
                 | Self::ReplaceMidiClipVolume { .. }
+                | Self::SetMidiClipGain { .. }
                 | Self::SetMidiClipSource { .. }
                 | Self::SetSessionMidiClipSource { .. }
         )
@@ -32,11 +35,42 @@ impl Command {
     /// in place so no-op detection is bounded and does not allocate before admission.
     pub fn prepare_sampler_midi_edit(&mut self, project: &Project) -> Result<bool, Invalid> {
         const MISSING: Invalid = Invalid("midi edit target is unavailable");
+        let grow_source = matches!(self, Self::UpdateMidiNotesWithSourceExtent { .. });
         match self {
+            Self::SetMidiNotesActive {
+                clip,
+                notes,
+                active,
+            } => {
+                if notes.is_empty() || notes.len() > crate::MAX_NOTES {
+                    return Err(Invalid("invalid midi activation batch size"));
+                }
+                notes.sort_unstable();
+                if notes.windows(2).any(|pair| pair[0] == pair[1]) {
+                    return Err(Invalid("duplicate midi activation note"));
+                }
+                let source = project.midi_source(*clip).ok_or(MISSING)?;
+                let mut matched = 0usize;
+                let mut changed = false;
+                for note in &source.notes {
+                    if notes.binary_search(&note.id).is_ok() {
+                        matched += 1;
+                        changed |= note.active != *active;
+                    }
+                }
+                if matched != notes.len() {
+                    return Err(MISSING);
+                }
+                return Ok(changed);
+            }
             Self::ReplaceMidiClipVolume { clip, volume } => {
                 let source = project.midi_source(*clip).ok_or(MISSING)?;
                 volume.validate_source_length(source.source_length())?;
-                return Ok(project.midi_clip_volume(*clip).ok_or(MISSING)? != volume);
+                let original = project.midi_clip_volume(*clip).ok_or(MISSING)?;
+                return Ok(original != &volume.clone().with_clip_gain(original.clip_gain()));
+            }
+            Self::SetMidiClipGain { clip, gain } => {
+                return Ok(project.midi_clip_volume(*clip).ok_or(MISSING)?.clip_gain() != *gain);
             }
             Self::ClearSessionCell { track, scene }
                 if project.session_cell(*track, *scene).is_none() =>
@@ -80,7 +114,8 @@ impl Command {
                     old.velocity,
                 ) != (*start, *duration, *pitch, *channel, *velocity));
             }
-            Self::UpdateMidiNotes { clip, notes } => {
+            Self::UpdateMidiNotes { clip, notes }
+            | Self::UpdateMidiNotesWithSourceExtent { clip, notes } => {
                 if notes.is_empty() || notes.len() > crate::MAX_NOTES {
                     return Err(Invalid("invalid midi update batch size"));
                 }
@@ -89,14 +124,14 @@ impl Command {
                     return Err(Invalid("duplicate midi note update"));
                 }
                 let source = project.midi_source(*clip).ok_or(MISSING)?;
+                let length = if grow_source {
+                    crate::midi::extended_update_source_length(source.source_length(), notes)?
+                } else {
+                    source.source_length()
+                };
                 for n in notes.iter() {
                     crate::midi::validate_note(
-                        n.start,
-                        n.duration,
-                        source.source_length,
-                        n.pitch,
-                        n.channel,
-                        n.velocity,
+                        n.start, n.duration, length, n.pitch, n.channel, n.velocity,
                     )?;
                 }
                 let mut matched = 0;

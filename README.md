@@ -5,22 +5,43 @@ alpha software for macOS arm64. Feature completeness, Live compatibility and
 native listening acceptance are ongoing work, tracked in [Pulse](https://pulse.iocore.dev/).
 The private repository does not currently select a distribution license.
 
+## Professional performance target
+
+hex aims to match Ableton Live and Bitwig Studio on comparable production and
+live performance workloads, then substantially surpass both in reliable track
+and device capacity, editing responsiveness, and low-latency performance.
+
+Dense sessions with native devices and hosted plug-ins should keep audio
+continuous and editing responsive. Live instruments and monitoring should run
+at the lowest practical latency. Independent playback paths should use available
+cores and bounded render-ahead where it improves headroom while preserving
+timing, automation, project recall, and plug-in fault isolation.
+
+Audio fidelity is part of the performance target. Changes must preserve
+sample-accurate timing, effect tails, and the selected processing quality.
+Performance comparisons use equivalent oversampling, interpolation, and
+plug-in quality settings.
+
+We compare pinned optimized builds on matched hardware, sample rates, buffer
+sizes, signal paths, and plug-in settings. We measure audio deadline misses,
+process CPU, monitoring latency, stable track and device counts, and editor
+responsiveness separately. Comparative claims require native device, listening,
+and failure-recovery evidence. [Performance baseline work](https://pulse.iocore.dev/#/issues/5044)
+
 ## Run
 
-Install the native Rust/macOS build toolchain and use locked dependencies.
-Save and quit hex before replacing the development app.
+Install the native Rust/macOS build toolchain.
 
 ```sh
-./launch          # update clean main, build/install optimized hex, then open
-./launch --test   # also run full local CI
-./launch --open   # verify/open the installed app without updating or building
+./launch                    # git pull, then cargo run -r
+./launch --diagnostics=off  # pass arguments to hex
 ```
 
-The default app is `artifacts/hex.app`, identity `org.portalsurfer.hex.dev`.
-Normal launch refuses running installed or raw desktop processes. Use
-`./launch --help` for explicit restart and recovery options; never infer permission
-to discard an unsaved project. Launch without `--test` records tests as not run.
-See [native builds](docs/test-builds.md) for qualified user-test delivery.
+The launcher runs in its own checkout and stops if `git pull` fails. It runs the
+release binary directly. On macOS arm64 it prepares signed VST3 discovery and
+effect hosting tools separately from the pinned SDK and reuses them on later
+launches. See
+[native builds](docs/test-builds.md) for qualified user-test delivery.
 Use [`./release beta`](docs/releases.md) for immutable signed/notarized beta,
 nightly and stable distribution packages.
 
@@ -31,27 +52,33 @@ cargo run -r --locked
 cargo run -r --locked -- --demo
 ```
 
-For an instrumented production test, save and quit hex, then use
-`./launch --open --diagnostics` on a qualified installed build advertising diagnostic support; older bundles are
-refused with rebuild guidance. When building a
-new user-test candidate, use `./launch --test --diagnostics`. The recommended
-`--diagnostics` preset records semantic actions, requests/outcomes, pointer/key
-intent and observed view changes together with audio publication/readiness and
-transport. `--diagnostics=off` disables both; `--diagnostics=all` additionally
-records every callback timing sample and can overflow sooner. Raw source runs
-accept the same options after `--`.
+Current development builds enable action and audio failure diagnostics by default,
+including optimized builds. The recommended preset records semantic actions,
+requests/outcomes, pointer/key intent and observed view changes together with
+audio publication/readiness and transport. Raw callback timing remains off.
+
+Use `./launch --diagnostics=off` to turn detailed tracing off for that launch,
+or `./launch --diagnostics` to select the recommended preset explicitly.
+`--diagnostics=all` additionally records every callback timing sample and can
+overflow sooner. Direct Cargo runs accept the same options after `--`.
 
 When a failure occurs, note what you heard and the approximate time. Keep the
 session's current log and its `.1.log` through `.3.log` siblings together; the
-header repeats source/build/flags and segment metadata. The log button opens the
-current file. Check loss counters before interpreting a missing event. New action
+header repeats source/build/flags and segment metadata. The log button opens a
+native viewer. Use the session, category and time controls or search to narrow
+the list. Use older and newer lines to move through large sessions; filters
+apply to the displayed page and live history may shift on refresh. Click a row
+to inspect it, then shift-click another to select a range and copy it.
+Times shown in the viewer are UTC. Refresh reads new records; the copied excerpt
+is limited to 1 MiB and includes available session context and loss warnings.
+Check loss counters before interpreting a missing event. New action
 records redact typed names/search contents and paths, with counts, IDs and numeric
 values retained. Existing status/error messages may contain paths or source text;
 review a capture before sharing it. Input tracing is not complete replay: rapid
 intermediate view changes, pointer movements, OS dialogs and text contents are
 excluded. Native listening and device stress still require testing.
 
-Detailed audio diagnostics are opt-in and written to the existing session log
+Detailed audio diagnostics are written to the existing session log
 (**open session log** in the app):
 
 ```sh
@@ -60,8 +87,9 @@ cargo run -r --locked -- --audio-diagnostics=publication,readiness,transport
 ```
 
 Categories are `publication`, `readiness`, `transport` and `timing`; `all` enables
-all four. Omit the flag or use `--audio-diagnostics=off` to disable it on the next
-launch. Save and quit an existing process before starting a diagnostic run.
+all four. Use `--audio-diagnostics=off` to disable audio tracing on the next launch
+while leaving action diagnostics enabled, or `--diagnostics=off` to disable both.
+Save and quit an existing process before starting a diagnostic run.
 Records correlate worker submission, ordinary and eligible callback
 preflight/application, command dequeue, priority stop and applied/rejected status
 using output/revision/context identities. Dequeue is distinct from application. Timing
@@ -97,12 +125,12 @@ buttons, gauges and scrolling rows. Select a named entry; edit its local
 values, switch theme, disable supported controls, reset it or narrow the preview.
 Plots use editable fixture values; they do not process audio. No project, audio,
 file or preferences I/O occurs. The former `knob_review` app is included here.
-The launcher builds the optimized example from the current checkout, then opens
+The launcher builds the optimized sandbox from the current checkout, then opens
 it. It works from any directory and does not update Git or replace `hex.app`.
 Headless catalog/input checks use:
 
 ```sh
-cargo test -p hex-ui --features ui-test-support --locked --example layout_review
+cargo test -p hex-sandbox --features ui-test-support --locked
 ```
 
 ## Check

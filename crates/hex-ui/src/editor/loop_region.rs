@@ -5,15 +5,8 @@ use hex_project::Command;
 use hex_session::service::Request;
 
 impl EditorView {
-    /// Command-L applies the contextual action to the complete Arrangement selection.
-    pub(super) fn set_loop_from_clip(&mut self, window: &Window, cx: &Context<Self>) {
-        if self.mode == EditorMode::Arrangement && self.loop_shortcut_context(window) {
-            self.apply_selection_loop(cx);
-        }
-    }
-
     /// Plain L/W remain musical notes while typing is enabled and retain the
-    /// existing Session toggle. Command-L is the explicit modified shortcut.
+    /// existing Session toggle. Command-L toggles the active transport loop.
     pub(super) fn loop_selection_key(&mut self, window: &Window, cx: &Context<Self>) {
         if self.computer_keyboard.enabled || !self.loop_shortcut_clear() {
             return;
@@ -28,9 +21,6 @@ impl EditorView {
         }
     }
 
-    fn loop_shortcut_context(&self, window: &Window) -> bool {
-        self.focus.is_focused(window) && self.loop_shortcut_clear()
-    }
     fn loop_shortcut_clear(&self) -> bool {
         !self.sections.naming()
             && !self.changelog.is_open()
@@ -43,27 +33,120 @@ impl EditorView {
             && !self.export_dialog_open
     }
 
-    fn apply_selection_loop(&mut self, cx: &Context<Self>) {
-        if self.edit_pending()
-            // A section loop also changes visibility after its ACK. Share Q's
-            // capture/numeric/modal guards before admitting that view intent.
-            || (self.section_loop_bounds().ok().flatten().is_some()
-                && !self.arrangement_view_change_available(cx))
-            || self.arrangement_pan.is_some()
-            || self.scrub_active()
-            || self.time_selection_gesture.is_some()
-            || self.time_range_move_gesture.is_some()
-            || self.active_clip_drag.is_some()
-            || self.active_browser_audio_drag.is_some()
-            || self.active_native_device_drag.is_some()
-            || self.active_trim_drag.is_some()
-            || self.active_midi_trim_drag.is_some()
-            || self.active_fade_drag.is_some()
-            || self.track_resize_active()
-            || self.loop_rail_gesture.is_some()
-            || self.sections.held()
-            || self.section_install_pending()
+    /// Modified loop toggle is transport-wide and never derives new bounds.
+    pub(super) fn toggle_active_loop_shortcut(&mut self, window: &Window, cx: &Context<Self>) {
+        if !self.loop_shortcut_clear()
+            || self.opening_project
+            || self.close_prompt_open
+            || self.controller_input_is_open()
+            || self.preset_dialog_open
+            || self.send_menu_track.is_some()
+            || (self.clip_view_open
+                && self.device_panel_active
+                && self.device_panel.add_menu_is_open(self.state.as_deref()))
+            || window
+                .context_stack()
+                .iter()
+                .any(|context| context.contains("hex_text_editing"))
         {
+            return;
+        }
+        let gates = self.loop_edit_gates();
+        if gates.iter().any(|(_, active)| *active) {
+            self.record_loop_refusal(cx, &gates, false);
+            self.error = Some("finish the current edit before changing the loop".into());
+            return;
+        }
+        if self
+            .state
+            .as_ref()
+            .and_then(|state| state.project.loop_region())
+            .is_some()
+        {
+            self.toggle_loop();
+        }
+    }
+
+    /// The names are diagnostics only; the same snapshot determines admission.
+    fn loop_edit_gates(&self) -> [(&'static str, bool); 28] {
+        [
+            ("edit_pending", self.edit_pending()),
+            ("gain_recording", self.gain_recorder.blocks_edits()),
+            ("midi_recording", self.midi_recorder.blocks_edits()),
+            (
+                "sampler_parameter_pending",
+                self.sampler_parameter_pending(),
+            ),
+            ("opening_project", self.opening_project),
+            ("close_prompt", self.close_prompt_open),
+            ("device_gesture_pending", self.device_gesture_pending()),
+            ("arrangement_pan", self.arrangement_pan.is_some()),
+            ("scrub", self.scrub_active()),
+            ("gain_lane_pointer", self.gain_lane.pointer_is_active()),
+            (
+                "device_automation_pointer",
+                self.automation_view.devices.pointer_active(),
+            ),
+            ("device_gesture", self.device_gesture.snapshot().is_some()),
+            ("clip_paint", self.clip_paint_gesture.is_some()),
+            ("clip_detail_resize", self.clip_detail_resize.is_active()),
+            ("spectrum_resize", self.project_spectrum.resize_is_active()),
+            (
+                "device_navigation",
+                self.device_panel.navigation.is_active(),
+            ),
+            ("time_selection", self.time_selection_gesture.is_some()),
+            ("time_range_move", self.time_range_move_gesture.is_some()),
+            ("clip_drag", self.active_clip_drag.is_some()),
+            (
+                "browser_audio_drag",
+                self.active_browser_audio_drag.is_some(),
+            ),
+            (
+                "native_device_drag",
+                self.active_native_device_drag.is_some(),
+            ),
+            ("trim_drag", self.active_trim_drag.is_some()),
+            ("midi_trim_drag", self.active_midi_trim_drag.is_some()),
+            ("fade_drag", self.active_fade_drag.is_some()),
+            ("track_resize", self.track_resize_active()),
+            ("loop_rail_gesture", self.loop_rail_gesture.is_some()),
+            ("section_held", self.sections.held()),
+            ("section_install_pending", self.section_install_pending()),
+        ]
+    }
+
+    fn record_loop_refusal(
+        &self,
+        cx: &Context<Self>,
+        gates: &[(&'static str, bool)],
+        section_view_blocked: bool,
+    ) {
+        if !crate::diagnostics::actions_enabled(cx) {
+            return;
+        }
+        crate::diagnostics::record_loop_refusal(
+            cx,
+            gates,
+            section_view_blocked,
+            self.worker_requests_pending,
+            self.pending_requests.len(),
+            self.sections.pending(),
+            self.audio
+                .as_ref()
+                .and_then(|audio| audio.control.status())
+                .is_some_and(|status| status.stopped_edit_pending()),
+        );
+    }
+
+    fn apply_selection_loop(&mut self, cx: &Context<Self>) {
+        let gates = self.loop_edit_gates();
+        let edit_blocked = gates.iter().any(|(_, active)| *active);
+        let section_view_blocked = (!edit_blocked || crate::diagnostics::actions_enabled(cx))
+            && self.section_loop_bounds().ok().flatten().is_some()
+            && !self.arrangement_view_change_available(cx);
+        if edit_blocked || section_view_blocked {
+            self.record_loop_refusal(cx, &gates, section_view_blocked);
             self.error = Some("finish the current edit before setting the loop".into());
             return;
         }
@@ -75,17 +158,10 @@ impl EditorView {
                 self.toggle_loop();
             }
             Ok(Some((start, end))) => {
-                if self.section_loop_bounds() == Ok(Some((start, end))) {
-                    match hex_project::LoopRegion::new(start, end, true) {
-                        Ok(region) => self.submit_section_loop_preview(region),
-                        Err(error) => self.error = Some(error.0.into()),
-                    }
-                } else {
-                    self.enqueue(Request::Edit(Command::SetLoopRegion {
-                        start,
-                        end,
-                        enabled: true,
-                    }));
+                let section = self.section_loop_bounds() == Ok(Some((start, end)));
+                match hex_project::LoopRegion::new(start, end, true) {
+                    Ok(region) => self.submit_selection_loop_preview(region, section),
+                    Err(error) => self.error = Some(error.0.into()),
                 }
             }
             Ok(None) if existing.is_some() => self.toggle_loop(),

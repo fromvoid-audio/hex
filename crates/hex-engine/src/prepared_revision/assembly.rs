@@ -52,6 +52,7 @@ pub(crate) struct RevisionAssembly {
     reserved_bytes: usize,
     reserved: bool,
     current_sampler_scope: Option<u64>,
+    native_parameter_input: Option<crate::device_automation::NativeParameterInputTarget>,
     extraction_attempted: [bool; 4],
     extracted: usize,
     #[cfg(test)]
@@ -129,6 +130,7 @@ impl RevisionAssembly {
         project: &hex_project::Project,
         scope: Option<u64>,
         effects: bool,
+        native_input: Option<crate::device_automation::NativeParameterInputTarget>,
     ) -> Result<(), Error> {
         if self.reserved
             || self.owner.is_some()
@@ -178,6 +180,7 @@ impl RevisionAssembly {
             }
         }
         self.current_sampler_scope = scope;
+        self.native_parameter_input = native_input;
         self.reserved_bytes = 0;
         for parts in [
             OwnedShared::<PlaybackProject>::declared_parts(),
@@ -224,9 +227,15 @@ impl RevisionAssembly {
             mutable_track_revisions,
             authored_midi_sources,
             gain_recording_track,
+            native_parameter_input,
+            scalar_automation,
+            foreign_automation: _,
         }) = revision
         {
-            if *resource_scope != self.current_sampler_scope || device_resource_scope.is_some() {
+            if *resource_scope != self.current_sampler_scope
+                || device_resource_scope.is_some()
+                || scalar_automation.is_some()
+            {
                 return Err(Error::UnsupportedGraph);
             }
             if self.arrangement.is_some()
@@ -236,6 +245,7 @@ impl RevisionAssembly {
                 || self.session_value.is_some()
                 || self.preview_value.is_some()
                 || gain_recording_track.is_some()
+                || *native_parameter_input != self.native_parameter_input
                 || mutable_track_revisions.capacity() != 0
                 || authored_midi_sources.capacity() != 0
                 || self.mutable_descriptors.capacity() != 0
@@ -390,6 +400,9 @@ impl RevisionAssembly {
                     mutable_track_revisions: Vec::new(),
                     authored_midi_sources: Vec::new(),
                     gain_recording_track: None,
+                    native_parameter_input: self.native_parameter_input,
+                    scalar_automation: None,
+                    foreign_automation: Default::default(),
                 });
             }
             (arrangement, session, preview) => {
@@ -450,6 +463,9 @@ impl RevisionAssembly {
             mutable_track_revisions,
             authored_midi_sources: _,
             gain_recording_track: _,
+            native_parameter_input: _,
+            scalar_automation: _,
+            foreign_automation: _,
         }) = self.revision_value.take()
         {
             self.arrangement = Some(arrangement);
@@ -480,6 +496,7 @@ impl RevisionAssembly {
             session.restore_revision(&mut self.session_value);
         }
         self.current_sampler_scope = None;
+        self.native_parameter_input = None;
         self.reserved = false;
         self.handles = [0; 4];
         self.reserved_bytes = 0;
@@ -541,6 +558,7 @@ impl RevisionAssembly {
             current_sampler_scope: _,
             extraction_attempted: _,
             extracted: _,
+            native_parameter_input: _,
             #[cfg(test)]
                 fail_after: _,
             #[cfg(test)]
@@ -572,8 +590,12 @@ impl RevisionAssembly {
                 mutable_track_revisions,
                 authored_midi_sources,
                 gain_recording_track: _,
+                native_parameter_input: _,
+                scalar_automation: _,
+                foreign_automation,
             } = revision;
             source_routing.visit_storage(l)?;
+            foreign_automation.visit_storage(l)?;
             l.vec(mutable_track_revisions)?;
             // This constructor class never admits ordinary authored-evidence children.
             if authored_midi_sources.capacity() != 0 {

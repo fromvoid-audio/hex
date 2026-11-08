@@ -154,13 +154,19 @@ pub(super) struct BatchFiles(std::path::PathBuf);
 impl BatchFiles {
     pub(super) fn new() -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let p = std::env::temp_dir().join(format!(
-            "hex-batch-ui-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&p).unwrap();
-        Self(p)
+        // A reused PID can meet a leftover directory; take the next free name.
+        loop {
+            let p = std::env::temp_dir().join(format!(
+                "hex-batch-ui-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            match std::fs::create_dir(&p) {
+                Ok(()) => return Self(p),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("create batch fixture directory: {error}"),
+            }
+        }
     }
     pub(super) fn wav(&self, name: &str, rate: u32, count: u32) -> PathBuf {
         let n = count * 2;
@@ -195,7 +201,7 @@ fn receive_worker(
     cx: &mut TestAppContext,
     initial: bool,
 ) {
-    let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let end = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(cx, |view, cx| {
             if view.tick(cx) {

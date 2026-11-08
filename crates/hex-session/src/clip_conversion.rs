@@ -201,6 +201,7 @@ fn isolated_source(
                 .iter()
                 .map(|note| hex_project::MidiNoteSnapshot {
                     id: note.id().value(),
+                    active: note.active(),
                     start_raw: note.start().raw(),
                     duration_raw: note.duration().raw(),
                     pitch: note.pitch(),
@@ -227,6 +228,7 @@ fn isolated_source(
     // the replacement clip, never to the isolated synthesis pass.
     source.active = true;
     snapshot.tracks.retain(|track| track.id == track_id.value());
+    snapshot.retain_automatic_track_names_after_projection();
     let track = snapshot
         .tracks
         .first_mut()

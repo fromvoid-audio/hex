@@ -1,5 +1,8 @@
 //! Control-side realization of the canonical finite placement projection.
-//! One prepared clip and its waveform retain the same contiguous outer PCM.
+//! A placement whose occurrences all read one shared root (frame clocks, or
+//! musical clocks at translation-free origins) and tile its window plays that
+//! root as a loop (or crop); split and copied pieces add no PCM. Other placements
+//! materialize one contiguous outer buffer shared with waveform preparation.
 //! Full processing roots keep their own cache/reservation; their crops never
 //! restart warp, source envelopes, events or fades. No callback scheduler changes.
 use super::*;
@@ -105,7 +108,10 @@ impl AudioTransformPreparation {
         sources
             .try_reserve_exact(events.sources.len())
             .map_err(|_| Invalid("grouped audio preview dependency allocation failed"))?;
-        for root in &events.sources {
+        for root in canonical.retained_audio_roots() {
+            sources
+                .try_reserve(1)
+                .map_err(|_| Invalid("grouped audio preview dependency allocation failed"))?;
             let asset = project
                 .asset(root.clip.asset())
                 .ok_or(Invalid("audio preview asset is missing"))?;
@@ -154,11 +160,6 @@ impl AudioTransformPreparation {
             ));
         };
         let tempo = self.shared_tempo(tempo_map)?;
-        if let Some(audio) = self.lookup_key(source, asset, |key| {
-            key.matches_view(edit, tempo_map, clip.start(), clip.duration())
-        })? {
-            return placed_clip(audio, clip);
-        }
         // Admit all projections before PCM allocation or root preparation. Each
         // distinct musical occurrence has its own processing origin. Frame
         // roots are identical across occurrences and need processing only once.
@@ -177,6 +178,23 @@ impl AudioTransformPreparation {
                         "audio placement exceeds bounded full-root preparation work",
                     ))?;
             }
+        }
+        if let Some(shape) = root_loop(clip, edit, &projection)? {
+            let first = projection.occurrence(0)?;
+            let root_edit = occurrence_edit(edit, first.root_origin, self, tempo_map)?;
+            let root = self.prepare_audio_at_tempo(tempo_map, &root_edit, asset, source)?;
+            return looped_clip(root, clip, shape);
+        }
+        if matches!(edit.domain.clock, AudioDomainClock::Beats(_))
+            && let Some((root, shape)) =
+                self.shared_musical_root(tempo_map, clip, edit, asset, source, &projection)?
+        {
+            return looped_clip(root, clip, shape);
+        }
+        if let Some(audio) = self.lookup_key(source, asset, |key| {
+            key.matches_view(edit, tempo_map, clip.start(), clip.duration())
+        })? {
+            return placed_clip(audio, clip);
         }
         let length = usize::try_from(clip.duration())
             .map_err(|_| Invalid("audio placement exceeds addressable frames"))?;
@@ -312,6 +330,180 @@ pub(super) fn occurrence_edit(
         }
     }
     Ok(root)
+}
+
+impl AudioTransformPreparation {
+    /// Prepare each musical occurrence root (translation-free origins share one
+    /// cached render). Only when all of them are that one PCM can the placement
+    /// play it as a loop; otherwise the caller materializes as before, reusing
+    /// the roots prepared here through the cache.
+    fn shared_musical_root(
+        &self,
+        tempo_map: &hex_project::TempoMap,
+        clip: &hex_project::Clip,
+        edit: &AudioClipEdit,
+        asset: &Asset,
+        source: &Audio,
+        projection: &AudioViewProjection,
+    ) -> Result<Option<(Audio, RootLoop)>, Invalid> {
+        let mut shared: Option<Audio> = None;
+        for index in 0..projection.occurrence_count() {
+            if self.cancelled() {
+                return Err(Invalid("audio preparation cancelled"));
+            }
+            let occurrence = projection.occurrence(index)?;
+            let root_edit = occurrence_edit(edit, occurrence.root_origin, self, tempo_map)?;
+            let root = self.prepare_audio_at_tempo(tempo_map, &root_edit, asset, source)?;
+            match &shared {
+                Some(first) if !first.shares_pcm_with(&root) => return Ok(None),
+                Some(_) => {}
+                None => shared = Some(root),
+            }
+        }
+        let Some(root) = shared else {
+            return Ok(None);
+        };
+        Ok(occurrence_loop(clip, projection)?.map(|shape| (root, shape)))
+    }
+}
+
+/// Loop geometry of a placement whose output equals its processing root's crop
+/// window `[offset, offset + period)` looped from `phase`.
+#[derive(Clone, Copy)]
+pub(super) struct RootLoop {
+    offset: u64,
+    period: u64,
+    phase: u64,
+    root_frames: u64,
+}
+
+/// Frame-clock occurrences read one identical processing root through the
+/// edit's crop window. When they tile the whole clip contiguously, each
+/// starting where the previous one wrapped inside that window, the outer output
+/// equals the window looped. Any other layout (gaps, rebased crops, differing
+/// roots) returns `None` and keeps the materialized path.
+pub(super) fn root_loop(
+    clip: &hex_project::Clip,
+    edit: &AudioClipEdit,
+    projection: &AudioViewProjection,
+) -> Result<Option<RootLoop>, Invalid> {
+    if !matches!(edit.domain.clock, AudioDomainClock::Frames(_))
+        || projection.occurrence_count() == 0
+    {
+        return Ok(None);
+    }
+    tiled_window(clip, projection, edit.view_start, edit.view_end)
+}
+
+/// Musical occurrences carry their own projected window. When every occurrence
+/// already resolved to one shared root, the window is read from the first two
+/// occurrences (a lone occurrence is a crop) and verified like a frame window.
+pub(super) fn occurrence_loop(
+    clip: &hex_project::Clip,
+    projection: &AudioViewProjection,
+) -> Result<Option<RootLoop>, Invalid> {
+    let (start, end) = match projection.occurrence_count() {
+        0 => return Ok(None),
+        1 => {
+            let only = projection.occurrence(0)?;
+            (only.root_start, only.root_end)
+        }
+        _ => (
+            projection.occurrence(1)?.root_start,
+            projection.occurrence(0)?.root_end,
+        ),
+    };
+    tiled_window(clip, projection, start, end)
+}
+
+/// Verify that occurrences tile the clip by looping root window `[offset, end)`.
+fn tiled_window(
+    clip: &hex_project::Clip,
+    projection: &AudioViewProjection,
+    offset: u64,
+    end: u64,
+) -> Result<Option<RootLoop>, Invalid> {
+    let first = projection.occurrence(0)?;
+    let Some(period) = end.checked_sub(offset).filter(|n| *n > 0) else {
+        return Ok(None);
+    };
+    let Some(phase) = first
+        .root_start
+        .checked_sub(offset)
+        .filter(|phase| *phase < period)
+    else {
+        return Ok(None);
+    };
+    if offset
+        .checked_add(period)
+        .is_none_or(|end| end > first.root_frame_length)
+    {
+        return Ok(None);
+    }
+    let mut elapsed = 0_u64;
+    for index in 0..projection.occurrence_count() {
+        let occurrence = projection.occurrence(index)?;
+        let Some(remaining) = clip.duration().checked_sub(elapsed).filter(|n| *n > 0) else {
+            return Ok(None);
+        };
+        // Both terms are below `period`, so the sum cannot overflow a u128.
+        let at = ((u128::from(phase) + u128::from(elapsed % period)) % u128::from(period)) as u64;
+        let length = (period - at).min(remaining);
+        if occurrence.root_frame_length != first.root_frame_length
+            || clip.start().checked_add(elapsed) != Some(occurrence.destination_start)
+            || occurrence.root_start != offset + at
+            || occurrence.root_end.checked_sub(occurrence.root_start) != Some(length)
+        {
+            return Ok(None);
+        }
+        elapsed += length;
+    }
+    Ok((elapsed == clip.duration()).then_some(RootLoop {
+        offset,
+        period,
+        phase,
+        root_frames: first.root_frame_length,
+    }))
+}
+
+/// Play a shared processing root's window as the clip's loop, without outer
+/// PCM. Split or duplicated placements of the same root share one buffer. A
+/// window that never wraps is an ordinary crop of that root.
+pub(super) fn looped_clip(
+    root: Audio,
+    clip: &hex_project::Clip,
+    shape: RootLoop,
+) -> Result<Clip, Invalid> {
+    if root.frames().len() as u64 != shape.root_frames {
+        return Err(Invalid(
+            "audio placement root projection differs from prepared pcm",
+        ));
+    }
+    let compiled = if shape
+        .phase
+        .checked_add(clip.duration())
+        .is_some_and(|end| end <= shape.period)
+    {
+        Clip::region(
+            root,
+            clip.start(),
+            clip.duration(),
+            shape.offset + shape.phase,
+            clip.duration(),
+            false,
+        )?
+    } else {
+        Clip::region(
+            root,
+            clip.start(),
+            clip.duration(),
+            shape.offset,
+            shape.period,
+            true,
+        )?
+        .with_source_phase(shape.phase)?
+    };
+    Ok(compiled.with_gain(clip.gain()))
 }
 
 pub(super) fn placed_clip(audio: Audio, clip: &hex_project::Clip) -> Result<Clip, Invalid> {
