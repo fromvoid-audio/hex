@@ -60,6 +60,7 @@ fn fixture() -> Project {
     s.import_provenance =
         Some(ImportProvenance::new("ableton-live-set", 1, 1, vec![255, 0, 42]).unwrap());
     s.tracks[0].devices.push(hex_project::DeviceSnapshot {
+        parent: None,
         automation: Vec::new(),
         comparison: None,
         id: s.next_id,

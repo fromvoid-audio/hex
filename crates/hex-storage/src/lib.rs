@@ -78,7 +78,7 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = VST3_AUTOMATION_TOUCH_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = SERIAL_DEVICE_SCHEMA_VERSION;
 
 /// Schema70 stores an independent original source span for signed musical event placement.
 pub const MUSICAL_EVENT_SOURCE_SCHEMA_VERSION: u32 = 70;
@@ -102,6 +102,8 @@ pub const VST3_AUTOMATION_SCHEMA_VERSION: u32 = 77;
 pub const DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION: u32 = 78;
 /// Class-bound raw VST3 touch overlays; schema78 retains its native-only contract.
 pub const VST3_AUTOMATION_TOUCH_SCHEMA_VERSION: u32 = 79;
+/// Schema80 adds bounded canonical serial-device parent membership.
+pub const SERIAL_DEVICE_SCHEMA_VERSION: u32 = 80;
 
 fn contains_larger_device_state(project: &Project) -> bool {
     schema::device_assets::authored_states(project)
@@ -155,8 +157,11 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// when content names an explicit warp resampler law,
 /// [`SINC_V2_SCHEMA_VERSION`] when it contains sinc v2 media, otherwise
 /// [`CURRENT_SCHEMA_VERSION`].
+/// Serial membership uses schema80 over its exact compatible flat envelope.
 pub fn schema_version_for(project: &Project) -> u32 {
-    if schema::device_automation_touch::contains_vst3(project) {
+    if schema::serial_units::contains(project) {
+        SERIAL_DEVICE_SCHEMA_VERSION
+    } else if schema::device_automation_touch::contains_vst3(project) {
         VST3_AUTOMATION_TOUCH_SCHEMA_VERSION
     } else if schema::device_automation_touch::contains(project) {
         DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION
@@ -364,8 +369,11 @@ impl From<serde_json::Error> for StorageError {
 /// Schema59 is reserved and explicitly refused.
 /// There is no blanket byte ceiling; typed model limits still apply. Owned output growth is fallible,
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
+/// Nonempty serial units use schema80; flat projects retain their prior layout.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    if schema::device_automation_touch::contains(project) {
+    if schema::serial_units::contains(project) {
+        encode_document(&schema::serial_units::encode(project)?)
+    } else if schema::device_automation_touch::contains(project) {
         encode_document(&schema::device_automation_touch::encode(project)?)
     } else if schema::vst3_automation::contains(project) {
         encode_document(&schema::vst3_automation::encode(project)?)
@@ -419,6 +427,7 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    schema::serial_units::refuse_legacy(project)?;
     if schema::sample_rate_mode::contains(project) {
         return Err(StorageError::Invalid(
             "older schema cannot save the project sample rate mode",
@@ -601,9 +610,10 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
 /// violating current model invariants refuse rather than lose musical data.
 /// Newer/unknown fields, duplicate keys and malformed inventories refuse.
 /// Saving uses the current schema through existing atomic publication/recovery.
-/// From schema30 upward the migration chain parses the bytes once (after one
+/// From schema30 through79 the migration chain parses the bytes once (after one
 /// duplicate-field check) and each frozen layer adapts that single value in
-/// place; layers never re-serialize the document for the next one.
+/// place; those layers never re-serialize the document for the next one.
+/// Schema80 materializes one compatible flat envelope before using that chain.
 pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     #[derive(serde::Deserialize)]
     struct CurrentHeader<'a> {
@@ -615,6 +625,7 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("unsupported project format"));
     }
     let project = match header.version {
+        SERIAL_DEVICE_SCHEMA_VERSION => schema::serial_units::decode(bytes),
         DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION | VST3_AUTOMATION_TOUCH_SCHEMA_VERSION => {
             schema::device_automation_touch::decode(bytes, header.version)
         }

@@ -398,6 +398,28 @@ fn send(input: &mut DraftInput, events: &[AppliedEvent]) {
     batch.submit().unwrap();
 }
 
+#[cfg(feature = "recording-fault-test-support")]
+#[test]
+fn per_take_injected_append_failure_retains_original_batch_without_terminal() {
+    let files = Files::new();
+    let path = files.path("injected-writer");
+    let (project, target, stamp) = fixture();
+    let writer = DraftWriter::create_new(&path, &project, target, stamp).unwrap();
+    let original = std::fs::read(&path).unwrap();
+    let (mut input, worker) = spawn_writer_on_control(writer).unwrap();
+    input.inject_next_append_failure().unwrap();
+    assert!(input.inject_next_append_failure().is_err());
+    send(&mut input, &[event(1)]);
+    input.finish(DraftTerminal::Interrupted).unwrap();
+    let outcome = worker.join_on_control().unwrap();
+    assert!(outcome.failure.is_some());
+    assert_eq!(outcome.retained.len(), 1);
+    assert_eq!(outcome.retained[0].events(), &[event(1)]);
+    assert_eq!(outcome.requested_terminal, DraftTerminal::Interrupted);
+    assert_eq!(outcome.progress.durable_terminal, None);
+    assert_eq!(std::fs::read(path).unwrap(), original);
+}
+
 pub(in crate::service) fn injected_failed_writer(
     writer: DraftWriter,
     event: AppliedEvent,
