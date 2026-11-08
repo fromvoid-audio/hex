@@ -188,13 +188,33 @@ pub(crate) struct TestWorkerHooks {
 pub(crate) struct TestReadGate {
     pub(crate) key: PageKey,
     pub(crate) after_checks: usize,
+    failure_after_page_reads: Option<u32>,
+    used: std::cell::Cell<bool>,
     pub(crate) entered: SyncSender<()>,
     pub(crate) release: std::sync::mpsc::Receiver<()>,
 }
 
 #[cfg(test)]
 impl TestReadGate {
+    pub(crate) fn new(
+        key: PageKey,
+        after_checks: usize,
+        entered: SyncSender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+        failure_after_page_reads: Option<u32>,
+    ) -> Self {
+        Self {
+            key,
+            after_checks,
+            entered,
+            release,
+            failure_after_page_reads,
+            used: std::cell::Cell::new(false),
+        }
+    }
+
     fn wait(&self, stop: &AtomicBool) {
+        self.used.set(true);
         if self.entered.try_send(()).is_err() {
             return;
         }
@@ -389,14 +409,18 @@ pub(crate) fn run_worker(
             continue;
         };
         #[cfg(feature = "test-support")]
-        if page_gate.as_ref().is_some_and(|gate| {
+        let read_failure_after = if let Some(gate) = page_gate.take_if(|gate| {
             key.source == StreamResourceKey::Audio(gate.key.source)
                 && key.page_index == gate.key.page_index
-        }) && let Some(gate) = page_gate.take()
-            && !gate.wait(&stop)
-        {
-            break;
-        }
+        }) {
+            let failure = gate.read_failure_after;
+            if !gate.wait(&stop) {
+                break;
+            }
+            failure
+        } else {
+            None
+        };
         if matches!(key.source, StreamResourceKey::Scalar(_)) && scalar_job.is_some() {
             if deferred_scalar.len() < deferred_scalar.capacity() {
                 deferred_scalar.push_back(key);
@@ -480,7 +504,11 @@ pub(crate) fn run_worker(
             continue;
         };
         let source = &mut sources[source_index];
-        match render_page(
+        #[cfg(feature = "test-support")]
+        if let Some(after) = read_failure_after {
+            source.reader.fail_page_read_after(after);
+        }
+        let rendered = render_page(
             source,
             PageKey {
                 source: audio_key,
@@ -493,7 +521,12 @@ pub(crate) fn run_worker(
             test_hooks
                 .as_ref()
                 .and_then(|hooks| hooks.read_gate.as_ref()),
-        ) {
+        );
+        #[cfg(feature = "test-support")]
+        if read_failure_after.is_some() {
+            source.reader.clear_page_read_failure();
+        }
+        match rendered {
             Ok(()) => {
                 match queues.ready.push(page) {
                     Ok(()) => {}
@@ -997,6 +1030,12 @@ fn render_page(
     }
     let input = &mut source_scratch[..source_count];
     #[cfg(test)]
+    let read_gate = read_gate.filter(|gate| gate.key == key && !gate.used.get());
+    #[cfg(test)]
+    if let Some(after) = read_gate.and_then(|gate| gate.failure_after_page_reads) {
+        source.reader.fail_page_read_after(after);
+    }
+    #[cfg(test)]
     let mut checks = 0;
     source
         .reader
@@ -1100,8 +1139,8 @@ pub(crate) mod tests {
             Self::pcm_frames(frames, 16)
         }
 
-        pub(crate) fn pcm32() -> Self {
-            Self::pcm_frames(4096, 32)
+        pub(crate) fn pcm32_frames(frames: u16) -> Self {
+            Self::pcm_frames(frames, 32)
         }
 
         fn pcm_frames(frames: u16, bits: u16) -> Self {

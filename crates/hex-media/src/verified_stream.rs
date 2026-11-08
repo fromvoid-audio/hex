@@ -101,6 +101,8 @@ pub struct VerifiedWavReader {
     max_window_frames: usize,
     manifest: VerifiedWavManifest,
     raw_page_reads: u64,
+    #[cfg(feature = "test-support")]
+    page_read_failure_after: Option<u32>,
     scratch: [u8; PAGE_BYTES],
 }
 
@@ -238,6 +240,8 @@ impl VerifiedWavReader {
         let (captured_len, captured_modified) = (manifest.file_len(), manifest.modified());
         let mut scratch = [0_u8; PAGE_BYTES];
         let mut raw_page_reads = 0_u64;
+        #[cfg(feature = "test-support")]
+        let mut page_read_failure_after = None;
         let layout = {
             check_metadata(&file, captured_len, captured_modified)?;
             let mut verified = VerifiedPageReader::new(
@@ -248,6 +252,8 @@ impl VerifiedWavReader {
                 captured_modified,
                 &mut cancelled,
                 &mut raw_page_reads,
+                #[cfg(feature = "test-support")]
+                &mut page_read_failure_after,
             );
             wav::scan(&mut verified, captured_len, limits.reader.max_header_count)
                 .map_err(map_verified_error)?
@@ -268,6 +274,8 @@ impl VerifiedWavReader {
             max_window_frames: limits.reader.max_window_frames,
             manifest,
             raw_page_reads,
+            #[cfg(feature = "test-support")]
+            page_read_failure_after: None,
             scratch,
         })
     }
@@ -283,6 +291,23 @@ impl VerifiedWavReader {
     /// the one-page cache are not counted.
     pub fn raw_page_reads(&self) -> u64 {
         self.raw_page_reads
+    }
+
+    /// Inject one generic I/O error before the page read following this many
+    /// successful raw page reads. Cached-page hits do not advance the plan.
+    /// The inline, one-shot plan allocates nothing, changes no file bytes and
+    /// never bypasses cancellation, metadata or digest validation. Only explicit
+    /// test-support builds expose it; readers start with no injected failure.
+    #[cfg(feature = "test-support")]
+    pub fn fail_page_read_after(&mut self, successful_reads: u32) {
+        self.page_read_failure_after = Some(successful_reads);
+    }
+
+    /// Discard an unused test-only read failure, allowing a caller to scope its
+    /// plan to one request even when that request reads fewer raw pages.
+    #[cfg(feature = "test-support")]
+    pub fn clear_page_read_failure(&mut self) {
+        self.page_read_failure_after = None;
     }
 
     pub fn path(&self) -> &Path {
@@ -409,6 +434,8 @@ impl VerifiedWavReader {
                 captured_modified,
                 cancelled,
                 &mut self.raw_page_reads,
+                #[cfg(feature = "test-support")]
+                &mut self.page_read_failure_after,
             );
             let layout = wav::scan(&mut verified, captured_len, self.max_header_count)
                 .map_err(map_verified_error)?;
@@ -476,9 +503,13 @@ struct VerifiedPageReader<'a> {
     cached_page: Option<usize>,
     cancelled: &'a mut dyn FnMut() -> bool,
     raw_page_reads: &'a mut u64,
+    #[cfg(feature = "test-support")]
+    page_read_failure_after: &'a mut Option<u32>,
 }
 
 impl<'a> VerifiedPageReader<'a> {
+    // Fixed reader owners plus the optional test-only I/O failure plan.
+    #[cfg_attr(feature = "test-support", allow(clippy::too_many_arguments))]
     fn new(
         file: &'a mut File,
         digests: &'a [[u8; DIGEST_BYTES]],
@@ -487,6 +518,7 @@ impl<'a> VerifiedPageReader<'a> {
         captured_modified: SystemTime,
         cancelled: &'a mut dyn FnMut() -> bool,
         raw_page_reads: &'a mut u64,
+        #[cfg(feature = "test-support")] page_read_failure_after: &'a mut Option<u32>,
     ) -> Self {
         Self {
             file,
@@ -498,6 +530,8 @@ impl<'a> VerifiedPageReader<'a> {
             cached_page: None,
             cancelled,
             raw_page_reads,
+            #[cfg(feature = "test-support")]
+            page_read_failure_after,
         }
     }
 
@@ -519,12 +553,22 @@ impl<'a> VerifiedPageReader<'a> {
         check_metadata(self.file, self.captured_len, self.captured_modified)
             .map_err(import_to_io)?;
         self.file.seek(SeekFrom::Start(page_start))?;
+        #[cfg(feature = "test-support")]
+        if *self.page_read_failure_after == Some(0) {
+            *self.page_read_failure_after = None;
+            return Err(io::ErrorKind::Other.into());
+        }
         if let Err(error) = self.file.read_exact(&mut self.scratch[..length]) {
             return Err(if error.kind() == io::ErrorKind::UnexpectedEof {
                 source_changed_io()
             } else {
                 error
             });
+        }
+        #[cfg(feature = "test-support")]
+        if let Some(remaining) = self.page_read_failure_after.as_mut() {
+            // Zero was consumed above; only a successful raw read advances it.
+            *remaining -= 1;
         }
         *self.raw_page_reads += 1;
         check_metadata(self.file, self.captured_len, self.captured_modified)
@@ -694,6 +738,8 @@ impl VerifiedWavReader {
             max_window_frames: _,
             manifest,
             raw_page_reads: _,
+            #[cfg(feature = "test-support")]
+                page_read_failure_after: _,
             scratch: _,
         } = self;
         VerifiedReaderDataLayout {

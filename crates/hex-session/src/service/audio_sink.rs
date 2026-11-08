@@ -31,8 +31,31 @@ pub struct PluginParameterGestureInput<'a> {
     pub(in crate::service) reading_class: Option<[u8; 16]>,
     pub(in crate::service) isolated_class: Option<[u8; 16]>,
     pub(in crate::service) instrument: bool,
+    pub(in crate::service) confirm_delivery: bool,
+    pub(in crate::service) record_touch: bool,
 }
 impl<'a> PluginParameterGestureInput<'a> {
+    /// Recorded touches require a playing reading lane and return admission
+    /// before input, then exclusive restoration instead of an opaque edit.
+    pub fn with_touch_recording(mut self) -> Self {
+        self.confirm_delivery = true;
+        self.record_touch = true;
+        self
+    }
+    pub fn records_touch(&self) -> bool {
+        self.record_touch
+    }
+
+    /// Request actual final-output point receipts. This copied request grants
+    /// no source/SDK authority; the adapter must admit its exact loaded worker.
+    pub fn with_delivery_confirmation(mut self) -> Self {
+        self.confirm_delivery = true;
+        self
+    }
+    pub fn requires_delivery_confirmation(&self) -> bool {
+        self.confirm_delivery
+    }
+
     pub fn context(&self) -> hex_engine::AudioSourceContext {
         self.context
     }
@@ -55,6 +78,42 @@ impl<'a> PluginParameterGestureInput<'a> {
     pub fn canonical_state(&self) -> &'a NativeDeviceState {
         self.canonical_state
     }
+}
+/// Control-side observation copied only after matching the complete private
+/// final-output receipt. Persist `application.origin`, not the later delivery
+/// processing frame. A caller requesting these records owns their retention.
+#[derive(Clone, Copy, Debug)]
+pub struct PluginParameterDelivery {
+    pub key: crate::device_gesture::GestureKey,
+    pub context: hex_engine::AudioSourceContext,
+    pub target: super::automation_draft::Vst3CaptureTarget,
+    pub source: super::DeviceAutomationSource,
+    pub sequence: u64,
+    pub application: super::automation_draft::Vst3ParameterApplication,
+    pub delivery_performance_frame: u64,
+}
+/// A confirmed point or a conservative interruption with no invented clock.
+#[derive(Clone, Copy, Debug)]
+pub enum PluginParameterObservation {
+    Ready {
+        key: crate::device_gesture::GestureKey,
+        context: hex_engine::AudioSourceContext,
+        target: super::automation_draft::Vst3CaptureTarget,
+        source: super::DeviceAutomationSource,
+    },
+    Delivered(PluginParameterDelivery),
+    Restored(PluginParameterDelivery),
+    /// No point was admitted; no audio clock is invented for this no-op.
+    Unchanged {
+        key: crate::device_gesture::GestureKey,
+    },
+    Interrupted {
+        key: crate::device_gesture::GestureKey,
+        context: hex_engine::AudioSourceContext,
+        target: super::automation_draft::Vst3CaptureTarget,
+        source: super::DeviceAutomationSource,
+        sequence: u64,
+    },
 }
 pub enum PluginParameterGestureResult {
     /// Validated Begin or completed Preview/Restore, not physical delivery or
@@ -414,6 +473,12 @@ pub trait WorkerAudioSink: Send {
     ) -> Result<bool, String> {
         Ok(false)
     }
+    /// Drain bounded final-output observations after each confirmed preparation,
+    /// including refusal and output loss. The requesting control owner retains
+    /// every returned record until durable recording admission; never UI time.
+    fn take_plugin_parameter_observation(&mut self) -> Option<PluginParameterObservation> {
+        None
+    }
     /// Use the existing actual source for one keyed plugin operation. Begin
     /// revalidates observed metadata/context. Preview/Restore must apply the
     /// real point before returning Applied; they never edit canonical state.
@@ -564,13 +629,14 @@ pub trait WorkerAudioSink: Send {
         Ok(None)
     }
     /// Actual original-worker pickup only, for bounded immutable program
-    /// retention. None conservatively retains history; never synthesize this
-    /// from a queued graph key or final Main publication.
+    /// retention. Unknown/Empty retain existing history; only an actual empty
+    /// worker receipt can qualify a first programme. Never synthesize this from
+    /// a queued graph key or final Main publication.
     fn received_foreign_program_on_control(
         &mut self,
         _binding: hex_lattice_contract::ForeignProcessorBinding,
-    ) -> Option<std::num::NonZeroU64> {
-        None
+    ) -> hex_engine::ForeignProgramFrontier {
+        hex_engine::ForeignProgramFrontier::Unknown
     }
 
     /// A host with no private offline capability must refuse foreign bounce
@@ -664,10 +730,11 @@ pub trait WorkerAudioSink: Send {
     }
     /// Exact current armed and playing ordinary output. A copied observation
     /// cannot reserve an audio input or substitute for a delivery receipt.
-    fn native_automation_source(
+    fn device_automation_source(
         &mut self,
         _context: hex_engine::AudioSourceContext,
-    ) -> Result<Option<super::NativeAutomationSource>, String> {
+        _target: super::DeviceCaptureTarget,
+    ) -> Result<Option<super::DeviceAutomationSource>, String> {
         Ok(None)
     }
     /// Synchronously borrow actual active/retiring/unpublished owners for every precommit check.

@@ -8,6 +8,7 @@ pub(super) enum NumericDisplayCodec {
     Pan,
     MidSide,
     Hertz,
+    HertzOffset,
     Ratio,
     AmplitudeDb,
     Seconds,
@@ -22,6 +23,7 @@ impl NumericDisplayCodec {
             Self::Percent | Self::Balance | Self::MidSide => {
                 spec.with_keyboard_stepper(|value, delta| Some(value + delta / 100.0))
             }
+            Self::HertzOffset => spec.with_keyboard_stepper(|value, delta| Some(value + delta)),
             Self::Seconds => spec.with_keyboard_stepper(|value, delta| {
                 Some(value + delta / if value < 1.0 { 1000.0 } else { 1.0 })
             }),
@@ -46,7 +48,7 @@ impl NumericDisplayCodec {
                 Self::Pan => format_side(value / 100.0, "l", "r"),
                 Self::MidSide if value == 0.0 => "0".to_owned(),
                 Self::MidSide => format_side(value, "m", "s"),
-                Self::Hertz => format!("{} hz", format_number(value, 2)),
+                Self::Hertz | Self::HertzOffset => format!("{} hz", format_number(value, 2)),
                 Self::Number => format_number(value, 2),
                 Self::AmplitudeDb if value == 0.0 => "-inf db".to_owned(),
                 Self::AmplitudeDb => format!("{:.1} db", 20.0 * value.log10()),
@@ -129,7 +131,7 @@ impl NumericDisplayCodec {
                     .trim()
                     .parse::<f64>()
                     .ok(),
-                Self::Hertz => {
+                Self::Hertz | Self::HertzOffset => {
                     let text = text.trim().to_ascii_lowercase();
                     let number = text.strip_suffix("hz").unwrap_or(&text).trim();
                     let (number, factor) = match number.strip_suffix('k') {

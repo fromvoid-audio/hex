@@ -71,6 +71,7 @@ impl EditorView {
         if self.mode != EditorMode::Arrangement
             || self.edit_pending()
             || self.context_menu.is_some()
+            || super::device_panel::picker_is_open(self)
             || self.theme_settings.open
             || self.opening_project
             || self.close_prompt_open
@@ -170,6 +171,7 @@ impl EditorView {
             || modifiers.alt
             || modifiers.control
             || self.context_menu.is_some()
+            || super::device_panel::picker_is_open(self)
             || self.opening_project
             || self.close_prompt_open
             || !x.is_finite()

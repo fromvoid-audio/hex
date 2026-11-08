@@ -212,7 +212,11 @@ fn full_metadata_cache_keeps_unavailable_parameters_and_unsupported_errors_witho
     assert!(panel.controls.is_empty());
 }
 
-fn assert_outline(visual: &mut VisualTestContext, device: DeviceId) -> Bounds<Pixels> {
+fn assert_outline(
+    visual: &mut VisualTestContext,
+    device: DeviceId,
+    selected: bool,
+) -> Bounds<Pixels> {
     let selector = Box::leak(format!("device-shell-{}", device.value()).into_boxed_str());
     let bounds = visual.debug_bounds(selector).expect("visible device shell");
     let scale = visual.update(|window, _| window.scale_factor());
@@ -221,8 +225,12 @@ fn assert_outline(visual: &mut VisualTestContext, device: DeviceId) -> Bounds<Pi
         .expect("one completed shell stroke");
     assert_eq!(
         color,
-        gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Border))),
-        "the shell outline uses its neutral theme token"
+        gpui::Hsla::from(rgb(theme::color(if selected {
+            theme::PaletteRole::Secondary
+        } else {
+            theme::PaletteRole::Border
+        }))),
+        "only the selected shell uses the highlight token: device={device:?}, selected={selected}"
     );
     assert_ne!(
         color,
@@ -279,7 +287,7 @@ fn assert_outline(visual: &mut VisualTestContext, device: DeviceId) -> Bounds<Pi
 }
 
 #[gpui::test]
-fn device_shell_outline_is_visible_rounded_and_neutral_across_selection_and_owners(
+fn device_shell_outline_is_visible_rounded_and_tracks_selection_across_owners(
     cx: &mut TestAppContext,
 ) {
     let _restore = RestoreTheme(theme::preferences());
@@ -295,17 +303,22 @@ fn device_shell_outline_is_visible_rounded_and_neutral_across_selection_and_owne
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
     for (width, height) in [(1280.0, 700.0), (960.0, 600.0)] {
+        editor.update(cx, |view, cx| {
+            view.device_panel.select_only(None);
+            cx.notify();
+        });
         visual.simulate_resize(size(px(width), px(height)));
         visual.run_until_parked();
-        let before = [instrument, effect].map(|id| assert_outline(&mut visual, id));
+        let before = [instrument, effect].map(|id| assert_outline(&mut visual, id, false));
         editor.update(cx, |view, cx| {
             view.device_panel.selected_device = Some(effect);
             cx.notify();
         });
         visual.run_until_parked();
+        editor.read_with(cx, |view, _| assert!(view.device_panel.is_selected(effect)));
         for (id, previous) in [instrument, effect].into_iter().zip(before) {
             assert_eq!(
-                assert_outline(&mut visual, id).size,
+                assert_outline(&mut visual, id, id == effect).size,
                 previous.size,
                 "selection cannot change shell metrics"
             );
@@ -321,11 +334,16 @@ fn device_shell_outline_is_visible_rounded_and_neutral_across_selection_and_owne
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     editor.update(cx, |view, cx| {
         view.focused_return = Some(return_id);
-        view.device_panel.selected_device = Some(device);
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(960.0), px(600.0)));
     visual.run_until_parked();
-    assert_outline(&mut visual, device);
+    editor.update(cx, |view, cx| {
+        view.device_panel.select_only(Some(device));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| assert!(view.device_panel.is_selected(device)));
+    assert_outline(&mut visual, device, true);
 }

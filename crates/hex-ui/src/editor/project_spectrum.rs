@@ -60,7 +60,7 @@ fn bounded_height(requested: f32, viewport: gpui::Size<Pixels>) -> f32 {
     // routing rows and usable workspace; the graph itself retains72px or more.
     let extra_toolbar =
         super::header::toolbar_height(f32::from(viewport.width)) - super::header::TOOLBAR_HEIGHT;
-    let max = (f32::from(viewport.height) - 420.0 - extra_toolbar).clamp(72.0, 300.0);
+    let max = (f32::from(viewport.height) - 394.0 - extra_toolbar).clamp(72.0, 300.0);
     if requested.is_finite() {
         requested.clamp(72.0, max)
     } else {
@@ -73,9 +73,9 @@ impl EditorView {
             .state
             .as_ref()
             .map_or(0, |s| s.project.return_tracks().len());
-        // Title22, responsive transport, status22, overview24, arrangement header42,
-        // main track44, mixer26 and detail tabs22. Routing owns its own height.
-        202.0
+        // Responsive transport, status22, arrangement header42,
+        // main track44 and mixer26. Routing owns its own height.
+        134.0
             + super::header::toolbar_height(f32::from(window.viewport_size().width))
             + if self.clip_view_open && !self.device_panel_active {
                 4.0

@@ -1044,7 +1044,10 @@ impl Callback {
         let program = authored
             .as_ref()
             .map(|segment| segment.program.quantum_program_key());
-        if stage.state.position % q != 0 && self.authored_origins.program != program {
+        if stage.state.position % q != 0
+            && self.authored_origins.program.is_some()
+            && self.authored_origins.program != program
+        {
             let retained = self
                 .authored_origins
                 .program
@@ -1183,7 +1186,12 @@ impl Callback {
             }
             stage.state.position = position.checked_add(1).ok_or(Fault::Exhausted)?;
             if offset + 1 == usize::from(self.quantum) {
-                if let Some(authored) = &authored {
+                // Absence is also frozen at the opening frame. A programme
+                // first supplied mid-quantum starts at the next boundary;
+                // it cannot replace this quantum's ordinary parameter input.
+                if let Some(authored) = &authored
+                    && self.authored_origins.program.is_some()
+                {
                     let points = self.authored_origins.render(
                         authored,
                         usize::from(self.quantum),

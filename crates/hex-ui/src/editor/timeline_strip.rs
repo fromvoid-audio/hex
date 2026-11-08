@@ -86,7 +86,7 @@ pub(super) fn loop_range(
     let first = start.clamp(0.0, 1.0);
     let last = end.clamp(0.0, 1.0);
     let color = theme::color(if enabled {
-        theme::PaletteRole::Primary
+        theme::PaletteRole::Text
     } else {
         theme::PaletteRole::Muted
     });

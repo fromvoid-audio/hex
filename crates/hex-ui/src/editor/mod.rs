@@ -48,6 +48,7 @@ mod leftover_recovery;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod navigation_metrics;
 mod plugin_effect;
+mod selection_play_start;
 mod truncated_import;
 #[cfg(feature = "ui-test-support")]
 pub(crate) use plugin_effect::fixture_catalog as plugin_effect_fixture_catalog;
@@ -157,6 +158,10 @@ mod track_defaults;
 mod user_errors;
 #[cfg(feature = "ui-test-support")]
 pub(crate) use midi_recording::pressure_fixture::exercise as midi_pressure_fixture;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod arrangement_chrome_ui_test;
+mod arrangement_map;
+mod group_overview;
 mod midi_loop_notes;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod midi_loop_profile;
@@ -177,7 +182,6 @@ mod musical_time;
 mod musical_time_controls;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod output_meter_ui_test;
-mod overview;
 mod overview_waveform;
 mod play_intent;
 mod poll_cadence;
@@ -510,7 +514,9 @@ fn bind_editor_keys(cx: &mut App) {
     changelog::bind_keys(cx);
     hex_widgets::bind_response_graph_keys(cx);
     device_panel::bind_operator_keys(cx);
+    device_panel::bind_picker_keys(cx);
     device_panel::bind_keyboard_keys(cx);
+    section_launch::bind_keys(cx);
     clip_name::bind_keys(cx);
     track_name::bind_keys(cx);
     cx.bind_keys([
@@ -996,7 +1002,8 @@ pub(super) struct EditorView {
     arrangement_pan: Option<ArrangementPan>,
     scrub: scrub::ScrubState,
     zoom_wheel_accum: f32,
-    overview_cache: std::cell::RefCell<Option<Rc<overview::OverviewCache>>>,
+    arrangement_map_cache: std::cell::RefCell<Option<Rc<arrangement_map::MapCache>>>,
+    group_overview_cache: std::cell::RefCell<group_overview::Cache>,
     audio_point_page: usize,
     overview_waveform_cache: Rc<std::cell::RefCell<overview_waveform::Cache>>,
     pub(in crate::editor) waveform_geometry_cache:
@@ -1074,7 +1081,7 @@ pub(super) struct EditorView {
     /// Transient Arrangement play-start lock; never seeks the active transport.
     locked_play_start: Option<edit_cursor::EditCursor>,
     /// The selected clip a point cursor was deliberately placed inside; that
-    /// cursor then outranks the clip's play start (see `selected_clip_play_start`).
+    /// cursor then outranks the clip's play start (see `selected_arrangement_play_start`).
     edit_cursor_in_selected_clip: Option<ClipId>,
     /// The selected clip whose in-clip cursor a loop enable retired; the loop
     /// start then keeps outranking that clip's play start until a new click.
@@ -1764,7 +1771,8 @@ impl EditorView {
             arrangement_pan: None,
             scrub: scrub::ScrubState::default(),
             zoom_wheel_accum: 0.0,
-            overview_cache: std::cell::RefCell::new(None),
+            arrangement_map_cache: std::cell::RefCell::new(None),
+            group_overview_cache: std::cell::RefCell::default(),
             audio_point_page: 0,
             overview_waveform_cache: Rc::new(std::cell::RefCell::new(
                 overview_waveform::Cache::default(),
@@ -1973,11 +1981,11 @@ impl EditorView {
         // The user's placed position wins, even outside an enabled loop; the
         // acknowledged canonical loop only supplies a start when none is placed.
         // Enabling the loop retires an earlier point cursor (Pulse #3838).
-        // A whole-clip selection replaces the point cursor, not a time range.
+        // A whole-rectangle selection replaces the point cursor, not a time range.
         if let Some(selection) = self.normalized_time_selection() {
             return selection.start();
         }
-        if let Some(frame) = self.selected_clip_play_start() {
+        if let Some(frame) = self.selected_arrangement_play_start() {
             return frame;
         }
         if let Some(cursor) = self

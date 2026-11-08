@@ -1,15 +1,16 @@
-//! Real worker cancellation after the verified decoder has made progress.
+//! Real worker completion, read failure and cancellation after decoder progress.
 use super::*;
 use crate::worker::{TestReadGate, TestWorkerHooks};
 use hex_engine::{MediaPages, StreamedSourceMetadata};
 use hex_media::{VerifiedWavReader, VerifiedWavReaderLimits, WavReaderLimits};
 use hex_project::{Command, Created, Editor, Project};
+use std::time::Instant;
 
-fn pump(runtime: &mut StreamRuntime) -> usize {
+fn measured<T: Copy>(work: impl FnOnce() -> T) -> T {
     #[cfg(feature = "allocation-probe")]
     {
-        let count = std::cell::Cell::new(0);
-        let measured = allocation_counter::measure(|| count.set(runtime.pump_ready(1)));
+        let value = std::cell::Cell::new(None);
+        let measured = allocation_counter::measure(|| value.set(Some(work())));
         assert_eq!(
             (
                 measured.count_total,
@@ -19,18 +20,33 @@ fn pump(runtime: &mut StreamRuntime) -> usize {
             ),
             (0, 0, 0, 0)
         );
-        count.get()
+        value.into_inner().expect("measured operation ran")
     }
     #[cfg(not(feature = "allocation-probe"))]
-    runtime.pump_ready(1)
+    work()
+}
+fn pump(runtime: &mut StreamRuntime) -> usize {
+    measured(|| runtime.pump_ready(1))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReadOutcome {
+    Complete,
+    DecodeFailed,
+    Cancelled,
 }
 
 #[test]
-fn shutdown_during_verified_page_read_reclaims_every_page_without_publication() {
-    for release_read in [true, false] {
-        let wav = crate::worker::tests::Fixture::pcm32();
+fn verified_page_read_outcomes_preserve_pcm_retry_and_complete_pool_custody() {
+    for outcome in [
+        ReadOutcome::Complete,
+        ReadOutcome::DecodeFailed,
+        ReadOutcome::Cancelled,
+    ] {
+        let release_read = outcome != ReadOutcome::Cancelled;
+        let wav = crate::worker::tests::Fixture::pcm32_frames(8192);
         let limits = VerifiedWavReaderLimits::new(
-            WavReaderLimits::new(1024 * 1024, 4096, 128, 8192),
+            WavReaderLimits::new(1024 * 1024, 8192, 128, 8192),
             1024 * 1024,
         );
         let mut reader = VerifiedWavReader::open(&wav.0, limits).expect("verified source");
@@ -38,7 +54,7 @@ fn shutdown_during_verified_page_read_reclaims_every_page_without_publication() 
         let mut prefix_checks = 0;
         let mut prefix = [[0.0; 2]; 1];
         reader
-            .read_frames_into_with_cancel(0, &mut prefix, || {
+            .read_frames_into_with_cancel(4096, &mut prefix, || {
                 prefix_checks += 1;
                 false
             })
@@ -46,7 +62,7 @@ fn shutdown_during_verified_page_read_reclaims_every_page_without_publication() 
         let mut complete_checks = 0;
         let mut complete = vec![[0.0; 2]; 4096];
         reader
-            .read_frames_into_with_cancel(0, &mut complete, || {
+            .read_frames_into_with_cancel(4096, &mut complete, || {
                 complete_checks += 1;
                 false
             })
@@ -61,7 +77,7 @@ fn shutdown_during_verified_page_read_reclaims_every_page_without_publication() 
             .execute(Command::AddAsset {
                 path: "in-flight-source.wav".into(),
                 sample_rate: 48_000,
-                frames: 4096,
+                frames: 8192,
             })
             .expect("asset")
         else {
@@ -72,8 +88,8 @@ fn shutdown_during_verified_page_read_reclaims_every_page_without_publication() 
             source,
             48_000,
             48_000,
-            4096,
-            4096,
+            8192,
+            8192,
             hex_project::IDENTITY_CONVERSION,
             fingerprint,
         )
@@ -89,17 +105,18 @@ fn shutdown_during_verified_page_read_reclaims_every_page_without_publication() 
             release,
             publications,
             scalar_steps: None,
-            read_gate: Some(TestReadGate {
-                key: crate::PageKey {
+            read_gate: Some(TestReadGate::new(
+                crate::PageKey {
                     source,
-                    page_index: 0,
+                    page_index: 1,
                 },
-                // Hold inside the real reader after the short read's entire
-                // checkpoint sequence, rather than before render_page starts.
-                after_checks: prefix_checks + 1,
-                entered: read_entered,
-                release: release_read_rx,
-            }),
+                // Hold after the short read's complete checkpoint sequence,
+                // before a later raw page read in the same real decoder call.
+                prefix_checks + 1,
+                read_entered,
+                release_read_rx,
+                (outcome == ReadOutcome::DecodeFailed).then_some(1),
+            )),
         };
         let mut runtime = StreamRuntime::new_inner(
             config,
@@ -115,14 +132,14 @@ fn shutdown_during_verified_page_read_reclaims_every_page_without_publication() 
         entered_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("worker ready");
-        runtime.request_page(source, 0);
+        measured(|| runtime.request_page(source, 1));
         resume.send(()).expect("start the real worker read");
         runtime.wake_worker();
         read_entered_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("read progressed beyond the calibrated prefix");
         assert_eq!(pump(&mut runtime), 0);
-        assert!(runtime.page(source, 0).is_none());
+        assert!(runtime.page(source, 1).is_none());
         assert!(matches!(
             published.try_recv(),
             Err(mpsc::TryRecvError::Empty)
@@ -130,6 +147,39 @@ fn shutdown_during_verified_page_read_reclaims_every_page_without_publication() 
 
         if release_read {
             resume_read.send(()).expect("release positive control");
+            if outcome == ReadOutcome::DecodeFailed {
+                let mut failures = [StreamFailure {
+                    key: source.into(),
+                    page_index: 1,
+                    kind: StreamFailureKind::Cancelled,
+                }];
+                let deadline = Instant::now() + Duration::from_secs(1);
+                while measured(|| runtime.take_failures(&mut failures)) == 0 {
+                    assert!(Instant::now() < deadline, "typed read failure");
+                    thread::yield_now();
+                }
+                assert_eq!(
+                    failures[0],
+                    StreamFailure {
+                        key: source.into(),
+                        page_index: 1,
+                        kind: StreamFailureKind::DecodeFailed
+                    }
+                );
+                assert_eq!(pump(&mut runtime), 0);
+                assert!(
+                    !measured(|| runtime.page(source, 1).is_some()),
+                    "partial read was not published"
+                );
+                assert!(matches!(
+                    published.try_recv(),
+                    Err(mpsc::TryRecvError::Empty)
+                ));
+                // Taking the failure releases its pending key. The reader's
+                // one-shot error and in-flight gate must both allow retry.
+                measured(|| runtime.request_page(source, 1));
+                runtime.wake_worker();
+            }
             assert_eq!(
                 published
                     .recv_timeout(Duration::from_secs(1))
@@ -137,10 +187,11 @@ fn shutdown_during_verified_page_read_reclaims_every_page_without_publication() 
                 0
             );
             assert_eq!(pump(&mut runtime), 1);
-            let page = runtime.page(source, 0).expect("verified PCM");
+            let page = runtime.page(source, 1).expect("verified PCM");
+            assert_eq!(page.page_index, 1);
             assert_eq!(page.frames.len(), 4096);
             for (index, frame) in page.frames.iter().enumerate() {
-                let sample = index as f32 / 32768.0;
+                let sample = (index + 4096) as f32 / 32768.0;
                 assert_eq!(*frame, [sample, -sample]);
             }
         }

@@ -163,6 +163,29 @@ impl EditorView {
         }));
     }
 
+    fn project_title_label(&self) -> gpui::Stateful<gpui::Div> {
+        let title = super::header::project_title(
+            self.state()
+                .and_then(|state| state.document_path.as_deref()),
+        );
+        let full_title = theme::text(&title);
+        div()
+            .id("project-title-label")
+            .debug_selector(|| "project-title-label".into())
+            .w(px(120.0))
+            .min_w(px(32.0))
+            .line_clamp(1)
+            .text_ellipsis()
+            .tooltip(move |_, cx| {
+                cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
+                    description: full_title.clone(),
+                })
+                .into()
+            })
+            .child(theme::text(title))
+    }
+
     fn status_bar(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let mut bar = div()
             .id("editor-status-bar")
@@ -171,12 +194,14 @@ impl EditorView {
             .flex_shrink_0()
             .flex()
             .items_center()
-            .gap_2()
+            .gap_1()
             .px_2()
             .border_t_1()
             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
             .bg(rgb(theme::color(theme::PaletteRole::Surface)))
-            .text_xs();
+            .text_xs()
+            .child(self.browser_toggle_button(cx))
+            .child(self.project_title_label());
         let scan_status = self.plugin_scan_status();
         let plugin_status = self
             .pending_plugin_effect
@@ -575,6 +600,7 @@ impl Render for EditorView {
                 .min_h_0()
                 .flex()
                 .flex_col()
+                .child(self.project_spectrum_panel(window, cx))
                 .child(self.session_grid(window, cx))
                 .child(clip_view)
                 .child(self.mixer_strip(cx, true))
@@ -585,6 +611,7 @@ impl Render for EditorView {
                 .min_h_0()
                 .flex()
                 .flex_col()
+                .child(self.project_spectrum_panel(window, cx))
                 .child(self.arrangement(window, cx))
                 .child(clip_view)
                 .child(self.mixer_strip(cx, false))
@@ -645,7 +672,9 @@ impl Render for EditorView {
             .child(self.project_spectrum_pointer_events(cx))
             .child(self.clip_detail_pointer_events(cx))
             .track_focus(&self.focus)
-            .key_context(if self.changelog.is_open() {
+            .key_context(if super::device_panel::picker_is_open(self) {
+                "hex_device_picker_root"
+            } else if self.changelog.is_open() {
                 "hex_changelog"
             } else if self.track_name.is_editing() {
                 "hex_track_name hex_text_editing"
@@ -829,6 +858,9 @@ impl Render for EditorView {
                 }),
             )
             .capture_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
+                if super::device_panel::picker_is_open(view) {
+                    return;
+                }
                 if event.keystroke.key == "space"
                     && event.keystroke.modifiers == gpui::Modifiers::default()
                     && !window.context_stack().iter().any(|context| {
@@ -880,6 +912,9 @@ impl Render for EditorView {
                 }
             }))
             .on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
+                if super::device_panel::picker_is_open(view) {
+                    return;
+                }
                 if view.workspace_tab(event, window, cx) {
                     cx.stop_propagation();
                     return;
@@ -1703,9 +1738,7 @@ impl Render for EditorView {
             .on_action(cx.trace(|view, _: &super::CancelUpdate, _, cx| {
                 view.cancel_requested_update(cx);
             }))
-            .child(self.title_bar(cx))
             .child(self.transport(window, cx))
-            .child(self.project_spectrum_panel(window, cx))
             .child(workspace)
             .child(self.status_bar(cx))
             .children(self.return_send_menu_overlay(window, cx))
@@ -1717,6 +1750,7 @@ impl Render for EditorView {
             .children(self.tuning_overlay(cx))
             .children(self.changelog_overlay(cx))
             .children(self.missing_media_overlay(cx))
+            .children(super::device_panel::picker_overlay(self, window, cx))
             .when(self.update_preparing(), |root| {
                 root.child(
                     div()

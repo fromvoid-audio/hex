@@ -245,3 +245,83 @@ fn nyquist_modulator_is_silenced_for_that_note_only() {
         );
     }
 }
+
+#[test]
+fn fine_offsets_follow_tuning_table_and_keep_untouched_oscillators_identical() {
+    let original = configuration([OperatorTuning::Ratio; 4], [OperatorWaveform::Sine; 4]);
+    let table = hex_lattice::TuningTable::new([300.0; 128]).unwrap();
+    let changed = original
+        .clone()
+        .with_fine_offsets([25.0, 0.0, 0.0, 0.0])
+        .unwrap();
+    let reference = configuration(
+        [OperatorTuning::fixed(325.0, 1.0).unwrap(); 4],
+        [OperatorWaveform::Sine; 4],
+    );
+    let a = changed
+        .prepare_note_with_tuning(69, 127, Some(&table))
+        .unwrap();
+    let b = reference.prepare_note(69, 127).unwrap();
+    let sine = SineTable::new();
+    for age in [1, 97, 1024, 8192] {
+        assert_eq!(
+            changed.sample(&sine, &a, age, u64::MAX).to_bits(),
+            reference.sample(&sine, &b, age, u64::MAX).to_bits()
+        );
+    }
+    assert!(!original.retarget_compatible_with(&changed));
+    assert!(
+        original.retarget_compatible_with(&original.clone().with_fine_offsets([0.0; 4]).unwrap())
+    );
+    for bad in [f32::NAN, f32::INFINITY, -1000.01, 1000.01] {
+        assert!(original.clone().with_fine_offsets([bad; 4]).is_err());
+    }
+}
+
+#[test]
+fn fine_offsets_silence_only_out_of_band_oscillators() {
+    for (base, offset) in [
+        (440.0, -1000.0),
+        (440.0, -440.0),
+        (23_500.0, 1000.0),
+        (23_500.0, 500.0),
+    ] {
+        let tuning = [
+            OperatorTuning::fixed(base / 2.0, 2.0).unwrap(),
+            OperatorTuning::Ratio,
+            OperatorTuning::Ratio,
+            OperatorTuning::Ratio,
+        ];
+        let make = |first_level| {
+            PreparedOperatorConfiguration::new_with_tuning(
+                48_000,
+                [
+                    Oscillator::new(1.0, first_level, 0.0).unwrap(),
+                    Oscillator::new(1.0, 1.0, 0.0).unwrap(),
+                    Oscillator::new(1.0, 0.0, 0.0).unwrap(),
+                    Oscillator::new(1.0, 0.0, 0.0).unwrap(),
+                ],
+                Routing::new([[0.0; 4]; 4], [1.0, 1.0, 0.0, 0.0]).unwrap(),
+                [OperatorEnvelope::new(1.0, 1.0, 1.0, 0.0, 0.0, 0.0).unwrap(); 4],
+                [OperatorWaveform::Sine; 4],
+                tuning,
+            )
+            .unwrap()
+        };
+        let actual = make(1.0)
+            .with_fine_offsets([offset, 0.0, 0.0, 0.0])
+            .unwrap();
+        let expected = make(0.0);
+        let a = actual.prepare_note(69, 127).unwrap();
+        let b = expected.prepare_note(69, 127).unwrap();
+        let table = SineTable::new();
+        for age in [1, 97, 1024, 8192] {
+            let sample = actual.sample(&table, &a, age, u64::MAX);
+            assert_eq!(
+                sample.to_bits(),
+                expected.sample(&table, &b, age, u64::MAX).to_bits()
+            );
+        }
+        assert_ne!(actual.sample(&table, &a, 97, u64::MAX), 0.0);
+    }
+}

@@ -92,7 +92,15 @@ impl EditorView {
     pub(super) fn sample_arm_button(&self, arm: Arm, cx: &mut Context<Self>) -> Stateful<Div> {
         let armed = self.sample_recorder.generation == Some(self.project_generation)
             && self.sample_recorder.armed.contains(&arm);
-        let (background, text) = super::track_gain::activator_colors(armed);
+        let (background, text) = if armed {
+            let background = theme::color(theme::PaletteRole::Recording);
+            (
+                background,
+                theme::readable_text(background, theme::color(theme::PaletteRole::Background)),
+            )
+        } else {
+            super::track_gain::activator_colors(false)
+        };
         let (key, id) = arm.identity();
         toggle_button_with_style(
             "◉",

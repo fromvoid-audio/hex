@@ -154,6 +154,10 @@ fn track_gain_gesture_reaches_callback_without_a_pcm_step() {
     }
 }
 
+pub(super) static CONFIRMED_TEST_POINTS: AtomicU64 = AtomicU64::new(0);
+pub(super) static CONFIRMED_TEST_READY: AtomicU64 = AtomicU64::new(0);
+pub(super) static CONFIRMED_TEST_ENDS: AtomicU64 = AtomicU64::new(0);
+pub(super) static CONFIRMED_TEST_NOOPS: AtomicU64 = AtomicU64::new(0);
 struct ResidentSink {
     inner: NativeAudioSink,
     initial_rate: u32,
@@ -231,7 +235,90 @@ impl WorkerAudioSink for ResidentSink {
         hex_session::service::PluginParameterGestureResult,
         hex_session::service::PluginParameterGestureError,
     > {
-        self.inner.prepare_plugin_parameter_gesture(input)
+        use hex_session::device_gesture::PluginGesturePreparation;
+        let case = std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").unwrap_or_default();
+        let retire = case == "delivery_retire";
+        let touch = matches!(case.as_str(), "touch" | "touch_empty" | "touch_commit");
+        let preview = matches!(input.operation(), PluginGesturePreparation::Preview(_));
+        let confirm = touch || (retire || case == "delivery") && preview;
+        let expected = match input.operation() {
+            PluginGesturePreparation::Begin { snapshot, .. }
+            | PluginGesturePreparation::Preview(snapshot)
+            | PluginGesturePreparation::Commit(snapshot)
+            | PluginGesturePreparation::Restore { snapshot, .. } => snapshot,
+        };
+        let result = self.inner.prepare_plugin_parameter_gesture(if touch {
+            input.with_touch_recording()
+        } else if confirm {
+            input.with_delivery_confirmation()
+        } else {
+            input
+        });
+        if confirm {
+            if retire && preview {
+                assert!(result.is_err());
+                self.inner.relinquish_output();
+            }
+            while let Some(observation) = self.inner.take_plugin_parameter_observation() {
+                use hex_session::service::PluginParameterObservation as Observation;
+                match observation {
+                    Observation::Ready {
+                        key,
+                        context,
+                        target,
+                        source,
+                    } => {
+                        assert_eq!(key, expected.key);
+                        assert_eq!(context.project_generation, key.generation);
+                        assert_eq!(
+                            source.target,
+                            hex_session::service::DeviceCaptureTarget::Vst3(target)
+                        );
+                        assert_eq!(source.sample_rate, self.initial_rate);
+                        assert_eq!(
+                            CONFIRMED_TEST_POINTS.load(std::sync::atomic::Ordering::Relaxed),
+                            CONFIRMED_TEST_ENDS.load(std::sync::atomic::Ordering::Relaxed)
+                        );
+                        CONFIRMED_TEST_READY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Observation::Delivered(point) | Observation::Restored(point) => {
+                        assert_eq!(point.key, expected.key);
+                        assert!(point.sequence <= expected.sequence);
+                        assert_eq!(point.source.sample_rate, self.initial_rate);
+                        assert_eq!(
+                            point.source.target,
+                            hex_session::service::DeviceCaptureTarget::Vst3(point.target)
+                        );
+                        assert_eq!(point.application.parameter, point.target.parameter);
+                        assert_eq!(point.application.binding, point.target.binding);
+                        assert!(
+                            point.delivery_performance_frame
+                                >= point.application.origin.performance_frame
+                        );
+                        match point.application.value {
+                            hex_session::service::automation_draft::Vst3ApplicationValue::Value(
+                                value,
+                            ) => {
+                                assert_eq!(value, expected.plugin_value.unwrap().normalized());
+                                CONFIRMED_TEST_POINTS
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            hex_session::service::automation_draft::Vst3ApplicationValue::Restored => {
+                                CONFIRMED_TEST_ENDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+                    }
+                    Observation::Unchanged { key } => {
+                        assert_eq!(key, expected.key);
+                        CONFIRMED_TEST_NOOPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Observation::Interrupted { .. } => {
+                        panic!("confirmed fixture operation was interrupted")
+                    }
+                }
+            }
+        }
+        result
     }
     fn confirm_plugin_parameter_publication(
         &mut self,
@@ -285,6 +372,12 @@ impl WorkerAudioSink for ResidentSink {
             -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
     ) -> Result<Option<hex_engine::PreparedRevision>, String> {
         self.inner.prepare_resident_effects(input, prepare)
+    }
+    fn received_foreign_program_on_control(
+        &mut self,
+        binding: hex_audio::plugin_effects::EffectBinding,
+    ) -> hex_engine::ForeignProgramFrontier {
+        self.inner.received_foreign_program_on_control(binding)
     }
     fn prepare_offline_bounce(
         &mut self,

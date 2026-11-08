@@ -11,9 +11,20 @@ widgets = (
     'self.track(', 'self.mixer_strip(', 'self.mixer(', 'self.transport(', 'self.controller_input_row(', 'self.controller_input_settings(', 'self.clip_detail_view(',
     'self.browser(', 'self.inspector(', 'self.status_bar(', 'theme::text(', 'crate::theme::text(',
     'self.icon(', 'self.control_icon(', 'self.control_icon_description(',
+    # Workspace navigation components route their glyphs/tooltips through theme::text.
+    'self.browser_toggle_button(', 'self.workspace_view_toggle(',
     'self.arrangement(', 'self.ruler(', 'self.clip_view(',
+    # Main's arrangement map paints cached geometry without text.
+    'super::arrangement_map::view(', 'super::arrangement_map::section(',
+    'self.section_launch_action(',
+    # Meter insertion action normalizes its caption in the owning component.
+    'device_add::button(',
+    'device_picker::render(',
+    'super::device_panel::picker_overlay(',
     # Query clear-slot composition contains a themed action and native input semantics.
     'self.clear_search_slot(',
+    # Pinned browser collections compose themed heading, labels and icons.
+    'self.browser_collections(',
     # Header drop wrapper preserves the existing themed row and only refines drag paint.
     'self.device_drop_header(',
     # Clip name components normalize labels or render a native text-input entity.
@@ -45,7 +56,7 @@ widgets = (
     'wave_canvas(',
     'harmonic_range_control)', 'harmonic_repeat_control)', 'harmonic_tools)',
     'view.device_panel.operator_harmonics[&key].entity.clone())',
-    'operator_row(', 'operator_label(', 'page_tab(', 'shell)', 'page_tabs)', 'detail)',
+    'operator_row(', 'operator_power(', 'page_tab(', 'shell)', 'page_tabs)', 'detail)',
     'level)', 'primary)', 'multiplier)', 'fixed_control)', 'section_title(', 'page_tabs(', 'control)',
     'preview::render(', 'fine)', 'toggle(', 'heading)', 'left)', 'select_row)',
     'routing_link(', 'selector(',
@@ -107,8 +118,8 @@ widgets = (
     'section_heading(', 'unavailable(',
     'menu_message(', 'action_button(', 'action_button_sized(', 'text_action_button(', 'text_segment_button(', 'entity.clone())', 'control.entity.clone())',
     'super::waveform::waveform_source_segment_view(', 'self.mixer_strip(', 'self.track_volume(', 'detail)', 'ruler_label)',
-    'self.title_bar()', 'self.title_bar(cx)', 'self.theme_button(', 'card)',
-    'header::title_bar(', 'header::loading_toolbar(',
+    'self.window_controls(', 'self.header_diagnostics(', 'self.project_title_label(', 'self.theme_button(', 'card)',
+    'header::window_controls(', 'header::loading_toolbar(',
     # Changelog body/group captions normalize text; the test paint probe has no label.
     'self.changelog_group(', 'self.changelog_paint_probe(', 'notes)',
     'crate::tooltips::HelpToggle)',
@@ -124,7 +135,7 @@ widgets = (
     'device_drag_title(', 'render_return_drop_target(', 'uniform_list(',
     'loop_grid_layer(',
     # Track sizing composes non-text pointer handles and capture listeners.
-    'self.track_resize_events(', 'self.track_width_resize_handle(',
+    'self.arrangement_playback_layer(', 'self.track_resize_events(', 'self.track_width_resize_handle(',
     'self.return_send_menu(', 'send_adjust_button(', 'super::device_panel::return_send_numeric_control(', 'upper.flex_1().min_h_0()',
     'returns)', 'add)', 'return_button(', 'render_return_effect(',
     'render_return_add_menu(',
@@ -267,6 +278,11 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             )
             and suffix.startswith('insertion_gap(')
         )
+        # Catalog list rows normalize their labels inside the shared picker.
+        device_insertion_component = device_insertion_component or (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel/device_picker.rs'
+            and suffix.startswith(('list)', 'card)'))
+        )
         # The rotated title paints the already themed label in the inherited font.
         device_insertion_component = device_insertion_component or (
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel.rs'
@@ -299,16 +315,16 @@ for root_view in ('app.rs', 'editor/render.rs'):
     app = (ROOT / 'crates/hex-ui/src' / root_view).read_text()
     if '.font_family(theme::FONT_FAMILY)' not in app:
         errors.append(f'{root_view}: root UI must inherit Ioskeley Mono')
-# The shared compact title row reserves balanced space for native controls;
+# The shared top toolbar reserves space for native window controls;
 # one EditorView renders both pending-backend startup and the loaded editor.
 # The generated demo retains its separate toolbar with the same leading inset.
 header = (ROOT / 'crates/hex-ui/src/editor/header.rs').read_text()
-if 'crate::build_info::HEADER_INSET.max(theme::TITLEBAR_LEADING_INSET)' not in header or '.px(px(' not in header:
-    errors.append('editor/header.rs: center title with balanced native-control insets')
+if '.pl(px(theme::TITLEBAR_LEADING_INSET))' not in header:
+    errors.append('editor/header.rs: reserve the native-control leading inset')
 for top_row in ('editor/render.rs',):
     source = (ROOT / 'crates/hex-ui/src' / top_row).read_text()
-    if 'header::title_bar' not in source and 'self.title_bar(cx)' not in source and 'self.title_bar()' not in source:
-        errors.append(f'{top_row}: use the shared title row')
+    if 'self.transport(window, cx)' not in source:
+        errors.append(f'{top_row}: use the shared top toolbar')
 demo_toolbar = (ROOT / 'crates/hex-ui/src/layout/transport.rs').read_text()
 if '.pl(px(theme::TITLEBAR_LEADING_INSET))' not in demo_toolbar:
     errors.append('layout/transport.rs: reserve the shared native titlebar leading inset')

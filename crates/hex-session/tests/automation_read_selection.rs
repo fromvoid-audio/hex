@@ -166,7 +166,7 @@ fn manual_read_reenable_global_and_stale_request_keep_points_and_one_undo() {
 fn stamped_base_edits_keep_nonautomatable_effects_and_retained_instruments_editable() {
     let service = Service::new(48_000, 32, 0).unwrap();
     next(&service);
-    let (effect, event) = effect(&service, "hex.overdrive");
+    let (effect, event) = effect(&service, "hex.limiter");
     check_base_edit(
         &service,
         effect,

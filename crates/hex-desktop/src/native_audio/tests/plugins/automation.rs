@@ -4,6 +4,152 @@ use hex_project::{
     AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, DeviceAutomationTarget,
 };
 
+#[test]
+#[ignore = "explicit source-bound signed SDK receipts required"]
+fn fresh_selected_lookup_finds_raw_zero_beyond_the_first_page_without_inventory() {
+    const CHILD: &str = "HEX_DESKTOP_SELECTED_LOOKUP_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "80")
+            .env("HEX_ORIGINAL_PARAMETER_INVENTORY", "9")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+        return;
+    }
+    let _native = native_fixture();
+    let (mut output, mut backend) = hex_audio::worker_fixture::open(48_000).unwrap();
+    let control = output.publication.control().unwrap();
+    control
+        .configure_device_resource_publication_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                data_rows: 4096,
+                handle_rows: 4096,
+                root_rows: 128,
+                max_retained_bytes: 32 * 1024 * 1024,
+                max_construction_peak_bytes: 32 * 1024 * 1024,
+            },
+        )
+        .unwrap();
+    control
+        .configure_ordinary_streaming_on_control(
+            hex_audio::AudioCandidateDomainReservation {
+                max_retained_data_bytes: 192 * 1024 * 1024,
+                max_construction_peak_data_bytes: 192 * 1024 * 1024,
+            },
+            3,
+            4096,
+        )
+        .unwrap();
+    control
+        .configure_native_source_preparation(
+            1,
+            hex_audio::NativeSourceDataReservation {
+                max_retained_data_bytes: 4 * 1024 * 1024,
+                max_construction_peak_data_bytes: 24 * 1024 * 1024,
+            },
+        )
+        .unwrap();
+    let host = host();
+    let selected = selection();
+    let binding = host
+        .begin_on_control(
+            control,
+            hex_audio::plugin_effects::EffectSelection {
+                module: &selected.module,
+                executable: &selected.executable,
+                cid: selected.cid,
+                executable_sha256: &selected.executable_sha256,
+                info_sha256: &selected.info_sha256,
+            },
+            PluginEffectDestination::Main.owner(),
+            1,
+            1,
+            48_000,
+            hex_audio::plugin_effects::PluginProfile::Effect,
+            None,
+        )
+        .unwrap();
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        match control.native_source_preparation_progress(binding) {
+            Some(hex_audio::NativeSourcePreparationProgress::Facts(_)) => host
+                .complete_on_control(
+                    control,
+                    binding,
+                    Some(EffectPresentation {
+                        input_frames: 0,
+                        output_frames: 512,
+                    }),
+                )
+                .unwrap(),
+            Some(hex_audio::NativeSourcePreparationProgress::Prepared { .. }) => control
+                .start_native_effect_with_authored_selection(binding, None)
+                .unwrap(),
+            Some(hex_audio::NativeSourcePreparationProgress::Effect { .. }) => break,
+            _ => {
+                assert!(Instant::now() < until);
+                std::thread::yield_now();
+            }
+        }
+    }
+    for hint in [None, Some(8), Some(4)] {
+        assert_eq!(
+            crate::native_audio::plugins::Plugins::lookup_authored_target_for_test(
+                control, binding, 0, hint
+            )
+            .unwrap(),
+            (0, 8)
+        );
+    }
+    assert!(
+        crate::native_audio::plugins::Plugins::lookup_authored_target_for_test(
+            control,
+            binding,
+            i32::MAX as u32,
+            None
+        )
+        .is_err()
+    );
+    assert!(
+        crate::native_audio::plugins::Plugins::lookup_authored_target_for_test(
+            control,
+            hex_audio::plugin_effects::EffectBinding {
+                epoch: binding.epoch + 1,
+                ..binding
+            },
+            0,
+            None
+        )
+        .is_err()
+    );
+    control.retire_native_source_preparation(binding);
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        control.reclaim();
+        if control.recover_native_source_preparation(binding).is_some() {
+            break;
+        }
+        assert!(Instant::now() < until, "lookup source disposal");
+        std::thread::yield_now();
+    }
+    drop(output);
+    backend.close();
+}
+
 pub(super) fn edit_with_running_callback(h: &mut ResidentHarness, request: Request) -> Event {
     h.service.submit(request).unwrap();
     let until = Instant::now() + Duration::from_secs(10);

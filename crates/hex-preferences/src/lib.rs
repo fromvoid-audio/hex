@@ -93,10 +93,10 @@ pub struct ThemePreferences {
 impl Default for ThemePreferences {
     fn default() -> Self {
         Self {
-            background: RgbColor::new(0x2a, 0x28, 0x28),
-            text: RgbColor::new(0xc3, 0xc5, 0xc0),
-            primary: RgbColor::new(0xf0, 0x64, 0x49),
-            secondary: RgbColor::new(0x70, 0xe8, 0xe3),
+            background: RgbColor::new(0x1b, 0x1b, 0x1b),
+            text: RgbColor::new(0xd2, 0xd2, 0xd2),
+            primary: RgbColor::new(0x3b, 0x95, 0xdf),
+            secondary: RgbColor::new(0x75, 0xba, 0xff),
         }
     }
 }

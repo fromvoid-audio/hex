@@ -57,7 +57,7 @@ fn clip_paint_double_click_hold_previews_then_commits_once(cx: &mut TestAppConte
         });
         visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
         let command = editor.read_with(cx, |view, _| {
-            assert!(view.clip_paint_gesture.is_none());
+            assert!(!view.clip_paint_held());
             view.last_enqueued_edit.clone().expect("release edit")
         });
         assert!(
@@ -74,12 +74,12 @@ fn clip_paint_double_click_hold_previews_then_commits_once(cx: &mut TestAppConte
         assert!(canonical.redo());
         assert!(canonical.project().midi_clip(clip).is_some());
         visual.run_until_parked();
-        assert!(visual.debug_bounds("clip-paint-preview").is_none());
+        assert!(visual.debug_bounds("clip-paint-preview").is_some());
     }
 }
 
 #[gpui::test]
-fn clip_paint_cancels_and_rejects_clip_headers_and_stale_state(cx: &mut TestAppContext) {
+fn clip_paint_cancels_and_rejects_explicit_handles_and_stale_state(cx: &mut TestAppContext) {
     cx.update(super::bind_editor_keys);
     let (project, source, target, _) = audio_project();
     let (handle, editor) = editor_window(cx, project, Arc::default());
@@ -91,7 +91,7 @@ fn clip_paint_cancels_and_rejects_clip_headers_and_stale_state(cx: &mut TestAppC
         (
             (lane.left + lane.width * 0.25, lane.top + 22.0),
             (lane.left + lane.width * 0.5, lane.top + 22.0),
-            (source.left + source.width * 0.125, source.top + 7.0),
+            (source.left + 1.0, source.top + 7.0),
         )
     });
     editor.update(cx, |view, _| {
@@ -234,7 +234,7 @@ fn clip_headers_grab_while_audio_and_midi_bodies_select_and_paint(cx: &mut TestA
         });
         visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
         let command = editor.read_with(cx, |view, _| {
-            assert!(view.clip_paint_gesture.is_none());
+            assert!(!view.clip_paint_held());
             assert!(view.active_clip_drag.is_none());
             view.last_enqueued_edit.clone().expect("painted clip edit")
         });

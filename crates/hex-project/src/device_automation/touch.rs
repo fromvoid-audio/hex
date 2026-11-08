@@ -1,4 +1,4 @@
-//! Bounded half-open overlays for delivered native parameter touches.
+//! Bounded half-open overlays for delivered parameter touches.
 //! Uncovered time evaluates the original base envelope exactly. A newer take
 //! replaces only its covered intervals; existing left/right fragments retain
 //! their held values and original step times.

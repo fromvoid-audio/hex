@@ -1976,48 +1976,6 @@ fn empty_arrangement_keeps_the_grid_aligned_with_the_ruler(cx: &mut TestAppConte
 }
 
 #[gpui::test]
-fn arrangement_overview_shows_the_project_and_click_centers_a_clamped_viewport(
-    cx: &mut TestAppContext,
-) {
-    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
-    editor.update(cx, |view, _| {
-        view.viewport = Some(super::super::viewport::Viewport {
-            start: 0,
-            length: 96_000,
-        });
-    });
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let overview = visual
-        .debug_bounds("arrangement-overview-map")
-        .expect("compact project overview above the ruler");
-    let ruler = visual
-        .debug_bounds("timeline-ruler")
-        .expect("Arrangement ruler");
-    assert_eq!(overview.origin.x, ruler.origin.x);
-    assert_eq!(overview.size.width, ruler.size.width);
-    assert!(overview.size.height >= px(20.0));
-    let before = editor.read_with(cx, |view, _| {
-        let state = view.state.as_ref().expect("project");
-        view.visible_viewport(state.timeline_frames)
-    });
-    assert_eq!(before.start, 0);
-    let click = point(
-        overview.origin.x + overview.size.width * 0.99,
-        overview.origin.y + overview.size.height / 2.0,
-    );
-    visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    let after = editor.read_with(cx, |view, _| {
-        let state = view.state.as_ref().expect("project");
-        view.visible_viewport(state.timeline_frames)
-    });
-    assert_eq!(after.length, 96_000);
-    assert_eq!(after.end(), Some(672_000));
-    assert!(after.start > before.start);
-}
-
-#[gpui::test]
 fn middle_drag_pans_both_arrangement_axes_until_release(cx: &mut TestAppContext) {
     let names = (0..32)
         .map(|index| format!("track {index}"))
@@ -5737,3 +5695,80 @@ fn browser_file_result_vectors_paint_in_light_and_dark_themes(cx: &mut TestAppCo
 mod random_ui_tests;
 #[path = "browser_scrollbar_ui_test.rs"]
 mod scrollbar_ui_tests;
+
+#[gpui::test]
+fn collections_stay_below_scrollable_sources_in_both_picker_sizes(cx: &mut TestAppContext) {
+    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let before = editor.read_with(&visual, |view, _| view.state.as_ref().unwrap().clone());
+    visual.run_until_parked();
+    let pinned = visual.debug_bounds("browser-collections").unwrap();
+    let gear = visual.debug_bounds("browser-control-⚙").unwrap().center();
+    visual.simulate_click(gear, Modifiers::default());
+    assert_eq!(visual.debug_bounds("browser-collections").unwrap(), pinned);
+    for window_size in [(880.0, 540.0), (1440.0, 800.0)] {
+        visual.simulate_resize(gpui::size(px(window_size.0), px(window_size.1)));
+        for width in [23.0, 124.0] {
+            let sources = visual.debug_bounds("browser-sidebar-sources").unwrap();
+            visual.simulate_event(gpui::ScrollWheelEvent {
+                position: sources.center(),
+                delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(500.0))),
+                ..Default::default()
+            });
+            let sidebar = visual.debug_bounds("browser-sidebar").unwrap();
+            let divider = visual
+                .debug_bounds("browser-sidebar-resize")
+                .unwrap()
+                .center();
+            let target = divider + point(px(width) - sidebar.size.width, px(0.0));
+            visual.simulate_mouse_down(divider, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+            let sidebar = visual.debug_bounds("browser-sidebar").unwrap();
+            let sources = visual.debug_bounds("browser-sidebar-sources").unwrap();
+            let collections = visual.debug_bounds("browser-collections").unwrap();
+            let library = visual
+                .debug_bounds("browser-picker-heading-library")
+                .unwrap();
+            assert_eq!(sidebar.size.width, px(width));
+            assert_eq!(library.top(), sidebar.top());
+            assert_eq!(sources.bottom(), collections.top());
+            assert_eq!(collections.bottom(), sidebar.bottom());
+            let first = visual.debug_bounds("browser-collection-0").unwrap();
+            assert!(first.top() >= collections.top() && first.bottom() <= collections.bottom());
+            visual.simulate_click(first.center(), Modifiers::default());
+            visual.update(|window, cx| {
+                editor.read_with(cx, |view, _| {
+                    assert_eq!(view.browser.section, BrowserSection::Collection(0));
+                    assert!(view.browser.results_focus.is_focused(window));
+                })
+            });
+            let all = visual.debug_bounds("browser-section-all").unwrap().center();
+            visual.simulate_click(all, Modifiers::default());
+            visual.simulate_event(gpui::ScrollWheelEvent {
+                position: sources.center(),
+                delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-500.0))),
+                ..Default::default()
+            });
+            assert_eq!(
+                visual.debug_bounds("browser-collections").unwrap(),
+                collections
+            );
+            if window_size.1 == 540.0 {
+                assert!(
+                    visual
+                        .debug_bounds("browser-picker-heading-library")
+                        .unwrap()
+                        .top()
+                        < library.top(),
+                    "the upper sources must actually scroll while collections stay fixed"
+                );
+            }
+            editor.read_with(&visual, |view, _| {
+                assert_eq!(view.state.as_ref().unwrap().project, before.project);
+                assert_eq!(view.state.as_ref().unwrap().revision, before.revision);
+                assert!(view.pending_requests.is_empty());
+            });
+        }
+    }
+}

@@ -449,12 +449,6 @@ impl EditorView {
                         .child(theme::text(self.sample_results_count_text(cx))),
                 )
                 .child(self.browser_icon(
-                    "↻",
-                    "rescan sample folders",
-                    |view, _, cx| view.refresh_browser_tree(cx),
-                    cx,
-                ))
-                .child(self.browser_icon(
                     "+",
                     "add sample folder",
                     |view, _, cx| view.open_browser_folder(cx),

@@ -598,7 +598,16 @@ fn instrument_takeover_preserves_other_base_and_held_midi() {
     const CASE: &str = "HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE";
     if std::env::var_os(CASE).is_none() {
         let name = std::thread::current().name().unwrap().to_owned();
-        for case in ["reading", "unread", "idle", "refused"] {
+        for case in [
+            "reading",
+            "unread",
+            "empty",
+            "renew",
+            "author",
+            "author_empty",
+            "idle",
+            "refused",
+        ] {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", &name, "--ignored", "--nocapture"])
                 .env(CASE, case)
@@ -615,6 +624,115 @@ fn instrument_takeover_preserves_other_base_and_held_midi() {
         return;
     }
     instrument_entrypoint(InstrumentWorkflow::Takeover);
+}
+
+#[test]
+#[ignore = "explicit source-bound signed SDK receipts required"]
+fn instrument_gesture_points_are_confirmed_at_final_output() {
+    const CASE: &str = "HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE";
+    if std::env::var_os(CASE).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(CASE, "delivery")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
+    instrument_entrypoint(InstrumentWorkflow::Takeover);
+    if std::env::var_os("HEX_DESKTOP_TEST_INSTRUMENT_CHILD").is_some() {
+        assert!(
+            crate::native_audio::tests::resident_preview::CONFIRMED_TEST_POINTS.load(Acquire) > 0
+        );
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound signed SDK receipts required"]
+fn confirmed_point_survives_output_close_while_sdk_ack_is_pending() {
+    const CASE: &str = "HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE";
+    if std::env::var_os(CASE).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(CASE, "delivery_retire")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
+    instrument_entrypoint(InstrumentWorkflow::Takeover);
+    if std::env::var_os("HEX_DESKTOP_TEST_INSTRUMENT_CHILD").is_some() {
+        assert!(
+            crate::native_audio::tests::resident_preview::CONFIRMED_TEST_POINTS.load(Acquire) > 0
+        );
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound signed SDK receipts required"]
+fn recorded_touch_admission_and_exclusive_restoration_use_actual_output() {
+    const CASE: &str = "HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE";
+    if std::env::var_os(CASE).is_none() {
+        for case in ["touch", "touch_empty", "touch_commit"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    std::thread::current().name().unwrap(),
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env(CASE, case)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{case}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        }
+        return;
+    }
+    instrument_entrypoint(InstrumentWorkflow::Takeover);
+    if std::env::var_os("HEX_DESKTOP_TEST_INSTRUMENT_CHILD").is_some() {
+        use crate::native_audio::tests::resident_preview::{
+            CONFIRMED_TEST_ENDS, CONFIRMED_TEST_NOOPS, CONFIRMED_TEST_POINTS, CONFIRMED_TEST_READY,
+        };
+        assert!(CONFIRMED_TEST_READY.load(Acquire) > 0);
+        if std::env::var(CASE).unwrap() == "touch_empty" {
+            assert_eq!(CONFIRMED_TEST_POINTS.load(Acquire), 0);
+            assert!(CONFIRMED_TEST_NOOPS.load(Acquire) > 0);
+        } else {
+            assert!(CONFIRMED_TEST_POINTS.load(Acquire) > 0);
+            assert_eq!(
+                CONFIRMED_TEST_POINTS.load(Acquire),
+                CONFIRMED_TEST_ENDS.load(Acquire)
+            );
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -694,9 +812,12 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
     };
     (applied, _) = harness.applied(applied);
     let (clip_length, note_duration) = if takeover {
+        // The headless control driver can render far faster than wall time
+        // while waiting for SDK work. Keep its held note alive throughout
+        // these operations without adding processing to the test.
         (
-            BeatTime::from_quarters(16).unwrap(),
-            BeatTime::from_quarters(16).unwrap(),
+            BeatTime::from_quarters(256).unwrap(),
+            BeatTime::from_quarters(256).unwrap(),
         )
     } else if automation_parameter.is_some() {
         (
@@ -1453,28 +1574,38 @@ fn verify_instrument_takeover(
     use hex_session::device_gesture::{GestureClient, PluginParameterOrigin, PluginParameterValue};
     use hex_session::service::{DeviceAutomationControlEdit, PluginParameterQuery};
     let case = std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").unwrap();
-    let reading = case != "unread";
+    let author = matches!(case.as_str(), "author" | "author_empty");
+    let reading = !matches!(case.as_str(), "unread" | "empty" | "renew");
     let playing = case != "idle";
     let context = h.submitted.unwrap().1.context;
     let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
-    h.run(Request::QueryPluginParameters(PluginParameterQuery {
-        context,
-        device,
-        output_identity: output,
-        request_id: 11,
-    }));
-    let rows = h.next().plugin_parameters.unwrap().rows.unwrap();
-    assert_eq!(rows.len(), 2);
-    let class = rows
-        .iter()
-        .find(|r| r.id == 7)
-        .unwrap()
-        .automation_class
-        .unwrap();
+    let class = if case == "author_empty" {
+        hex_plugin_state::decode(original.device(device).unwrap().state())
+            .unwrap()
+            .identity
+            .class
+            .bytes()
+    } else {
+        h.run(Request::QueryPluginParameters(PluginParameterQuery {
+            context,
+            device,
+            output_identity: output,
+            request_id: 11,
+        }));
+        let rows = h.next().plugin_parameters.unwrap().rows.unwrap();
+        assert_eq!(rows.len(), 2);
+        rows.iter()
+            .find(|r| r.id == 7)
+            .unwrap()
+            .automation_class
+            .unwrap()
+    };
     let mut before = original.clone();
     let mut revision = context.editor_revision;
     for (id, value) in [(7, 0.25), (11, 0.5)] {
-        if id == 7 && !reading {
+        if matches!(case.as_str(), "empty" | "renew" | "author_empty")
+            || id == 7 && (!reading || author)
+        {
             continue;
         }
         let event = super::automation::edit_with_running_callback(
@@ -1524,6 +1655,77 @@ fn verify_instrument_takeover(
     } else {
         0.0
     };
+    if author {
+        let binding = h.plugin_progress.lock().unwrap().binding.unwrap();
+        for value in [0.5, 0.25] {
+            h.service
+                .submit(Request::DeviceAutomation {
+                    project_generation: context.project_generation,
+                    revision,
+                    device,
+                    target: DeviceAutomationTarget::Vst3 { parameter: 7 },
+                    vst3_class: Some(class),
+                    points: vec![AutomationPoint {
+                        beat: BeatTime::ZERO,
+                        value: AutomationValue::new(value).unwrap(),
+                        outgoing: AutomationInterpolation::Step,
+                    }],
+                })
+                .unwrap();
+            let until = Instant::now() + Duration::from_secs(3);
+            let mut fragment = 0;
+            let mut step = |h: &mut ResidentHarness| {
+                render_takeover_partial(h, [3, 5, 117, 1, 130][fragment % 5], true);
+                fragment += 1;
+                while h
+                    .callback
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .native_workers_idle_on_control()
+                    != Some(true)
+                {
+                    assert!(Instant::now() < until);
+                    std::thread::yield_now();
+                }
+                assert!(Instant::now() < until, "live lane authoring timed out");
+            };
+            let event = loop {
+                h.pump();
+                if let Ok(event) = h.service.try_event() {
+                    break event;
+                }
+                step(h);
+            };
+            assert!(event.error.is_none(), "{:?}", event.error);
+            while h
+                .audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .applied_revision
+                .load(Acquire)
+                <= applied
+            {
+                h.pump();
+                step(h);
+            }
+            applied = h.applied(applied).0;
+            before = (*event.state.project).clone();
+            revision = event.state.revision;
+            assert_eq!(
+                h.plugin_progress.lock().unwrap().binding,
+                Some(binding),
+                "new lane must retain the original SDK instrument"
+            );
+            assert!(
+                (peak(h) - baseline * value / 0.25).abs() < 0.0001,
+                "live authoring must deliver the new value on the held gate"
+            );
+        }
+    }
     let query = |h: &mut ResidentHarness, request_id| {
         let context = h.submitted.unwrap().1.context;
         h.run(Request::QueryPluginParameters(PluginParameterQuery {
@@ -1563,7 +1765,16 @@ fn verify_instrument_takeover(
                 && ack.key == request.key()
                 && ack.phase == request.phase()
             {
-                assert_eq!(ack.accepted, accepted, "{case}: {ack:?} {:?}", event.error);
+                let status = h.audio.as_ref().unwrap().status().unwrap();
+                assert_eq!(
+                    ack.accepted,
+                    accepted,
+                    "{case}: {ack:?} {:?}; playing={} source={:?} fault={:?}",
+                    event.error,
+                    status.playing.load(Acquire),
+                    status.native_parameter_source(playing),
+                    status.render_fault_snapshot()
+                );
                 assert!(!ack.source_lost, "{case}: {ack:?}");
                 assert!(client.acknowledge_with_snapshot(ack, event.active_device_gesture));
                 return event;
@@ -1572,7 +1783,11 @@ fn verify_instrument_takeover(
                 Instant::now() < deadline,
                 "instrument gesture timed out: {request:?}"
             );
-            render_takeover_partial(h, [3, 5, 117, 1, 130][fragment % 5], playing);
+            render_takeover_partial(
+                h,
+                [3, 5, 117, 1, 130][fragment % 5],
+                playing && case != "delivery_retire",
+            );
             fragment += 1;
             // The native worker is asynchronous; wait only on this test/control
             // thread before offering the next irregular physical fragment.
@@ -1595,15 +1810,40 @@ fn verify_instrument_takeover(
     for request_id in [12, 13] {
         client.begin_plugin(query(h, request_id)).unwrap();
         assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
+        if case == "touch_empty" {
+            client.cancel().unwrap();
+            send(h, &mut client, true);
+            return;
+        }
         client
             .change_plugin(PluginParameterValue::new(0.75).unwrap())
             .unwrap();
-        assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
+        assert_eq!(
+            send(h, &mut client, case != "delivery_retire")
+                .state
+                .project
+                .as_ref(),
+            &before
+        );
+        if case == "delivery_retire" {
+            return;
+        }
         if playing {
             assert!(
                 (peak(h) - baseline * 3.0).abs() < 0.0001,
                 "held MIDI must continue through preview"
             );
+        }
+        if case == "touch_commit" {
+            client
+                .finish_plugin(PluginParameterValue::new(0.75).unwrap())
+                .unwrap();
+            // The ordinary Session path deliberately refuses opaque commit:
+            // canonical take adoption is the next consumer increment.
+            let ended = send(h, &mut client, false);
+            assert_eq!(ended.state.project.as_ref(), &before);
+            assert!((peak(h) - baseline).abs() < 0.0001);
+            return;
         }
         client.cancel().unwrap();
         assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
@@ -1613,6 +1853,9 @@ fn verify_instrument_takeover(
                 "cancel must resume authored input"
             );
         }
+    }
+    if case == "touch" {
+        return;
     }
     client.begin_plugin(query(h, 14)).unwrap();
     send(h, &mut client, true);
@@ -1746,5 +1989,48 @@ fn verify_instrument_takeover(
         saved.error
     );
     assert_eq!(hex_storage::load(path).unwrap(), *saved.state.project);
+    if case == "renew" {
+        let before_stop = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire);
+        h.audio.as_ref().unwrap().control.stop();
+        h.render_plugin_block();
+        let mut restored = h.run(Request::RestoreStoppedPlayback);
+        if !restored.stopped_playback_restore_complete {
+            restored = restored_terminal(h);
+        }
+        assert!(restored.error.is_none(), "{:?}", restored.error);
+        assert_eq!(restored.state.project, saved.state.project);
+        h.applied(before_stop);
+        wait(|| h.plugin_completed.load(Acquire) == 0);
+        wait(|| {
+            h.pump();
+            h.audio
+                .as_mut()
+                .unwrap()
+                .control
+                .command(PlaybackCommand::Play)
+                .is_ok()
+        });
+        assert!(
+            (peak(h) - baseline * 2.0).abs() < 0.0001,
+            "renewal must retain the manual canonical base"
+        );
+        client.begin_plugin(query(h, 16)).unwrap();
+        send(h, &mut client, true);
+        client
+            .change_plugin(PluginParameterValue::new(0.75).unwrap())
+            .unwrap();
+        send(h, &mut client, true);
+        assert!((peak(h) - baseline * 3.0).abs() < 0.0001);
+        client.cancel().unwrap();
+        send(h, &mut client, true);
+        assert!((peak(h) - baseline * 2.0).abs() < 0.0001);
+    }
     println!("instrument takeover {case} passed");
 }

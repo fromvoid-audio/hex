@@ -511,6 +511,7 @@ pub(super) fn command(value: &Command) -> Description {
             device,
             target,
             spans,
+            ..
         } => {
             describe!("splice_device_automation_touch"; ["device" => device.value(), "target" => target, "span_count" => spans.len()]; omitted="")
         }
@@ -1259,6 +1260,9 @@ pub(super) fn command(value: &Command) -> Description {
 
 pub(super) fn request(value: &Request) -> Description {
     match value {
+        Request::PaintMidiClip(intent) => {
+            describe!("paint_midi_clip"; ["project_generation" => intent.project_generation, "revision" => intent.revision, "track" => intent.track.value(), "start" => intent.start.raw(), "length" => intent.length.raw()]; omitted="")
+        }
         Request::DeviceClipboard {
             project_generation,
             revision,
@@ -1454,12 +1458,12 @@ pub(super) fn request(value: &Request) -> Description {
         } => {
             describe!("commit_midi_take"; ["request_id" => request_id, "project_generation" => project_generation, "revision" => revision, "notes_count" => notes.len(), "stop_frame" => stop_frame]; omitted="binding")
         }
-        Request::NativeAutomationTake {
+        Request::DeviceAutomationTake {
             request_id,
             scope,
             action: _,
         } => {
-            describe!("native_automation_take"; ["request_id" => request_id, "gesture_serial" => scope.stamp.gesture_serial]; omitted="delivery data")
+            describe!("device_automation_take"; ["request_id" => request_id, "gesture_serial" => scope.stamp.gesture_serial]; omitted="delivery data")
         }
         Request::ArmNativeParameterRecording {
             project_generation,

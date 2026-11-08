@@ -212,7 +212,7 @@ pub fn device_frame(
         .min_w_0()
         .min_h_0()
         .border_1()
-        .border_color(rgb(style.controls.border))
+        .border_color(rgb(style.border))
         .bg(rgb(style.controls.surface))
         .rounded(px(radius))
         .overflow_hidden()

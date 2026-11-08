@@ -347,7 +347,7 @@ fn clip_fade_layer(samples: Vec<(f32, f32)>, active: bool) -> impl IntoElement +
             }
             shade.close();
             if let Ok(shade) = shade.build() {
-                window.paint_path(shade, rgba(0x00000038));
+                window.paint_path(shade, rgba(theme::CLIP_FADE_SHADE));
             }
             if let Some(path) = path
                 && let Ok(path) = path.build()
@@ -696,6 +696,10 @@ impl EditorView {
                 .h(px(1.0))
                 .bg(rgb(theme::color(theme::PaletteRole::Border))),
         );
+        if track.is_group() {
+            clip_area =
+                clip_area.children([super::group_overview::view(self, state, track, viewport)]);
+        }
         // Keep the divider out of layout: clips, pointer projection and the Main
         // lane must all use the complete timeline width. Paint beneath clips to
         // preserve their selection stroke at the viewport edge.
@@ -1557,6 +1561,9 @@ impl EditorView {
                 })
                 .into()
             });
+        let group_plate = track.is_group()
+            && self.document_audio_mode == hex_session::DocumentAudioMode::Resident;
+        let group_expanded = group_plate && self.track_body_height(track_id) > TRACK_ROW_HEIGHT;
         let name_area = div()
             .id(("track-name-area", track_id.value()))
             .cursor_pointer()
@@ -1567,7 +1574,11 @@ impl EditorView {
             .px(px(2.))
             .bg(rgb(name_fill))
             .text_color(rgb(name_text))
-            .child(track_name_view);
+            .when(track.is_group(), |plate| {
+                plate.rounded_tr(px(6.0)).rounded_br(px(6.0))
+            })
+            .when(group_plate, |plate| plate.h_full().justify_center())
+            .when(group_expanded, |plate| plate.justify_start());
         let sample_source =
             super::sample_recorder::Arm::Output(hex_engine::OutputCaptureId::Track(track_id));
         let resident_layout = self.document_audio_mode == hex_session::DocumentAudioMode::Resident;
@@ -1582,7 +1593,7 @@ impl EditorView {
                 .w_full()
                 .flex()
                 .items_center()
-                .children([name_area.flex_1().min_w_0()])
+                .children([name_area.child(track_name_view).flex_1().min_w_0()])
                 .child(self.sample_arm_button(sample_source, cx))
         } else if resident_layout {
             let (active_background, active_text) =
@@ -1695,15 +1706,34 @@ impl EditorView {
                 .child(theme::text("○"));
             div()
                 .id(("arrangement-track-controls", track_id.value()))
+                .when(group_plate, |controls| controls.h_full())
                 .debug_selector(move || format!("track-controls-{}", track_id.value()))
                 .w_full()
                 .flex()
                 .items_center()
+                .when(group_expanded, |controls| controls.items_start())
                 .gap(px(2.0))
-                .children([name_area.flex_1().gap(px(2.)).child(utilities)])
+                .children([name_area.flex_1().child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .when(group_plate, |content| {
+                            content
+                                .h(px(TRACK_ROW_HEIGHT - 4.0))
+                                .flex_shrink_0()
+                                .justify_center()
+                        })
+                        .child(track_name_view)
+                        .child(utilities),
+                )])
                 .child(
                     div()
                         .id(("track-header-mixer", track_id.value()))
+                        .when(group_plate, |mixer| {
+                            mixer.h(px(TRACK_ROW_HEIGHT - 4.0)).justify_center()
+                        })
                         // Two existing 60-point numeric minima and their gap.
                         .w(px(122.0))
                         .flex_shrink_0()
@@ -1837,29 +1867,47 @@ impl EditorView {
                 .w_full()
                 .flex()
                 .flex_col()
-                .children([name_area.w_full()])
+                .children([name_area.child(track_name_view).w_full()])
                 .child(track_controls)
         };
         let header_focus = self.track_header_focus(track_id, cx);
         let click_focus = header_focus.clone();
         let header_height = self.track_body_height(track_id);
         let expanded_header = header_height > TRACK_ROW_HEIGHT;
+        let next_ancestors = self
+            .arrangement_row_index(track_index)
+            .and_then(|row| self.arrangement_track_index(row + 1))
+            .and_then(|index| state.project.tracks().get(index))
+            .map_or(&[][..], |next| {
+                self.track_hierarchy_indent.ancestors(next.id())
+            });
+        let branch_ends = |ancestor| !next_ancestors.iter().any(|(id, _)| *id == ancestor);
+        let own_branch_ends = branch_ends(track_id);
         let group_rails = self
             .track_hierarchy_indent
             .ancestors(track_id)
             .iter()
             .enumerate()
             .map(|(depth, &(ancestor, color))| {
+                let identity = theme::element_colors(color);
+                let fill = if self.track_selection.contains(ancestor) {
+                    identity.accent
+                } else {
+                    identity.muted
+                };
                 div()
                     .absolute()
                     .left(px(depth as f32 * super::track_hierarchy_indent::RAIL_WIDTH))
-                    .top(px(1.0))
+                    .top_0()
                     .bottom_0()
                     .w(px(super::track_hierarchy_indent::RAIL_WIDTH))
                     .debug_selector(move || {
                         format!("track-group-rail-{}-{}", track_id.value(), ancestor.value())
                     })
-                    .bg(rgb(theme::element_colors(color).accent))
+                    .when(branch_ends(ancestor), |rail| {
+                        rail.rounded_bl(px(super::track_hierarchy_indent::RAIL_WIDTH / 2.0))
+                    })
+                    .bg(rgb(fill))
             })
             .collect::<Vec<_>>();
         let header = super::track_header::surface(
@@ -1867,9 +1915,13 @@ impl EditorView {
             self.track_header_width(),
             header_height,
             selected,
-            expanded_header.then_some(name_fill),
+            (expanded_header && !track.is_group()).then_some(name_fill),
         )
         .when(expanded_header, |header| header.justify_start())
+        .when(track.is_group() || hierarchy_indent > 0.0, |header| {
+            header.border_b_0()
+        })
+        .when(group_plate, |header| header.pb_0())
         .debug_selector(move || format!("arrangement-track-header-{}", track_id.value()))
         .track_focus(&header_focus)
         .key_context("hex_track_header")
@@ -1886,8 +1938,10 @@ impl EditorView {
                 // Keep the compact content slot, excluding its bottom inset
                 // and border, anchored to the top when the row grows.
                 .when(expanded_header, |row| row.h(px(TRACK_ROW_HEIGHT - 4.0)))
+                .when(group_plate, |row| row.h_full())
                 .flex()
                 .items_center()
+                .when(group_expanded, |row| row.items_start())
                 .gap(px(2.0))
                 .children([header_content.flex_1().min_w_0()])
                 .children(
@@ -1909,11 +1963,25 @@ impl EditorView {
             div()
                 .absolute()
                 .left(px(hierarchy_indent))
-                .top(px(1.0))
+                .top(px(if track.is_group() || hierarchy_indent > 0.0 {
+                    0.0
+                } else {
+                    1.0
+                }))
                 .bottom_0()
+                .when(track.is_group(), |rail| {
+                    rail.rounded_tl(px(super::track_hierarchy_indent::RAIL_WIDTH / 2.0))
+                })
+                .when(track.is_group() && own_branch_ends, |rail| {
+                    rail.rounded_bl(px(super::track_hierarchy_indent::RAIL_WIDTH / 2.0))
+                })
                 .w(px(4.0))
                 .debug_selector(move || format!("track-color-strip-{}", track_id.value()))
-                .bg(rgb(theme::element_colors(track.color()).accent)),
+                .bg(rgb(if track.is_group() {
+                    name_fill
+                } else {
+                    theme::element_colors(track.color()).accent
+                })),
         )
         .on_mouse_down(
             MouseButton::Right,
@@ -2229,12 +2297,9 @@ impl EditorView {
             );
             let midi_drag_payload =
                 self.midi_drag_payload(state, track_id, clip, start, end, viewport);
-            let fill = theme::clip_activity_fill(
-                track.color(),
-                clip.flavor(),
-                selected_clip,
-                clip.active(),
-            );
+            let header_fill =
+                theme::clip_activity_fill(track.color(), clip.flavor(), false, clip.active());
+            let fill = theme::arrangement_clip_body_fill(header_fill, selected_clip);
             let stroke = 1.0 / scale_factor.max(1.0);
             let border = hex_widgets::rectangle_border_width(pixel_width) > 0.0;
             let mut midi = hex_widgets::rectangle_surface(left as f32, width as f32, pixel_width)
@@ -2356,7 +2421,13 @@ impl EditorView {
                     clip.looping(),
                 ));
             }
-            midi = midi.child(self.clip_name_header(track_id, clip.id(), clip.name(), fill, cx));
+            midi = midi.child(self.clip_name_header(
+                track_id,
+                clip.id(),
+                clip.name(),
+                header_fill,
+                cx,
+            ));
             midi = midi.when(clip.looping(), |midi| {
                 midi.child(loop_handles::midi_markers(
                     clip,
@@ -2679,15 +2750,16 @@ impl EditorView {
                     lane,
                 )
             });
-        let fill = theme::clip_activity_fill(
+        let header_fill = theme::clip_activity_fill(
             state
                 .project
                 .track(track)
                 .map_or(hex_project::ElementColor::default(), |t| t.color()),
             clip.flavor(),
-            selected,
+            false,
             clip.active(),
         );
+        let fill = theme::arrangement_clip_body_fill(header_fill, selected);
         let clip_pixel_width = self.drag_lanes.get(&track).map_or(0.0, |lane| {
             super::trim::rendered_clip_width(lane.width, width)
         });
@@ -2790,7 +2862,7 @@ impl EditorView {
         );
         let hover_generation = self.project_generation;
         let mut content = content
-            .child(self.clip_name_header(track, clip.id(), clip.name(), fill, cx))
+            .child(self.clip_name_header(track, clip.id(), clip.name(), header_fill, cx))
             .when(!active_trim_preview && looping, |content| {
                 content.child(loop_handles::audio_markers(
                     clip,
@@ -2801,20 +2873,21 @@ impl EditorView {
             })
             .id(("clip", clip_id.value()))
             .debug_selector(|| format!("clip-visual-{}", clip_id.value()))
-            .on_hover(cx.listener(move |view, hovered, _, cx| {
-                if *hovered && view.project_generation != hover_generation {
-                    return;
-                }
-                let hovered_clip = (hover_generation, clip_id);
-                let next = if *hovered {
-                    Some(hovered_clip)
-                } else if view.hovered_fade_clip == Some(hovered_clip) {
-                    None
-                } else {
-                    view.hovered_fade_clip
-                };
-                if view.hovered_fade_clip != next {
-                    view.hovered_fade_clip = next;
+            .on_mouse_move(
+                cx.listener(move |view, event: &gpui::MouseMoveEvent, _, cx| {
+                    if view.update_fade_hover(
+                        track,
+                        clip_id,
+                        hover_generation,
+                        Some(f32::from(event.position.y)),
+                    ) {
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_hover(cx.listener(move |view, hovered: &bool, window, cx| {
+                let pointer_y = hovered.then(|| f32::from(window.mouse_position().y));
+                if view.update_fade_hover(track, clip_id, hover_generation, pointer_y) {
                     cx.notify();
                 }
             }))

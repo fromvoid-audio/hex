@@ -11,16 +11,25 @@ use hex_plugin_scan::macos::build_identity::InstanceBuild;
 mod parameter_extension;
 
 impl PublicationControl {
+    /// Definite correspondence or a specific unavailable/busy observation.
+    /// A control caller must not turn contention into a negative approval or
+    /// use this observation as graph/native admission authority.
+    pub fn try_native_source_approves_captured_state_on_control(
+        &self,
+        binding: Binding,
+        state: &NativeDeviceState,
+    ) -> Result<bool, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native captured-state output is closing");
+        }
+        self.candidate_root
+            .try_native_source_approves_captured_state(binding, state)
+    }
     pub(crate) fn approve_native_canonical_processing_on_control(
         &self,
         facts: &crate::plugin_effects::CapturedCanonicalBases,
     ) -> Result<NativeDeviceState, &'static str> {
-        let (source, epoch, playing) = facts.source();
-        let matches = || {
-            !self.status.closing.load(Acquire)
-                && self.output_identity() == Some(source.output_identity)
-                && self.status.native_parameter_source(playing) == Some((source, epoch))
-        };
+        let matches = || facts.matches_output_on_control(self);
         if !self.native_custody || !matches() {
             return Err("native processing approval source changed");
         }
@@ -91,8 +100,9 @@ impl Status {
     }
 
     /// Current ordinary source at the requested transport state. Idle uses the
-    /// installed canonical graph observation, including after native runtime
-    /// return. Root must independently match the exact native binding and state.
+    /// installed canonical graph observation. After ordinary graph return,
+    /// canonical preparation instead requires its held restore fence. Root
+    /// independently matches the exact native binding and state in either case.
     pub fn native_parameter_source(&self, playing: bool) -> Option<(AppliedAudioSource, u64)> {
         let epoch = self.transport_epoch.load(Acquire);
         let source = if playing {
@@ -110,6 +120,52 @@ impl Status {
 }
 
 impl PublicationControl {
+    pub(crate) fn canonical_source_matches_on_control(
+        &self,
+        (source, epoch, playing): (AppliedAudioSource, u64, bool),
+        fence: Option<StoppedEditFence>,
+    ) -> bool {
+        if !self.native_custody
+            || self.output_identity() != Some(source.output_identity)
+            || self.status.closing.load(Acquire)
+        {
+            return false;
+        }
+        match fence {
+            None => self.status.native_parameter_source(playing) == Some((source, epoch)),
+            Some(fence) => {
+                !playing
+                    && !self.status.playing.load(Acquire)
+                    && self.status.pending_stop_marker.load(Acquire) == 0
+                    && self.status.transport_epoch.load(Acquire) == epoch
+                    && self.status.sampler_edit.ready_transport_epoch.load(Acquire) == epoch
+                    && self.status.applied_revision.load(Acquire) == source.audio_revision
+                    && self.status.sampler_edit.ordinary_native_epoch_active()
+                    && self.status.sampler_edit.matches_source(fence, source)
+                    && self.stopped_edit_fence_state(fence) == StoppedEditFenceState::Ready
+            }
+        }
+    }
+
+    pub(crate) fn native_fenced_base_capture_source(
+        &self,
+        source: AppliedAudioSource,
+        fence: StoppedEditFence,
+        binding: Binding,
+        canonical: &NativeDeviceState,
+    ) -> Result<(u32, u64, crate::plugin_effects::BaseCaptureSource), String> {
+        let epoch = self.status.transport_epoch.load(Acquire);
+        if binding.root != source.output_identity
+            || !self.canonical_source_matches_on_control((source, epoch, false), Some(fence))
+        {
+            return Err("native base capture requires its held ordinary restore fence".into());
+        }
+        let original = self
+            .candidate_root
+            .native_source_for_base_capture(binding, canonical, false)?;
+        Ok((self.rate, epoch, original))
+    }
+
     pub(crate) fn native_base_capture_source(
         &self,
         expected: AppliedAudioSource,
@@ -173,7 +229,10 @@ impl PublicationControl {
     > {
         self.require_parameter_delivery_source(source, binding)?;
         let status = &self.status;
-        let delivery = &mut self.foreign_parameter_delivery;
+        let delivery = self
+            .foreign_parameter_delivery
+            .as_mut()
+            .ok_or("vst3 delivery reader is retired")?;
         self.candidate_root.native_parameter_change_with_before(
             binding,
             id,
@@ -207,7 +266,10 @@ impl PublicationControl {
     > {
         self.require_parameter_delivery_source(source, binding)?;
         let status = &self.status;
-        let delivery = &mut self.foreign_parameter_delivery;
+        let delivery = self
+            .foreign_parameter_delivery
+            .as_mut()
+            .ok_or("vst3 delivery reader is retired")?;
         self.candidate_root
             .native_parameter_hold_with_before(binding, command, |request| {
                 let (binding, operation, parameter) = request
@@ -222,6 +284,9 @@ impl PublicationControl {
         source: AppliedAudioSource,
         binding: Binding,
     ) -> Result<(), &'static str> {
+        if self.foreign_parameter_delivery.is_none() {
+            return Err("vst3 delivery reader is retired");
+        }
         if !self.native_custody
             || self.status.closing.load(Acquire)
             || self.output_identity() != Some(source.output_identity)
@@ -237,13 +302,30 @@ impl PublicationControl {
         &mut self,
         target: crate::foreign_parameter_delivery::Target,
     ) -> bool {
-        self.foreign_parameter_delivery.cancel(target)
+        self.foreign_parameter_delivery
+            .as_mut()
+            .is_some_and(|delivery| delivery.cancel(target))
     }
 
     pub fn try_native_source_parameter_delivery_on_control(
         &mut self,
     ) -> Option<crate::foreign_parameter_delivery::Receipt> {
-        self.foreign_parameter_delivery.try_receipt(&self.status)
+        self.foreign_parameter_delivery
+            .as_mut()?
+            .try_receipt(&self.status)
+    }
+
+    /// Detach the one outstanding witness before relinquishing this output.
+    /// New confirmed inputs on this publication are permanently refused. The
+    /// non-Clone reader retains bounded Copy receipt channels and status only,
+    /// never Root, SDK workers, PCM or a native output lease. Its poll/drop and
+    /// final channel destruction belong on control, after callback activity.
+    pub fn retire_native_source_parameter_delivery_on_control(
+        &mut self,
+    ) -> Option<crate::foreign_parameter_delivery::Retired> {
+        self.foreign_parameter_delivery.as_ref()?.target()?;
+        let delivery = self.foreign_parameter_delivery.take()?;
+        delivery.retire(Arc::clone(&self.status))
     }
 
     /// Queue a live hold on the selected original worker. A begin/change
@@ -946,6 +1028,21 @@ impl PublicationControl {
         }
         self.candidate_root.native_source_received_program(binding)
     }
+    /// Retryable observation on the exact original live worker. `Ok(None)`
+    /// means no coherent pickup is available yet; only `Some(received)` whose
+    /// `program` is None proves an observed empty frontier. Busy observations
+    /// are distinct from a stale, revoked or closing source. No admission or
+    /// callback/graph custody is granted by this query.
+    pub fn try_native_source_received_program_on_control(
+        &self,
+        binding: Binding,
+    ) -> Result<Option<crate::plugin_worker::ReceivedProgram>, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native automation output is closing");
+        }
+        self.candidate_root
+            .try_native_source_received_program(binding)
+    }
     /// Exact worker reply publication, still distinct from final Main delivery.
     pub fn native_source_processed_program_on_control(
         &self,
@@ -1214,3 +1311,6 @@ mod parameter_source_tests {
         assert_eq!(status.native_parameter_source(false), None);
     }
 }
+
+#[cfg(test)]
+mod retired_delivery_tests;

@@ -1,10 +1,13 @@
-//! Bounded FDN history; preparation is the only allocation and coefficient owner.
+//! Bounded FDN history; preparation owns allocation and canonical coefficients.
+//! Authored output/filter coefficients use bounded cached conversion in automation.
+pub(super) mod automation;
 use super::{PARAMETER_COUNT, Settings, parameter as p};
+use automation::{AutomatedSettings, AutomatedValues};
 use hex_lattice::{
     DeviceResources, NativeInstrumentClock, NativeParameterAutomation, NativeProcessorRuntime,
     OutputTail, PreparedNativeProcessor, StereoFrame,
 };
-use hex_lattice_contract::{DeviceContractError, ParameterDescriptor, ParameterId, ParameterValue};
+use hex_lattice_contract::{DeviceContractError, ParameterDescriptor, ParameterId};
 use std::any::Any;
 const TIMES: [f32; 8] = [
     0.0233, 0.0297, 0.0311, 0.0371, 0.0411, 0.0437, 0.0479, 0.0539,
@@ -15,6 +18,88 @@ const TAPS: [f32; 8] = [
 const COEFFICIENTS: usize = 32;
 type FeedbackGains = (f32, f32, f32, f32);
 type Rotations = [Option<(f32, f32)>; 3];
+
+// Authored diffusion/density reuse the passive scatter law. A partial override
+// keys on the other component's current canonical ramp, not its final target.
+#[derive(Clone, Copy, Default)]
+struct ScatterCache {
+    parameters: Option<(f32, f32)>,
+    rotations: Rotations,
+}
+impl ScatterCache {
+    fn resolve(&mut self, diffusion: f32, density: f32) -> Rotations {
+        let parameters = Some((diffusion, density));
+        if self.parameters != parameters {
+            self.rotations = scatter_rotations(diffusion * 0.01, density + 1.0);
+            self.parameters = parameters;
+        }
+        self.rotations
+    }
+    fn check_inline(&self) {
+        let Self {
+            parameters,
+            rotations,
+        } = self;
+        let _: &Option<(f32, f32)> = parameters;
+        let _: &Rotations = rotations;
+    }
+}
+
+// Authored feedback derives from effective parameter ramps at tank rate.
+// Canonical-only rendering keeps the established prepared coefficient ramps.
+#[derive(Clone, Copy, Default)]
+struct FeedbackCache {
+    parameters: Option<[f32; 8]>,
+    gains: [FeedbackGains; 8],
+}
+fn blend(a: f32, b: f32, weight: f32) -> f32 {
+    if weight <= 0.0 {
+        a
+    } else if weight >= 1.0 {
+        b
+    } else {
+        a + (b - a) * weight
+    }
+}
+impl FeedbackCache {
+    fn resolve(&mut self, parameters: [f32; 8]) -> &[FeedbackGains; 8] {
+        if self.parameters != Some(parameters) {
+            let [decay, size, high_ratio, low_ratio, freeze, flat, low, high] = parameters;
+            self.gains = std::array::from_fn(|i| {
+                let base = 10.0_f32.powf(-3.0 * TIMES[i] * size / decay);
+                let mid = blend(base, 1.0, freeze);
+                let shaped_low =
+                    blend(mid, base.powf(1.0 / low_ratio), low * (1.0 - freeze * flat));
+                let shaped_high = blend(
+                    mid,
+                    base.powf(1.0 / high_ratio),
+                    high * (1.0 - freeze * flat),
+                );
+                shaping_gains(shaped_low, mid, shaped_high)
+            });
+            self.parameters = Some(parameters);
+        }
+        &self.gains
+    }
+    fn check_inline(&self) {
+        let Self { parameters, gains } = self;
+        let _: &Option<[f32; 8]> = parameters;
+        let _: &[(f32, f32, f32, f32); 8] = gains;
+    }
+}
+// Validated none/fast/slow choice; each supported rate gives a nonzero duration.
+fn smoothing_frames(rate: u32, mode: u32) -> u32 {
+    match mode {
+        0 => 1,
+        2 => (rate / 10).max(1),
+        _ => (rate / 50).max(1),
+    }
+}
+// Inputs are validated: decay0.1..60s and rate8..192kHz. The largest
+// product is34,752,000frames, safely representable before this cast.
+fn silence_deadline_frames(rate: u32, decay: f32) -> u64 {
+    ((f64::from(decay) * 3.0 + 1.0).max(8.0) * f64::from(rate)).ceil() as u64
+}
 
 #[derive(Clone, Copy)]
 struct TankDesign {
@@ -58,6 +143,9 @@ pub struct PreparedReverb {
     capacities: [usize; 8],
     allpass_capacities: [usize; 2],
     silence_limit: u64,
+    decay_admitted: bool,
+    freeze_admitted: bool,
+    smoothing_admitted: bool,
 }
 // Topology-preserving state-variable section. Positive g and damping remain
 // stable throughout bounded parameter ramps; no arbitrary biquad interpolation.
@@ -142,13 +230,32 @@ impl PreparedReverb {
                 .map(|t| ((t * std::f32::consts::SQRT_2 + 0.004) * tank_rate).ceil() as usize + 4),
             allpass_capacities: [0.005_f32, 0.0017]
                 .map(|t| (t * 2.0 * tank_rate).ceil() as usize + 4),
-            silence_limit: ((f64::from(settings.get(p::DECAY)) * 3.0 + 1.0).max(8.0)
-                * f64::from(rate))
-            .ceil() as u64,
+            silence_limit: silence_deadline_frames(rate, settings.get(p::DECAY)),
+            decay_admitted: false,
+            freeze_admitted: false,
+            smoothing_admitted: false,
         })
+    }
+    pub(super) fn with_automation(mut self, parameters: &[ParameterId]) -> Self {
+        self.decay_admitted = parameters.contains(&p::DECAY);
+        self.freeze_admitted = parameters.contains(&p::FREEZE);
+        self.smoothing_admitted = parameters.contains(&p::SMOOTH);
+        self
     }
     fn runtime(&self) -> ReverbRuntime {
         ReverbRuntime {
+            automation_controls: crate::parameter_binding::Controls::new(
+                AutomatedSettings::new(self.settings),
+                std::array::from_fn(|i| {
+                    (i != 0 || self.decay_admitted)
+                        && (i != automation::FREEZE_INDEX || self.freeze_admitted)
+                        && (i != automation::SMOOTH_INDEX || self.smoothing_admitted)
+                }),
+            ),
+            automated_values: AutomatedValues::default(),
+            tail_controls_frozen: false,
+            scatter_cache: ScatterCache::default(),
+            feedback_cache: FeedbackCache::default(),
             rate: self.rate,
             factor: self.factor,
             tank_rate: self.tank_rate,
@@ -183,7 +290,7 @@ impl PreparedNativeProcessor for PreparedReverb {
         &self,
         parameter: ParameterId,
     ) -> Option<ParameterDescriptor> {
-        if parameter != p::DRY_WET {
+        if !self.supports_parameter_automation(parameter) {
             return None;
         }
         super::DESCRIPTORS
@@ -192,7 +299,10 @@ impl PreparedNativeProcessor for PreparedReverb {
             .copied()
     }
     fn supports_parameter_automation(&self, parameter: ParameterId) -> bool {
-        parameter == p::DRY_WET
+        automation::supports(parameter)
+            && (parameter != p::DECAY || self.decay_admitted)
+            && (parameter != p::FREEZE || self.freeze_admitted)
+            && (parameter != p::SMOOTH || self.smoothing_admitted)
     }
 
     fn supports_smoothed_bypass(&self) -> bool {
@@ -217,13 +327,17 @@ impl PreparedNativeProcessor for PreparedReverb {
         Some(0)
     }
     fn output_tail(&self) -> OutputTail {
-        if self.settings.on(p::FREEZE) {
+        if self.settings.on(p::FREEZE) || self.freeze_admitted {
             OutputTail::Unbounded
         } else {
             OutputTail::Finite {
                 // A copied freeze-off ramp may retain up to 100ms before its
                 // silence clock starts. Include that transition in the promise.
-                max_tail_frames: self.silence_limit + u64::from(self.rate).div_ceil(10),
+                max_tail_frames: if self.decay_admitted {
+                    silence_deadline_frames(self.rate, 60.0)
+                } else {
+                    self.silence_limit
+                } + u64::from(self.rate).div_ceil(10),
             }
         }
     }
@@ -331,6 +445,11 @@ pub struct ReverbRuntimeStorage {
 }
 pub const RUNTIME_HEAP_ALLOCATIONS: usize = 14;
 pub struct ReverbRuntime {
+    automation_controls: crate::parameter_binding::Controls<AutomatedSettings, 33>,
+    automated_values: AutomatedValues,
+    tail_controls_frozen: bool,
+    scatter_cache: ScatterCache,
+    feedback_cache: FeedbackCache,
     rate: u32,
     factor: u32,
     tank_rate: f32,
@@ -363,6 +482,11 @@ impl ReverbRuntime {
     /// Exhaustive destructuring forces an owning-field audit when this changes.
     pub fn control_storage(&self) -> Option<ReverbRuntimeStorage> {
         let Self {
+            automation_controls,
+            automated_values,
+            tail_controls_frozen,
+            scatter_cache,
+            feedback_cache,
             rate,
             factor,
             tank_rate,
@@ -389,6 +513,11 @@ impl ReverbRuntime {
             chorus_phase,
         } = self;
         fn inline<T: Copy>(_: &T) {}
+        automation_controls.check_inline(AutomatedSettings::check_inline);
+        automated_values.check_inline();
+        inline(tail_controls_frozen);
+        scatter_cache.check_inline();
+        feedback_cache.check_inline();
         inline(rate);
         inline(factor);
         inline(tank_rate);
@@ -438,6 +567,24 @@ impl ReverbRuntime {
             .into_iter()
             .try_fold(storage.inline_bytes, usize::checked_add)
     }
+    fn retime_canonical_ramps(&mut self, mode: u32) {
+        if self.tank_ramp_remaining == 0 {
+            return;
+        }
+        let frames = smoothing_frames(self.rate, mode);
+        let mut remaining = 0;
+        for ramp in self
+            .parameters
+            .iter_mut()
+            .chain(self.coefficients.iter_mut())
+        {
+            if ramp.remaining != 0 {
+                ramp.retarget(ramp.target, frames);
+                remaining = frames;
+            }
+        }
+        self.tank_ramp_remaining = remaining;
+    }
     fn v(&self, id: hex_lattice_contract::ParameterId) -> f32 {
         self.parameters[(id.value() - 1) as usize].current
     }
@@ -464,10 +611,24 @@ impl ReverbRuntime {
         self.silent_frames = 0;
         self.active = false;
     }
-    fn tank(&mut self, input: StereoFrame) {
-        let size = (self.v(p::SIZE) / 100.0).sqrt();
-        let predelay = self.v(p::PREDELAY) * 0.001 * self.tank_rate;
-        let excitation = 1.0 - self.v(p::FREEZE) * self.v(p::CUT);
+    fn tank(&mut self, input: StereoFrame, output: AutomatedValues) {
+        let freeze = output.freeze.unwrap_or_else(|| self.v(p::FREEZE));
+        let flat = output.flat.unwrap_or_else(|| self.v(p::FLAT));
+        let cut = output.cut.unwrap_or_else(|| self.v(p::CUT));
+        let predelay = output.predelay.unwrap_or_else(|| self.v(p::PREDELAY));
+        let spin_amount = output.spin_amount.unwrap_or_else(|| self.v(p::SPIN_AMOUNT));
+        let spin_rate = output.spin_rate.unwrap_or_else(|| self.v(p::SPIN_RATE));
+        let shape = output.shape.unwrap_or_else(|| self.v(p::SHAPE));
+        let scale = output.scale.unwrap_or_else(|| self.v(p::SCALE));
+        let chorus_amount = output
+            .chorus_amount
+            .unwrap_or_else(|| self.v(p::CHORUS_AMOUNT));
+        let chorus_rate = output.chorus_rate.unwrap_or_else(|| self.v(p::CHORUS_RATE));
+        let diffusion = output.diffusion.unwrap_or_else(|| self.v(p::DIFFUSION));
+        let density = output.density.unwrap_or_else(|| self.v(p::DENSITY));
+        let size = (output.size.unwrap_or_else(|| self.v(p::SIZE)) / 100.0).sqrt();
+        let predelay = predelay * 0.001 * self.tank_rate;
+        let excitation = 1.0 - freeze * cut;
         let settled = self.tank_ramp_remaining == 0;
         let [high_filter, low_filter] = if settled {
             self.settled_tank.filters
@@ -477,60 +638,102 @@ impl ReverbRuntime {
                 InputFilter::new(self.coefficients[25].current, self.coefficients[31].current),
             ]
         };
+        let high_filter = if output.lo_g.is_some() || output.lo_damping.is_some() {
+            InputFilter::new(
+                output.lo_g.unwrap_or(self.coefficients[24].current),
+                output.lo_damping.unwrap_or(self.coefficients[30].current),
+            )
+        } else {
+            high_filter
+        };
+        let low_filter = if output.hi_g.is_some() || output.hi_damping.is_some() {
+            InputFilter::new(
+                output.hi_g.unwrap_or(self.coefficients[25].current),
+                output.hi_damping.unwrap_or(self.coefficients[31].current),
+            )
+        } else {
+            low_filter
+        };
+        let lo_alpha = output.low_alpha.unwrap_or(self.coefficients[26].current);
+        let hi_alpha = output.high_alpha.unwrap_or(self.coefficients[27].current);
         let mut late_input = [0.0; 2];
         let mut early = [0.0; 2];
         for c in 0..2 {
             let mut x = input[c] * excitation;
             let high = high_filter.apply(&mut self.input_low[c], x, true);
-            x += (high - x) * self.v(p::LO_CUT);
+            x += (high - x) * output.lo_cut.unwrap_or_else(|| self.v(p::LO_CUT));
             let low = low_filter.apply(&mut self.input_high[c], x, false);
-            x += (low - x) * self.v(p::HI_CUT);
+            x += (low - x) * output.hi_cut.unwrap_or_else(|| self.v(p::HI_CUT));
             self.inputs[c].push(x);
             late_input[c] = self.inputs[c].read(predelay + 1.0);
             for (i, seconds) in TAPS.into_iter().enumerate() {
                 let phase = self.spin_phase + c as f32 * 0.25 + i as f32 * 0.137;
                 let spin = (std::f32::consts::TAU * phase).sin()
-                    * self.v(p::SPIN)
-                    * self.v(p::SPIN_AMOUNT)
+                    * output.spin.unwrap_or_else(|| self.v(p::SPIN))
+                    * spin_amount
                     * 0.000025
                     * self.tank_rate;
                 let delay = predelay
-                    + (seconds * size * (0.75 + 0.5 * self.v(p::SHAPE)) * self.tank_rate + spin)
-                        .max(0.0)
+                    + (seconds * size * (0.75 + 0.5 * shape) * self.tank_rate + spin).max(0.0)
                     + 1.0;
-                let weight = (1.0 - self.v(p::SHAPE) + self.v(p::SHAPE) * (i as f32 / 7.0)) * 0.125;
+                let weight = (1.0 - shape + shape * (i as f32 / 7.0)) * 0.125;
                 early[c] +=
                     self.inputs[c].read(delay) * weight * if i % 3 == 2 { -1.0 } else { 1.0 };
             }
             late_input[c] += early[c] * 0.25;
         }
-        let depth = self.v(p::CHORUS)
-            * self.v(p::CHORUS_AMOUNT)
+        let depth = output.chorus.unwrap_or_else(|| self.v(p::CHORUS))
+            * chorus_amount
             * 0.001
             * self.tank_rate
-            * (1.0 - self.v(p::FREEZE));
+            * (1.0 - freeze);
         let delayed = std::array::from_fn(|i| {
             let modulation =
                 (std::f32::consts::TAU * (self.chorus_phase + i as f32 * 0.173)).sin() * depth;
             let base = TIMES[i] * size * self.tank_rate;
-            let delay = base + self.v(p::FREEZE) * (base.round() - base);
+            let delay = base + freeze * (base.round() - base);
             self.lines[i].read(delay + modulation)
         });
-        let rotations = if settled {
+        let rotations = if output.diffusion.is_some() || output.density.is_some() {
+            self.scatter_cache.resolve(diffusion, density)
+        } else if settled {
             self.settled_tank.rotations
         } else {
             scatter_rotations(self.v(p::DIFFUSION) * 0.01, self.v(p::DENSITY) + 1.0)
         };
         let feedback = scatter(delayed, rotations);
+        let authored_feedback = if output.decay.is_some()
+            || output.size.is_some()
+            || output.high_ratio.is_some()
+            || output.low_ratio.is_some()
+            || output.high.is_some()
+            || output.low.is_some()
+            || output.freeze.is_some()
+            || output.flat.is_some()
+        {
+            let feedback_parameters = [
+                output.decay.unwrap_or_else(|| self.v(p::DECAY)),
+                size,
+                output.high_ratio.unwrap_or_else(|| self.v(p::HIGH_RATIO)),
+                output.low_ratio.unwrap_or_else(|| self.v(p::LOW_RATIO)),
+                freeze,
+                flat,
+                output.low.unwrap_or_else(|| self.v(p::LOW)),
+                output.high.unwrap_or_else(|| self.v(p::HIGH)),
+            ];
+            Some(self.feedback_cache.resolve(feedback_parameters))
+        } else {
+            None
+        };
         for (i, sample) in feedback.into_iter().enumerate() {
-            let lo_alpha = self.coefficients[26].current;
-            let hi_alpha = self.coefficients[27].current;
             self.feedback_low[i] =
                 clean(lo_alpha * self.feedback_low[i] + (1.0 - lo_alpha) * sample);
             // Cascaded shelves have a conservative product-gain bound. Keep
             // even crossed cutoffs and in-flight mode/ratio edits passive;
             // ordinary feedback stays below unity, flat freeze reaches unity.
-            let (mid, low, high_ratio, normalizer) = if settled {
+            let (mid, low, high_ratio, normalizer) = if let Some(gains) = authored_feedback {
+                gains[i]
+            } else if settled {
                 self.settled_tank.feedback[i]
             } else {
                 shaping_gains(
@@ -558,23 +761,35 @@ impl ReverbRuntime {
                 .map(|(i, v)| v * if (i >> (c + 1)) & 1 == 0 { 0.25 } else { -0.25 })
                 .sum::<f32>();
             for (i, seconds) in [0.005, 0.0017].into_iter().enumerate() {
-                let a = self.v(p::DIFFUSION) * 0.006;
+                let a = diffusion * 0.006;
                 let old = self.allpasses[c][i]
-                    .read(seconds * (0.5 + 1.5 * self.v(p::SCALE) * 0.01) * self.tank_rate);
+                    .read(seconds * (0.5 + 1.5 * scale * 0.01) * self.tank_rate);
                 let output = old - a * diffuse;
                 self.allpasses[c][i].push(diffuse + a * output);
                 diffuse = output;
             }
-            self.next[c] = reflection * self.coefficients[28].current
-                + diffuse * self.coefficients[29].current;
+            self.next[c] = reflection * output.reflect.unwrap_or(self.coefficients[28].current)
+                + diffuse * output.diffuse.unwrap_or(self.coefficients[29].current);
         }
         let mid = (self.next[0] + self.next[1]) * 0.5;
-        let side = (self.next[0] - self.next[1]) * 0.5 * self.v(p::STEREO) * 0.01;
+        let side = (self.next[0] - self.next[1])
+            * 0.5
+            * output.stereo.unwrap_or_else(|| self.v(p::STEREO))
+            * 0.01;
         self.next = [mid + side, mid - side];
-        self.spin_phase = (self.spin_phase + self.v(p::SPIN_RATE) / self.tank_rate).fract();
-        self.chorus_phase = (self.chorus_phase + self.v(p::CHORUS_RATE) / self.tank_rate).fract();
+        self.spin_phase = (self.spin_phase + spin_rate / self.tank_rate).fract();
+        self.chorus_phase = (self.chorus_phase + chorus_rate / self.tank_rate).fract();
     }
     fn frame(&mut self, frame: &mut StereoFrame, dry_wet: Option<f32>) {
+        self.frame_outputs(
+            frame,
+            AutomatedValues {
+                dry_wet,
+                ..AutomatedValues::default()
+            },
+        );
+    }
+    fn frame_outputs(&mut self, frame: &mut StereoFrame, output: AutomatedValues) {
         if self.tank_ramp_remaining != 0 {
             for ramp in &mut self.parameters {
                 ramp.advance();
@@ -591,10 +806,12 @@ impl ReverbRuntime {
                 0.0
             }
         });
-        if input != [0.0; 2] && self.v(p::FREEZE) * self.v(p::CUT) < 1.0 {
+        let freeze = output.freeze.unwrap_or_else(|| self.v(p::FREEZE));
+        let cut = output.cut.unwrap_or_else(|| self.v(p::CUT));
+        if input != [0.0; 2] && freeze * cut < 1.0 {
             self.active = true;
             self.silent_frames = 0;
-        } else if self.active && self.v(p::FREEZE) == 0.0 {
+        } else if self.active && freeze == 0.0 {
             self.silent_frames += 1;
             if self.silent_frames >= self.silence_limit {
                 self.clear();
@@ -607,12 +824,12 @@ impl ReverbRuntime {
             self.phase += 1;
             if self.phase == self.factor {
                 self.phase = 0;
-                self.tank(self.sum.map(|v| v / self.factor as f32));
+                self.tank(self.sum.map(|v| v / self.factor as f32), output);
                 self.sum = [0.0; 2];
             }
         }
         let fraction = (self.phase + 1) as f32 / self.factor as f32;
-        let wet = dry_wet.unwrap_or_else(|| self.v(p::DRY_WET)) * 0.01;
+        let wet = output.dry_wet.unwrap_or_else(|| self.v(p::DRY_WET)) * 0.01;
         for c in 0..2 {
             let room = self.previous[c] + fraction * (self.next[c] - self.previous[c]);
             frame[c] = ((1.0 - wet) * input[c] + wet * room).clamp(-16.0, 16.0);
@@ -654,12 +871,41 @@ fn scatter(mut output: [f32; 8], rotations: Rotations) -> [f32; 8] {
 }
 impl NativeProcessorRuntime for ReverbRuntime {
     fn process_block(&mut self, frames: &mut [StereoFrame], _: &dyn hex_lattice::DeviceResources) {
+        if !frames.is_empty() && !self.tail_controls_frozen {
+            // This active render has no provider automation view. Discard
+            // inherited delivery state without resetting the room; a later
+            // tail must freeze canonical controls, and resumed identical
+            // authored values must be sampled into a fresh cache.
+            let canonical_mode = self.settings.get(p::SMOOTH) as u32;
+            if self
+                .automated_values
+                .smooth
+                .is_some_and(|mode| mode != canonical_mode)
+            {
+                self.retime_canonical_ramps(canonical_mode);
+            }
+            self.automation_controls.reset();
+            self.automated_values = AutomatedValues::default();
+            self.silence_limit = silence_deadline_frames(self.rate, self.settings.get(p::DECAY));
+        }
         for frame in frames {
-            self.frame(frame, None);
+            if self.tail_controls_frozen {
+                self.frame_outputs(frame, self.automated_values);
+            } else {
+                self.frame(frame, None);
+            }
         }
     }
+    fn begin_output_tail(&mut self) {
+        self.tail_controls_frozen = true;
+    }
     fn supports_parameter_automation(&self, parameter: ParameterId) -> bool {
-        parameter == p::DRY_WET
+        automation::supports(parameter)
+            && (parameter != p::DECAY || self.automation_controls.admitted(0))
+            && (parameter != p::FREEZE
+                || self.automation_controls.admitted(automation::FREEZE_INDEX))
+            && (parameter != p::SMOOTH
+                || self.automation_controls.admitted(automation::SMOOTH_INDEX))
     }
     fn process_block_with_automation(
         &mut self,
@@ -668,24 +914,16 @@ impl NativeProcessorRuntime for ReverbRuntime {
         automation: &dyn NativeParameterAutomation,
         _: &dyn DeviceResources,
     ) -> Result<(), DeviceContractError> {
-        if automation.parameter_ids() != [p::DRY_WET] {
-            return Err(DeviceContractError::UnknownParameter);
-        }
-        for (offset, frame) in frames.iter_mut().enumerate() {
-            let mut values = [None];
-            automation.values_at(offset, &mut values)?;
-            let dry_wet = match values[0] {
-                Some(ParameterValue::Float(percent)) if (0.0..=100.0).contains(&percent) => {
-                    Some(percent)
-                }
-                None => None,
-                _ => return Err(DeviceContractError::InvalidParameterValue),
-            };
-            self.frame(frame, dry_wet);
-        }
-        Ok(())
+        self.process_automation(frames, automation)
     }
+
     fn reset(&mut self) {
+        self.automation_controls.reset();
+        self.automated_values = AutomatedValues::default();
+        self.tail_controls_frozen = false;
+        self.scatter_cache = ScatterCache::default();
+        self.feedback_cache = FeedbackCache::default();
+        self.silence_limit = silence_deadline_frames(self.rate, self.settings.get(p::DECAY));
         self.clear();
         for v in &mut self.parameters {
             *v = Ramp::steady(v.target);
@@ -715,6 +953,20 @@ impl NativeProcessorRuntime for ReverbRuntime {
         else {
             return;
         };
+        self.automation_controls.inherit(&old.automation_controls);
+        self.automated_values = old.automated_values;
+        self.scatter_cache = old.scatter_cache;
+        self.feedback_cache = old.feedback_cache;
+        if self.automation_controls.admitted(0) {
+            self.silence_limit = silence_deadline_frames(
+                self.rate,
+                self.automated_values
+                    .decay
+                    .unwrap_or(self.settings.get(p::DECAY)),
+            );
+        }
+        // Tail admission belongs to the host, not inherited DSP history. Fresh
+        // canonical successors must ignore overrides from removed lanes.
         for (to, from) in self
             .inputs
             .iter_mut()
@@ -729,11 +981,13 @@ impl NativeProcessorRuntime for ReverbRuntime {
         {
             to.copy(from);
         }
-        let frames = match self.settings.get(p::SMOOTH) as u32 {
-            0 => 1,
-            2 => (self.rate / 10).max(1),
-            _ => (self.rate / 50).max(1),
+        let canonical_mode = self.settings.get(p::SMOOTH) as u32;
+        let mode = if self.automation_controls.admitted(automation::SMOOTH_INDEX) {
+            old.automated_values.smooth.unwrap_or(canonical_mode)
+        } else {
+            canonical_mode
         };
+        let frames = smoothing_frames(self.rate, mode);
         let mut ramp_remaining = 0;
         for (v, p) in self.parameters.iter_mut().zip(old.parameters) {
             v.inherit(p, frames);

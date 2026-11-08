@@ -369,6 +369,47 @@ impl EditorView {
                     && state.project.clip(drag.clip.id()) == Some(drag.clip.as_ref())
             })
     }
+    /// Hover follows the same title/body boundary as the waveform surface.
+    /// Held and admitted fade display is owned separately by the gesture below.
+    pub(super) fn update_fade_hover(
+        &mut self,
+        track: TrackId,
+        clip: ClipId,
+        generation: u64,
+        pointer_y: Option<f32>,
+    ) -> bool {
+        if pointer_y.is_some() && generation != self.project_generation {
+            return false;
+        }
+        let target = (generation, clip);
+        let over_body = self.track_height(track) > super::track_layout::HEADER_ONLY_HEIGHT
+            && self.drag_lane_epochs.get(&track) == Some(&self.drag_layout_generation)
+            && pointer_y
+                .zip(self.drag_lanes.get(&track))
+                .is_some_and(|(y, lane)| {
+                    let body_top = lane.top + super::clip_name::CLIP_NAME_HEIGHT;
+                    let bottom = lane.top + lane.height;
+                    [y, lane.top, lane.height, body_top, bottom]
+                        .into_iter()
+                        .all(f32::is_finite)
+                        && lane.height > super::clip_name::CLIP_NAME_HEIGHT
+                        && y >= body_top
+                        && y < bottom
+                });
+        let next = if over_body {
+            Some(target)
+        } else if self.hovered_fade_clip == Some(target) {
+            None
+        } else {
+            self.hovered_fade_clip
+        };
+        if self.hovered_fade_clip == next {
+            return false;
+        }
+        self.hovered_fade_clip = next;
+        true
+    }
+
     pub(super) fn reconcile_fade_gesture(&mut self) {
         if self.hovered_fade_clip.is_some_and(|(generation, clip)| {
             generation != self.project_generation

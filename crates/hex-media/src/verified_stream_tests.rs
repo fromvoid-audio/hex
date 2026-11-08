@@ -720,3 +720,49 @@ fn reuse_open_keeps_manifest_limits_and_cancellation() {
         Err(ImportError::Cancelled)
     ));
 }
+
+#[cfg(feature = "test-support")]
+#[test]
+fn generic_read_failure_clears_decoded_prefix_and_allows_verified_retry() {
+    let frames = (0_i16..20_000)
+        .map(|sample| [sample, -sample])
+        .collect::<Vec<_>>();
+    let file = TempFile::create(&pcm16_wav(&frames, false));
+    let mut reader = VerifiedWavReader::open(file.path(), limits(8192)).unwrap();
+    let expected = frames[10_000..18_192]
+        .iter()
+        .map(|frame| frame.map(|sample| f32::from(sample) / 32768.0))
+        .collect::<Vec<_>>();
+    let mut output = vec![[42.0; 2]; expected.len()];
+    assert_eq!(
+        reader.read_frames_into(10_000, &mut output).unwrap(),
+        expected.len()
+    );
+    assert_eq!(output, expected);
+    // Header and the first three decoded batches fit in the first verified
+    // page; the next actual page read fails after a nonzero decoded prefix.
+    reader.fail_page_read_after(1);
+    output.fill([42.0; 2]);
+    let before = reader.raw_page_reads();
+    assert!(
+        matches!(reader.read_frames_into(10_000, &mut output), Err(ImportError::Io(error)) if error.kind() == std::io::ErrorKind::Other)
+    );
+    assert_eq!(reader.raw_page_reads() - before, 1);
+    assert!(output.iter().all(|frame| *frame == [0.0; 2]));
+    assert_eq!(
+        reader.read_frames_into(10_000, &mut output).unwrap(),
+        expected.len()
+    );
+    assert_eq!(
+        output, expected,
+        "the one-shot error leaves verified retry intact"
+    );
+    reader.fail_page_read_after(0);
+    reader.clear_page_read_failure();
+    output.fill([42.0; 2]);
+    assert_eq!(
+        reader.read_frames_into(10_000, &mut output).unwrap(),
+        expected.len()
+    );
+    assert_eq!(output, expected, "a cleared plan leaves the reader intact");
+}
