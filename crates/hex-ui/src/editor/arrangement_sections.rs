@@ -82,7 +82,14 @@ struct Display {
     // toggle it.
     held: [Option<SectionId>; 2],
     marker_only: bool,
-    drop_feedback: Option<section_reorder::DropFeedback>,
+    drop_feedback: Option<DropDisplay>,
+}
+#[derive(Clone)]
+struct DropDisplay {
+    feedback: section_reorder::DropFeedback,
+    // Earlier FIFO completions may install a different clock while this exact
+    // receipt still owns paint. Never reproject its original target with it.
+    tempo: TempoMap,
 }
 impl Display {
     fn pointer_hover_at(
@@ -1093,7 +1100,11 @@ impl EditorView {
                             g.display.markers =
                                 preview.sections().iter().map(Marker::from).collect();
                             g.display.tempo = preview.tempo_map().clone();
-                            g.display.drop_feedback = preview.feedback();
+                            g.display.drop_feedback =
+                                preview.feedback().map(|feedback| DropDisplay {
+                                    feedback,
+                                    tempo: state.project.tempo_map().clone(),
+                                });
                             g.command = Some(preview.command);
                         }
                         Ok(None) => {}
@@ -2304,18 +2315,13 @@ impl EditorView {
                     .into_any_element(),
             );
         }
-        if let Some(feedback) = display.drop_feedback {
+        if let Some(drop) = &display.drop_feedback {
             let fraction = |beat| {
-                state
-                    .project
-                    .tempo_map()
-                    .beat_to_frame(beat)
-                    .ok()
-                    .map(|frame| {
-                        (frame as f64 - viewport.start as f64) as f32 / viewport.length as f32
-                    })
+                drop.tempo.beat_to_frame(beat).ok().map(|frame| {
+                    (frame as f64 - viewport.start as f64) as f32 / viewport.length as f32
+                })
             };
-            match feedback {
+            match drop.feedback {
                 section_reorder::DropFeedback::Insert(at) => {
                     if let Some(left) = fraction(at) {
                         elements.push(

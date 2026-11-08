@@ -47,7 +47,7 @@ impl Fixture {
     }
 
     pub(super) fn position(&self, beat: BeatTime) -> f32 {
-        (beat.raw() as f64 / view_span(self.project().arrangement_sections()) as f64) as f32
+        position_in(self.project(), beat)
     }
 
     #[cfg(test)]
@@ -306,6 +306,10 @@ impl Fixture {
             feedback: None,
         }))
     }
+}
+
+pub(super) fn position_in(project: &Project, beat: BeatTime) -> f32 {
+    (beat.raw() as f64 / view_span(project.arrangement_sections()) as f64) as f32
 }
 
 fn view_span(sections: &[ArrangementSection]) -> u64 {

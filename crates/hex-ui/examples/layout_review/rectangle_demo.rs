@@ -1146,25 +1146,32 @@ impl Render for RectangleDemo {
                 }
             }
         }
-        let feedback = match self.pending.as_ref() {
-            Some(Pending::Section { feedback, .. }) => *feedback,
-            _ if self.capture.is_some() => self.section_feedback,
-            _ => None,
+        let (feedback, project) = match self.pending.as_ref() {
+            Some(Pending::Section {
+                feedback, source, ..
+            }) => (*feedback, Some(source.as_ref())),
+            _ if self.capture.is_some() => (
+                self.section_feedback,
+                self.section_fixture.as_ref().map(|f| f.project()),
+            ),
+            _ => (None, None),
         };
-        if let (Some(feedback), Some(fixture)) = (feedback, self.section_fixture.as_ref()) {
+        if let (Some(feedback), Some(project)) = (feedback, project) {
             match feedback {
                 crate::section_reorder::DropFeedback::Insert(at) => {
                     area = area.child(
-                        crate::section_surface::insertion_indicator(fixture.position(at))
-                            .debug_selector(|| "sandbox-section-drop-insertion".into()),
+                        crate::section_surface::insertion_indicator(section_fixture::position_in(
+                            project, at,
+                        ))
+                        .debug_selector(|| "sandbox-section-drop-insertion".into()),
                     );
                 }
                 crate::section_reorder::DropFeedback::Replace { start, end, .. } => {
-                    let left = fixture.position(start);
+                    let left = section_fixture::position_in(project, start);
                     area = area.child(
                         crate::section_surface::replacement_indicator(
                             left,
-                            fixture.position(end) - left,
+                            section_fixture::position_in(project, end) - left,
                         )
                         .debug_selector(|| "sandbox-section-drop-replace".into()),
                     );
