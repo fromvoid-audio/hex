@@ -210,6 +210,7 @@ fn stolen_occurrence_receives_no_host_gain_after_the_steal() {
                     None,
                     &resources,
                     &mut half,
+                    None,
                 )
                 .unwrap_or_else(|error| panic!("{partitions:?} at {offset}: {error:?}"));
             runtime.commit_block();

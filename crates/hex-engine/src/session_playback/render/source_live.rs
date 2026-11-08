@@ -81,6 +81,7 @@ pub(super) fn render_source_live_input(
                     Some(&source_clock),
                     &hex_lattice::EMPTY_DEVICE_RESOURCES,
                     None,
+                    None,
                 )
                 .map_err(|error| error.render_error())?;
         }

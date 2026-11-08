@@ -2499,6 +2499,7 @@ fn process_mutable_tail<T: MidiTiming + ?Sized>(
                 Some(&clock),
                 &hex_lattice::EMPTY_DEVICE_RESOURCES,
                 None,
+                None,
             )
             .map_err(crate::mutable_instrument::MutableInstrumentRuntimeError::render_error);
     }
@@ -2912,6 +2913,7 @@ fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?
             Some(&clock),
             resources,
             &mut lookup,
+            None,
         )
         .map_err(crate::mutable_instrument::MutableInstrumentRuntimeError::render_error)
 }
