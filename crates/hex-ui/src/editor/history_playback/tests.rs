@@ -52,38 +52,7 @@ fn play_menu_preserves_history_through_delayed_ack_and_completed_repaints(cx: &m
             project.as_ref()
         );
     });
-    let deadline = Instant::now() + std::time::Duration::from_secs(2);
-    loop {
-        editor.update(&mut visual, |view, cx| {
-            view.tick(cx);
-            cx.notify();
-        });
-        if editor.read_with(&visual, |view, _| {
-            matches!(
-                view.prepared_seek.as_ref().map(|p| p.stage),
-                Some(SeekStage::Published { .. })
-            )
-        }) {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "{:?}",
-            editor.read_with(&visual, |view, _| (
-                view.prepared_seek.as_ref().map(|p| (p.stage, p.cancelled)),
-                view.error.as_ref().map(|e| e.to_string()),
-                view.status.to_string(),
-                view.pending_playback.is_some(),
-                view.pending_resident_publication.is_some(),
-                view.playback_candidates.len(),
-                view.worker_requests_pending,
-                view.state.as_ref().map(|s| s.revision),
-                view.applied_project_revision,
-                view.audible_playback.as_ref().map(|a| a.audio_revision),
-            ))
-        );
-        std::thread::yield_now();
-    }
+    wait_for_submission(&editor, &mut visual, 256);
     for _ in 0..2 {
         editor.update(&mut visual, |view, cx| {
             view.tick(cx);
@@ -271,4 +240,90 @@ fn feedback_commands() -> Vec<hex_project::Command> {
         velocity: 100,
     });
     commands
+}
+
+fn wait_for_submission(
+    editor: &gpui::Entity<crate::editor::EditorView>,
+    visual: &mut VisualTestContext,
+    destination: u64,
+) {
+    let deadline = Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        editor.update(visual, |view, cx| {
+            view.tick(cx);
+            cx.notify();
+        });
+        if editor.read_with(visual, |view, _| {
+            view.prepared_seek.as_ref().is_some_and(|pending| {
+                pending.destination_frame == destination
+                    && matches!(pending.stage, SeekStage::Published { .. })
+            })
+        }) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "history submission unavailable: {:?}",
+            editor.read_with(visual, |view, _| (
+                view.prepared_seek
+                    .as_ref()
+                    .map(|p| (p.stage, p.cancelled, p.destination_frame)),
+                view.error.as_ref().map(|e| e.to_string()),
+                view.status.to_string(),
+            ))
+        );
+        std::thread::yield_now();
+    }
+}
+
+#[gpui::test]
+fn latest_history_intent_on_an_ordinary_graph_waits_for_prior_then_exact_ack(
+    cx: &mut TestAppContext,
+) {
+    let mut fixture = crate::editor::worker_ui_fixture::open(
+        cx,
+        vec![hex_project::Command::AddTrack {
+            name: "arrangement".into(),
+        }],
+    );
+    let editor = fixture.editor.clone();
+    let mut visual = VisualTestContext::from_window(fixture.handle, cx);
+    editor.update(&mut visual, |view, _| view.request_history_playback(256));
+    wait_for_submission(&editor, &mut visual, 256);
+    editor.update(&mut visual, |view, _| {
+        view.request_history_playback(512);
+        assert!(!view.prepared_seek.as_ref().unwrap().cancelled);
+        let latest = view.latched_seek_intent.as_ref().unwrap();
+        assert!(matches!(latest.kind, SeekKind::History));
+        assert_eq!(latest.destination_frame, 512);
+    });
+    // An already submitted publication retains custody until its exact ACK;
+    // only then may the latest latched request capture the new active fence.
+    fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+    wait_for_submission(&editor, &mut visual, 512);
+    for _ in 0..2 {
+        editor.update(&mut visual, |view, cx| {
+            view.tick(cx);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            let latest = view.prepared_seek.as_ref().unwrap();
+            assert!(matches!(latest.kind, SeekKind::History));
+            assert_eq!(latest.destination_frame, 512);
+            assert_eq!(view.audio_status().unwrap().position.load(Acquire), 320);
+        });
+    }
+    fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+    editor.update(&mut visual, |view, cx| {
+        view.tick(cx);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(view.prepared_seek.is_none());
+        assert!(view.latched_seek_intent.is_none());
+        assert_eq!(view.audio_status().unwrap().position.load(Acquire), 576);
+    });
+    fixture.finish(cx);
 }
