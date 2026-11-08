@@ -143,7 +143,33 @@ impl Project {
         })?;
         Ok(Created::Device(id))
     }
+
+    pub(crate) fn remove_source_device(
+        &mut self,
+        source: SourceId,
+        device: DeviceId,
+    ) -> Result<(), Invalid> {
+        let definition = self
+            .native_source(source)
+            .ok_or(Invalid("native source no longer exists"))?;
+        if definition.instrument().id() == device {
+            return Err(Invalid(
+                "source instrument requires explicit source removal or unlinking",
+            ));
+        }
+        self.edit_source_chain(source, |chain| {
+            let index = chain
+                .iter()
+                .position(|item| item.id() == device)
+                .ok_or(Invalid("source device no longer exists"))?;
+            let span = crate::device_inventory::serial_unit_span(chain, index)?;
+            drop(chain.drain(span));
+            Ok(())
+        })
+    }
 }
 
+#[cfg(test)]
+mod removal_tests;
 #[cfg(test)]
 mod tests;
