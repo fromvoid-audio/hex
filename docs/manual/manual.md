@@ -260,11 +260,13 @@ section edits apply while playing. when an edit changes the tempo, a sampler's h
 notes or a device's latency, audio briefly restarts at the playhead: effect tails
 cut and sounding notes start again, and playback keeps running.
 
-hold **command** before or during a drag to adjust only the marker; the music stays
-in place. command-resize an edge to trim or remove overlapping section markers, or
-use **command-delete** to remove the selected marker only. releasing command keeps
-that drag marker-only. **control** temporarily inverts section snapping. release
-outside the section lane to accept the last valid preview, or press **escape** to cancel.
+hold **option-command** before or during a drag to adjust only the marker; the music
+stays in place. option-command-resize an edge to trim or remove overlapping section
+markers, or use **option-command-delete** to remove the selected marker only.
+releasing the keys keeps that drag marker-only. **command** alone temporarily inverts
+section snapping; **control** remains an alias, including during marker-only edits.
+release outside the section lane to accept the last valid preview, or press **escape**
+to cancel.
 
 turn on **section autoplay and loop** in the top toolbar, then click the body of
 an arrange section to play it repeatedly. the launch dropdown beside it also
