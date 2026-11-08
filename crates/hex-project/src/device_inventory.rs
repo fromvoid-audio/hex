@@ -39,7 +39,18 @@ impl Project {
     pub(crate) fn validate_serial_units(&self) -> Result<(), Invalid> {
         validate_chain(self.main_devices().iter())?;
         for track in self.tracks() {
-            validate_chain(track.devices().iter())?;
+            if let Some(position) = track.instrument_position() {
+                // The retained instrument interrupts local signal order and is
+                // a different canonical owner, never a local unit ancestor.
+                let (before, after) = track
+                    .devices()
+                    .split_at_checked(position)
+                    .ok_or(Invalid("track instrument position is out of bounds"))?;
+                validate_chain(before.iter())?;
+                validate_chain(after.iter())?;
+            } else {
+                validate_chain(track.devices().iter())?;
+            }
         }
         for track in self.return_tracks() {
             validate_chain(track.devices().iter())?;
@@ -81,6 +92,52 @@ fn validate_chain<'a>(devices: impl Iterator<Item = &'a Device>) -> Result<(), I
 mod tests {
     use super::*;
     use crate::{Command, Created, Editor, default_instrument_state};
+
+    #[test]
+    fn local_units_cannot_cross_the_track_instrument_slot() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "source".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        editor
+            .execute(Command::InsertInstrument {
+                track,
+                state: default_instrument_state().unwrap(),
+            })
+            .unwrap();
+        for _ in 0..2 {
+            editor
+                .execute(Command::InsertDevice {
+                    track,
+                    before: None,
+                    state: default_instrument_state().unwrap(),
+                })
+                .unwrap();
+        }
+        let snapshot = editor.project().snapshot();
+        for position in 0..=2 {
+            let mut candidate = snapshot.clone();
+            candidate.tracks[0].instrument_position = Some(position);
+            assert!(
+                Project::from_snapshot(candidate.clone()).is_ok(),
+                "flat control at {position}"
+            );
+            candidate.tracks[0].devices[1].parent = Some(candidate.tracks[0].devices[0].id);
+            assert_eq!(
+                Project::from_snapshot(candidate).is_ok(),
+                position != 1,
+                "unit at {position}"
+            );
+        }
+        let mut malformed = snapshot;
+        malformed.tracks[0].instrument_position = Some(3);
+        assert!(Project::from_snapshot(malformed).is_err());
+    }
 
     #[test]
     fn serial_membership_is_bounded_preorder_and_preserved_by_scalar_history() {
