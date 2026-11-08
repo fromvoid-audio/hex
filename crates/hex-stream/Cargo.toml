@@ -20,6 +20,7 @@ hex-storage = { path = "../hex-storage" }
 rtrb = "=0.3.4"
 
 [dev-dependencies]
+hex-media = { path = "../hex-media", features = ["test-support"] }
 allocation-counter = "=0.8.1"
 
 [build-dependencies]
