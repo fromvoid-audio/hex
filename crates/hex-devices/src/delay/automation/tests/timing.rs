@@ -313,3 +313,36 @@ fn linked_sync_and_division_use_current_right_presence() {
         }
     }
 }
+
+#[test]
+fn publication_without_timing_admission_restores_donor_targets_once() {
+    let base = patch(
+        &patch(&state(0.5, 0.4), LINK, ParameterValue::Bool(false)),
+        RIGHT_TIME,
+        ParameterValue::Float(5.0),
+    );
+    let mut donor = runtime(&base, 8000, Some(&IDS));
+    let mut v = values();
+    v.values[0] = Some(ParameterValue::Float(2.0));
+    v.values[1] = Some(ParameterValue::Float(5.0));
+    v.values[8] = Some(ParameterValue::Bool(true));
+    render(donor.as_mut(), &signal(257), &mut v, 13, false);
+    let target = patch(
+        &patch(&base, FEEDBACK, ParameterValue::Float(0.7)),
+        DRY_WET,
+        ParameterValue::Float(0.8),
+    );
+    let mut expected = runtime(&target, 8000, None);
+    expected.inherit_from(donor.as_ref());
+    let mut actual = runtime(&base, 8000, Some(&[FEEDBACK, DRY_WET]));
+    actual.inherit_from(donor.as_ref());
+    assert_eq!(
+        super::auto(
+            actual.as_mut(),
+            &signal(1024),
+            &mut super::values(Some([0.7, 0.8])),
+            13
+        ),
+        plain(expected.as_mut(), &signal(1024))
+    );
+}

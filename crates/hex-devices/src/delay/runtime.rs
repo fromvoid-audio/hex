@@ -325,6 +325,13 @@ impl Runtime {
             .controls
             .resolve(&automation::BINDINGS, values)?;
         let block = self.block_settings();
+        let timing_admitted = [0, 3, 4, 5, 6, 7, 8, 9, 10]
+            .iter()
+            .any(|&i| self.speculative.controls.admitted(i));
+        // An incoming factory without timing lanes may still inherit a donor's
+        // targets. Refresh once after its first installed fallback; thereafter
+        // no borrowed value can change timing when it was not admitted.
+        let mut refresh_timing = true;
         for (offset, frame) in frames.iter_mut().enumerate() {
             if let Some(next) = self.speculative.controls.sample(
                 &automation::BINDINGS,
@@ -335,11 +342,16 @@ impl Runtime {
                 let changed = next.effective().other_targets()
                     != self.speculative.controls.effective().other_targets();
                 self.speculative.controls.install(next);
-                let timing = automation::timing(&self.speculative.controls);
-                if changed || timing != self.speculative.timing {
+                let mut retime = changed;
+                if refresh_timing {
+                    let timing = automation::timing(&self.speculative.controls);
+                    retime |= timing != self.speculative.timing;
+                    self.speculative.timing = timing;
+                    refresh_timing = timing_admitted;
+                }
+                if retime {
                     self.speculative.ramp_left = self.rate.div_ceil(100);
                 }
-                self.speculative.timing = timing;
             }
             self.process_frame(
                 frame,
