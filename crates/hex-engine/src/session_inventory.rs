@@ -557,7 +557,6 @@ impl PreparedSessionInventory {
         ) -> Result<PreparedAudioSourceRef<'a>, crate::Invalid>,
         samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
     ) -> Result<Self, crate::Invalid> {
-        crate::compile::refuse_serial_effect_units(project)?;
         crate::device_automation::validate_project(project)?;
         crate::gain_envelope::validate_project(project)?;
         crate::compile::validate_source_midi_roots(project)?;
