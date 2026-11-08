@@ -104,6 +104,34 @@ fn active(scope: DeviceAutomationTakeScope, source: DeviceAutomationSource) -> S
 }
 
 #[test]
+fn generic_sealed_recovery_refuses_each_original_custody_owner() {
+    use crate::service::native_automation_recording::tests::failed_lane_for_test;
+    use hex_storage::automation_draft::DraftTerminal;
+
+    let (files, session, scope, source) = fixture();
+    let before = session.project().clone();
+    let idle = Lane::default();
+    assert!(generic_sealed_recovery_idle(&State::default(), &idle));
+    let mut state = active(scope, source);
+    assert!(!generic_sealed_recovery_idle(&state, &idle));
+    let failed = state.active.take().unwrap();
+    state.failed = Some(failed);
+    assert!(!generic_sealed_recovery_idle(&state, &idle));
+    let original_path = files.0.join("sealed-guard-original");
+    let lane = failed_lane_for_test(
+        &session,
+        scope,
+        source,
+        &original_path,
+        DraftTerminal::Interrupted,
+    );
+    let original = std::fs::read(&original_path).unwrap();
+    assert!(!generic_sealed_recovery_idle(&State::default(), &lane));
+    assert_eq!(std::fs::read(&original_path).unwrap(), original);
+    assert_eq!(session.project(), &before);
+}
+
+#[test]
 fn failed_recovery_snapshots_only_quiescent_original_observations() {
     let (_files, _session, scope, source) = fixture();
     let mut state = active(scope, source);
@@ -189,7 +217,7 @@ fn failed_recovery_dispatch_copies_receipts_without_releasing_custody() {
             scope,
             source,
             8,
-            Vst3ApplicationValue::Value(0.5),
+            Vst3ApplicationValue::Value(0.0),
         )),
     )));
     let delivered = delivery(scope, source, 16, Vst3ApplicationValue::Value(0.75));
@@ -206,6 +234,7 @@ fn failed_recovery_dispatch_copies_receipts_without_releasing_custody() {
         start_failed_copy(&state, &mut lane, scope, &output, 3, false).unwrap(),
         Step::Progress(DeviceAutomationTakeProgress::Pending)
     ));
+    assert!(inspect_failed_copy(&state, &lane, scope, false).is_err());
     assert!(start_failed_copy(&state, &mut lane, scope, &output, 3, false).is_err());
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
@@ -240,6 +269,47 @@ fn failed_recovery_dispatch_copies_receipts_without_releasing_custody() {
             _ => panic!("unexpected recovery result"),
         }
     }
+    assert!(
+        matches!(inspect_failed_copy(&state, &lane, scope, false).unwrap(),
+        Step::Progress(DeviceAutomationTakeProgress::VerifiedCopy { path, .. }) if path == output)
+    );
+    assert!(inspect_failed_copy(&state, &lane, scope, true).is_err());
+    state.active = active(scope, source).active;
+    assert!(inspect_failed_copy(&state, &lane, scope, false).is_err());
+    state.active = None;
+    let mut wrong_scope = scope;
+    wrong_scope.stamp.gesture_serial += 1;
+    assert!(inspect_failed_copy(&state, &lane, wrong_scope, false).is_err());
+    let failed = state.failed.as_mut().unwrap();
+    let saved = failed.failed_observations[1].take();
+    assert!(inspect_failed_copy(&state, &lane, scope, false).is_err());
+    state.failed.as_mut().unwrap().failed_observations[1] = saved;
+    state.failed.as_mut().unwrap().source.transport_epoch += 1;
+    assert!(inspect_failed_copy(&state, &lane, scope, false).is_err());
+    state.failed.as_mut().unwrap().source = source;
+    let Some(DeviceAutomationTakeAction::PluginObservation(observation)) =
+        state.failed.as_mut().unwrap().pending.as_mut()
+    else {
+        panic!("pending observation");
+    };
+    let PluginParameterObservation::Delivered(delivery) = observation.as_mut() else {
+        panic!("delivery");
+    };
+    delivery.application.value = Vst3ApplicationValue::Value(-0.0);
+    assert!(inspect_failed_copy(&state, &lane, scope, false).is_err());
+    let Some(DeviceAutomationTakeAction::PluginObservation(observation)) =
+        state.failed.as_mut().unwrap().pending.as_mut()
+    else {
+        panic!("pending observation");
+    };
+    let PluginParameterObservation::Delivered(delivery) = observation.as_mut() else {
+        panic!("delivery");
+    };
+    delivery.application.value = Vst3ApplicationValue::Value(0.0);
+    assert!(
+        matches!(inspect_failed_copy(&state, &lane, scope, false).unwrap(),
+        Step::Progress(DeviceAutomationTakeProgress::VerifiedCopy { path, .. }) if path == output)
+    );
     let reader = DraftReader::open(
         &output,
         DraftReadLimits {

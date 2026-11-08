@@ -35,6 +35,7 @@ fn utility_filter_bypass_track_return_main_matches_automated_wet_and_dry_referen
                         .unwrap();
             }
             let device = DeviceSnapshot {
+                parent: None,
                 id,
                 automation: if automated {
                     vec![hex_project::DeviceAutomation {

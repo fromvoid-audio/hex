@@ -1,4 +1,4 @@
-//! Fixed FM4 voices and carrier controls; native host admission is separate.
+//! Fixed FM4 voices and carrier controls used by the registered native host.
 //!
 //! Control prepares all 128 tuned step entries (invalid/Nyquist keys remain
 //! explicitly unavailable). One twin owns 64 inline occurrence slots; batches
@@ -13,6 +13,11 @@
 //! Voice age/gate and the original tuned phase-step law are unchanged by carrier
 //! controls. Per-voice f32 source samples receive occurrence gain before f64 sum.
 //! Complete controls, effective pruning and voices participate in twin history.
+//! Rendering collects active slot indices once per segment and after event
+//! frames, preserving ascending slot summation order. Retirement can leave an
+//! inert index until the next collection; the zero-ID check prevents rendering
+//! it. Ordinary segments with exact settled Base controls skip carrier updates.
+//! These are derived stack views, not additional runtime history or custody.
 //! A prepared retarget adopts the complete same-rate target Base law. Ratio or
 //! tuning changes preserve oscillator phase; authored phase changes apply the
 //! new phase explicitly. Level/routing and attack/decay/sustain take effect at
@@ -27,7 +32,7 @@
 //! extending a carried note requires a separate host-deadline contract. Effective carrier ramps survive the handoff;
 //! the next segment selects the target's Base or supplied authored values.
 //! No assets, queues, host publication, event scheduler or new resource owner.
-//! Native definition admission and parameter metadata remain unchanged.
+//! Parameter automation metadata is exposed separately from this runtime.
 use super::*;
 use crate::fm4::{
     PreparedEnvelope, PreparedFmConfiguration, audible_operator_ancestors, prepared_steps_frequency,
@@ -52,11 +57,37 @@ const CARRIERS: [ParameterDescriptor; 4] = [
 /// Control-only component preparation through FM4's existing validated state
 /// and tuning contract. This does not advertise native host automation support.
 impl Fm4Definition {
+    /// Prepare the same fixed factory used by registered native FM4 playback.
     pub fn prepare_carrier_runtime(
         &self,
         state: &NativeDeviceState,
         context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn PreparedMutableInstrumentRuntime>, DeviceContractError> {
+        Ok(Box::new(Factory::prepare(state, context)?))
+    }
+}
+impl Factory {
+    pub(super) fn validate_note_on(
+        &self,
+        pitch: u8,
+        velocity: u8,
+    ) -> Result<(), DeviceContractError> {
+        if (1..=127).contains(&velocity)
+            && self
+                .config
+                .steps
+                .get(usize::from(pitch))
+                .is_some_and(Option::is_some)
+        {
+            Ok(())
+        } else {
+            Err(DeviceContractError::InvalidParameterValue)
+        }
+    }
+    pub(super) fn prepare(
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+    ) -> Result<Self, DeviceContractError> {
         let settings = Fm4Settings::from_state(state)?;
         let (oscillators, routing, envelope) = settings.kernel_parts()?;
         let sample_rate = context.sample_rate;
@@ -83,7 +114,7 @@ impl Fm4Definition {
         let frames = |seconds: f64| (seconds * f64::from(sample_rate)).round() as u64;
         let mut identity = [0; PAYLOAD_BYTES];
         identity.copy_from_slice(state.payload());
-        Ok(Box::new(Factory {
+        Ok(Self {
             config: Config {
                 identity,
                 tuning: *context.tuning,
@@ -100,7 +131,7 @@ impl Fm4Definition {
                 table: crate::shared_sine_table(),
                 smoothing: ((u64::from(sample_rate) * 5 + 500) / 1000) as u32,
             },
-        }))
+        })
     }
 }
 #[derive(Clone, Copy)]
@@ -136,7 +167,8 @@ impl PreparedInstrumentHistoryRetarget for Retarget {
         self
     }
 }
-struct Factory {
+#[derive(Clone, Copy)]
+pub(super) struct Factory {
     config: Config,
 }
 #[derive(Clone, Copy, Default)]
@@ -268,6 +300,31 @@ impl Runtime {
             }
         }
     }
+    fn active_slots(&self, slots: &mut [usize; VOICES]) -> usize {
+        let mut count = 0;
+        for (slot, (index, _)) in slots.iter_mut().zip(
+            self.voices
+                .iter()
+                .enumerate()
+                .filter(|(_, voice)| voice.id != 0),
+        ) {
+            *slot = index;
+            count += 1;
+        }
+        count
+    }
+    fn has_steady_base_carriers(&self) -> bool {
+        self.controls
+            .iter()
+            .zip(self.config.base.routing.carriers)
+            .zip(self.effective.routing.carriers)
+            .all(|((control, base), effective)| {
+                control.remaining == 0
+                    && control.current.to_bits() == base.to_bits()
+                    && control.target.to_bits() == base.to_bits()
+                    && effective.to_bits() == base.to_bits()
+            })
+    }
     fn render(
         &mut self,
         events: &[NativeInstrumentEvent],
@@ -276,19 +333,26 @@ impl Runtime {
         values: Option<&dyn NativeParameterAutomation>,
     ) {
         let mut next_event = 0;
+        let mut slots = [0; VOICES];
+        let mut active_count = self.active_slots(&mut slots);
+        let steady_base = values.is_none() && self.has_steady_base_carriers();
         for (offset, frame) in frames.iter_mut().enumerate() {
-            let carriers = std::array::from_fn(|index| {
-                let target =
-                    match values.and_then(|values| values.value_at(CARRIERS[index].id, offset)) {
+            if !steady_base {
+                let carriers = std::array::from_fn(|index| {
+                    let target = match values
+                        .and_then(|values| values.value_at(CARRIERS[index].id, offset))
+                    {
                         Some(ParameterValue::Float(value)) => f64::from(value),
                         _ => self.config.base.routing.carriers[index],
                     };
-                self.controls[index].sample(target, self.config.smoothing, self.cold)
-            });
-            if carriers != self.effective.routing.carriers {
-                self.set_carriers(carriers);
+                    self.controls[index].sample(target, self.config.smoothing, self.cold)
+                });
+                if carriers != self.effective.routing.carriers {
+                    self.set_carriers(carriers);
+                }
             }
             self.cold = false;
+            let first_event = next_event;
             while let Some(event) = events
                 .get(next_event)
                 .filter(|event| event.frame_offset() == offset)
@@ -297,8 +361,15 @@ impl Runtime {
                 let _ = Self::apply(&self.config, &mut self.voices, *event);
                 next_event += 1;
             }
+            if next_event != first_event {
+                active_count = self.active_slots(&mut slots);
+            }
             let mut sum = 0.0_f64;
-            for voice in &mut self.voices {
+            for &slot in &slots[..active_count] {
+                // Collected from this fixed array; no caller-supplied index.
+                let Some(voice) = self.voices.get_mut(slot) else {
+                    continue;
+                };
                 if voice.id == 0 {
                     continue;
                 }
@@ -309,24 +380,40 @@ impl Runtime {
                 envelope.release = voice.release_ceiling;
                 let amplitude = envelope.level(voice.age, voice.gate.unwrap_or(u64::MAX))
                     * (f64::from(voice.velocity) / 127.0);
-                let mut configuration = self.effective;
-                for (phase, offset) in configuration.phases.iter_mut().zip(voice.phase_offsets) {
-                    *phase = phase.wrapping_add(offset);
-                }
                 let sample = if amplitude == 0.0 {
                     0.0
                 } else {
-                    (configuration.routed_output::<false>(
-                        self.config.table,
-                        voice.age,
-                        &steps,
-                        [1.0; 4],
-                    ) * amplitude) as f32
+                    let output = if voice.phase_offsets == [0; 4] {
+                        self.effective.routed_output::<false>(
+                            self.config.table,
+                            voice.age,
+                            &steps,
+                            [1.0; 4],
+                        )
+                    } else {
+                        let mut configuration = self.effective;
+                        for (phase, offset) in
+                            configuration.phases.iter_mut().zip(voice.phase_offsets)
+                        {
+                            *phase = phase.wrapping_add(offset);
+                        }
+                        configuration.routed_output::<false>(
+                            self.config.table,
+                            voice.age,
+                            &steps,
+                            [1.0; 4],
+                        )
+                    };
+                    (output * amplitude) as f32
                 };
-                let gain = gains
-                    .binary_search_by_key(&voice.id, |gain| gain.occurrence_id())
-                    .ok()
-                    .map_or(1.0, |index| gains[index].value_at_offset(offset as u64));
+                let gain = if gains.is_empty() {
+                    1.0
+                } else {
+                    gains
+                        .binary_search_by_key(&voice.id, |gain| gain.occurrence_id())
+                        .ok()
+                        .map_or(1.0, |index| gains[index].value_at_offset(offset as u64))
+                };
                 sum += f64::from(sample) * gain;
                 voice.advance(1);
             }

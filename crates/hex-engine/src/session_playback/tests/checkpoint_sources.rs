@@ -63,6 +63,7 @@ fn process_source_input(
             None,
             &hex_lattice::EMPTY_DEVICE_RESOURCES,
             None,
+            None,
         )
         .unwrap();
     runtime.commit_block();

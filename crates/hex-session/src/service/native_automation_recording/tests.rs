@@ -367,14 +367,14 @@ fn failed_lane_retains_original_custody_through_copy_refusal_and_retry() {
     };
     assert_eq!(copy_path, plugin_copy);
     assert!(
-        matches!(lane.receive(&session, None, scope.context(), scope, &DeviceAutomationTakeAction::InspectFailedPluginCopy).unwrap(),
+        matches!(lane.inspect_failed_plugin_copy(scope, &observations).unwrap(),
         Step::Progress(DeviceAutomationTakeProgress::VerifiedCopy { path, receipt: retained }) if path == plugin_copy && retained == receipt)
     );
-    lane.copy_failed_plugin(scope, &destination, 2, observations)
+    lane.copy_failed_plugin(scope, &destination, 2, observations.clone())
         .unwrap();
     assert!(wait(&mut lane).is_err());
     assert!(
-        matches!(lane.receive(&session, None, scope.context(), scope, &DeviceAutomationTakeAction::InspectFailedPluginCopy).unwrap(),
+        matches!(lane.inspect_failed_plugin_copy(scope, &observations).unwrap(),
         Step::Progress(DeviceAutomationTakeProgress::VerifiedCopy { path, receipt: retained }) if path == plugin_copy && retained == receipt)
     );
     let copied = DraftReader::open(

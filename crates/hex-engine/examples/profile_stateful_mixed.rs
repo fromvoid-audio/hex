@@ -111,6 +111,7 @@ fn fixture_with_companion(
         }
         for device in 0..devices {
             track.devices.push(DeviceSnapshot {
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: snapshot.next_id,
