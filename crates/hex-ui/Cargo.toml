@@ -30,6 +30,8 @@ serde_json = "=1.0.151"
 image = { version = "=0.25.9", default-features = false }
 
 [dev-dependencies]
+# Complete control-side EQ upgrade project save/reopen fixture only.
+hex-storage = { path = "../hex-storage" }
 hex-devices = { path = "../hex-devices" }
 hex-audio = { path = "../hex-audio", features = ["allocation-probe"] }
 hex-media = { path = "../hex-media" }

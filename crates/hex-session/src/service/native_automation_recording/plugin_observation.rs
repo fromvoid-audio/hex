@@ -42,11 +42,7 @@ pub fn copy_failed_plugin_on_control(
             };
             if reader.provenance() != scope.stamp
                 || reader.target() != expected
-                || reader.capture_clock()
-                    != Some(CaptureClock {
-                        sample_rate: source.sample_rate,
-                        loop_region: source.section_loop,
-                    })
+                || reader.capture_clock() != Some(source.capture_clock(reader.source()))
                 || reader
                     .target()
                     .vst3_class_in_source(reader.source())
@@ -57,10 +53,16 @@ pub fn copy_failed_plugin_on_control(
             }
             let tail = prepare_failed_plugin_continuation(scope, source, previous, observations)
                 .map_err(str::to_owned)?;
-            Ok((
-                tail.events().collect(),
-                tail.terminal().unwrap_or(DraftTerminal::Interrupted),
-            ))
+            let terminal = match outcome.requested_terminal {
+                DraftTerminal::Interrupted => tail.terminal().unwrap_or(DraftTerminal::Interrupted),
+                terminal => {
+                    if !observations.is_empty() {
+                        return Err("plugin observation follows admitted terminal".into());
+                    }
+                    terminal
+                }
+            };
+            Ok((tail.events().collect(), terminal))
         },
     )
 }

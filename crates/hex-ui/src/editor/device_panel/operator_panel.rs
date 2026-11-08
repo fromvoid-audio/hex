@@ -190,7 +190,7 @@ pub(super) fn render_body(
                     && !event.keystroke.modifiers.platform
                     && owner.is_some_and(|owner| owner.is_current(view))
                 {
-                    if preview::finalize_controls(view, cx, device) && finalize_controls(view, cx) {
+                    if finalize_controls(view, cx) {
                         if event.keystroke.modifiers.shift {
                             window.focus_prev();
                         } else {

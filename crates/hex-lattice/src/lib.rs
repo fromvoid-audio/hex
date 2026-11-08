@@ -183,11 +183,11 @@ pub use instrument_pair::{
     NativeOwnedInstrumentRuntimePair, OwnedInstrumentRuntime, PreparedOwnedInstrumentRuntime,
 };
 pub use instrument_runtime::{
-    AnalyticInstrumentHistory, InstrumentHistoryRetargetPreparation, MutableInstrumentRuntime,
-    NativeInstrumentAnalyticSeed, NativeInstrumentClock, NativeInstrumentEvent,
-    NativeInstrumentExpression, NativeInstrumentRuntimeError, NativeInstrumentRuntimeLimits,
-    NativeInstrumentRuntimePair, PreparedInstrumentHistoryRetarget,
-    PreparedMutableInstrumentRuntime,
+    AnalyticInstrumentHistory, InstrumentHistoryRetargetPreparation, InstrumentParameterRuntime,
+    MAX_INSTRUMENT_AUTOMATION_FRAMES, MutableInstrumentRuntime, NativeInstrumentAnalyticSeed,
+    NativeInstrumentClock, NativeInstrumentEvent, NativeInstrumentExpression,
+    NativeInstrumentRuntimeError, NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair,
+    PreparedInstrumentHistoryRetarget, PreparedMutableInstrumentRuntime,
 };
 
 /// Immutable, control-prepared configuration for one stateful native effect.

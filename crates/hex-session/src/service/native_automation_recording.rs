@@ -105,6 +105,15 @@ impl DeviceAutomationSource {
             && self.audio_revision == scope.stamp.audio_revision
             && self.transport_epoch == scope.stamp.transport_epoch
     }
+
+    fn capture_clock(self, project: &hex_project::Project) -> CaptureClock {
+        CaptureClock {
+            sample_rate: self.sample_rate,
+            loop_region: self
+                .section_loop
+                .or_else(|| project.loop_region().filter(|region| region.enabled())),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -160,6 +169,7 @@ pub(super) struct Lane {
 
 struct Failed {
     scope: DeviceAutomationTakeScope,
+    source: DeviceAutomationSource,
     outcome: Arc<DraftWorkerOutcome>,
 }
 
@@ -204,15 +214,7 @@ impl Lane {
         if !source.matches(scope) || source.sample_rate != session.project().sample_rate() {
             return Err("device automation source or transport changed".into());
         }
-        let clock = CaptureClock {
-            sample_rate: source.sample_rate,
-            loop_region: source.section_loop.or_else(|| {
-                session
-                    .project()
-                    .loop_region()
-                    .filter(|region| region.enabled())
-            }),
-        };
+        let clock = source.capture_clock(session.project());
         let path = draft_path(directory)?;
         let (input, worker) = match scope.target {
             DeviceCaptureTarget::Native(target) => DeviceDraftInput::start_on_control(
@@ -259,7 +261,7 @@ impl Lane {
                 .failed
                 .as_ref()
                 .ok_or("no failed device automation custody is available")?;
-            if failed.scope != scope {
+            if failed.scope != scope || !failed.source.matches(scope) {
                 return Err("device automation recovery belongs to another take".into());
             }
             return match action {
@@ -406,8 +408,9 @@ impl Lane {
                 let Some(outcome) = active.input.try_take_outcome() else {
                     return Ok(Step::Progress(Progress::Pending));
                 };
+                let source = active.source;
                 self.active = None;
-                return self.resolve(session, document_base, current, scope, outcome);
+                return self.resolve(session, document_base, current, scope, source, outcome);
             }
         };
         Ok(Step::Progress(progress))
@@ -429,12 +432,14 @@ impl Lane {
         document_base: Option<&Path>,
         current: AudioSourceContext,
         scope: DeviceAutomationTakeScope,
+        source: DeviceAutomationSource,
         outcome: DraftWorkerOutcome,
     ) -> Result<Step, String> {
         if let Some(reason) = outcome.failure.as_deref() {
             let error = retained_error(&outcome.path, reason);
             self.failed = Some(Failed {
                 scope,
+                source,
                 outcome: Arc::new(outcome),
             });
             return Err(error);
