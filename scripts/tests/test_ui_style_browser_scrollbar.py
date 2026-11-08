@@ -28,6 +28,7 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                 "crates/hex-ui/src/editor/track_meters.rs": '.child(bar) .child(bars.id(id))',
                 "crates/hex-ui/src/editor/tracks.rs": '.child(toggle_button_with_style(label, tooltip, id, style)) .child(framed_clip)',
                 "crates/hex-ui/src/editor/clip_boundary.rs": '.child(paint)',
+                "crates/hex-ui/src/editor/clip_border_ui_test.rs": '.child(super::pixel_boundary_shell(body, left, top, width, height, stroke, color, true, selector))',
                 "crates/hex-ui/src/editor/return_tracks.rs": '.child(super::waveform::toggle_button_with_style(label, tooltip, id, style))',
             }
             for name, text in files.items():
@@ -47,6 +48,10 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                 ("other.rs", '.child(bar)'),
                 ("other.rs", '.child(framed_clip)'),
                 ("other.rs", '.child(paint)'),
+                ("other.rs", '.child(body.absolute().left(x).top(y).w(width).h(height))'),
+                ("other.rs", '.child(super::pixel_boundary_shell(body, left, top, width, height, stroke, color, true, selector))'),
+                ("editor/clip_border_ui_test.rs", '.child("Unnormalized")'),
+                ("editor/clip_border_ui_test.rs", '.child(self.unregistered_component(cx))'),
                 ("other.rs", '.child(trailing_edge(notch, color, hover))'),
                 ("editor/clip_boundary.rs", '.child("Unnormalized")'),
                 ("editor/clip_boundary.rs", '.child(self.unregistered_component(cx))'),
