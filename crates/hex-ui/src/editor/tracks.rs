@@ -161,7 +161,10 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
         );
     } else if let Some(waveform) = &payload.ghost_waveform {
         ghost = ghost.children([loop_handles::body(
-            clip_waveform_body(waveform_summary_view(std::sync::Arc::clone(waveform))),
+            clip_waveform_body(waveform_summary_view(
+                std::sync::Arc::clone(waveform),
+                theme::waveform_ink_for_fill(fill),
+            )),
             looping,
         )]);
     } else {
@@ -905,6 +908,7 @@ impl EditorView {
                                 tempo: state.project.tempo_map(),
                                 asset: state.waveforms.get(&original_clip.asset()),
                                 prepared: state.audio_clip_waveforms.get(&original_clip.id()),
+                                ink: theme::waveform_ink_for_fill(fill),
                             },
                             visible_start,
                             visible_end,
@@ -1307,6 +1311,7 @@ impl EditorView {
                             preview.start_frame,
                             visible_start,
                             visible_end,
+                            crate::theme::color(crate::theme::PaletteRole::Waveform),
                         ))]);
                 }
                 if clip_preview.is_some()
@@ -2656,9 +2661,14 @@ impl EditorView {
         }
         match source {
             ClipPaintSource::Audio(clip) => {
-                content = content.child(clip_waveform_body(
-                    self.audio_clip_body(state, clip, start, end, None),
-                ));
+                content = content.child(clip_waveform_body(self.audio_clip_body(
+                    state,
+                    clip,
+                    start,
+                    end,
+                    None,
+                    theme::waveform_ink_for_fill(fill),
+                )));
                 let fade = if clip.audio_edit().is_some() {
                     super::waveform::projected_fade_envelope_samples(
                         clip,
@@ -2700,6 +2710,7 @@ impl EditorView {
         visible_start: u64,
         visible_end: u64,
         grid: Option<super::waveform::WaveformGrid>,
+        ink: u32,
     ) -> Div {
         let waveform = state.waveforms.get(&clip.asset());
         let body = if let Some(prepared) = state.audio_clip_waveforms.get(&clip.id()) {
@@ -2727,6 +2738,7 @@ impl EditorView {
                 visible_end,
                 std::rc::Rc::clone(&self.waveform_geometry_cache),
                 grid,
+                ink,
             )
         } else if clip.audio_edit().is_some() {
             div()
@@ -2746,6 +2758,7 @@ impl EditorView {
                     visible_end,
                     std::rc::Rc::clone(&self.waveform_geometry_cache),
                     grid,
+                    ink,
                 ),
                 None => div()
                     .absolute()
@@ -2872,13 +2885,17 @@ impl EditorView {
                     lane,
                 )
             });
-        let header_fill = theme::clip_activity_fill(
-            state
-                .project
-                .track(track)
-                .map_or(hex_project::ElementColor::default(), |t| t.color()),
-            clip.flavor(),
-            false,
+        let identity = state
+            .project
+            .track(track)
+            .map_or(hex_project::ElementColor::default(), |t| t.color());
+        let header_fill = theme::clip_activity_fill(identity, clip.flavor(), false, clip.active());
+        let waveform_ink = theme::clip_waveform_ink(
+            identity,
+            theme::ClipWaveformBackground::Arrangement {
+                flavor: clip.flavor(),
+                selected,
+            },
             clip.active(),
         );
         let fill = theme::arrangement_clip_body_fill(header_fill, selected);
@@ -2935,6 +2952,7 @@ impl EditorView {
                     visible_start,
                     visible_end,
                     self.waveform_grid(track, viewport, scale_factor),
+                    waveform_ink,
                 )),
                 looping,
             ));

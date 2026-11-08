@@ -174,6 +174,8 @@ struct ThemeTokens {
     colors: hex_preferences::ThemePreferences,
     elements: [ElementColors; 10],
     muted_clip_fills: [u32; 10],
+    clip_waveform_inks: [ClipWaveformInks; 10],
+    inactive_waveform_inks: [u32; 2],
     clip: u32,
     clip_fill: u32,
     clip_text: u32,
@@ -196,9 +198,26 @@ impl ThemeTokens {
         let primary = colors.primary.packed();
         let elements = hex_project::ElementColor::ALL
             .map(|identity| resolve_element_colors(identity, lighten(background, 5)));
+        let muted_clip_fills = elements.map(|colors| muted_clip_fill(colors.accent));
+        let surface = lighten(background, 5);
+        let event_fill = mix(background, text, 0.15);
+        let clip_waveform_inks = std::array::from_fn(|index| {
+            ClipWaveformInks::resolve(
+                elements[index].accent,
+                muted_clip_fills[index],
+                surface,
+                event_fill,
+            )
+        });
+        let neutral = elements[hex_project::ElementColor::Gray as usize].accent;
+        let inactive_waveform_inks = [false, true].map(|selected| {
+            waveform_ink_for_background(neutral, arrangement_clip_body_fill(0x888888, selected))
+        });
         Self {
             colors,
-            muted_clip_fills: elements.map(|colors| muted_clip_fill(colors.accent)),
+            muted_clip_fills,
+            clip_waveform_inks,
+            inactive_waveform_inks,
             elements,
             clip: mix(background, text, 0.15),
             clip_fill: mix(primary, text, 0.15),
@@ -321,7 +340,7 @@ fn contrast_text(background: u32, preferred: u32) -> u32 {
     }
 }
 
-fn contrast_ratio(first: u32, second: u32) -> f32 {
+pub(crate) fn contrast_ratio(first: u32, second: u32) -> f32 {
     let luminance = |color: u32| {
         let linear = |shift: u32| {
             let channel = ((color >> shift) & 0xff) as f32 / 255.0;
@@ -444,9 +463,92 @@ fn resolve_element_colors(identity: hex_project::ElementColor, surface: u32) -> 
         accent_text: contrast_text(accent, 0x000000),
     }
 }
+/// Actual backdrop used by the clip's shared waveform painter. Paint context
+/// never participates in the waveform geometry cache or saved project state.
+#[derive(Clone, Copy)]
+pub(crate) enum ClipWaveformBackground {
+    Arrangement {
+        flavor: hex_project::ClipFlavor,
+        selected: bool,
+    },
+    Events,
+    Source,
+}
+
+#[derive(Clone, Copy)]
+struct ClipWaveformInks {
+    muted: [u32; 2],
+    accent: [u32; 2],
+    source: u32,
+    events: u32,
+}
+impl ClipWaveformInks {
+    fn resolve(hue: u32, muted: u32, source: u32, events: u32) -> Self {
+        Self {
+            muted: [false, true].map(|selected| {
+                waveform_ink_for_background(hue, arrangement_clip_body_fill(muted, selected))
+            }),
+            accent: [false, true].map(|selected| {
+                waveform_ink_for_background(hue, arrangement_clip_body_fill(hue, selected))
+            }),
+            source: waveform_ink_for_background(hue, source),
+            events: waveform_ink_for_background(hue, events),
+        }
+    }
+}
+
+fn waveform_ink_for_background(hue: u32, background: u32) -> u32 {
+    let dark = mix(0x000000, hue, 0.18);
+    let light = mix(hue, 0xffffff, 0.80);
+    if contrast_ratio(dark, background) >= contrast_ratio(light, background) {
+        dark
+    } else {
+        light
+    }
+}
+
+/// Passive fragments already carry their resolved clip fill, without an owner ID.
+/// Their bounded paint-only tone stays in that hue and changes no sample geometry.
+pub(crate) fn waveform_ink_for_fill(fill: u32) -> u32 {
+    waveform_ink_for_background(fill, fill)
+}
+
+/// Constant-time palette query. Resolve relative-luminance contrast once per
+/// theme, including the selected Arrangement body lift. Inactive ink stays
+/// neutral; the existing waveform opacity remains with its presentation owner.
+pub(crate) fn clip_waveform_ink(
+    identity: hex_project::ElementColor,
+    background: ClipWaveformBackground,
+    active: bool,
+) -> u32 {
+    ACTIVE_THEME.with(|theme| {
+        let theme = theme.get();
+        let hue = if active {
+            identity
+        } else {
+            hex_project::ElementColor::Gray
+        };
+        let inks = theme.clip_waveform_inks[hue as usize];
+        match background {
+            ClipWaveformBackground::Arrangement { flavor, selected } => {
+                if !active {
+                    return theme.inactive_waveform_inks[usize::from(selected)];
+                }
+                let values = match flavor {
+                    hex_project::ClipFlavor::Muted => inks.muted,
+                    hex_project::ClipFlavor::Accent => inks.accent,
+                };
+                values[usize::from(selected)]
+            }
+            ClipWaveformBackground::Events => inks.events,
+            ClipWaveformBackground::Source => inks.source,
+        }
+    })
+}
+
 /// Darken the track hue by removing neutral light, increasing saturation without
 /// shifting its hue. Resolve once per theme; retain 4.5:1 contrast for the existing
-/// black waveform/note ink and Console foregrounds, including historical gray.
+/// note ink and Console foregrounds, including historical gray.
 fn muted_clip_fill(accent: u32) -> u32 {
     (0..=40)
         .rev()
@@ -466,7 +568,7 @@ const CLIP_SELECTION_LIFT: u32 = 22;
 const SELECTED_CLIP_BODY_WHITENING: f32 = 0.35;
 
 /// Derive the Arrangement content surface from its unselected header color.
-/// This changes no geometry or content ink, and requires no project traversal.
+/// This changes no geometry and requires no project traversal.
 pub(crate) fn arrangement_clip_body_fill(header: u32, selected: bool) -> u32 {
     if selected {
         mix(
@@ -558,6 +660,54 @@ mod tests {
     impl Drop for RestoreTheme {
         fn drop(&mut self) {
             apply_preferences(self.0);
+        }
+    }
+
+    #[test]
+    fn waveform_hues_contrast_with_each_actual_clip_backdrop() {
+        for background in [0x000000, 0x101010, 0x2a1438, 0x808080, 0xf5f0e6, 0xffffff] {
+            let colors = hex_preferences::ThemePreferences {
+                background: hex_preferences::RgbColor::new(
+                    (background >> 16) as u8,
+                    (background >> 8) as u8,
+                    background as u8,
+                ),
+                ..hex_preferences::ThemePreferences::default()
+            };
+            let tokens = ThemeTokens::from_preferences(colors);
+            for identity in hex_project::ElementColor::ALL {
+                let index = identity as usize;
+                let inks = tokens.clip_waveform_inks[index];
+                let hue = tokens.elements[index].accent;
+                for (ink, fill) in [(inks.source, tokens.surface), (inks.events, tokens.clip)] {
+                    assert!(
+                        contrast_ratio(ink, fill) >= 3.0,
+                        "{identity:?}: {ink:06x}/{fill:06x}"
+                    );
+                    assert_ne!(ink, 0);
+                    assert_ne!(ink, 0xffffff);
+                }
+                for selected in [false, true] {
+                    for (inks, fill) in [
+                        (inks.muted, tokens.muted_clip_fills[index]),
+                        (inks.accent, hue),
+                    ] {
+                        let fill = arrangement_clip_body_fill(fill, selected);
+                        let ink = inks[usize::from(selected)];
+                        assert!(
+                            contrast_ratio(ink, fill) >= 3.0,
+                            "{identity:?}: {ink:06x}/{fill:06x}"
+                        );
+                        assert!(contrast_ratio(waveform_ink_for_fill(fill), fill) >= 3.0);
+                    }
+                    let ink = tokens.inactive_waveform_inks[usize::from(selected)];
+                    assert_eq!(ink >> 16, (ink >> 8) & 255);
+                    assert_eq!(ink >> 16, ink & 255);
+                    assert!(
+                        contrast_ratio(ink, arrangement_clip_body_fill(0x888888, selected)) >= 3.0
+                    );
+                }
+            }
         }
     }
 

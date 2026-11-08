@@ -25,6 +25,7 @@ pub(super) struct WaveformPreview<'a> {
     pub(super) tempo: &'a hex_project::TempoMap,
     pub(super) asset: Option<&'a Arc<CachedWaveform>>,
     pub(super) prepared: Option<&'a hex_session::service::AudioClipWaveform>,
+    pub(super) ink: u32,
 }
 
 /// Keep inactive clip peaks readable but subordinate to active material.
@@ -59,6 +60,7 @@ fn prefix_waveform_view(
         tempo,
         asset,
         prepared,
+        ink,
     } = request;
     let source_end = original
         .source_offset()
@@ -157,6 +159,7 @@ fn prefix_waveform_view(
         visible_end,
         cache,
         grid,
+        ink,
     ))
 }
 
@@ -173,6 +176,7 @@ fn preview_waveform_view_cached_inner(
         tempo,
         asset,
         prepared,
+        ink,
     } = request;
     if original.id() != preview.id() || original.asset() != preview.asset() {
         return None;
@@ -273,6 +277,7 @@ fn preview_waveform_view_cached_inner(
                 visible_end,
                 cache,
                 grid,
+                ink,
             ));
         }
         if old.content_view.is_some() || edit.content_view.is_some() {
@@ -303,6 +308,7 @@ fn preview_waveform_view_cached_inner(
             visible_end,
             cache,
             grid,
+            ink,
         ))
     } else {
         if original.audio_edit().is_some() {
@@ -318,6 +324,7 @@ fn preview_waveform_view_cached_inner(
             visible_end,
             cache,
             grid,
+            ink,
         ))
     }
 }
@@ -328,6 +335,7 @@ pub(super) fn prepared_waveform_view_cached(
     visible_start: u64,
     visible_end: u64,
     cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
+    ink: u32,
 ) -> Div {
     clip_waveform_activity(
         waveform_canvas(
@@ -341,6 +349,7 @@ pub(super) fn prepared_waveform_view_cached(
             visible_end,
             Some(cache),
             None,
+            ink,
         ),
         clip.active(),
     )
@@ -355,6 +364,7 @@ pub(super) fn timeline_waveform_view_cached(
     visible_end: u64,
     cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
     grid: Option<WaveformGrid>,
+    ink: u32,
 ) -> Div {
     waveform_canvas(
         waveform,
@@ -363,6 +373,7 @@ pub(super) fn timeline_waveform_view_cached(
         visible_end,
         Some(cache),
         grid,
+        ink,
     )
 }
 
@@ -372,6 +383,7 @@ pub(super) fn waveform_view_cached(
     visible_start: u64,
     visible_end: u64,
     cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
+    ink: u32,
 ) -> Div {
     clip_waveform_activity(
         waveform_canvas(
@@ -384,6 +396,7 @@ pub(super) fn waveform_view_cached(
             visible_end,
             Some(cache),
             None,
+            ink,
         ),
         clip.active(),
     )
@@ -394,6 +407,7 @@ pub(super) fn waveform_source_segment_view(
     timeline_origin: u64,
     visible_start: u64,
     visible_end: u64,
+    ink: u32,
 ) -> Div {
     waveform_canvas(
         waveform,
@@ -402,17 +416,18 @@ pub(super) fn waveform_source_segment_view(
         visible_end,
         None,
         None,
+        ink,
     )
 }
 
 pub(super) fn waveform_source_segment_gain_view_cached(
     waveform: Arc<CachedWaveform>,
     timeline_origin: u64,
-    visible_start: u64,
-    visible_end: u64,
+    visible: Range<u64>,
     gain: hex_project::ClipGain,
     detail: bool,
     cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
+    ink: u32,
 ) -> Div {
     waveform_canvas(
         waveform,
@@ -421,16 +436,17 @@ pub(super) fn waveform_source_segment_gain_view_cached(
             gain,
             detail,
         },
-        visible_start,
-        visible_end,
+        visible.start,
+        visible.end,
         Some(cache),
         None,
+        ink,
     )
 }
 
-pub(super) fn waveform_summary_view(waveform: Arc<CachedWaveform>) -> Div {
+pub(super) fn waveform_summary_view(waveform: Arc<CachedWaveform>, ink: u32) -> Div {
     let end = u64::try_from(waveform.source_frames).unwrap_or(u64::MAX);
-    waveform_source_segment_view(waveform, 0, 0, end)
+    waveform_source_segment_view(waveform, 0, 0, end, ink)
 }
 
 pub(super) fn waveform_canvas(
@@ -440,8 +456,14 @@ pub(super) fn waveform_canvas(
     visible_end: u64,
     cache: Option<Rc<std::cell::RefCell<WaveformGeometryCache>>>,
     grid: Option<WaveformGrid>,
+    ink: u32,
 ) -> Div {
     let mapping = mapping.clone();
+    let colors = WaveformColors {
+        waveform: ink,
+        inactive: ink,
+        centerline: theme::color(theme::PaletteRole::Border),
+    };
     waveform_plot(
         move |paint| {
             #[cfg(all(test, feature = "ui-test-support"))]
@@ -490,15 +512,11 @@ pub(super) fn waveform_canvas(
                 && let Some(cache) = &cache
                 && let Ok(mut cache) = cache.try_borrow_mut()
             {
-                cache.record_paint(bounds, paint.mask, geometry);
+                cache.record_paint(bounds, paint.mask, geometry, colors);
             }
             geometry
         },
-        WaveformColors {
-            waveform: 0x000000,
-            inactive: 0x000000,
-            centerline: theme::color(theme::PaletteRole::Border),
-        },
+        colors,
         WaveformEmphasis::Uniform,
     )
 }
