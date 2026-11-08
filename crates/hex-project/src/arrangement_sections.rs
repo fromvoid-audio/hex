@@ -23,7 +23,11 @@
 //! for the same candidate identity; history and storage retain the chosen color.
 //! Appended copies use an absolute final beat beyond the last marker; one
 //! nonempty gap marker and the musical copy share a single candidate/history edge.
-//! Metadata-only previews use zero IDs for unpublished new markers.
+//! Replacement removes the target interval, then moves or copies source content
+//! into its former slot. The target identity retires; source name/color follow
+//! the result. Copies get a fresh ID, moves retain source ID and close its old
+//! interval. Self replacement is a no-op. All other music follows the established
+//! cut/insert law. Metadata-only previews use zero IDs for unpublished markers.
 //! Beyond-end moves preserve the source identity and close its original interval.
 //! The gap starts at the remaining final marker (or zero for a sole section);
 //! it may cover unmarked music, which is retained by the same ripple law.
@@ -409,6 +413,11 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             gap_name,
             gap_color,
         } => move_beyond_end::apply(project, section, start, gap_name, gap_color),
+        Command::ReplaceArrangementSection {
+            source,
+            target,
+            copy,
+        } => replace::apply(project, source, target, copy),
         Command::SplitArrangementSection { section, at } => {
             let (right, mut sections) = project.preview_section_split(section, at)?;
             let id = SectionId(project.allocate_id()?);
@@ -464,6 +473,7 @@ mod color;
 mod meter;
 mod move_beyond_end;
 mod reorder;
+mod replace;
 #[cfg(test)]
 mod test_support;
 use reorder::{reorder, reorder_after};
@@ -525,6 +535,11 @@ impl Project {
                 gap_name,
                 gap_color,
             } => move_beyond_end::preview(self, *section, *start, gap_name, *gap_color),
+            Command::ReplaceArrangementSection {
+                source,
+                target,
+                copy,
+            } => replace::preview(self, *source, *target, *copy),
             Command::SplitArrangementSection { section, at } => {
                 let (_, sections) = self.preview_section_split(*section, *at)?;
                 Ok(SectionSplicePreview {
