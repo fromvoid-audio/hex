@@ -236,6 +236,7 @@ impl EditorView {
             || self.gain_numeric_editing(cx)
             || self.sampler_parameter.numeric_draft_active()
             || self.track_gain_controls.has_pending_draft(cx)
+            || super::device_panel::pending_send(self, cx).is_some()
             || self.gain_lane.pointer_is_active()
             || self.automation_view.devices.pointer_active()
             || self.clip_numeric_editing(cx)

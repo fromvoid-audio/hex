@@ -61,7 +61,10 @@ fn verified_send_entry_and_owner_finalization_keep_single_edit_history(cx: &mut 
         .into_boxed_str(),
     );
     let initial_revision = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().revision);
-    for (text, expected, finalize) in [("0.5", 0.5, true), ("0.75", 0.75, false)] {
+    for (text, expected, finalize) in [
+        ("-6 db", 10_f32.powf(-6.0 / 20.0), true),
+        ("-12 db", 10_f32.powf(-12.0 / 20.0), false),
+    ] {
         let field = visual.debug_bounds(selector).unwrap().center();
         visual.simulate_click(field, Modifiers::default());
         visual.simulate_keystrokes("cmd-a");
@@ -74,7 +77,8 @@ fn verified_send_entry_and_owner_finalization_keep_single_edit_history(cx: &mut 
             visual.simulate_keystrokes("enter");
         }
         pump(&editor, cx, |view| {
-            view.worker_requests_pending == 0 && gain(view, track, return_track) == expected
+            view.worker_requests_pending == 0
+                && (gain(view, track, return_track) - expected).abs() < 1e-5
         });
         visual.run_until_parked();
     }
@@ -97,14 +101,15 @@ fn verified_send_entry_and_owner_finalization_keep_single_edit_history(cx: &mut 
         assert_eq!(gain(view, other, return_track), 0.0);
     });
     for (request, expected) in [
-        (Request::Undo, 0.5),
+        (Request::Undo, 10_f32.powf(-6.0 / 20.0)),
         (Request::Undo, 0.0),
-        (Request::Redo, 0.5),
-        (Request::Redo, 0.75),
+        (Request::Redo, 10_f32.powf(-6.0 / 20.0)),
+        (Request::Redo, 10_f32.powf(-12.0 / 20.0)),
     ] {
         editor.update(cx, |view, _| assert!(view.enqueue(request)));
         pump(&editor, cx, |view| {
-            view.worker_requests_pending == 0 && gain(view, track, return_track) == expected
+            view.worker_requests_pending == 0
+                && (gain(view, track, return_track) - expected).abs() < 1e-5
         });
     }
 }
@@ -158,7 +163,7 @@ fn verified_send_refuses_held_preview_and_busy_entry_restoring_canonical(cx: &mu
     let field = visual.debug_bounds(field_id).unwrap().center();
     visual.simulate_click(field, Modifiers::default());
     visual.simulate_keystrokes("cmd-a");
-    visual.simulate_input("0.75");
+    visual.simulate_input("-9 db");
     editor.update(cx, |view, _| {
         assert!(view.enqueue(Request::Edit(Command::Gain {
             track: other,
@@ -184,5 +189,47 @@ fn verified_send_refuses_held_preview_and_busy_entry_restoring_canonical(cx: &mu
                 .as_deref()
                 .is_some_and(|s| s.contains("current edit") && !s.contains("resident"))
         );
+    });
+}
+
+#[gpui::test]
+fn console_send_entry_uses_the_shared_actor_binding(cx: &mut TestAppContext) {
+    let (_browser, mut visual, editor, [track, other]) = actor_fixture_in_mode(
+        cx,
+        crate::editor::test_environment::Environment::new().unwrap(),
+        DocumentAudioMode::VerifiedStreaming,
+    );
+    let return_track = add_return(&editor, cx);
+    editor.update(cx, |view, cx| {
+        view.mode = crate::editor::EditorMode::Session;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let selector = Box::leak(
+        format!(
+            "return-send-{}-{}-value",
+            track.value(),
+            return_track.value()
+        )
+        .into_boxed_str(),
+    );
+    let field = visual.debug_bounds(selector).unwrap().center();
+    visual.simulate_click(field, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("-6 db");
+    visual.simulate_keystrokes("enter");
+    let expected = 10_f32.powf(-6.0 / 20.0);
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && (gain(view, track, return_track) - expected).abs() < 1e-5
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(gain(view, other, return_track), 0.0);
+        assert!(view.send_menu_track.is_none());
+        assert!(view.device_gesture.snapshot().is_none());
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0 && gain(view, track, return_track) == 0.0
     });
 }

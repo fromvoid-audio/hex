@@ -424,10 +424,13 @@ impl EditorView {
         });
         let available_width =
             f32::from(window.bounds().size.width) - self.browser_content_width(window);
+        super::device_panel::retire_removed_send_controls(self, cx);
+        let pending_send = super::device_panel::pending_send(self, cx);
         let pending_return = self
             .track_name
             .pending_return(generation)
-            .or_else(|| self.track_gain_controls.pending_return_gain(generation, cx));
+            .or_else(|| self.track_gain_controls.pending_return_gain(generation, cx))
+            .or_else(|| pending_send.map(|(_, id)| id));
         let return_page = self.console_returns.page(
             &state.project,
             generation,
@@ -441,6 +444,22 @@ impl EditorView {
             .max(1.0) as usize;
         self.session_visible_columns = visible_columns;
         let indices = &self.arrangement_focus.projection.console_indices;
+        if let Some(index) = pending_send.and_then(|(track, _)| {
+            indices.iter().position(|&index| {
+                tracks
+                    .get(index)
+                    .is_some_and(|candidate| candidate.id() == track)
+            })
+        }) {
+            let range = super::console_track_page::visible_track_range(
+                indices.len(),
+                self.session_track_start,
+                visible_columns,
+            );
+            if index < range.start || index >= range.end {
+                self.session_track_start = index.saturating_sub(visible_columns - 1);
+            }
+        }
         let page = self.pending_console_reorder_page().unwrap_or_else(|| {
             Arc::new(TrackPage::capture(
                 &state.project,
@@ -773,7 +792,7 @@ impl EditorView {
                 &page,
                 TRACK_COLUMN_WIDTH,
                 SCENE_HEADER_WIDTH,
-                return_width,
+                &return_page,
                 cx,
             ))
             .children(self.console_return_bank(&return_page, frame, SCENE_HEADER_WIDTH, cx));
