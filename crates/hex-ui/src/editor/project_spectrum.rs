@@ -60,7 +60,10 @@ fn bounded_height(requested: f32, viewport: gpui::Size<Pixels>) -> f32 {
     // routing rows and usable workspace; the graph itself retains72px or more.
     let extra_toolbar =
         super::header::toolbar_height(f32::from(viewport.width)) - super::header::TOOLBAR_HEIGHT;
-    let max = (f32::from(viewport.height) - 394.0 - extra_toolbar).clamp(72.0, 300.0);
+    let panel_chrome =
+        2.0 * (2.0 * hex_widgets::PANEL_FRAME_INSET + super::workspace_view::PANEL_GUTTER);
+    let max =
+        (f32::from(viewport.height) - 394.0 - panel_chrome - extra_toolbar).clamp(72.0, 300.0);
     if requested.is_finite() {
         requested.clamp(72.0, max)
     } else {
@@ -77,6 +80,7 @@ impl EditorView {
         // main track44 and mixer26. Routing owns its own height.
         134.0
             + super::header::toolbar_height(f32::from(window.viewport_size().width))
+            + self.workspace_panel_chrome()
             + if self.clip_view_open && !self.device_panel_active {
                 4.0
             } else {

@@ -38,6 +38,10 @@ pub(crate) fn workspace_panel_style() -> hex_widgets::PanelStyle {
     }
 }
 
+pub(crate) fn workspace_gutter_fill() -> u32 {
+    mix(color(PaletteRole::Background), 0x000000, 0.33)
+}
+
 /// Shared product colors for all sample-level meters; widgets own no palette.
 pub(crate) fn meter_colors() -> hex_widgets::MeterColors {
     hex_widgets::MeterColors {
@@ -881,6 +885,7 @@ mod tests {
         assert_eq!(track_selection_fill(), 0xa4ccd7);
         assert_eq!(workspace_panel_style().surface, 0x202020);
         assert_eq!(workspace_panel_style().border, 0x363636);
+        assert_eq!(workspace_gutter_fill(), 0x121212);
         assert_eq!(color(PaletteRole::ClipOutline), 0x000000);
         assert!(colors_are_legible(defaults));
         assert!(contrast_ratio(color(PaletteRole::ClipFill), color(PaletteRole::ClipText)) >= 4.5);

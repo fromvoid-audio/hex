@@ -107,8 +107,7 @@ impl EditorView {
     }
 
     pub(super) fn arrangement(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
-        let available_width =
-            (f32::from(window.bounds().size.width) - self.browser_content_width(window)).max(0.0);
+        let available_width = self.workspace_body_width(window);
         if self
             .track_layout
             .available_width
@@ -133,10 +132,7 @@ impl EditorView {
         };
         self.sync_track_layout(state.project.tracks());
         let clip_move_guide = self.displayed_clip_move_guide_frame();
-        let ruler_width = (f32::from(window.bounds().size.width)
-            - self.browser_content_width(window)
-            - self.track_header_width())
-        .max(0.0);
+        let ruler_width = (self.workspace_body_width(window) - self.track_header_width()).max(0.0);
         if self.arrangement_track_index(0).is_none() {
             let empty_viewport = self.visible_viewport(state.timeline_frames);
             let grid = super::musical_time::grid_lines(
