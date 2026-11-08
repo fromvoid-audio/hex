@@ -140,6 +140,21 @@ pub(super) fn project_interval(
 }
 
 pub(super) fn view(view: &EditorView, viewport: Viewport) -> Div {
+    layer(view, viewport, None)
+}
+
+pub(super) fn section(view: &EditorView, start: u64, end: u64, chamfer: f32) -> Div {
+    layer(
+        view,
+        Viewport {
+            start,
+            length: end.saturating_sub(start),
+        },
+        Some(chamfer),
+    )
+}
+
+fn layer(view: &EditorView, viewport: Viewport, chamfer: Option<f32>) -> Div {
     let data = view.state.as_ref().map(|state| {
         cached(
             &view.arrangement_map_cache,
@@ -151,7 +166,13 @@ pub(super) fn view(view: &EditorView, viewport: Viewport) -> Div {
         )
     });
     div()
-        .debug_selector(|| "main-arrangement-map".into())
+        .debug_selector(move || {
+            if chamfer.is_some() {
+                "section-arrangement-map".into()
+            } else {
+                "main-arrangement-map".into()
+            }
+        })
         .absolute()
         .inset_0()
         .children(data.map(|data| {
@@ -166,23 +187,45 @@ pub(super) fn view(view: &EditorView, viewport: Viewport) -> Div {
                     }
                     let width = f32::from(bounds.size.width);
                     let height = f32::from(bounds.size.height);
-                    let top = (height * hex_widgets::RANGE_HANDLE_FRACTION)
-                        .max(super::clip_name::CLIP_NAME_HEIGHT)
-                        .min(height);
+                    let top = if chamfer.is_some() {
+                        super::clip_name::CLIP_NAME_HEIGHT
+                    } else {
+                        (height * hex_widgets::RANGE_HANDLE_FRACTION)
+                            .max(super::clip_name::CLIP_NAME_HEIGHT)
+                    }
+                    .min(height);
                     let available = height - top;
                     if available <= 0.0 {
                         return;
                     }
                     let row_height = available / data.rows.len() as f32;
                     let pixel = 1.0 / window.scale_factor();
-                    let color = rgb(theme::color(theme::PaletteRole::Raised));
+                    let color = rgb(theme::color(if chamfer.is_some() {
+                        theme::PaletteRole::Background
+                    } else {
+                        theme::PaletteRole::Raised
+                    }));
                     for (index, row) in data.rows.iter().enumerate() {
                         let first = row.partition_point(|span| span.end <= viewport.start);
                         let y = top + index as f32 * row_height;
                         let h = (row_height - pixel).max(pixel).min(height - y);
                         for &span in row[first..].iter().take_while(|span| span.start < limit) {
                             if let Some((left, right)) = project_interval(span, viewport, width) {
-                                let w = (right - left - pixel).max(pixel).min(width - left);
+                                let edge = chamfer.map_or(width, |cut| {
+                                    crate::section_surface::miniature_right(
+                                        width,
+                                        height,
+                                        cut,
+                                        y + h,
+                                    )
+                                });
+                                let w = (right - left - pixel)
+                                    .max(pixel)
+                                    .min(right - left)
+                                    .min(edge - left);
+                                if w <= 0.0 {
+                                    continue;
+                                }
                                 window.paint_quad(fill(
                                     gpui::Bounds::new(
                                         point(bounds.left() + px(left), bounds.top() + px(y)),
@@ -462,11 +505,19 @@ mod tests {
                         (view.visible_viewport(state.timeline_frames), state.revision)
                     });
                     let scale = visual.update(|window, _| window.scale_factor());
-                    let color: gpui::Background =
-                        rgb(theme::color(theme::PaletteRole::Raised)).into();
+                    let color: gpui::Background = rgb(theme::color(if has_section {
+                        theme::PaletteRole::Background
+                    } else {
+                        theme::PaletteRole::Raised
+                    }))
+                    .into();
                     let quads = visual.rendered_filled_quads("main-arrangement-map");
-                    let top = (f32::from(lane.size.height) / 3.0)
-                        .max(super::super::clip_name::CLIP_NAME_HEIGHT);
+                    let top = if has_section {
+                        super::super::clip_name::CLIP_NAME_HEIGHT
+                    } else {
+                        (f32::from(lane.size.height) / 3.0)
+                            .max(super::super::clip_name::CLIP_NAME_HEIGHT)
+                    };
                     for (row, (first, last)) in [(48_000_u64, 96_000_u64), (24_000, 144_000)]
                         .into_iter()
                         .enumerate()

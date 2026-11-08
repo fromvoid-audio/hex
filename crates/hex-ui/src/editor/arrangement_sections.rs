@@ -27,8 +27,6 @@ use crate::{
     section_hit::{self, INNER_EDGE_WIDTH, SHARED_EDGE_RADIUS},
     section_input, section_reorder, section_resize, section_selection, theme,
 };
-#[cfg(all(test, feature = "ui-test-support"))]
-use gpui::rgba;
 use gpui::{
     AnyElement, AppContext, Context, Entity, Subscription, Window, div, prelude::*, px, relative,
     rgb,
@@ -1853,6 +1851,11 @@ impl EditorView {
             ) else {
                 continue;
             };
+            let chamfer = if end <= limit {
+                crate::section_surface::CHAMFER
+            } else {
+                0.0
+            };
             let (start, end) = (start.max(viewport.start), end.min(limit));
             if end <= start {
                 continue;
@@ -1894,7 +1897,7 @@ impl EditorView {
             let mut element = crate::section_surface::surface(
                 (start - viewport.start) as f32 / viewport.length as f32,
                 (end - start) as f32 / viewport.length as f32,
-                pixel_width, stroke, m.color, selected, owned_hover,
+                pixel_width, chamfer, m.color, selected, owned_hover,
             )
                 .id(("arrangement-section", index))
                 .debug_selector(move || format!("arrangement-section-{index}"))
@@ -1935,7 +1938,9 @@ impl EditorView {
                     m.name.clone()
                 }));
             }
-            element = element.child(header);
+            element = element
+                .child(super::arrangement_map::section(self, start, end, chamfer))
+                .child(header);
             if let Some(name) = name_edit {
                 // Name editing keeps its existing full-size native field; held
                 // pointer/range captures are disabled for its entire lifetime.
@@ -1960,8 +1965,8 @@ impl EditorView {
                     border,
                     hover.2,
                     true,
-                    has_border,
-                    0.0,
+                    has_border && (selected || owned_hover),
+                    chamfer,
                     move || format!("arrangement-section-trailing-{index}"),
                 )
                 .into_any_element(),
@@ -1974,7 +1979,7 @@ impl EditorView {
                         })
                         .absolute()
                         .top_0()
-                        .bottom_0()
+                        .bottom(px(chamfer))
                         .left(relative(
                             (end - viewport.start) as f32 / viewport.length as f32,
                         ))
@@ -2198,6 +2203,27 @@ pub(super) mod tests {
     use hex_session::service::Service;
     use std::time::{Duration, Instant};
 
+    fn painted_fill(visual: &mut VisualTestContext, index: usize) -> Option<gpui::Background> {
+        let selector = Box::leak(format!("arrangement-section-{index}").into_boxed_str());
+        painted_fill_for(visual, selector)
+    }
+    fn painted_fill_for(
+        visual: &mut VisualTestContext,
+        selector: &'static str,
+    ) -> Option<gpui::Background> {
+        let body = visual.debug_bounds(selector)?;
+        let scale = gpui::ScaledPixels::from(visual.update(|window, _| window.scale_factor()));
+        visual
+            .rendered_filled_quads(selector)
+            .into_iter()
+            .filter(|(b, _)| {
+                (b.top() / scale - f32::from(body.top())).abs() < 0.1
+                    && (b.size.width / scale - f32::from(body.size.width)).abs() < 0.1
+                    && b.size.height / scale > 2.0
+            })
+            .map(|(_, color)| color)
+            .next_back()
+    }
     #[track_caller]
     pub(in crate::editor) fn next(service: &Service) -> Event {
         let deadline = crate::test_wait::hang_deadline();
@@ -2387,7 +2413,7 @@ pub(super) mod tests {
                 bounds(&mut visual, 1),
                 bounds(&mut visual, 2),
             ];
-            let selected_fill = visual.rendered_background("arrangement-section-2");
+            let selected_fill = painted_fill(&mut visual, 2);
             let preview = before
                 .preview_arrangement_section_edit(&Command::DuplicateArrangementSectionAt {
                     section: ids[0],
@@ -2403,7 +2429,7 @@ pub(super) mod tests {
                 .color();
             assert_eq!(
                 selected_fill,
-                Some(rgba((theme::section_colors(copy_color, true, true,).0 << 8) | 0x38,).into()),
+                Some(rgb(theme::section_colors(copy_color, true, true).0).into()),
                 "the captured copy retains its gesture-owned target feedback"
             );
             visual.simulate_mouse_up(to, MouseButton::Left, copy);
@@ -2432,10 +2458,7 @@ pub(super) mod tests {
                     ],
                     frozen
                 );
-                assert_eq!(
-                    visual.rendered_background("arrangement-section-2"),
-                    selected_fill
-                );
+                assert_eq!(painted_fill(&mut visual, 2), selected_fill);
             }
             editor.update(cx, |view, cx| {
                 if select_elsewhere {
@@ -2472,10 +2495,7 @@ pub(super) mod tests {
                 frozen
             );
             if !select_elsewhere {
-                assert_eq!(
-                    visual.rendered_background("arrangement-section-2"),
-                    selected_fill
-                );
+                assert_eq!(painted_fill(&mut visual, 2), selected_fill);
             }
         }
     }
@@ -3320,7 +3340,7 @@ pub(super) mod tests {
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
         let (a, b) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 10)));
-        let base = visual.rendered_background("arrangement-section-0");
+        let base = painted_fill(&mut visual, 0);
         visual.simulate_event(gpui::MouseMoveEvent {
             position: a,
             pressed_button: None,
@@ -3329,13 +3349,13 @@ pub(super) mod tests {
         visual.run_until_parked();
         assert_ne!(
             base,
-            visual.rendered_background("arrangement-section-0"),
+            painted_fill(&mut visual, 0),
             "hover changes section surface"
         );
         visual.simulate_mouse_down(a, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(a, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
-        let selected = visual.rendered_background("arrangement-section-0");
+        let selected = painted_fill(&mut visual, 0);
         assert_ne!(base, selected, "selection changes entire section surface");
         let shift = Modifiers {
             shift: true,
@@ -3970,7 +3990,7 @@ pub(super) mod tests {
             cx.notify();
         });
         visual.run_until_parked();
-        let original_fill = visual.rendered_background("arrangement-section-0");
+        let original_fill = painted_fill(&mut visual, 0);
         visual.simulate_mouse_down(down, MouseButton::Right, Modifiers::default());
         visual.run_until_parked();
         let green = editor.read_with(cx, |v, _| {
@@ -4003,10 +4023,7 @@ pub(super) mod tests {
             cx.notify();
         });
         visual.run_until_parked();
-        assert_ne!(
-            visual.rendered_background("arrangement-section-0"),
-            original_fill
-        );
+        assert_ne!(painted_fill(&mut visual, 0), original_fill);
         let tracks = editor.read_with(cx, |v, _| {
             v.state.as_ref().unwrap().project.tracks().to_vec()
         });
@@ -4871,7 +4888,7 @@ pub(super) mod tests {
         }
     }
     #[gpui::test]
-    fn section_header_is_opaque_and_body_keeps_grid_visible_across_palettes_and_layouts(
+    fn section_has_opaque_chamfered_fill_and_compact_header_across_palettes_and_layouts(
         cx: &mut TestAppContext,
     ) {
         struct RestoreTheme(hex_preferences::ThemePreferences);
@@ -4914,25 +4931,34 @@ pub(super) mod tests {
                 .expect("actual section header");
             assert!((f32::from(header.top() - body.top())).abs() <= 1.0);
             assert!(
-                (f32::from(header.size.height) * 3.0 - f32::from(body.size.height)).abs() <= 2.0,
-                "header is the compact top third"
+                (f32::from(header.size.height) - super::super::clip_name::CLIP_NAME_HEIGHT).abs()
+                    <= 0.1,
+                "header remains a fixed compact height"
             );
             assert!(header.right() <= body.right() + px(1.0));
             let (fill, _, _) = theme::section_colors(ElementColor::Blue, false, false);
             assert_eq!(
-                visual.rendered_background("arrangement-section-header-0"),
+                painted_fill(&mut visual, 0),
                 Some(rgb(fill).into()),
-                "opaque header preserves title contrast"
+                "opaque tier fill"
             );
-            assert_eq!(
-                visual.rendered_background("arrangement-section-0"),
-                Some(rgba((fill << 8) | 0x38).into()),
-                "completed body paint leaves the underlying Main grid/range visible"
+            let scale = gpui::ScaledPixels::from(visual.update(|window, _| window.scale_factor()));
+            let fills: Vec<_> = visual
+                .rendered_filled_quads("arrangement-section-0")
+                .into_iter()
+                .filter(|(_, c)| *c == gpui::Background::from(rgb(fill)))
+                .collect();
+            assert!(
+                fills.iter().any(
+                    |(b, _)| (b.bottom() / scale - f32::from(body.bottom())).abs() < 0.1
+                        && b.right() / scale < f32::from(body.right()) - 1.0
+                ),
+                "cut leaves the bottom-right corner unfilled"
             );
             for (at, cursor) in [
                 (header.center(), gpui::CursorStyle::OpenHand),
                 (
-                    point(body.center().x, body.top() + body.size.height * 0.75),
+                    point(body.center().x, header.bottom() + px(1.0)),
                     gpui::CursorStyle::Arrow,
                 ),
                 (
@@ -5392,8 +5418,8 @@ pub(super) mod tests {
                     assert!(v.sections.gesture.is_some());
                 });
                 frames.push((
-                    visual.rendered_background("arrangement-section-0"),
-                    visual.rendered_background("arrangement-section-header-0"),
+                    painted_fill(&mut visual, 0),
+                    painted_fill_for(&mut visual, "arrangement-section-header-0"),
                 ));
             }
             visual.simulate_mouse_up(to, MouseButton::Left, modifiers);
@@ -5409,11 +5435,11 @@ pub(super) mod tests {
                         .is_some()
                 );
                 frames.push((
-                    visual.rendered_background("arrangement-section-0"),
-                    visual.rendered_background("arrangement-section-header-0"),
+                    painted_fill(&mut visual, 0),
+                    painted_fill_for(&mut visual, "arrangement-section-header-0"),
                 ));
             }
-            assert!(frames[0].0.is_some() && frames[0].1.is_some());
+            assert!(frames[0].0.is_some() && frames[0].1.is_some(), "{frames:?}");
             for (index, frame) in frames.iter().enumerate() {
                 assert_eq!(
                     frame, &frames[0],
