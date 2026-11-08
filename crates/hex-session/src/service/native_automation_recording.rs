@@ -105,6 +105,15 @@ impl DeviceAutomationSource {
             && self.audio_revision == scope.stamp.audio_revision
             && self.transport_epoch == scope.stamp.transport_epoch
     }
+
+    fn capture_clock(self, project: &hex_project::Project) -> CaptureClock {
+        CaptureClock {
+            sample_rate: self.sample_rate,
+            loop_region: self
+                .section_loop
+                .or_else(|| project.loop_region().filter(|region| region.enabled())),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -204,15 +213,7 @@ impl Lane {
         if !source.matches(scope) || source.sample_rate != session.project().sample_rate() {
             return Err("device automation source or transport changed".into());
         }
-        let clock = CaptureClock {
-            sample_rate: source.sample_rate,
-            loop_region: source.section_loop.or_else(|| {
-                session
-                    .project()
-                    .loop_region()
-                    .filter(|region| region.enabled())
-            }),
-        };
+        let clock = source.capture_clock(session.project());
         let path = draft_path(directory)?;
         let (input, worker) = match scope.target {
             DeviceCaptureTarget::Native(target) => DeviceDraftInput::start_on_control(
