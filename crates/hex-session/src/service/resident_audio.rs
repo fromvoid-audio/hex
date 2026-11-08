@@ -3155,6 +3155,7 @@ pub(super) mod tests {
         drop(publications);
         let accepted_before_seek = observed.accepted.lock().unwrap().len();
         let seek = ResidentArrangementSeekIntent {
+            history: crate::service::ResidentSeekHistory::Fresh,
             request_id: 1,
             project_generation: 0,
             project_revision: loaded.state.revision,
@@ -3723,6 +3724,7 @@ pub(super) mod tests {
         let (results, receiver) = mpsc::sync_channel(4);
         let mut lane = resident_seek::Lane::new(ArrangementSeekWorker::new().unwrap(), results);
         let intent = ResidentArrangementSeekIntent {
+            history: crate::service::ResidentSeekHistory::Fresh,
             request_id: 1,
             project_generation: 0,
             project_revision: 1,
@@ -3835,6 +3837,7 @@ pub(super) mod tests {
         .unwrap();
         let identity = preview.as_ref().unwrap().device_identity().unwrap();
         let intent = ResidentArrangementSeekIntent {
+            history: crate::service::ResidentSeekHistory::Fresh,
             request_id: 2,
             project_generation: 0,
             project_revision: 1,
