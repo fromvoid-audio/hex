@@ -17,8 +17,8 @@ pub use aux_input::{AuxiliaryBlockError, StereoAuxiliaryBlock};
 mod foreign_processor;
 mod host_output_gain_ramp;
 mod matrix_ramp;
-mod modulation_sources;
 mod meter;
+mod modulation_sources;
 mod owned_processor;
 mod parameter_automation;
 #[cfg(test)]
@@ -40,13 +40,13 @@ pub use parameter_automation::{
 pub use tail_split::{TailSplit, TailSplitObserver};
 mod resources;
 mod runtime_ownership;
+pub use hex_lattice_contract::ModulationSourceId;
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, MAX_NATIVE_DEVICE_TYPES, NativeDeviceMetadata,
     NativeDeviceState,
 };
 pub use hex_tuning::{TuningTable, Waveform as TuningWaveform};
 pub use meter::{DeviceMeter, DevicePeaks, DynamicsMeter, RenderWorkMeter, RenderWorkSample};
-pub use hex_lattice_contract::ModulationSourceId;
 pub use modulation_sources::{ModulationLfoBank, PreparedLfoSource};
 pub use owned_processor::{
     MAX_RESERVED_BYPASS_FRAMES, OwnedProcessorRuntime, PreparedOwnedProcessorRuntime,
