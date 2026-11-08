@@ -38,7 +38,7 @@ pub struct WaveformEnvelope<'a> {
     pub centerline: Option<WaveformZeroLine>,
 }
 
-/// Checked paths for one channel. Construction is bounded and fallible; the
+/// Checked envelope and guide for one channel. Construction is bounded and fallible; the
 /// painter cannot receive malformed point arrays or an unbounded iterator.
 pub struct WaveformChannel {
     envelope: Path<Pixels>,

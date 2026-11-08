@@ -712,7 +712,7 @@ pub(super) fn prepare_waveform_geometry(
                 trace_width: px(1.0),
                 // A retained span paints as one device-pixel quad in either
                 // sampling mode; it never prepares an extra stroke path.
-                centerline: (!grid.binned).then_some(WaveformZeroLine {
+                centerline: Some(WaveformZeroLine {
                     points: [
                         point(bounds.origin.x, bounds.origin.y + px(center)),
                         point(
