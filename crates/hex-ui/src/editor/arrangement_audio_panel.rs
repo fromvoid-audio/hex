@@ -66,6 +66,17 @@ pub(super) fn view(
     let (track, clip_id, position, length, source_start, source_length) =
         view.detail_audio_clip_data()?;
     let clip = state.project.clip(clip_id)?;
+    let identity = state.project.track(track)?.color();
+    let waveform_ink = theme::clip_waveform_ink(
+        identity,
+        theme::ClipWaveformBackground::Source,
+        clip.active(),
+    );
+    let event_ink = theme::clip_waveform_ink(
+        identity,
+        theme::ClipWaveformBackground::Events,
+        clip.active(),
+    );
     let retained_source_count = clip
         .audio_edit()
         .and_then(|edit| edit.domain.events.as_ref())
@@ -239,8 +250,12 @@ pub(super) fn view(
             .children(source_view.then(|| source_navigation(view, cx))),
     );
     if !source_view {
-        waveform_panel =
-            waveform_panel.child(super::audio_event_editor::view(view, render_window, cx)?);
+        waveform_panel = waveform_panel.child(super::audio_event_editor::view(
+            view,
+            render_window,
+            cx,
+            event_ink,
+        )?);
         return Some(details.child(waveform_panel));
     }
     if let Some(prepared) = state.audio_clip_waveforms.get(&clip_id) {
@@ -251,6 +266,7 @@ pub(super) fn view(
                 clip.start(),
                 clip.start() + clip.duration(),
                 std::rc::Rc::clone(&view.waveform_geometry_cache),
+                waveform_ink,
             ),
         ));
         waveform_panel = waveform_panel.child(div().text_xs().child(theme::text(
@@ -324,11 +340,11 @@ pub(super) fn view(
             let visible = super::waveform::waveform_source_segment_gain_view_cached(
                 waveform,
                 0,
-                first,
-                end,
+                first..end,
                 window.gain,
                 false,
                 std::rc::Rc::clone(&view.waveform_geometry_cache),
+                waveform_ink,
             );
             canvas_region = canvas_region.child(
                 div()

@@ -146,7 +146,14 @@ pub(super) fn passive_audio_fragment(
                 .map(|grid| loop_handles::body(grid, looping)),
         );
         let body = if let Some(waveform) = waveform {
-            super::waveform::waveform_view_cached(waveform, clip, start, stop, cache)
+            super::waveform::waveform_view_cached(
+                waveform,
+                clip,
+                start,
+                stop,
+                cache,
+                theme::waveform_ink_for_fill(fill),
+            )
         } else {
             div()
                 .absolute()

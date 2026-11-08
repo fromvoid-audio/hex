@@ -463,7 +463,10 @@ fn browser_audio_drag_ghost(
         ghost = ghost.children([super::tracks::clip_waveform_body(waveform)]);
     } else if let Some(metadata) = metadata {
         ghost = ghost.children([super::tracks::clip_waveform_body(
-            super::waveform::waveform_summary_view(Arc::clone(&metadata.waveform)),
+            super::waveform::waveform_summary_view(
+                Arc::clone(&metadata.waveform),
+                crate::theme::color(crate::theme::PaletteRole::Waveform),
+            ),
         )]);
     } else {
         ghost = ghost.child(super::tracks::clip_waveform_body(
@@ -1375,6 +1378,7 @@ impl EditorView {
                                 start,
                                 visible_start,
                                 visible_end,
+                                crate::theme::color(crate::theme::PaletteRole::Waveform),
                             )
                         }),
                 },

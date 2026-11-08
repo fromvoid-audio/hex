@@ -99,6 +99,7 @@ pub(super) fn loop_waveform_view(
         end,
         Some(cache),
         grid,
+        request.ink,
     ))
 }
 
@@ -495,6 +496,7 @@ mod tests {
             tempo,
             asset: None,
             prepared: Some(&accepted),
+            ink: crate::theme::color(crate::theme::PaletteRole::Waveform),
         };
         let (chosen, origin, prepared) = accepted_loop_source(request).unwrap();
         assert!(Arc::ptr_eq(&chosen, &root));
@@ -573,6 +575,7 @@ mod tests {
                 tempo: editor.project().tempo_map(),
                 asset: None,
                 prepared: Some(&accepted),
+                ink: crate::theme::color(crate::theme::PaletteRole::Waveform),
             })
             .is_none(),
             "post-fade root peaks cannot represent destination-faded reversed output"
