@@ -1127,6 +1127,15 @@ impl Callback {
     pub(crate) fn native_worker_phase_for_test(&self) -> Option<usize> {
         self.native_sources.single_worker_phase_for_test()
     }
+    /// Source-specific diagnostic only, outside callback measurement. Absence
+    /// means healthy or unknown; it grants no readiness or source authority.
+    #[cfg(feature = "allocation-probe")]
+    pub(crate) fn native_source_fault_for_test(
+        &self,
+        binding: Binding,
+    ) -> Option<hex_plugin_host::transport::Fault> {
+        self.native_sources.test_transport_fault(binding)
+    }
     pub(super) fn current_native_epoch_fence_source(&self) -> Option<AppliedAudioSource> {
         if !self.status.sampler_edit.ordinary_native_epoch_active() {
             return self.current_native_epoch_source();

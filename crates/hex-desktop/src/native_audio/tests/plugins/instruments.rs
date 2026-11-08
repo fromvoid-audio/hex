@@ -723,7 +723,12 @@ fn recorded_touch_admission_and_exclusive_restoration_use_actual_output() {
             CONFIRMED_TEST_ENDS, CONFIRMED_TEST_NOOPS, CONFIRMED_TEST_POINTS, CONFIRMED_TEST_READY,
         };
         assert!(CONFIRMED_TEST_READY.load(Acquire) > 0);
-        if std::env::var(CASE).unwrap() == "touch_empty" {
+        if std::env::var(CASE).unwrap() == "touch_stress" {
+            assert_eq!(CONFIRMED_TEST_READY.load(Acquire), 100);
+            assert_eq!(CONFIRMED_TEST_POINTS.load(Acquire), 100);
+            assert_eq!(CONFIRMED_TEST_ENDS.load(Acquire), 100);
+            assert_eq!(CONFIRMED_TEST_NOOPS.load(Acquire), 0);
+        } else if std::env::var(CASE).unwrap() == "touch_empty" {
             assert_eq!(CONFIRMED_TEST_POINTS.load(Acquire), 0);
             assert!(CONFIRMED_TEST_NOOPS.load(Acquire) > 0);
         } else {
@@ -1535,7 +1540,17 @@ fn assert_instrument_takeover_begin(
 }
 
 /// Deliberately vary callback sizes while the worker owns complete SDK quanta.
-fn render_takeover_partial(h: &ResidentHarness, frames: usize, held: bool) {
+fn render_takeover_partial(
+    h: &ResidentHarness,
+    frames: usize,
+    held: bool,
+    label: &str,
+    request: Option<&hex_session::device_gesture::GestureRequest>,
+) {
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    let start = status.position.load(Acquire);
+    let performance_start = status.performance_frame.load(Acquire);
+    let binding = h.plugin_progress.lock().unwrap().binding;
     let mut pcm = [[0.0; 2]; 256];
     let mut host = [0.0; 512];
     let mut slot = h.callback.lock().unwrap();
@@ -1560,7 +1575,15 @@ fn render_takeover_partial(h: &ResidentHarness, frames: usize, held: bool) {
                 .iter()
                 .flatten()
                 .all(|sample| sample.abs() > 1.0e-6),
-            "the constant signed instrument must not drop its held gate at a publication cut"
+            "held gate dropped: case={label} request={request:?} frames={frames} position={start}->{} performance={performance_start}->{} playing={} source={:?} fault={:?} phase={:?} source_fault={:?} head={:?}",
+            status.position.load(Acquire),
+            status.performance_frame.load(Acquire),
+            status.playing.load(Acquire),
+            status.recording_source(),
+            status.render_fault_snapshot(),
+            callback.native_worker_phase_for_test(),
+            binding.and_then(|binding| callback.native_source_fault_on_control(binding)),
+            &pcm[..frames.min(5)],
         );
     }
 }
@@ -1679,7 +1702,13 @@ fn verify_instrument_takeover(
             let until = Instant::now() + Duration::from_secs(3);
             let mut fragment = 0;
             let mut step = |h: &mut ResidentHarness| {
-                render_takeover_partial(h, [3, 5, 117, 1, 130][fragment % 5], true);
+                render_takeover_partial(
+                    h,
+                    [3, 5, 117, 1, 130][fragment % 5],
+                    true,
+                    "live authoring",
+                    None,
+                );
                 fragment += 1;
                 while h
                     .callback
@@ -1792,6 +1821,8 @@ fn verify_instrument_takeover(
                 h,
                 [3, 5, 117, 1, 130][fragment % 5],
                 playing && case != "delivery_retire",
+                &case,
+                Some(&request),
             );
             fragment += 1;
             // The native worker is asynchronous; wait only on this test/control
@@ -1812,7 +1843,8 @@ fn verify_instrument_takeover(
         }
     };
     let mut client = GestureClient::default();
-    for request_id in [12, 13] {
+    let touches = if case == "touch_stress" { 100 } else { 2 };
+    for request_id in 12..12 + touches {
         client.begin_plugin(query(h, request_id)).unwrap();
         assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
         if case == "touch_empty" {
@@ -1859,7 +1891,7 @@ fn verify_instrument_takeover(
             );
         }
     }
-    if case == "touch" {
+    if matches!(case.as_str(), "touch" | "touch_stress") {
         return;
     }
     client.begin_plugin(query(h, 14)).unwrap();

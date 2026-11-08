@@ -238,7 +238,7 @@ impl WorkerAudioSink for ResidentSink {
         use hex_session::device_gesture::PluginGesturePreparation;
         let case = std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").unwrap_or_default();
         let retire = case == "delivery_retire";
-        let touch = matches!(case.as_str(), "touch" | "touch_empty" | "touch_commit");
+        let touch = case.starts_with("touch");
         let preview = matches!(input.operation(), PluginGesturePreparation::Preview(_));
         let confirm = touch || (retire || case == "delivery") && preview;
         let expected = match input.operation() {
