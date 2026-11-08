@@ -1526,6 +1526,9 @@ fn native_editor_touch_updates_host_follow_knob_and_arranger(cx: &mut gpui::Test
                 })
         },
     );
+    // The release file represents one GUI action, not a command for every
+    // controller recreated during the subsequent canonical source publication.
+    fs::remove_file(std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap()).unwrap();
     let view = fixture.view(cx);
     let follow = view.parameter_touches[0].3.unwrap();
     let row = view
@@ -1556,6 +1559,11 @@ fn native_editor_touch_updates_host_follow_knob_and_arranger(cx: &mut gpui::Test
         .visual
         .simulate_mouse_move(end, MouseButton::Left, modifiers);
     repaint(cx, &mut fixture.visual);
+    assert_eq!(
+        fixture.view(cx).parameter_gesture,
+        Some(0.5),
+        "the follow dial must dispatch its changed normalized value before release"
+    );
     fixture
         .visual
         .simulate_mouse_up(end, MouseButton::Left, modifiers);
@@ -1570,17 +1578,32 @@ fn native_editor_touch_updates_host_follow_knob_and_arranger(cx: &mut gpui::Test
                 .is_some_and(|state| state.revision == revision + 1 && state.project != initial)
         },
     );
-    until(
-        "last touched selection survives its canonical commit and fresh source",
-        || {
-            fixture.step(cx);
-            fixture.view(cx).parameter_touches.iter().any(
-                |&(id, parameter, value, control, lane)| {
-                    id == device && parameter == 7 && value < 0.74 && control.is_some() && lane
-                },
-            )
-        },
+    let committed = fixture.view(cx).state.unwrap();
+    let envelope = hex_plugin_state::decode(committed.project.main_devices()[0].state()).unwrap();
+    let component = envelope.component.unwrap();
+    assert_eq!(
+        f32::from_le_bytes(component[8..12].try_into().unwrap()),
+        2.0,
+        "the original processor capture must retain the follow edit, normalized 0.5"
     );
+    let refresh_deadline = Instant::now() + Duration::from_secs(3);
+    until("last touched display survives its canonical commit", || {
+        fixture.step(cx);
+        let view = fixture.view(cx);
+        assert!(
+            Instant::now() < refresh_deadline,
+            "follow projection after commit: {:?}; query pending={}; status={}; error={:?}",
+            view.parameter_touches,
+            view.parameter_query_pending,
+            view.status,
+            view.error
+        );
+        view.parameter_touches
+            .iter()
+            .any(|&(id, parameter, value, control, lane)| {
+                id == device && parameter == 7 && value < 0.74 && control.is_some() && lane
+            })
+    });
     fixture.visual.update(|window, _| window.remove_window());
     fixture.visual.run_until_parked();
 }

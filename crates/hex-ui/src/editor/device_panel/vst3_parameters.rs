@@ -1141,31 +1141,31 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
     let Some(panel) = view.device_panel.vst3_parameters.panels.get(&device) else {
         return body.child(theme::text("reading vst3 parameters…"));
     };
-    let mut search_bar = div()
+    let mut toolbar = div()
         .flex()
         .items_center()
         .gap_2()
         .w_full()
         .child(div().flex_1().min_w_0().child(panel.search.clone()));
     if let Some(row) = &follow_row {
-        search_bar = search_bar.child(
+        toolbar = toolbar.child(
             div()
                 .max_w(px(120.0))
                 .truncate()
                 .child(theme::text(hex_session::service::text::verbatim(&row.name))),
         );
     }
-    if let Some(follow) = follow {
-        search_bar = search_bar.child(
+    if let Some(control) = follow {
+        toolbar = toolbar.child(
             div()
                 .debug_selector(|| "vst3-last-touched-knob".to_string())
-                .child(follow),
+                .child(control),
         );
     }
     if let Some(status) = follow_status {
-        search_bar = search_bar.child(theme::text(status));
+        toolbar = toolbar.child(theme::text(status));
     }
-    let mut body = body.child(search_bar);
+    let mut body = body.child(toolbar);
     if let Some(error) = &panel.cache_error {
         body = body.child(theme::text(error));
     }
@@ -1414,6 +1414,7 @@ pub(in crate::editor) fn test_state(view: &EditorView) -> (Vec<(u64, u32, gpui::
 pub(in crate::editor) fn test_touch_state(
     view: &EditorView,
     device_id: u64,
+    cx: &App,
 ) -> (Option<(u32, f64)>, Option<gpui::EntityId>, bool) {
     let Some((device, panel)) = view
         .device_panel
@@ -1429,7 +1430,14 @@ pub(in crate::editor) fn test_touch_state(
             .rows()
             .and_then(|rows| rows.iter().find(|row| row.id == parameter))
             .filter(|row| row.metadata_revision != 0)
-            .map(|row| (parameter, row.normalized))
+            .map(|row| {
+                let displayed = panel
+                    .follow_knob
+                    .as_ref()
+                    .filter(|(id, _)| *id == parameter)
+                    .map_or(row.normalized, |(_, knob)| knob.control.read(cx).value());
+                (parameter, displayed)
+            })
     });
     let follow = panel
         .follow_knob

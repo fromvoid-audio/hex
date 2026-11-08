@@ -23,7 +23,7 @@ pub(crate) fn fixture_view(
                 .into_iter()
                 .filter_map(|device| {
                     let (row, control, lane) =
-                        device_panel::vst3_parameters::test_touch_state(view, device);
+                        device_panel::vst3_parameters::test_touch_state(view, device, cx);
                     row.map(|(parameter, normalized)| {
                         (device, parameter, normalized, control, lane)
                     })
@@ -38,6 +38,11 @@ pub(crate) fn fixture_view(
                 parameter_controls,
                 parameter_query_pending,
                 parameter_touches,
+                parameter_gesture: view
+                    .device_gesture
+                    .snapshot()
+                    .and_then(|snapshot| snapshot.plugin_value)
+                    .map(|value| value.normalized()),
                 operation: view
                     .pending_plugin_effect
                     .as_ref()
