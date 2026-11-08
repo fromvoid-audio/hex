@@ -692,13 +692,7 @@ impl EditorView {
                                     .children(self.track_latency_indicator(
                                         super::track_latency::Owner::Track(track_id),
                                     ))
-                                    .children(self.track_tags_header(track, cx))
-                                    .child(self.sample_arm_button(
-                                        super::sample_recorder::Arm::Output(
-                                            hex_engine::OutputCaptureId::Track(track_id),
-                                        ),
-                                        cx,
-                                    )),
+                                    .children(self.track_tags_header(track, cx)),
                             )
                             .children(self.route_marker_for_track(
                                 track.id().value(),
@@ -785,6 +779,7 @@ impl EditorView {
                 .flex()
                 .child(scene_rows),
         )
+        .child(self.console_mixer_row(&page, TRACK_COLUMN_WIDTH, SCENE_HEADER_WIDTH, cx))
         .child(self.track_reorder_events(cx))
     }
 
@@ -820,7 +815,7 @@ impl EditorView {
                     "previous tracks",
                     "session-page-previous",
                     cx.listener(move |view, _, _, cx| {
-                        if !view.track_reorder_active() {
+                        if !view.track_reorder_active() && view.track_view_change_available(cx) {
                             view.session_track_start = page_start.saturating_sub(page_size.max(1));
                         }
                         cx.notify();
@@ -1012,7 +1007,7 @@ impl EditorView {
                 "next tracks",
                 "session-page-next",
                 cx.listener(move |view, _, _, cx| {
-                    if !view.track_reorder_active() {
+                    if !view.track_reorder_active() && view.track_view_change_available(cx) {
                         view.session_track_start = page_start
                             .saturating_add(page_size.max(1))
                             .min(track_count.saturating_sub(page_size));

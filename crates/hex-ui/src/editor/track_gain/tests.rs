@@ -1567,7 +1567,10 @@ fn console_selected_group_uses_shared_gain_gesture_and_meter(cx: &mut TestAppCon
     for _ in 0..3 {
         editor.update(cx, |_, cx| cx.notify());
         visual.run_until_parked();
-        assert!(visual.debug_bounds("console-track-gain-owner").is_some());
+        assert!(
+            visual.debug_bounds("console-track-gain-owner").is_none(),
+            "the draft remains in its original visible column"
+        );
         editor.read_with(cx, |view, cx| {
             assert_eq!(view.selected_track, Some(other));
             assert!(
@@ -1620,7 +1623,7 @@ fn console_selected_group_uses_shared_gain_gesture_and_meter(cx: &mut TestAppCon
             .debug_bounds(Box::leak(
                 format!("console-track-meter-{}", group.value()).into_boxed_str()
             ))
-            .is_none()
+            .is_some()
     );
     assert!(
         visual
@@ -1718,13 +1721,28 @@ fn console_gain_draft_stays_visible_when_selection_changes(cx: &mut TestAppConte
         visual.debug_bounds(field_id).is_some(),
         "the old track's draft must stay visible"
     );
-    assert!(visual.debug_bounds("console-track-gain-owner").is_some());
+    assert!(
+        visual.debug_bounds("console-track-gain-owner").is_none(),
+        "the original column retains the draft without a duplicate footer"
+    );
     let field = visual.debug_bounds(field_id).unwrap().center();
     visual.simulate_mouse_down(field, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(field, MouseButton::Left, Modifiers::default());
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
-    assert!(visual.debug_bounds(field_id).is_none());
+    editor.read_with(cx, |view, cx| {
+        assert!(
+            !view
+                .track_gain_controls
+                .bindings
+                .get(&track)
+                .unwrap()
+                .entity
+                .read(cx)
+                .is_editing(),
+            "escape cancels the draft while retaining the column's control"
+        );
+    });
     assert!(
         visual
             .debug_bounds(Box::leak(
@@ -1804,7 +1822,9 @@ fn console_track_activator_and_solo_use_canonical_commands(cx: &mut TestAppConte
     });
     visual.run_until_parked();
     let mute = visual
-        .debug_bounds("console-track-mute")
+        .debug_bounds(Box::leak(
+            format!("console-track-mute-{}", group.value()).into_boxed_str(),
+        ))
         .expect("console activator")
         .center();
     visual.simulate_mouse_down(mute, MouseButton::Left, Modifiers::default());
@@ -1833,7 +1853,9 @@ fn console_track_activator_and_solo_use_canonical_commands(cx: &mut TestAppConte
                 .muted()
     });
     let solo = visual
-        .debug_bounds("console-track-solo")
+        .debug_bounds(Box::leak(
+            format!("console-track-solo-{}", group.value()).into_boxed_str(),
+        ))
         .expect("console solo")
         .center();
     visual.simulate_mouse_down(solo, MouseButton::Left, Modifiers::default());
@@ -1854,7 +1876,12 @@ fn console_track_activator_and_solo_use_canonical_commands(cx: &mut TestAppConte
         cx.notify();
     });
     visual.run_until_parked();
-    let solo = visual.debug_bounds("console-track-solo").unwrap().center();
+    let solo = visual
+        .debug_bounds(Box::leak(
+            format!("console-track-solo-{}", other.value()).into_boxed_str(),
+        ))
+        .unwrap()
+        .center();
     let modifiers = Modifiers {
         platform: true,
         ..Modifiers::default()

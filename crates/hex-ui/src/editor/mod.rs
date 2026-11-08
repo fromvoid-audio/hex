@@ -163,6 +163,7 @@ pub(crate) use midi_recording::pressure_fixture::exercise as midi_pressure_fixtu
 #[cfg(all(test, feature = "ui-test-support"))]
 mod arrangement_chrome_ui_test;
 mod arrangement_map;
+mod console_mixer;
 mod group_overview;
 mod midi_loop_notes;
 #[cfg(all(test, feature = "ui-test-support"))]
