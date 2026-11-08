@@ -2866,7 +2866,12 @@ pub(super) mod tests {
                 frozen
             );
             if !select_elsewhere {
-                assert_eq!(painted_fill(&mut visual, 2), selected_fill);
+                // At the exact insertion edge, the pointer is outside the new
+                // copy's hover fill after ACK; pending target paint above stays frozen.
+                assert_eq!(
+                    painted_fill(&mut visual, 2),
+                    Some(rgb(theme::section_colors(copy_color, true, false).0).into())
+                );
             }
         }
     }
