@@ -106,20 +106,23 @@ impl ModulationLfoBank {
             last_frames: 0,
             active: false,
         };
-        if bank.storage_bytes()? > MAX_MODULATION_LFO_STORAGE_BYTES {
+        if bank
+            .storage_bytes()?
+            .checked_add(std::mem::size_of::<Self>())
+            .is_none_or(|bytes| bytes > MAX_MODULATION_LFO_STORAGE_BYTES)
+        {
             return Err(Error::RuntimeBudgetExceeded);
         }
         Ok(bank)
     }
 
-    /// Actual reserved element capacities and inline state, for host admission.
-    /// Allocator bookkeeping is outside this count.
+    /// Reserved vector capacities for host admission, excluding the inline
+    /// bank header and allocator bookkeeping.
     pub fn storage_bytes(&self) -> Result<usize, Error> {
         let mut bytes = self
             .sources
             .capacity()
             .checked_mul(std::mem::size_of::<Source>())
-            .and_then(|size| size.checked_add(std::mem::size_of::<Self>()))
             .ok_or(Error::RuntimeBudgetExceeded)?;
         for source in &self.sources {
             bytes = source
