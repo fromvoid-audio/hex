@@ -311,8 +311,9 @@ mod tests {
 
     #[test]
     fn tempo_change_is_speculative_and_keeps_phase() {
-        let original = source(1, 12_000.0, 0.0);
-        let changed = source(1, 6_000.0, 0.0);
+        let id = ModulationSourceId::new(1).unwrap();
+        let original = PreparedLfoSource::tempo(id, 8.0, 120.0, 1.0, 0.0).unwrap();
+        let changed = PreparedLfoSource::tempo(id, 8.0, 60.0, 1.0, 0.0).unwrap();
         let mut bank = ModulationLfoBank::new(&[original], 8).unwrap();
         assert!(bank.retarget(changed).is_err());
         bank.begin();
