@@ -46,6 +46,7 @@ mod operator_tuning_ui_tests;
 mod operator_voice_ui_tests;
 mod overdrive_ui_tests;
 mod parameter_rows_tests;
+mod rattle_ui_tests;
 mod reverb_ui_tests;
 mod saturator_ui_tests;
 mod shortcut_text_tests;

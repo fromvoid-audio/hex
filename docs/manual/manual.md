@@ -872,7 +872,9 @@ distortion, **tone** adjusts its brightness, and **dynamics** restores more of t
 input's level changes as it increases. **dry/wet** blends the original signal with
 the processed sound. the effect is available on track, return and main chains.
 
-rattle is a one-knob drive. at **drive** 0 it passes audio unchanged; raising
+rattle is a one-knob drive. its compact panel pairs a percent drive dial with
+eleven orange diamonds. the diamonds tighten as drive rises and follow its
+automation while the lane reads. at **drive** 0 it passes audio unchanged; raising
 **drive** blends in a progressively harder, grittier and noisier saturation whose
 level is compensated for typical programme, so it gets dirtier rather than much
 louder. rattle processes at twice the sample rate and reports 11 samples of

@@ -79,7 +79,7 @@ widgets = (
     'hex_widgets::device_rail(', 'hex_widgets::device_grouped_row(',
     'hex_widgets::device_split(',
     # Shared production composition slots are already-bound native view elements.
-    'compact_rail(', 'dense_rail(', 'device_compact_section(', 'plot(', 'range)', 'footer)', 'rail)',
+    'compact_rail(', 'dense_rail(', 'device_compact_section(', 'plot(', 'crate::device_composition::plot(', 'range)', 'footer)', 'rail)',
     'first)', 'second)', 'preview)', 'tabs)', 'rails)',
     'hex_widgets::device_divider(', 'hex_widgets::device_identity_marker(',
     'main)', 'mixer)', 'lane)', 'row)', 'rows)', 'clips)', 'strips)', 'track_labels)',
