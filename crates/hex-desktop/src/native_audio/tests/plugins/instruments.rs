@@ -1531,7 +1531,7 @@ fn verify_paced_instrument_authoring(
         if block >= 550 {
             tail_peak = tail_peak.max(block_peak);
         }
-        if monitor && query_pending.is_none() && block >= 30 && block % 25 == 0 {
+        if monitor && query_pending.is_none() && (30..500).contains(&block) && block % 25 == 0 {
             let query_context = hex_engine::AudioSourceContext {
                 editor_revision: revision,
                 ..context
@@ -1642,6 +1642,11 @@ fn verify_paced_instrument_authoring(
             query_yielded > 0,
             "the test must exercise a read yielding to an automation edit"
         );
+        assert!(
+            query_pending.is_none(),
+            "the last parameter query must complete"
+        );
+        assert_eq!(query_sent, query_completed + query_changed + query_yielded);
         println!(
             "paced_vst3 queries_sent={query_sent} completed={query_completed} invalidated={query_changed} yielded={query_yielded} pending={}",
             query_pending.is_some()
