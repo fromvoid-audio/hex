@@ -29,11 +29,10 @@ pub(super) struct FadeGesture {
 }
 impl FadeGesture {
     pub(super) fn pointer_cursor(self) -> gpui::CursorStyle {
-        if matches!(self.handle, Handle::InCurve | Handle::OutCurve) {
-            gpui::CursorStyle::Crosshair
-        } else {
-            gpui::CursorStyle::ResizeLeftRight
-        }
+        gpui::CursorStyle::Arrow
+    }
+    pub(super) fn identity(self) -> (u64, Handle) {
+        (self.event.id, self.handle)
     }
 }
 fn source_window(root: &AudioClipEdit, event: AudioEvent, tempo: &TempoMap) -> Option<(u64, u64)> {
@@ -454,12 +453,16 @@ impl EditorView {
         if !self.update_audio_event_fade_pointer(position, platform, window, cx) {
             return false;
         }
-        if let Some(gesture) = self.audio_event_editor.gesture.take()
-            && gesture.moved
-            && let Some(operation) = gesture.operation
+        if let Some(operation) = self
+            .audio_event_editor
+            .gesture
+            .as_ref()
+            .filter(|gesture| gesture.moved)
+            .and_then(|gesture| gesture.operation.clone())
         {
             self.event_commit(operation);
         }
+        self.audio_event_editor.gesture = None;
         cx.notify();
         true
     }
@@ -473,11 +476,22 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> Vec<gpui::AnyElement> {
         let held = self.audio_event_editor.fade_key_held;
-        let active = self
+        let captured = self
             .audio_event_editor
             .gesture
             .as_ref()
-            .is_some_and(|g| matches!(g.kind,Kind::Fade(f) if f.event.id==event.id));
+            .and_then(|g| match g.kind {
+                Kind::Fade(f) => Some(f.identity()),
+                _ => None,
+            })
+            .or_else(|| {
+                self.audio_event_editor
+                    .pending
+                    .as_ref()
+                    .filter(|p| Some(p.owner) == self.audio_event_editor.owner)
+                    .and_then(|p| p.fade_handle)
+            });
+        let active = captured.is_some_and(|(id, _)| id == event.id);
         let hovered = self.audio_event_editor.fade_hover == Some(event.id);
         if !held && !active && !hovered && event.fade.is_none_or(|fade| fade.shape().is_neutral()) {
             return Vec::new();
@@ -625,6 +639,17 @@ impl EditorView {
             }
             .clamp(inset, height - inset - 2.0);
             let selector = format!("audio-event-{}-{}", handle.name(), event.id);
+            let paint_state = if captured == Some((event.id, handle)) {
+                theme::FadeHandleState::Active
+            } else if captured.is_none()
+                && self.audio_event_editor.fade_handle_hover == Some((event.id, handle))
+            {
+                theme::FadeHandleState::Hover
+            } else {
+                theme::FadeHandleState::Idle
+            };
+            let owner = self.audio_event_editor.owner;
+            let revision = self.audio_event_editor.revision;
             elements.push(
                 div()
                     .id((handle.name(), event.id))
@@ -636,13 +661,25 @@ impl EditorView {
                     .h(px(size))
                     .children([fade_handles::handle_shape(
                         matches!(handle, Handle::InCurve | Handle::OutCurve),
-                        active,
+                        paint_state,
                     )])
-                    .cursor(if matches!(handle, Handle::InCurve | Handle::OutCurve) {
-                        gpui::CursorStyle::Crosshair
-                    } else {
-                        gpui::CursorStyle::ResizeLeftRight
-                    })
+                    .cursor(gpui::CursorStyle::Arrow)
+                    .on_hover(cx.listener(move |view, hovered: &bool, _, cx| {
+                        let state = &mut view.audio_event_editor;
+                        if state.owner != owner || state.revision != revision {
+                            return;
+                        }
+                        let target = (event.id, handle);
+                        let next = if *hovered {
+                            Some(target)
+                        } else {
+                            state.fade_handle_hover.filter(|current| *current != target)
+                        };
+                        if next != state.fade_handle_hover {
+                            state.fade_handle_hover = next;
+                            cx.notify();
+                        }
+                    }))
                     .tooltip(move |_, cx| {
                         cx.new(|_| crate::editor::waveform::ClipTooltip {
                             kind: crate::tooltips::Kind::control(handle.name().replace('-', " ")),

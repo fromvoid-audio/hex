@@ -874,6 +874,11 @@ fn released_push_keeps_both_pushed_handles_painted_until_real_worker_ack(cx: &mu
     assert!(deeper.fade_out() < preview.fade_out() && preview.fade_out() < 24_000);
     let held_out = visual.debug_bounds(out_top).unwrap();
     let held_in = visual.debug_bounds(in_top).unwrap();
+    assert_eq!(
+        held_in, held_out,
+        "pushed top handles exercise actual paint overlap"
+    );
+    super::paint_probe::assert_style(&mut visual, in_top, theme::FadeHandleState::Active);
     assert!(held_out.center().x > before_out.center().x);
     visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
     let deadline = crate::test_wait::hang_deadline();
@@ -899,6 +904,7 @@ fn released_push_keeps_both_pushed_handles_painted_until_real_worker_ack(cx: &mu
         visual.run_until_parked();
         assert_eq!(visual.debug_bounds(out_top), Some(held_out));
         assert_eq!(visual.debug_bounds(in_top), Some(held_in));
+        super::paint_probe::assert_style(&mut visual, in_top, theme::FadeHandleState::Active);
         editor.read_with(&visual, |v, _| {
             assert!(v.pending_fade.is_some());
             assert_eq!(v.fade_preview(clip), Some(preview));
@@ -917,6 +923,7 @@ fn released_push_keeps_both_pushed_handles_painted_until_real_worker_ack(cx: &mu
     });
     assert_eq!(visual.debug_bounds(out_top), Some(held_out));
     assert_eq!(visual.debug_bounds(in_top), Some(held_in));
+    super::paint_probe::assert_not_active(&mut visual, in_top);
 }
 
 #[gpui::test]
@@ -1493,4 +1500,47 @@ fn fade_capture_stays_visible_when_dragging_into_the_header(cx: &mut TestAppCont
         ));
         assert!(view.active_clip_drag.is_none());
     });
+}
+
+#[gpui::test]
+fn fade_handle_hover_keeps_the_arrow_cursor(cx: &mut TestAppContext) {
+    use super::paint_probe::assert_style;
+    use crate::theme::FadeHandleState::{Active, Hover, Idle};
+    let (_files, _editor, mut visual, clip) = real_faded_clip(cx);
+    key(&mut visual, true, "f");
+    let other = Box::leak(format!("fade-out-top-{}", clip.value()).into_boxed_str());
+    let selector = Box::leak(format!("fade-in-top-{}", clip.value()).into_boxed_str());
+    assert_style(&mut visual, other, Idle);
+    let target = visual.debug_bounds(selector).unwrap().center();
+    visual.simulate_mouse_move(target, None, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        visual.rendered_cursor_style(),
+        Some(gpui::CursorStyle::Arrow)
+    );
+    assert_style(&mut visual, selector, Hover);
+    assert_style(&mut visual, other, Idle);
+    visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert_style(&mut visual, selector, Active);
+    assert_style(&mut visual, other, Idle);
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert_style(&mut visual, selector, Hover);
+    visual.simulate_mouse_move(point(px(0.0), px(0.0)), None, Modifiers::default());
+    visual.run_until_parked();
+    assert_style(&mut visual, selector, Idle);
+    visual.simulate_mouse_move(target, None, Modifiers::default());
+    visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(px(0.0), px(0.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    assert_style(&mut visual, selector, Active);
+    assert_style(&mut visual, other, Idle);
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert_style(&mut visual, selector, Idle);
 }
