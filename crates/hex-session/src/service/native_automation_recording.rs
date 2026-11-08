@@ -17,6 +17,7 @@ use hex_engine::{AudioSourceContext, NativeParameterApplication, NativeParameter
 use hex_storage::automation_draft::{
     CaptureClock, DraftAbortReason, DraftReadLimits, DraftTerminal,
 };
+pub use recovery::prepare_verified_vst3_recovery_on_control;
 pub(super) use recovery::recover_sealed;
 use std::{
     path::{Path, PathBuf},

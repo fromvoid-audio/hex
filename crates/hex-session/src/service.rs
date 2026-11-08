@@ -39,6 +39,7 @@ pub use native_automation_recording::{
     DeviceAutomationTakeProgress, DeviceAutomationTakeScope, DeviceCaptureTarget,
     FailedPluginContinuation, copy_failed_plugin_on_control,
     copy_failed_plugin_with_receipt_on_control, prepare_failed_plugin_continuation,
+    prepare_verified_vst3_recovery_on_control,
 };
 #[cfg(test)]
 mod busy_reason_tests;
