@@ -65,7 +65,12 @@ impl NativeDeviceMetadata for EqDefinition {
         };
         let settings = EqState::decode(state)?;
         let (normalization, stepping, automation, smoothing) = if id == MODE {
-            (N::Discrete, T::Choice, E::Unsupported, S::None)
+            (
+                N::Discrete,
+                T::Choice,
+                E::DeviceArrangementEnvelope,
+                S::DeviceManaged,
+            )
         } else if id == OUTPUT_GAIN {
             (
                 N::Linear,
@@ -208,7 +213,7 @@ impl NativeDeviceDefinition for EqDefinition {
         parameter: ParameterId,
     ) -> Result<bool, DeviceContractError> {
         let settings = EqState::decode(state)?;
-        if parameter == OUTPUT_GAIN {
+        if parameter == MODE || parameter == OUTPUT_GAIN {
             return Ok(true);
         }
         let Ok((id, field)) = NodeId::from_parameter(parameter) else {
@@ -230,10 +235,6 @@ impl NativeDeviceDefinition for EqDefinition {
         context: &hex_lattice::DevicePreparationContext<'_>,
         parameters: &[ParameterId],
     ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
-        // Mode component qualification precedes ordinary registry admission.
-        if parameters.first() == Some(&MODE) {
-            return Err(DeviceContractError::UnsupportedProcessingClass);
-        }
         Ok(hex_lattice::PreparedRuntimeDevice {
             matrix: StereoMatrix::identity(),
             processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(

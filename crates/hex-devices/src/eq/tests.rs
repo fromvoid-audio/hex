@@ -917,8 +917,35 @@ fn shared_node_admission_and_factory_agree_with_descriptors_and_refusals() {
             Some(descriptor(id, field).unwrap())
         );
     }
+    for (parameter, descriptor) in [(MODE, DESCRIPTORS[200]), (OUTPUT_GAIN, DESCRIPTORS[201])] {
+        assert!(
+            EQ_DEFINITION
+                .supports_parameter_automation(&state, parameter)
+                .unwrap()
+        );
+        let semantics = EQ_DEFINITION
+            .parameter_semantics_for_state(&state, parameter)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            semantics.automation,
+            hex_lattice_contract::ParameterAutomation::DeviceArrangementEnvelope
+        );
+        assert_eq!(
+            semantics.smoothing,
+            hex_lattice_contract::ParameterSmoothing::DeviceManaged
+        );
+        let processor = EQ_DEFINITION
+            .prepare_automated_runtime_instance(identity, &state, &context, &[parameter])
+            .unwrap()
+            .processor
+            .unwrap();
+        assert_eq!(
+            processor.parameter_automation_descriptor(parameter),
+            Some(descriptor)
+        );
+    }
     for parameter in [
-        MODE,
         ParameterId::from_static(1063),
         NodeId::new(99)
             .unwrap()
