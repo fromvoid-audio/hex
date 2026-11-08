@@ -166,34 +166,39 @@ impl EditorView {
                     cx,
                 ))
                 .children([self.arrangement_body(
-                    div()
-                        .relative()
-                        .flex_1()
-                        .min_h_0()
-                        .flex()
-                        .flex_col()
-                        .children([timeline_grid_layer(
-                            &bands,
-                            &grid,
-                            empty_viewport,
-                            self.track_header_width(),
-                            window.scale_factor(),
-                        )])
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_h_0()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_xs()
-                                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                                .child(theme::text(if self.arrangement_focus.projection.enabled {
-                                    "no clips in selected sections · q clears section focus"
-                                } else {
-                                    "no tracks · import audio or add a track"
-                                })),
-                        ),
+                    self.decorate_focused_empty_tracks(
+                        window.scale_factor(),
+                        div()
+                            .relative()
+                            .flex_1()
+                            .min_h_0()
+                            .flex()
+                            .flex_col()
+                            .children([timeline_grid_layer(
+                                &bands,
+                                &grid,
+                                empty_viewport,
+                                self.track_header_width(),
+                                window.scale_factor(),
+                            )])
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_xs()
+                                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                                    .child(theme::text(
+                                        if self.arrangement_focus.projection.enabled {
+                                            "no clips in selected sections · q clears section focus"
+                                        } else {
+                                            "no tracks · import audio or add a track"
+                                        },
+                                    )),
+                            ),
+                    ),
                     cx,
                 )]);
             let main =

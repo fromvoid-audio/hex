@@ -2125,7 +2125,7 @@ impl EditorView {
             viewport,
             cx,
         );
-        div()
+        let row = div()
             .on_scroll_wheel(
                 cx.listener(move |view, event: &gpui::ScrollWheelEvent, _, cx| {
                     view.resize_row_wheel(Some(track_id), event, cx);
@@ -2137,7 +2137,8 @@ impl EditorView {
             .flex()
             .flex_col()
             .child(row)
-            .child(rows)
+            .child(rows);
+        self.decorate_focused_track_row(track_index, track_id, scale_factor, row)
     }
 
     pub(super) fn build_clip_contents(
