@@ -109,10 +109,21 @@ fn real_fm4_retune_retargets_actual_voice_history_without_allocations_or_frees()
     let tuning = TuningTable::default();
     let retuned = TuningTable::new(tuning.frequencies().map(|frequency| frequency * 1.01)).unwrap();
     let state = FM4_DEFINITION.default_state().unwrap();
-    let prepare = |tuning| {
+    let mut changed_state = state.clone();
+    for (id, value) in [
+        (parameter::oscillator_ratio(1), 1.25),
+        (parameter::oscillator_phase(1), 0.125),
+        (parameter::ATTACK, 0.015),
+        (parameter::RELEASE, 0.005),
+    ] {
+        changed_state = FM4_DEFINITION
+            .patch_parameter(&changed_state, id, ParameterValue::Float(value))
+            .unwrap();
+    }
+    let prepare = |state, tuning| {
         FM4_DEFINITION
             .prepare_carrier_runtime(
-                &state,
+                state,
                 &DevicePreparationContext {
                     sample_rate: 48000,
                     tuning,
@@ -121,8 +132,8 @@ fn real_fm4_retune_retargets_actual_voice_history_without_allocations_or_frees()
             )
             .unwrap()
     };
-    let source = prepare(&tuning);
-    let target = prepare(&retuned);
+    let source = prepare(&state, &tuning);
+    let target = prepare(&changed_state, &retuned);
     let limits = NativeInstrumentRuntimeLimits {
         max_pair_bytes: 2 * 1024 * 1024,
         max_events_per_block: 259,

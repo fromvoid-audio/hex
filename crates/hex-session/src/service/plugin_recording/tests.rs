@@ -223,8 +223,18 @@ fn failed_recovery_dispatch_copies_receipts_without_releasing_custody() {
                 assert!(Instant::now() < deadline);
                 std::thread::yield_now();
             }
-            Step::Progress(DeviceAutomationTakeProgress::Retained(path)) => {
+            Step::Progress(DeviceAutomationTakeProgress::VerifiedCopy { path, receipt }) => {
                 assert_eq!(path, output);
+                assert_eq!(receipt.events(), 3);
+                receipt
+                    .verify_on_control(
+                        &path,
+                        DraftReadLimits {
+                            max_source_bytes: 65536,
+                        },
+                        3,
+                    )
+                    .unwrap();
                 break;
             }
             _ => panic!("unexpected recovery result"),
@@ -293,8 +303,9 @@ fn failed_recovery_dispatch_preserves_already_admitted_terminal_without_late_rec
                 assert!(Instant::now() < deadline);
                 std::thread::yield_now();
             }
-            Step::Progress(DeviceAutomationTakeProgress::Retained(path)) => {
+            Step::Progress(DeviceAutomationTakeProgress::VerifiedCopy { path, receipt }) => {
                 assert_eq!(path, output);
+                assert_eq!(receipt.events(), 1);
                 break;
             }
             _ => panic!("unexpected recovery result"),

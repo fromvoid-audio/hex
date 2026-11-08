@@ -13,11 +13,18 @@
 //! Voice age/gate and the original tuned phase-step law are unchanged by carrier
 //! controls. Per-voice f32 source samples receive occurrence gain before f64 sum.
 //! Complete controls, effective pruning and voices participate in twin history.
-//! A prepared retarget may change same-rate tuning and Base carriers only.
+//! A prepared retarget adopts the complete same-rate target Base law. Ratio or
+//! tuning changes preserve oscillator phase; authored phase changes apply the
+//! new phase explicitly. Level/routing and attack/decay/sustain take effect at
+//! the retained note age, so coefficient edits may be audible discontinuities.
 //! Each retained voice carries four modulo-2^64 phase offsets; retarget adds
 //! (source_step-target_step)*age without changing age/gate/velocity. Both twins
-//! validate exact target proof, complete noncarrier authored law and every live
-//! target pitch before mutation. Effective carrier ramps survive the handoff;
+//! validate exact target proof, same sample rate and every live target pitch
+//! before mutation. Each note starts with its authored release ceiling; retarget
+//! takes min(previous ceiling,target release) to respect the host's existing
+//! occurrence deadline and target factory bound. A shorter release can retire
+//! an already-released note immediately. Release increases affect new notes;
+//! extending a carried note requires a separate host-deadline contract. Effective carrier ramps survive the handoff;
 //! the next segment selects the target's Base or supplied authored values.
 //! No assets, queues, host publication, event scheduler or new resource owner.
 //! Native definition admission and parameter metadata remain unchanged.
@@ -35,8 +42,6 @@ use hex_lattice::{
 use std::any::Any;
 const VOICES: usize = 64;
 const EVENTS: usize = 259;
-const CARRIER_START: usize = (OSCILLATOR_FIELDS + ROUTING_FIELDS) * size_of::<f32>();
-const CARRIER_END: usize = CARRIER_START + CARRIER_FIELDS * size_of::<f32>();
 const CARRIERS: [ParameterDescriptor; 4] = [
     PARAMETERS[24],
     PARAMETERS[25],
@@ -152,16 +157,17 @@ struct Voice {
     age: u64,
     gate: Option<u64>,
     phase_offsets: [u64; 4],
+    release_ceiling: u64,
 }
 impl Voice {
-    fn advance(&mut self, frames: u64, release: u64) {
+    fn advance(&mut self, frames: u64) {
         if self.id == 0 {
             return;
         }
         self.age = self.age.saturating_add(frames);
         if self
             .gate
-            .is_some_and(|gate| self.age.saturating_sub(gate) >= release)
+            .is_some_and(|gate| self.age.saturating_sub(gate) >= self.release_ceiling)
         {
             *self = Self::default();
         }
@@ -247,6 +253,7 @@ impl Runtime {
                     age: 0,
                     gate: None,
                     phase_offsets: [0; 4],
+                    release_ceiling: config.envelope.release,
                 };
             }
             NativeInstrumentEvent::NoteOff { occurrence_id, .. } => {
@@ -254,7 +261,7 @@ impl Runtime {
                     if voice.gate.is_none() {
                         voice.gate = Some(voice.age);
                     }
-                    voice.advance(0, config.envelope.release);
+                    voice.advance(0);
                 }
             }
             NativeInstrumentEvent::Expression { .. } => {}
@@ -308,10 +315,9 @@ impl Runtime {
                 let Some(steps) = self.config.steps[usize::from(voice.pitch)] else {
                     continue;
                 };
-                let amplitude = self
-                    .config
-                    .envelope
-                    .level(voice.age, voice.gate.unwrap_or(u64::MAX))
+                let mut envelope = self.config.envelope;
+                envelope.release = voice.release_ceiling;
+                let amplitude = envelope.level(voice.age, voice.gate.unwrap_or(u64::MAX))
                     * (f64::from(voice.velocity) / 127.0);
                 let mut configuration = self.effective;
                 for (phase, offset) in configuration.phases.iter_mut().zip(voice.phase_offsets) {
@@ -332,7 +338,7 @@ impl Runtime {
                     .ok()
                     .map_or(1.0, |index| gains[index].value_at_offset(offset as u64));
                 sum += f64::from(sample) * gain;
-                voice.advance(1, self.config.envelope.release);
+                voice.advance(1);
             }
             frame[0] += sum as f32;
             frame[1] += sum as f32;
@@ -356,7 +362,7 @@ impl PreparedMutableInstrumentRuntime for Factory {
         Some(0)
     }
     fn runtime_version(&self) -> u32 {
-        2
+        3
     }
     fn prepare_history_retarget_target(
         &self,
@@ -429,7 +435,7 @@ impl MutableInstrumentRuntime for Runtime {
                 return Err(Error::InvalidEventBatch);
             }
             for voice in &mut voices {
-                voice.advance((offset - previous) as u64, self.config.envelope.release);
+                voice.advance((offset - previous) as u64);
             }
             Self::apply(&self.config, &mut voices, *event)?;
             previous = offset;
@@ -497,8 +503,6 @@ impl MutableInstrumentRuntime for Runtime {
             && self.config.tuning == proof.tuning
             && self.config.sample_rate == proof.sample_rate)
             && self.config.sample_rate == previous.config.sample_rate
-            && self.config.identity[..CARRIER_START] == previous.config.identity[..CARRIER_START]
-            && self.config.identity[CARRIER_END..] == previous.config.identity[CARRIER_END..]
             && previous
                 .voices
                 .iter()
@@ -518,6 +522,11 @@ impl MutableInstrumentRuntime for Runtime {
         if let Some(previous) = previous.as_any().downcast_ref::<Self>() {
             self.voices = previous.voices;
             for voice in self.voices.iter_mut().filter(|voice| voice.id != 0) {
+                voice.release_ceiling = voice.release_ceiling.min(self.config.envelope.release);
+                voice.advance(0);
+                if voice.id == 0 {
+                    continue;
+                }
                 let (Some(source), Some(target)) = (
                     previous.config.steps[usize::from(voice.pitch)],
                     self.config.steps[usize::from(voice.pitch)],
