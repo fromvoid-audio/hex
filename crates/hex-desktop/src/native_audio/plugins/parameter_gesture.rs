@@ -632,8 +632,10 @@ impl Gesture {
                 processed: false,
                 sdk_finished: false,
                 #[cfg(all(test, feature = "allocation-probe"))]
-                hold_sdk_ack: std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").as_deref()
-                    == Ok("delivery_retire"),
+                hold_sdk_ack: matches!(
+                    std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").as_deref(),
+                    Ok("delivery_retire" | "touch_close_pending")
+                ),
             });
             self.drain_point(control)?;
         }

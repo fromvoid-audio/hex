@@ -714,7 +714,15 @@ fn confirmed_point_survives_output_close_while_sdk_ack_is_pending() {
 fn recorded_touch_admission_and_exclusive_restoration_use_actual_output() {
     const CASE: &str = "HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE";
     if std::env::var_os(CASE).is_none() {
-        for case in ["touch", "touch_empty", "touch_commit", "touch_control_lag"] {
+        for case in [
+            "touch_close_begin",
+            "touch_close_point",
+            "touch_close_pending",
+            "touch",
+            "touch_empty",
+            "touch_commit",
+            "touch_control_lag",
+        ] {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
@@ -738,7 +746,8 @@ fn recorded_touch_admission_and_exclusive_restoration_use_actual_output() {
     instrument_entrypoint(InstrumentWorkflow::Takeover);
     if std::env::var_os("HEX_DESKTOP_TEST_INSTRUMENT_CHILD").is_some() {
         use crate::native_audio::tests::resident_preview::{
-            CONFIRMED_TEST_ENDS, CONFIRMED_TEST_NOOPS, CONFIRMED_TEST_POINTS, CONFIRMED_TEST_READY,
+            CONFIRMED_TEST_ENDS, CONFIRMED_TEST_INTERRUPTS, CONFIRMED_TEST_NOOPS,
+            CONFIRMED_TEST_POINTS, CONFIRMED_TEST_READY,
         };
         assert!(CONFIRMED_TEST_READY.load(Acquire) > 0);
         if std::env::var(CASE).unwrap() == "touch_stress" {
@@ -746,6 +755,10 @@ fn recorded_touch_admission_and_exclusive_restoration_use_actual_output() {
             assert_eq!(CONFIRMED_TEST_POINTS.load(Acquire), 100);
             assert_eq!(CONFIRMED_TEST_ENDS.load(Acquire), 100);
             assert_eq!(CONFIRMED_TEST_NOOPS.load(Acquire), 0);
+        } else if std::env::var(CASE).unwrap().starts_with("touch_close_") {
+            assert_eq!(CONFIRMED_TEST_READY.load(Acquire), 1);
+            assert_eq!(CONFIRMED_TEST_INTERRUPTS.load(Acquire), 1);
+            assert_eq!(CONFIRMED_TEST_ENDS.load(Acquire), 0);
         } else if std::env::var(CASE).unwrap() == "touch_empty" {
             assert_eq!(CONFIRMED_TEST_POINTS.load(Acquire), 0);
             assert!(CONFIRMED_TEST_NOOPS.load(Acquire) > 0);
@@ -1838,7 +1851,14 @@ fn verify_instrument_takeover(
             render_takeover_partial(
                 h,
                 [3, 5, 117, 1, 130][fragment % 5],
-                playing && case != "delivery_retire",
+                playing
+                    && !matches!(
+                        case.as_str(),
+                        "delivery_retire"
+                            | "touch_close_pending"
+                            | "touch_close_point"
+                            | "touch_close_begin"
+                    ),
                 &case,
                 Some(&request),
             );
@@ -1865,6 +1885,9 @@ fn verify_instrument_takeover(
     for request_id in 12..12 + touches {
         client.begin_plugin(query(h, request_id)).unwrap();
         assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
+        if case == "touch_close_begin" {
+            return;
+        }
         if case == "touch_empty" {
             client.cancel().unwrap();
             send(h, &mut client, true);
@@ -1874,13 +1897,20 @@ fn verify_instrument_takeover(
             .change_plugin(PluginParameterValue::new(0.75).unwrap())
             .unwrap();
         assert_eq!(
-            send(h, &mut client, case != "delivery_retire")
-                .state
-                .project
-                .as_ref(),
+            send(
+                h,
+                &mut client,
+                !matches!(case.as_str(), "delivery_retire" | "touch_close_pending")
+            )
+            .state
+            .project
+            .as_ref(),
             &before
         );
-        if case == "delivery_retire" {
+        if matches!(
+            case.as_str(),
+            "delivery_retire" | "touch_close_point" | "touch_close_pending"
+        ) {
             return;
         }
         if playing {
