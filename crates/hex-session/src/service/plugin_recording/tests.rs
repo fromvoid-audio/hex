@@ -222,7 +222,7 @@ fn failed_custody_query_preserves_original_identity_and_rejects_mismatch() {
         assert_eq!(
             failed_custody(&state, &lane, false).unwrap(),
             Progress::FailedPluginCustody {
-                scope,
+                scope: Box::new(scope),
                 path: path.clone()
             }
         );

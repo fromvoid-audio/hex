@@ -173,7 +173,7 @@ pub enum DeviceAutomationTakeProgress {
     FailedPluginPending,
     /// Exact retained identity; querying it never changes custody.
     FailedPluginCustody {
-        scope: DeviceAutomationTakeScope,
+        scope: Box<DeviceAutomationTakeScope>,
         path: PathBuf,
     },
     Retained(PathBuf),

@@ -118,7 +118,7 @@ pub(super) fn failed_custody(
     }
     state.failed_observations(scope, source)?;
     Ok(Progress::FailedPluginCustody {
-        scope,
+        scope: Box::new(scope),
         path: path.to_owned(),
     })
 }

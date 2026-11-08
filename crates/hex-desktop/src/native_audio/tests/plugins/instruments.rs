@@ -2370,8 +2370,8 @@ fn verify_instrument_takeover(
             assert_eq!(
                 discovery.progress,
                 Progress::FailedPluginCustody {
-                    scope,
-                    path: paths[0].clone(),
+                    scope: Box::new(scope),
+                    path: std::fs::canonicalize(&paths[0]).unwrap(),
                 }
             );
             if case != "session_writer_failure" {
