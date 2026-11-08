@@ -455,6 +455,8 @@ actions!(
         GroupSelection,
         RenameClip,
         RenameTrack,
+        SelectPreviousReturn,
+        SelectNextReturn,
         CommitTrackName,
         CancelTrackName,
         CommitClipName,
@@ -525,6 +527,7 @@ fn bind_editor_keys(cx: &mut App) {
     section_launch::bind_keys(cx);
     clip_name::bind_keys(cx);
     track_name::bind_keys(cx);
+    console_returns::bind_keys(cx);
     cx.bind_keys([
         KeyBinding::new("cmd-,", OpenSettings, None),
         KeyBinding::new("escape", ThemeSettingsEscape, Some("hex_theme_settings")),
