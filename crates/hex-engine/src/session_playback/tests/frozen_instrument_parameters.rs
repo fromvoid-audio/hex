@@ -244,12 +244,9 @@ fn second_capture_refusal_preserves_both_donor_voices_and_retry() {
 }
 
 #[test]
+#[cfg(not(debug_assertions))]
 #[ignore = "release CPU measurement; run with --release --ignored --nocapture"]
 fn profile_four_carrier_playing_and_detached_release_cost() {
-    assert!(
-        !cfg!(debug_assertions),
-        "use --release for CPU measurements"
-    );
     std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
         .spawn(|| {
