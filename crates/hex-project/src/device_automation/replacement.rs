@@ -144,6 +144,27 @@ mod tests {
         assert_eq!(e.project().snapshot(), after);
     }
     #[test]
+    fn inventory_only_edit_prepares_the_new_rows_without_changing_provider_bytes() {
+        let (mut e, device) = setup();
+        let before = e.project().snapshot();
+        let current = e.project().device(device).unwrap().state().clone();
+        let mut cmd = command(&e, device, vec![]);
+        if let Command::ReplaceDeviceStateWithIdentityReservation { state, .. } = &mut cmd {
+            *state = current.clone();
+        }
+        let calls = Cell::new(0);
+        e.execute_prepared(cmd, |candidate| {
+            calls.set(calls.get() + 1);
+            assert_eq!(candidate.device(device).unwrap().state(), &current);
+            assert!(candidate.device(device).unwrap().automation().is_empty());
+            Ok::<_, Invalid>(())
+        })
+        .unwrap();
+        assert_eq!(calls.get(), 1);
+        assert!(e.undo());
+        assert_eq!(e.project().snapshot(), before);
+    }
+    #[test]
     fn stale_inventory_and_existing_state_variant_allocator_guards_refuse_before_preparation() {
         let (mut e, device) = setup();
         let captured = command(&e, device, vec![]);
