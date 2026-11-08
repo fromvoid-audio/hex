@@ -1683,7 +1683,10 @@ impl EditorView {
             .debug_selector(move || format!("track-mute-{}", track_id.value()))
             .flex_1()
             .min_w_0()
-            .h(px(18.0))
+            .h(px(14.0))
+            .text_size(px(10.0))
+            .border_1()
+            .border_color(rgb(theme::control_style().border))
             .child(theme::text((track_index + 1).to_string()))
             .on_click(cx.listener(move |view, _, _, cx| {
                 cx.stop_propagation();
@@ -1697,8 +1700,11 @@ impl EditorView {
                 theme::action_style().with_state_colors(solo_background, solo_text),
             )
             .debug_selector(move || format!("track-solo-{}", track_id.value()))
-            .w(px(28.0))
-            .h(px(18.0))
+            .w(px(16.0))
+            .h(px(14.0))
+            .text_size(px(10.0))
+            .border_1()
+            .border_color(rgb(theme::control_style().border))
             .on_click(cx.listener(move |view, event: &gpui::ClickEvent, _, cx| {
                 cx.stop_propagation();
                 view.toggle_solo(track_id, !event.modifiers().platform);
@@ -1707,8 +1713,11 @@ impl EditorView {
             let arm = div()
                 .id(("track-arm-unavailable", track_id.value()))
                 .debug_selector(move || format!("track-arm-unavailable-{}", track_id.value()))
-                .w(px(28.0))
-                .h(px(18.0))
+                .w(px(16.0))
+                .h(px(14.0))
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+                .border_1()
+                .border_color(rgb(theme::control_style().border))
                 .flex_shrink_0()
                 .flex()
                 .items_center()
@@ -1811,21 +1820,27 @@ impl EditorView {
                 )
                 .child(self.track_volume(track, cx))
                 .child(
-                    button(
-                        "●",
+                    toggle_button_with_style(
+                        "",
                         if track.muted() {
                             "unmute track"
                         } else {
                             "mute track"
                         },
                         ("track-mute", track_id.value()),
+                        {
+                            let (background, text) =
+                                super::track_gain::activator_colors(!track.muted());
+                            theme::action_style().with_state_colors(background, text)
+                        },
                     )
+                    .w(px(20.0))
+                    .h(px(14.0))
+                    .text_size(px(10.0))
+                    .border_1()
+                    .border_color(rgb(theme::control_style().border))
+                    .child(theme::text((track_index + 1).to_string()))
                     .debug_selector(move || format!("track-mute-{}", track_id.value()))
-                    .text_color(rgb(if track.muted() {
-                        theme::color(theme::PaletteRole::Primary)
-                    } else {
-                        theme::color(theme::PaletteRole::Muted)
-                    }))
                     .on_click(cx.listener(move |view, _, _, cx| {
                         cx.stop_propagation();
                         view.toggle_mute(track_id);
@@ -1833,17 +1848,23 @@ impl EditorView {
                     })),
                 )
                 .child(
-                    button(
+                    toggle_button_with_style(
                         "s",
                         "solo track · s · cmd+click additive",
                         ("track-solo", track_id.value()),
+                        {
+                            let (background, text) = super::track_gain::activator_colors(
+                                self.displayed_solo(track_id, track.soloed()),
+                            );
+                            theme::action_style().with_state_colors(background, text)
+                        },
                     )
+                    .w(px(16.0))
+                    .h(px(14.0))
+                    .text_size(px(10.0))
+                    .border_1()
+                    .border_color(rgb(theme::control_style().border))
                     .debug_selector(move || format!("track-solo-{}", track_id.value()))
-                    .text_color(rgb(if self.displayed_solo(track_id, track.soloed()) {
-                        theme::color(theme::PaletteRole::Primary)
-                    } else {
-                        theme::color(theme::PaletteRole::Muted)
-                    }))
                     .on_click(cx.listener(
                         move |view, event: &gpui::ClickEvent, _, cx| {
                             cx.stop_propagation();

@@ -94,10 +94,7 @@ impl EditorView {
             && self.sample_recorder.armed.contains(&arm);
         let (background, text) = if armed {
             let background = theme::color(theme::PaletteRole::Recording);
-            (
-                background,
-                theme::readable_text(background, theme::color(theme::PaletteRole::Background)),
-            )
+            (background, theme::color(theme::PaletteRole::Background))
         } else {
             super::track_gain::activator_colors(false)
         };
@@ -113,8 +110,11 @@ impl EditorView {
             theme::action_style().with_state_colors(background, text),
         )
         .debug_selector(move || format!("{key}-{id}"))
-        .w(px(22.0))
-        .h(px(18.0))
+        .w(px(16.0))
+        .h(px(14.0))
+        .text_size(px(10.0))
+        .border_1()
+        .border_color(rgb(theme::control_style().border))
         .flex_shrink_0()
         .on_click(cx.listener(move |view, _, _, cx| {
             cx.stop_propagation();
@@ -449,9 +449,16 @@ mod tests {
         visual.run_until_parked();
         let track_arm = Box::leak(format!("sample-arm-track-{}", track.value()).into_boxed_str());
         for selector in [track_arm, "sample-arm-main-0"] {
-            let point = visual.debug_bounds(selector).unwrap().center();
-            visual.simulate_click(point, Modifiers::default());
+            let bounds = visual.debug_bounds(selector).unwrap();
+            assert_eq!(bounds.size.width, px(16.0));
+            assert_eq!(bounds.size.height, px(14.0));
+            visual.simulate_click(bounds.center(), Modifiers::default());
+            visual.simulate_mouse_move(gpui::point(px(0.0), px(0.0)), None, Modifiers::default());
             visual.run_until_parked();
+            assert_eq!(
+                visual.rendered_background(selector),
+                Some(rgb(theme::color(theme::PaletteRole::Recording)).into())
+            );
         }
         let switch = visual
             .debug_bounds("sample-recorder-mode")
