@@ -255,3 +255,93 @@ fn history_preserving_requires_the_exact_ordinary_resource_scope() {
         assert_eq!(candidate.performance_frame(), 17);
     });
 }
+
+#[test]
+fn history_pages_refuse_invalid_width_failure_and_mid_chunk_cancellation() {
+    on_worker_stack(|| {
+        struct Pages<'a> {
+            width: usize,
+            cancel: &'a AtomicBool,
+            cancel_on_prepare: bool,
+            fail: bool,
+        }
+        impl crate::MediaPages for Pages<'_> {
+            fn page(
+                &mut self,
+                _: crate::StreamSourceKey,
+                _: u64,
+            ) -> Option<crate::BorrowedMediaPage<'_>> {
+                None
+            }
+            fn request_page(&mut self, _: crate::StreamSourceKey, _: u64) {}
+        }
+        impl PreparedPrerollPages for Pages<'_> {
+            fn prepare_chunk(
+                &mut self,
+                _: &SessionPlayback,
+                maximum: usize,
+                _: &AtomicBool,
+            ) -> Result<usize, ArrangementPrerollError> {
+                if self.fail {
+                    return Err(ArrangementPrerollError::MediaPreparation(
+                        "fixture read failed",
+                    ));
+                }
+                if self.cancel_on_prepare {
+                    self.cancel.store(true, Ordering::Release);
+                }
+                Ok(if self.width == 7 {
+                    maximum.min(7)
+                } else {
+                    self.width
+                })
+            }
+            fn complete_chunk(&mut self) -> Result<(), ArrangementPrerollError> {
+                Ok(())
+            }
+        }
+        let revision = fixture();
+        for (width, fail, cancel_on_prepare, expected) in [
+            (
+                0,
+                false,
+                false,
+                ArrangementPrerollError::MediaPreparation("invalid preroll page demand width"),
+            ),
+            (
+                usize::MAX,
+                false,
+                false,
+                ArrangementPrerollError::MediaPreparation("invalid preroll page demand width"),
+            ),
+            (
+                7,
+                true,
+                false,
+                ArrangementPrerollError::MediaPreparation("fixture read failed"),
+            ),
+            (7, false, true, ArrangementPrerollError::Cancelled),
+        ] {
+            let cancel = AtomicBool::new(false);
+            let mut pages = Pages {
+                width,
+                cancel: &cancel,
+                cancel_on_prepare,
+                fail,
+            };
+            assert_eq!(
+                SessionPlayback::prepare_history_preserving_arrangement_preroll_with_pages(
+                    Arc::clone(&revision),
+                    None,
+                    256,
+                    256,
+                    true,
+                    &cancel,
+                    &mut pages,
+                )
+                .unwrap_err(),
+                expected
+            );
+        }
+    });
+}

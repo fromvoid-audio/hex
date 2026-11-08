@@ -268,6 +268,7 @@ fn vst3_drag_roundtrip(playing: bool, stopped: bool, changed_steps: bool) {
         device,
         output_identity: h.audio.as_ref().unwrap().control.output_identity().unwrap(),
         request_id: 1,
+        page_first: None,
     };
     h.run(Request::QueryPluginParameters(query));
     let result = h.next().plugin_parameters.unwrap().rows.unwrap();
@@ -663,6 +664,7 @@ fn authored_drag(reading: bool, editor_changed: bool, transport: GestureTranspor
             device,
             output_identity: h.audio.as_ref().unwrap().control.output_identity().unwrap(),
             request_id,
+            page_first: None,
         };
         h.run(Request::QueryPluginParameters(query));
         let rows = h.next().plugin_parameters.unwrap().rows.unwrap();

@@ -203,6 +203,7 @@ fn verify_saved_instrument_automation(
         device,
         output_identity: output,
         request_id: 1,
+        page_first: None,
     }));
     let rows = harness.next().plugin_parameters.unwrap().rows.unwrap();
     let parameter = rows
@@ -1326,6 +1327,7 @@ fn verify_shared_instrument_authoring(
         device,
         output_identity: output,
         request_id: 10,
+        page_first: None,
     }));
     let rows = harness.next().plugin_parameters.unwrap().rows.unwrap();
     let row = rows
@@ -1497,6 +1499,7 @@ fn assert_instrument_takeover_begin(
             device,
             output_identity: output,
             request_id: 2,
+            page_first: None,
         },
     ));
     let rows = harness.next().plugin_parameters.unwrap().rows.unwrap();
@@ -1591,6 +1594,7 @@ fn verify_instrument_takeover(
             device,
             output_identity: output,
             request_id: 11,
+            page_first: None,
         }));
         let rows = h.next().plugin_parameters.unwrap().rows.unwrap();
         assert_eq!(rows.len(), 2);
@@ -1733,6 +1737,7 @@ fn verify_instrument_takeover(
             device,
             output_identity: output,
             request_id,
+            page_first: None,
         }));
         let row = h
             .next()

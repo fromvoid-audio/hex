@@ -1,7 +1,8 @@
 //! Bounded control-side Arrangement seek preparation.
 //!
-//! This worker only constructs a fresh stateful candidate (interactive seeks and
-//! sections start device history empty; linear mode replays). It does not publish
+//! This worker only constructs a fresh stateful candidate (ordinary interactive seeks and
+//! sections start device history empty; linear and explicitly history-preserving
+//! interactive modes replay). It does not publish
 //! to audio, fence live routes, or mutate the canonical project worker.
 
 use hex_engine::{
@@ -17,8 +18,8 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-/// Maximum prefix replay a request may ask the engine to perform. Interactive
-/// and section destinations replay no prefix and are not limited by it.
+/// Maximum prefix replay a request may ask the engine to perform. Ordinary
+/// interactive and section destinations replay no prefix and are not limited by it.
 pub const MAX_SEEK_WORK_FRAMES: u64 = MAX_ARRANGEMENT_PREROLL_FRAMES;
 /// Dedicated control-side preparation stack for the bounded runtime
 /// constructor and preroll renderer. This reservation is independent of the
@@ -33,6 +34,10 @@ pub const SEEK_WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
 pub enum ArrangementSeekMode {
     #[default]
     LinearArrangement,
+    /// Replay bounded linear Arrangement history on control, retaining an
+    /// interactive runtime. Enabled loops refuse; file-backed requests require
+    /// their bounded page preparer to honor this exact policy.
+    HistoryPreservingInteractive,
     Interactive,
     /// Fresh playing section loop. The region must be enabled, destination must
     /// equal its start, and start_playing must be true; malformed specs refuse.
@@ -420,6 +425,17 @@ fn prepare(
             )?;
             Playback::from_arrangement_preroll(runtime)
         }
+        ArrangementSeekMode::HistoryPreservingInteractive => {
+            let runtime = SessionPlayback::prepare_history_preserving_arrangement_preroll(
+                Arc::clone(&spec.prepared_revision),
+                None,
+                spec.destination_frame,
+                spec.work_budget_frames,
+                spec.start_playing,
+                cancelled,
+            )?;
+            Playback::from_interactive_arrangement_preroll(runtime)
+        }
         ArrangementSeekMode::Interactive => {
             let runtime = SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
                 Arc::clone(&spec.prepared_revision),
@@ -520,6 +536,21 @@ fn run_worker(shared: Arc<Shared>, preparer: Box<Preparer>) {
                 })
             } else {
                 let runtime = match work.spec.mode {
+                    ArrangementSeekMode::LinearArrangement => {
+                        Err(ArrangementPrerollError::MediaPreparation(
+                            "resident seek requires an interactive runtime policy",
+                        ))
+                    }
+                    ArrangementSeekMode::HistoryPreservingInteractive => {
+                        SessionPlayback::prepare_history_preserving_arrangement_preroll(
+                            Arc::clone(&work.spec.prepared_revision),
+                            Some(&resident.resources),
+                            work.spec.destination_frame,
+                            work.spec.work_budget_frames,
+                            work.spec.start_playing,
+                            &cancelled,
+                        )
+                    }
                     ArrangementSeekMode::SectionLoop(region) => {
                         SessionPlayback::prepare_section_arrangement_preroll(
                             Arc::clone(&work.spec.prepared_revision),
@@ -529,7 +560,7 @@ fn run_worker(shared: Arc<Shared>, preparer: Box<Preparer>) {
                             &cancelled,
                         )
                     }
-                    _ => {
+                    ArrangementSeekMode::Interactive => {
                         SessionPlayback::prepare_interactive_arrangement_preroll_with_device_resources(
                             Arc::clone(&work.spec.prepared_revision),
                             &resident.resources,
@@ -1061,6 +1092,10 @@ mod tests {
             (ArrangementSeekMode::Interactive, Ok(destination)),
             (ArrangementSeekMode::SectionLoop(region), Ok(destination)),
             (
+                ArrangementSeekMode::HistoryPreservingInteractive,
+                Err(ArrangementPrerollError::WorkBudgetExceeded),
+            ),
+            (
                 ArrangementSeekMode::LinearArrangement,
                 Err(ArrangementPrerollError::WorkBudgetExceeded),
             ),
@@ -1141,5 +1176,228 @@ mod tests {
         wait_for_ready(&worker);
         let result = worker.try_result().expect("new result");
         assert_eq!(result.generation, 2);
+    }
+    #[test]
+    fn history_mode_worker_reconstructs_mutable_pcm_and_preserves_request_identity() {
+        thread::Builder::new()
+            .stack_size(SEEK_WORKER_STACK_BYTES)
+            .spawn(|| {
+                use hex_engine::session_playback::SessionPlaybackCommand;
+                use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
+                use hex_project::{BeatTime, Command, Created};
+                let mut session = Session::new(48_000, 8, 0).unwrap();
+                let state = hex_engine::default_native_device_state_for_class(
+                    hex_engine::NativeDeviceClass::Instrument,
+                    DeviceTypeId::new("hex.instrument.operator").unwrap(),
+                )
+                .unwrap();
+                let state = hex_engine::patch_native_device_parameter_for_class(
+                    hex_engine::NativeDeviceClass::Instrument,
+                    &state,
+                    ParameterId::new(78).unwrap(),
+                    ParameterValue::Float(0.3),
+                )
+                .unwrap();
+                let Created::Track(track) = session
+                    .command(Command::InsertTrackWithDevice {
+                        name: "history fixture".into(),
+                        before_track: None,
+                        slot: hex_project::TrackDeviceSlot::Instrument,
+                        state,
+                    })
+                    .unwrap()
+                else {
+                    panic!("track")
+                };
+                let Created::Clip(clip) = session
+                    .command(Command::PlaceMidiClip {
+                        track,
+                        start: BeatTime::ZERO,
+                        length: BeatTime::from_quarters(4).unwrap(),
+                    })
+                    .unwrap()
+                else {
+                    panic!("clip")
+                };
+                session
+                    .command(Command::AddMidiNote {
+                        clip,
+                        start: BeatTime::ZERO,
+                        duration: BeatTime::ONE,
+                        pitch: 60,
+                        channel: 0,
+                        velocity: 100,
+                    })
+                    .unwrap();
+                let graph = session.compile_prepared_revision(None).unwrap();
+                assert!(graph.arrangement_seek_requires_preroll());
+                let worker = ArrangementSeekWorker::new().unwrap();
+                for (destination, playing) in [(512, true), (24_004, false)] {
+                    let mut oracle = SessionPlayback::new(Arc::clone(&graph)).unwrap();
+                    oracle.apply(SessionPlaybackCommand::Play).unwrap();
+                    let mut prefix = vec![[0.0; 2]; destination as usize];
+                    for chunk in prefix.chunks_mut(127) {
+                        oracle.render(chunk).unwrap();
+                    }
+                    let mut expected = [[0.0; 2]; 193];
+                    oracle.render(&mut expected).unwrap();
+                    assert!(
+                        expected
+                            .iter()
+                            .flatten()
+                            .any(|sample| sample.abs() > 1.0e-6)
+                    );
+                    let requested = ArrangementSeekSpec {
+                        mode: ArrangementSeekMode::HistoryPreservingInteractive,
+                        destination_frame: destination,
+                        work_budget_frames: destination,
+                        start_playing: playing,
+                        ..spec(Arc::clone(&graph), 7)
+                    };
+                    let request = worker.submit(requested.clone()).unwrap();
+                    wait_for_ready(&worker);
+                    let result = worker.try_result().unwrap();
+                    assert_eq!(
+                        (
+                            result.request_id,
+                            result.mode,
+                            result.generation,
+                            result.revision
+                        ),
+                        (request, requested.mode, 7, 17)
+                    );
+                    assert!(Arc::ptr_eq(&result.prepared_revision, &graph));
+                    assert_eq!(
+                        (
+                            result.destination_frame,
+                            result.work_budget_frames,
+                            result.start_playing
+                        ),
+                        (destination, destination, playing)
+                    );
+                    let mut candidate = result.result.unwrap();
+                    assert_eq!(candidate.playing(), playing);
+                    assert_eq!(candidate.position(), destination);
+                    if !playing {
+                        candidate.apply(hex_engine::playback::PlaybackCommand::Play);
+                    }
+                    let mut actual = [[0.0; 2]; 193];
+                    for chunk in actual.chunks_mut(31) {
+                        candidate.render(chunk).unwrap();
+                    }
+                    assert_eq!(actual, expected, "destination={destination}");
+                }
+                worker.shutdown_and_join_on_control();
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+    #[test]
+    fn resident_history_mode_honors_budget_and_forwards_file_policy_without_coercion() {
+        use crate::service::{ResidentFileInput, ResidentFileMetadata, ResidentFileSet};
+        static FILE_PREPARER_CALLS: AtomicUsize = AtomicUsize::new(0);
+        fn unexpected_file_preparer(
+            request: crate::service::ResidentFileSeekRequest<'_>,
+        ) -> Result<Playback, ArrangementPrerollError> {
+            assert_eq!(
+                request.spec().mode,
+                ArrangementSeekMode::HistoryPreservingInteractive
+            );
+            FILE_PREPARER_CALLS.fetch_add(1, Ordering::Relaxed);
+            Err(ArrangementPrerollError::MediaPreparation(
+                "unexpected file preparer",
+            ))
+        }
+        let project = hex_project::Project::new(48_000).unwrap();
+        let cancel = AtomicBool::new(false);
+        let resources = PreparedDeviceResources::prepare_on_control(
+            &hex_engine::native_device_resources::ResidentDeviceAssets::default(),
+            &project,
+            10_000,
+            &cancel,
+        )
+        .unwrap();
+        let graph = Arc::new(
+            PreparedRevision::prepare_with_device_resources(
+                &project,
+                &std::collections::BTreeMap::new(),
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+                &hex_engine::audio_transform::AudioTransformPreparation::default(),
+                &resources,
+                0,
+                &cancel,
+            )
+            .unwrap(),
+        );
+        let files = ResidentFileSet::capture(
+            ResidentFileInput {
+                context: hex_engine::AudioSourceContext {
+                    project_generation: 1,
+                    editor_revision: 11,
+                },
+                semantic_source_epoch: 1,
+                files: &[],
+            },
+            ResidentFileMetadata::new(1, std::collections::BTreeMap::new()).unwrap(),
+        )
+        .unwrap();
+        let worker = ArrangementSeekWorker::new().unwrap();
+        let history = ArrangementSeekMode::HistoryPreservingInteractive;
+        for (mode, budget, with_files, expected) in [
+            (history, 17, false, Ok(17)),
+            (
+                history,
+                0,
+                false,
+                Err(ArrangementPrerollError::WorkBudgetExceeded),
+            ),
+            (
+                history,
+                17,
+                true,
+                Err(ArrangementPrerollError::MediaPreparation(
+                    "unexpected file preparer",
+                )),
+            ),
+            (
+                ArrangementSeekMode::LinearArrangement,
+                17,
+                false,
+                Err(ArrangementPrerollError::MediaPreparation(
+                    "resident seek requires an interactive runtime policy",
+                )),
+            ),
+        ] {
+            let request = worker
+                .submit_resident(
+                    ArrangementSeekSpec {
+                        mode,
+                        destination_frame: 17,
+                        work_budget_frames: budget,
+                        start_playing: true,
+                        ..spec(Arc::clone(&graph), 1)
+                    },
+                    71,
+                    resources.capture_on_control(10_000).unwrap(),
+                    Arc::new(AtomicBool::new(false)),
+                    with_files.then(|| {
+                        (
+                            files.clone(),
+                            unexpected_file_preparer as crate::service::ResidentFileSeekPreparer,
+                        )
+                    }),
+                )
+                .unwrap();
+            wait_for_ready(&worker);
+            assert!(worker.try_result().is_none(), "native result stays private");
+            let (job, result) = worker.try_resident_result().unwrap();
+            assert_eq!((job, result.request_id, result.mode), (71, request, mode));
+            assert!(Arc::ptr_eq(&result.prepared_revision, &graph));
+            assert_eq!(result.result.map(|playback| playback.position()), expected);
+        }
+        assert_eq!(FILE_PREPARER_CALLS.load(Ordering::Relaxed), 1);
+        worker.shutdown_and_join_on_control();
     }
 }

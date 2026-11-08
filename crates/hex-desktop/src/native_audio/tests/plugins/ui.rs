@@ -1277,6 +1277,7 @@ fn live_vst3_pointer_drag_reaches_native_device_during_playback(cx: &mut gpui::T
             .env(CHILD, "1")
             .env("HEX_ORIGINAL_INSTANCE_VARIANT", "37")
             .env("HEX_ORIGINAL_RESTORE_TRACE", files.0.join("restore-trace"))
+            .env("HOME", files.0.join("home"))
             .output()
             .unwrap();
         assert!(
@@ -1341,10 +1342,8 @@ fn live_vst3_pointer_drag_reaches_native_device_during_playback(cx: &mut gpui::T
         pcm
     };
     click(&mut visual, "main-track-header");
-    let parameters = Box::leak(format!("vst3-parameters-{}", device.value()).into_boxed_str());
-    click(&mut visual, parameters);
     let knob = Box::leak(format!("vst3-knob-{}-7-knob", device.value()).into_boxed_str());
-    until("actual controller knob paints", || {
+    until("actual controller knob paints automatically", || {
         repaint(cx, &mut visual);
         assert!(view(cx).error.is_none(), "{:?}", view(cx).error);
         visual.debug_bounds(knob).is_some()
@@ -1353,6 +1352,19 @@ fn live_vst3_pointer_drag_reaches_native_device_during_playback(cx: &mut gpui::T
     for _ in 0..3 {
         render();
     }
+    // Admit a real background page immediately before user input. Its reply
+    // must neither make the gesture busy nor replace the captured control.
+    until("background parameter page is in flight", || {
+        repaint(cx, &mut visual);
+        view(cx).parameter_query_pending
+    });
+    let control_identity = view(cx)
+        .parameter_controls
+        .into_iter()
+        .find_map(|(current, parameter, entity)| {
+            (current == device.value() && parameter == 7).then_some(entity)
+        })
+        .expect("painted controller identity");
     let start = visual.debug_bounds(knob).unwrap().center();
     let end = gpui::point(start.x, start.y - gpui::px(40.0));
     let mods = gpui::Modifiers::default();
@@ -1366,6 +1378,15 @@ fn live_vst3_pointer_drag_reaches_native_device_during_playback(cx: &mut gpui::T
         let pcm = render();
         peak = peak.max(pcm.iter().map(|frame| frame[0].abs()).fold(0.0, f32::max));
         repaint(cx, &mut visual);
+        assert!(
+            view(cx)
+                .parameter_controls
+                .iter()
+                .any(|&(current, parameter, entity)| {
+                    current == device.value() && parameter == 7 && entity == control_identity
+                }),
+            "a completed repaint must retain the held parameter control"
+        );
     }
     assert!(
         peak > 0.30,
