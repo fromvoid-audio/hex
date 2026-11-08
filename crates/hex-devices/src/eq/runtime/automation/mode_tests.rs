@@ -371,3 +371,58 @@ fn audition_queries_follow_effective_node_fields_and_reset_restores_base_routing
         "reset must expose canonical stereo bank before the next render"
     );
 }
+#[test]
+fn routing_changes_preserve_the_existing_node_target_cadence() {
+    struct Values {
+        ids: [ParameterId; 2],
+        start: usize,
+        gain_frame: usize,
+    }
+    impl NativeParameterAutomation for Values {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            &self.ids
+        }
+        fn value_at(&self, id: ParameterId, offset: usize) -> Option<ParameterValue> {
+            let frame = self.start + offset;
+            Some(if id == MODE {
+                ParameterValue::Choice(u32::from(frame >= 33))
+            } else {
+                ParameterValue::Float(if frame >= self.gain_frame { 12.0 } else { 0.0 })
+            })
+        }
+    }
+    let mut settings = EqState::default();
+    let node = NodeId::new(1).unwrap();
+    settings
+        .add(Node::new(node, 700.0, 0.0, 1).unwrap())
+        .unwrap();
+    let mut values = Values {
+        ids: [MODE, node.parameter(NodeParameter::Gain).unwrap()],
+        start: 0,
+        gain_frame: 32,
+    };
+    let factory = PreparedEq::automated(settings, 48000, &values.ids).unwrap();
+    let mut first = factory.create_runtime();
+    let mut second = factory.create_runtime();
+    let mut actual = input(257);
+    let mut expected = actual.clone();
+    for (index, (a, b)) in actual
+        .chunks_mut(17)
+        .zip(expected.chunks_mut(17))
+        .enumerate()
+    {
+        values.start = index * 17;
+        values.gain_frame = 32;
+        first
+            .process_block_with_automation(a, None, &values, &R)
+            .unwrap();
+        values.gain_frame = 64;
+        second
+            .process_block_with_automation(b, None, &values, &R)
+            .unwrap();
+    }
+    assert!(
+        actual.iter().zip(&expected).all(|(a, b)| a == b),
+        "a mode change must not sample a node target before the existing 64-frame cadence"
+    );
+}

@@ -562,7 +562,8 @@ impl EqRuntime {
             band.history = [[[0.0; 2]; 4]; 2];
         }
         self.cancel_immediately();
-        self.refresh_target = true;
+        // Routing is independent of node coefficients. Keep their existing
+        // target cadence and in-flight trajectories through a mode switch.
     }
     fn process(
         &mut self,
