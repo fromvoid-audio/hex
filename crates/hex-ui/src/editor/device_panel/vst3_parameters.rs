@@ -614,7 +614,10 @@ fn reconcile_panels(view: &mut EditorView, cx: &Context<EditorView>) {
             let key = cache_location(view, *device)
                 .map(|(key, _)| key)
                 .unwrap_or_default();
-            (!present || key != panel.key).then_some(*device)
+            (panel.query.context.project_generation != context.project_generation
+                || !present
+                || key != panel.key)
+                .then_some(*device)
         })
         .collect::<Vec<_>>();
     for device in stale {
