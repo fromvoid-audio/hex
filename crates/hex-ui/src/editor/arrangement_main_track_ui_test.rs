@@ -931,10 +931,40 @@ fn clips_and_main_sections_share_grid_endpoints_through_fractional_pan_and_resiz
                     bounds.right()
                 );
                 if bounds.size.width > px(0.0) {
-                    assert!(
-                        visual.rendered_surface_geometry(selector).is_some(),
-                        "actual painted surface: {selector}, bounds={bounds:?}, offset={offset}, tail={tail}"
-                    );
+                    if selector == "arrangement-section-0" {
+                        // Section fill is a shaped canvas, not one full rectangular
+                        // scene quad. Its upper piece must retain the same endpoint.
+                        let cut = crate::section_surface::cut(
+                            f32::from(bounds.size.width),
+                            f32::from(bounds.size.height),
+                            crate::section_surface::CHAMFER,
+                        );
+                        let projected = bounds.scale(scale);
+                        assert!(
+                            visual
+                                .rendered_filled_quads(selector)
+                                .iter()
+                                .any(|(paint, _)| (f64::from(paint.left())
+                                    - f64::from(projected.left()))
+                                .abs()
+                                    < 0.1
+                                    && (f64::from(paint.right()) - f64::from(projected.right()))
+                                        .abs()
+                                        < 0.1
+                                    && (f64::from(paint.top()) - f64::from(projected.top())).abs()
+                                        < 0.1
+                                    && (f64::from(paint.size.height)
+                                        - f64::from((bounds.size.height - px(cut)).scale(scale)))
+                                    .abs()
+                                        < 0.1),
+                            "actual shaped section: {bounds:?}, offset={offset}, tail={tail}"
+                        );
+                    } else {
+                        assert!(
+                            visual.rendered_surface_geometry(selector).is_some(),
+                            "actual painted surface: {selector}, bounds={bounds:?}, offset={offset}, tail={tail}"
+                        );
+                    }
                 }
             }
             for selector in [

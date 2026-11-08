@@ -182,6 +182,7 @@ pub(super) struct Sections {
     // wins). It is validated and submitted against the acknowledged revision.
     queued: Option<Queued>,
     name: Option<Name>,
+    launch_focus: std::cell::RefCell<std::collections::BTreeMap<SectionId, gpui::FocusHandle>>,
 }
 struct Queued {
     generation: u64,
@@ -342,6 +343,10 @@ impl EditorView {
                             || view.gain_numeric_editing(cx)
                             || view.clip_numeric_editing(cx)
                             || view.project_tempo_editing(cx)
+                            || view.pointer_hits_section_launch(
+                                f32::from(event.position.x),
+                                f32::from(event.position.y),
+                            )
                         {
                             return false;
                         }
@@ -671,6 +676,98 @@ impl EditorView {
                 s.revision == g.revision && self.visible_viewport(s.timeline_frames) == g.viewport
             })
     }
+    pub(super) fn pointer_hits_section_launch(&self, x: f32, y: f32) -> bool {
+        let Some([left, top, width, _]) = self.section_layout() else {
+            return false;
+        };
+        let Some(state) = &self.state else {
+            return false;
+        };
+        let viewport = self.visible_viewport(state.timeline_frames);
+        state.project.arrangement_sections().iter().any(|section| {
+            let tempo = state.project.tempo_map();
+            let (Ok(start), Ok(end)) = (
+                tempo.beat_to_frame(section.start()),
+                tempo.beat_to_frame(section.end()),
+            ) else {
+                return false;
+            };
+            let Some((l, r)) = super::arrangement_map::project_interval(
+                super::arrangement_map::Interval { start, end },
+                viewport,
+                width,
+            ) else {
+                return false;
+            };
+            super::section_launch::action_bounds(left + l, top, r - l)
+                .is_some_and(|bounds| bounds.contains(&gpui::point(px(x), px(y))))
+        })
+    }
+
+    fn section_launch_action(
+        &self,
+        id: SectionId,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let generation = self.project_generation;
+        let focus = self
+            .sections
+            .launch_focus
+            .borrow_mut()
+            .entry(id)
+            .or_insert_with(|| cx.focus_handle().tab_index(0).tab_stop(true))
+            .clone();
+        let click_focus = focus.clone();
+        hex_widgets::action(theme::text("▶"), theme::action_style())
+            .id(("section-launch", id.value()))
+            .debug_selector(move || format!("section-launch-{}", id.value()))
+            .absolute()
+            .left(px(super::section_launch::ACTION_LEFT))
+            .top(px(super::section_launch::ACTION_TOP))
+            .size(px(super::section_launch::ACTION_SIZE))
+            .rounded_full()
+            .text_size(px(8.0))
+            .line_height(px(12.0))
+            .track_focus(&focus)
+            .key_context("hex_section_launch")
+            .focus(|style| {
+                style
+                    .border_1()
+                    .border_color(rgb(theme::color(theme::PaletteRole::Text)))
+            })
+            .tooltip(|_, cx| {
+                cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
+                    description: "launch and loop section".into(),
+                })
+                .into()
+            })
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(move |view, _, window, cx| {
+                cx.stop_propagation();
+                if generation == view.project_generation
+                    && view.sections_available()
+                    && !view.sections.held()
+                {
+                    click_focus.focus(window);
+                    view.launch_arrangement_section_once(id);
+                    cx.notify();
+                }
+            }))
+            .on_action(cx.listener(
+                move |view, _: &super::section_launch::ActivateSectionLaunch, _, cx| {
+                    cx.stop_propagation();
+                    if generation == view.project_generation
+                        && view.sections_available()
+                        && !view.sections.held()
+                    {
+                        view.launch_arrangement_section_once(id);
+                        cx.notify();
+                    }
+                },
+            ))
+    }
+
     pub(super) fn begin_section_pointer(
         &mut self,
         x: f32,
@@ -1310,6 +1407,26 @@ impl EditorView {
         if let Some(edit) = &self.sections.name {
             super::browser_input::restyle(&edit.input, cx);
         }
+        let removed_focus = self
+            .sections
+            .launch_focus
+            .borrow()
+            .iter()
+            .any(|(id, focus)| {
+                focus.is_focused(window)
+                    && self
+                        .state
+                        .as_ref()
+                        .is_none_or(|state| state.project.arrangement_section(*id).is_none())
+            });
+        if removed_focus {
+            self.focus.focus(window);
+        }
+        self.sections.launch_focus.borrow_mut().retain(|id, _| {
+            self.state
+                .as_ref()
+                .is_some_and(|s| s.project.arrangement_section(*id).is_some())
+        });
         self.sections.selection.retain(|id| {
             self.state
                 .as_ref()
@@ -1332,6 +1449,12 @@ impl EditorView {
                 || self.device_panel.main_selected != Some(self.project_generation)
                 || (!self.focus.is_focused(window)
                     && !self.section_focus_toggle_focused(window, cx)
+                    && !self
+                        .sections
+                        .launch_focus
+                        .borrow()
+                        .values()
+                        .any(|focus| focus.is_focused(window))
                     && !self.sections.naming()
                     && self.context_menu.is_none()))
         {
@@ -1932,6 +2055,13 @@ impl EditorView {
             let name_edit =
                 m.id.and_then(|id| self.sections.name.as_ref().filter(|name| name.id == id));
             if name_edit.is_none() {
+                if let Some(id) = m.id.filter(|_| {
+                    super::section_launch::action_bounds(0.0, 0.0, pixel_width).is_some()
+                }) {
+                    header = header
+                        .pl(px(16.0))
+                        .child(self.section_launch_action(id, cx));
+                }
                 header = header.child(theme::text(if selected {
                     format!("✓ {}", m.name)
                 } else {
@@ -3512,6 +3642,151 @@ pub(super) mod tests {
         });
     }
     #[gpui::test]
+    fn launch_action_geometry_matches_raw_exclusion_without_enlarging_tiny_sections(
+        cx: &mut TestAppContext,
+    ) {
+        for empty in [false, true] {
+            let (handle, editor, ids) = fixture(cx);
+            if empty {
+                editor.update(cx, |view, cx| {
+                    let track = view.state.as_ref().unwrap().project.tracks()[0].id();
+                    view.service
+                        .submit(Request::Edit(Command::RemoveTrack(track)))
+                        .unwrap();
+                    let event = next(&view.service);
+                    assert!(event.error.is_none());
+                    view.receive(event);
+                    cx.notify();
+                });
+            }
+            let mut visual = VisualTestContext::from_window(handle, cx);
+            for width in [880.0, 1440.0] {
+                visual.simulate_resize(gpui::size(px(width), px(700.0)));
+                for start in [0, 72_000] {
+                    editor.update(cx, |view, cx| {
+                        view.viewport = Some(Viewport {
+                            start,
+                            length: 384_000,
+                        });
+                        cx.notify();
+                    });
+                    visual.run_until_parked();
+                    for (index, id) in ids.iter().enumerate() {
+                        let header = visual
+                            .debug_bounds(Box::leak(
+                                format!("arrangement-section-header-{index}").into_boxed_str(),
+                            ))
+                            .unwrap();
+                        let selector =
+                            Box::leak(format!("section-launch-{}", id.value()).into_boxed_str());
+                        let expected = super::super::section_launch::action_bounds(
+                            f32::from(header.left()),
+                            f32::from(header.top()),
+                            f32::from(header.size.width),
+                        );
+                        assert_eq!(visual.debug_bounds(selector), expected);
+                        if let Some(bounds) = expected {
+                            let at = bounds.center();
+                            editor.read_with(cx, |view, _| {
+                                assert!(
+                                    view.pointer_hits_section_launch(
+                                        f32::from(at.x),
+                                        f32::from(at.y)
+                                    )
+                                );
+                                assert!(
+                                    !view.pointer_hits_section_launch(
+                                        f32::from(header.left()) + 1.0,
+                                        f32::from(at.y)
+                                    ),
+                                    "leading resize edge remains available"
+                                );
+                            });
+                        }
+                    }
+                }
+            }
+            let play = visual
+                .debug_bounds(Box::leak(
+                    format!("section-launch-{}", ids[1].value()).into_boxed_str(),
+                ))
+                .unwrap()
+                .center();
+            let before = editor.read_with(cx, |view, _| {
+                view.state.as_ref().unwrap().project.snapshot()
+            });
+            for range_key in [false, true] {
+                editor.update(cx, |view, _| {
+                    view.error = None;
+                    view.time_selection_key_held = range_key;
+                });
+                visual.simulate_mouse_down(play, MouseButton::Left, Modifiers::default());
+                visual.simulate_mouse_up(play, MouseButton::Left, Modifiers::default());
+                editor.read_with(cx, |view, _| {
+                    assert_eq!(
+                        view.error.as_deref(),
+                        Some("section playback source is unavailable")
+                    );
+                    assert!(!view.sections.held());
+                    assert!(view.time_selection_gesture.is_none());
+                    assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+                });
+            }
+            editor.update(cx, |view, _| view.time_selection_key_held = false);
+            let tiny = editor.update(cx, |view, cx| {
+                let start = BeatTime::from_quarters(6).unwrap();
+                view.service
+                    .submit(Request::EditArrangementSection {
+                        project_generation: view.project_generation,
+                        revision: view.state.as_ref().unwrap().revision,
+                        command: Command::AddArrangementSection {
+                            name: "tiny".into(),
+                            color: ElementColor::Red,
+                            start,
+                            end: BeatTime::from_raw(start.raw() + 1),
+                        },
+                    })
+                    .unwrap();
+                let event = next(&view.service);
+                assert!(event.error.is_none());
+                let Some(Created::ArrangementSection(id)) = event.created else {
+                    panic!("tiny section");
+                };
+                view.receive(event);
+                cx.notify();
+                id
+            });
+            visual.run_until_parked();
+            assert!(
+                visual
+                    .debug_bounds(Box::leak(
+                        format!("section-launch-{}", tiny.value()).into_boxed_str()
+                    ))
+                    .is_none()
+            );
+            editor.update(cx, |view, cx| {
+                view.service
+                    .submit(Request::EditArrangementSection {
+                        project_generation: view.project_generation,
+                        revision: view.state.as_ref().unwrap().revision,
+                        command: Command::RemoveArrangementSection(ids[1]),
+                    })
+                    .unwrap();
+                let event = next(&view.service);
+                assert!(event.error.is_none());
+                view.receive(event);
+                cx.notify();
+            });
+            visual.run_until_parked();
+            visual.update(|window, cx| {
+                let view = editor.read(cx);
+                assert!(!view.sections.launch_focus.borrow().contains_key(&ids[1]));
+                assert!(view.focus.is_focused(window));
+            });
+        }
+    }
+
+    #[gpui::test]
     fn section_autoplay_click_dispatches_stateless_loop_and_toggle_off_cancels(
         cx: &mut TestAppContext,
     ) {
@@ -3648,6 +3923,77 @@ pub(super) mod tests {
         });
         editor.update(cx, |view, _| {
             view.cancel_section_pointer();
+        });
+        visual.update(|window, cx| {
+            window.cancel_pointer_capture_for(editor.entity_id(), cx);
+        });
+        visual.run_until_parked();
+        let selector = Box::leak(format!("section-launch-{}", ids[0].value()).into_boxed_str());
+        let target = visual
+            .debug_bounds(selector)
+            .expect("explicit section launch")
+            .center();
+        let selected = editor.read_with(cx, |view, _| view.sections.selected);
+        for key in [None, Some("enter"), Some("space")] {
+            editor.update(cx, |view, _| {
+                view.invalidate_prepared_seek();
+            });
+            if let Some(key) = key {
+                visual.update(|window, cx| {
+                    editor.read(cx).sections.launch_focus.borrow()[&ids[0]].focus(window)
+                });
+                visual.simulate_keystrokes(key);
+            } else {
+                visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
+                visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+            }
+            editor.read_with(cx, |view, _| {
+                let launch = view
+                    .latched_seek_intent
+                    .as_ref()
+                    .and_then(|intent| intent.section)
+                    .or_else(|| {
+                        view.prepared_seek
+                            .as_ref()
+                            .filter(|pending| !pending.cancelled)
+                            .and_then(|pending| pending.section)
+                    })
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "explicit {key:?} launch while autoplay is off: {:?}",
+                            view.error
+                        )
+                    });
+                assert_eq!(
+                    launch.region,
+                    hex_project::LoopRegion::new(0, 96_000, true).unwrap()
+                );
+                assert_eq!(
+                    launch.quantization,
+                    hex_engine::LaunchQuantization::QuarterTriplet
+                );
+                assert!(!view.section_autoplay);
+                assert!(!view.sections.held());
+                assert_eq!(view.sections.selected, selected);
+                assert_eq!(view.state.as_ref().unwrap().project, source);
+            });
+        }
+        editor.update(cx, |view, _| {
+            view.invalidate_prepared_seek();
+            view.save_dialog_open = true;
+        });
+        visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        editor.read_with(cx, |view, _| {
+            assert!(view.latched_seek_intent.is_none());
+            assert!(
+                view.prepared_seek
+                    .as_ref()
+                    .is_none_or(|pending| pending.cancelled)
+            );
+        });
+        editor.update(cx, |view, _| {
+            view.save_dialog_open = false;
             view.audio = None;
         });
     }
