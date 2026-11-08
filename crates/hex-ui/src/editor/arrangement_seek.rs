@@ -1,4 +1,4 @@
-//! Admission helpers for stateful Arrangement seeks (empty-tail interactive law).
+//! Admission helpers for fresh, explicit history-preserving and section seeks.
 //!
 //! Preroll runs on the session service worker. This module only validates the
 //! exact source and captures a control-side runtime fence; it never prepares a

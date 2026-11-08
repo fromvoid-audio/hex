@@ -93,7 +93,11 @@ impl EditorView {
                     } else {
                         TransportIcon::Play
                     },
-                    "play or pause · space · right-click for history playback",
+                    if self.mode == EditorMode::Arrangement {
+                        "play or pause · space · right-click for history playback"
+                    } else {
+                        "play or pause · space"
+                    },
                     TogglePlay,
                     cx,
                 )
