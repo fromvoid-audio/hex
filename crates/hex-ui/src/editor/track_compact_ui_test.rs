@@ -560,6 +560,12 @@ fn compact_mixed_group_drag_has_titles_without_bodies_and_preserves_capture(
     let previews = f.clips.map(|clip| {
         let preview = bounds(&mut f.visual, "group-clip-preview", clip.value());
         assert_title(&mut f.visual, "clip-drag-name", clip, preview);
+        super::clip_boundary::tests::assert_open_upper_right(
+            &mut f.visual,
+            selector("group-clip-preview", clip.value()),
+            selector("group-clip-preview-trailing", clip.value()),
+            Some(selector("clip-drag-name", clip.value())),
+        );
         preview
     });
     assert_no_bodies(&mut f);
