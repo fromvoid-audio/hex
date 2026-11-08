@@ -40,6 +40,7 @@ enum Pending {
         source: Box<Project>,
         receipt: crate::pending_edit::Receipt,
         hover: crate::section_surface::Hover,
+        feedback: Option<crate::section_reorder::DropFeedback>,
     },
 }
 impl Pending {
@@ -63,6 +64,7 @@ pub(super) struct RectangleDemo {
     section_fixture: Option<section_fixture::Fixture>,
     section_preview: Vec<ArrangementSection>,
     section_command: Option<Command>,
+    section_feedback: Option<crate::section_reorder::DropFeedback>,
     section_error: Option<&'static str>,
     section_marker_latched: bool,
     section_gap_appearance: Option<(String, hex_project::ElementColor)>,
@@ -114,6 +116,7 @@ impl RectangleDemo {
             section_fixture,
             section_preview,
             section_command: None,
+            section_feedback: None,
             section_error: None,
             section_marker_latched: false,
             section_gap_appearance: None,
@@ -151,6 +154,7 @@ impl RectangleDemo {
             }
             let _ = capture.cancel();
             self.section_command = None;
+            self.section_feedback = None;
             self.section_error = None;
             self.section_marker_latched = false;
             self.section_gap_appearance = None;
@@ -480,6 +484,7 @@ impl RectangleDemo {
         }
         if intent.key == Target::SectionPaint {
             self.section_command = None;
+            self.section_feedback = None;
             self.section_error = None;
             self.preview = self.canonical.clone();
             if let (Some(fixture), Some((name, color))) =
@@ -505,6 +510,7 @@ impl RectangleDemo {
                     Ok(plan) => {
                         self.preview = plan.display;
                         self.section_preview = plan.sections;
+                        self.section_feedback = plan.feedback;
                         self.section_command = Some(plan.command);
                     }
                     Err(error) => {
@@ -524,6 +530,7 @@ impl RectangleDemo {
                 self.section_marker_latched = true;
             }
             self.section_command = None;
+            self.section_feedback = None;
             self.section_error = None;
             self.preview = self.canonical.clone();
             if let Some(fixture) = self.section_fixture.as_ref() {
@@ -560,6 +567,7 @@ impl RectangleDemo {
                                     raw,
                                     snapped,
                                     edit.copy_content,
+                                    width,
                                     &mut self.section_gap_appearance,
                                 )
                             })
@@ -580,6 +588,7 @@ impl RectangleDemo {
                         Ok(Some(plan)) => {
                             self.preview = plan.display;
                             self.section_preview = plan.sections;
+                            self.section_feedback = plan.feedback;
                             self.section_command = Some(plan.command);
                         }
                         Ok(None) => {}
@@ -754,6 +763,7 @@ impl RectangleDemo {
             source: Box::new(source),
             receipt,
             hover: std::mem::take(&mut self.section_released_hover),
+            feedback: self.section_feedback.take(),
         });
         self.status = "pending · enter accepts · backspace refuses";
         true
@@ -821,7 +831,7 @@ impl RectangleDemo {
                 if fixture.project() != source {
                     commit_error = Some("section project changed");
                 } else {
-                    let select_copy = matches!(command, Command::DuplicateArrangementSectionAt { section, .. } | Command::AppendArrangementSectionCopy { section, .. } if Some(section) == primary_id);
+                    let select_copy = matches!(command, Command::DuplicateArrangementSectionAt { section, .. } | Command::AppendArrangementSectionCopy { section, .. } | Command::ReplaceArrangementSection { source: section, copy: true, .. } if Some(section) == primary_id);
                     match fixture.commit(command) {
                         Ok(hex_project::Created::ArrangementSection(id)) if select_copy => {
                             created_copy = Some(id)
@@ -855,6 +865,7 @@ impl RectangleDemo {
         let display = self.pending.as_ref().map(Pending::display);
         self.pending = None;
         self.section_command = None;
+        self.section_feedback = None;
         self.generation = generation;
         self.preview = self.canonical.clone();
         self.status = if let Some(error) = commit_error {
@@ -895,7 +906,7 @@ impl RectangleDemo {
             _ => self.section_command.as_ref(),
         };
         project.is_some_and(|project| {
-            if let Some(Command::DuplicateArrangementSectionAt { section, .. } | Command::AppendArrangementSectionCopy { section, .. }) = command {
+            if let Some(Command::DuplicateArrangementSectionAt { section, .. } | Command::AppendArrangementSectionCopy { section, .. } | Command::ReplaceArrangementSection { source: section, copy: true, .. }) = command {
                 return self
                     .selection_primary
                     .and_then(|index| project.arrangement_sections().get(index))
@@ -1130,6 +1141,31 @@ impl Render for RectangleDemo {
                             })
                             .left(gpui::relative(pair[0][1]))
                             .ml(px(-1.0)),
+                    );
+                }
+            }
+        }
+        let feedback = match self.pending.as_ref() {
+            Some(Pending::Section { feedback, .. }) => *feedback,
+            _ if self.capture.is_some() => self.section_feedback,
+            _ => None,
+        };
+        if let (Some(feedback), Some(fixture)) = (feedback, self.section_fixture.as_ref()) {
+            match feedback {
+                crate::section_reorder::DropFeedback::Insert(at) => {
+                    area = area.child(
+                        crate::section_surface::insertion_indicator(fixture.position(at))
+                            .debug_selector(|| "sandbox-section-drop-insertion".into()),
+                    );
+                }
+                crate::section_reorder::DropFeedback::Replace { start, end, .. } => {
+                    let left = fixture.position(start);
+                    area = area.child(
+                        crate::section_surface::replacement_indicator(
+                            left,
+                            fixture.position(end) - left,
+                        )
+                        .debug_selector(|| "sandbox-section-drop-replace".into()),
                     );
                 }
             }

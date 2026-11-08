@@ -42,6 +42,8 @@ use std::sync::Arc;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod beyond_end_tests;
 mod clipboard;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod drop_tests;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SectionEdge {
@@ -80,6 +82,7 @@ struct Display {
     // toggle it.
     held: [Option<SectionId>; 2],
     marker_only: bool,
+    drop_feedback: Option<section_reorder::DropFeedback>,
 }
 impl Display {
     fn pointer_hover_at(
@@ -514,6 +517,7 @@ impl EditorView {
                     | Command::DuplicateArrangementSectionAt { .. }
                     | Command::AppendArrangementSectionCopy { .. }
                     | Command::MoveArrangementSectionBeyondEnd { .. }
+                    | Command::ReplaceArrangementSection { .. }
             )
         }) || self
             .audio
@@ -957,6 +961,7 @@ impl EditorView {
             pointer_hover: None,
             held: [None; 2],
             marker_only: mode.marker_only(),
+            drop_feedback: None,
         };
         let part = match edge {
             Some(SectionEdge::Shared(..)) => RectanglePart::Seam,
@@ -985,7 +990,7 @@ impl EditorView {
         });
         self.select_section_metadata(id);
         self.status = if matches!(mode, Mode::Reorder(_)) {
-            "section drag · reorder song content · option copies · option-command edits markers only · command toggles snap"
+            "section drag · insert or replace song content · option copies · option-command edits markers only · command toggles snap"
         } else if matches!(
             mode,
             Mode::ContentStart(_)
@@ -1062,6 +1067,7 @@ impl EditorView {
             pointer_hover: None,
             held: [None; 2],
             marker_only: g.mode.marker_only(),
+            drop_feedback: None,
         };
         match g.mode {
             Mode::Reorder(id) => {
@@ -1071,18 +1077,23 @@ impl EditorView {
                     .section_pointer(g.last_pointer.0, g.last_pointer.1, true)
                     .unwrap_or(beat);
                 if g.capture.displaced(4.0) {
-                    match section_reorder::drag_preview(
-                        &state.project,
-                        id,
-                        raw_beat,
-                        beat,
-                        edit.copy_content,
-                        &mut g.gap_appearance,
-                    ) {
+                    match crate::section_hit::drop_edge_frames(g.viewport.length, g.layout[2])
+                        .and_then(|edge_frames| {
+                            section_reorder::drop_preview(
+                                &state.project,
+                                id,
+                                raw_beat,
+                                beat,
+                                edit.copy_content,
+                                edge_frames,
+                                &mut g.gap_appearance,
+                            )
+                        }) {
                         Ok(Some(preview)) => {
                             g.display.markers =
                                 preview.sections().iter().map(Marker::from).collect();
                             g.display.tempo = preview.tempo_map().clone();
+                            g.display.drop_feedback = preview.feedback();
                             g.command = Some(preview.command);
                         }
                         Ok(None) => {}
@@ -1801,6 +1812,7 @@ impl EditorView {
             pointer_hover: None,
             held: [None; 2],
             marker_only: false,
+            drop_feedback: None,
         };
         match &command {
             Command::RenameArrangementSection { section, name } => {
@@ -1822,6 +1834,7 @@ impl EditorView {
             | Command::DuplicateArrangementSectionAt { .. }
             | Command::AppendArrangementSectionCopy { .. }
             | Command::MoveArrangementSectionBeyondEnd { .. }
+            | Command::ReplaceArrangementSection { .. }
             | Command::SplitArrangementSection { .. }
             | Command::MergeArrangementSections(_) => {
                 match state.project.preview_arrangement_section_edit(&command) {
@@ -2029,6 +2042,7 @@ impl EditorView {
                 pointer_hover: None,
                 held: [None; 2],
                 marker_only: false,
+                drop_feedback: None,
             };
             &canonical
         };
@@ -2099,7 +2113,8 @@ impl EditorView {
             let new_copy = m.id.is_none()
                 && copy_command.is_some_and(|command| match command {
                     Command::AppendArrangementSectionCopy { start, .. } => m.start == *start,
-                    Command::DuplicateArrangementSectionAt { .. } => true,
+                    Command::DuplicateArrangementSectionAt { .. }
+                    | Command::ReplaceArrangementSection { copy: true, .. } => true,
                     _ => false,
                 });
             let canonical_selected = m.id.is_some_and(|id| {
@@ -2289,6 +2304,38 @@ impl EditorView {
                     .into_any_element(),
             );
         }
+        if let Some(feedback) = display.drop_feedback {
+            let fraction = |beat| {
+                state
+                    .project
+                    .tempo_map()
+                    .beat_to_frame(beat)
+                    .ok()
+                    .map(|frame| {
+                        (frame as f64 - viewport.start as f64) as f32 / viewport.length as f32
+                    })
+            };
+            match feedback {
+                section_reorder::DropFeedback::Insert(at) => {
+                    if let Some(left) = fraction(at) {
+                        elements.push(
+                            crate::section_surface::insertion_indicator(left)
+                                .debug_selector(|| "section-drop-insertion".into())
+                                .into_any_element(),
+                        );
+                    }
+                }
+                section_reorder::DropFeedback::Replace { start, end, .. } => {
+                    if let (Some(left), Some(right)) = (fraction(start), fraction(end)) {
+                        elements.push(
+                            crate::section_surface::replacement_indicator(left, right - left)
+                                .debug_selector(|| "section-drop-replace".into())
+                                .into_any_element(),
+                        );
+                    }
+                }
+            }
+        }
         elements
     }
 }
@@ -2302,6 +2349,18 @@ fn copied_section_source(command: &Command) -> Option<SectionId> {
 
 fn same_command(a: &Command, b: &Command) -> bool {
     match (a, b) {
+        (
+            Command::ReplaceArrangementSection {
+                source: a,
+                target: at,
+                copy: ac,
+            },
+            Command::ReplaceArrangementSection {
+                source: b,
+                target: bt,
+                copy: bc,
+            },
+        ) => (a, at, ac) == (b, bt, bc),
         (
             Command::AppendArrangementSectionCopy {
                 section: a,

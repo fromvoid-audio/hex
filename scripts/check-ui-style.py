@@ -19,6 +19,8 @@ widgets = (
     'self.section_launch_action(',
     # Marker-only section feedback is a text-free shared paint component.
     'crate::section_surface::marker_only_overlay(',
+    'crate::section_surface::insertion_indicator(',
+    'crate::section_surface::replacement_indicator(',
     # Meter insertion action normalizes its caption in the owning component.
     'device_add::button(',
     'device_picker::render(',
