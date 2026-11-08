@@ -126,7 +126,7 @@ fn detached_fm4_freezes_latest_target_across_pause_bypass_removal_and_revision()
                             .unwrap()
                             .preflight_tail_parameters()
                             .unwrap();
-                        render(runtime, 53, 7);
+                        render(runtime, 33, 7);
                     }
                     let mut oracle_editor = Editor::new(editor.project().clone(), 16).unwrap();
                     oracle_editor
