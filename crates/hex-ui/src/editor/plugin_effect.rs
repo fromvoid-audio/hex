@@ -15,6 +15,20 @@ pub(crate) fn fixture_view(
             let view = view.read(cx);
             let (parameter_controls, parameter_query_pending) =
                 device_panel::vst3_parameters::test_state(view);
+            let devices: std::collections::BTreeSet<_> = parameter_controls
+                .iter()
+                .map(|(device, _, _)| *device)
+                .collect();
+            let parameter_touches = devices
+                .into_iter()
+                .filter_map(|device| {
+                    let (row, control, lane) =
+                        device_panel::vst3_parameters::test_touch_state(view, device);
+                    row.map(|(parameter, normalized)| {
+                        (device, parameter, normalized, control, lane)
+                    })
+                })
+                .collect();
             crate::PluginEffectTestView {
                 state: view.state.clone(),
                 pending: view.pending_plugin_effect.is_some(),
@@ -23,6 +37,7 @@ pub(crate) fn fixture_view(
                     + view.device_gesture_barriers.len(),
                 parameter_controls,
                 parameter_query_pending,
+                parameter_touches,
                 operation: view
                     .pending_plugin_effect
                     .as_ref()
