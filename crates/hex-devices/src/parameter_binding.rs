@@ -162,7 +162,13 @@ pub(crate) struct Pending<'a, C: Copy, const N: usize> {
 }
 impl<C: Copy, const N: usize> Pending<'_, C, N> {
     pub fn effective(&self) -> C {
-        self.effective
+        *self.effective_ref()
+    }
+    /// Borrow the effective value without copying the complete control set.
+    /// This view neither installs a candidate nor changes cache custody.
+    #[inline]
+    pub fn effective_ref(&self) -> &C {
+        &self.effective
     }
 }
 #[derive(Clone, Copy, Debug)]
@@ -189,7 +195,13 @@ impl<C: Copy + PartialEq, const N: usize> Controls<C, N> {
         self.base
     }
     pub fn effective(&self) -> C {
-        self.effective
+        *self.effective_ref()
+    }
+    /// Borrow the effective value without copying the complete control set.
+    /// This view neither installs a candidate nor changes cache custody.
+    #[inline]
+    pub fn effective_ref(&self) -> &C {
+        &self.effective
     }
     /// Presence from the last installed bulk sample, distinct from the
     /// canonical fallback. This never re-queries or advances a producer.
@@ -439,6 +451,20 @@ mod tests {
         let mut c = Controls::new(Pair { a: 1.0, b: 2.0 }, [true; 2]);
         apply(&mut c, &values(Some(3.0), Some(4.0))).unwrap();
         assert_eq!(c.effective(), Pair { a: 3.0, b: 4.0 });
+        // A consumer can inspect and refuse a staged candidate while the
+        // installed cache remains unchanged, then admit a later candidate.
+        let v = values(Some(5.0), Some(6.0));
+        let mut map = c.resolve(&TABLE, &v).unwrap();
+        {
+            let next = c.sample(&TABLE, &mut map, &v, 0).unwrap().unwrap();
+            assert_eq!(*next.effective_ref(), Pair { a: 5.0, b: 6.0 });
+            assert_eq!(*c.effective_ref(), Pair { a: 3.0, b: 4.0 });
+        }
+        assert_eq!(*c.effective_ref(), Pair { a: 3.0, b: 4.0 });
+        let next = c.sample(&TABLE, &mut map, &v, 0).unwrap().unwrap();
+        c.install(next);
+        assert_eq!(*c.effective_ref(), Pair { a: 5.0, b: 6.0 });
+        apply(&mut c, &values(Some(3.0), Some(4.0))).unwrap();
         assert!(apply(&mut c, &values(Some(5.0), Some(f32::NAN))).is_err());
         assert_eq!(c.effective(), Pair { a: 3.0, b: 4.0 });
         let subset = Values {
