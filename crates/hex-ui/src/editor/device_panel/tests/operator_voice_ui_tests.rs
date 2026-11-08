@@ -50,6 +50,7 @@ fn primary_voices_preserve_loaded_counts_context_and_single_edit_history(cx: &mu
     visual.simulate_click(field.center(), Modifiers::default());
     visual.run_until_parked();
     assert!(visual.debug_bounds(popup_id).is_some());
+    visual.simulate_keystrokes("down");
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     assert!(visual.debug_bounds(popup_id).is_none());
@@ -63,13 +64,21 @@ fn primary_voices_preserve_loaded_counts_context_and_single_edit_history(cx: &mu
     });
     visual.simulate_keystrokes("enter");
     visual.run_until_parked();
-    let option = visual
-        .debug_bounds(selector(format!(
-            "device-{}-parameter-601-option-7",
-            device.value()
-        )))
-        .unwrap();
-    visual.simulate_click(option.center(), Modifiers::default());
+    for _ in 0..5 {
+        visual.simulate_keystrokes("down");
+    }
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().revision, initial_revision);
+        assert_eq!(view.worker_requests_pending, 0);
+        assert!(view.pending_requests.is_empty());
+        assert_eq!(
+            operator_parameter_value(view.state.as_ref().unwrap(), track, device, 601),
+            ParameterValue::Choice(2)
+        );
+    });
+    assert!(visual.debug_bounds(popup_id).is_some());
+    visual.simulate_keystrokes("enter");
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
             && view.state.as_ref().is_some_and(|state| {
@@ -150,6 +159,7 @@ fn primary_voice_popup_cancels_outside_and_refuses_invalid_working_drafts(cx: &m
     visual.simulate_click(field.center(), Modifiers::default());
     visual.run_until_parked();
     assert!(visual.debug_bounds(popup_id).is_some());
+    visual.simulate_keystrokes("up");
     visual.simulate_click(point(px(10.0), px(400.0)), Modifiers::default());
     visual.run_until_parked();
     assert!(visual.debug_bounds(popup_id).is_none());

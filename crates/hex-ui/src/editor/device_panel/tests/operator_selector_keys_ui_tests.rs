@@ -58,6 +58,14 @@ fn native_choice_popup_keys_own_input_before_editor_transport_and_launch_actions
     }
     visual.simulate_keystrokes("enter");
     visual.simulate_keystrokes("up");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().revision, revision);
+        assert_eq!(view.worker_requests_pending, 0);
+        assert!(view.pending_requests.is_empty());
+    });
+    assert!(visual.debug_bounds(popup_id).is_some());
+    visual.simulate_keystrokes("enter");
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
             && view.state.as_ref().is_some_and(|state| {

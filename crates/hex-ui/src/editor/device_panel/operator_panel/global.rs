@@ -19,7 +19,7 @@ pub(super) fn voices(
         },
         &device_view.parameters,
         id(601),
-        ControlPresentation::CompactSelector,
+        ControlPresentation::CompactConfirmSelector,
         Some("voices"),
     )
     .w(px(52.0));
