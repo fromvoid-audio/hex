@@ -1,5 +1,6 @@
 //! Immutable control-side inventory of every canonical Session cell.
 pub(crate) mod audio_assembly;
+mod instrument_automation;
 mod routed_midi;
 use crate::prepared_tempo::{PreparedPeriodicSessionTempo, PreparedTempoError, SessionTimingView};
 use crate::{
@@ -28,6 +29,7 @@ fn requires_shared_source_admission(
 }
 
 struct PreparedTrackInstrumentConfig {
+    automation: Option<instrument_automation::Program>,
     track: TrackId,
     config: Option<Arc<dyn PreparedNativeInstrument>>,
     mutable_limits: Option<crate::midi_compile::MutableInstrumentLimits>,
@@ -56,6 +58,7 @@ impl PreparedTrackInstrumentConfig {
 }
 
 struct PreparedMutableTrackInstrument {
+    automation: Option<instrument_automation::Program>,
     track: TrackId,
     factory: Box<dyn PreparedMutableInstrumentRuntime>,
     resource_factory_inline_bound: Option<usize>,
@@ -376,6 +379,7 @@ pub struct PreparedSessionInventory {
     midi_source_roots: Vec<(TrackId, TrackId)>,
     mutable_instruments: Vec<PreparedMutableTrackInstrument>,
     mutable_history_retarget_storage_bytes: usize,
+    instrument_automation_storage_bytes: usize,
     audio_clips: Vec<PreparedSessionAudioClip>,
     work: SessionWorkEnvelope,
     contains_streamed_sources: bool,
@@ -591,6 +595,7 @@ impl PreparedSessionInventory {
             samplers,
         )?;
         let mut instrument_track_indices = BTreeMap::new();
+        let mut instrument_automation_storage_bytes = 0;
         for track in project.tracks() {
             let slot = track.instrument();
             let source_config = slot.and_then(|device| source_instruments.get_mut(&device.id()));
@@ -619,6 +624,12 @@ impl PreparedSessionInventory {
                     .then(|| prepared.mutable_runtime.take())
                     .flatten()
             });
+            let automation = instrument_automation::prepare_for_receiver(
+                track,
+                mutable_runtime.as_deref(),
+                instrument_registry,
+                &mut instrument_automation_storage_bytes,
+            )?;
             let resource_factory_inline_bound = if samplers
                 .is_some_and(|sources| sources.device_scope().is_some())
                 && slot.is_some_and(|device| !device.state().asset_references().is_empty())
@@ -657,6 +668,7 @@ impl PreparedSessionInventory {
                     InstrumentHistoryRetargetPreparation::RequiresQuiescence => (None, true),
                 };
             instrument_configs.push(PreparedTrackInstrumentConfig {
+                automation,
                 track: track.id(),
                 config,
                 mutable_limits,
@@ -1267,6 +1279,7 @@ impl PreparedSessionInventory {
                         ))?;
                 }
                 mutable_instruments.push(PreparedMutableTrackInstrument {
+                    automation: config.automation.take(),
                     track: config.track,
                     factory,
                     resource_factory_inline_bound: config.resource_factory_inline_bound,
@@ -1293,6 +1306,7 @@ impl PreparedSessionInventory {
             midi_source_roots: routed_plan.destinations,
             mutable_instruments,
             mutable_history_retarget_storage_bytes,
+            instrument_automation_storage_bytes,
             audio_clips,
             work,
             contains_streamed_sources,
@@ -1332,6 +1346,39 @@ impl PreparedSessionInventory {
         &self.scenes
     }
 
+    /// Program backing only; this does not audit the complete native graph.
+    pub fn visit_instrument_automation_storage<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        for entry in &self.mutable_instruments {
+            if let Some(program) = &entry.automation {
+                program.visit(ledger)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Retained canonical source program bytes, excluding provider factories.
+    pub fn instrument_automation_storage_bytes(&self) -> usize {
+        self.instrument_automation_storage_bytes
+    }
+
+    /// Borrow one receiving source's program; contributors never own copies.
+    pub fn instrument_automation(
+        &self,
+        receiver: TrackId,
+        device: DeviceId,
+    ) -> Option<&hex_lattice::PreparedParameterAutomation> {
+        self.mutable_instruments
+            .iter()
+            .find(|entry| entry.track == receiver)?
+            .automation
+            .as_ref()
+            .filter(|program| program.device == device)
+            .map(|program| &program.values)
+    }
+
     pub(crate) fn resource_factory_inline_bytes(&self) -> Result<usize, crate::AudioStorageError> {
         self.mutable_instruments
             .iter()
@@ -1360,6 +1407,7 @@ impl PreparedSessionInventory {
         ledger: &mut crate::AudioRootStorageLedger<'a>,
         resources: &crate::native_device_resources::PreparedDeviceResources,
     ) -> Result<(), crate::AudioStorageError> {
+        self.visit_instrument_automation_storage(ledger)?;
         if !ledger.native_payload_once(self)? {
             return Ok(());
         }
@@ -1395,6 +1443,7 @@ impl PreparedSessionInventory {
         ledger: &mut crate::AudioRootStorageLedger<'a>,
         sources: &crate::native_device_resources::ControlSamplerSources,
     ) -> Result<(), crate::AudioStorageError> {
+        self.visit_instrument_automation_storage(ledger)?;
         if !ledger.native_payload_once(self)? {
             return Ok(());
         }
