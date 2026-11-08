@@ -304,6 +304,22 @@ fn layer_batches_only_proven_disjoint_geometry_with_conservative_trace_bounds() 
     for scale in [0.0, -1.0, f32::NAN, f32::INFINITY] {
         assert!(envelope_layer(&separate, scale).is_none());
     }
+    // Stroke joins have different painted extents from filled triangles;
+    // without a proof for those joins, keep the established separate path.
+    let points = [point(px(0.0), px(50.0)), point(px(100.0), px(50.0))];
+    let trace = WaveformChannel::new(
+        WaveformEnvelope {
+            upper: &points,
+            lower: &points,
+            mode: WaveformEnvelopeMode::Trace,
+            trace_width: px(2.0),
+            centerline: None,
+        },
+        std::iter::empty(),
+    )
+    .unwrap();
+    let mixed = WaveformGeometry::stereo([lane(10.0, 20.0, false), trace]);
+    assert!(envelope_layer(&mixed, 2.0).is_none());
     let a = Bounds::new(point(px(0.0), px(0.0)), size(px(10.0), px(1.0)));
     let b = Bounds::new(point(px(0.0), px(2.0)), size(px(10.0), px(1.0)));
     assert!(disjoint_layer(a, b).is_some());
