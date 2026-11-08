@@ -122,6 +122,50 @@ fn nested_group_plates_and_poles_join_follow_selection_and_close_at_visible_ends
         assert_eq!(f64::from(corners.top_right), 6.0 * f64::from(scale));
         assert_eq!(f64::from(corners.bottom_right), 6.0 * f64::from(scale));
     }
+    // Resizing a group grows only its plate, keeping the working controls
+    // in the compact top slot instead of following the middle of the row.
+    let original_height = visual
+        .debug_bounds(selector("arrangement-track-header", outer))
+        .unwrap()
+        .size
+        .height;
+    let edge = visual
+        .debug_bounds(selector("track-height-resize", outer))
+        .unwrap()
+        .center();
+    let to = gpui::point(edge.x, edge.y + px(80.0));
+    visual.simulate_mouse_down(edge, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let grown = visual
+        .debug_bounds(selector("arrangement-track-header", outer))
+        .unwrap();
+    assert_eq!(grown.size.height, original_height + px(80.0));
+    let name = visual.debug_bounds(selector("track-name", outer)).unwrap();
+    assert!(
+        name.top() - grown.top() <= px(4.0),
+        "group controls stay in their top slot"
+    );
+    assert_eq!(
+        visual
+            .debug_bounds(selector("track-name-area", outer))
+            .unwrap()
+            .size
+            .height,
+        grown.size.height
+    );
+    visual.update(|window, cx| editor.read(cx).focus.focus(window));
+    visual.simulate_keystrokes("cmd-h");
+    visual.run_until_parked();
+    assert_eq!(
+        visual
+            .debug_bounds(selector("arrangement-track-header", outer))
+            .unwrap()
+            .size
+            .height,
+        original_height
+    );
     for (track, group, last) in [
         (inner, outer, false),
         (ids[0], outer, false),

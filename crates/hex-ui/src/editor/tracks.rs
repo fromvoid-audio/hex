@@ -1563,6 +1563,7 @@ impl EditorView {
             });
         let group_plate = track.is_group()
             && self.document_audio_mode == hex_session::DocumentAudioMode::Resident;
+        let group_expanded = group_plate && self.track_body_height(track_id) > TRACK_ROW_HEIGHT;
         let name_area = div()
             .id(("track-name-area", track_id.value()))
             .cursor_pointer()
@@ -1577,7 +1578,7 @@ impl EditorView {
                 plate.rounded_tr(px(6.0)).rounded_br(px(6.0))
             })
             .when(group_plate, |plate| plate.h_full().justify_center())
-            .child(track_name_view);
+            .when(group_expanded, |plate| plate.justify_start());
         let sample_source =
             super::sample_recorder::Arm::Output(hex_engine::OutputCaptureId::Track(track_id));
         let resident_layout = self.document_audio_mode == hex_session::DocumentAudioMode::Resident;
@@ -1592,7 +1593,7 @@ impl EditorView {
                 .w_full()
                 .flex()
                 .items_center()
-                .children([name_area.flex_1().min_w_0()])
+                .children([name_area.child(track_name_view).flex_1().min_w_0()])
                 .child(self.sample_arm_button(sample_source, cx))
         } else if resident_layout {
             let (active_background, active_text) =
@@ -1710,11 +1711,29 @@ impl EditorView {
                 .w_full()
                 .flex()
                 .items_center()
+                .when(group_expanded, |controls| controls.items_start())
                 .gap(px(2.0))
-                .children([name_area.flex_1().gap(px(2.)).child(utilities)])
+                .children([name_area.flex_1().child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .when(group_plate, |content| {
+                            content
+                                .h(px(TRACK_ROW_HEIGHT - 4.0))
+                                .flex_shrink_0()
+                                .justify_center()
+                        })
+                        .child(track_name_view)
+                        .child(utilities),
+                )])
                 .child(
                     div()
                         .id(("track-header-mixer", track_id.value()))
+                        .when(group_plate, |mixer| {
+                            mixer.h(px(TRACK_ROW_HEIGHT - 4.0)).justify_center()
+                        })
                         // Two existing 60-point numeric minima and their gap.
                         .w(px(122.0))
                         .flex_shrink_0()
@@ -1848,7 +1867,7 @@ impl EditorView {
                 .w_full()
                 .flex()
                 .flex_col()
-                .children([name_area.w_full()])
+                .children([name_area.child(track_name_view).w_full()])
                 .child(track_controls)
         };
         let header_focus = self.track_header_focus(track_id, cx);
@@ -1896,7 +1915,7 @@ impl EditorView {
             self.track_header_width(),
             header_height,
             selected,
-            expanded_header.then_some(name_fill),
+            (expanded_header && !track.is_group()).then_some(name_fill),
         )
         .when(expanded_header, |header| header.justify_start())
         .when(track.is_group() || hierarchy_indent > 0.0, |header| {
@@ -1922,6 +1941,7 @@ impl EditorView {
                 .when(group_plate, |row| row.h_full())
                 .flex()
                 .items_center()
+                .when(group_expanded, |row| row.items_start())
                 .gap(px(2.0))
                 .children([header_content.flex_1().min_w_0()])
                 .children(
