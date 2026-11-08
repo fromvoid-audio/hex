@@ -143,6 +143,21 @@ impl ModulationLfoBank {
         Ok(bytes)
     }
 
+    /// Source count for comparing this bank with an admitted route program.
+    pub fn source_count(&self) -> usize {
+        self.sources.len()
+    }
+
+    /// The stable identity at this bank's sorted, transient source index.
+    pub fn source_id(&self, index: usize) -> Option<ModulationSourceId> {
+        self.sources.get(index).map(|source| source.id)
+    }
+
+    /// Maximum frames in one render chunk; longer segments require chunking.
+    pub fn chunk_frames(&self) -> usize {
+        self.chunk_frames
+    }
+
     /// Start or restart a transaction from committed phase, discarding scratch.
     pub fn begin(&mut self) {
         for source in &mut self.sources {
@@ -357,6 +372,10 @@ mod tests {
         let many: Vec<_> = (1..=32).map(|id| source(id, 1.0, 0.0)).collect();
         assert!(ModulationLfoBank::new(&many, 8192).is_err());
         let mut bank = ModulationLfoBank::new(&[prepared], 8).unwrap();
+        assert_eq!(bank.source_count(), 1);
+        assert_eq!(bank.source_id(0), Some(prepared.id));
+        assert_eq!(bank.source_id(1), None);
+        assert_eq!(bank.chunk_frames(), 8);
         assert!(bank.render_chunk(1).is_err());
         assert!(bank.commit().is_err());
         assert!(bank.reset(prepared.id, f64::NAN).is_err());
