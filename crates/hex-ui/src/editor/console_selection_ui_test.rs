@@ -127,7 +127,12 @@ fn console_solo_applies_to_the_selected_tracks(cx: &mut TestAppContext) {
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.selected_track_ids(), [ids[0], ids[1]])
     });
-    let solo = visual.debug_bounds("console-track-solo").unwrap().center();
+    let solo = visual
+        .debug_bounds(Box::leak(
+            format!("console-track-solo-{}", ids[1].value()).into_boxed_str(),
+        ))
+        .unwrap()
+        .center();
     visual.simulate_mouse_down(solo, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(solo, MouseButton::Left, Modifiers::default());
     receive(&mut visual, &editor);

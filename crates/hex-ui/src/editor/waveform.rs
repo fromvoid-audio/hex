@@ -16,7 +16,8 @@ const FADE_ENVELOPE_SAMPLES: usize = 32;
 const FADE_ENVELOPE_BREAKPOINTS: usize = 72;
 
 /// Same-revision accepted peaks and the original/prospective metadata view.
-/// Ordinary trim retains its processing root; no decoding or DSP belongs here.
+/// Trim retains its processing root or proves a silent frame prefix before
+/// borrowing unchanged output. No decoding or DSP belongs here.
 #[derive(Clone, Copy)]
 pub(super) struct WaveformPreview<'a> {
     pub(super) original: &'a Clip,
@@ -24,6 +25,7 @@ pub(super) struct WaveformPreview<'a> {
     pub(super) tempo: &'a hex_project::TempoMap,
     pub(super) asset: Option<&'a Arc<CachedWaveform>>,
     pub(super) prepared: Option<&'a hex_session::service::AudioClipWaveform>,
+    pub(super) ink: u32,
 }
 
 /// Keep inactive clip peaks readable but subordinate to active material.
@@ -42,6 +44,125 @@ pub(super) fn preview_waveform_view_cached(
         .map(|body| clip_waveform_activity(body, request.preview.active()))
 }
 
+/// A canonical silent prefix translates the accepted frame output unchanged.
+/// Prove the exact model operation before borrowing peaks; a different root
+/// cannot use this path. Work is bounded by one clip's event/point limits.
+fn prefix_waveform_view(
+    request: WaveformPreview<'_>,
+    visible_start: u64,
+    visible_end: u64,
+    cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
+    grid: Option<WaveformGrid>,
+) -> Option<Div> {
+    let WaveformPreview {
+        original,
+        preview,
+        tempo,
+        asset,
+        prepared,
+        ink,
+    } = request;
+    let source_end = original
+        .source_offset()
+        .checked_add(original.source_length())?;
+    let asset_frames = asset.map_or(source_end, |wave| wave.source_frames() as u64);
+    let origin = if let Some(old) = original.audio_edit() {
+        if !matches!(old.domain.clock, hex_project::AudioDomainClock::Frames(_)) {
+            return None;
+        }
+        let projection = hex_project::AudioViewProjection::new(original, tempo).ok()?;
+        u64::try_from(projection.root_origin()).ok()?
+    } else {
+        original.start().checked_sub(original.source_offset())?
+    };
+    if preview.start() >= origin {
+        return None;
+    }
+    let expected = original
+        .preview_edge_trim_with_tempo(
+            hex_project::TrimEdge::Left,
+            preview.start(),
+            asset_frames,
+            tempo,
+        )
+        .ok()?;
+    // Plain cached peaks are raw source samples, with fades painted separately.
+    // Their existing lower-handle operation can borrow the same raw mapping.
+    if &expected != preview
+        && (original.audio_edit().is_some()
+            || original
+                .preview_fade_edge_trim(
+                    hex_project::TrimEdge::Left,
+                    preview.start(),
+                    asset_frames,
+                    tempo,
+                )
+                .ok()
+                .as_ref()
+                != Some(preview))
+    {
+        return None;
+    }
+    let rewound = original
+        .preview_edge_trim_with_tempo(hex_project::TrimEdge::Left, origin, asset_frames, tempo)
+        .ok()?;
+    if rewound
+        .audio_edit()
+        .is_some_and(|edit| edit.placement.is_some())
+    {
+        // The original root, rewound to zero, already has the exact sounding
+        // interval of the prefixed clip. Its finite gate excludes hidden PCM
+        // after the Once cycle end even if the clip has a silent tail.
+        return super::waveform_loop::loop_waveform_view(
+            WaveformPreview {
+                preview: &rewound,
+                ..request
+            },
+            visible_start,
+            visible_end,
+            cache,
+            grid,
+        );
+    }
+    let (source, mapping) = if let Some(old) = original.audio_edit() {
+        let (_, length, offset, _) = old.projected_domain(tempo).ok()?;
+        let accepted = prepared?;
+        if accepted.offset != offset
+            || accepted.length != original.duration()
+            || accepted.waveform.source_frames() as u64 != length
+            || accepted.preview_root.is_some()
+        {
+            return None;
+        }
+        (
+            Arc::clone(&accepted.waveform),
+            WaveformMapping::Prepared {
+                timeline_origin: origin,
+                root_offset: 0,
+                gain: preview.gain(),
+            },
+        )
+    } else {
+        let source = Arc::clone(asset?);
+        (
+            source,
+            WaveformMapping::Clip {
+                clip: rewound,
+                timeline_origin: origin,
+            },
+        )
+    };
+    Some(timeline_waveform_view_cached(
+        source,
+        mapping,
+        visible_start,
+        visible_end,
+        cache,
+        grid,
+        ink,
+    ))
+}
+
 fn preview_waveform_view_cached_inner(
     request: WaveformPreview<'_>,
     visible_start: u64,
@@ -55,11 +176,21 @@ fn preview_waveform_view_cached_inner(
         tempo,
         asset,
         prepared,
+        ink,
     } = request;
     if original.id() != preview.id() || original.asset() != preview.asset() {
         return None;
     }
     if let Some(edit) = preview.audio_edit() {
+        let changed_root = original
+            .audio_edit()
+            .is_none_or(|old| !Arc::ptr_eq(&old.domain, &edit.domain));
+        if changed_root
+            && let Some(prefix) =
+                prefix_waveform_view(request, visible_start, visible_end, Rc::clone(&cache), grid)
+        {
+            return Some(prefix);
+        }
         // Placement sampling owns repeat wraps for both ordinary crop/loop
         // changes and canonical Shift-Warp root retiming.
         if edit.placement.is_some() {
@@ -71,10 +202,7 @@ fn preview_waveform_view_cached_inner(
                 grid,
             );
         }
-        if original
-            .audio_edit()
-            .is_none_or(|old| !Arc::ptr_eq(&old.domain, &edit.domain))
-        {
+        if changed_root {
             return super::waveform_stretch::stretch_waveform_view(
                 request,
                 visible_start,
@@ -93,7 +221,7 @@ fn preview_waveform_view_cached_inner(
             let prepared = prepared?;
             if prepared.offset != 0
                 || prepared.length != original.duration()
-                || u64::try_from(prepared.waveform.source_frames).ok()? != original.duration()
+                || u64::try_from(prepared.waveform.source_frames()).ok()? != original.duration()
                 || before.window.reversed != after.window.reversed
             {
                 return None;
@@ -149,6 +277,7 @@ fn preview_waveform_view_cached_inner(
                 visible_end,
                 cache,
                 grid,
+                ink,
             ));
         }
         if old.content_view.is_some() || edit.content_view.is_some() {
@@ -159,7 +288,7 @@ fn preview_waveform_view_cached_inner(
         let prepared = prepared?;
         if origin != old_origin
             || length != old_length
-            || u64::try_from(prepared.waveform.source_frames).ok()? != length
+            || u64::try_from(prepared.waveform.source_frames()).ok()? != length
             || prepared.offset != old_offset
             || prepared.length != original.duration()
             || offset >= end
@@ -179,6 +308,7 @@ fn preview_waveform_view_cached_inner(
             visible_end,
             cache,
             grid,
+            ink,
         ))
     } else {
         if original.audio_edit().is_some() {
@@ -194,6 +324,7 @@ fn preview_waveform_view_cached_inner(
             visible_end,
             cache,
             grid,
+            ink,
         ))
     }
 }
@@ -204,6 +335,7 @@ pub(super) fn prepared_waveform_view_cached(
     visible_start: u64,
     visible_end: u64,
     cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
+    ink: u32,
 ) -> Div {
     clip_waveform_activity(
         waveform_canvas(
@@ -217,6 +349,7 @@ pub(super) fn prepared_waveform_view_cached(
             visible_end,
             Some(cache),
             None,
+            ink,
         ),
         clip.active(),
     )
@@ -231,6 +364,7 @@ pub(super) fn timeline_waveform_view_cached(
     visible_end: u64,
     cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
     grid: Option<WaveformGrid>,
+    ink: u32,
 ) -> Div {
     waveform_canvas(
         waveform,
@@ -239,6 +373,7 @@ pub(super) fn timeline_waveform_view_cached(
         visible_end,
         Some(cache),
         grid,
+        ink,
     )
 }
 
@@ -248,6 +383,7 @@ pub(super) fn waveform_view_cached(
     visible_start: u64,
     visible_end: u64,
     cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
+    ink: u32,
 ) -> Div {
     clip_waveform_activity(
         waveform_canvas(
@@ -260,6 +396,7 @@ pub(super) fn waveform_view_cached(
             visible_end,
             Some(cache),
             None,
+            ink,
         ),
         clip.active(),
     )
@@ -270,6 +407,7 @@ pub(super) fn waveform_source_segment_view(
     timeline_origin: u64,
     visible_start: u64,
     visible_end: u64,
+    ink: u32,
 ) -> Div {
     waveform_canvas(
         waveform,
@@ -278,17 +416,18 @@ pub(super) fn waveform_source_segment_view(
         visible_end,
         None,
         None,
+        ink,
     )
 }
 
 pub(super) fn waveform_source_segment_gain_view_cached(
     waveform: Arc<CachedWaveform>,
     timeline_origin: u64,
-    visible_start: u64,
-    visible_end: u64,
+    visible: Range<u64>,
     gain: hex_project::ClipGain,
     detail: bool,
     cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
+    ink: u32,
 ) -> Div {
     waveform_canvas(
         waveform,
@@ -297,16 +436,17 @@ pub(super) fn waveform_source_segment_gain_view_cached(
             gain,
             detail,
         },
-        visible_start,
-        visible_end,
+        visible.start,
+        visible.end,
         Some(cache),
         None,
+        ink,
     )
 }
 
-pub(super) fn waveform_summary_view(waveform: Arc<CachedWaveform>) -> Div {
-    let end = u64::try_from(waveform.source_frames).unwrap_or(u64::MAX);
-    waveform_source_segment_view(waveform, 0, 0, end)
+pub(super) fn waveform_summary_view(waveform: Arc<CachedWaveform>, ink: u32) -> Div {
+    let end = u64::try_from(waveform.source_frames()).unwrap_or(u64::MAX);
+    waveform_source_segment_view(waveform, 0, 0, end, ink)
 }
 
 pub(super) fn waveform_canvas(
@@ -316,8 +456,14 @@ pub(super) fn waveform_canvas(
     visible_end: u64,
     cache: Option<Rc<std::cell::RefCell<WaveformGeometryCache>>>,
     grid: Option<WaveformGrid>,
+    ink: u32,
 ) -> Div {
     let mapping = mapping.clone();
+    let colors = WaveformColors {
+        waveform: ink,
+        inactive: ink,
+        centerline: theme::color(theme::PaletteRole::Border),
+    };
     waveform_plot(
         move |paint| {
             #[cfg(all(test, feature = "ui-test-support"))]
@@ -362,20 +508,15 @@ pub(super) fn waveform_canvas(
                 .map(Arc::new)
             });
             #[cfg(all(test, feature = "ui-test-support"))]
-            if let Some(geometry) = &geometry {
-                if let Some(cache) = &cache
-                    && let Ok(mut cache) = cache.try_borrow_mut()
-                {
-                    cache.record_paint(bounds, paint.mask, geometry);
-                }
+            if let Some(geometry) = &geometry
+                && let Some(cache) = &cache
+                && let Ok(mut cache) = cache.try_borrow_mut()
+            {
+                cache.record_paint(bounds, paint.mask, geometry, colors);
             }
             geometry
         },
-        WaveformColors {
-            waveform: 0x000000,
-            inactive: 0x000000,
-            centerline: theme::color(theme::PaletteRole::Border),
-        },
+        colors,
         WaveformEmphasis::Uniform,
     )
 }
@@ -676,11 +817,12 @@ pub(super) fn push_source_range(
     let (Ok(start), Ok(end)) = (usize::try_from(start), usize::try_from(end)) else {
         return;
     };
-    if start < end && end <= available_frames {
-        if let Some(slot) = ranges.ranges.get_mut(ranges.len) {
-            *slot = start..end;
-            ranges.len += 1;
-        }
+    if start < end
+        && end <= available_frames
+        && let Some(slot) = ranges.ranges.get_mut(ranges.len)
+    {
+        *slot = start..end;
+        ranges.len += 1;
     }
 }
 

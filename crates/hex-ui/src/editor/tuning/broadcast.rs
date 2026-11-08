@@ -1,4 +1,5 @@
-//! Explicit project ownership; focus and opening the tuning window never acquire it.
+//! Explicit project ownership. The blocked owner can request a shared MTS
+//! reset with the same control used to start and stop broadcasting.
 use super::*;
 use hex_mts::{ClientId, Handle, Owner, Publication, Revision, Snapshot, State};
 
@@ -35,10 +36,10 @@ impl Broadcast {
         }
     }
     fn disable(&mut self) {
-        if let (Some(handle), Some(owner)) = (&self.handle, self.owner.take()) {
-            if let Err(error) = handle.disable(owner) {
-                self.error = Some(error.to_string());
-            }
+        if let (Some(handle), Some(owner)) = (&self.handle, self.owner.take())
+            && let Err(error) = handle.disable(owner)
+        {
+            self.error = Some(error.to_string());
         }
         self.sent = None;
     }
@@ -122,11 +123,25 @@ impl Broadcast {
             self.error = Some("mts publisher unavailable".into());
         }
     }
-    fn retry(&mut self) {
-        if let (Some(handle), Some(owner)) = (&self.handle, self.owner) {
-            if let Err(error) = handle.retry(owner) {
-                self.error = Some(error.to_string());
-            }
+    fn force_claim_owner(&self) -> Option<Owner> {
+        match self.snapshot {
+            Some(Snapshot {
+                owner,
+                state:
+                    State::Blocked {
+                        recovery_available: true,
+                    },
+                ..
+            }) if owner == self.owner => owner,
+            _ => None,
+        }
+    }
+    fn force_claim(&mut self, owner: Owner) {
+        if self.force_claim_owner() == Some(owner)
+            && let Some(handle) = &self.handle
+        {
+            self.error = handle.recover(owner).err().map(|error| error.to_string());
+            self.snapshot = handle.snapshot().ok();
         }
     }
     fn status(&self) -> String {
@@ -143,7 +158,12 @@ impl Broadcast {
             State::Disabled => "mts off".into(),
             State::Disabling => "mts stopping".into(),
             State::Stopped => "mts publisher stopped".into(),
-            State::Blocked => "mts blocked · another master is active · retry explicitly".into(),
+            State::Blocked {
+                recovery_available: true,
+            } => "mts blocked · active or stale master registration".into(),
+            State::Blocked {
+                recovery_available: false,
+            } => "mts blocked · a master is already registered".into(),
             State::Unavailable(error) => format!("mts unavailable · {error}").to_lowercase(),
             State::Pending | State::Active => format!(
                 "mts {} · desired {} · published {} · clients {}",
@@ -167,19 +187,28 @@ impl Drop for Broadcast {
 
 impl EditorView {
     pub(super) fn tuning_mts_controls(&self, cx: &mut Context<Self>) -> Div {
-        let retry = self.tuning.broadcast.owner.is_some()
-            && self.tuning.broadcast.snapshot.is_some_and(|snapshot| {
-                matches!(snapshot.state, State::Blocked | State::Unavailable(_))
-            });
-        let mut controls = div()
+        let broadcast = &self.tuning.broadcast;
+        let force_owner = broadcast.force_claim_owner();
+        let (label, selector, active) = if force_owner.is_some() {
+            ("force claim mts", "tuning-mts-force-claim", false)
+        } else {
+            (
+                "broadcast mts",
+                "tuning-mts-broadcast",
+                broadcast.owner.is_some(),
+            )
+        };
+        div()
             .flex()
             .flex_col()
             .gap_1()
             .child(
-                button("broadcast mts", self.tuning.broadcast.owner.is_some())
-                    .debug_selector(|| "tuning-mts-broadcast".into())
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        if let Some(state) = view.state.as_ref() {
+                button(label, active)
+                    .debug_selector(move || selector.into())
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        if let Some(owner) = force_owner {
+                            view.tuning.broadcast.force_claim(owner);
+                        } else if let Some(state) = view.state.as_ref() {
                             view.tuning.broadcast.toggle(
                                 view.project_generation,
                                 state.revision,
@@ -189,17 +218,61 @@ impl EditorView {
                         cx.notify();
                     })),
             )
-            .child(theme::text(self.tuning.broadcast.status()));
-        if retry {
-            controls = controls.child(button("retry mts", false).on_click(cx.listener(
-                |view, _, _, cx| {
-                    view.tuning.broadcast.retry();
-                    cx.notify();
-                },
-            )));
-        }
-        controls
+            .child(theme::text(broadcast.status()))
     }
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[gpui::test]
+fn blocked_mts_replaces_broadcast_with_one_direct_force_claim(cx: &mut gpui::TestAppContext) {
+    use gpui::{Modifiers, VisualTestContext};
+
+    let worker = hex_mts::Worker::start().unwrap();
+    let publisher = worker.handle();
+    let owner = Owner {
+        client: publisher.new_client().unwrap(),
+        generation: 0,
+    };
+    let (window, editor) = crate::editor::clip_drag_ui_test::editor_window(
+        cx,
+        hex_project::Project::new(48_000).unwrap(),
+        Default::default(),
+    );
+    editor.update(cx, |view, cx| {
+        view.tuning.open = true;
+        let broadcast = &mut view.tuning.broadcast;
+        broadcast.handle = Some(publisher.clone());
+        broadcast.owner = Some(owner);
+        // Inject the blocked receipt without touching the installed MTS library.
+        broadcast.snapshot = Some(Snapshot {
+            owner: Some(owner),
+            state: State::Blocked {
+                recovery_available: true,
+            },
+            ..Snapshot::default()
+        });
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(window, cx);
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("tuning-mts-broadcast").is_none());
+    let button = visual
+        .debug_bounds("tuning-mts-force-claim")
+        .unwrap()
+        .center();
+    visual.simulate_mouse_down(button, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(button, MouseButton::Left, Modifiers::default());
+    assert!(!visual.has_pending_prompt());
+    assert_eq!(publisher.snapshot().unwrap(), Snapshot::default());
+    editor.read_with(&visual, |view, _| {
+        // The idle publisher rejects the request from the injected UI receipt.
+        // This observes dispatch without resetting the machine's shared MTS state.
+        assert_eq!(
+            view.tuning.broadcast.error,
+            Some(hex_mts::ControlError::Stale.to_string())
+        );
+        assert_eq!(view.tuning.broadcast.force_claim_owner(), None);
+    });
 }
 
 // A Linux UI fixture exercises the real unavailable backend without acquiring

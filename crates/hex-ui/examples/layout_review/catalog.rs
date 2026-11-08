@@ -479,7 +479,6 @@ mod grouping_tests {
                 "pan dial · bipolar",
                 "frequency dial · logarithmic",
             ],
-            vec!["vertical slider", "device meters"],
         ] {
             for &name in &names {
                 assert_eq!(page(name), page(names[0]), "{name}");
@@ -523,6 +522,5 @@ mod grouping_tests {
             page("meter indicator · stereo")
         );
         assert_ne!(page("meter indicator · mono"), page("level meter"));
-        assert_ne!(page("meter indicator · mono"), page("device meters"));
     }
 }

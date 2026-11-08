@@ -611,7 +611,7 @@ fn adjusted_source_range(
 }
 
 fn waveform_bars(waveform: &CachedWaveform, start: u64, end: u64) -> Vec<f32> {
-    let source_frames = waveform.source_frames;
+    let source_frames = waveform.source_frames();
     let start = usize::try_from(start)
         .unwrap_or(usize::MAX)
         .min(source_frames);
@@ -619,7 +619,7 @@ fn waveform_bars(waveform: &CachedWaveform, start: u64, end: u64) -> Vec<f32> {
         .unwrap_or(usize::MAX)
         .min(source_frames)
         .max(start);
-    if start == end || source_frames == 0 || waveform.bins.is_empty() {
+    if start == end || source_frames == 0 || waveform.bins().is_empty() {
         return vec![0.0; WAVEFORM_COLUMNS];
     }
     (0..WAVEFORM_COLUMNS)
@@ -633,7 +633,7 @@ fn waveform_bars(waveform: &CachedWaveform, start: u64, end: u64) -> Vec<f32> {
                 .min(end);
             let bins = bin_range(waveform, left, right);
             waveform
-                .bins
+                .bins()
                 .get(bins)
                 .unwrap_or(&[])
                 .iter()
@@ -650,14 +650,14 @@ fn fraction(length: usize, numerator: usize, denominator: usize) -> usize {
 }
 
 fn bin_range(waveform: &CachedWaveform, start: usize, end: usize) -> Range<usize> {
-    let start = start.min(waveform.source_frames);
-    let end = end.min(waveform.source_frames).max(start);
-    let count = waveform.bins.len();
-    if start == end || count == 0 || waveform.source_frames == 0 {
+    let start = start.min(waveform.source_frames());
+    let end = end.min(waveform.source_frames()).max(start);
+    let count = waveform.bins().len();
+    if start == end || count == 0 || waveform.source_frames() == 0 {
         return 0..0;
     }
-    let width = waveform.source_frames / count;
-    let extra = waveform.source_frames % count;
+    let width = waveform.source_frames() / count;
+    let extra = waveform.source_frames() % count;
     let wide_frames = (width + 1).saturating_mul(extra);
     let at = |frame: usize| {
         if frame < wide_frames {

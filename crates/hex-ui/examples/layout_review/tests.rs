@@ -49,13 +49,38 @@ fn catalog_fixture_track_return_labels_reuse_production_geometry_in_bounded_view
             let card = visual.debug_bounds("catalog-card").unwrap();
             let header = visual.debug_bounds("device-frame-header").unwrap();
             let body = visual.debug_bounds("fixture-body").unwrap();
-            assert_eq!(card.size, size(px(entry.width()), px(184.0)), "{entry:?}");
             assert_eq!(
-                header.size.height,
-                px(hex_widgets::DEVICE_FRAME_HEADER_HEIGHT)
+                card.size,
+                size(
+                    px(entry.width() + hex_widgets::DEVICE_FRAME_HEADER_WIDTH),
+                    px(200.0)
+                ),
+                "{entry:?}"
+            );
+            assert_eq!(
+                header.size.width,
+                px(hex_widgets::DEVICE_FRAME_HEADER_WIDTH)
             );
             assert_eq!(body.size.height, px(device_composition::BODY_HEIGHT));
-            assert_eq!(body.origin.y, header.bottom_left().y);
+            assert_eq!(body.origin.x, header.right());
+            assert_eq!(body.origin.y, header.origin.y);
+            if entry == Entry::Vector {
+                for index in 0..12 {
+                    let slider = visual
+                        .debug_bounds(number_id(entry, index, "-slider"))
+                        .unwrap();
+                    assert_eq!(slider.size, size(px(58.0), px(14.0)));
+                    assert!(
+                        visual
+                            .debug_bounds(number_id(entry, index, "-knob"))
+                            .is_none()
+                    );
+                }
+            }
+            assert_eq!(
+                body.bottom() + px(hex_widgets::DEVICE_FRAME_BORDER_WIDTH),
+                card.bottom()
+            );
             assert_eq!(
                 visual.rendered_background("device-frame-header"),
                 Some(gpui::Background::from(rgb(theme::device_style(
@@ -143,7 +168,7 @@ fn selection_focus_hover_and_bypass_preserve_body_paint_and_real_control_footpri
         Some(gpui::Background::from(rgb(theme::device_style(
             theme::DeviceStyleRole::Layout
         )
-        .accent)))
+        .surface)))
     );
     visual.simulate_keystrokes("escape");
     let bypass = visual.debug_bounds("bypass-sample").unwrap();
@@ -500,11 +525,25 @@ fn eq_catalog_uses_shared_live_geometry_controls_and_registered_response_without
                 && graph.size.height >= body.size.height * 0.9
         );
     }
+    let q_control = view.read_with(cx, |view, _| {
+        view.fixtures[&Entry::Eq].numbers[3].entity.clone()
+    });
+    q_control.update(cx, |q, cx| q.set_external_value(18.0, cx).unwrap());
     let before = view.read_with(cx, |view, cx| {
         eq::model(&view.fixtures[&Entry::Eq], cx).unwrap()
     });
     before.validate().unwrap();
-    assert!(before.analyzer.is_none() && before.input_analyzer.is_none());
+    let center = before.nodes[0].position[0];
+    assert!(
+        before
+            .primary
+            .iter()
+            .any(|point| (point[0] - center).abs() < 1.0e-6),
+        "the narrow node center must be sampled"
+    );
+    assert!(before.analyzer.is_some());
+    assert!(before.input_analyzer.is_some());
+    assert!(before.analyzer_peak.is_some());
     let field = visual.debug_bounds("fixture-eq-numeric-2-value").unwrap();
     visual.simulate_click(field.center(), Modifiers::default());
     visual.simulate_keystrokes("cmd-a");
@@ -519,6 +558,9 @@ fn eq_catalog_uses_shared_live_geometry_controls_and_registered_response_without
         after.primary, before.primary,
         "real registered response follows the shared numeric control"
     );
+    assert_eq!(after.analyzer, before.analyzer);
+    assert_eq!(after.input_analyzer, before.input_analyzer);
+    assert_eq!(after.analyzer_peak, before.analyzer_peak);
     let choice = visual.debug_bounds("fixture-eq-selector-1").unwrap();
     visual.simulate_click(choice.center(), Modifiers::default());
     visual.run_until_parked();

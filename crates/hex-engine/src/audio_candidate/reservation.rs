@@ -156,7 +156,21 @@ impl AudioCandidateReservationQuote {
                 .checked_add(largest)
                 .ok_or(AudioStorageError::Overflow)?;
         }
-        // Cardinalities cannot describe spare capacity retained by canonical
+        if effect_payloads {
+            let (bytes, rows) = crate::foreign_automation::candidate::quote(project)?;
+            quote.metadata_data_bytes = quote
+                .metadata_data_bytes
+                .checked_add(bytes)
+                .ok_or(AudioStorageError::Overflow)?;
+            quote.data_rows = quote
+                .data_rows
+                .checked_add(rows)
+                .ok_or(AudioStorageError::Overflow)?;
+            quote.handle_rows = quote
+                .handle_rows
+                .checked_add(rows.checked_mul(2).ok_or(AudioStorageError::Overflow)?)
+                .ok_or(AudioStorageError::Overflow)?;
+        } // Cardinalities cannot describe spare capacity retained by canonical
         // sources. Quote the actual two owning identity tokens per Console clip.
         let canonical_bytes =
             crate::session_inventory::audio_assembly::current_midi::canonical_source_metadata_bytes(

@@ -26,6 +26,11 @@ original note-off times; earlier voice history is reset. starting does not repla
 the song before the cursor. section launches and exact-history seeks have their
 own preparation behavior.
 
+normal pause and stop fade the output briefly. seeking during playback fades
+out at the old position and in at the new one. pause releases held arrangement
+and session instrument notes. when resuming from that position, the instrument
+plays the next note starts without replaying those held notes.
+
 # install and update
 
 the macos package includes `hex.app`, this manual in pdf and offline html,
@@ -61,16 +66,58 @@ readers, choose **save as…** to keep the original. only choose overwrite when 
 intend to replace that original. supported format migration happens while opening;
 opening alone does not authorize rewriting the original project.
 
+on macos, saving over a project can remove custom access rules on that file.
+use **file → save as…** to keep the original and check the new file's access
+rules before sharing it.
+
 keep the original project and its media if opening fails. an unsupported or
 malformed format needs its reported recovery path; changing the filename does
 not convert it. compatibility with every historical alpha file is not implied.
 
+## quit with work in progress
+
+quitting from the dock uses the same confirmation as quitting from the app
+menu. if hex asks whether to discard unsaved work, choose **cancel** to return
+to the project and save it. **discard** closes the project and can cancel an
+export in progress. finish a recording or resolve a retained take before
+quitting.
+
 ## missing media
 
-use **file → open and relink media…** when audio files have moved. follow the
-**locate missing media** prompt and select the corresponding original recording.
-check the loaded clips before saving a new copy. do not replace a missing file
-with unrelated audio merely to dismiss the prompt.
+when you open a project whose audio files have moved, hex shows the
+**missing files** panel instead of an error. each row lists the file name, its
+last known location and where the project uses it (clips, scenes, sampler and
+other devices). **file → open and relink media…** opens the same panel for any
+saved project.
+
+- **locate…** picks the file for one row. other missing files from the same old
+  folder are found automatically when they exist at the same relative location
+  under the new folder.
+- **search folders…** searches the folders you choose, including subfolders,
+  for files with the same name. a file is accepted only when its length and
+  sample rate equal the saved recording. when several files match, pick one;
+  a file that differs is shown as a mismatch and is not used. you can cancel a
+  search at any time.
+- **open with missing offline** opens the project now. clips that use a missing
+  file stay in place but play silence, and **missing files: n** shows in the
+  status bar. saving keeps their original locations. click **missing files: n**
+  to open the same panel for the open project: find the files with **locate…**
+  or **search folders…**, then **relink**. relinking is one edit, so **undo**
+  makes those clips silent again; files you have not found stay offline. a missing sampler or other device sample, or a missing
+  file used by a session clip, still has to be found before the project opens.
+- **relink all found** appears when the browser's scanned sample folders
+  contain files with the same names. it applies only when you click it: files
+  with exactly one matching candidate are found, and files with several
+  matches list them for you to pick. add the new sample folder to the browser
+  first so it is scanned.
+- **open** becomes available once every file is found. the project then opens
+  with the new locations as unsaved changes; your project file stays unchanged
+  until you save. **cancel** keeps the current project.
+
+hex only reads your sample files; it never moves, renames or deletes them.
+matching uses the file name, length and sample rate, so check the loaded clips
+before saving: two different recordings with the same name, length and rate
+cannot be told apart yet.
 
 ## recover work
 
@@ -93,12 +140,29 @@ arrange places clips along a time ruler. console provides the clip/scene workspa
 these views share the project; switching views does not create another document.
 tracks can contain both audio and midi clips under the same mixer controls.
 
+choose **view → track performance indicators** to show six compact segments in
+track headers and arrange return headers. hover an indicator for its sampled
+share of audio processing time and the scale. group indicators show only the
+group's own work; a shared instrument belongs to its receiver. main processing,
+old detached tails and shared overhead remain in the global meter. external
+worker cpu is excluded. dim segments mean a fresh reading is unavailable, not
+zero work. some playback modes cannot supply these timings and show unavailable. the indicators are diagnostic: they do not measure latency or prove
+which track caused a dropout.
+
 solo takes precedence over track mute or deactivation. a muted track sounds while
 soloed; turning solo off restores its muted state. solo does not change the stored
 track activator setting.
 
 in arrange, select a track or clip before editing it. drag a clip to move it and
-use its edges to adjust its extent. work at a zoom level where the intended edge
+drag its left or right edge within the clip header to adjust its extent; hold
+**shift** to stretch instead. lower down, the edge belongs to the clip body and
+its fade handles.
+
+when moving a clip near its original time, it snaps back to that exact position,
+even on another track or with the grid off. move farther away to use the chosen
+grid. hold **command** to bypass both the original-position target and grid
+snapping for the move.
+work at a zoom level where the intended edge
 and grid position are clear. use **command+z** to undo and
 **command+shift+z** to redo admitted edits.
 
@@ -170,9 +234,13 @@ repeats it, and starting after its end plays on without looping. only when there
 is no selection or edit cursor does an enabled loop supply its beginning.
 moving or resizing the loop during playback takes effect immediately with the
 same rule: inside the new loop the playhead wraps at its new end, before it the
-playhead plays into it, and after it playback continues. a known limit: a loop
-change made while an arrangement instrument note is still sounding is not yet
-applied to playback.
+playhead plays into it, and after it playback continues. some first-pass loop
+edits keep a held arrangement instrument note sounding, when the note and its
+release finish before both loop ends and playback can retain the same source
+history. when playback needs to restart at the playhead, effect tails reset and
+notes under the playhead start again from there.
+at a normal loop wrap, arrangement audio fades briefly at the end so the next
+pass can keep its original attack. this fade belongs to the loop boundary.
 for multiple sections, the loop spans the earliest start to the latest end,
 including gaps. while the computer midi keyboard is on, plain **l** and **w** play notes.
 setting new loop bounds from selected main sections also turns on section focus
@@ -180,27 +248,57 @@ after the edit is accepted. focus shows tracks that intersect the selected
 sections, excluding gaps between them. repeated loop toggles leave focus unchanged;
 press **q** or use the section focus toggle to restore all tracks.
 
-**shift-click** section blocks to add or remove them from the section selection,
-including clicks in their lower body. ordinary lower-body dragging still selects time.
+**shift-click** a section block to select every section from the last clicked one
+through it; **command-shift-click** adds or removes a single section. both work in a
+section's lower body too. ordinary lower-body dragging still selects time.
 drag a section header to move its musical content; hold **option** to insert a copy
-before or after another section, or beside the source. changing option during the drag
-switches between moving and copying. the source stays in place when copying, and
+before or after another section, or beside the source. past the last section,
+move or copy to the snapped pointer beat; a new section marks the intervening gap.
+a move closes the old interval and preserves music in the gap. move/copy and the
+gap marker share one undo step. command toggles snapping for a move; use control
+while option-copying, since option-command edits only markers. changing option
+during the drag switches between moving and copying. the source stays in place when copying, and
 one undo restores the entire operation.
 
-some section edits involving sampler midi require stopped playback. if hex asks,
-stop playback and repeat the edit; the refused edit leaves the project and history unchanged.
+while dragging a section, the cyan bar marks insertion at an edge or in a gap.
+a highlighted section body marks replacement: the target's music is removed and
+the source content takes its place. later music ripples by the length difference;
+a move also closes the source's old interval. the result carries the source name
+and color. option preserves the source and gives the replacement a new identity.
+dropping on the source body does nothing. option-command marker edits do not
+replace content. the indicator stays with a pending edit until its result arrives.
 
-hold **command** before or during a drag to adjust only the marker; the music stays
-in place. command-resize an edge to trim or remove overlapping section markers, or
-use **command-delete** to remove the selected marker only. releasing command keeps
-that drag marker-only. **control** temporarily inverts section snapping. release
-outside the section lane to accept the last valid preview, or press **escape** to cancel.
+with the section lane focused, select one section and press **command+c**, then click
+the lane to place the edit cursor and press **command+v**. paste inserts at the nearest
+section boundary before or within the song. after the last marker, it lands at the
+cursor and gives any intervening marker gap a new section. all tracks are copied,
+and one undo removes the whole paste. the section cursor keeps the snapping chosen
+when you clicked it; command+v does not invert the grid again.
+
+the section clipboard stays available after successful copies of the same section. place the
+cursor again for another paste. other project edits, undo or redo make the reference
+stale; copy the section again before pasting. opening another project clears it.
+right-click a section for **copy section** and **paste section at cursor**.
+
+section edits apply while playing. when an edit changes the tempo, a sampler's held
+notes or a device's latency, audio briefly restarts at the playhead: effect tails
+cut and sounding notes start again, and playback keeps running.
+
+hold **option-command** before or during a drag to adjust only the marker; the music
+stays in place. option-command-resize an edge to trim or remove overlapping section
+markers, or use **option-command-delete** to remove the selected marker only.
+releasing the keys keeps that drag marker-only. **command** alone temporarily inverts
+section snapping; **control** remains an alias, including during marker-only edits.
+release outside the section lane to accept the last valid preview, or press **escape**
+to cancel.
 
 turn on **section autoplay and loop** in the top toolbar, then click the body of
 an arrange section to play it repeatedly. the launch dropdown beside it also
 sets quantization for console clip and scene launches: **none**, **8 bars**,
 **4 bars**, **2 bars**, **1 bar**, **1/2**, **1/2t**, **1/4**, **1/4t**, **1/8**,
 **1/8t**, **1/16**, **1/16t**, or **1/32**. **t** means triplet timing.
+when a console launch replaces a playing audio clip, the outgoing clip fades
+briefly as the new one begins.
 
 current playback continues while hex prepares the section. the prepared section
 starts at the next selected boundary after it is ready; **none** starts as soon
@@ -231,26 +329,56 @@ a time selection shows a dark dot when its musical length is a power of two,
 such as two or four beats. the dot follows the dragged top-right or top-left
 corner and stays visible after release.
 
-with the arrange timeline focused, **command+b** keeps the originals and inserts
+with the arrange timeline focused, **b** keeps the originals and inserts
 bounced audio on a new track below
-each source track. a nonempty time selection takes precedence over selected clips.
+each source track. **command+b** does the same and then deactivates the bounced
+source clips or time selection, exactly as **c** or **0** would; one undo restores
+both the bounce and the sources' activation. a nonempty time selection takes precedence over selected clips.
 each selected track produces one audio clip spanning its selected clips and gaps.
-clip bounces include instrument and effect release tails. a time selection renders
+clip bounces render instrument and effect release tails, but the new clip keeps the
+original clip's start and length; drag its right edge out to reveal the tail. a time selection renders
 exactly its start-to-end interval, retaining earlier state needed for sound inside
 that interval. press **escape** to cancel; one undo restores the entire operation.
 
-stop playback and disable live midi input or audition before bouncing in place. hex keeps the stopped cursor and installs
-a fresh playback state so live release voices cannot duplicate the baked tails.
-undo and redo of an in-place bounce use the same stopped-edit rule.
+select a time range on a group row to bounce its submix. **b** inserts an audio
+track beside the group and leaves the original tracks playing. **command+b** on
+one group row adds the same bounce and silences the original group's output
+only for the selected interval. child clips stay intact, and group effects keep
+processing through the muted interval. both commands include nested audio and
+midi tracks and print the selected group's effects before its mixer. the new
+track carries the group's mixer and sends. one undo removes the bounce and, for
+**command+b**, restores the original interval's playback.
+
+while dragging arrangement clips, hold **b** as you release to drop a bounce of them
+at the drop position instead of moving them. the dragged clips stay where they were,
+the bounced clips keep their original lengths with the tail in the file, and one undo
+removes the drop. the drop shows as pending until rendering finishes. let go of **b**
+before releasing to move normally. a bounce drop that would overlap its own source, or
+that lands between tracks, is refused.
+
+disable live midi input or audition before bouncing in place. bounce in place works while
+playing: the render runs while the song continues, then audio restarts at the cursor on the
+baked clips, so release voices and effect tails cannot duplicate the baked tails. when stopped,
+hex keeps the stopped cursor. undo and redo of an in-place bounce follow the same rule.
 
 bounce writes float audio before the track mixer. mixer automation, sends, returns
 and main processing remain live. only the track-header **bounce in place** action replaces material in place and
 removes the track's devices. it covers the entire track, regardless of a smaller
-clip or time selection. for clip and time-selection editing, use **g** to group
+clip or time selection. on a group, it prints the descendants' arrangement
+material and release tail to one new playback child. the group's mixer and sends
+remain live. its printed devices are removed, and the original descendants are
+muted in place with their own devices, arrangement clips and console cells
+preserved. undo restores the group devices and each child's previous mute state.
+unsolo group children before bouncing in place. an external shared source or
+sidechain key can prevent a group bounce. **command+b** also refuses when the
+selected group supplies a sidechain key.
+
+for clip and time-selection editing, use **g** to group
 material instead; grouping retains its existing source and processing behavior.
-**b** has no arrange bounce action. routed inputs, verified streaming and nonzero-latency device
-paths currently refuse. clip bounces keep up to 30 seconds of release after the
-selected span. if the tail is still sounding then, hex cuts it at that limit and
+in the focused midi editor, **b** keeps toggling draw mode. a bounce needs a
+supported routing and storage mode. device latency is aligned using the admitted
+compensation graph. clip and whole-track bounces keep up to 30 seconds of release
+after the selected span. if the tail is still sounding then, hex cuts it at that limit and
 finishes the bounce. a noise floor at or below -80 dbfs peak in both channels
 counts as silence for tail length. hex retains up to 50 ms after the last louder
 tail sample, without trimming the selected span or changing retained audio. it checks
@@ -361,11 +489,14 @@ keyboard keep their own input.
 in the focused midi editor, **c** or **0** toggles the selected notes. inactive
 notes remain editable and are silent during playback; copies retain their state.
 
-click a curve to add a point, drag a point to change its time or value, and
-release to apply the edit. editing another track's curve keeps the background
-clip selection. **command** gives free beat placement. **escape**
-cancels a held edit; **backspace** removes the selected automation point.
-one undo restores a completed change. background clip edits are unavailable
+click empty space in a lane to add a point, drag a point to change its time or
+value, and release to apply the edit. drag across empty space to draw a
+selection rectangle around several points; hold **shift** to add to the
+selection or **command** to toggle points in and out of it. dragging any
+selected point moves the whole selection, and **backspace** removes every
+selected point. editing another track's curve keeps the background clip
+selection. **command** gives free beat placement while dragging a point.
+**escape** cancels a held edit or rectangle. one undo restores a completed change. background clip edits are unavailable
 while the automation lanes own arrangement focus.
 
 right-click a supported device parameter and choose **show automation** to use
@@ -394,7 +525,7 @@ and are retained when saving, reopening and rendering the project. clicking a
 control without editing it leaves automation running.
 
 supported device controls are utility's parameters, saturator's four parameters,
-and auto pan's amount, rate, phase and waveform. native effects on tracks, main
+auto pan's amount, rate, phase and waveform, and rattle's drive. native effects on tracks, main
 and returns also offer host **input gain** and **output gain** lanes. instrument
 and source-owned effect lanes, other device controls and vst lanes are not yet
 available. recording device movements and shared modulator assignments are not
@@ -416,14 +547,24 @@ with several clips selected, pitch changes remain relative to each clip's
 existing value. in **re-pitch** mode the dial is unavailable: tempo determines
 the audible pitch while the stored transpose value is retained.
 
+pitch and warp reconstruction use the resampling version saved with the clip.
+new material uses the current version, which reduces aliasing when you raise
+pitch substantially. opening an older project preserves the version used by
+its existing pitched or warped material.
+
 ## clip loop resizing
 
-hover the lower part of a clip's right edge to show the circular-arrow cursor, then drag
-to repeat its source. the rest of the edge keeps ordinary trimming. audio and
-midi clips use the same gesture; no loop icon is painted inside the clip. looped
-clips have rounded bottom corners. the first repeat boundary uses left/right
-arrows; drag it to change the cycle while keeping the outer duration; directed clips retain only the outer
-repeat handle. **escape** cancels a held edit; one undo restores a completed drag.
+hold **option** over a clip's right header edge to show the circle cursor, then
+drag to repeat its source. the modifier you hold when the drag starts decides the
+gesture for the whole drag: none trims, **shift** stretches, **option** repeats
+(option wins if both are held). dragging the right edge of a clip that already
+repeats also extends its repeats. audio and midi clips use the same gesture; no
+loop icon is painted inside the clip, and the fade-out handle keeps the
+bottom-right corner. looped clips have rounded bottom corners. the first repeat
+boundary uses left/right arrows; drag it to change the cycle while keeping the
+outer duration; directed clips have no first-boundary handle. inside a time
+selection the clip header moves or copies the range instead. **escape** cancels
+a held edit; one undo restores a completed drag.
 
 clips and sections keep their actual timeline width when zoomed out. zoom in
 to resize very short clips when their edge handles no longer fit.
@@ -511,6 +652,13 @@ folder stays in its original location; bookmarking keeps the current browser
 source and search. dragging the same folder again preserves its existing place
 and icon. press **escape** or drop outside places to cancel.
 
+adding a sample folder starts a background scan; the samples count shows its
+progress. the scan records each sample's size and a content fingerprint so hex
+can later find moved files. it only reads your samples; it never moves or
+changes them. if a place's folder has been moved or renamed, the place shows
+**missing**. right-click it and choose **relocate…** to point it at the new
+folder; its position and icon are kept and its samples reappear after the scan.
+
 the preview controls audition a selected audio file. the waveform can be used to
 choose a preview position. stop preview playback before judging the main project's
 output. auditioning a file and inserting it into the project are separate actions.
@@ -525,10 +673,19 @@ do not assume double-clicking a sample inserts it into a track.
 and channel information; check duration, placement and playback after importing.
 keep source recordings available with the project.
 
+when a new import has a different sample rate from the project, hex uses the
+current conversion to prepare playback. a saved import keeps its original
+conversion version when the project is reopened.
+
 as projects grow, ordinary audio clips can play directly from their original
 files while retaining their complete duration. single-file and bulk imports keep
 this behavior; a bulk drop remains one undo step. keep those files available for
 playback, save/reopen and export.
+
+the **disk** indicator lights when streamed data arrives too late for playback. hover
+over it to see how many playback callbacks were affected on the current output.
+it clears three seconds after the last reported increase. short fades ease the
+transition into and out of missing audio.
 
 on an arrangement audio clip, hover over the top edge between the trim corners
 and drag vertically to adjust clip gain. drag down to reduce or up to increase;
@@ -659,6 +816,16 @@ click a device header to focus its card, then press **0** to toggle its bypass.
 this uses the same state as the header bypass control and supports undo/redo.
 while a parameter field or browser search has focus, **0** remains text input.
 
+during playback, track gain, eq edits and supported device bypass changes apply
+to the running audio. supported latency-bearing effects keep the dry signal
+aligned when you bypass them. reverb and delay tails may shorten or stop.
+
+if a sounding instrument has a long release, hex can keep that release through
+supported receiver paths while you switch the instrument off and back on.
+some processed, routed or compensated paths require playback to stop first.
+if hex reports that source history cannot transfer live, the previous audio
+continues. stop playback before changing bypass on that path.
+
 reverb combines resonant input filters (20 hz–20 khz, q 0.1–10), early reflections and a diffusion network.
 use predelay to separate the room from the source; size, decay, diffusion and
 scale shape its space. spin moves the early reflections, while chorus modulates
@@ -705,14 +872,30 @@ distortion, **tone** adjusts its brightness, and **dynamics** restores more of t
 input's level changes as it increases. **dry/wet** blends the original signal with
 the processed sound. the effect is available on track, return and main chains.
 
+rattle is a one-knob drive. its compact panel pairs a percent drive dial with
+eleven orange diamonds. the diamonds tighten as drive rises and follow its
+automation while the lane reads. at **drive** 0 it passes audio unchanged; raising
+**drive** blends in a progressively harder, grittier and noisier saturation whose
+level is compensated for typical programme, so it gets dirtier rather than much
+louder. rattle processes at twice the sample rate and reports 11 samples of
+latency, which hex compensates. drive changes glide over about 20 ms and can be
+automated. bypass passes audio unchanged while keeping its history warm.
+
 in the eq graph, single-click empty space to create a band. the left and right
 edges create low-cut and high-cut bands; the bottom interior creates a notch;
 other empty space creates a bell. at the bottom corners, the edge cut takes
 priority. a small curve beside the crosshair shows the shape before pressing.
-keep the button held to position the new band and hear its effect during playback.
-release to keep the band as one undoable edit. vertical movement changes q for a
-cut or notch, or the gain of a bell. existing
-nodes keep their own selection and drag targets. press **escape** to cancel.
+hold **option** while pressing empty space to keep the button held, position the
+new band and hear its effect during playback; release to keep the band as one
+undoable edit. vertical movement changes q for a cut or notch, or the gain of a
+bell. existing nodes keep their own selection and drag targets. press
+**escape** to cancel.
+
+drag across empty space in the eq graph to select every node inside the
+rectangle; **shift** adds to the selection and **command** toggles nodes.
+dragging a selected node moves the whole selection, keeping each node's
+spacing, and **backspace** or **remove** deletes every selected node with its
+automation. one undo restores either edit.
 
 each visible eq has its own live spectrum, including eqs on return and main
 tracks. selecting another device keeps these spectra running. use **spectrum**
@@ -734,6 +917,14 @@ does not promise a complete third-party plugin-hosting workflow.
 
 # audio output and settings
 
+choose **view → track latency indicators** and hover **lat** in a track header
+to see delay in samples and milliseconds. local devices shows the longest
+processing path within that track. post-fader arrival includes upstream routes.
+default route compensation is the alignment added on the way to the parent
+group or main. sends can have separate alignment. main output arrival includes
+main devices. a pending or unavailable reading has its own marker. these figures
+describe the applied audio graph and exclude interface and round-trip delay.
+
 hex opens the system's default output device with that device's default
 configuration. **settings…** is available from the hex menu or **command+,**;
 it does not currently provide an audio device, sample-rate or buffer-size chooser.
@@ -751,11 +942,16 @@ or the physical device is working correctly.
 
 select the intended time range and press **command+shift+e**. the **export output**
 dialog offers **main mix**, **selected tracks**, **shared returns**, and
-**selected stems and shared returns**. select the tracks needed for a stem export
-and choose a new destination in the native file dialog.
+**selected stems and shared returns**. the **export format** dialog then offers
+**16-bit pcm**, **24-bit pcm** and **32-bit float**. select the tracks needed for
+a stem export and choose a new destination in the native file dialog.
 
 exports are wav files. main mix produces the combined output; the stem choices
-keep the selected outputs separate. check the range and output choice before
+keep the selected outputs separate, each in the chosen format. 16-bit files are
+dithered and 24-bit files are rounded; both clamp samples above full scale, and
+the status line reports how many samples clipped. 32-bit float files keep levels
+above full scale and never clip. the format is chosen for each export and is not
+saved in the project. check the range and output choice before
 exporting, then audition the resulting files. offline rendering can be available
 even when live audio output is unavailable.
 
@@ -803,7 +999,9 @@ the complete edit.
 | selection fades / browser search outside audio selection | command+f |
 | compact track overview (computer midi keyboard off) | h |
 | settings | command+, |
-| bounce selected material to a new track | command+b |
+| bounce selected material to a new track | b |
+| bounce to a new track and deactivate the sources | command+b |
+| drop a bounce of dragged clips | hold b while releasing a clip drag |
 | arrangement automation view | a / toolbar a control |
 | contextual activation | c / 0 |
 | export | command+shift+e |
@@ -849,6 +1047,28 @@ audio device, the steps that reproduce the problem, and what you expected to
 happen. include the displayed error and whether the issue survives a normal quit
 and reopen. keep original projects and media; share only material you have the
 right to share.
+
+## inspect diagnostic logs
+
+select the log button beside the version to open the diagnostic log window.
+the current session opens first. use previous session and next session to browse
+retained sessions, and refresh to read records written since the last refresh.
+the time column is in utc.
+
+use the category and time controls and the search field to narrow the visible
+records. the time window is measured back from the latest event on the displayed
+page; search for `level=error` to find error records. older unclassified records
+appear under uncategorised. in a large session, use older lines and newer lines
+to move between pages. filters apply to the displayed page, and live history can
+shift between page reads.
+
+click a row to inspect it below the list. unusually long rows are clipped in
+the detail view. to share a section, click its first row, shift-click its last
+row, and select copy selection. the copied excerpt includes the original rows,
+available session context and warnings, and is limited to 1 mib. the viewer
+reports missing, truncated or unreadable data; oversized legacy segments may
+be clipped. logs and excerpts can contain paths or other private information,
+so review them before sharing.
 
 `TESTING.md` is the finite checklist for this specific package. record actual
 results against that version. passing automated checks does not replace native

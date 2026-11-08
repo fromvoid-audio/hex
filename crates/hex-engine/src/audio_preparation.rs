@@ -336,6 +336,8 @@ struct SourceSlot {
     owner: Option<OwnedAudioSource>,
     // Fresh constructor root stays here after its distinct graph alias moves.
     prepared_origin: Option<OwnedAudioSource>,
+    sparse_frames: Option<usize>,
+    sparse: Option<std::sync::Arc<crate::SparseFrameMap>>,
     transformed: bool,
     disposal: Disposal,
     #[cfg(test)]
@@ -778,6 +780,16 @@ impl AudioPreparationCustody {
         } = stages;
         let mut slots = Vec::new();
         let mut capacity = AudioArrangementCapacity::default();
+        let foreign_bytes = match crate::foreign_automation::candidate::quote(project) {
+            Ok((bytes, _)) => bytes,
+            Err(reason) => return Err(Box::new(AudioArrangementStartRefusal { reason, capacity })),
+        };
+        if foreign_bytes != 0 && (!assemble_revision || effects.is_none()) {
+            return Err(Box::new(AudioArrangementStartRefusal {
+                reason: AudioStorageError::UnsupportedGraph,
+                capacity,
+            }));
+        }
         let result = self.preflight(
             project,
             generation,
@@ -792,6 +804,20 @@ impl AudioPreparationCustody {
                 return Err(Box::new(AudioArrangementStartRefusal { reason, capacity }));
             }
         };
+        if capacity
+            .retained_stage_bytes
+            .checked_add(foreign_bytes)
+            .is_none_or(|bytes| bytes > inputs.reservation.max_prepared_data_bytes)
+            || capacity
+                .construction_peak_bytes
+                .checked_add(foreign_bytes)
+                .is_none_or(|bytes| bytes > inputs.reservation.max_construction_data_bytes)
+        {
+            return Err(Box::new(AudioArrangementStartRefusal {
+                reason: AudioStorageError::ReservationExceeded,
+                capacity,
+            }));
+        }
         if native_input.is_some() && !assemble_revision {
             return Err(Box::new(AudioArrangementStartRefusal {
                 reason: AudioStorageError::UnsupportedGraph,
@@ -901,7 +927,14 @@ impl AudioPreparationCustody {
                         .chain(project.return_tracks().iter().map(|r| r.devices()))
                         .chain(std::iter::once(project.main_devices()))
                         .try_fold(0usize, |n, devices| {
-                            n.checked_add(devices.len().checked_mul(4)?)
+                            n.checked_add(devices.len().checked_mul(4)?)?.checked_add(
+                                devices
+                                    .iter()
+                                    .filter(|device| {
+                                        crate::foreign_automation::candidate::has_authored(device)
+                                    })
+                                    .count(),
+                            )
                         })
                         .ok_or(AudioStorageError::Overflow)?
                 } else {
@@ -1422,17 +1455,16 @@ impl AudioPreparationCustody {
         resources: ConstructorResources<'_>,
     ) -> Result<u64, AudioStorageError> {
         let effects = resources.effects;
-        if let Some(input) = resources.native_input {
-            if crate::device_automation::native_parameter_input_target(
+        if let Some(input) = resources.native_input
+            && crate::device_automation::native_parameter_input_target(
                 project,
                 input.device(),
                 input.target(),
             )
             .map_err(|_| AudioStorageError::UnsupportedGraph)?
                 != input
-            {
-                return Err(AudioStorageError::SourceMismatch);
-            }
+        {
+            return Err(AudioStorageError::SourceMismatch);
         }
 
         let allow_sampler = resources.sampler.is_some();
@@ -1617,15 +1649,14 @@ impl AudioPreparationCustody {
                 {
                     return Err(AudioStorageError::SourceMismatch);
                 }
-                if let SourceKind::Streamed(meta) = &owner.kind {
-                    if meta.key().generation() != generation
+                if let SourceKind::Streamed(meta) = &owner.kind
+                    && (meta.key().generation() != generation
                         || meta.key().asset() != asset.id()
                         || meta.source_rate() != asset.source_sample_rate()
                         || meta.source_frames() != asset.source_frames()
-                        || meta.conversion_version() != asset.conversion_version()
-                    {
-                        return Err(AudioStorageError::SourceMismatch);
-                    }
+                        || meta.conversion_version() != asset.conversion_version())
+                {
+                    return Err(AudioStorageError::SourceMismatch);
                 }
                 let transformed = clip.audio_edit().is_some();
                 transformed::validate_sources(project, inputs, clip)?;
@@ -1679,6 +1710,10 @@ impl AudioPreparationCustody {
                     },
                     owner: None,
                     prepared_origin: None,
+                    sparse_frames: crate::audio_transform::sparse_group_plan(clip)
+                        .map_err(|_| AudioStorageError::UnsupportedGraph)?
+                        .map(|(_, frames, _)| frames),
+                    sparse: None,
                     transformed,
                     disposal: Disposal::Unstarted,
                     #[cfg(test)]
@@ -1769,6 +1804,7 @@ impl AudioPreparationCustody {
             let result = catch_unwind(AssertUnwindSafe(|| {
                 drop(self.slots[index].owner.take());
                 drop(self.slots[index].prepared_origin.take());
+                drop(self.slots[index].sparse.take());
                 #[cfg(test)]
                 drop(self.slots[index].probe.take());
             }));

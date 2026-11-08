@@ -1,8 +1,6 @@
 //! Optimized headless Vector runtime-pair profile. This is not physical callback,
 //! listening, allocation instrumentation, or numerical Live compatibility proof.
-use hex_devices::operator_state::{
-    OPERATOR_METADATA, OPERATOR_STATE_VERSION, OPERATOR_TYPE_ID, parameter,
-};
+use hex_devices::operator_state::{OPERATOR_METADATA, OPERATOR_STATE_VERSION, parameter};
 use hex_lattice::{
     NativeInstrumentDefinition, NativeInstrumentEvent, NativeInstrumentRuntimeLimits,
     NativeInstrumentRuntimePair,
@@ -21,7 +19,46 @@ const FRAMES: usize = 128;
 const WARMUPS: usize = 100;
 const MEASURED: usize = 2000;
 const TRIALS: usize = 5;
-const GLOBAL_SUFFIX_BYTES: usize = 112;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_variants_use_current_codec_and_explicit_processing_modes() {
+        for variant in [Variant::Legacy16, Variant::Operator16, Variant::Operator32] {
+            let state = state(variant).unwrap();
+            assert_eq!(state.state_version(), OPERATOR_STATE_VERSION);
+            assert_eq!(
+                OPERATOR_METADATA
+                    .read_parameter(&state, parameter::GLOBAL_MODE)
+                    .unwrap(),
+                ParameterValue::Choice(u32::from(!matches!(variant, Variant::Legacy16)))
+            );
+            let factory = OPERATOR_METADATA
+                .prepare_instrument(
+                    &state,
+                    &hex_lattice::DevicePreparationContext {
+                        sample_rate: RATE,
+                        tuning: &hex_lattice::TuningTable::default(),
+                        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                    },
+                )
+                .unwrap()
+                .prepare_mutable_runtime()
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                factory.max_active_occurrences(),
+                if matches!(variant, Variant::Legacy16) {
+                    16
+                } else {
+                    64
+                }
+            );
+        }
+    }
+}
 #[derive(Clone, Copy)]
 enum Variant {
     Legacy16,
@@ -53,11 +90,6 @@ impl Variant {
     }
 }
 fn state(variant: Variant) -> Result<NativeDeviceState, Box<dyn Error>> {
-    if OPERATOR_STATE_VERSION != 15 {
-        return Err(
-            "profile's exact v14-prefix migration fixture requires current state v15".into(),
-        );
-    }
     let mut state = OPERATOR_METADATA.default_state()?;
     let mut patches = vec![
         (parameter::ALGORITHM, ParameterValue::Choice(1)),
@@ -88,17 +120,12 @@ fn state(variant: Variant) -> Result<NativeDeviceState, Box<dyn Error>> {
     for (id, value) in patches {
         state = OPERATOR_METADATA.patch_parameter(&state, id, value)?;
     }
-    if matches!(variant, Variant::Legacy16) {
-        let end = state
-            .payload()
-            .len()
-            .checked_sub(GLOBAL_SUFFIX_BYTES)
-            .ok_or("state is shorter than the known v15 suffix")?;
-        state = NativeDeviceState::new(OPERATOR_TYPE_ID, 14, state.payload()[..end].to_vec())?;
-        // Validate the exact historical prefix through the normal metadata codec.
-        let _ = OPERATOR_METADATA.migrate_state(&state)?;
-    }
-    Ok(state)
+    // Other global parameter edits opt in to global processing; set the mode last.
+    Ok(OPERATOR_METADATA.patch_parameter(
+        &state,
+        parameter::GLOBAL_MODE,
+        ParameterValue::Choice(u32::from(!matches!(variant, Variant::Legacy16))),
+    )?)
 }
 fn percentile(samples: &[Duration], percent: usize) -> Result<f64, Box<dyn Error>> {
     let index = (samples.len() * percent).div_ceil(100).saturating_sub(1);
@@ -253,7 +280,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .nth(2)
         .unwrap_or_else(|| "artifacts/profiles/vector-globals".to_owned());
     println!(
-        "vector_globals_profile os={} arch={} hardware={} commit={} source_sha256={} rate={RATE} frames={FRAMES} warmups={WARMUPS} measured={MEASURED} trials={TRIALS} optimization=release percentiles=nearest_rank outlier_removal=none",
+        "vector_globals_profile codec_version={OPERATOR_STATE_VERSION} state_fixture=current_codec_with_explicit_mode os={} arch={} hardware={} commit={} source_sha256={} rate={RATE} frames={FRAMES} warmups={WARMUPS} measured={MEASURED} trials={TRIALS} optimization=release percentiles=nearest_rank outlier_removal=none",
         std::env::consts::OS,
         std::env::consts::ARCH,
         option_env!("HEX_PROFILE_HARDWARE").unwrap_or("unrecorded"),

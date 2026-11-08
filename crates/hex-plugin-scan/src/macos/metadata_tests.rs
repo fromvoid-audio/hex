@@ -5,6 +5,9 @@ fn text(bytes: &mut Vec<u8>, value: &[u8]) {
     bytes.extend_from_slice(value);
 }
 fn packet(marker: u8, categories: &[u8]) -> Vec<u8> {
+    packet_with_classes(marker, categories, &[b"Audio Module Class"])
+}
+fn packet_with_classes(marker: u8, categories: &[u8], classes: &[&[u8]]) -> Vec<u8> {
     let mut body = vec![2, 0];
     body.extend_from_slice(&1_u64.to_le_bytes());
     for value in [SDK, PUBLIC_SDK, "darwin-arm64"] {
@@ -14,16 +17,18 @@ fn packet(marker: u8, categories: &[u8]) -> Vec<u8> {
     for value in ["factory vendor", "", ""] {
         text(&mut body, value.as_bytes());
     }
-    body.extend_from_slice(&1_u32.to_le_bytes());
-    body.extend_from_slice(&[33; 16]);
-    body.extend_from_slice(&1_i32.to_le_bytes());
-    text(&mut body, b"Audio Module Class");
-    text(&mut body, b"original class");
-    body.push(marker);
-    if marker == 1 {
-        body.extend_from_slice(&0x8000_0000_u32.to_le_bytes());
-        for value in [categories, b"class vendor", b"1.2.3", b"VST 3.8"] {
-            text(&mut body, value);
+    body.extend_from_slice(&(classes.len() as u32).to_le_bytes());
+    for class in classes {
+        body.extend_from_slice(&[33; 16]);
+        body.extend_from_slice(&1_i32.to_le_bytes());
+        text(&mut body, class);
+        text(&mut body, b"original class");
+        body.push(marker);
+        if marker == 1 {
+            body.extend_from_slice(&0x8000_0000_u32.to_le_bytes());
+            for value in [categories, b"class vendor", b"1.2.3", b"VST 3.8"] {
+                text(&mut body, value);
+            }
         }
     }
     let mut bytes = b"HVSCAN01".to_vec();
@@ -58,4 +63,31 @@ fn optional_metadata_preserves_bytes_and_refuses_invalid_extension_frames() {
     obsolete[12] = 1;
     assert!(decode_packet_for_platform(&obsolete, 1, "darwin-arm64").is_err());
     assert!(decode_packet_for_platform(&good, 1, "linux-x86_64").is_err());
+}
+
+#[test]
+fn compatibility_service_does_not_claim_the_processor_identity() {
+    let processor = b"Audio Module Class".as_slice();
+    let compatibility = b"Plugin Compatibility Class".as_slice();
+    for classes in [[processor, compatibility], [compatibility, processor]] {
+        let bytes = packet_with_classes(1, b"Fx|Distortion", &classes);
+        let discovery = decode_packet_for_platform(&bytes, 1, "darwin-arm64").unwrap();
+        assert_eq!(discovery.classes.len(), 1);
+        assert_eq!(discovery.classes[0].cid, [33; 16]);
+        assert_eq!(discovery.classes[0].category, "Audio Module Class");
+        assert_eq!(
+            discovery.classes[0].subcategories.as_deref(),
+            Some("Fx|Distortion")
+        );
+    }
+    for classes in [
+        [processor, processor],
+        [processor, b"Component Controller Class"],
+    ] {
+        let bytes = packet_with_classes(1, b"", &classes);
+        assert_eq!(
+            decode_packet_for_platform(&bytes, 1, "darwin-arm64").unwrap_err(),
+            "invalid or duplicate class identity"
+        );
+    }
 }

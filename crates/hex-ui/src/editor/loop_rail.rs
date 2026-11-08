@@ -17,6 +17,7 @@ pub(super) struct PendingLoop {
     remaining: Option<usize>,
     // Selection intent for automatic focus after a successful section-loop ACK.
     focus_intent: Option<u64>,
+    start_intent: Option<u64>,
 }
 
 const EDGE_HIT_PIXELS: f32 = 6.0;
@@ -70,6 +71,7 @@ impl EditorView {
         if self.mode != EditorMode::Arrangement
             || self.edit_pending()
             || self.context_menu.is_some()
+            || super::device_panel::picker_is_open(self)
             || self.theme_settings.open
             || self.opening_project
             || self.close_prompt_open
@@ -169,6 +171,7 @@ impl EditorView {
             || modifiers.alt
             || modifiers.control
             || self.context_menu.is_some()
+            || super::device_panel::picker_is_open(self)
             || self.opening_project
             || self.close_prompt_open
             || !x.is_finite()

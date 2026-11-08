@@ -157,6 +157,34 @@ fn ordinary_streamed_actions_deliver_split_client_outcomes() {
     data.owner_mut()
         .unwrap()
         .run(|callback, _| assert!(callback.streamed_transport_mode()));
+    let track = project.tracks()[0].id();
+    let mut take = client
+        .start_sample_recording(7, &[hex_engine::OutputCaptureId::Track(track)], true)
+        .unwrap();
+    assert!(take.ready());
+    let output = measured_block(&mut data);
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.finish_sample_recording(true));
+    client.stop_sample_recording();
+    measured_block(&mut data);
+    let mut seen = false;
+    assert_eq!(
+        take.drain(|frames, _, pcm| {
+            assert!(!seen);
+            assert!(output.iter().flatten().any(|sample| *sample != 0.0));
+            for layer in 0..2 {
+                assert_eq!(
+                    crate::sample_recording::Reader::source_frames(pcm, frames, layer),
+                    Some(&output[..])
+                );
+            }
+            seen = true;
+        }),
+        Some(crate::sample_recording::End::Stopped)
+    );
+    assert!(seen);
+    client.reclaim_sample_recording();
     assert!(
         !client
             .status()
@@ -320,6 +348,7 @@ fn ordinary_publication_reports_changed_source_after_catalog_admission() {
         editor_revision: 3,
     };
     control.status.stream_source_changed.store(true, Release);
+    control.status.stream_read_failed.store(true, Release);
     let donor_revision = control
         .publish_with_admission_and_source_on_control(
             donor,
@@ -335,6 +364,7 @@ fn ordinary_publication_reports_changed_source_after_catalog_admission() {
         donor_revision
     );
     assert!(!control.status.stream_source_changed.load(Acquire));
+    assert!(!control.status.take_stream_read_failure());
     let domain = control
         .register_audio_candidate_domain_with_readiness(
             stream_fixture::pair(definition),
@@ -1781,11 +1811,23 @@ fn prepared_audio_domain_gate(retire_while_held: bool) {
     measured_render(&mut data, &mut output);
     assert!(control.status.stream_buffering.load(Acquire));
     assert_eq!(output, [[0.0; 2]; 256]);
+    // The held page starved audible playback: the published count rises (#4074).
+    let starved = control.status.stream_starved_callbacks.load(Relaxed);
+    assert!(starved > 0, "mid-play page hold was not counted");
+    measured_render(&mut data, &mut output);
+    assert!(control.status.stream_starved_callbacks.load(Relaxed) > starved);
     if retire_while_held {
         control.stop();
         measured_render(&mut data, &mut output);
         assert!(!control.status.playing.load(Acquire));
         assert_eq!(output, [[0.0; 2]; 256]);
+        // Stopped holds are not audible starvation.
+        let stopped = control.status.stream_starved_callbacks.load(Relaxed);
+        measured_render(&mut data, &mut output);
+        assert_eq!(
+            control.status.stream_starved_callbacks.load(Relaxed),
+            stopped
+        );
     } else {
         release.send(()).unwrap();
         loop {

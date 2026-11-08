@@ -156,9 +156,6 @@ impl RuntimeInputs {
                 {
                     "computer keyboard track has no active instrument"
                 }
-                Some(_) if !playback.computer_keyboard_latency_supported_on_control() => {
-                    "computer keyboard monitoring is unavailable with this latency"
-                }
                 _ => "computer keyboard input could not bind to the current audio",
             },
             RequiredInput::Audition => "tuning audition input was cancelled",
@@ -174,8 +171,7 @@ impl RuntimeInputs {
                 && project
                     .track(*track)
                     .and_then(hex_project::Track::instrument)
-                    .is_some_and(|device| !device.bypassed())
-                && playback.computer_keyboard_latency_supported_on_control();
+                    .is_some_and(|device| !device.bypassed());
             if valid {
                 playback.prepare_computer_keyboard(project, *track, Arc::clone(input))?;
             } else {

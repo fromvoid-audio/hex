@@ -1,7 +1,7 @@
 //! Header destinations capture the painted TrackId, independent of
 //! device-panel selection. Existing worker stamps and prepare-before-commit own
-//! insertion/history. Browser effects append; browser instruments require an
-//! empty chain. Option-drag copies append through the canonical clipboard edit.
+//! insertion/history. Browser effects append; browser instruments replace the
+//! existing instrument or precede effects. Option-drag copies use clipboard edits.
 use super::{
     EditorView,
     drag::{NativeDeviceDrag, NativeDeviceDragSource},
@@ -37,6 +37,36 @@ impl EditorView {
         {
             return Err("device drop canceled · project or source changed");
         }
+        let NativeDeviceDragSource::Browser { class, type_id } = drag.source else {
+            self.check_device_append_target(track, cx)?;
+            if copy {
+                return self.duplicate_device_drag_request(
+                    drag,
+                    hex_project::DeviceChainOwner::Track(track),
+                    None,
+                );
+            }
+            return Err("hold option to copy devices onto a track");
+        };
+        if class != NativeDeviceClass::Instrument {
+            return self.browser_device_append_request(track, class, type_id, cx);
+        }
+        let target = self.check_device_append_target(track, cx)?;
+        Ok(Request::DropNativeDevice {
+            project_generation: generation,
+            revision: drag.revision,
+            source: NativeDeviceDropSource::Browser { class, type_id },
+            track,
+            before: None,
+            replace: target.instrument().map(hex_project::Device::id),
+        })
+    }
+
+    fn check_device_append_target(
+        &self,
+        track: TrackId,
+        cx: &App,
+    ) -> Result<&hex_project::Track, &'static str> {
         if self.save_dialog_open
             || self.export_dialog_open
             || self.export_pending
@@ -57,16 +87,17 @@ impl EditorView {
             .as_ref()
             .and_then(|state| state.project.track(track))
             .ok_or("device drop target is no longer available")?;
-        let NativeDeviceDragSource::Browser { class, type_id } = drag.source else {
-            if copy {
-                return self.duplicate_device_drag_request(
-                    drag,
-                    hex_project::DeviceChainOwner::Track(track),
-                    None,
-                );
-            }
-            return Err("hold option to copy devices onto a track");
-        };
+        Ok(target)
+    }
+
+    pub(super) fn browser_device_append_request(
+        &self,
+        track: TrackId,
+        class: NativeDeviceClass,
+        type_id: hex_lattice_contract::DeviceTypeId,
+        cx: &App,
+    ) -> Result<Request, &'static str> {
+        let target = self.check_device_append_target(track, cx)?;
         if class == NativeDeviceClass::Instrument {
             if target.instrument().is_some() {
                 return Err(
@@ -77,9 +108,13 @@ impl EditorView {
                 return Err("header instrument drop requires an empty device chain");
             }
         }
+        let state = self
+            .state
+            .as_ref()
+            .ok_or("device drop target is no longer available")?;
         Ok(Request::DropNativeDevice {
-            project_generation: drag.project_generation,
-            revision: drag.revision,
+            project_generation: self.project_generation,
+            revision: state.revision,
             source: NativeDeviceDropSource::Browser { class, type_id },
             track,
             before: None,

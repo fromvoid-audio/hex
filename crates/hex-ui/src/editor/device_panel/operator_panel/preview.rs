@@ -1,8 +1,8 @@
-//! View-only Operator controls for sections without native DSP contracts yet.
+//! Vector working sections and owner-scoped transient view state.
 use super::super::{EditorView, control_style};
-use crate::diagnostics::ActionTraceContext as _;
 use crate::theme;
 use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px, rgb};
+use hex_lattice_contract::ParameterValue;
 use hex_widgets::{
     NumericControl, NumericControlConfig, NumericControlEvent, NumericControlKind,
     NumericControlPresentation, NumericScale, NumericSpec, Toggle, ToggleAppearance, ToggleChanged,
@@ -25,38 +25,16 @@ pub(in crate::editor::device_panel) enum Field {
     Time,
     Tone,
     Volume,
-    FineA,
-    FineB,
-    FineC,
-    FineD,
 }
 
 impl Field {
-    pub(super) const fn operator(self) -> Option<usize> {
-        match self {
-            Self::FineA => Some(0),
-            Self::FineB => Some(1),
-            Self::FineC => Some(2),
-            Self::FineD => Some(3),
-            _ => None,
-        }
-    }
-
-    pub(super) const fn is_global(self) -> bool {
-        matches!(self, Self::Time | Self::Tone | Self::Volume)
-    }
-
-    pub(in crate::editor::device_panel) const ALL: [Self; 10] = [
+    pub(in crate::editor::device_panel) const ALL: [Self; 6] = [
         Self::PitchEnvelope,
         Self::Spread,
         Self::Transpose,
         Self::Time,
         Self::Tone,
         Self::Volume,
-        Self::FineA,
-        Self::FineB,
-        Self::FineC,
-        Self::FineD,
     ];
 
     const fn spec(self) -> FieldSpec {
@@ -67,9 +45,6 @@ impl Field {
             Self::Time => FieldSpec::new("time", 0.0, 100.0, 23.0, "%", 0, false),
             Self::Tone => FieldSpec::new("tone", 0.0, 100.0, 100.0, "%", 0, false),
             Self::Volume => FieldSpec::new("volume", -60.0, 6.0, -16.0, "db", 0, false),
-            Self::FineA | Self::FineB | Self::FineC | Self::FineD => {
-                FieldSpec::new("fine", -100.0, 100.0, 0.0, "", 0, false)
-            }
         }
     }
 }
@@ -131,21 +106,27 @@ pub(in crate::editor::device_panel) struct TogglePreview {
 }
 
 pub(in crate::editor::device_panel) struct State {
+    pub(super) filter_response: Option<super::filter_response::Control>,
     pub(in crate::editor::device_panel) controls: HashMap<Field, NumericPreview>,
     pub(in crate::editor::device_panel) toggles: HashMap<Switch, TogglePreview>,
     pub(in crate::editor::device_panel) routing_focus: Option<gpui::FocusHandle>,
-    pub(in crate::editor::device_panel) values: [f64; 10],
+    pub(in crate::editor::device_panel) routing_popup: Option<usize>,
+    pub(super) routing_blur: Option<gpui::Subscription>,
+    pub(in crate::editor::device_panel) values: [f64; 6],
     pub(in crate::editor::device_panel) enabled: [bool; 1],
 }
 
 impl Default for State {
     fn default() -> Self {
         Self {
+            filter_response: None,
             controls: HashMap::new(),
             toggles: HashMap::new(),
             values: Field::ALL.map(|field| field.spec().default),
             enabled: [true; 1],
             routing_focus: None,
+            routing_popup: None,
+            routing_blur: None,
         }
     }
 }
@@ -172,6 +153,7 @@ pub(super) fn render(
             "pitch env",
             Some(Switch::Pitch),
             &[Field::PitchEnvelope, Field::Spread, Field::Transpose],
+            None,
         ),
         row(
             view,
@@ -180,7 +162,13 @@ pub(super) fn render(
             "global",
             None,
             &[Field::Time, Field::Tone, Field::Volume],
+            device_view
+                .parameters
+                .iter()
+                .find(|parameter| parameter.descriptor.id == super::id(600))
+                .map(|parameter| parameter.value),
         ),
+        super::global::voices(view, cx, device, device_view),
     ];
     let mut content = hex_widgets::device_rail(super::super::device_layout_style())
         .w_full()
@@ -207,6 +195,7 @@ fn row(
     title: &'static str,
     switch: Option<Switch>,
     fields: &[Field],
+    routing: Option<ParameterValue>,
 ) -> Stateful<Div> {
     let owner = super::context::Owner::capture(view, device);
     let section = super::Section::Preview(title);
@@ -233,7 +222,8 @@ fn row(
     if let Some(switch) = switch {
         left = left.child(toggle(view, cx, device, switch));
     } else {
-        left = left.child(routing_link(view, cx, device));
+        let link = super::routing_picker::render(view, cx, device, routing);
+        left = left.child(link);
     }
     row = row.child(left);
     let mut dials = div()
@@ -247,87 +237,16 @@ fn row(
     }
     row = row.child(dials);
     if title == "global" {
-        row = row.capture_any_mouse_down(cx.listener(
-            move |view, event: &gpui::MouseDownEvent, _, cx| {
-                if event.button == gpui::MouseButton::Left
-                    && let Some(owner) = owner
-                {
+        row = row.on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(move |view, _, _, cx| {
+                if let Some(owner) = owner {
                     super::context::select_routing(view, cx, owner);
                 }
-            },
-        ));
-    }
-    row
-}
-
-fn routing_link(
-    view: &mut EditorView,
-    cx: &mut Context<EditorView>,
-    device: hex_project::DeviceId,
-) -> Stateful<Div> {
-    let owner = super::context::Owner::capture(view, device);
-    let focus = view
-        .device_panel
-        .operator_previews
-        .entry(device)
-        .or_default()
-        .routing_focus
-        .get_or_insert_with(|| cx.focus_handle().tab_index(0).tab_stop(true))
-        .clone();
-    let colors = (0..4).rev().filter_map(theme::oscillator_identity_color);
-    let mut icon = div()
-        .w(px(12.0))
-        .h(px(30.0))
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_between();
-    for (index, color) in colors.enumerate() {
-        icon = icon.child(
-            hex_widgets::device_identity_marker(color).id(ElementId::Name(
-                format!("operator-route-icon-{}-{index}", device.value()).into(),
-            )),
+            }),
         );
     }
-    hex_widgets::device_focus_target(super::super::device_layout_style())
-        .id(ElementId::Name(
-            format!("operator-preview-{}-route-link", device.value()).into(),
-        ))
-        .debug_selector(move || format!("operator-preview-{}-route-link", device.value()))
-        .track_focus(&focus)
-        .key_context("hex_operator_routing")
-        .tooltip(|_, cx| {
-            cx.new(|_| super::super::super::transport::MiniTooltip {
-                kind: crate::tooltips::Kind::control("routing and global context"),
-                description: theme::text("routing and global context · enter or space"),
-            })
-            .into()
-        })
-        .w(px(18.0))
-        .h(px(34.0))
-        .flex()
-        .items_center()
-        .cursor(gpui::CursorStyle::PointingHand)
-        .child(icon)
-        .on_click(cx.listener(move |view, _, window, cx| {
-            if owner.is_some_and(|owner| owner.is_current(view))
-                && super::finalize_controls(view, cx)
-            {
-                focus.focus(window);
-                view.device_panel
-                    .operator_pages
-                    .entry(device)
-                    .or_default()
-                    .page = super::OperatorPage::Routing;
-                cx.notify();
-            }
-        }))
-        .on_action(cx.trace(move |view, _: &super::ActivateRouting, _, cx| {
-            if let Some(owner) = owner {
-                super::context::select_routing(view, cx, owner);
-                cx.stop_propagation();
-            }
-        }))
+    row
 }
 
 /// Refuse Tab traversal before blur can leave an invalid view-only numeric draft.
@@ -414,13 +333,6 @@ pub(super) fn control(
                     if !current {
                         return;
                     }
-                    if event.phase == hex_widgets::NumericEventPhase::Begin {
-                        if let Some(operator) = field.operator() {
-                            super::context::select_oscillator(view, cx, owner, operator, &[]);
-                        } else if field.is_global() {
-                            super::context::select_routing(view, cx, owner);
-                        }
-                    }
                 }
                 if let Some(state) = view.device_panel.operator_previews.get_mut(&key.0) {
                     state.values[key.1 as usize] = event.value;
@@ -458,7 +370,6 @@ pub(super) fn control(
         control.set_tab_navigation(true, cx);
         let _ = control.set_external_value(value, cx);
     });
-    let owner = super::context::Owner::capture(view, device);
     div()
         .id(ElementId::Name(
             format!("operator-preview-{}-{}", device.value(), field as usize).into(),
@@ -468,16 +379,7 @@ pub(super) fn control(
         .h(px(ROW_HEIGHT))
         .flex_shrink_0()
         .child(control.entity.clone())
-        .on_mouse_down(
-            gpui::MouseButton::Left,
-            cx.listener(move |view, _, _, cx| {
-                if let Some(owner) = owner
-                    && let Some(operator) = field.operator()
-                {
-                    super::context::select_oscillator(view, cx, owner, operator, &[]);
-                }
-            }),
-        )
+        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
 }
 
 fn toggle(
@@ -605,6 +507,9 @@ pub(in crate::editor::device_panel) fn cancel_interactions(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
 ) {
+    for state in view.device_panel.operator_previews.values_mut() {
+        state.routing_popup = None;
+    }
     let controls: Vec<_> = view
         .device_panel
         .operator_previews
