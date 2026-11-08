@@ -25,6 +25,7 @@ pub(super) fn render(
     let rows = [
         super::lfo_summary(view, cx, device, device_view),
         super::filter_summary(view, cx, device, device_view),
+        super::oscillator_options::feedback(view, cx, device, device_view),
         routing_row(
             view,
             cx,

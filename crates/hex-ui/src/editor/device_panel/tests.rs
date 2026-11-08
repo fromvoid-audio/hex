@@ -39,6 +39,7 @@ mod operator_fine_ui_tests;
 mod operator_harmonic_ui_tests;
 mod operator_keytrack_ui_tests;
 mod operator_navigation_tests;
+mod operator_options_tests;
 mod operator_preview_navigation_tests;
 mod operator_routing_picker_tests;
 mod operator_selector_keys_ui_tests;
@@ -1442,6 +1443,7 @@ fn browser_instrument_dropped_on_instrument_card_replaces_in_place_and_retires_o
             operator_panel::OperatorPanelState {
                 selected_operator: 3,
                 page: operator_panel::OperatorPage::Routing,
+                ..Default::default()
             },
         );
         let parameter = operator_view.parameters[0];
@@ -1757,7 +1759,11 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     let envelope_graph = visual
         .debug_bounds("operator-envelope-graph")
         .expect("amp envelope is the default contextual view");
-    assert!(envelope_graph.size.width > px(220.0));
+    assert!(
+        envelope_graph.size.width >= px(180.0)
+            && envelope_graph.size.width
+                <= px(crate::device_composition::VECTOR_DETAIL_WIDTH + 30.0)
+    );
     assert!(
         envelope_graph.size.height >= px(80.0),
         "amp graph bounds: {:?}",
@@ -1784,7 +1790,7 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         .expect("right side control column");
     assert!(shell.origin.x + shell.size.width <= detail.origin.x);
     assert!(detail.origin.x + detail.size.width <= preview.origin.x);
-    for section in ["lfo", "filter", "global"] {
+    for section in ["lfo", "filter", "feedback", "global"] {
         let row = visual
             .debug_bounds(Box::leak(
                 format!("operator-preview-row-{}-{section}", instrument_id.value())
@@ -1916,7 +1922,11 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     let waveform_preview = visual
         .debug_bounds("operator-waveform-cycle")
         .expect("selected oscillator cycle preview");
-    assert!(waveform_preview.size.width > px(240.0));
+    assert!(
+        (px(200.0)..=px(crate::device_composition::VECTOR_DETAIL_WIDTH + 30.0))
+            .contains(&waveform_preview.size.width)
+    );
+    open_operator_options(&mut visual, instrument_id);
     assert_eq!(waveform_preview.size.height, px(86.0));
     let ratio = hex_lattice_contract::ParameterId::from_static(1);
     enter_typed_value(&mut visual, instrument_id, ratio, "invalid");
@@ -2657,6 +2667,7 @@ fn operator_shell_controls_preserve_edits_across_explicit_context_selection(
             operator_panel::OperatorPanelState {
                 selected_operator: 0,
                 page: operator_panel::OperatorPage::Routing,
+                ..Default::default()
             },
         );
         cx.notify();
@@ -2719,6 +2730,7 @@ fn operator_shell_controls_preserve_edits_across_explicit_context_selection(
                 operator_panel::OperatorPanelState {
                     selected_operator: selected,
                     page: operator_panel::OperatorPage::Oscillator,
+                    ..Default::default()
                 }
             );
         });
@@ -2736,6 +2748,7 @@ fn operator_shell_controls_preserve_edits_across_explicit_context_selection(
         assert!(!selector.is_open(), "context changes dismiss the old popup")
     });
 
+    open_operator_options(&mut visual, operator);
     let phase_a = hex_lattice_contract::ParameterId::from_static(3);
     enter_typed_value(&mut visual, operator, phase_a, "invalid");
     let d_level = visual
@@ -2840,6 +2853,7 @@ fn operator_shell_controls_preserve_edits_across_explicit_context_selection(
             operator_panel::OperatorPanelState {
                 selected_operator: 0,
                 page: operator_panel::OperatorPage::Routing,
+                ..Default::default()
             },
         );
         cx.notify();
@@ -2861,6 +2875,7 @@ fn operator_shell_controls_preserve_edits_across_explicit_context_selection(
             operator_panel::OperatorPanelState {
                 selected_operator: 0,
                 page: operator_panel::OperatorPage::Routing,
+                ..Default::default()
             },
             "numeric adjustment preserves the explicitly selected editor"
         );
@@ -3102,29 +3117,28 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
                     <= filter.origin.x + filter.size.width - px(4.0)
             );
         }
-        for (title, fields) in [("pitch env", vec![0, 1, 2]), ("global", vec![3, 4, 5])] {
-            let row = visual
-                .debug_bounds(Box::leak(
-                    format!("operator-preview-row-{}-{title}", instrument_id.value())
-                        .into_boxed_str(),
-                ))
-                .expect("preview row");
-            for field in fields {
-                let field = field as usize;
-                let control = visual
+        for field in 0..6 {
+            assert!(
+                visual
                     .debug_bounds(Box::leak(
                         format!("operator-preview-{}-{field}", instrument_id.value())
                             .into_boxed_str(),
                     ))
-                    .expect("preview control");
-                assert!(control.origin.x >= row.origin.x + px(4.0));
-                assert!(
-                    control.origin.x + control.size.width
-                        <= row.origin.x + row.size.width - px(4.0),
-                    "preview controls need an inset from the dark row edges"
-                );
-            }
+                    .is_none(),
+                "unsupported preview controls are not mounted"
+            );
         }
+        let feedback = visual
+            .debug_bounds(Box::leak(
+                format!("device-{}-parameter-81", instrument_id.value()).into_boxed_str(),
+            ))
+            .expect("real feedback slider");
+        let row = visual
+            .debug_bounds(Box::leak(
+                format!("operator-preview-row-{}-feedback", instrument_id.value()).into_boxed_str(),
+            ))
+            .unwrap();
+        assert!(feedback.left() >= row.left() && feedback.right() <= row.right());
     }
     // LFO uses canonical controls after PR154, with the same accepted row inset.
     let lfo_row = visual
@@ -3144,6 +3158,7 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
                 <= lfo_row.origin.x + lfo_row.size.width - px(4.0)
         );
     }
+    open_operator_options(&mut visual, instrument_id);
     // Fixed frequency and multiplier have distinct IDs from ratio controls.
     // A keyboard edit must follow the focused fixed-frequency field too.
     let at = operator_context_selection_tests::row_background(&mut visual, instrument_id, 1);
@@ -3162,6 +3177,7 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
             operator_panel::OperatorPanelState {
                 selected_operator: 0,
                 page: operator_panel::OperatorPage::Routing,
+                ..Default::default()
             },
         );
         cx.notify();
@@ -3175,6 +3191,7 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
             operator_panel::OperatorPanelState {
                 selected_operator: 0,
                 page: operator_panel::OperatorPage::Routing,
+                ..Default::default()
             }
         );
     });
@@ -4941,6 +4958,7 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
             super::operator_panel::OperatorPanelState {
                 selected_operator: 2,
                 page: super::operator_panel::OperatorPage::Routing,
+                ..Default::default()
             },
         );
         view.project_generation = view.project_generation.saturating_add(1);
@@ -4991,6 +5009,7 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
             super::operator_panel::OperatorPanelState {
                 selected_operator: 3,
                 page: super::operator_panel::OperatorPage::Envelope,
+                ..Default::default()
             },
         );
         let current = view.state.as_ref().expect("view state");
@@ -6195,4 +6214,19 @@ fn clicking_a_device_meter_clears_its_held_overload_line(cx: &mut TestAppContext
     meter.observe_output(&[[0.0, 2.0]]);
     repaint(&mut visual);
     assert_eq!(visual.rendered_background(right_peak), clipping);
+}
+
+/// Open the real optional oscillator controls for tests that edit those fields.
+fn open_operator_options(visual: &mut VisualTestContext, device: DeviceId) {
+    let panel = Box::leak(format!("operator-options-panel-{}", device.value()).into_boxed_str());
+    if visual.debug_bounds(panel).is_none() {
+        let button = visual
+            .debug_bounds(Box::leak(
+                format!("operator-options-{}", device.value()).into_boxed_str(),
+            ))
+            .expect("oscillator options toggle");
+        visual.simulate_click(button.center(), Modifiers::default());
+        visual.run_until_parked();
+    }
+    assert!(visual.debug_bounds(panel).is_some());
 }

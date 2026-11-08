@@ -1167,10 +1167,7 @@ fn render_track(
                 }
                 hex_project::TrackDeviceRef::Effect(device) => (*device, NativeDeviceClass::Effect),
             };
-            (
-                device.id(),
-                device_card_width(class, device.state().type_id()),
-            )
+            (device.id(), device_card_width(view, class, device))
         })
         .collect();
     view.device_panel.chain_window.prepare(&geometry);
@@ -1202,11 +1199,8 @@ fn render_track(
         };
         let mounted = chain_window::must_mount(view, device.id(), window, cx);
         if !mounted {
-            let card = chain_window::spacer(
-                device.id(),
-                device_card_width(class, device.state().type_id()),
-            )
-            .mr(px(DEVICE_CHAIN_PADDING));
+            let card = chain_window::spacer(device.id(), device_card_width(view, class, device))
+                .mr(px(DEVICE_CHAIN_PADDING));
             chain = chain.child(card);
             continue;
         }
@@ -1222,7 +1216,7 @@ fn render_track(
                 track: track_id,
                 device: device.id(),
                 class,
-                width: device_card_width(class, device.state().type_id()),
+                width: device_card_width(view, class, device),
                 next: device_ids.get(index + 1).copied(),
                 first: first_device,
                 visible_chain_bounds: visible_chain_bounds.clone(),
@@ -1349,10 +1343,21 @@ fn retire_transfer_previews(
     });
 }
 
-fn device_card_width(class: NativeDeviceClass, type_id: hex_lattice_contract::DeviceTypeId) -> f32 {
+fn device_card_width(
+    view: &EditorView,
+    class: NativeDeviceClass,
+    device: &hex_project::Device,
+) -> f32 {
+    let type_id = device.state().type_id();
     let frame_width = match (class, type_id.as_str().ok()) {
         (NativeDeviceClass::Instrument, Some("hex.instrument.operator")) => {
-            operator_panel::OPERATOR_FRAME_WIDTH
+            operator_panel::frame_width(
+                view.device_panel
+                    .operator_pages
+                    .get(&device.id())
+                    .copied()
+                    .unwrap_or_default(),
+            )
         }
         (NativeDeviceClass::Instrument, Some("hex.instrument.sampler")) => {
             crate::device_composition::SAMPLER_FRAME_WIDTH
@@ -2084,7 +2089,7 @@ fn render_effect(
         ),
     );
     let selector = format!("effect-device-{}", device_id.value());
-    let card_width = device_card_width(NativeDeviceClass::Effect, device.state().type_id());
+    let card_width = device_card_width(view, NativeDeviceClass::Effect, device);
     let rendered = div()
         .w(px(card_width - device_meter::WIDTH))
         .flex_shrink_0()
@@ -2814,7 +2819,7 @@ fn render_instrument(
         ),
     );
     let selector = format!("instrument-device-{}", device_id.value());
-    let card_width = device_card_width(NativeDeviceClass::Instrument, device.state().type_id());
+    let card_width = device_card_width(view, NativeDeviceClass::Instrument, device);
     let rendered = div()
         .w(px(card_width - device_meter::WIDTH))
         .flex_shrink_0()

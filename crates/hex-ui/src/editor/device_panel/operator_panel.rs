@@ -16,6 +16,7 @@ pub(super) mod envelope;
 pub(super) mod filter_response;
 mod global;
 pub(super) mod harmonics;
+pub(super) mod oscillator_options;
 pub(super) mod preview;
 pub(super) mod routing_picker;
 
@@ -23,6 +24,24 @@ pub(super) const OPERATOR_FRAME_WIDTH: f32 = crate::device_composition::VECTOR_W
 // Two compact control columns with a narrow power/identity column.
 const SHELL_WIDTH: f32 = crate::device_composition::VECTOR_SHELL_WIDTH;
 const FIELD_WIDTH: f32 = 46.0;
+
+pub(super) fn detail_width(page: OperatorPage) -> f32 {
+    if matches!(page, OperatorPage::Routing | OperatorPage::Lfo) {
+        crate::device_composition::VECTOR_ADVANCED_DETAIL_WIDTH
+    } else {
+        crate::device_composition::VECTOR_DETAIL_WIDTH
+    }
+}
+
+pub(super) fn frame_width(state: OperatorPanelState) -> f32 {
+    OPERATOR_FRAME_WIDTH + detail_width(state.page) - crate::device_composition::VECTOR_DETAIL_WIDTH
+        + if state.options_open {
+            crate::device_composition::VECTOR_OPTIONS_WIDTH
+        } else {
+            0.0
+        }
+}
+
 // Retain the implementation while these additional harmonic tools are dormant.
 const SHOW_HARMONIC_TOOLS: bool = false;
 
@@ -35,12 +54,15 @@ gpui::actions!(
         NextRouting,
         PreviousRouting,
         ActivateSection,
-        ActivatePower
+        ActivatePower,
+        ToggleOptions
     ]
 );
 
 pub(in crate::editor) fn bind_keys(cx: &mut gpui::App) {
     cx.bind_keys([
+        gpui::KeyBinding::new("enter", ToggleOptions, Some("hex_operator_options")),
+        gpui::KeyBinding::new("space", ToggleOptions, Some("hex_operator_options")),
         gpui::KeyBinding::new("enter", ActivateSection, Some("hex_operator_section")),
         gpui::KeyBinding::new("enter", ActivatePower, Some("hex_operator_power")),
         gpui::KeyBinding::new("enter", ActivateRouting, Some("hex_operator_routing")),
@@ -58,6 +80,7 @@ pub(in crate::editor) fn bind_keys(cx: &mut gpui::App) {
 pub(super) struct OperatorPanelState {
     pub(super) selected_operator: usize,
     pub(super) page: OperatorPage,
+    pub(super) options_open: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -75,6 +98,7 @@ pub(super) enum NavigationTarget {
     Oscillator(usize),
     Page(OperatorPage),
     Algorithm(u32),
+    Options,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -132,6 +156,21 @@ pub(super) fn render_body(
         ));
     }
 
+    let control = oscillator_options::button(view, cx, device, state.options_open);
+    shell = shell.child(control);
+    let mut left = div().flex().h_full().flex_shrink_0().child(shell);
+    if state.options_open {
+        let control = oscillator_options::render(
+            view,
+            cx,
+            device,
+            identity,
+            parameters,
+            state.selected_operator,
+        );
+        left = left.child(control);
+    }
+
     envelope::retire_hidden(
         view,
         cx,
@@ -168,7 +207,7 @@ pub(super) fn render_body(
     } else {
         page_tabs(view, cx, device, owner, state)
     };
-    let detail = crate::device_composition::tabbed_detail(detail, tabs)
+    let detail = crate::device_composition::tabbed_detail(detail, tabs, detail_width(state.page))
         .on_children_prepainted(context::section_listener(view, cx, device, Section::Detail))
         .id(ElementId::Name(
             format!("operator-detail-{}", device.value()).into(),
@@ -176,7 +215,7 @@ pub(super) fn render_body(
         .debug_selector(move || format!("operator-detail-{}", device.value()))
         .track_focus(&detail_focus);
     let preview = preview::render(view, cx, device, device_view);
-    crate::device_composition::three_pane(shell, detail, preview)
+    crate::device_composition::three_pane(left, detail, preview)
         .tab_group()
         .id(ElementId::Name(
             format!("operator-body-{}", device.value()).into(),
@@ -542,191 +581,12 @@ fn oscillator_envelope_detail(
     operator: usize,
     page: OperatorPage,
 ) -> Stateful<Div> {
-    let phase = compact_control_with_codec(
-        view,
-        cx,
-        device,
-        identity,
-        parameters,
-        id(operator as u32 * 3 + 3),
-        ControlPresentation::InlineValue,
-        Some("phase"),
-        Some(super::numeric_display::NumericDisplayCodec::Percent),
-    );
-    let companion_base = 357 + operator as u32 * 8;
-    let oscillator_velocity = compact_control_with_codec(
-        view,
-        cx,
-        device,
-        identity,
-        parameters,
-        id(companion_base + 1),
-        ControlPresentation::InlineValue,
-        Some("osc<vel"),
-        Some(super::numeric_display::NumericDisplayCodec::Percent),
-    );
-    let restart = compact_control(
-        view,
-        cx,
-        device,
-        identity,
-        parameters,
-        id(companion_base),
-        ControlPresentation::CompactButton,
-        Some("r"),
-    );
-    let quantize = compact_control(
-        view,
-        cx,
-        device,
-        identity,
-        parameters,
-        id(companion_base + 2),
-        ControlPresentation::CompactButton,
-        Some("q"),
-    );
-    let feedback = compact_control_with_codec(
-        view,
-        cx,
-        device,
-        identity,
-        parameters,
-        id(78 + operator as u32),
-        ControlPresentation::InlineValue,
-        Some("feedback"),
-        Some(super::numeric_display::NumericDisplayCodec::Percent),
-    );
-    let fixed_id = 62 + operator as u32 * 3;
-    let fixed = compact_control(
-        view,
-        cx,
-        device,
-        identity,
-        parameters,
-        id(fixed_id),
-        ControlPresentation::CompactButton,
-        Some(""),
-    );
-    let frequency = compact_control_with_codec(
-        view,
-        cx,
-        device,
-        identity,
-        parameters,
-        id(fixed_id + 1),
-        ControlPresentation::InlineValue,
-        None,
-        Some(super::numeric_display::NumericDisplayCodec::Hertz),
-    );
-    let multiplier = compact_control(
-        view,
-        cx,
-        device,
-        identity,
-        parameters,
-        id(fixed_id + 2),
-        ControlPresentation::InlineValue,
-        None,
-    );
     let (graph, _) = harmonics::graph(view, cx, device, operator, parameters);
     let harmonic_range_control = harmonics::ranges(view, cx, device, operator, parameters);
-    let harmonic_repeat_control = compact_control(
-        view,
-        cx,
-        device,
-        identity,
-        parameters,
-        id(353 + operator as u32),
-        ControlPresentation::CompactSelector,
-        Some("repeat"),
-    );
     let envelope_fields = envelope_fields(view, cx, device, identity, parameters, operator)
         .when(SHOW_HARMONIC_TOOLS, |fields| {
             fields.child(harmonics::tools(view, cx, device, operator))
         });
-    let oscillator_fields = div()
-        .id("operator-oscillator-fields")
-        .debug_selector(|| "operator-oscillator-fields".into())
-        .w(px(120.0))
-        .flex_shrink_0()
-        .flex()
-        .flex_col()
-        .child(
-            div()
-                .debug_selector(|| "operator-fixed-anchors".into())
-                .w_full()
-                .h(px(21.0))
-                .flex_shrink_0()
-                .flex()
-                .gap(px(2.0))
-                .child(detail_field(device, id(fixed_id), "fixed", 24.0, fixed))
-                .child(detail_field(
-                    device,
-                    id(fixed_id + 1),
-                    "base",
-                    46.0,
-                    frequency,
-                ))
-                .child(detail_field(
-                    device,
-                    id(fixed_id + 2),
-                    "multi",
-                    46.0,
-                    multiplier,
-                )),
-        )
-        .child(
-            div()
-                .w_full()
-                .h(px(21.0))
-                .flex_shrink_0()
-                .flex()
-                .gap(px(4.0))
-                .child(detail_field(
-                    device,
-                    id(78 + operator as u32),
-                    "feedback",
-                    52.0,
-                    feedback,
-                ))
-                .child(detail_field(
-                    device,
-                    id(353 + operator as u32),
-                    "repeat",
-                    64.0,
-                    harmonic_repeat_control,
-                )),
-        )
-        .child(
-            div()
-                .w_full()
-                .h(px(21.0))
-                .flex_shrink_0()
-                .flex()
-                .gap(px(4.0))
-                .child(detail_field(
-                    device,
-                    id(operator as u32 * 3 + 3),
-                    "phase",
-                    58.0,
-                    div()
-                        .flex()
-                        .gap(px(2.0))
-                        .child(div().w(px(42.0)).child(phase))
-                        .child(restart),
-                ))
-                .child(detail_field(
-                    device,
-                    id(companion_base + 1),
-                    "osc<vel",
-                    58.0,
-                    div()
-                        .flex()
-                        .gap(px(2.0))
-                        .child(div().w(px(42.0)).child(oscillator_velocity))
-                        .child(quantize),
-                )),
-        );
     let upper_display = if page == OperatorPage::Envelope {
         let base = 33 + operator as u32 * 6;
         let values = std::array::from_fn(|field| {
@@ -781,8 +641,7 @@ fn oscillator_envelope_detail(
                         .flex()
                         .flex_col()
                         .child(envelope_fields),
-                )
-                .child(oscillator_fields),
+                ),
         )
 }
 

@@ -402,7 +402,7 @@ pub(super) fn render_return_effect(
             device_view,
         ),
     );
-    let card_width = device_card_width(NativeDeviceClass::Effect, device.state().type_id());
+    let card_width = device_card_width(view, NativeDeviceClass::Effect, device);
     let rendered = rendered
         .h_full()
         .debug_selector(move || format!("device-shell-{}", id.value()));
