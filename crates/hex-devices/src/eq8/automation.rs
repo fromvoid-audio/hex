@@ -3,17 +3,21 @@
 //! before controls install; immutable canonical coefficient Arcs never change.
 use super::*;
 use crate::parameter_binding::{BOOLEAN_ENVELOPE, Binding, CHOICE_ENVELOPE, SCALAR_ENVELOPE};
-pub(super) const COUNT: usize = 201;
+pub(super) mod routing;
+pub(super) const COUNT: usize = 202;
+pub(super) const MODE_SLOT: usize = 200;
 pub(super) const GAIN_SLOT: usize = COUNT - 1;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct ControlValues {
     pub gain: f32,
+    pub mode: ChannelMode,
     pub banks: [[Band; BAND_COUNT]; 5],
 }
 impl ControlValues {
     pub(super) fn new(settings: Settings) -> Self {
         Self {
             gain: settings.output_gain,
+            mode: settings.mode,
             banks: settings.banks,
         }
     }
@@ -68,6 +72,9 @@ macro_rules! band_bindings {
                 |s| s.banks[$bank][$band].q,
                 |s, v| s.banks[$bank][$band].q = v,
             ),)*
+            Binding::choice(DESCRIPTORS[200], CHOICE,
+                |s| match s.mode { ChannelMode::Stereo => 0, ChannelMode::LeftRight => 1, ChannelMode::MidSide => 2 },
+                |s, v| { s.mode = match v { 0 => ChannelMode::Stereo, 1 => ChannelMode::LeftRight, 2 => ChannelMode::MidSide, _ => return Err(DeviceContractError::InvalidParameterValue) }; Ok(()) }),
             Binding::float(DESCRIPTORS[201], SEMANTICS, |s| s.gain, |s, v| s.gain = v),
         ];
     };
@@ -174,10 +181,10 @@ impl Eq8Runtime {
     fn enable_admitted(&self, bank: usize, band: usize) -> bool {
         slot(parameter::enabled(bank, band)).is_some_and(|i| self.controls.admitted(i))
     }
-    pub(super) fn enabled_layout_compatible(&self, previous: &Self) -> bool {
+    pub(super) fn enabled_layout_compatible(&self, previous: &Self, mode: ChannelMode) -> bool {
         let base = self.controls.base();
         let old = previous.controls.base();
-        selected(self.mode).into_iter().all(|bank| {
+        selected(mode).into_iter().all(|bank| {
             (0..BAND_COUNT).all(|band| {
                 base.banks[bank][band].enabled == old.banks[bank][band].enabled
                     || self.enable_admitted(bank, band)
@@ -207,17 +214,28 @@ impl Eq8Runtime {
             self.audition_request = None;
         }
     }
-    pub(super) fn restore_canonical_controls(&mut self) {
-        self.controls.reset();
-        self.install_enabled_bands(&self.controls.base().banks);
-        if let Some(previous) = self.automated_target.take() {
-            if previous != *self.target {
-                self.smooth_remaining = coefficient_smooth_frames(self.sample_rate);
-            }
+    pub(super) fn set_automation_target(&mut self, target: Option<[[BandStages; BAND_COUNT]; 2]>) {
+        let changed = target.as_ref().unwrap_or(self.target.as_ref()) != self.current_target();
+        let replaced = target.is_some() || self.automated_target.is_some();
+        self.automated_target = target;
+        if changed {
+            self.smooth_remaining = coefficient_smooth_frames(self.sample_rate);
+        }
+        if replaced {
             self.refresh_active_bands();
         }
+    }
+    pub(super) fn restore_canonical_controls(&mut self) {
+        self.controls.reset();
+        let base = self.controls.base();
+        let target = self
+            .routing
+            .as_mut()
+            .and_then(|route| route.restore_canonical(base, self.mode));
+        self.install_enabled_bands(&base.banks);
+        self.set_automation_target(target);
         self.band_targets_pending = self.band_automation_admitted;
-        self.retarget_gain(f64::from(self.controls.effective().gain));
+        self.retarget_gain(f64::from(base.gain));
     }
     pub(super) fn retarget_gain(&mut self, gain: f64) {
         if self.target_gain != gain {
@@ -248,14 +266,18 @@ impl Eq8Runtime {
                 } else {
                     None
                 };
+                let pending = self
+                    .routing
+                    .as_ref()
+                    .map(|route| route.stage(next_values, self.mode, self.sample_rate))
+                    .transpose()?;
                 self.controls.install(next);
+                if let Some(route) = self.routing.as_mut() {
+                    route.install(pending.flatten());
+                }
                 self.install_enabled_bands(&next_values.banks);
                 if let Some(target) = target {
-                    if target != *self.current_target() {
-                        self.smooth_remaining = coefficient_smooth_frames(self.sample_rate);
-                    }
-                    self.automated_target = Some(target);
-                    self.refresh_active_bands();
+                    self.set_automation_target(Some(target));
                     self.band_targets_pending = false;
                 }
                 self.retarget_gain(f64::from(next_values.gain));
@@ -302,12 +324,12 @@ mod tests {
             start: 0,
         }
     }
-    fn room(state: &NativeDeviceState, rate: u32, admitted: bool) -> Eq8Runtime {
+    pub(super) fn room(state: &NativeDeviceState, rate: u32, admitted: bool) -> Eq8Runtime {
         let mut prepared = PreparedEq8::new(decode(state).unwrap(), rate).unwrap();
         prepared.admitted[GAIN_SLOT] = admitted;
         prepared.runtime()
     }
-    fn signal(len: usize) -> Vec<StereoFrame> {
+    pub(super) fn signal(len: usize) -> Vec<StereoFrame> {
         (0..len)
             .map(|i| {
                 if i % 31 < 7 {
@@ -341,7 +363,7 @@ mod tests {
         }
         state
     }
-    fn all_bands(mode: u32) -> NativeDeviceState {
+    pub(super) fn all_bands(mode: u32) -> NativeDeviceState {
         let mut base = state(mode, true);
         for bank in 0..5 {
             for band in 0..BAND_COUNT {
@@ -418,9 +440,9 @@ mod tests {
             }
         }
     }
-    struct BandDense {
-        ids: Vec<ParameterId>,
-        start: usize,
+    pub(super) struct BandDense {
+        pub(super) ids: Vec<ParameterId>,
+        pub(super) start: usize,
     }
     impl NativeParameterAutomation for BandDense {
         fn parameter_ids(&self) -> &[ParameterId] {
@@ -429,6 +451,9 @@ mod tests {
         fn value_at(&self, id: ParameterId, offset: usize) -> Option<ParameterValue> {
             let f = ((self.start + offset) * 7 + id.value() as usize * 3) % 65;
             let t = f as f32 / 64.0;
+            if id == parameter::MODE {
+                return Some(ParameterValue::Choice((f % 3) as u32));
+            }
             if id != parameter::OUTPUT_GAIN && (id.value() - 1).is_multiple_of(5) {
                 return Some(ParameterValue::Bool(f.is_multiple_of(2)));
             }
@@ -638,7 +663,11 @@ mod tests {
     }
     #[test]
     fn dense_all_banks_and_canonical_base_changes_keep_exact_targets() {
-        let ids: Vec<_> = BINDINGS.iter().map(|b| b.descriptor.id).collect();
+        let ids: Vec<_> = BINDINGS
+            .iter()
+            .map(|b| b.descriptor.id)
+            .filter(|&id| id != parameter::MODE)
+            .collect();
         for rate in [8000, 96000] {
             for mode in 0..3 {
                 let base = all_bands(mode);
@@ -948,6 +977,8 @@ mod tests {
             (parameter::kind(0, 0), ParameterValue::Choice(8)),
             (parameter::kind(0, 0), ParameterValue::Float(0.0)),
             (parameter::enabled(0, 0), ParameterValue::Float(0.0)),
+            (parameter::MODE, ParameterValue::Choice(3)),
+            (parameter::MODE, ParameterValue::Bool(false)),
         ] {
             let mut actual = prepare(&base, 8000, &[id]).unwrap().runtime();
             let source = Values {
@@ -992,7 +1023,7 @@ mod tests {
         }
         assert!(
             !EQ8_DEFINITION
-                .supports_parameter_automation(&base, parameter::MODE)
+                .supports_parameter_automation(&base, ParameterId::new(203).unwrap())
                 .unwrap()
         );
     }
@@ -1037,6 +1068,7 @@ mod tests {
                                     _: usize,
                                 ) -> Option<ParameterValue> {
                                     if id != parameter::OUTPUT_GAIN
+                                        && id != parameter::MODE
                                         && (id.value() - 1).is_multiple_of(5)
                                     {
                                         Some(ParameterValue::Bool(true))

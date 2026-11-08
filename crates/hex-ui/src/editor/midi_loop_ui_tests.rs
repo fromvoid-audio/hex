@@ -18,7 +18,7 @@ fn assert_brace(v: &mut VisualTestContext, first: f32, last: f32, on: bool) {
     let b = content_bounds(v, "midi-loop-ruler");
     let scale = gpui::ScaledPixels::from(v.update(|window, _| window.scale_factor()));
     let color: gpui::Background = gpui::Hsla::from(rgb(theme::color(if on {
-        theme::PaletteRole::Primary
+        theme::PaletteRole::Text
     } else {
         theme::PaletteRole::Muted
     })))

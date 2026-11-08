@@ -214,8 +214,6 @@ impl EditorView {
         let rows_viewport = viewport;
         let rows_grid = grid.clone();
         let track_scale_factor = window.scale_factor();
-        // What you hear, not the scheduled cursor ahead of it by Main latency.
-        let playhead = self.audible_cursor_position();
         let rows_entity = cx.entity();
         let rows = list(self.track_scroll.list.clone(), move |index, _, cx| {
             rows_entity
@@ -265,25 +263,6 @@ impl EditorView {
                 window.scale_factor(),
             )])
             .child(rows);
-        if let Some(position) = viewport.fraction(playhead) {
-            content = content.child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .left_0()
-                    .right(px(self.track_header_width()))
-                    .child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .bottom_0()
-                            .left(relative(position.clamp(0.0, 1.0)))
-                            .w(px(1.0))
-                            .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
-                    ),
-            );
-        }
         content = content.children(self.edit_cursor_layer(viewport, clip_move_guide, cx));
         content = content.children(self.track_reorder_line());
         let upper = div()
@@ -676,6 +655,60 @@ impl EditorView {
         )
     }
 
+    /// Paint after the body and Main have measured their current-frame bounds.
+    /// The shared timeline line spans gain/Return rows without owning any input.
+    fn arrangement_playback_layer(&self, cx: &Context<Self>) -> Div {
+        let entity = cx.entity();
+        div()
+            .debug_selector(|| "arrangement-playback-layer".into())
+            .absolute()
+            .inset_0()
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |_, _, window, cx| {
+                        let view = entity.read(cx);
+                        let Some(state) = view.state.as_ref() else {
+                            return;
+                        };
+                        let (Some(body), Some(main)) =
+                            (view.arrangement_bounds, view.main_track_lane_bounds)
+                        else {
+                            return;
+                        };
+                        let width = body.width - view.track_header_width();
+                        let height = main.top - body.top;
+                        if !width.is_finite()
+                            || !height.is_finite()
+                            || width <= 0.0
+                            || height <= 0.0
+                        {
+                            return;
+                        }
+                        let viewport = view.visible_viewport(state.timeline_frames);
+                        // Use the audible position, compensated for Main latency.
+                        let Some(position) = viewport.fraction(view.audible_cursor_position())
+                        else {
+                            return;
+                        };
+                        let bounds = gpui::Bounds::new(
+                            gpui::point(
+                                px(body.left + width * position.clamp(0.0, 1.0)),
+                                px(body.top),
+                            ),
+                            gpui::size(px(1.0), px(height)),
+                        );
+                        window.paint_quad(gpui::fill(
+                            bounds,
+                            rgb(theme::color(theme::PaletteRole::Text)),
+                        ));
+                    },
+                )
+                .absolute()
+                .inset_0(),
+            )
+    }
+
     fn arrangement_surface(
         &self,
         upper: Div,
@@ -687,6 +720,7 @@ impl EditorView {
         let clip_entity = entity.clone();
         let device_entity = entity.clone();
         div()
+            .relative()
             .flex_1()
             .min_h_0()
             .flex()
@@ -694,6 +728,7 @@ impl EditorView {
             .child(upper.flex_1().min_h_0())
             .child(returns)
             .child(main)
+            .child(self.arrangement_playback_layer(cx))
             .child(self.track_resize_events(cx))
             .children([self.track_reorder_events(cx)])
             .on_drag_move::<super::drag::NativeDeviceDrag>(move |event, _, cx| {

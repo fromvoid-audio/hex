@@ -134,7 +134,7 @@ widgets = (
     'device_drag_title(', 'render_return_drop_target(', 'uniform_list(',
     'loop_grid_layer(',
     # Track sizing composes non-text pointer handles and capture listeners.
-    'self.track_resize_events(', 'self.track_width_resize_handle(',
+    'self.arrangement_playback_layer(', 'self.track_resize_events(', 'self.track_width_resize_handle(',
     'self.return_send_menu(', 'send_adjust_button(', 'super::device_panel::return_send_numeric_control(', 'upper.flex_1().min_h_0()',
     'returns)', 'add)', 'return_button(', 'render_return_effect(',
     'render_return_add_menu(',
