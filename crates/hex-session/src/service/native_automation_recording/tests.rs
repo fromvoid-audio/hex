@@ -138,7 +138,8 @@ pub(super) fn poll(
 #[test]
 fn failed_lane_retains_original_custody_through_copy_refusal_and_retry() {
     use crate::service::automation_draft::{AppliedEvent, tests::injected_failed_writer};
-    let (files, session, scope, source) = fixture();
+    let (files, session, scope, mut source) = fixture();
+    source.section_loop = Some(hex_project::LoopRegion::new(0, 48000, true).unwrap());
     let DeviceCaptureTarget::Vst3(target) = scope.target else {
         panic!("vst3 target")
     };
@@ -155,7 +156,7 @@ fn failed_lane_retains_original_custody_through_copy_refusal_and_retry() {
         scope.stamp,
         CaptureClock {
             sample_rate: 48000,
-            loop_region: None,
+            loop_region: source.section_loop,
         },
     )
     .unwrap();
@@ -169,13 +170,14 @@ fn failed_lane_retains_original_custody_through_copy_refusal_and_retry() {
     let outcome = injected_failed_writer(writer, event);
     assert!(outcome.failure.is_some());
     let original = std::fs::read(&path).unwrap();
-    let mut lane = Lane {
-        failed: Some(Failed {
-            scope,
-            outcome: Arc::new(outcome),
-        }),
-        ..Lane::default()
-    };
+    let mut lane = Lane::default();
+    assert!(
+        lane.resolve(&session, None, scope.context(), scope, source, outcome)
+            .is_err()
+    );
+    let retained_source = lane.failed.as_ref().unwrap().source;
+    assert!(retained_source.matches(scope));
+    assert_eq!(retained_source.section_loop, source.section_loop);
     let current = scope.context();
     assert!(
         lane.receive(
@@ -199,6 +201,12 @@ fn failed_lane_retains_original_custody_through_copy_refusal_and_retry() {
         lane.receive(&session, None, current, wrong_scope, &start)
             .is_err()
     );
+    lane.failed.as_mut().unwrap().source.transport_epoch += 1;
+    assert!(
+        lane.receive(&session, None, current, scope, &start)
+            .is_err()
+    );
+    lane.failed.as_mut().unwrap().source = source;
     assert!(
         lane.receive(
             &session,

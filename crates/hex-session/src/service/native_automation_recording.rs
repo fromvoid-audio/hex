@@ -169,6 +169,7 @@ pub(super) struct Lane {
 
 struct Failed {
     scope: DeviceAutomationTakeScope,
+    source: DeviceAutomationSource,
     outcome: Arc<DraftWorkerOutcome>,
 }
 
@@ -260,7 +261,7 @@ impl Lane {
                 .failed
                 .as_ref()
                 .ok_or("no failed device automation custody is available")?;
-            if failed.scope != scope {
+            if failed.scope != scope || !failed.source.matches(scope) {
                 return Err("device automation recovery belongs to another take".into());
             }
             return match action {
@@ -407,8 +408,9 @@ impl Lane {
                 let Some(outcome) = active.input.try_take_outcome() else {
                     return Ok(Step::Progress(Progress::Pending));
                 };
+                let source = active.source;
                 self.active = None;
-                return self.resolve(session, document_base, current, scope, outcome);
+                return self.resolve(session, document_base, current, scope, source, outcome);
             }
         };
         Ok(Step::Progress(progress))
@@ -430,12 +432,14 @@ impl Lane {
         document_base: Option<&Path>,
         current: AudioSourceContext,
         scope: DeviceAutomationTakeScope,
+        source: DeviceAutomationSource,
         outcome: DraftWorkerOutcome,
     ) -> Result<Step, String> {
         if let Some(reason) = outcome.failure.as_deref() {
             let error = retained_error(&outcome.path, reason);
             self.failed = Some(Failed {
                 scope,
+                source,
                 outcome: Arc::new(outcome),
             });
             return Err(error);
