@@ -13,6 +13,8 @@ use crate::{
 };
 use std::{ops::Deref, sync::Arc};
 
+mod unit_parent;
+
 // The preceding format allowed256 retained sources PLUS256 track instruments.
 // Migration retains both; the existing global device budget is unchanged.
 pub const MAX_NATIVE_SOURCES: usize = crate::MAX_TRACKS * 2;

@@ -181,6 +181,10 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             Ok(crate::Created::None)
         }
         Command::RemoveDevice(id) => {
+            if let Some(source) = project.source_owning_device(id) {
+                project.remove_source_device(source, id)?;
+                return Ok(crate::Created::None);
+            }
             if let Ok((track, index)) = locate_device(project, id) {
                 let span = crate::device_inventory::serial_unit_span(
                     &project.tracks[track].devices,
@@ -243,6 +247,14 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
         }
         Command::InsertNestedDevice { parent, state } => {
             unit_parent::insert(project, parent, state)
+        }
+        Command::MoveNativeSourceDevice {
+            source,
+            device,
+            before,
+        } => {
+            project.move_source_device(source, device, before)?;
+            Ok(crate::Created::None)
         }
         Command::ReparentDevice { device, parent } => {
             unit_parent::apply(project, device, parent)?;

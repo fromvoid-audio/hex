@@ -393,15 +393,24 @@ pub enum Command {
         track: TrackId,
         before: Option<DeviceId>,
     },
-    /// Create a fresh last child of a local/Main/Return effect parent in one
-    /// candidate. Source-owned parents remain unsupported until source admission.
+    /// Move a complete unit within one retained source, keeping its parent.
+    /// The designated instrument moves with its children. None appends; invalid
+    /// membership placement and edits to bound source chains refuse.
+    MoveNativeSourceDevice {
+        source: crate::SourceId,
+        device: DeviceId,
+        before: Option<DeviceId>,
+    },
+    /// Create a fresh last child of a local/Main/Return effect or an unbound
+    /// retained source parent in one candidate. Bound source edits still refuse.
     InsertNestedDevice {
         parent: DeviceId,
         state: hex_lattice_contract::NativeDeviceState,
     },
     /// Attach a complete local/Main/Return effect unit as the parent's last
     /// child. None detaches it immediately after its former top-level unit.
-    /// An unchanged parent is a no-op; source-owned edits and foreign parents refuse.
+    /// Unbound source units use the same rule. An unchanged parent is a no-op;
+    /// bound source edits and foreign parents refuse.
     ReparentDevice {
         device: DeviceId,
         parent: Option<DeviceId>,
@@ -2205,6 +2214,7 @@ impl Project {
             | Command::RemoveDevice(_)
             | Command::MoveDevice { .. }
             | Command::MoveTrackDevice { .. }
+            | Command::MoveNativeSourceDevice { .. }
             | Command::ReparentDevice { .. }
             | Command::InsertNestedDevice { .. }
             | Command::ReplaceDeviceState { .. }
