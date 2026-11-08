@@ -402,6 +402,14 @@ pub(in crate::service) fn injected_failed_writer(
     writer: DraftWriter,
     event: AppliedEvent,
 ) -> DraftWorkerOutcome {
+    injected_failed_writer_with_terminal(writer, event, DraftTerminal::Interrupted)
+}
+
+pub(in crate::service) fn injected_failed_writer_with_terminal(
+    writer: DraftWriter,
+    event: AppliedEvent,
+    terminal: DraftTerminal,
+) -> DraftWorkerOutcome {
     let barrier = Arc::new(Barrier::new(2));
     let held = Arc::clone(&barrier);
     let (mut input, worker) = spawn_with_start(writer, move || {
@@ -409,7 +417,7 @@ pub(in crate::service) fn injected_failed_writer(
     })
     .unwrap();
     send(&mut input, &[event]);
-    input.finish(DraftTerminal::Interrupted).unwrap();
+    input.finish(terminal).unwrap();
     input.shared.state().failed = true;
     barrier.wait();
     worker.join_on_control().unwrap()
