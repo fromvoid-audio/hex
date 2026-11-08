@@ -132,7 +132,7 @@ pub(super) fn passive_audio_fragment(
         .border_color(rgb(theme::color(theme::PaletteRole::ClipOutline)))
         .bg(rgb(fill));
     if let Some(header) = compact_header {
-        return Some(super::tracks::clip_boundary_shell(
+        return Some(super::clip_boundary::clip_boundary_shell(
             content.child(header),
             left as f32,
             width as f32,
@@ -165,7 +165,7 @@ pub(super) fn passive_audio_fragment(
                 .child(theme::text("missing media")),
         );
     }
-    Some(super::tracks::clip_boundary_shell(
+    Some(super::clip_boundary::clip_boundary_shell(
         content,
         left as f32,
         width as f32,
@@ -218,7 +218,7 @@ pub(super) fn passive_midi_fragment(
         .bg(rgb(fill))
         .border_color(rgb(theme::color(theme::PaletteRole::ClipOutline)));
     if let Some(header) = compact_header {
-        return Some(super::tracks::clip_boundary_shell(
+        return Some(super::clip_boundary::clip_boundary_shell(
             content.child(header),
             left as f32,
             width as f32,
@@ -258,7 +258,7 @@ pub(super) fn passive_midi_fragment(
             super::tracks::midi_note_canvas(move || notes_selector.clone(), shapes, fit);
         content = content.child(super::tracks::clip_waveform_body(notes));
     }
-    Some(super::tracks::clip_boundary_shell(
+    Some(super::clip_boundary::clip_boundary_shell(
         content,
         left as f32,
         width as f32,
