@@ -114,3 +114,19 @@ fn short_rows_preserve_opposite_phase_peaks_instead_of_summing_to_silence() {
         assert!((bottom - top - 1.5 * height * 0.44).abs() < 0.0001);
     }
 }
+
+#[cfg(feature = "ui-test-support")]
+#[test]
+fn scoped_reference_keeps_legacy_stereo_and_restores_adaptive_geometry() {
+    use crate::editor::navigation_metrics::use_reference_stereo;
+    let audio = hex_engine::Audio::new(48_000, vec![[0.5; 2], [-0.25; 2]]).unwrap();
+    let source = hex_media::waveform::summarize(&audio, 2).unwrap();
+    for height in [28.0, 80.0] {
+        assert_eq!(geometry(&source, height, false).display.channels().len(), 1);
+        {
+            let _reference = use_reference_stereo(true);
+            assert_eq!(geometry(&source, height, false).display.channels().len(), 2);
+        }
+        assert_eq!(geometry(&source, height, false).display.channels().len(), 1);
+    }
+}

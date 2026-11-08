@@ -708,6 +708,9 @@ pub(super) fn prepare_waveform_geometry(
         super::navigation_metrics::Timer::start(super::navigation_metrics::Stage::WaveformPaths);
     let combined =
         height < crate::theme::WAVEFORM_STEREO_MIN_BODY_HEIGHT || waveform.has_identical_channels();
+    // Compare legacy stereo in the same test binary/window; no shipped override.
+    #[cfg(all(test, feature = "ui-test-support"))]
+    let combined = combined && !super::navigation_metrics::reference_stereo();
     let channel_count = if combined { 1 } else { 2 };
     let mut channels = Vec::with_capacity(channel_count);
     #[cfg(test)]
