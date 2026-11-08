@@ -29,6 +29,7 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                 "crates/hex-ui/src/editor/tracks.rs": '.child(toggle_button_with_style(label, tooltip, id, style)) .child(framed_clip) .child(super::clip_name::passive_name_header(name, fill, true))',
                 "crates/hex-ui/src/editor/clip_boundary.rs": '.child(paint)',
                 "crates/hex-ui/src/editor/clip_border_ui_test.rs": '.child(super::pixel_backdrop_shell(body, bounds, style, true, selector))',
+                "crates/hex-ui/src/editor/time_move_preview.rs": '.child(super::clip_name::passive_name_header(name, fill, true))',
                 "crates/hex-ui/src/editor/return_tracks.rs": '.child(super::waveform::toggle_button_with_style(label, tooltip, id, style))',
             }
             for name, text in files.items():
@@ -48,6 +49,8 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                 ("other.rs", '.child(bar)'),
                 ("other.rs", '.child(framed_clip)'),
                 ("other.rs", '.child(paint)'),
+                ("editor/time_move_preview.rs", '.child("Unnormalized")'),
+                ("editor/time_move_preview.rs", '.child(self.unregistered_component(cx))'),
                 ("other.rs", '.child(super::pixel_backdrop_shell(body, bounds, style, true, selector))'),
                 ("editor/clip_border_ui_test.rs", '.child("Unnormalized")'),
                 ("editor/clip_border_ui_test.rs", '.child(self.unregistered_component(cx))'),
