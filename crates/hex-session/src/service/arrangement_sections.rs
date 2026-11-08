@@ -24,6 +24,7 @@ pub(super) fn is_command(command: &Command) -> bool {
             | Command::DuplicateArrangementSection(_)
             | Command::DuplicateArrangementSectionAt { .. }
             | Command::AppendArrangementSectionCopy { .. }
+            | Command::MoveArrangementSectionBeyondEnd { .. }
             | Command::SplitArrangementSection { .. }
             | Command::MergeArrangementSections(_)
     )
@@ -325,51 +326,78 @@ mod append_tests {
     }
 
     #[test]
-    fn stamped_append_uses_structural_preparation_and_one_history_edge() {
-        let service = Service::new(48_000, 8, 0).unwrap();
-        let initial = next(&service);
-        service
-            .submit(Request::EditArrangementSection {
-                project_generation: 0,
-                revision: initial.state.revision,
-                command: Command::AddArrangementSection {
-                    name: "source".into(),
-                    color: hex_project::ElementColor::Blue,
-                    start: hex_project::BeatTime::ZERO,
-                    end: hex_project::BeatTime::from_quarters(4).unwrap(),
-                },
-            })
-            .unwrap();
-        let added = next(&service);
-        let Some(Created::ArrangementSection(section)) = added.created else {
-            panic!("source");
-        };
-        let before = added.state.project.snapshot();
-        let edit = Command::AppendArrangementSectionCopy {
-            section,
-            start: hex_project::BeatTime::from_quarters(8).unwrap(),
-            gap_name: "gap".into(),
-            gap_color: hex_project::ElementColor::Rose,
-        };
-        assert!(is_command(&edit));
-        assert!(edit.requires_section_publication());
-        service
-            .submit(Request::EditArrangementSection {
-                project_generation: 0,
-                revision: added.state.revision,
-                command: edit,
-            })
-            .unwrap();
-        let copied = next(&service);
-        assert!(copied.error.is_none(), "{:?}", copied.error);
-        assert_eq!(copied.state.project.arrangement_sections().len(), 3);
-        let after = copied.state.project.snapshot();
-        service.submit(Request::Undo).unwrap();
-        let mut restored = next(&service).state.project.snapshot();
-        assert!(restored.next_id >= after.next_id);
-        restored.next_id = before.next_id;
-        assert_eq!(restored, before);
-        service.submit(Request::Redo).unwrap();
-        assert_eq!(next(&service).state.project.snapshot(), after);
+    fn stamped_absolute_placements_use_structural_preparation_and_one_history_edge() {
+        for moving in [false, true] {
+            let service = Service::new(48_000, 8, 0).unwrap();
+            let initial = next(&service);
+            service
+                .submit(Request::EditArrangementSection {
+                    project_generation: 0,
+                    revision: initial.state.revision,
+                    command: Command::AddArrangementSection {
+                        name: "source".into(),
+                        color: hex_project::ElementColor::Blue,
+                        start: hex_project::BeatTime::ZERO,
+                        end: hex_project::BeatTime::from_quarters(4).unwrap(),
+                    },
+                })
+                .unwrap();
+            let added = next(&service);
+            let Some(Created::ArrangementSection(section)) = added.created else {
+                panic!("source");
+            };
+            let before = added.state.project.snapshot();
+            let start = hex_project::BeatTime::from_quarters(8).unwrap();
+            let edit = if moving {
+                Command::MoveArrangementSectionBeyondEnd {
+                    section,
+                    start,
+                    gap_name: "gap".into(),
+                    gap_color: hex_project::ElementColor::Rose,
+                }
+            } else {
+                Command::AppendArrangementSectionCopy {
+                    section,
+                    start,
+                    gap_name: "gap".into(),
+                    gap_color: hex_project::ElementColor::Rose,
+                }
+            };
+            assert!(is_command(&edit));
+            assert!(edit.requires_section_publication());
+            service
+                .submit(Request::EditArrangementSection {
+                    project_generation: 0,
+                    revision: added.state.revision,
+                    command: edit,
+                })
+                .unwrap();
+            let copied = next(&service);
+            assert!(copied.error.is_none(), "{:?}", copied.error);
+            assert_eq!(
+                copied.state.project.arrangement_sections().len(),
+                if moving { 2 } else { 3 }
+            );
+            if moving {
+                assert_eq!(copied.created, Some(Created::None));
+                assert_eq!(
+                    copied
+                        .state
+                        .project
+                        .arrangement_section(section)
+                        .unwrap()
+                        .start(),
+                    start
+                );
+            }
+            let after = copied.state.project.snapshot();
+            service.submit(Request::Undo).unwrap();
+            let mut restored = next(&service).state.project.snapshot();
+            assert!(restored.next_id >= after.next_id);
+            restored.next_id = before.next_id;
+            assert_eq!(restored, before);
+            service.submit(Request::Redo).unwrap();
+            assert_eq!(next(&service).state.project.snapshot(), after);
+        }
     }
 }
