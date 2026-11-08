@@ -37,6 +37,38 @@ impl Program {
     }
 }
 
+/// Ordinary program allowance only; four vector rows include empty storage.
+pub(super) fn reservation() -> crate::AudioStorageLedgerReservation {
+    crate::AudioStorageLedgerReservation {
+        data_rows: hex_project::MAX_TRACKS * 4,
+        handle_rows: 0,
+        root_rows: hex_project::MAX_TRACKS,
+        max_retained_bytes: MAX_PROGRAM_BYTES,
+        max_construction_peak_bytes: MAX_PROGRAM_BYTES,
+    }
+}
+/// One receiving program per source. Previous retained programs coexist with
+/// the current program's retained and temporary backing during compilation.
+pub(super) fn construction_bytes(project: &hex_project::Project) -> Result<usize, Invalid> {
+    let mut retained = 0;
+    let mut peak = 0;
+    for track in project
+        .tracks()
+        .iter()
+        .filter(|track| track.receives_source_audio())
+    {
+        let Some(device) = track.instrument().filter(|device| {
+            !device.automation().is_empty() && !crate::compile::is_vst3_instrument(device)
+        }) else {
+            continue;
+        };
+        let (bytes, temporary) = quote(device)?;
+        retained = add_budget(retained, bytes)?;
+        peak = peak.max(add_budget(retained, temporary)?);
+    }
+    Ok(peak)
+}
+
 pub(super) fn quote(device: &hex_project::Device) -> Result<(usize, usize), Invalid> {
     quote_lanes(device.automation())
 }
