@@ -127,7 +127,7 @@ impl EditorView {
                 .flex_1()
                 .min_h_0()
                 .bg(rgb(theme::color(theme::PaletteRole::Background)));
-            let main = self.main_track_row(viewport, &[], &[], window.scale_factor(), cx);
+            let main = self.main_track_row(viewport, &[], &[], window.scale_factor(), window, cx);
             let returns = self.return_tracks_view(cx);
             return self.arrangement_surface(upper, returns, main, cx);
         };
@@ -201,8 +201,14 @@ impl EditorView {
                     ),
                     cx,
                 )]);
-            let main =
-                self.main_track_row(empty_viewport, &bands, &grid, window.scale_factor(), cx);
+            let main = self.main_track_row(
+                empty_viewport,
+                &bands,
+                &grid,
+                window.scale_factor(),
+                window,
+                cx,
+            );
             let returns = self.return_tracks_view(cx);
             return self.arrangement_surface(upper, returns, main, cx);
         }
@@ -285,7 +291,7 @@ impl EditorView {
                 ruler_width,
                 cx,
             ));
-        let main = self.main_track_row(viewport, &bands, &grid, window.scale_factor(), cx);
+        let main = self.main_track_row(viewport, &bands, &grid, window.scale_factor(), window, cx);
         let returns = self.return_tracks_view(cx);
         self.arrangement_surface(upper, returns, main, cx)
     }
@@ -474,6 +480,14 @@ impl EditorView {
                             }
                             if view.pointer_hits_priority_clip_control(x, y, event.modifiers.alt) {
                                 return (false, false);
+                            }
+                            if event.click_count == 2
+                                && let Some((track, _)) = view.visible_lane_at(x, y)
+                                && let Some(clip) = view.visible_clip_at_pointer(track, x, y)
+                            {
+                                view.select_clip_header(track, clip, event.modifiers, window, cx);
+                                view.focus.focus(window);
+                                return (true, false);
                             }
                             if event.click_count == 2
                                 && !event.modifiers.shift
@@ -811,6 +825,7 @@ impl EditorView {
         bands: &[super::musical_time::GridBand],
         lines: &[super::musical_time::GridLine],
         scale: f32,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Div {
         let state = self.state.clone();
@@ -834,7 +849,7 @@ impl EditorView {
             .children([main_track_grid_layer(bands, lines, viewport, scale)])
             .child(super::arrangement_map::view(self, viewport))
             .children(self.main_time_selection_overlay(viewport))
-            .children(self.section_elements(viewport, scale, cx))
+            .children(self.section_elements(viewport, scale, window, cx))
             .children([self.section_pointer_events(cx)])
             .children(automation)
             .child(

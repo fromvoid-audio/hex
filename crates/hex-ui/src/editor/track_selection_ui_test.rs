@@ -378,14 +378,17 @@ fn selected_lane_palette_and_paint_order_preserve_clip_fill_and_outer_selection_
     visual.simulate_click(at, Modifiers::default());
     let tint = Box::leak(format!("selected-track-lane-{}", source.value()).into_boxed_str());
     let clip_visual = Box::leak(format!("clip-visual-{}", clip.value()).into_boxed_str());
-    for palette in [
-        hex_preferences::ThemePreferences::default(),
-        hex_preferences::ThemePreferences {
-            background: hex_preferences::RgbColor::new(240, 240, 240),
-            text: hex_preferences::RgbColor::new(16, 16, 16),
-            primary: hex_preferences::RgbColor::new(166, 65, 47),
-            secondary: hex_preferences::RgbColor::new(40, 88, 170),
-        },
+    for (palette, expected_tint) in [
+        (hex_preferences::ThemePreferences::default(), 0xa4ccd7),
+        (
+            hex_preferences::ThemePreferences {
+                background: hex_preferences::RgbColor::new(240, 240, 240),
+                text: hex_preferences::RgbColor::new(16, 16, 16),
+                primary: hex_preferences::RgbColor::new(166, 65, 47),
+                secondary: hex_preferences::RgbColor::new(40, 88, 170),
+            },
+            0x2858aa,
+        ),
     ] {
         theme::apply_preferences(palette);
         editor.update(&mut visual, |_, cx| cx.notify());
@@ -393,8 +396,8 @@ fn selected_lane_palette_and_paint_order_preserve_clip_fill_and_outer_selection_
         assert_eq!(
             visual.rendered_background(tint),
             Some(
-                gpui::Hsla::from(gpui::rgb(theme::color(theme::PaletteRole::Secondary)))
-                    .alpha(theme::TRACK_SELECTION_OPACITY)
+                gpui::Hsla::from(gpui::rgb(expected_tint))
+                    .alpha(0.28)
                     .into()
             )
         );

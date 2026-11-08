@@ -39,6 +39,8 @@ struct WaveformGeometryEntry {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WaveformGeometryKey {
+    #[cfg(all(test, feature = "ui-test-support"))]
+    reference_stereo: bool,
     mapping: WaveformMappingKey,
     visible_start: u64,
     visible_end: u64,
@@ -498,6 +500,8 @@ fn waveform_geometry_key(
         },
     };
     WaveformGeometryKey {
+        #[cfg(all(test, feature = "ui-test-support"))]
+        reference_stereo: super::navigation_metrics::reference_stereo(),
         mapping,
         visible_start,
         visible_end,
@@ -784,6 +788,26 @@ mod tests {
             bounds,
             2.0,
         )
+    }
+
+    #[cfg(feature = "ui-test-support")]
+    #[test]
+    fn comparison_cache_identity_is_scoped_and_restored() {
+        use crate::editor::navigation_metrics::{reference_stereo, use_reference_stereo};
+        assert!(!reference_stereo());
+        let current = key(0, bounds());
+        {
+            let _reference = use_reference_stereo(true);
+            assert!(reference_stereo());
+            assert_ne!(current, key(0, bounds()));
+            {
+                let _nested = use_reference_stereo(false);
+                assert_eq!(current, key(0, bounds()));
+            }
+            assert!(reference_stereo());
+        }
+        assert!(!reference_stereo());
+        assert_eq!(current, key(0, bounds()));
     }
 
     fn geometry(
