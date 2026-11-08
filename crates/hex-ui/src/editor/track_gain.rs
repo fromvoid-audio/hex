@@ -407,7 +407,9 @@ impl EditorView {
             ) else {
                 return div();
             };
-            let config = config.with_presentation(NumericControlPresentation::FilledSlider);
+            let config = config
+                .with_presentation(NumericControlPresentation::FilledSlider)
+                .with_slider_center_mark(!matches!(key, MixerKey::Balance(_)));
             let entity = cx.new(|cx| NumericControl::from_config(cx, config));
             let lease: device_panel::NumericGestureLease = Rc::new(Cell::new(None));
             let captured = lease.clone();

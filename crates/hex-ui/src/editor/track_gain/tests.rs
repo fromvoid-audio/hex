@@ -800,6 +800,14 @@ fn header_mixer_pan_entry_drag_cancel_and_activator_solo_are_real_commands(
         ))
         .unwrap();
     assert!(field.left() >= pan.left() && field.right() <= pan.right());
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("track-pan-{}-bar-center", track.value()).into_boxed_str()
+            ))
+            .is_none(),
+        "the pan value must not have a center line behind it"
+    );
     let start = field.center();
     let end = point(start.x, start.y - px(20.0));
     drag(&mut visual, start, end);

@@ -1099,3 +1099,75 @@ fn numeric_same_position_input_restarts_hidden_caret(cx: &mut TestAppContext) {
     visual.run_until_parked();
     assert!(is_visible(&mut visual));
 }
+
+#[gpui::test]
+fn optional_center_mark_preserves_bipolar_fill_and_value_geometry(cx: &mut TestAppContext) {
+    for marked in [true, false] {
+        let handle = *cx.add_window(|_, _| Empty);
+        let control = cx
+            .update_window(handle, |_, window, cx| {
+                let control = cx.new(|cx| {
+                    NumericControl::from_config(
+                        cx,
+                        NumericControlConfig::new(
+                            "center-field",
+                            "pan",
+                            NumericControlPresentation::FilledSlider,
+                            NumericSpec::new(
+                                -1.0,
+                                1.0,
+                                0.0,
+                                crate::NumericScale::Bipolar,
+                                2,
+                                None::<&str>,
+                            )
+                            .unwrap(),
+                            0.0,
+                            STYLE,
+                        )
+                        .unwrap()
+                        .with_slider_center_mark(marked),
+                    )
+                });
+                window.replace_root(cx, |_, _| Root {
+                    control: control.clone(),
+                    width: 86.0,
+                });
+                control
+            })
+            .unwrap();
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(size(px(400.0), px(140.0)));
+        for value in [-0.5, 0.0, 0.5] {
+            control.update(cx, |control, cx| {
+                control.set_external_value(value, cx).unwrap()
+            });
+            visual.run_until_parked();
+            let bar = visual.debug_bounds("center-field-slider").unwrap();
+            let field = visual.debug_bounds("center-field-value").unwrap();
+            let fill = visual.debug_bounds("center-field-bar-fill").unwrap();
+            assert_eq!(
+                visual.debug_bounds("center-field-bar-center").is_some(),
+                marked
+            );
+            assert_eq!(
+                bar, field,
+                "hiding the mark does not shrink or move the editable field"
+            );
+            assert!(
+                (f32::from(fill.size.width) - f32::from(bar.size.width) * value.abs() as f32 / 2.0)
+                    .abs()
+                    <= 1.0
+            );
+            let edge = if value < 0.0 {
+                fill.right()
+            } else {
+                fill.left()
+            };
+            assert!(
+                (f32::from(edge - bar.center().x)).abs() <= 1.0,
+                "the fill must still originate at center"
+            );
+        }
+    }
+}
