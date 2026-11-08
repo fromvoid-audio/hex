@@ -3670,3 +3670,5 @@ fn mutable_arrangement_source_and_transport_loops_are_callback_allocation_free()
 
 mod delay_mix;
 mod eq8_gain;
+
+mod stage_clocks;
