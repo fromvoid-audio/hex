@@ -26,7 +26,7 @@ fn all_canonical_device_owners_refuse_unconsumed_curves_without_changing_source(
         let state =
             hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.limiter"))
                 .unwrap();
-        let parameter = ParameterId::new(1).unwrap();
+        let parameter = ParameterId::new(if owner < 3 { 6 } else { 1 }).unwrap();
         let device = match owner {
             0 => match editor
                 .execute(Command::InsertDevice {

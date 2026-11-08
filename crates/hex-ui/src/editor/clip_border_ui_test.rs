@@ -8,6 +8,51 @@ use crate::theme;
 use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext};
 use hex_project::{BeatTime, ClipId, Command, Created, Editor};
 use std::sync::Arc;
+/// Real scene probe shared by preview consumers; source/input tests own the gesture.
+pub(in crate::editor) fn assert_open_upper_right(
+    visual: &mut VisualTestContext,
+    selector: &'static str,
+    trailing: &'static str,
+    title: Option<&'static str>,
+) {
+    let bounds = visual
+        .debug_bounds(selector)
+        .expect("actual preview surface");
+    assert!(bounds.size.width > gpui::px(2.0) && bounds.size.height > gpui::px(2.0));
+    let scale = visual.update(|window, _| window.scale_factor());
+    let cut = 5.0_f32
+        .min(f32::from(bounds.size.width) / 2.0)
+        .min(f32::from(bounds.size.height) / 2.0);
+    let corner = gpui::point(
+        bounds.right() - gpui::px(0.25),
+        bounds.top() + gpui::px(cut * 0.5),
+    )
+    .scale(scale);
+    // Match the surface/header's own completed quads, not an underlying clip
+    // that the transparent cut is correctly allowed to reveal.
+    for paint_selector in std::iter::once(selector).chain(title) {
+        let layers = visual.rendered_quad_paint_layers(paint_selector, false);
+        assert!(!layers.is_empty(), "actual completed surface/header paint");
+        assert!(
+            layers.iter().all(|(_, mask)| !mask.contains(&corner)),
+            "preview fill and title must leave the actual cut open"
+        );
+    }
+    let edge = visual
+        .debug_bounds(trailing)
+        .expect("physical trailing column");
+    assert_eq!(edge.left(), bounds.right());
+    assert_eq!(f64::from(edge.scale(scale).size.width), 1.0);
+    let layers = visual.rendered_quad_paint_layers(trailing, false);
+    assert!(!layers.is_empty());
+    assert!(
+        layers
+            .iter()
+            .all(|(_, mask)| mask.top() >= (bounds.top() + gpui::px(cut)).scale(scale)),
+        "edge must begin below the cut"
+    );
+}
+
 fn click(visual: &mut VisualTestContext, clip: ClipId, modifiers: Modifiers) {
     let selector = Box::leak(format!("clip-name-{}", clip.value()).into_boxed_str());
     let bounds = visual.debug_bounds(selector).unwrap();

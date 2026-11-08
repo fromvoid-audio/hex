@@ -3835,7 +3835,12 @@ fn alias_drag_preview_and_release_follow_live_modifiers_for_audio_and_midi(
         };
         visual.simulate_modifiers_change(alias);
         visual.run_until_parked();
-        assert!(visual.debug_bounds("clip-alias-drag-indicator").is_some());
+        let badge = visual.debug_bounds("clip-alias-drag-indicator").unwrap();
+        let preview = visual.debug_bounds("clip-drop-preview").unwrap();
+        assert!(
+            badge.right() <= preview.right() - px(5.0),
+            "alias badge clears the clip corner cut"
+        );
         visual.simulate_modifiers_change(Modifiers {
             alt: true,
             ..Modifiers::default()

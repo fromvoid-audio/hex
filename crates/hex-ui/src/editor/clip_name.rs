@@ -266,31 +266,30 @@ impl EditorView {
         self.clip_name_strip(track, clip, name, fill, true, true, notched, cx)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn clip_name_preview_header(
         &self,
         track: hex_project::TrackId,
         clip: ClipId,
         name: &str,
+        fill: u32,
+        on_backdrop: bool,
+        notched: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        self.clip_name_strip(
-            track,
-            clip,
-            name,
-            theme::color(theme::PaletteRole::Raised),
-            false,
-            false,
-            false,
-            cx,
-        )
+        self.clip_name_strip(track, clip, name, fill, false, on_backdrop, notched, cx)
     }
     pub(super) fn clip_name_drag_header(
         &self,
         clip: ClipId,
         name: &str,
         fill: u32,
+        on_backdrop: bool,
     ) -> impl IntoElement + use<> {
         clip_name_surface(fill)
+            .when(on_backdrop, |header| {
+                header.bg(gpui::transparent_black()).pr(px(6.0))
+            })
             .id(("clip-drag-name", clip.value()))
             .debug_selector(move || format!("clip-drag-name-{}", clip.value()))
             .child(clip_name_text(name))

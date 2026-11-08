@@ -25,6 +25,9 @@ struct Fixture {
     media: BTreeMap<hex_project::AssetId, Audio>,
 }
 fn fixture(id: DeviceTypeId, frames: usize) -> Fixture {
+    fixture_owner(id, frames, 0)
+}
+fn fixture_owner(id: DeviceTypeId, frames: usize, owner: u8) -> Fixture {
     let mut e = Editor::new(Project::new(RATE).unwrap(), 32).unwrap();
     let Created::Imported { track, asset, .. } = e
         .execute(Command::ImportPreparedAudioTrack {
@@ -39,14 +42,40 @@ fn fixture(id: DeviceTypeId, frames: usize) -> Fixture {
     else {
         panic!("import")
     };
-    let Created::Device(device) = e
-        .execute(Command::InsertDevice {
+    let state = hex_engine::default_native_device_state(id).unwrap();
+    let command = match owner {
+        0 => Command::InsertDevice {
             track,
             before: None,
-            state: hex_engine::default_native_device_state(id).unwrap(),
-        })
-        .unwrap()
-    else {
+            state,
+        },
+        1 => Command::InsertMainDevice {
+            before: None,
+            state,
+        },
+        _ => {
+            let Created::ReturnTrack(return_track) = e
+                .execute(Command::AddReturnTrack {
+                    name: "return".into(),
+                })
+                .unwrap()
+            else {
+                panic!("return")
+            };
+            e.execute(Command::SetReturnSend {
+                track,
+                return_track,
+                gain: 1.0,
+            })
+            .unwrap();
+            Command::InsertReturnDevice {
+                return_track,
+                before: None,
+                state,
+            }
+        }
+    };
+    let Created::Device(device) = e.execute(command).unwrap() else {
         panic!("device")
     };
     Fixture {
@@ -411,4 +440,107 @@ fn nonlinear_host_positions_match_static_millidb_and_zero_db_is_bit_exact() {
     );
     assert_eq!(render(&f, false, 513, 31), original);
     assert_eq!(render(&f, true, 513, 31), original);
+}
+
+#[test]
+fn limiter_scalar_targets_reach_every_effect_owner_and_both_renderers() {
+    use hex_devices::limiter::parameter as p;
+    limiter_values(&[
+        (p::GAIN, 0.75),
+        (p::CEILING, 0.75),
+        (
+            p::RELEASE,
+            (10.0_f32 / 0.01).ln() / (3000.0_f32 / 0.01).ln(),
+        ),
+    ]);
+}
+#[test]
+fn limiter_switch_and_lr_link_targets_reach_every_owner() {
+    use hex_devices::limiter::parameter as p;
+    limiter_values(&[(p::AUTO_RELEASE, 1.0), (p::LINK, 0.0), (p::MAXIMIZE, 1.0)]);
+}
+#[test]
+fn limiter_maximize_levels_and_ms_link_targets_reach_every_owner() {
+    use hex_devices::limiter::parameter as p;
+    limiter_values(&[
+        (p::THRESHOLD, 0.25),
+        (p::OUTPUT, 0.5),
+        (p::LINK_MID_SIDE, 1.0),
+    ]);
+}
+fn limiter_values(parameters: &[(hex_lattice_contract::ParameterId, f32)]) {
+    use hex_devices::limiter::{DEFINITION as D, parameter as p};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    for owner in 0..3 {
+        for &(parameter, normalized) in parameters {
+            let mut f = fixture_owner(DeviceTypeId::from_static("hex.limiter"), 1024, owner);
+            let settings = D
+                .patch_parameter(
+                    &D.default_state().unwrap(),
+                    p::CEILING,
+                    ParameterValue::Float(-18.0),
+                )
+                .unwrap();
+            let mut settings = settings;
+            for (id, value) in [
+                (
+                    p::MAXIMIZE,
+                    ParameterValue::Bool(matches!(parameter, p::THRESHOLD | p::OUTPUT)),
+                ),
+                (
+                    p::THRESHOLD,
+                    ParameterValue::Float(if parameter == p::MAXIMIZE {
+                        -12.0
+                    } else {
+                        -0.3
+                    }),
+                ),
+                (
+                    p::ROUTING,
+                    ParameterValue::Choice(u32::from(parameter == p::LINK_MID_SIDE)),
+                ),
+            ] {
+                settings = D.patch_parameter(&settings, id, value).unwrap();
+            }
+            state(&mut f, settings);
+            let before = render(&f, true, 1024, 127);
+            lane(
+                &mut f,
+                Target::Parameter(parameter),
+                vec![AutomationPoint {
+                    beat: BeatTime::ZERO,
+                    value: AutomationValue::new(normalized).unwrap(),
+                    outgoing: Curve::Step,
+                }],
+            );
+            let whole = render(&f, true, 1024, 1024);
+            close(&whole, &render(&f, true, 1024, 13));
+            close(&whole, &render(&f, false, 1024, 31));
+            assert!(
+                whole
+                    .iter()
+                    .zip(&before)
+                    .any(|(a, b)| a.iter().zip(b).any(|(a, b)| (a - b).abs() > 1e-6)),
+                "owner {owner} parameter {parameter:?}"
+            );
+            let revision = Arc::new(
+                PreparedRevision::prepare(
+                    f.e.project(),
+                    &f.media,
+                    Arc::new(SineTable::new()),
+                    None,
+                )
+                .unwrap(),
+            );
+            let mut playback = SessionPlayback::new(revision).unwrap();
+            playback.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut output = vec![[0.0; 2]; 1024];
+            playback.render(&mut output).unwrap();
+            playback.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+            for block in output.chunks_mut(17) {
+                playback.render(block).unwrap();
+            }
+            close(&whole, &output);
+        }
+    }
 }
