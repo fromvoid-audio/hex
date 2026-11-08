@@ -63,7 +63,8 @@ impl EditorView {
         cx.notify();
     }
 
-    fn cancel_update(&mut self, id: u64, cx: &Context<Self>) {
+    pub(super) fn cancel_update(&mut self, id: u64, cx: &Context<Self>) {
+        self.automation_close_preflight.cancel_update(id);
         if let Some(client) = cx.try_global::<crate::UpdateClient>() {
             let _ = client.send(UpdateCommand::Cancel(id));
         }
@@ -348,6 +349,9 @@ impl EditorView {
     }
 
     pub(super) fn reconcile_update_ready(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.automation_close_preflight.awaiting_update() {
+            return;
+        }
         let Some(ready) = self.update_flow.ready.take() else {
             return;
         };
@@ -383,6 +387,7 @@ impl EditorView {
                 && !view.automation_close_preflight.blocks_update_approval()
                 && !window.is_pointer_dragging()
                 && !view.gain_recorder.blocks_edits()
+                && !view.native_automation_recorder.busy()
                 && !view.midi_recorder.blocks_edits();
             let same_document = view.project_generation == generation
                 && view
@@ -413,6 +418,15 @@ impl EditorView {
                 view.cancel_update(id, cx);
                 view.error = Some("theme save in progress · update cancelled".into());
                 cx.notify();
+                return;
+            }
+            if !view.automation_close_preflight.update_safe(id) {
+                view.update_flow.ready = Some(ready);
+                if let Err(reason) = view.begin_update_automation_close(id, window, cx) {
+                    view.cancel_update(id, cx);
+                    view.error = Some(reason.into());
+                    cx.notify();
+                }
                 return;
             }
             view.cancel_browser_sample_playback();
@@ -449,6 +463,57 @@ mod tests {
             self.0.store(true, Ordering::SeqCst);
             Ok(())
         }
+    }
+
+    #[gpui::test]
+    fn cancelling_update_releases_automation_freeze_without_approving(cx: &mut TestAppContext) {
+        let service = Service::new(48_000, 32, 8_000_000).unwrap();
+        let deadline = crate::test_wait::hang_deadline();
+        let event = loop {
+            if let Ok(event) = service.try_event() {
+                break event;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        };
+        let approved = Arc::new(AtomicBool::new(false));
+        let visual = cx.add_window(|_, _| Empty);
+        let handle: AnyWindowHandle = *visual;
+        let editor = cx
+            .update_window(handle, |_, window, cx| {
+                let editor = window.replace_root(cx, |window, cx| {
+                    EditorView::new(window, cx, service, Err("offline fixture".into()))
+                });
+                editor.update(cx, |view, cx| {
+                    view.receive(event);
+                    let revision = view.state.as_ref().unwrap().revision;
+                    view.update_flow.phase = Phase::Preparing {
+                        id: 7,
+                        saved: None,
+                        discard: true,
+                        generation: view.project_generation,
+                        revision,
+                    };
+                    view.update_flow.ready = Some(UpdateReady {
+                        id: 7,
+                        approval: Box::new(Approval(approved.clone())),
+                    });
+                    view.reconcile_update_ready(window, cx);
+                    cx.defer_in(window, |view, _, cx| {
+                        assert!(view.automation_close_preflight.frozen());
+                        view.cancel_requested_update(cx);
+                        assert!(!view.automation_close_preflight.frozen());
+                    });
+                });
+                editor
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert!(!approved.load(Ordering::SeqCst));
+        assert!(editor.read_with(cx, |view, _| matches!(view.update_flow.phase, Phase::Idle)));
+        assert_eq!(cx.windows().len(), 1);
+        cx.update_window(handle, |_, window, _| window.remove_window())
+            .unwrap();
     }
 
     #[gpui::test]
@@ -625,7 +690,26 @@ mod tests {
             });
         })
         .unwrap();
+        assert!(
+            !approved.load(Ordering::SeqCst),
+            "helper approval waits for custody read"
+        );
         cx.run_until_parked();
+        while !approved.load(Ordering::SeqCst) {
+            cx.update_window(handle, |_, window, cx| {
+                editor.update(cx, |view, cx| {
+                    view.tick(cx);
+                    view.reconcile_update_ready(window, cx);
+                });
+            })
+            .unwrap();
+            cx.run_until_parked();
+            assert!(
+                Instant::now() < deadline,
+                "update custody read did not settle"
+            );
+            std::thread::yield_now();
+        }
         assert!(approved.load(Ordering::SeqCst));
         std::fs::remove_file(path).unwrap();
     }
