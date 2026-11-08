@@ -21,6 +21,8 @@ use hex_session::service::BusyReason;
 /// Editor-owned pending custodies one request matches.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct PendingKinds {
+    /// Read-only host observations are polled but never block editor gestures.
+    parameter_observation: bool,
     trim: bool,
     loop_region: bool,
     group_copy: bool,
@@ -71,6 +73,7 @@ impl EditorView {
     pub(super) fn classify_submission(&self, request: &Request) -> Submission {
         Submission {
             kinds: PendingKinds {
+                parameter_observation: matches!(request, Request::QueryPluginParameters(_)),
                 trim: self.pending_trim_matches(request),
                 loop_region: self.pending_loop_matches(request),
                 group_copy: self.pending_group_copy_matches(request),
@@ -129,7 +132,11 @@ impl EditorView {
             kinds,
             import_intent,
         } = submission;
-        self.worker_submitted();
+        if kinds.parameter_observation {
+            self.wake_poll();
+        } else {
+            self.worker_submitted();
+        }
         if kinds.project_rate {
             self.project_rate_settings
                 .submitted(self.worker_requests_pending);
