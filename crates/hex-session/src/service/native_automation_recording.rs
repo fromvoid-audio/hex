@@ -386,4 +386,4 @@ fn draft_path(directory: &Path) -> Result<PathBuf, String> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

@@ -783,7 +783,12 @@ fn recorded_touch_admission_and_exclusive_restoration_use_actual_output() {
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn recorded_session_gesture_commits_one_take_and_reopens() {
     std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE")
-        .map(|case| assert_eq!(case, "session_record"))
+        .map(|case| {
+            assert!(matches!(
+                case.as_str(),
+                "session_record" | "session_refused" | "session_cancel" | "session_empty"
+            ))
+        })
         .expect("run explicitly with HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE=session_record");
     instrument_entrypoint(InstrumentWorkflow::Takeover);
 }
@@ -1890,11 +1895,17 @@ fn verify_instrument_takeover(
         }
     };
     let mut client = GestureClient::default();
-    if case == "session_record" {
+    if case.starts_with("session_") {
         let origin = query(h, 12);
         let binding = h.plugin_progress.lock().unwrap().binding;
         client.begin_plugin_recording(origin).unwrap();
         assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
+        if case == "session_empty" {
+            client.finish_plugin(origin.initial).unwrap();
+            let empty = send(h, &mut client, true);
+            assert_eq!(empty.state.project.as_ref(), &before);
+            return;
+        }
         for value in [0.75, 0.375] {
             client
                 .change_plugin(PluginParameterValue::new(value).unwrap())
@@ -1902,7 +1913,27 @@ fn verify_instrument_takeover(
             assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
             assert!((peak(h) - baseline * value as f32 / 0.25).abs() < 0.0001);
         }
+        if case == "session_cancel" {
+            client.cancel().unwrap();
+            let cancelled = send(h, &mut client, true);
+            assert_eq!(cancelled.state.project.as_ref(), &before);
+            assert!((peak(h) - baseline).abs() < 0.0001);
+            return;
+        }
         client.finish_plugin(origin.initial).unwrap();
+        if case == "session_refused" {
+            h.refuse.store(true, std::sync::atomic::Ordering::Release);
+            let refused = send(h, &mut client, false);
+            h.refuse.store(false, std::sync::atomic::Ordering::Release);
+            assert_eq!(refused.state.project.as_ref(), &before);
+            assert!(!refused.gesture_ack.unwrap().preview_retained);
+            assert!((peak(h) - baseline).abs() < 0.0001);
+            client.begin_plugin_recording(query(h, 13)).unwrap();
+            send(h, &mut client, true);
+            client.cancel().unwrap();
+            send(h, &mut client, true);
+            return;
+        }
         let committed = send(h, &mut client, true);
         assert_ne!(committed.state.project.as_ref(), &before);
         applied = h.applied(applied).0;

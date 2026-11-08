@@ -2370,7 +2370,14 @@ impl Session {
             &transition,
             Transition::SectionCommand { .. } | Transition::SectionHistory { .. }
         );
-        let plugin_parameter = matches!(&transition, Transition::PluginParameter(_));
+        let plugin_parameter = matches!(&transition, Transition::PluginParameter(_))
+            || matches!(
+                &transition,
+                Transition::DeviceAutomationTake {
+                    target: super::DeviceCaptureTarget::Vst3(_),
+                    ..
+                }
+            );
         let explicit_tuning = matches!(&transition, Transition::Command(command)
             if matches!(command.as_ref(), Command::SetTuning(..)));
         let prepare = |source: &Project, project: &Project| {

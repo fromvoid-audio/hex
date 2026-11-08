@@ -1,6 +1,7 @@
 //! Control-side connection from one keyed SDK gesture to the existing device
 //! take Lane. The Lane retains disk custody; this owner retains at most one
-//! original observation under backpressure and one terminal request while disk
+//! original observation under backpressure, at most two later SDK observations
+//! during failed-input release, and one terminal request while disk
 //! completion is pending. No callback, UI clock or second writer lives here.
 use super::*;
 use crate::device_gesture::{PluginGesturePreparation, PreparedGesture};
@@ -20,6 +21,8 @@ struct Active {
     scope: DeviceAutomationTakeScope,
     pending: Option<DeviceAutomationTakeAction>,
     released: bool,
+    ended: bool,
+    failed_observations: [Option<PluginParameterObservation>; 2],
     interrupted: bool,
     sealing: bool,
     outcome: Option<Result<Step, String>>,
@@ -118,6 +121,73 @@ impl Preparation<'_> {
             .state
             .active
             .as_ref()
+            .is_some_and(|active| matches!(active.outcome, Some(Err(_))))
+        {
+            if !self.may_defer {
+                return Some(Err(SessionError::Invalid(
+                    "vst3 take writer failed; release the gesture to retain recovery",
+                )));
+            }
+            self.retain_failed_observations(context, sink);
+            if !self
+                .state
+                .active
+                .as_ref()
+                .is_some_and(|active| active.ended)
+            {
+                let snapshot = snapshot(operation);
+                let Some(initial) = snapshot.plugin_value else {
+                    return Some(Err(SessionError::Invalid(
+                        "plugin recording value is unavailable",
+                    )));
+                };
+                let device = match snapshot.target {
+                    crate::device_gesture::GestureTarget::PluginParameter { device, .. } => device,
+                    _ => {
+                        return Some(Err(SessionError::Invalid(
+                            "plugin recording target changed",
+                        )));
+                    }
+                };
+                let Some(device) = session.project().device(device) else {
+                    return Some(Err(SessionError::PluginSourceLost(
+                        "plugin recording device changed".into(),
+                    )));
+                };
+                let class = observation_class(session, snapshot);
+                let result = sink.prepare_plugin_parameter_gesture(PluginParameterGestureInput {
+                    context,
+                    operation: PluginGesturePreparation::Restore { snapshot, initial },
+                    canonical_state: device.state(),
+                    reading_class: class,
+                    isolated_class: class,
+                    confirm_delivery: true,
+                    record_touch: true,
+                    instrument: session
+                        .project()
+                        .native_sources()
+                        .iter()
+                        .any(|source| source.instrument().id() == device.id()),
+                });
+                self.retain_failed_observations(context, sink);
+                if let Err(PluginParameterGestureError::SourceLost(reason)) = result {
+                    return Some(Err(SessionError::PluginSourceLost(reason)));
+                }
+                if !self
+                    .state
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.ended)
+                {
+                    return Some(self.pending_result());
+                }
+            }
+            return Some(self.finish(session, operation, context, sink, Some(current), admission));
+        }
+        if self
+            .state
+            .active
+            .as_ref()
             .is_some_and(|active| active.sealing || active.outcome.is_some())
         {
             if matches!(operation, PluginGesturePreparation::Preview(_)) {
@@ -166,6 +236,8 @@ impl Preparation<'_> {
                     scope,
                     pending: None,
                     released: false,
+                    ended: false,
+                    failed_observations: [None; 2],
                     interrupted: false,
                     sealing: false,
                     outcome: None,
@@ -229,6 +301,15 @@ impl Preparation<'_> {
         context: hex_engine::AudioSourceContext,
         sink: &mut dyn WorkerAudioSink,
     ) {
+        if self
+            .state
+            .active
+            .as_ref()
+            .is_some_and(|active| matches!(active.outcome, Some(Err(_))))
+        {
+            self.retain_failed_observations(context, sink);
+            return;
+        }
         let Some(active) = self.state.active.as_mut() else {
             return;
         };
@@ -255,6 +336,12 @@ impl Preparation<'_> {
                         active.interrupted |= matches!(
                             **observation,
                             PluginParameterObservation::Interrupted { .. }
+                        );
+                        active.ended |= matches!(
+                            **observation,
+                            PluginParameterObservation::Restored(_)
+                                | PluginParameterObservation::Unchanged { .. }
+                                | PluginParameterObservation::Interrupted { .. }
                         );
                     }
                     active.sealing |= progress == DeviceAutomationTakeProgress::Sealing;
@@ -308,6 +395,47 @@ impl Preparation<'_> {
                 "vst3 automation finish timed out; original take remains in recovery custody"
                     .into(),
             ));
+        }
+    }
+
+    fn retain_failed_observations(
+        &mut self,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+    ) {
+        let Some(active) = self.state.active.as_mut() else {
+            return;
+        };
+        for slot in &mut active.failed_observations {
+            if slot.is_some() {
+                continue;
+            }
+            let Some(observation) = sink.take_plugin_parameter_observation() else {
+                break;
+            };
+            let matches = |point: PluginParameterDelivery| {
+                DeviceAutomationTakeScope::from_plugin_ready(
+                    context,
+                    &PluginParameterObservation::Ready {
+                        key: point.key,
+                        context: point.context,
+                        target: point.target,
+                        source: point.source,
+                    },
+                )
+                .is_ok_and(|scope| scope == active.scope)
+            };
+            match observation {
+                PluginParameterObservation::Restored(point) if matches(point) => {
+                    active.released = true;
+                    active.ended = true;
+                }
+                PluginParameterObservation::Unchanged { key } if key == active.key => {
+                    active.ended = true;
+                }
+                _ => {}
+            }
+            *slot = Some(observation);
         }
     }
 
@@ -389,10 +517,13 @@ impl Preparation<'_> {
                         current.as_ref(),
                     )
                     .map_err(|error| {
-                        SessionError::NativeAudio(native_automation_recording::retained_error(
-                            &path,
-                            &error.to_string(),
-                        ))
+                        let reason =
+                            native_automation_recording::retained_error(&path, &error.to_string());
+                        if matches!(error, SessionError::PluginSourceLost(_)) {
+                            SessionError::PluginSourceLost(reason)
+                        } else {
+                            SessionError::NativeAudio(reason)
+                        }
                     })?;
                 *current = Some(snapshot);
             }
@@ -413,13 +544,19 @@ impl Preparation<'_> {
             );
         }
         let result = result.map_err(|error: SessionError| {
-            if active.released {
+            if active.ended
+                && !active.interrupted
+                && !matches!(error, SessionError::PluginSourceLost(_))
+            {
                 SessionError::PluginRecordingReleased(error.to_string())
             } else {
                 error
             }
         });
-        if active.pending.is_some() || self.lane.busy() {
+        if active.pending.is_some()
+            || self.lane.busy()
+            || active.failed_observations.iter().any(Option::is_some)
+        {
             self.state.failed = Some(active);
         }
         result
@@ -443,3 +580,6 @@ fn observation_class(session: &Session, snapshot: GestureSnapshot) -> Option<[u8
         .automation_target(hex_lattice_contract::DeviceAutomationTarget::Vst3 { parameter })?
         .vst3_class
 }
+
+#[cfg(test)]
+mod tests;
