@@ -57,7 +57,7 @@ fn compact_notes_match_standalone_pcm_across_routes_gates_and_query_order() {
 }
 
 #[test]
-fn all_frequencies_are_validated_even_when_an_operator_is_inaudible() {
+fn rates_and_midi_values_are_validated_while_nyquist_operators_are_silenced() {
     let mut oscillators = [Oscillator::new(1.0, 1.0, 0.0).expect("oscillator"); 4];
     oscillators[3] = Oscillator::new(128.0, 0.0, 0.0).expect("inaudible oscillator");
     let routing = Routing::new([[0.0; 4]; 4], [1.0, 0.0, 0.0, 0.0]).expect("routing");
@@ -68,7 +68,7 @@ fn all_frequencies_are_validated_even_when_an_operator_is_inaudible() {
     let context =
         PreparedOperatorConfiguration::new(8000, oscillators, routing, envelopes).expect("context");
     assert!(context.prepare_note(0, 100).is_ok());
-    assert!(context.prepare_note(60, 100).is_err());
+    assert!(context.prepare_note(60, 100).is_ok());
     assert!(context.prepare_note(128, 100).is_err());
     assert!(context.prepare_note(0, 0).is_err());
     assert!(context.prepare_note(0, 128).is_err());

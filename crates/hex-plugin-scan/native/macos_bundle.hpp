@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 namespace hex_bundle {
@@ -47,22 +48,24 @@ static NSString* member(NSString* root,NSString* relative) {
     if(![[info fileType] isEqual:NSFileTypeRegular]) throw std::runtime_error("nonregular bundle input");
     return current;
 }
-static std::string digest(NSString* path,uint64_t maximum) {
+static std::string digest(NSString* path,std::optional<uint64_t> maximum=std::nullopt) {
     NSDictionary* info=[[NSFileManager defaultManager] attributesOfItemAtPath:path error:nullptr];
-    if(!info || ![[info fileType] isEqual:NSFileTypeRegular] || [info fileSize]>maximum) throw std::runtime_error("scan file bound refused");
+    if(!info || ![[info fileType] isEqual:NSFileTypeRegular]) throw std::runtime_error("nonregular scan input");
+    uint64_t remaining=[info fileSize];
+    if(maximum && remaining>*maximum) throw std::runtime_error("scan file bound refused");
     std::ifstream input([path fileSystemRepresentation],std::ios::binary);
     if(!input) throw std::runtime_error("scan file open failed");
     CC_SHA256_CTX context{}; CC_SHA256_Init(&context);
     std::array<char,65536> block{};
-    uint64_t total=0;
-    while(input) {
-        input.read(block.data(),block.size());
-        auto count=input.gcount();
-        if(count<0 || static_cast<uint64_t>(count)>maximum-total) throw std::runtime_error("scan file grew beyond bound");
-        total+=static_cast<uint64_t>(count);
+    // Bound reads by the observed length, with constant scratch regardless of module size.
+    while(remaining) {
+        auto count=remaining<block.size()?static_cast<size_t>(remaining):block.size();
+        if(!input.read(block.data(),count)) throw std::runtime_error("scan file read failed or truncated");
         CC_SHA256_Update(&context,block.data(),static_cast<CC_LONG>(count));
+        remaining-=count;
     }
-    if(!input.eof()) throw std::runtime_error("scan file read failed");
+    if(input.peek()!=std::ifstream::traits_type::eof()) throw std::runtime_error("scan file grew during validation");
+    if(!input.eof() || input.bad()) throw std::runtime_error("scan file end read failed");
     std::array<unsigned char,CC_SHA256_DIGEST_LENGTH> hash{}; CC_SHA256_Final(hash.data(),&context);
     char result[65]={};
     for(size_t i=0;i<hash.size();++i) std::snprintf(result+2*i,3,"%02x",hash[i]);

@@ -28,6 +28,8 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
         let instrument_id = next_id;
         next_id += 1;
         tracks.push(TrackSnapshot {
+            group_output_mutes: Vec::new(),
+            tags: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),
@@ -102,6 +104,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
     }
     Ok(Project::from_legacy_snapshot(Snapshot {
         automatic_track_names: Vec::new(),
+        retained_source_paths: Vec::new(),
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
@@ -110,8 +113,10 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
+        sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,
+        sample_rate_mode: Default::default(),
         next_id,
         assets: Vec::new(),
         tracks,

@@ -590,6 +590,7 @@ fn final_admission_refusal_preserves_exact_current_waveform_owners() {
             None,
             AudioImportOptions {
                 warp,
+                new_track_gain: Some(0.25),
                 ..Default::default()
             },
             || {
@@ -601,6 +602,7 @@ fn final_admission_refusal_preserves_exact_current_waveform_owners() {
                 }
             },
             |input, admit| {
+                assert_eq!(input.project.tracks().last().unwrap().gain(), 0.25);
                 let staged = input.waveforms;
                 prepare_asset_free(input, &mut || {
                     if warp == hex_project::AudioImportWarp::Beats {

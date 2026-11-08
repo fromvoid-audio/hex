@@ -17,6 +17,15 @@ pub enum MeterLevel {
     Clipping,
 }
 impl MeterLevel {
+    /// Height for a linear sample amplitude on the shared -60 to 0 dBFS
+    /// display scale. Nonpositive and non-finite readings draw empty.
+    pub fn fraction_from_amplitude(amplitude: f32) -> f32 {
+        if !amplitude.is_finite() || amplitude <= 0.0 {
+            return 0.0;
+        }
+        ((20.0 * amplitude.log10() + 60.0) / 60.0).clamp(0.0, 1.0)
+    }
+
     pub fn from_dbfs(dbfs: f32, clipping: bool) -> Self {
         if clipping || (dbfs.is_finite() && dbfs > 0.0) {
             Self::Clipping
@@ -77,11 +86,13 @@ pub fn level_meter(id: SharedString, fraction: f32, above: bool, style: LevelMet
         held_clipping: false,
         color: style.above,
     };
-    meter_body(id, fraction, style).child(cap)
+    signal_meter(id, fraction, style).child(cap)
 }
 
-/// Shared signal well; device gain meters install their cap after the gain handle.
-pub(crate) fn meter_body(id: SharedString, fraction: f32, style: LevelMeterStyle) -> Div {
+/// Passive normalized signal well without a clipping cap or input behavior.
+/// Owners supply calibrated fractions and may overlay scale/peak marks. Device
+/// gain meters use this same well and install their cap after the gain handle.
+pub fn signal_meter(id: SharedString, fraction: f32, style: LevelMeterStyle) -> Div {
     meter_body_direction(id, fraction, style, false)
 }
 
@@ -119,6 +130,15 @@ fn meter_body_direction(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn amplitude_fraction_uses_sixty_db_floor_and_bounds_invalid_readings() {
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0, 0.0, 0.001] {
+            assert_eq!(MeterLevel::fraction_from_amplitude(value), 0.0);
+        }
+        for (amplitude, expected) in [(0.01, 1.0 / 3.0), (0.1, 2.0 / 3.0), (1.0, 1.0), (2.0, 1.0)] {
+            assert!((MeterLevel::fraction_from_amplitude(amplitude) - expected).abs() < 1e-6);
+        }
+    }
     #[test]
     fn near_peak_units_and_explicit_overload_are_independent_of_display_height() {
         for (dbfs, expected) in [

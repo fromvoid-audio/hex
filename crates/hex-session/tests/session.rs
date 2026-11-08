@@ -95,11 +95,11 @@ fn prepared_import_compiles_exact_audio_and_waveform_summary() {
         session.audio(asset).expect("resident audio").sample_rate(),
         48_000
     );
-    assert_eq!(waveform.source_frames, 3);
-    assert_eq!(waveform.bins.len(), 3);
-    assert_eq!(waveform.bins[0][0].min, 0.25);
-    assert_eq!(waveform.bins[2][0].min, -1.0);
-    assert_eq!(waveform.bins[2][1].max, 32_767.0 / 32_768.0);
+    assert_eq!(waveform.source_frames(), 3);
+    assert_eq!(waveform.bins().len(), 3);
+    assert_eq!(waveform.bins()[0][0].min, 0.25);
+    assert_eq!(waveform.bins()[2][0].min, -1.0);
+    assert_eq!(waveform.bins()[2][1].max, 32_767.0 / 32_768.0);
 
     let playback = session.compile().expect("compile session");
     let mut renderer = hex_engine::Renderer::new(&playback);
@@ -779,7 +779,8 @@ fn waveform_summary_caps_resolution_and_keeps_bucket_extrema() {
             .import(prepare(&directory, "waveform.wav", 48_000, &samples))
             .expect("import"),
     );
-    let bins = &session.waveform(asset).expect("waveform").bins;
+    let waveform = session.waveform(asset).expect("waveform");
+    let bins = waveform.bins();
     assert_eq!(bins.len(), 2_048);
     assert_eq!(bins[1][0].max, 0.5);
     assert_eq!(bins[1][1].min, -0.25);
@@ -863,7 +864,7 @@ fn converted_import_preserves_source_metadata_and_uses_playback_frames_for_histo
         },
     )
     .expect("prepare conversion");
-    assert_eq!(prepared.waveform().source_frames, 480);
+    assert_eq!(prepared.waveform().source_frames(), 480);
     let mut session = Session::new(48_000, 8, 441 + 480).expect("original plus playback budget");
     let (_, asset, clip) = imported_ids(session.import(prepared).expect("import"));
     assert_eq!(session.source_audio(asset).unwrap().sample_rate(), 44_100);
@@ -873,9 +874,10 @@ fn converted_import_preserves_source_metadata_and_uses_playback_frames_for_histo
     assert_eq!(metadata.source_sample_rate(), 44_100);
     assert_eq!(metadata.source_frames(), 441);
     assert_eq!(metadata.playback_frames(), 480);
+    // New imports record and render sinc v2.
     assert_eq!(
         metadata.conversion_version(),
-        hex_project::SINC_CONVERSION_V1
+        hex_project::SINC_CONVERSION_V2
     );
     assert_eq!(
         session.project().clip(clip).expect("clip").source_length(),
@@ -887,6 +889,17 @@ fn converted_import_preserves_source_metadata_and_uses_playback_frames_for_histo
         .expect("prepared PCM")
         .frames()
         .to_vec();
+    let v2 = hex_media::resample_with_version(
+        session.source_audio(asset).unwrap(),
+        48_000,
+        hex_media::ResampleLimits {
+            max_source_frames: 441,
+            max_output_frames: 480,
+        },
+        hex_media::ResampleVersion::V2,
+    )
+    .expect("v2 oracle");
+    assert_eq!(original, v2.frames());
     assert!(session.undo());
     assert!(session.project().tracks().is_empty());
     assert_eq!(session.resident_frames(), 441 + 480);
@@ -1141,7 +1154,8 @@ fn clip_loop_resize_preserves_audio_cycle_through_render_export_reopen_and_histo
     let summaries = session.audio_clip_waveforms().unwrap();
     let accepted = &summaries[&clip];
     assert_eq!(
-        accepted.waveform.source_frames, 24,
+        accepted.waveform.source_frames(),
+        24,
         "playback peaks cover the outer placement"
     );
     let root = accepted
@@ -1149,7 +1163,8 @@ fn clip_loop_resize_preserves_audio_cycle_through_render_export_reopen_and_histo
         .as_ref()
         .expect("retained preview root");
     assert_eq!(
-        root.waveform.source_frames, 6,
+        root.waveform.source_frames(),
+        6,
         "cycle resizing keeps the full captured root"
     );
     let hidden = root.waveform.peaks_for_frames(4, 6).unwrap();
@@ -1191,7 +1206,8 @@ fn clip_loop_resize_preserves_audio_cycle_through_render_export_reopen_and_histo
     let decoded = decode_wav_file(&export, Limits::new(4096, 64)).unwrap();
     for (actual, expected) in decoded.audio().frames().iter().zip(&expected) {
         for channel in 0..2 {
-            assert!((actual[channel] - expected[channel]).abs() < 0.00004);
+            // Decode scale (1 LSB) plus rounding and ±1 LSB TPDF dither (1.5 LSB).
+            assert!((actual[channel] - expected[channel]).abs() < 2.6 / 32_768.0);
         }
     }
     assert!(session.undo());
@@ -1306,7 +1322,8 @@ fn clip_loop_resize_midi_trimmed_window_reopens_and_exports_the_same_prepared_no
     assert_eq!(decoded.frames(), frames);
     for (actual, expected) in decoded.audio().frames().iter().zip(&expected) {
         for channel in 0..2 {
-            assert!((actual[channel] - expected[channel]).abs() < 0.00004);
+            // Decode scale (1 LSB) plus rounding and ±1 LSB TPDF dither (1.5 LSB).
+            assert!((actual[channel] - expected[channel]).abs() < 2.6 / 32_768.0);
         }
     }
     assert!(session.undo());

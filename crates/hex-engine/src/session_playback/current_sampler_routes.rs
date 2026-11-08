@@ -117,6 +117,7 @@ impl SessionPlayback {
             .checked_add(tail)
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
         let voice_capacity = runtime.max_active_occurrences();
+        let runtime_steals = runtime.steals_releasing_voices();
         let proof_capacity = runtime.transition_proof_capacity();
         let event_capacity = runtime
             .max_events_per_block()
@@ -250,7 +251,8 @@ impl SessionPlayback {
                     .query_with_origin(origin, &timing, cut, end, &mut self.spans)
                     .map_err(SessionPlaybackError::Midi)?;
                 (
-                    prepared.work().active_voices,
+                    // Held density when the instrument steals releases.
+                    prepared.instrument_template().admitted_voices(),
                     self.spans.spans().filter(|s| s.start_frame == cut).count(),
                 )
             }
@@ -286,8 +288,16 @@ impl SessionPlayback {
             .len
             .checked_add(incoming_onsets)
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+        // Every survivor is releasing by the cut (held ones receive NoteOff
+        // there, before equal-offset NoteOns), so a stealing provider needs
+        // voice slots for the incoming voices only. Proofs still bound all.
+        let voices = if runtime_steals {
+            incoming_voices
+        } else {
+            total
+        };
         if total > proof_capacity
-            || total > voice_capacity
+            || voices > voice_capacity
             || events > event_capacity
             || incoming_onsets > crate::mutable_instrument::MAX_MUTABLE_SPANS_PER_QUERY
         {

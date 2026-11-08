@@ -34,6 +34,24 @@ impl Device {
     }
 }
 
+impl Project {
+    /// Control-side, history-free preview of an existing device-state edit.
+    /// Reuse the canonical command implementation on an isolated metadata copy;
+    /// this grants no media/runtime/source ownership or identity reservation.
+    /// Commands that change routing, identity or other model owners refuse.
+    pub fn preview_device_edit(&self, command: &Command) -> Result<Self, Invalid> {
+        if !matches!(
+            command,
+            Command::ReplaceDeviceState { .. } | Command::ManualDeviceEdit { .. }
+        ) {
+            return Err(Invalid("command has no device-state preview"));
+        }
+        let mut candidate = self.clone();
+        candidate.apply(command.clone())?;
+        Ok(candidate)
+    }
+}
+
 pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Created, Invalid> {
     match command {
         Command::InsertDevice {
@@ -116,6 +134,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             Ok(crate::Created::None)
         }
         Command::ReplaceDeviceStateWithIdentityReservation {
+            automation,
             device,
             expected_state,
             expected_variant,
@@ -140,7 +159,10 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             let next = expected_next_id
                 .checked_add(reserved_ids)
                 .ok_or(Invalid("project identity space exhausted"))?;
-            project.edit_device(device, |d| d.replace_state(state))?;
+            project.edit_device(device, |d| match automation {
+                Some(change) => d.replace_state_and_automation(state, change),
+                None => d.replace_state(state),
+            })?;
             project.next_id = next;
             Ok(crate::Created::None)
         }
@@ -171,6 +193,13 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
         Command::SetDeviceBypass { device, bypassed } => {
             project.edit_device(device, |d| {
                 d.bypassed = bypassed;
+                Ok(())
+            })?;
+            Ok(crate::Created::None)
+        }
+        Command::ToggleDeviceBypass { device } => {
+            project.edit_device(device, |d| {
+                d.bypassed = !d.bypassed;
                 Ok(())
             })?;
             Ok(crate::Created::None)
@@ -574,11 +603,55 @@ mod tests {
     }
 
     #[test]
+    fn device_preview_matches_canonical_edit_without_history_or_identity_changes() {
+        let mut editor = crate::Editor::new(Project::new(48000).unwrap(), 16).unwrap();
+        let track = track_id(&mut editor, "preview");
+        let device = device_id(&mut editor, track);
+        let original = editor.project().clone();
+        let command = Command::ReplaceDeviceState {
+            device,
+            state: state(vec![4, 2]),
+        };
+        let preview = original.preview_device_edit(&command).unwrap();
+        assert_eq!(editor.project(), &original);
+        editor.execute(command).unwrap();
+        assert_eq!(editor.project(), &preview);
+        assert!(editor.undo());
+        assert_eq!(editor.project(), &original);
+        assert!(
+            original
+                .preview_device_edit(&Command::InsertDevice {
+                    track,
+                    before: None,
+                    state: state(vec![]),
+                })
+                .is_err()
+        );
+        assert!(
+            original
+                .preview_device_edit(&Command::Gain { track, gain: 0.25 })
+                .is_err()
+        );
+        let mut missing = original.clone();
+        missing.apply(Command::RemoveDevice(device)).unwrap();
+        assert!(
+            missing
+                .preview_device_edit(&Command::ReplaceDeviceState {
+                    device,
+                    state: state(vec![]),
+                })
+                .is_err()
+        );
+        assert_eq!(editor.project(), &original);
+    }
+
+    #[test]
     fn opaque_identity_reservation_slot_switch_refuses_before_prepare() {
         let mut editor = crate::Editor::new(Project::new(48000).unwrap(), 16).unwrap();
         let track = track_id(&mut editor, "track");
         let device = device_id(&mut editor, track);
         let command = Command::ReplaceDeviceStateWithIdentityReservation {
+            automation: None,
             device,
             expected_state: editor.project().device(device).unwrap().state().clone(),
             expected_variant: crate::DeviceVariant::A,
@@ -616,6 +689,7 @@ mod tests {
         let entry = editor.project().device(device).unwrap();
         editor
             .execute(Command::ReplaceDeviceStateWithIdentityReservation {
+                automation: None,
                 device,
                 expected_state: entry.state().clone(),
                 expected_variant: entry.active_variant(),
@@ -647,6 +721,7 @@ mod tests {
         let expected = editor.project().device(device).unwrap().state().clone();
         let first = editor.project().next_identity();
         let command = Command::ReplaceDeviceStateWithIdentityReservation {
+            automation: None,
             device,
             expected_state: expected.clone(),
             expected_variant: crate::DeviceVariant::A,
@@ -668,6 +743,7 @@ mod tests {
         assert!(
             editor
                 .execute(Command::ReplaceDeviceStateWithIdentityReservation {
+                    automation: None,
                     device,
                     expected_state: expected,
                     expected_variant: crate::DeviceVariant::A,

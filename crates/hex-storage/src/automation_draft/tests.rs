@@ -4,8 +4,30 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[path = "completed_tests.rs"]
 mod completed_tests;
+#[path = "vst3_tests.rs"]
+mod vst3_tests;
 
 static NEXT_TEST: AtomicU64 = AtomicU64::new(0);
+
+#[test]
+fn journal_record_hash_matches_legacy_digest() {
+    // SHA-256 of a zero chain followed by bytes 0 through 63, generated with
+    // the previous 0.10 backend. Existing journal chains must remain readable.
+    let mut record = [0; RECORD_BYTES];
+    for (index, byte) in record[..PAYLOAD_BYTES].iter_mut().enumerate() {
+        *byte = index as u8;
+    }
+    let sealed = seal(record, [0; 32]);
+    assert_eq!(
+        &sealed[PAYLOAD_BYTES..],
+        &[
+            0xdc, 0x7a, 0x48, 0x01, 0x4f, 0xc1, 0xfa, 0xc8, 0xb5, 0x2a, 0xf3, 0x9b, 0xc7, 0xea,
+            0x5c, 0xaf, 0xaf, 0xab, 0xf8, 0xbb, 0x81, 0xfb, 0x8f, 0x88, 0x0f, 0xdf, 0x3b, 0x4a,
+            0x45, 0x66, 0x79, 0x5c,
+        ]
+    );
+    assert!(valid_hash(&sealed, [0; 32]));
+}
 struct TestDir(PathBuf);
 impl TestDir {
     fn new() -> Self {
@@ -64,8 +86,73 @@ fn limits() -> DraftReadLimits {
         max_source_bytes: 16 * 1024 * 1024,
     }
 }
+// Tests that have dropped their writer wait for the actual shared lock before
+// opening. A retained descriptor still fails after the bound; production reader
+// admission remains nonblocking and its contention tests use it directly.
+#[cfg(unix)]
+pub(super) fn wait_for_shared_lock(
+    path: &Path,
+    bound: std::time::Duration,
+) -> std::io::Result<File> {
+    let file = File::open(path)?;
+    let start = std::time::Instant::now();
+    loop {
+        match fs2::FileExt::try_lock_shared(&file) {
+            Ok(()) => return Ok(file),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock && start.elapsed() < bound =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
 fn open(path: &Path) -> DraftReader {
+    #[cfg(unix)]
+    let _released = wait_for_shared_lock(path, std::time::Duration::from_millis(250)).unwrap();
     DraftReader::open(path, limits()).unwrap()
+}
+
+#[test]
+fn bounded_reader_refuses_only_prefixes_beyond_budget() {
+    let dir = TestDir::new();
+    let path = dir.path();
+    let (source, target, provenance) = fixture();
+    let mut writer = DraftWriter::create_new(&path, &source, target, provenance).unwrap();
+    writer.append(&[event(0), event(1)]).unwrap();
+    drop(writer);
+    let original = fs::read(&path).unwrap();
+
+    let reader = DraftReader::open_bounded(&path, limits(), 2).unwrap();
+    assert_eq!(reader.progress().durable_events, 2);
+    assert_eq!(reader.outcome(), DraftOutcome::Interrupted);
+    drop(reader);
+    let error = DraftReader::open_bounded(&path, limits(), 1).err().unwrap();
+    assert!(error.to_string().contains("event budget"));
+    assert_eq!(fs::read(&path).unwrap(), original);
+    assert_eq!(open(&path).progress().durable_events, 2);
+}
+
+#[test]
+fn bounded_reader_preserves_damage_at_limit() {
+    let dir = TestDir::new();
+    let path = dir.path();
+    let (source, target, provenance) = fixture();
+    let mut writer = DraftWriter::create_new(&path, &source, target, provenance).unwrap();
+    writer.append(&[event(0)]).unwrap();
+    drop(writer);
+    let mut bytes = fs::read(&path).unwrap();
+    bytes.push(1);
+    fs::write(&path, &bytes).unwrap();
+    let reader = DraftReader::open_bounded(&path, limits(), 1).unwrap();
+    assert_eq!(
+        reader.outcome(),
+        DraftOutcome::Damaged {
+            reason: DraftDamage::TruncatedRecord
+        }
+    );
+    assert_eq!(fs::read(&path).unwrap(), bytes);
 }
 
 #[test]
@@ -83,7 +170,16 @@ fn duration_independent_pages_preserve_more_than_65536_exact_applications() {
         for (offset, slot) in batch[..count].iter_mut().enumerate() {
             *slot = event(first + offset as u64);
         }
-        writer.append(&batch[..count]).unwrap();
+        // This test exercises large-draft paging, not per-batch crash durability.
+        // The real finish below syncs the entire file; the separate sync-failure
+        // and interrupted-process tests cover the append durability boundary.
+        writer
+            .append_with(
+                &batch[..count],
+                |file, bytes| file.write_all(bytes),
+                |_| Ok(()),
+            )
+            .unwrap();
     }
     let end = clock(event(COUNT));
     assert_eq!(
@@ -188,7 +284,10 @@ fn partial_write_and_sync_failure_are_sticky_and_keep_recoverable_prefix() {
         let dir = TestDir::new();
         let path = dir.path();
         let mut writer = DraftWriter::create_new(&path, &source, target, provenance).unwrap();
+        let empty_identity = writer.durable_prefix_identity();
         writer.append(&[event(0)]).unwrap();
+        let acknowledged = writer.durable_prefix_identity();
+        assert_ne!(acknowledged, empty_identity);
         let error = if fail_sync {
             writer
                 .append_with(
@@ -211,11 +310,14 @@ fn partial_write_and_sync_failure_are_sticky_and_keep_recoverable_prefix() {
         };
         assert_eq!(error.progress.accepted_events, 2);
         assert_eq!(error.progress.durable_events, 1);
+        assert_eq!(writer.durable_prefix_identity(), acknowledged);
         assert!(writer.append(&[event(2)]).is_err());
         assert!(writer.finish(DraftTerminal::Interrupted).is_err());
         let failed_bytes = fs::read(&path).unwrap();
         drop(writer);
         let mut reader = open(&path);
+        assert!(reader.matches_prefix(empty_identity).unwrap());
+        assert!(reader.matches_prefix(acknowledged).unwrap());
         assert_eq!(
             reader.progress().durable_events,
             if fail_sync { 2 } else { 1 }
@@ -238,6 +340,33 @@ fn partial_write_and_sync_failure_are_sticky_and_keep_recoverable_prefix() {
         assert_eq!(page[0], Some(event(0)));
         assert_eq!(fs::read(&path).unwrap(), failed_bytes);
     }
+}
+
+#[test]
+fn acknowledged_identity_rejects_replacement_with_same_source() {
+    let (source, target, provenance) = fixture();
+    let first = TestDir::new();
+    let second = TestDir::new();
+    let mut writer = DraftWriter::create_new(first.path(), &source, target, provenance).unwrap();
+    writer.append(&[event(0)]).unwrap();
+    let identity = writer.durable_prefix_identity();
+    writer.append(&[event(1)]).unwrap();
+    let later = writer.durable_prefix_identity();
+    drop(writer);
+    let mut replacement =
+        DraftWriter::create_new(second.path(), &source, target, provenance).unwrap();
+    replacement.append(&[event(1)]).unwrap();
+    drop(replacement);
+    assert!(open(&first.path()).matches_prefix(identity).unwrap());
+    let mut changed = open(&second.path());
+    assert!(!changed.matches_prefix(identity).unwrap());
+    assert!(!changed.matches_prefix(later).unwrap());
+    let mut damaged = fs::read(first.path()).unwrap();
+    damaged.pop();
+    fs::write(first.path(), &damaged).unwrap();
+    let mut truncated = open(&first.path());
+    assert!(truncated.matches_prefix(identity).unwrap());
+    assert!(!truncated.matches_prefix(later).unwrap());
 }
 
 #[test]
@@ -738,4 +867,24 @@ fn actual_process_exit_releases_writer_lock_and_recovers_the_exact_durable_prefi
         assert_eq!(*actual, Some(event(index as u64)));
     }
     assert_eq!(fs::read(&path).unwrap(), original);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_wait_observes_actual_shared_lock_and_does_not_hide_a_retained_owner() {
+    let dir = TestDir::new();
+    let path = dir.path();
+    let (source, target, provenance) = fixture();
+    let writer = DraftWriter::create_new(&path, &source, target, provenance).unwrap();
+    let retained = writer.file.try_clone().unwrap();
+    drop(writer);
+    let error = wait_for_shared_lock(&path, std::time::Duration::from_millis(20)).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        drop(retained);
+    });
+    let reader = open(&path);
+    assert_eq!(reader.outcome(), DraftOutcome::Interrupted);
+    release.join().unwrap();
 }

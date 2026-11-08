@@ -181,7 +181,8 @@ fn real_mono_and_stereo_wavs_reach_actual_sampler_from_original_rate_native_bank
                 max_pair_bytes: 2 * 1024 * 1024,
                 max_events_per_block: 1,
                 max_active_occurrences: 1,
-                max_tail_frames: 0,
+                // The sampler's declared tail includes its ~2 ms declick floor.
+                max_tail_frames: 8_000,
             },
         )
         .unwrap();
