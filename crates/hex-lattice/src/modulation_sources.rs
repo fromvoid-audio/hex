@@ -9,23 +9,11 @@
 //! defines whether bypass, stop, seek, loops and retrigger advance or reset a
 //! source; this helper never infers those events from block boundaries.
 use hex_dsp::ModulationLfo;
-use hex_lattice_contract::DeviceContractError as Error;
+use hex_lattice_contract::{DeviceContractError as Error, ModulationSourceId};
 
 pub const MAX_MODULATION_LFO_SOURCES: usize = 32;
 pub const MAX_MODULATION_LFO_STORAGE_BYTES: usize = 262_144;
 pub const MAX_MODULATION_LFO_CHUNK_FRAMES: usize = 8192;
-
-/// Stable, nonzero source identity, scoped by the owning device.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ModulationSourceId(u64);
-impl ModulationSourceId {
-    pub fn new(value: u64) -> Result<Self, Error> {
-        if value == 0 {
-            return Err(Error::InvalidId);
-        }
-        Ok(Self(value))
-    }
-}
 
 /// A source prepared on control; its initial phase and rate have been validated.
 #[derive(Clone, Copy, Debug)]

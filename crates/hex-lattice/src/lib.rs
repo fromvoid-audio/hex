@@ -46,7 +46,8 @@ use hex_lattice_contract::{
 };
 pub use hex_tuning::{TuningTable, Waveform as TuningWaveform};
 pub use meter::{DeviceMeter, DevicePeaks, DynamicsMeter, RenderWorkMeter, RenderWorkSample};
-pub use modulation_sources::{ModulationLfoBank, ModulationSourceId, PreparedLfoSource};
+pub use hex_lattice_contract::ModulationSourceId;
+pub use modulation_sources::{ModulationLfoBank, PreparedLfoSource};
 pub use owned_processor::{
     MAX_RESERVED_BYPASS_FRAMES, OwnedProcessorRuntime, PreparedOwnedProcessorRuntime,
     PreparedProcessorFactory, PreparedRuntimeDevice, PreparedRuntimeInstance,
