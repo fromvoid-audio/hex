@@ -376,7 +376,7 @@ fn command_f_device_highlight_waits_for_result_focus(cx: &mut TestAppContext) {
     visual.run_until_parked();
     assert_eq!(
         visual.rendered_background(selector),
-        Some(gpui::rgb(theme::color(theme::PaletteRole::Hover)).into())
+        Some(gpui::rgb(theme::color(theme::PaletteRole::Secondary)).into())
     );
 }
 
