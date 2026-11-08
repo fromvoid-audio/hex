@@ -1,19 +1,7 @@
 //! Bounded, non-destructive copies of failed writer custody.
 use super::{DraftTerminal, DraftWorkerOutcome, EVENTS_PER_BATCH};
-use hex_project::Project;
-use hex_storage::automation_draft::{
-    CaptureClock, DraftOutcome, DraftProvenance, DraftReadLimits, DraftReader, DraftTarget,
-    DraftWriter,
-};
+use hex_storage::automation_draft::{DraftOutcome, DraftReadLimits, DraftReader, DraftWriter};
 use std::path::Path;
-
-/// Original capture identity retained by the recording owner.
-pub struct RecoverySource<'a> {
-    pub project: &'a Project,
-    pub target: DraftTarget,
-    pub provenance: DraftProvenance,
-    pub clock: Option<CaptureClock>,
-}
 
 /// Copy a failed writer's validated prefix and retained suffix to a new interrupted draft.
 /// The original file and borrowed batches remain owned by the caller on every outcome.
@@ -24,7 +12,6 @@ pub struct RecoverySource<'a> {
 /// destination publication leaves that incomplete file in place for inspection.
 pub fn copy_failed_on_control(
     outcome: &DraftWorkerOutcome,
-    expected: RecoverySource<'_>,
     destination: &Path,
     limits: DraftReadLimits,
     max_events: u64,
@@ -53,15 +40,6 @@ pub fn copy_failed_on_control(
         .map_err(|error| error.to_string())?
     {
         return Err("automation draft acknowledged prefix no longer matches writer custody".into());
-    }
-    if reader.target() != expected.target
-        || reader.provenance() != expected.provenance
-        || reader.capture_clock() != expected.clock
-        || !reader
-            .source_matches(expected.project)
-            .map_err(|error| error.to_string())?
-    {
-        return Err("automation draft no longer matches original capture identity".into());
     }
     let prefix = reader.progress().durable_events;
     if prefix < acknowledged || prefix > outcome.admitted_events {

@@ -113,24 +113,7 @@ fn copy_test(
     limits: DraftReadLimits,
     max_events: u64,
 ) -> Result<(), String> {
-    let captured = reader(&outcome.path);
-    let project = captured.source().clone();
-    let target = captured.target();
-    let provenance = captured.provenance();
-    let clock = captured.capture_clock();
-    drop(captured);
-    copy_failed_on_control(
-        outcome,
-        RecoverySource {
-            project: &project,
-            target,
-            provenance,
-            clock,
-        },
-        destination,
-        limits,
-        max_events,
-    )
+    copy_failed_on_control(outcome, destination, limits, max_events)
 }
 
 #[test]
@@ -199,24 +182,6 @@ fn failed_copy_refuses_inconsistent_custody_and_keeps_original() {
     let collision = files.path("collision");
     fs::write(&collision, b"keep").unwrap();
     let valid = failed_outcome(source.clone(), 2, identity2, &[]);
-    let mut wrong_stamp = stamp;
-    wrong_stamp.gesture_serial += 1;
-    assert!(
-        copy_failed_on_control(
-            &valid,
-            RecoverySource {
-                project: &project,
-                target,
-                provenance: wrong_stamp,
-                clock: None
-            },
-            &files.path("wrong-identity"),
-            limits,
-            4
-        )
-        .is_err()
-    );
-    assert!(!files.path("wrong-identity").exists());
     assert!(copy_test(&valid, &collision, limits, 4).is_err());
     assert_eq!(fs::read(&collision).unwrap(), b"keep");
     let wrong_count = failed_outcome(source.clone(), 2, identity1, &[]);
@@ -227,6 +192,14 @@ fn failed_copy_refuses_inconsistent_custody_and_keeps_original() {
     drop(other);
     fs::write(&source, fs::read(replacement).unwrap()).unwrap();
     assert!(copy_test(&valid, &files.path("replaced"), limits, 4).is_err());
+    let wrong_header = files.path("wrong-header");
+    let mut wrong_stamp = stamp;
+    wrong_stamp.gesture_serial += 1;
+    let mut other = DraftWriter::create_new(&wrong_header, &project, target, wrong_stamp).unwrap();
+    other.append(&[event(1), event(2)]).unwrap();
+    drop(other);
+    fs::write(&source, fs::read(wrong_header).unwrap()).unwrap();
+    assert!(copy_test(&valid, &files.path("replaced-header"), limits, 4).is_err());
     fs::write(&source, &original).unwrap();
     assert_eq!(fs::read(&source).unwrap(), original);
 }

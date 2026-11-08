@@ -24,7 +24,7 @@ pub use hex_storage::automation_draft::{
 pub use native_device::{
     DeviceDraftInput, Vst3ApplicationValue, Vst3CaptureTarget, Vst3ParameterApplication,
 };
-pub use recovery_copy::{RecoverySource, copy_failed_on_control};
+pub use recovery_copy::copy_failed_on_control;
 use std::{
     collections::VecDeque,
     path::{Path, PathBuf},
