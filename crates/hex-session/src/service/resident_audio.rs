@@ -1275,7 +1275,7 @@ enum Transition {
     Command(Box<Command>),
     DeviceAutomationTake {
         command: Box<Command>,
-        target: super::DeviceCaptureTarget,
+        target: super::native_automation_recording::TakePublication,
     },
     PluginParameter(PluginParameterCommit),
     PluginEffect {
@@ -2121,7 +2121,7 @@ impl Session {
     pub(super) fn device_take_resident_snapshot(
         &mut self,
         command: Command,
-        target: super::DeviceCaptureTarget,
+        target: super::native_automation_recording::TakePublication,
         context: hex_engine::AudioSourceContext,
         sink: &mut dyn WorkerAudioSink,
         admission: sampler_export::Admission<'_>,
@@ -2374,7 +2374,7 @@ impl Session {
             || matches!(
                 &transition,
                 Transition::DeviceAutomationTake {
-                    target: super::DeviceCaptureTarget::Vst3(_),
+                    target: super::native_automation_recording::TakePublication::Vst3,
                     ..
                 }
             );

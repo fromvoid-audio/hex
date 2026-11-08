@@ -796,6 +796,7 @@ fn recorded_session_gesture_commits_one_take_and_reopens() {
                     | "session_barrier_stop"
                     | "session_stop"
                     | "session_refused"
+                    | "session_recover"
                     | "session_cancel"
                     | "session_empty"
             ))
@@ -878,12 +879,16 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
             files
         });
     let mut harness = if let Some(files) = recording_catalog.as_ref() {
-        ResidentHarness::with_plugins_at_rate_and_catalog(
+        ResidentHarness::with_plugins_at_rate_and_catalog_recovery(
             host(),
             presentation,
             rate,
             files.0.canonicalize().unwrap().join("plugin-catalog.json"),
-            8192,
+            files
+                .0
+                .canonicalize()
+                .unwrap()
+                .join("recording.hex-journal"),
         )
     } else if automation_parameter.is_some() || (shared_authoring && installed.is_some()) {
         let catalog = PathBuf::from(std::env::var_os("HEX_TEST_VST3_INSTRUMENT_CATALOG").unwrap());
@@ -1007,6 +1012,7 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
             &accepted.state.project,
             project_track.instrument().unwrap().id(),
             applied,
+            recording_catalog.as_ref().map(|files| files.0.as_path()),
         );
         return;
     }
@@ -1676,6 +1682,7 @@ fn verify_instrument_takeover(
     original: &hex_project::Project,
     device: hex_project::DeviceId,
     mut applied: u64,
+    recovery_directory: Option<&std::path::Path>,
 ) {
     use hex_project::{
         AutomationInterpolation, AutomationPoint, AutomationValue, DeviceAutomationTarget,
@@ -2181,20 +2188,97 @@ fn verify_instrument_takeover(
             origin.initial
         };
         client.finish_plugin(final_value).unwrap();
-        if case == "session_refused" {
+        let committed = if matches!(case.as_str(), "session_refused" | "session_recover") {
             h.refuse.store(true, std::sync::atomic::Ordering::Release);
             let refused = send(h, &mut client, false);
             h.refuse.store(false, std::sync::atomic::Ordering::Release);
             assert_eq!(refused.state.project.as_ref(), &before);
             assert!(!refused.gesture_ack.unwrap().preview_retained);
             assert!((peak(h) - baseline).abs() < 0.0001);
-            client.begin_plugin_recording(query(h, 13)).unwrap();
-            send(h, &mut client, true);
-            client.cancel().unwrap();
-            send(h, &mut client, true);
-            return;
-        }
-        let committed = send(h, &mut client, true);
+            if case == "session_refused" {
+                client.begin_plugin_recording(query(h, 13)).unwrap();
+                send(h, &mut client, true);
+                client.cancel().unwrap();
+                send(h, &mut client, true);
+                return;
+            }
+            use hex_session::service::DeviceAutomationTakeProgress;
+            let directory = recovery_directory.unwrap().join("automation-drafts");
+            let paths = std::fs::read_dir(directory)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect::<Vec<_>>();
+            assert_eq!(paths.len(), 1);
+            let path = paths[0].clone();
+            let original = std::fs::read(&path).unwrap();
+            // Durable header data are sufficient; the caller does not retain or
+            // reconstruct the old SDK worker binding to request recovery.
+            let (target, expected) = {
+                let reader = hex_storage::automation_draft::DraftReader::open(
+                    &path,
+                    hex_storage::automation_draft::DraftReadLimits {
+                        max_source_bytes: hex_storage::MAX_PROJECT_DOCUMENT_BYTES as u64,
+                    },
+                )
+                .unwrap();
+                (reader.target(), reader.provenance())
+            };
+            let request = |request_id| Request::RecoverDeviceAutomationTake {
+                request_id,
+                target,
+                expected,
+                path: path.clone(),
+                context: origin.context,
+            };
+            h.service.submit(request(401)).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut fragment = 0usize;
+            let recovered = loop {
+                h.pump();
+                if let Ok(event) = h.service.try_event()
+                    && event
+                        .device_automation_take_complete
+                        .as_ref()
+                        .is_some_and(|done| done.request_id == 401)
+                {
+                    break event;
+                }
+                // Probe the actual publication interval, including its first
+                // callback, while retaining the original held instrument gate.
+                render_takeover_partial(h, [3, 5, 117, 1, 130][fragment % 5], true, &case, None);
+                fragment += 1;
+                while h
+                    .callback
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .native_workers_idle_on_control()
+                    != Some(true)
+                {
+                    assert!(Instant::now() < deadline, "recovery DSP prefix timed out");
+                    std::thread::yield_now();
+                }
+                assert!(Instant::now() < deadline, "recovery publication timed out");
+                std::thread::yield_now();
+            };
+            assert!(recovered.error.is_none(), "{:?}", recovered.error);
+            assert_eq!(
+                recovered
+                    .device_automation_take_complete
+                    .as_ref()
+                    .unwrap()
+                    .progress,
+                DeviceAutomationTakeProgress::Committed
+            );
+            let duplicate = super::automation::edit_with_running_callback(h, request(402));
+            assert!(duplicate.error.is_some());
+            assert_eq!(duplicate.state.project, recovered.state.project);
+            assert_eq!(std::fs::read(path).unwrap(), original);
+            recovered
+        } else {
+            send(h, &mut client, true)
+        };
         assert_ne!(committed.state.project.as_ref(), &before);
         applied = h.applied(applied).0;
         assert_eq!(h.plugin_progress.lock().unwrap().binding, binding);
