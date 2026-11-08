@@ -1861,6 +1861,7 @@ pub(super) fn gesture_target(value: &crate::device_gesture::GestureTarget) -> De
         crate::device_gesture::GestureTarget::TrackGains { track } => {
             describe!("track_gains"; ["anchor" => track.value()]; omitted="")
         }
+        crate::device_gesture::GestureTarget::MainGain => describe!("main_gain"; []; omitted=""),
         crate::device_gesture::GestureTarget::TrackBalance { track } => {
             describe!("track_balance"; ["track" => track.value()]; omitted="")
         }
