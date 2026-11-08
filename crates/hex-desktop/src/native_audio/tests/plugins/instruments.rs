@@ -1738,7 +1738,11 @@ fn verify_instrument_takeover(
                 Instant::now() < deadline,
                 "instrument gesture timed out: {request:?}"
             );
-            render_takeover_partial(h, [3, 5, 117, 1, 130][fragment % 5], playing);
+            render_takeover_partial(
+                h,
+                [3, 5, 117, 1, 130][fragment % 5],
+                playing && case != "delivery_retire",
+            );
             fragment += 1;
             // The native worker is asynchronous; wait only on this test/control
             // thread before offering the next irregular physical fragment.

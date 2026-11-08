@@ -225,7 +225,10 @@ impl Plugins {
             if gesture.retired_delivery.is_none()
                 && let Some(pending) = gesture.pending.take()
             {
-                let _ = gesture.observe_delivery(pending, None);
+                // The witness may already be held here while the SDK ACK is
+                // busy. Its original channel is then empty, not interrupted.
+                let receipt = pending.delivery.and_then(|delivery| delivery.receipt);
+                let _ = gesture.observe_delivery(pending, receipt);
             }
         }
         self.collect_parameter_observations();
