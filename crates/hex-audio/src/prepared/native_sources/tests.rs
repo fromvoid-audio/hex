@@ -7,6 +7,35 @@ use crate::native_callback_owner::{
 use crate::prepared::candidate_tests::{finish, serial};
 use std::time::{Duration, Instant};
 
+#[test]
+fn committed_quantum_is_unavailable_without_native_custody_or_after_closing() {
+    let (mut control, _callback) = channel(48_000).unwrap();
+    let binding = Binding {
+        root: 1,
+        instance: 1,
+        graph: 1,
+        epoch: 1,
+    };
+    assert!(
+        control
+            .publication
+            .try_native_source_committed_quantum_on_control(binding)
+            .is_err()
+    );
+    control.publication.enable_native_custody().unwrap();
+    control
+        .publication
+        .status
+        .closing
+        .store(true, std::sync::atomic::Ordering::Release);
+    assert_eq!(
+        control
+            .publication
+            .try_native_source_committed_quantum_on_control(binding),
+        Err("native automation output is closing")
+    );
+}
+
 fn setup() -> (
     Control,
     Guard<NativeCallbackOwner>,

@@ -3,8 +3,8 @@
 //! This is not installed-plugin process admission or crash recovery authority.
 #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 use hex_lattice_contract::ForeignProcessorBinding as Binding;
-pub use hex_plugin_host::transport::ReceivedProgram;
 use hex_plugin_host::transport::*;
+pub use hex_plugin_host::transport::{CommittedQuantum, CommittedQuantumState, ReceivedProgram};
 use std::{
     sync::atomic::Ordering::{Acquire, Release},
     sync::{Arc, atomic::AtomicU64},
@@ -592,6 +592,14 @@ impl NativeWorker {
     pub fn received_program_on_control(&self) -> Option<ReceivedProgram> {
         self.transport_is_live_on_control()
             .then(|| self.reaper.control.received_program())
+            .flatten()
+    }
+
+    /// Last accepted callback quantum on this original pair. This is not an
+    /// installed-graph, quiescence, worker-receipt or reclamation witness.
+    pub fn committed_quantum_on_control(&self) -> Option<CommittedQuantum> {
+        self.transport_is_live_on_control()
+            .then(|| self.reaper.control.committed_quantum())
             .flatten()
     }
 
