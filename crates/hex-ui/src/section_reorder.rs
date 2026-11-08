@@ -16,9 +16,25 @@ enum Geometry {
 pub(crate) struct Preview {
     pub(crate) command: Command,
     geometry: Geometry,
+    feedback: Option<DropFeedback>,
+}
+
+/// Original drop coordinates stay under the pointer while canonical previews
+/// ripple the result. The capture/receipt owns this single feedback value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DropFeedback {
+    Insert(BeatTime),
+    Replace {
+        target: SectionId,
+        start: BeatTime,
+        end: BeatTime,
+    },
 }
 
 impl Preview {
+    pub(crate) fn feedback(&self) -> Option<DropFeedback> {
+        self.feedback
+    }
     pub(crate) fn sections(&self) -> &[ArrangementSection] {
         match &self.geometry {
             Geometry::Move(preview) => preview.sections(),
@@ -32,6 +48,76 @@ impl Preview {
             Geometry::Splice(preview) => preview.tempo_map(),
         }
     }
+}
+
+/// Strict body hits replace; the existing edge width wins over body placement.
+/// A source-body drop is a no-op, including copy gestures. Source edges still
+/// support the established adjacent insertion behavior.
+pub(crate) fn drop_preview(
+    project: &Project,
+    source: SectionId,
+    raw: BeatTime,
+    snapped: BeatTime,
+    copy: bool,
+    edge_frames: u64,
+    gap_appearance: &mut Option<(String, ElementColor)>,
+) -> Result<Option<Preview>, Invalid> {
+    if let Some(target) = project
+        .arrangement_sections()
+        .iter()
+        .find(|m| m.start() <= raw && raw < m.end())
+    {
+        let map = project.tempo_map();
+        let pointer = map.beat_to_frame(raw)?;
+        let start = map.beat_to_frame(target.start())?;
+        let end = map.beat_to_frame(target.end())?;
+        if pointer.saturating_sub(start) > edge_frames && end.saturating_sub(pointer) > edge_frames
+        {
+            if target.id() == source {
+                return Ok(None);
+            }
+            let command = Command::ReplaceArrangementSection {
+                source,
+                target: target.id(),
+                copy,
+            };
+            let geometry = Geometry::Splice(project.preview_arrangement_section_edit(&command)?);
+            return Ok(Some(Preview {
+                command,
+                geometry,
+                feedback: Some(DropFeedback::Replace {
+                    target: target.id(),
+                    start: target.start(),
+                    end: target.end(),
+                }),
+            }));
+        }
+    }
+    let Some(mut preview) = drag_preview(project, source, raw, snapped, copy, gap_appearance)?
+    else {
+        return Ok(None);
+    };
+    let at = match &preview.command {
+        Command::AppendArrangementSectionCopy { start, .. }
+        | Command::MoveArrangementSectionBeyondEnd { start, .. } => *start,
+        Command::ReorderSectionBefore { before, .. } => project
+            .arrangement_section(*before)
+            .ok_or(Invalid("section drop target disappeared"))?
+            .start(),
+        Command::ReorderSectionAfter { after, .. } => project
+            .arrangement_section(*after)
+            .ok_or(Invalid("section drop target disappeared"))?
+            .end(),
+        Command::DuplicateArrangementSectionAt { target, after, .. } => {
+            let target = project
+                .arrangement_section(*target)
+                .ok_or(Invalid("section drop target disappeared"))?;
+            if *after { target.end() } else { target.start() }
+        }
+        _ => return Err(Invalid("section insertion preview has no destination")),
+    };
+    preview.feedback = Some(DropFeedback::Insert(at));
+    Ok(Some(preview))
 }
 
 /// Beyond the final edge, use the host's snapped pointer beat. The host retains
@@ -72,7 +158,11 @@ pub(crate) fn drag_preview(
         }
     };
     let geometry = Geometry::Splice(project.preview_arrangement_section_edit(&command)?);
-    Ok(Some(Preview { command, geometry }))
+    Ok(Some(Preview {
+        command,
+        geometry,
+        feedback: None,
+    }))
 }
 
 /// Resolve a raw pointer beat to the same insertion edge and project preview
@@ -93,7 +183,11 @@ pub(crate) fn preview(
             after,
         };
         let geometry = Geometry::Splice(project.preview_arrangement_section_edit(&command)?);
-        return Ok(Some(Preview { command, geometry }));
+        return Ok(Some(Preview {
+            command,
+            geometry,
+            feedback: None,
+        }));
     }
     let (command, geometry) = if after {
         (
@@ -118,6 +212,7 @@ pub(crate) fn preview(
     Ok(Some(Preview {
         command,
         geometry: Geometry::Move(geometry),
+        feedback: None,
     }))
 }
 
@@ -367,5 +462,78 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(edge_copy.sections().len(), 4, "equal-end copy has no gap");
+    }
+    #[test]
+    fn drop_body_edge_self_and_dense_targets_choose_one_canonical_feedback() {
+        let (editor, ids) = fixture();
+        for copy in [false, true] {
+            let mut appearance = None;
+            assert!(
+                drop_preview(
+                    editor.project(),
+                    ids[0],
+                    beat(2),
+                    beat(2),
+                    copy,
+                    100,
+                    &mut appearance
+                )
+                .unwrap()
+                .is_none()
+            );
+            let body = drop_preview(
+                editor.project(),
+                ids[0],
+                beat(10),
+                beat(10),
+                copy,
+                100,
+                &mut appearance,
+            )
+            .unwrap()
+            .unwrap();
+            assert!(
+                matches!(body.command,Command::ReplaceArrangementSection { source,target,copy:mode } if source==ids[0] && target==ids[1] && mode==copy)
+            );
+            assert_eq!(
+                body.feedback(),
+                Some(DropFeedback::Replace {
+                    target: ids[1],
+                    start: beat(8),
+                    end: beat(12)
+                })
+            );
+            for at in [beat(8), beat(12)] {
+                let edge =
+                    drop_preview(editor.project(), ids[0], at, at, copy, 100, &mut appearance)
+                        .unwrap()
+                        .unwrap();
+                assert_eq!(edge.feedback(), Some(DropFeedback::Insert(at)));
+            }
+            let dense = drop_preview(
+                editor.project(),
+                ids[0],
+                beat(10),
+                beat(10),
+                copy,
+                100_000,
+                &mut appearance,
+            )
+            .unwrap()
+            .unwrap();
+            assert!(matches!(dense.feedback(), Some(DropFeedback::Insert(_))));
+            let beyond = drop_preview(
+                editor.project(),
+                ids[0],
+                beat(25),
+                beat(24),
+                copy,
+                100,
+                &mut appearance,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(beyond.feedback(), Some(DropFeedback::Insert(beat(24))));
+        }
     }
 }

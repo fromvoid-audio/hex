@@ -13,6 +13,7 @@ pub(super) struct Fixture {
 
 pub(super) struct Plan {
     pub(super) command: Command,
+    pub(super) feedback: Option<crate::section_reorder::DropFeedback>,
     pub(super) display: Vec<[f32; 2]>,
     pub(super) sections: Vec<ArrangementSection>,
 }
@@ -46,7 +47,7 @@ impl Fixture {
     }
 
     pub(super) fn position(&self, beat: BeatTime) -> f32 {
-        (beat.raw() as f64 / view_span(self.project().arrangement_sections()) as f64) as f32
+        position_in(self.project(), beat)
     }
 
     #[cfg(test)]
@@ -85,6 +86,7 @@ impl Fixture {
             .map(|preview| Plan {
                 display: display(preview.sections()),
                 sections: preview.sections().to_vec(),
+                feedback: None,
                 command: preview.command,
             })),
             RectanglePart::Leading | RectanglePart::Trailing => {
@@ -110,6 +112,7 @@ impl Fixture {
                 Ok(Some(Plan {
                     display: display(preview.sections()),
                     sections: preview.sections().to_vec(),
+                    feedback: None,
                     command: preview.command,
                 }))
             }
@@ -126,6 +129,7 @@ impl Fixture {
                     return Ok(Some(Plan {
                         display: display(preview.sections()),
                         sections: preview.sections().to_vec(),
+                        feedback: None,
                         command: preview.command,
                     }));
                 }
@@ -144,6 +148,7 @@ impl Fixture {
                 Ok(Some(Plan {
                     display: display(preview.sections()),
                     sections: preview.sections().to_vec(),
+                    feedback: None,
                     command: preview.command,
                 }))
             }
@@ -156,19 +161,22 @@ impl Fixture {
         raw: BeatTime,
         snapped: BeatTime,
         copy: bool,
+        width: f32,
         gap_appearance: &mut Option<(String, ElementColor)>,
     ) -> Result<Option<Plan>, Invalid> {
-        Ok(crate::section_reorder::drag_preview(
+        Ok(crate::section_reorder::drop_preview(
             self.project(),
             section,
             raw,
             snapped,
             copy,
+            crate::section_hit::drop_edge_frames(self.grid_viewport()?.length, width)?,
             gap_appearance,
         )?
         .map(|preview| Plan {
             display: display(preview.sections()),
             sections: preview.sections().to_vec(),
+            feedback: preview.feedback(),
             command: preview.command,
         }))
     }
@@ -267,6 +275,7 @@ impl Fixture {
             display: display(&sections),
             sections,
             command,
+            feedback: None,
         })
     }
 
@@ -294,8 +303,13 @@ impl Fixture {
             display: display(preview.sections()),
             sections: preview.sections().to_vec(),
             command,
+            feedback: None,
         }))
     }
+}
+
+pub(super) fn position_in(project: &Project, beat: BeatTime) -> f32 {
+    (beat.raw() as f64 / view_span(project.arrangement_sections()) as f64) as f32
 }
 
 fn view_span(sections: &[ArrangementSection]) -> u64 {

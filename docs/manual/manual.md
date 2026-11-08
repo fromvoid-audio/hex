@@ -260,6 +260,14 @@ while option-copying, since option-command edits only markers. changing option
 during the drag switches between moving and copying. the source stays in place when copying, and
 one undo restores the entire operation.
 
+while dragging a section, the cyan bar marks insertion at an edge or in a gap.
+a highlighted section body marks replacement: the target's music is removed and
+the source content takes its place. later music ripples by the length difference;
+a move also closes the source's old interval. the result carries the source name
+and color. option preserves the source and gives the replacement a new identity.
+dropping on the source body does nothing. option-command marker edits do not
+replace content. the indicator stays with a pending edit until its result arrives.
+
 with the section lane focused, select one section and press **command+c**, then click
 the lane to place the edit cursor and press **command+v**. paste inserts at the nearest
 section boundary before or within the song. after the last marker, it lands at the

@@ -1,8 +1,8 @@
 //! Shared section paint; owners retain input, selection and project custody.
 use crate::theme;
 use gpui::{
-    Bounds, Div, PathBuilder, Pixels, Styled, Window, canvas, fill, point, prelude::*, px, rgb,
-    size,
+    Bounds, Div, PathBuilder, Pixels, Styled, Window, canvas, fill, point, prelude::*, px,
+    relative, rgb, rgba, size,
 };
 use hex_project::{BeatTime, ElementColor, SectionId};
 
@@ -84,6 +84,30 @@ pub(crate) fn marker_only_overlay(color: ElementColor, chamfer: f32, selected: b
         .absolute()
         .inset_0(),
     )
+}
+
+/// Match device-chain insertion/replace feedback through its shared secondary
+/// palette token and two-pixel insertion width. Hosts project original targets.
+pub(crate) fn insertion_indicator(left: f32) -> Div {
+    gpui::div()
+        .absolute()
+        .left(relative(left))
+        .top_0()
+        .bottom_0()
+        .w(px(2.0))
+        .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+}
+pub(crate) fn replacement_indicator(left: f32, width: f32) -> Div {
+    let color = theme::color(theme::PaletteRole::Secondary);
+    gpui::div()
+        .absolute()
+        .left(relative(left))
+        .w(relative(width))
+        .top_0()
+        .bottom_0()
+        .border_2()
+        .border_color(rgb(color))
+        .bg(rgba((color << 8) | 0x22))
 }
 
 /// Header height follows the host's lane minimum while sharing production paint.
