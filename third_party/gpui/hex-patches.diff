@@ -318,10 +318,7 @@ diff --git a/src/app.rs b/src/app.rs
 diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 --- a/src/app/test_context.rs
 +++ b/src/app/test_context.rs
-@@ -120,6 +120,24 @@ impl AppContext for TestAppContext {
- }
-
- impl TestAppContext {
+@@ -122,0 +123,18 @@
 +    /// Verify private draw-order queries against an independent linear scan.
 +    /// Test support only; no native graphics or public scene API.
 +    pub fn verify_draw_order_queries(&self) -> std::result::Result<(), String> {
@@ -340,13 +337,9 @@ diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 +        self.test_platform.cursor_style()
 +    }
 +
-     /// Creates a new `TestAppContext`. Usually you can rely on `#[gpui::test]` to do this for you.
-     pub fn build(dispatcher: TestDispatcher, fn_name: Option<&'static str>) -> Self {
-         let arc_dispatcher = Arc::new(dispatcher.clone());
-@@ -142,6 +160,24 @@ impl TestAppContext {
-         }
-     }
-
+@@ -142,0 +161,18 @@
++    }
++
 +    /// Opt into real macOS font registration and shaping for a disposable test.
 +    /// Call before opening any window. This retains the deterministic test
 +    /// platform and never creates an OS window or changes system font settings.
@@ -363,15 +356,7 @@ diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 +        app.text_system = Arc::clone(&text_system);
 +        self.text_system = text_system;
 +        Ok(())
-+    }
-+
-     /// Create a single TestAppContext, for non-multi-client tests
-     pub fn single() -> Self {
-         let dispatcher = TestDispatcher::new(StdRng::seed_from_u64(0));
-@@ -305,6 +341,56 @@ impl TestAppContext {
-         self.test_platform.simulate_new_path_selection(select_path);
-     }
-
+@@ -307,0 +344,50 @@
 +    /// Whether the test platform has an outstanding Open picker request.
 +    pub fn did_prompt_for_paths(&self) -> bool {
 +        self.test_platform.did_prompt_for_paths()
@@ -422,13 +407,49 @@ diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 +        crate::MacPlatform::picker_directory_url_for_test(directory)
 +    }
 +
-     /// Simulates clicking a button in an platform-level alert dialog.
-     #[track_caller]
-     pub fn simulate_prompt_answer(&self, button: &str) {
-@@ -675,6 +761,151 @@ pub struct VisualTestContext {
- }
-
- impl VisualTestContext {
+@@ -665,0 +752,11 @@
++/// One tessellated path triangle in a completed test scene, including its replay mask.
++/// This is geometry evidence, not antialiased framebuffer readback.
++pub struct RenderedPathTriangle {
++    /// Actual completed path fill.
++    pub color: crate::Background,
++    /// Content/replay mask in physical scene coordinates.
++    pub mask: crate::Bounds<crate::ScaledPixels>,
++    /// The three tessellated positions in physical scene coordinates.
++    pub vertices: [crate::Point<crate::ScaledPixels>; 3],
++}
++
+@@ -677,0 +775,175 @@
++    /// Read path meshes whose complete bounds match the selected element.
++    /// Reads the completed scene, including retained replay, without drawing a frame.
++    pub fn rendered_path_triangles(&mut self, selector: &'static str) -> Vec<RenderedPathTriangle> {
++        self.update(|window, _| {
++            let Some(bounds) = window.rendered_frame.debug_bounds.get(selector) else {
++                return Vec::new();
++            };
++            let bounds = bounds.scale(window.scale_factor());
++            window
++                .rendered_frame
++                .scene
++                .paths
++                .iter()
++                .filter(|path| path.bounds == bounds)
++                .flat_map(|path| {
++                    path.vertices
++                        .chunks_exact(3)
++                        .map(move |vertices| RenderedPathTriangle {
++                            color: path.color,
++                            mask: path.content_mask.bounds,
++                            vertices: [
++                                vertices[0].xy_position,
++                                vertices[1].xy_position,
++                                vertices[2].xy_position,
++                            ],
++                        })
++                })
++                .collect()
++        })
++    }
 +    /// Returns the cursor request selected by the current rendered hitbox.
 +    /// This checks GPUI hover routing; it does not claim native OS cursor delivery.
 +    pub fn rendered_cursor_style(&mut self) -> Option<crate::CursorStyle> {
@@ -574,9 +595,6 @@ diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 +        })
 +    }
 +
-     /// Provides a `Window` and `App` for the duration of the closure.
-     pub fn update<R>(&mut self, f: impl FnOnce(&mut Window, &mut App) -> R) -> R {
-         self.cx
 diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 --- a/src/bounds_tree.rs
 +++ b/src/bounds_tree.rs

@@ -1652,12 +1652,14 @@ impl EditorView {
             .min_w_0()
             .flex()
             .flex_col()
+            .relative()
             .px(px(2.))
-            .bg(rgb(name_fill))
+            .children([super::track_header::name_plate(
+                format!("track-name-plate-{}", track_id.value()),
+                name_fill,
+                track.is_group(),
+            )])
             .text_color(rgb(name_text))
-            .when(track.is_group(), |plate| {
-                plate.rounded_tr(px(6.0)).rounded_br(px(6.0))
-            })
             .when(group_plate, |plate| plate.h_full().justify_center())
             .when(group_expanded, |plate| plate.justify_start());
         let sample_source =
@@ -2017,7 +2019,7 @@ impl EditorView {
             self.track_header_width(),
             header_height,
             selected,
-            (expanded_header && !track.is_group()).then_some(name_fill),
+            None,
         )
         .when(expanded_header, |header| header.justify_start())
         .when(track.is_group() || hierarchy_indent > 0.0, |header| {

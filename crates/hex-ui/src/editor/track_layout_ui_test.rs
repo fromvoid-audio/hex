@@ -201,9 +201,7 @@ fn header_width_edges_align_every_timeline_layer_and_preserve_frame_coordinates(
 }
 
 #[gpui::test]
-fn tall_track_header_keeps_controls_at_default_offset_and_fills_with_track_color(
-    cx: &mut TestAppContext,
-) {
+fn tall_track_header_keeps_controls_at_default_offset_and_neutral_backing(cx: &mut TestAppContext) {
     let (mut visual, editor, tracks) = fixture(cx, 2);
     let track = tracks[0];
     let header = bounds(&mut visual, "arrangement-track-header", track);
@@ -219,9 +217,23 @@ fn tall_track_header_keeps_controls_at_default_offset_and_fills_with_track_color
         Box::leak(format!("arrangement-track-header-{}", track.value()).into_boxed_str());
     let name_selector: &'static str =
         Box::leak(format!("track-name-area-{}", track.value()).into_boxed_str());
-    assert_eq!(
-        visual.rendered_background(header_selector),
-        visual.rendered_background(name_selector)
+    assert!(visual.rendered_background(name_selector).is_none());
+    assert!(
+        !visual
+            .rendered_path_triangles(Box::leak(
+                format!("track-name-plate-{}", track.value()).into_boxed_str()
+            ))
+            .is_empty()
+    );
+    assert!(
+        [
+            super::super::theme::PaletteRole::Surface,
+            super::super::theme::PaletteRole::Raised,
+            super::super::theme::PaletteRole::Hover
+        ]
+        .iter()
+        .any(|role| visual.rendered_background(header_selector)
+            == Some(gpui::rgb(super::super::theme::color(*role)).into()))
     );
     let other_name = bounds(&mut visual, "track-name", tracks[1]).center();
     visual.simulate_click(other_name, Modifiers::default());
@@ -232,9 +244,23 @@ fn tall_track_header_keeps_controls_at_default_offset_and_fills_with_track_color
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.selected_track, Some(track))
     });
-    assert_eq!(
-        visual.rendered_background(header_selector),
-        visual.rendered_background(name_selector)
+    assert!(visual.rendered_background(name_selector).is_none());
+    assert!(
+        !visual
+            .rendered_path_triangles(Box::leak(
+                format!("track-name-plate-{}", track.value()).into_boxed_str()
+            ))
+            .is_empty()
+    );
+    assert!(
+        [
+            super::super::theme::PaletteRole::Surface,
+            super::super::theme::PaletteRole::Raised,
+            super::super::theme::PaletteRole::Hover
+        ]
+        .iter()
+        .any(|role| visual.rendered_background(header_selector)
+            == Some(gpui::rgb(super::super::theme::color(*role)).into()))
     );
     // A narrow header must still leave a readable label beside the mixer.
     let width_handle = bounds(&mut visual, "track-width-resize", track).center();

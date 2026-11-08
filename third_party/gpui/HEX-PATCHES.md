@@ -12,6 +12,8 @@ per-event device-direction inversion flag; offer opt-in physical_delta() while
 keeping ordinary scroll delta unchanged; initialize the flag false on other
 platforms; clear rendered debug selector bounds between test-support frames.
 AppKit access stays inside GPUI's existing native boundary.
+Test-support also exposes completed path triangles with their actual fill and replay mask,
+so nonrectangular application surfaces can be checked without framebuffer claims.
 
 This is an excluded external dependency, not a Hex workspace crate. Hex crates
 retain unsafe_code=forbid. Do not edit the machine's registry cache, add app FFI,
