@@ -36,6 +36,10 @@ pub struct DeviceDraftInput {
 }
 
 impl DeviceDraftInput {
+    #[cfg(feature = "recording-fault-test-support")]
+    pub(in crate::service) fn inject_next_append_failure(&mut self) -> Result<(), &'static str> {
+        self.input.inject_next_append_failure()
+    }
     /// Borrow recovery identity without transferring draft or worker custody.
     pub(in crate::service) fn path(&self) -> &Path {
         self.input.path()
