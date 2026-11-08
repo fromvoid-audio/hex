@@ -164,6 +164,23 @@ impl ModulationLfoBank {
         Ok(())
     }
 
+    /// Change a source's prepared rate at a chunk boundary, preserving its
+    /// speculative phase. Rollback restores the previously committed rate.
+    pub fn retarget(&mut self, prepared: PreparedLfoSource) -> Result<(), Error> {
+        if !self.active {
+            return Err(Error::InvalidParameterValue);
+        }
+        let index = self
+            .sources
+            .binary_search_by_key(&prepared.id, |source| source.id)
+            .map_err(|_| Error::InvalidId)?;
+        let source = self.sources.get_mut(index).ok_or(Error::InvalidId)?;
+        let mut next = prepared.lfo;
+        next.inherit_phase(&source.scratch);
+        source.scratch = next;
+        Ok(())
+    }
+
     /// Borrow the last rendered chunk for one source, without transferring ownership.
     pub fn samples(&self, id: ModulationSourceId) -> Option<&[f32]> {
         if !self.active {
@@ -290,6 +307,32 @@ mod tests {
         assert!(inserted[0].abs() < 1e-6);
         assert!((inserted[1] - 1.0).abs() < 1e-6);
         assert!(next.samples(old_sources[1].id).is_none());
+    }
+
+    #[test]
+    fn tempo_change_is_speculative_and_keeps_phase() {
+        let original = source(1, 12_000.0, 0.0);
+        let changed = source(1, 6_000.0, 0.0);
+        let mut bank = ModulationLfoBank::new(&[original], 8).unwrap();
+        assert!(bank.retarget(changed).is_err());
+        bank.begin();
+        bank.render_chunk(1).unwrap();
+        bank.retarget(changed).unwrap();
+        bank.render_chunk(2).unwrap();
+        let samples = bank.samples(original.id).unwrap();
+        assert!((samples[0] - 1.0).abs() < 1e-6);
+        assert!((samples[1] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+        bank.rollback();
+        bank.begin();
+        bank.render_chunk(2).unwrap();
+        assert_eq!(bank.samples(original.id).unwrap(), &[0.0, 1.0]);
+        bank.retarget(changed).unwrap();
+        bank.commit().unwrap();
+        bank.begin();
+        bank.render_chunk(2).unwrap();
+        let samples = bank.samples(original.id).unwrap();
+        assert!(samples[0].abs() < 1e-6);
+        assert!((samples[1] + std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
     }
 
     #[test]
