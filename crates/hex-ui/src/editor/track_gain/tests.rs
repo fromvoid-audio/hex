@@ -2251,3 +2251,172 @@ fn dragging_a_silent_selected_anchor_preserves_other_selected_gains(cx: &mut Tes
         assert_eq!(project.track(other).unwrap().gain(), 1.5);
     });
 }
+
+#[gpui::test]
+fn main_slider_edits_and_cancels_one_canonical_owner_in_both_views(cx: &mut TestAppContext) {
+    use hex_session::{device_gesture::GestureTarget, service::Request};
+    let (_browser, mut visual, editor, tracks) = actor_fixture(cx);
+    for (mode, db) in [
+        (super::super::EditorMode::Arrangement, -6.0_f64),
+        (super::super::EditorMode::Session, -12.0_f64),
+    ] {
+        editor.update(cx, |view, cx| {
+            view.set_mode(mode);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let (previous, track_gains) = editor.read_with(cx, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            (
+                project.master_gain(),
+                tracks.map(|id| project.track(id).unwrap().gain()),
+            )
+        });
+        assert!(visual.debug_bounds("main-gain-up").is_none());
+        let field = visual.debug_bounds("main-volume-value").unwrap().center();
+        visual.simulate_mouse_down(field, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(field, MouseButton::Left, Modifiers::default());
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input(&format!("{db} db"));
+        visual.simulate_keystrokes("enter");
+        let expected = 10.0_f32.powf(db as f32 / 20.0);
+        pump(&editor, cx, |view| {
+            view.device_gesture.snapshot().is_none()
+                && view.worker_requests_pending == 0
+                && (view.state.as_ref().unwrap().project.master_gain() - expected).abs() < 1e-5
+        });
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert_eq!(
+                tracks.map(|id| view
+                    .state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .track(id)
+                    .unwrap()
+                    .gain()),
+                track_gains
+            )
+        });
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump(&editor, cx, |view| {
+            view.worker_requests_pending == 0
+                && (view.state.as_ref().unwrap().project.master_gain() - previous).abs() < 1e-5
+        });
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+        pump(&editor, cx, |view| {
+            view.worker_requests_pending == 0
+                && (view.state.as_ref().unwrap().project.master_gain() - expected).abs() < 1e-5
+        });
+        visual.run_until_parked();
+        let rail = visual.debug_bounds("main-volume-slider").unwrap();
+        let start = point(rail.left() + px(10.0), rail.center().y);
+        let end = start - point(px(0.0), px(18.0));
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        pump(&editor, cx, |view| {
+            view.device_gesture
+                .snapshot()
+                .is_some_and(|s| s.target == GestureTarget::MainGain)
+                && view.worker_requests_pending == 0
+        });
+        editor.read_with(cx, |view, _| {
+            assert!(
+                (view.state.as_ref().unwrap().project.master_gain() - expected).abs() < 1e-5,
+                "held preview does not commit canonical gain"
+            )
+        });
+        visual.simulate_keystrokes("escape");
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        pump(&editor, cx, |view| {
+            view.device_gesture.snapshot().is_none() && view.worker_requests_pending == 0
+        });
+        editor.read_with(cx, |view, _| {
+            assert!((view.state.as_ref().unwrap().project.master_gain() - expected).abs() < 1e-5)
+        });
+    }
+}
+
+#[gpui::test]
+fn verified_main_slider_keeps_explicit_entry_and_finalization_without_held_preview(
+    cx: &mut TestAppContext,
+) {
+    use hex_session::{DocumentAudioMode, service::Request};
+    let environment = super::super::test_environment::Environment::new().unwrap();
+    let (_browser, mut visual, editor, tracks) =
+        actor_fixture_in_mode(cx, environment, DocumentAudioMode::VerifiedStreaming);
+    let field = visual.debug_bounds("main-volume-value").unwrap().center();
+    visual.simulate_mouse_down(field, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(field, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("-6 db");
+    editor.update(cx, |view, cx| {
+        assert!(super::super::device_panel::finalize_controls(view, cx))
+    });
+    let expected = 10.0_f32.powf(-6.0 / 20.0);
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && (view.state.as_ref().unwrap().project.master_gain() - expected).abs() < 1e-5
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(view.device_gesture.snapshot().is_none());
+        assert!(
+            view.audible_playback.is_none(),
+            "no resident preview fallback"
+        );
+    });
+    let rail = visual.debug_bounds("main-volume-slider").unwrap();
+    let start = point(rail.left() + px(10.0), rail.center().y);
+    let end = start - point(px(0.0), px(18.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.error
+                .as_deref()
+                .is_some_and(|s| s.contains("resident"))
+        );
+        assert!(view.device_gesture.snapshot().is_none());
+        assert!((view.state.as_ref().unwrap().project.master_gain() - expected).abs() < 1e-5);
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.state.as_ref().unwrap().project.master_gain() == 1.0
+    });
+    visual.run_until_parked();
+    let field = visual.debug_bounds("main-volume-value").unwrap().center();
+    visual.simulate_mouse_down(field, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(field, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("-12 db");
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::Gain {
+            track: tracks[0],
+            gain: 0.2
+        })))
+    });
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, cx| {
+        assert_eq!(view.state.as_ref().unwrap().project.master_gain(), 1.0);
+        assert_eq!(
+            view.track_gain_controls.mixer[&super::MixerKey::MainGain]
+                .entity
+                .read(cx)
+                .value(),
+            1.0,
+            "rejected Main entry must not remain painted during another pending edit"
+        );
+        assert!(
+            view.error.as_deref().is_some_and(
+                |message| message.contains("current edit") && !message.contains("resident")
+            ),
+            "atomic entry is supported; only the pending edit blocks it"
+        );
+    });
+}

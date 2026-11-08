@@ -251,23 +251,20 @@ fn main_track_stays_pinned_below_regular_tracks_at_minimum_size(cx: &mut TestApp
 }
 
 #[gpui::test]
-fn main_gain_control_dispatches_canonical_master_command(cx: &mut TestAppContext) {
+fn main_gain_slider_composes_with_lane_selection_in_both_views(cx: &mut TestAppContext) {
     let (handle, editor) = editor_window(cx, project_with_tracks(1), Arc::default());
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    let button = visual
-        .debug_bounds("main-gain-up")
-        .expect("main gain control");
-    let button_point = point(button.center().x, button.center().y);
-    visual.simulate_mouse_down(button_point, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(button_point, MouseButton::Left, Modifiers::default());
-    editor.read_with(cx, |view, _| {
-        assert!(matches!(
-            view.last_enqueued_edit.as_ref(),
-            Some(Command::MasterGainBy { amount }) if (*amount - 0.1).abs() < f32::EPSILON
-        ));
-    });
-
+    let slider = visual
+        .debug_bounds("main-volume-slider")
+        .expect("shared Main gain slider");
+    assert!(visual.debug_bounds("main-gain-up").is_none());
+    assert!(
+        visual
+            .debug_bounds("main-track-controls")
+            .unwrap()
+            .contains(&slider.center())
+    );
     let lane = visual
         .debug_bounds("main-track-lane")
         .expect("main timeline lane");
@@ -287,17 +284,10 @@ fn main_gain_control_dispatches_canonical_master_command(cx: &mut TestAppContext
     });
     visual.run_until_parked();
     let session_gain = visual
-        .debug_bounds("main-gain-up")
-        .expect("session keeps its master controls");
-    let session_click = point(session_gain.center().x, session_gain.center().y);
-    visual.simulate_mouse_down(session_click, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(session_click, MouseButton::Left, Modifiers::default());
-    editor.read_with(cx, |view, _| {
-        assert!(matches!(
-            view.last_enqueued_edit.as_ref(),
-            Some(Command::MasterGainBy { amount }) if (*amount - 0.1).abs() < f32::EPSILON
-        ));
-    });
+        .debug_bounds("main-volume-slider")
+        .expect("Console shares the Main slider");
+    assert_eq!(session_gain.size.height, slider.size.height);
+    assert!(visual.debug_bounds("main-gain-up").is_none());
 }
 
 #[gpui::test]

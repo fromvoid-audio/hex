@@ -48,18 +48,21 @@ impl Controls {
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum MixerKey {
+    MainGain,
     Balance(TrackId),
     ReturnGain(ReturnId),
 }
 impl MixerKey {
     fn target(self) -> GestureTarget {
         match self {
+            Self::MainGain => GestureTarget::MainGain,
             Self::Balance(track) => GestureTarget::TrackBalance { track },
             Self::ReturnGain(return_track) => GestureTarget::ReturnGain { return_track },
         }
     }
     fn current(self, view: &EditorView) -> bool {
         view.state.as_ref().is_some_and(|state| match self {
+            Self::MainGain => true,
             Self::Balance(track) => state.project.track(track).is_some(),
             Self::ReturnGain(id) => state
                 .project
@@ -361,6 +364,30 @@ impl EditorView {
         )
     }
 
+    pub(super) fn main_volume(&mut self, cx: &mut Context<Self>) -> Div {
+        let Some(gain) = self.state.as_ref().map(|state| state.project.master_gain()) else {
+            return div();
+        };
+        let Ok(spec) = NumericSpec::new(
+            0.0,
+            2.0,
+            1.0,
+            NumericScale::LinearAmplitudeDecibels,
+            1,
+            Some("db"),
+        ) else {
+            return div();
+        };
+        self.mixer_control(
+            MixerKey::MainGain,
+            "main-volume".into(),
+            "main volume · db",
+            spec,
+            gain,
+            cx,
+        )
+    }
+
     pub(super) fn return_volume(&mut self, track: &ReturnTrack, cx: &mut Context<Self>) -> Div {
         let Ok(spec) = NumericSpec::new(
             0.0,
@@ -413,23 +440,83 @@ impl EditorView {
             let entity = cx.new(|cx| NumericControl::from_config(cx, config));
             let lease: device_panel::NumericGestureLease = Rc::new(Cell::new(None));
             let captured = lease.clone();
+            let atomic_admitted = Cell::new(false);
             let subscription = cx.subscribe(
                 &entity,
                 move |view, control, event: &NumericControlEvent, cx| {
                     if generation != view.project_generation || !key.current(view) {
                         return;
                     }
+                    if event.phase == NumericEventPhase::Begin {
+                        atomic_admitted.set(false);
+                    }
+                    let explicit_main = key == MixerKey::MainGain && event.gesture.is_none();
                     if event.phase == NumericEventPhase::Begin
-                        && (view.document_audio_mode != hex_session::DocumentAudioMode::Resident
-                            || (view.gain_recorder.blocks_edits()
-                                || view.midi_recorder.blocks_edits())
+                        && ((view.document_audio_mode != hex_session::DocumentAudioMode::Resident
+                            && !explicit_main)
+                            || view.gain_recorder.blocks_edits()
+                            || view.midi_recorder.blocks_edits()
                             || view.edit_pending())
                     {
-                        view.error = Some(
+                        view.error = Some(if explicit_main {
+                            "finish the current edit before changing main volume"
+                        } else {
                             "finish the current edit · held mixer controls require resident audio"
-                                .into(),
-                        );
-                        control.update(cx, |control, cx| control.cancel(cx));
+                        }.into());
+                        let rejected_main = (key == MixerKey::MainGain
+                            && view.document_audio_mode
+                                != hex_session::DocumentAudioMode::Resident)
+                            .then(|| {
+                                view.state
+                                    .as_ref()
+                                    .map_or(1.0, |state| state.project.master_gain())
+                            });
+                        control.update(cx, |control, cx| {
+                            control.cancel(cx);
+                            if let Some(gain) = rejected_main {
+                                let _ = control.set_external_value(f64::from(gain), cx);
+                            }
+                        });
+                        cx.notify();
+                        return;
+                    }
+                    // Verified sources retain explicit atomic Main edits. Held
+                    // preview stays resident-only; the actor owns the sole edit.
+                    if key == MixerKey::MainGain
+                        && view.document_audio_mode != hex_session::DocumentAudioMode::Resident
+                    {
+                        match event.phase {
+                            NumericEventPhase::Begin => atomic_admitted.set(true),
+                            NumericEventPhase::Commit if atomic_admitted.replace(false) => {
+                                if view.edit_pending()
+                                    || view.gain_recorder.blocks_edits()
+                                    || view.midi_recorder.blocks_edits()
+                                    || !view.enqueue_device_barrier(
+                                        hex_session::service::Request::Edit(
+                                            hex_project::Command::MasterGain {
+                                                gain: event.value as f32,
+                                            },
+                                        ),
+                                    )
+                                {
+                                    view.error = Some(
+                                        "finish the current edit before changing main volume"
+                                            .into(),
+                                    );
+                                    let canonical = view
+                                        .state
+                                        .as_ref()
+                                        .map_or(1.0, |state| state.project.master_gain());
+                                    control.update(cx, |control, cx| {
+                                        control.cancel(cx);
+                                        let _ =
+                                            control.set_external_value(f64::from(canonical), cx);
+                                    });
+                                }
+                            }
+                            NumericEventPhase::Cancel => atomic_admitted.set(false),
+                            _ => {}
+                        }
                         cx.notify();
                         return;
                     }
@@ -462,7 +549,8 @@ impl EditorView {
                 ParameterValue::Float(value) => Some(value),
                 _ => None,
             });
-        let enabled = self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+        let enabled = (self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+            || key == MixerKey::MainGain)
             && !self.gain_recorder.blocks_edits()
             && !self.midi_recorder.blocks_edits()
             && !self.opening_project
@@ -471,7 +559,14 @@ impl EditorView {
         binding.entity.update(cx, |control, cx| {
             control.set_enabled(enabled, cx);
             let _ = control.set_external_style(theme::control_style(), cx);
-            let _ = control.set_external_value(f64::from(active.unwrap_or(canonical)), cx);
+            // The existing worker queue retains an explicit Main edit until its
+            // acknowledgement; do not flash the old value during that handoff.
+            if !(key == MixerKey::MainGain
+                && self.document_audio_mode != hex_session::DocumentAudioMode::Resident
+                && self.edit_pending())
+            {
+                let _ = control.set_external_value(f64::from(active.unwrap_or(canonical)), cx);
+            }
         });
         div()
             .flex()
