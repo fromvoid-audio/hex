@@ -272,3 +272,41 @@ fn zero_line_refuses_malformed_spans_and_invalid_or_overflowing_scales() {
         assert!(channel.zero_line_bounds(scale).is_none());
     }
 }
+
+#[test]
+fn layer_batches_only_proven_disjoint_geometry_with_conservative_trace_bounds() {
+    let lane = |top, bottom, flat: bool| {
+        let upper = [point(px(0.0), px(top)), point(px(100.0), px(top))];
+        let lower = upper.map(|p| point(p.x, px(bottom)));
+        WaveformChannel::new(
+            WaveformEnvelope {
+                upper: &upper,
+                lower: &lower,
+                mode: WaveformEnvelopeMode::Filled,
+                trace_width: px(2.0),
+                centerline: None,
+            },
+            flat.then_some([point(px(0.0), px(top)), point(px(100.0), px(top))]),
+        )
+        .unwrap()
+    };
+    let separate = WaveformGeometry::stereo([lane(10.0, 20.0, false), lane(30.0, 40.0, false)]);
+    let layer = envelope_layer(&separate, 2.0).unwrap();
+    assert_eq!(layer.origin, point(px(-1.5), px(8.5)));
+    assert_eq!(layer.bottom_right(), point(px(101.5), px(41.5)));
+    // A lower display scale expands the physical antialiasing margin.
+    assert_eq!(envelope_layer(&separate, 0.5).unwrap().top(), px(7.0));
+    let overlap = WaveformGeometry::stereo([lane(10.0, 20.0, false), lane(21.0, 30.0, false)]);
+    assert!(envelope_layer(&overlap, 2.0).is_none());
+    let flat = WaveformGeometry::stereo([lane(10.0, 20.0, true), lane(30.0, 40.0, false)]);
+    assert!(envelope_layer(&flat, 2.0).is_none());
+    assert!(envelope_layer(&WaveformGeometry::mono(lane(10.0, 20.0, false)), 2.0).is_none());
+    for scale in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+        assert!(envelope_layer(&separate, scale).is_none());
+    }
+    let a = Bounds::new(point(px(0.0), px(0.0)), size(px(10.0), px(1.0)));
+    let b = Bounds::new(point(px(0.0), px(2.0)), size(px(10.0), px(1.0)));
+    assert!(disjoint_layer(a, b).is_some());
+    assert!(disjoint_layer(a, a).is_none());
+    assert!(disjoint_layer(a, Bounds::new(point(px(0.0), px(f32::INFINITY)), b.size)).is_none());
+}

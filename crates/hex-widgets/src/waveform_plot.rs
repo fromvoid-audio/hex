@@ -42,6 +42,8 @@ pub struct WaveformEnvelope<'a> {
 /// painter cannot receive malformed point arrays or an unbounded iterator.
 pub struct WaveformChannel {
     envelope: Path<Pixels>,
+    envelope_bounds: Option<Bounds<Pixels>>,
+    trace_width: Pixels,
     centerline: Option<WaveformZeroLine>,
     zero_ranges: Option<Path<Pixels>>,
 }
@@ -62,10 +64,15 @@ impl WaveformChannel {
         if upper.len() != lower.len()
             || upper.len() > MAX_WAVEFORM_ENVELOPE_POINTS
             || !valid_width(trace_width)
-            || upper.iter().zip(lower).any(|(top, bottom)| {
-                !valid_point(*top) || !valid_point(*bottom) || top.x != bottom.x || top.y > bottom.y
-            })
-            || upper.windows(2).any(|pair| pair[0].x > pair[1].x)
+        {
+            return None;
+        }
+        // Reuse the validation extrema for conservative paint-layer bounds;
+        // retaining them adds no extra envelope traversal.
+        let envelope_bounds = envelope_bounds(upper, lower);
+        if upper.iter().zip(lower).any(|(top, bottom)| {
+            !valid_point(*top) || !valid_point(*bottom) || top.x != bottom.x || top.y > bottom.y
+        }) || upper.windows(2).any(|pair| pair[0].x > pair[1].x)
             || upper
                 .first()
                 .zip(upper.last())
@@ -74,7 +81,7 @@ impl WaveformChannel {
                 .iter()
                 .zip(lower)
                 .any(|(top, bottom)| !f32::from(bottom.y - top.y).is_finite())
-            || !valid_vertical_extent(upper, lower)
+            || envelope_bounds.is_some_and(|bounds| !finite_bounds(bounds))
         {
             return None;
         }
@@ -110,6 +117,8 @@ impl WaveformChannel {
         }
         Some(Self {
             envelope: path,
+            envelope_bounds,
+            trace_width,
             centerline,
             zero_ranges: if spans > 0 {
                 Some(flat.build().ok()?)
@@ -180,11 +189,46 @@ fn filled_band(upper: &[Point<Pixels>], lower: &[Point<Pixels>]) -> Path<Pixels>
 fn valid_point(point: Point<Pixels>) -> bool {
     f32::from(point.x).is_finite() && f32::from(point.y).is_finite()
 }
-fn valid_vertical_extent(upper: &[Point<Pixels>], lower: &[Point<Pixels>]) -> bool {
-    let min = upper.iter().map(|p| f32::from(p.y)).reduce(f32::min);
-    let max = lower.iter().map(|p| f32::from(p.y)).reduce(f32::max);
-    min.zip(max)
-        .is_none_or(|(min, max)| (max - min).is_finite())
+fn envelope_bounds(upper: &[Point<Pixels>], lower: &[Point<Pixels>]) -> Option<Bounds<Pixels>> {
+    let min = upper.iter().map(|p| f32::from(p.y)).reduce(f32::min)?;
+    let max = lower.iter().map(|p| f32::from(p.y)).reduce(f32::max)?;
+    Some(Bounds::new(
+        gpui::point(upper.first()?.x, px(min)),
+        gpui::size(upper.last()?.x - upper.first()?.x, px(max - min)),
+    ))
+}
+fn finite_bounds(bounds: Bounds<Pixels>) -> bool {
+    valid_point(bounds.origin)
+        && valid_point(bounds.bottom_right())
+        && f32::from(bounds.size.width).is_finite()
+        && f32::from(bounds.size.height).is_finite()
+}
+fn disjoint_layer(a: Bounds<Pixels>, b: Bounds<Pixels>) -> Option<Bounds<Pixels>> {
+    if !finite_bounds(a) || !finite_bounds(b) || a.is_empty() || b.is_empty() || a.intersects(&b) {
+        return None;
+    }
+    let union = a.union(&b);
+    finite_bounds(union).then_some(union)
+}
+// GPUI layers require non-overlapping geometry at one draw order. Include a
+// conservative physical AA pixel plus trace width; uncertain/overlapping spans
+// retain their original independent submission. Separate DC traces may overlap
+// their envelope, so those channels never enter this batch.
+fn envelope_layer(geometry: &WaveformGeometry, scale: f32) -> Option<Bounds<Pixels>> {
+    if !scale.is_finite() || scale <= 0.0 {
+        return None;
+    }
+    let [a, b] = geometry.channels() else {
+        return None;
+    };
+    if a.zero_ranges.is_some() || b.zero_ranges.is_some() {
+        return None;
+    }
+    let padded = |channel: &WaveformChannel| {
+        let padding = channel.trace_width * 0.5 + px(1.0 / scale);
+        channel.envelope_bounds.map(|bounds| bounds.dilate(padding))
+    };
+    disjoint_layer(padded(a)?, padded(b)?)
 }
 fn valid_width(width: Pixels) -> bool {
     f32::from(width).is_finite() && width > px(0.0)
@@ -288,12 +332,36 @@ fn zero_line_quads(
         .iter()
         .filter_map(move |channel| channel.zero_line_bounds(scale))
 }
-fn paint_channels(geometry: &WaveformGeometry, color: u32, window: &mut Window) {
-    for channel in geometry.channels() {
-        window.paint_path(channel.envelope.clone(), rgb(color));
-        if let Some(path) = &channel.zero_ranges {
-            window.paint_path(path.clone(), rgb(color));
+fn paint_guides(geometry: &WaveformGeometry, centerline: u32, scale: f32, window: &mut Window) {
+    let mut quads = zero_line_quads(geometry, scale);
+    let quads = [quads.next(), quads.next()];
+    let paint = |window: &mut Window| {
+        for bounds in quads.iter().flatten() {
+            window.paint_quad(gpui::fill(*bounds, rgb(centerline)));
         }
+    };
+    if let Some(layer) = quads[0]
+        .zip(quads[1])
+        .and_then(|(a, b)| disjoint_layer(a, b))
+    {
+        window.paint_layer(layer, paint);
+    } else {
+        paint(window);
+    }
+}
+fn paint_channels(geometry: &WaveformGeometry, color: u32, window: &mut Window) {
+    let paint = |window: &mut Window| {
+        for channel in geometry.channels() {
+            window.paint_path(channel.envelope.clone(), rgb(color));
+            if let Some(path) = &channel.zero_ranges {
+                window.paint_path(path.clone(), rgb(color));
+            }
+        }
+    };
+    if let Some(layer) = envelope_layer(geometry, window.scale_factor()) {
+        window.paint_layer(layer, paint);
+    } else {
+        paint(window);
     }
 }
 
@@ -337,9 +405,7 @@ where
                 let geometry = data.deref().as_ref();
                 // Timeline geometry deliberately includes neighboring columns. Its
                 // existing ancestor mask, not another canvas-bound mask, crops them.
-                for bounds in zero_line_quads(geometry, scale) {
-                    window.paint_quad(gpui::fill(bounds, rgb(colors.centerline)));
-                }
+                paint_guides(geometry, colors.centerline, scale, window);
                 if emphasis == WaveformEmphasis::Uniform {
                     paint_channels(geometry, colors.waveform, window);
                     return;
