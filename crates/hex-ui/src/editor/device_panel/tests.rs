@@ -19,6 +19,7 @@ mod device_picker_ui_tests;
 mod device_preset_ui_tests;
 mod device_reorder_tests;
 mod device_theme_tests;
+mod eq8_marquee_tests;
 pub(in crate::editor) mod eq_ui_tests;
 mod gate_ui_tests;
 mod header_actions_tests;
