@@ -113,7 +113,8 @@ impl Preparation<'_> {
         if matches!(operation, PluginGesturePreparation::Begin { .. }) {
             return (self.lane.busy()
                 || self.state.active.is_some()
-                || self.state.failed.is_some())
+                || self.state.failed.is_some()
+                || self.state.terminal.is_some())
             .then(|| {
                 Err(SessionError::Invalid(
                     "recover or finish the previous automation take first",
@@ -457,7 +458,8 @@ impl Preparation<'_> {
                 && active.outcome.is_some()
         }) && let Some(active) = self.state.active.take()
         {
-            self.state.terminal = None;
+            // The original terminal is still owed an exact acknowledgement.
+            // Keep it until its synthetic attempt, even after source custody ends.
             if active.pending.is_some()
                 || matches!(active.outcome, Some(Err(_)))
                 || active.failed_observations.iter().any(Option::is_some)

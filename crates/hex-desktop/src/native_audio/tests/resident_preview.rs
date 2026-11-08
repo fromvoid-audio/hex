@@ -363,7 +363,8 @@ impl WorkerAudioSink for ResidentSink {
         &mut self,
     ) -> Option<hex_session::service::PluginParameterObservation> {
         let observation = self.inner.take_plugin_parameter_observation();
-        if std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").as_deref() == Ok("session_record")
+        if std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE")
+            .is_ok_and(|case| case.starts_with("session_record"))
             && let Some(observation) = observation
         {
             let mut originals = SESSION_RECORDING_OBSERVATIONS.lock().unwrap();

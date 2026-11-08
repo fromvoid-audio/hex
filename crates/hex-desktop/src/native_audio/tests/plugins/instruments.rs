@@ -786,7 +786,11 @@ fn recorded_session_gesture_commits_one_take_and_reopens() {
         .map(|case| {
             assert!(matches!(
                 case.as_str(),
-                "session_record" | "session_refused" | "session_cancel" | "session_empty"
+                "session_record"
+                    | "session_record_changed"
+                    | "session_refused"
+                    | "session_cancel"
+                    | "session_empty"
             ))
         })
         .expect("run explicitly with HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE=session_record");
@@ -1940,7 +1944,12 @@ fn verify_instrument_takeover(
             assert!((peak(h) - baseline).abs() < 0.0001);
             return;
         }
-        client.finish_plugin(origin.initial).unwrap();
+        let final_value = if case == "session_record_changed" {
+            PluginParameterValue::new(0.75).unwrap()
+        } else {
+            origin.initial
+        };
+        client.finish_plugin(final_value).unwrap();
         if case == "session_refused" {
             h.refuse.store(true, std::sync::atomic::Ordering::Release);
             let refused = send(h, &mut client, false);
@@ -1976,7 +1985,7 @@ fn verify_instrument_takeover(
                 .iter()
                 .map(|step| step.value.get())
                 .collect::<Vec<_>>(),
-            [0.75, 0.375, 0.25]
+            [0.75, 0.375, final_value.normalized() as f32]
         );
         assert_eq!(
             result.automation_target(DeviceAutomationTarget::Vst3 { parameter: 11 }),
