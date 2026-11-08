@@ -137,6 +137,44 @@ pub(super) fn inspect_failed_copy(
     lane.inspect_failed_plugin_copy(scope, &observations)
 }
 
+/// Explicit keep-copy resolution changes no canonical project or history. The
+/// completed, aborted or interrupted outcome remains exactly as captured; no
+/// restoration clock is synthesized. Both durable files remain on disk.
+pub(super) fn keep_failed_copy(
+    state: &mut State,
+    lane: &mut Lane,
+    scope: DeviceAutomationTakeScope,
+    max_events: u64,
+    gesture_active: bool,
+) -> Result<Step, String> {
+    if max_events > hex_project::MAX_DEVICE_AUTOMATION_POINTS as u64 {
+        return Err("device automation recovery exceeds the event budget".into());
+    }
+    let DeviceAutomationTakeProgress::FailedPluginCustody { scope: found, .. } =
+        failed_custody(state, lane, gesture_active)?
+    else {
+        return Err("no failed device automation custody is available for resolution".into());
+    };
+    if *found != scope {
+        return Err("device automation recovery belongs to another take".into());
+    }
+    let Step::Progress(DeviceAutomationTakeProgress::VerifiedCopy { path, receipt }) =
+        inspect_failed_copy(state, lane, scope, gesture_active)?
+    else {
+        return Err("verified VST3 recovery copy is unavailable".into());
+    };
+    let outcome = Arc::clone(lane.failed_outcome(scope)?);
+    receipt.with_verified_on_control(
+        &path,
+        hex_storage::automation_draft::DraftReadLimits {
+            max_source_bytes: hex_storage::MAX_PROJECT_DOCUMENT_BYTES as u64,
+        },
+        max_events,
+        || release_failed_copy(state, lane, scope, &path, receipt, &outcome),
+    )?;
+    Ok(Step::Progress(DeviceAutomationTakeProgress::CopyKept(path)))
+}
+
 pub(super) struct RecoveryAdoption {
     scope: DeviceAutomationTakeScope,
     pub(super) path: PathBuf,
@@ -224,17 +262,30 @@ pub(super) fn release_failed_adoption(
     lane: &mut Lane,
     adoption: &RecoveryAdoption,
 ) -> Result<(), String> {
-    let source = lane.failed_source(adoption.scope)?;
-    if !Arc::ptr_eq(lane.failed_outcome(adoption.scope)?, &adoption.outcome) {
-        return Err("original VST3 recovery custody changed".into());
-    }
-    let observations = state.failed_observations(adoption.scope, source)?;
-    lane.release_failed_plugin_copy(
+    release_failed_copy(
+        state,
+        lane,
         adoption.scope,
         &adoption.path,
         adoption.receipt,
-        &observations,
-    )?;
+        &adoption.outcome,
+    )
+}
+
+fn release_failed_copy(
+    state: &mut State,
+    lane: &mut Lane,
+    scope: DeviceAutomationTakeScope,
+    path: &Path,
+    receipt: automation_draft::RecoveryCopyReceipt,
+    outcome: &Arc<automation_draft::DraftWorkerOutcome>,
+) -> Result<(), String> {
+    let source = lane.failed_source(scope)?;
+    if !Arc::ptr_eq(lane.failed_outcome(scope)?, outcome) {
+        return Err("original VST3 recovery custody changed".into());
+    }
+    let observations = state.failed_observations(scope, source)?;
+    lane.release_failed_plugin_copy(scope, path, receipt, &observations)?;
     state.failed = None;
     Ok(())
 }
