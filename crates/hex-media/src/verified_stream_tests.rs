@@ -757,4 +757,12 @@ fn generic_read_failure_clears_decoded_prefix_and_allows_verified_retry() {
         output, expected,
         "the one-shot error leaves verified retry intact"
     );
+    reader.fail_page_read_after(0);
+    reader.clear_page_read_failure();
+    output.fill([42.0; 2]);
+    assert_eq!(
+        reader.read_frames_into(10_000, &mut output).unwrap(),
+        expected.len()
+    );
+    assert_eq!(output, expected, "a cleared plan leaves the reader intact");
 }

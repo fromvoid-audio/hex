@@ -303,6 +303,13 @@ impl VerifiedWavReader {
         self.page_read_failure_after = Some(successful_reads);
     }
 
+    /// Discard an unused test-only read failure, allowing a caller to scope its
+    /// plan to one request even when that request reads fewer raw pages.
+    #[cfg(feature = "test-support")]
+    pub fn clear_page_read_failure(&mut self) {
+        self.page_read_failure_after = None;
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }
