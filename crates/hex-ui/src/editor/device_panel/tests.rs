@@ -32,6 +32,7 @@ mod operator_algorithm_ui_tests;
 mod operator_context_selection_tests;
 mod operator_enable_ui_tests;
 mod operator_envelope_reference_ui_tests;
+mod operator_filter_response_tests;
 mod operator_fine_ui_tests;
 #[path = "operator_harmonic_ui_tests.rs"]
 mod operator_harmonic_ui_tests;

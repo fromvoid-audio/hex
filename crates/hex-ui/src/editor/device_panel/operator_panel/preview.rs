@@ -1,4 +1,4 @@
-//! View-only Operator controls for sections without native DSP contracts yet.
+//! Vector working sections and owner-scoped transient view state.
 use super::super::{EditorView, control_style};
 use super::algorithms::diagram;
 use crate::diagnostics::ActionTraceContext as _;
@@ -108,6 +108,7 @@ pub(in crate::editor::device_panel) struct TogglePreview {
 }
 
 pub(in crate::editor::device_panel) struct State {
+    pub(super) filter_response: Option<super::filter_response::Control>,
     pub(in crate::editor::device_panel) controls: HashMap<Field, NumericPreview>,
     pub(in crate::editor::device_panel) toggles: HashMap<Switch, TogglePreview>,
     pub(in crate::editor::device_panel) routing_focus: Option<gpui::FocusHandle>,
@@ -118,6 +119,7 @@ pub(in crate::editor::device_panel) struct State {
 impl Default for State {
     fn default() -> Self {
         Self {
+            filter_response: None,
             controls: HashMap::new(),
             toggles: HashMap::new(),
             values: Field::ALL.map(|field| field.spec().default),
