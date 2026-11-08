@@ -678,6 +678,7 @@ pub(super) struct ResidentHarness {
     allow_unavailable: bool,
     pub(super) unavailable: Vec<String>,
     pub(super) publication_refusals: Vec<String>,
+    pub(super) degraded_devices: Vec<u64>,
     constructor_submitted: Option<(u64, AudioSourceContext)>,
     /// `OutputReleased` events in delivery order: (generation, old output).
     pub(super) released: Vec<(u64, u64)>,
@@ -939,6 +940,7 @@ impl ResidentHarness {
             allow_unavailable,
             unavailable: Vec::new(),
             publication_refusals: Vec::new(),
+            degraded_devices: Vec::new(),
             constructor_submitted: None,
             released: Vec::new(),
             rebound: None,
@@ -1038,6 +1040,9 @@ impl ResidentHarness {
                     state: EditorPublicationState::Refused(error),
                     ..
                 } => self.publication_refusals.push(error),
+                EditorAudioEvent::DegradedPlugins { devices, .. } => {
+                    self.degraded_devices = devices;
+                }
                 EditorAudioEvent::OutputReleased {
                     project_generation,
                     old_output_identity,

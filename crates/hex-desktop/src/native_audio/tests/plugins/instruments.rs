@@ -605,6 +605,14 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
     instrument_entrypoint(InstrumentWorkflow::Playback);
 }
 
+/// An opt-in wall-clock driver for the actual native worker, not a physical
+/// audio deadline or a reproduction of any particular user project.
+#[test]
+#[ignore = "requires an installed VST3 instrument, its catalog and a source-bound helper"]
+fn paced_live_instrument_automation_preserves_the_worker() {
+    instrument_entrypoint(InstrumentWorkflow::PacedAuthoring);
+}
+
 #[test]
 #[ignore = "requires explicit source-bound SDK receipts and optional installed catalog"]
 fn shared_instrument_lane_authoring_undo_read_controls_and_pcm() {
@@ -809,12 +817,14 @@ fn recorded_session_gesture_commits_one_take_and_reopens() {
 enum InstrumentWorkflow {
     Playback,
     Authoring,
+    PacedAuthoring,
     Takeover,
 }
 
 fn instrument_entrypoint(workflow: InstrumentWorkflow) {
     let shared_authoring = !matches!(workflow, InstrumentWorkflow::Playback);
     let takeover = matches!(workflow, InstrumentWorkflow::Takeover);
+    let paced = matches!(workflow, InstrumentWorkflow::PacedAuthoring);
     let name = std::thread::current().name().unwrap().to_owned();
     const CHILD: &str = "HEX_DESKTOP_TEST_INSTRUMENT_CHILD";
     let installed = std::env::var("HEX_TEST_VST3_INSTRUMENT_BUNDLE").ok();
@@ -905,7 +915,7 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         panic!("midi track");
     };
     (applied, _) = harness.applied(applied);
-    let (clip_length, note_duration) = if takeover {
+    let (clip_length, note_duration) = if takeover || paced {
         // The headless control driver can render far faster than wall time
         // while waiting for SDK work. Keep its held note alive throughout
         // these operations without adding processing to the test.
@@ -986,14 +996,26 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         (applied, _) = harness.applied(applied);
         Some(console)
     };
-    let mut insertion = request(&note.state, PluginEffectDestination::Instrument(track));
-    if let Some(bundle) = installed {
-        insertion.selection = installed_selection(
-            &PathBuf::from(std::env::var_os("HEX_TEST_VST3_INSTRUMENT_CATALOG").unwrap()),
-            &bundle,
-            hex_plugin_catalog::PluginRole::Instrument,
-        );
-    }
+    let insertion = if let Some(bundle) = installed.as_ref() {
+        PluginEffectInsertion {
+            context: note
+                .state
+                .canonical_audio_source
+                .as_ref()
+                .unwrap()
+                .context(),
+            selection: installed_selection(
+                &PathBuf::from(std::env::var_os("HEX_TEST_VST3_INSTRUMENT_CATALOG").unwrap()),
+                bundle,
+                hex_plugin_catalog::PluginRole::Instrument,
+            ),
+            destination: PluginEffectDestination::Instrument(track),
+            before: None,
+            control: Arc::new(PluginEffectControl::default()),
+        }
+    } else {
+        request(&note.state, PluginEffectDestination::Instrument(track))
+    };
     harness
         .service
         .submit(Request::InsertPluginEffect(insertion))
@@ -1013,6 +1035,14 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
             project_track.instrument().unwrap().id(),
             applied,
             recording_catalog.as_ref().map(|files| files.0.as_path()),
+        );
+        return;
+    }
+    if paced {
+        verify_paced_instrument_authoring(
+            &mut harness,
+            project_track.instrument().unwrap().id(),
+            applied,
         );
         return;
     }
@@ -1395,6 +1425,165 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         }
         assert_eq!(render_completed_block(&harness), [[0.0; 2]; 256]);
     }
+}
+
+fn verify_paced_instrument_authoring(
+    harness: &mut ResidentHarness,
+    device: hex_project::DeviceId,
+    mut applied: u64,
+) {
+    use hex_project::{
+        AutomationInterpolation, AutomationPoint, AutomationValue, DeviceAutomationTarget,
+    };
+    use hex_session::service::PluginParameterQuery;
+    let context = harness.submitted.unwrap().1.context;
+    let output_identity = harness
+        .audio
+        .as_ref()
+        .unwrap()
+        .control
+        .output_identity()
+        .unwrap();
+    let page_first: u16 = std::env::var("HEX_TEST_VST3_INSTRUMENT_AUTOMATION_PAGE")
+        .unwrap_or_else(|_| "148".into())
+        .parse()
+        .expect("parameter page offset");
+    harness.run(Request::QueryPluginParameters(PluginParameterQuery {
+        context,
+        device,
+        output_identity,
+        request_id: 10,
+        page_first: Some(page_first),
+    }));
+    let rows = harness.next().plugin_parameters.unwrap().rows.unwrap();
+    let parameter: u32 = std::env::var("HEX_TEST_VST3_INSTRUMENT_AUTOMATION_ID")
+        .unwrap_or_else(|_| "148".into())
+        .parse()
+        .expect("parameter id");
+    let row = rows
+        .iter()
+        .find(|row| row.id == parameter)
+        .expect("requested parameter in inventory");
+    let target = DeviceAutomationTarget::Vst3 { parameter: row.id };
+    let class = row.automation_class.expect("automatable parameter");
+    println!("paced_vst3 parameter={} id={}", row.name, row.id);
+    harness
+        .audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let period = Duration::from_nanos(
+        256 * 1_000_000_000 / u64::from(harness.audio.as_ref().unwrap().sample_rate),
+    );
+    let start = Instant::now();
+    let mut pending = false;
+    let mut sent = 0;
+    let mut completed = 0;
+    let mut revision = context.editor_revision;
+    let mut max_lateness = Duration::ZERO;
+    let mut peak = 0.0_f32;
+    let mut tail_peak = 0.0_f32;
+    for block in 0..600_u32 {
+        let deadline = start + period * block;
+        if let Some(delay) = deadline.checked_duration_since(Instant::now()) {
+            std::thread::sleep(delay);
+        }
+        harness.pump();
+        max_lateness = max_lateness.max(Instant::now().saturating_duration_since(deadline));
+        let frames = harness.render_plugin_block();
+        let block_peak = frames
+            .into_iter()
+            .flatten()
+            .fold(0.0_f32, |value, sample| value.max(sample.abs()));
+        peak = peak.max(block_peak);
+        if block >= 550 {
+            tail_peak = tail_peak.max(block_peak);
+        }
+        if !pending && sent < 3 && block >= 50 + sent * 125 {
+            let points = [
+                (BeatTime::ZERO, 0.4),
+                (BeatTime::from_ratio(1 + u64::from(sent), 8).unwrap(), 0.7),
+            ]
+            .map(|(beat, value)| AutomationPoint {
+                beat,
+                value: AutomationValue::new(value).unwrap(),
+                outgoing: AutomationInterpolation::Step,
+            })
+            .to_vec();
+            harness
+                .service
+                .submit(Request::DeviceAutomation {
+                    project_generation: context.project_generation,
+                    revision,
+                    device,
+                    target,
+                    vst3_class: Some(class),
+                    points,
+                })
+                .unwrap();
+            sent += 1;
+            pending = true;
+        }
+        while let Ok(event) = harness.service.try_event() {
+            assert!(
+                event.error.is_none(),
+                "live automation failed: {:?}",
+                event.error
+            );
+            assert!(
+                pending && event.state.revision > revision,
+                "expected the admitted edit's new revision"
+            );
+            revision = event.state.revision;
+            pending = false;
+            completed += 1;
+        }
+        assert!(
+            harness.degraded_devices.is_empty(),
+            "vst endpoint degraded after block {block}, maximum lateness {:?}: {:?}",
+            max_lateness,
+            harness.degraded_devices
+        );
+        let status = harness.audio.as_ref().unwrap().status().unwrap();
+        if block >= 50 {
+            assert!(
+                status.playing.load(Acquire),
+                "the edit requires active playback"
+            );
+        }
+        assert!(!status.device_fault.load(Acquire) && !status.render_fault.load(Acquire));
+        applied = applied.max(status.applied_revision.load(Acquire));
+    }
+    harness.pump();
+    assert!(
+        harness.degraded_devices.is_empty(),
+        "vst endpoint degraded: {:?}",
+        harness.degraded_devices
+    );
+    assert_eq!((sent, completed, pending), (3, 3, false));
+    let source = harness
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .native_effect_source()
+        .unwrap();
+    assert_eq!(
+        source.context.editor_revision, revision,
+        "last edit must be applied"
+    );
+    assert!(
+        peak > 0.001 && tail_peak > 0.001,
+        "instrument must remain audible after editing"
+    );
+    println!(
+        "paced_vst3 rate={} blocks=600 edits={completed} applied={applied} max_late_us={} peak={peak} tail_peak={tail_peak}",
+        harness.audio.as_ref().unwrap().sample_rate,
+        max_lateness.as_micros()
+    );
 }
 
 fn verify_shared_instrument_authoring(
