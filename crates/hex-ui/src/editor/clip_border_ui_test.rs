@@ -183,6 +183,29 @@ fn selected_audio_midi_borders_cover_visible_bounds_and_restore_each_member(
             assert_eq!(trailing.left(), current.right());
             let scale = visual.update(|window, _| window.scale_factor());
             assert_eq!(f64::from(trailing.scale(scale).size.width), 1.0);
+            if index != 4 {
+                let expected = (current.top() + gpui::px(5.0)).scale(scale);
+                let layers = visual.rendered_quad_paint_layers(edge_name, false);
+                assert!(!layers.is_empty());
+                assert!(
+                    layers.iter().all(|(_, mask)| mask.top() >= expected),
+                    "raised edge must leave the corner open"
+                );
+                let body_color = visual.rendered_background(selector).unwrap();
+                let corner = gpui::point(
+                    current.right() - gpui::px(0.25),
+                    current.top() + gpui::px(0.25),
+                )
+                .scale(scale);
+                assert!(
+                    visual
+                        .rendered_filled_quads(selector)
+                        .iter()
+                        .filter(|(_, fill)| *fill == body_color)
+                        .all(|(bounds, _)| !bounds.contains(&corner)),
+                    "the cut must be transparent, not a covering triangle"
+                );
+            }
             let fill = editor.read_with(&visual, |view: &EditorView, _| {
                 let source = view.state.as_ref().unwrap().project.track(track).unwrap();
                 let flavor = source
@@ -455,7 +478,7 @@ fn all_four_clip_edges_paint_above_actual_row_separator_without_geometry_changes
                     (
                         scaled.left(),
                         scaled.top(),
-                        scaled.right(),
+                        scaled.right() - gpui::px(if i == 4 { 0.0 } else { 5.0 }).scale(scale),
                         scaled.top() + widths.top,
                     ),
                     (
@@ -759,4 +782,30 @@ fn adjacent_clip_edges_share_one_grid_pixel(cx: &mut TestAppContext) {
         selected_order > next_order,
         "selected seam remains visible above an unselected neighbor"
     );
+}
+
+#[test]
+fn corner_geometry_is_bounded_and_resolves_again_after_resize() {
+    use super::{Notch, corner_extent};
+    assert_eq!(corner_extent(100.0, 44.0), 5.0);
+    assert_eq!(corner_extent(6.0, 44.0), 3.0);
+    assert_eq!(corner_extent(100.0, 4.0), 2.0);
+    assert_eq!(corner_extent(0.0, 44.0), 0.0);
+    assert_eq!(corner_extent(-1.0, 44.0), 0.0);
+    assert_eq!(corner_extent(f32::NAN, 44.0), 0.0);
+    let notch = Notch::new(true);
+    let edge = notch.clone();
+    for width in [100.0, 6.0, 100.0] {
+        notch.observe(gpui::Bounds::new(
+            gpui::point(gpui::px(10.0), gpui::px(20.0)),
+            gpui::size(gpui::px(width), gpui::px(44.0)),
+        ));
+        assert_eq!(edge.extent(), corner_extent(width, 44.0));
+    }
+    let cropped = Notch::default();
+    cropped.observe(gpui::Bounds::new(
+        gpui::point(gpui::px(0.0), gpui::px(0.0)),
+        gpui::size(gpui::px(100.0), gpui::px(44.0)),
+    ));
+    assert_eq!(cropped.extent(), 0.0);
 }
