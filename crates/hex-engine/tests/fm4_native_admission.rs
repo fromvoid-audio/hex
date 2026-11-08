@@ -429,3 +429,39 @@ fn shortening_release_filters_retired_gain_ids_and_surviving_note_off_reaches_si
         );
     }
 }
+
+#[test]
+fn unsupported_authored_fm4_pitch_is_refused_during_control_preparation() {
+    let (project, _, track) = fixture();
+    let mut editor = Editor::new(project, 8).unwrap();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: beat(8),
+            length: beat(1),
+        })
+        .unwrap()
+    else {
+        panic!("clip fixture")
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: beat(1),
+            pitch: 127,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    assert!(
+        PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .is_err(),
+        "unsupported authored pitch must be refused before callback admission"
+    );
+}

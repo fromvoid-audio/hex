@@ -360,3 +360,27 @@ fn registered_definition_supplies_bounded_mutable_playback_matching_its_inline_o
         );
     }
 }
+
+#[test]
+fn registered_event_validation_matches_inline_pitch_and_velocity_domain() {
+    let tuning = hex_lattice::TuningTable::default();
+    for sample_rate in [8000, 48000, 192000] {
+        let context = hex_lattice::DevicePreparationContext {
+            sample_rate,
+            tuning: &tuning,
+            resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        };
+        let prepared = FM4_DEFINITION
+            .prepare_instrument(&FM4_DEFINITION.default_state().unwrap(), &context)
+            .unwrap();
+        for pitch in 0..=u8::MAX {
+            for velocity in [0, 1, 127, 128, 255] {
+                assert_eq!(
+                    prepared.validate_event_note(pitch, velocity).is_ok(),
+                    prepared.prepare_note(pitch, velocity).is_ok(),
+                    "rate {sample_rate}, pitch {pitch}, velocity {velocity}"
+                );
+            }
+        }
+    }
+}

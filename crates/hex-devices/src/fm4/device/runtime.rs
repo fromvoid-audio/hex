@@ -1,4 +1,4 @@
-//! Fixed FM4 voices and carrier controls; native host admission is separate.
+//! Fixed FM4 voices and carrier controls used by the registered native host.
 //!
 //! Control prepares all 128 tuned step entries (invalid/Nyquist keys remain
 //! explicitly unavailable). One twin owns 64 inline occurrence slots; batches
@@ -32,7 +32,7 @@
 //! extending a carried note requires a separate host-deadline contract. Effective carrier ramps survive the handoff;
 //! the next segment selects the target's Base or supplied authored values.
 //! No assets, queues, host publication, event scheduler or new resource owner.
-//! Native definition admission and parameter metadata remain unchanged.
+//! Parameter automation metadata is exposed separately from this runtime.
 use super::*;
 use crate::fm4::{
     PreparedEnvelope, PreparedFmConfiguration, audible_operator_ancestors, prepared_steps_frequency,
@@ -67,6 +67,23 @@ impl Fm4Definition {
     }
 }
 impl Factory {
+    pub(super) fn validate_note_on(
+        &self,
+        pitch: u8,
+        velocity: u8,
+    ) -> Result<(), DeviceContractError> {
+        if (1..=127).contains(&velocity)
+            && self
+                .config
+                .steps
+                .get(usize::from(pitch))
+                .is_some_and(Option::is_some)
+        {
+            Ok(())
+        } else {
+            Err(DeviceContractError::InvalidParameterValue)
+        }
+    }
     pub(super) fn prepare(
         state: &NativeDeviceState,
         context: &hex_lattice::DevicePreparationContext<'_>,

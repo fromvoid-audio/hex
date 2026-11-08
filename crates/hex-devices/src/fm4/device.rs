@@ -415,6 +415,10 @@ struct PreparedFm4Instrument {
 }
 
 impl PreparedNativeInstrument for PreparedFm4Instrument {
+    fn validate_event_note(&self, pitch: u8, velocity: u8) -> Result<(), DeviceContractError> {
+        self.runtime.validate_note_on(pitch, velocity)
+    }
+
     fn prepare_mutable_runtime(
         &self,
     ) -> Result<Option<Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>>, DeviceContractError>
