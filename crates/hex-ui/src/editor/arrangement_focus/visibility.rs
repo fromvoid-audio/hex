@@ -86,6 +86,8 @@ pub(crate) struct Projection {
     fold_revision: u64,
     pub(crate) ranges: Rc<[(u64, u64)]>,
     pub(crate) indices: Vec<usize>,
+    // Count from the same snapshot as indices, including hidden trailing rows.
+    canonical_count: usize,
     pub(crate) console_indices: Vec<usize>,
     pub(crate) tracks: BTreeSet<TrackId>,
     pub(crate) clips: BTreeSet<ClipId>,
@@ -115,6 +117,33 @@ fn section_intervals(project: &Project, selected: &[SectionId]) -> Rc<[(u64, u64
     union.into()
 }
 impl Projection {
+    /// Gap cues are for selected section intervals, not ordinary tags or folds.
+    fn section_markers_active(&self) -> bool {
+        self.enabled && !self.ranges.is_empty()
+    }
+    pub(super) fn hidden_before(&self, index: usize) -> bool {
+        if !self.section_markers_active() {
+            return false;
+        }
+        let Ok(row) = self.indices.binary_search(&index) else {
+            return false;
+        };
+        row.checked_sub(1)
+            .and_then(|previous| self.indices.get(previous))
+            .map_or(index > 0, |previous| index.saturating_sub(*previous) > 1)
+    }
+    /// Interior gaps belong to the next row, so no boundary is painted twice.
+    pub(super) fn hidden_after(&self, index: usize) -> bool {
+        self.section_markers_active()
+            && self.indices.last() == Some(&index)
+            && index
+                .checked_add(1)
+                .is_some_and(|next| next < self.canonical_count)
+    }
+    pub(super) fn all_tracks_hidden(&self) -> bool {
+        self.section_markers_active() && self.canonical_count > 0 && self.indices.is_empty()
+    }
+
     pub(crate) fn tag_filter(&self) -> Option<&TrackTag> {
         self.tag.as_ref()
     }
@@ -196,6 +225,7 @@ impl Projection {
         self.selected.clear();
         self.selected.extend_from_slice(selected);
         self.ranges = ranges;
+        self.canonical_count = project.tracks().len();
         self.indices.clear();
         self.console_indices.clear();
         self.tracks.clear();
