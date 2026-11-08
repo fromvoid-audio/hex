@@ -104,11 +104,15 @@ impl Fence {
     pub(super) fn active(&self) -> bool {
         self.gate() & 1 != 0
     }
-    /// Interrupt an acknowledged fence before clearing a priority Stop marker.
-    /// A pending fence may instead acknowledge after Stop has been applied.
+    /// Interrupt an acknowledged native epoch witness before clearing a
+    /// priority Stop marker. Arrangement fences retain their installation
+    /// custody; a pending native fence may acknowledge after Stop is applied.
     /// A delayed store cannot overwrite cancellation of a later operation.
     pub(super) fn interrupt_for_stop(&self) {
-        self.interrupt_operation_for_stop(self.gate());
+        let operation = self.gate();
+        if self.native_epoch.load(SeqCst) {
+            self.interrupt_operation_for_stop(operation);
+        }
     }
     fn interrupt_operation_for_stop(&self, operation: u64) {
         if operation & 1 != 0 && self.ack.load(SeqCst) == operation {
@@ -583,7 +587,7 @@ mod tests {
     fn consumed_stop_marker_already_interrupts_the_ready_fence() {
         let (control, callback) = channel(48_000).unwrap();
         let fence = &callback.status.sampler_edit;
-        let first = fence.begin(source(), 0).unwrap();
+        let first = fence.begin_source(source(), 0, false, false, true).unwrap();
         fence.acknowledge(first.operation, Some(source()), false, 0, false, 0);
         assert_eq!(fence.state(first), StoppedEditFenceState::Ready);
         control.stop();
@@ -611,7 +615,7 @@ mod tests {
         assert_eq!(fence.state(first), StoppedEditFenceState::Refused);
         fence.acknowledge(first.operation, Some(source()), false, 0, false, 0);
         fence.retire_abort_on_control();
-        let next = fence.begin(source(), 0).unwrap();
+        let next = fence.begin_source(source(), 0, false, false, true).unwrap();
         fence.acknowledge(next.operation, Some(source()), false, 0, false, 0);
         assert_eq!(callback.take_stop_marker(), 0);
         assert_eq!(fence.state(next), StoppedEditFenceState::Ready);
@@ -636,7 +640,7 @@ mod tests {
         let (control, callback) = channel(48_000).unwrap();
         control.stop();
         let fence = &callback.status.sampler_edit;
-        let token = fence.begin(source(), 0).unwrap();
+        let token = fence.begin_source(source(), 0, false, false, true).unwrap();
         assert_eq!(fence.state(token), StoppedEditFenceState::Pending);
         assert_ne!(callback.take_stop_marker(), 0);
         fence.acknowledge(token.operation, Some(source()), false, 0, false, 0);
