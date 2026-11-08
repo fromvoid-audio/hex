@@ -27,8 +27,7 @@ mod bounce;
 mod browser;
 mod browser_input;
 mod clip_action_scope;
-#[cfg(all(test, feature = "ui-test-support"))]
-mod clip_border_ui_test;
+mod clip_boundary;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_clipboard_ui_test;
 mod clip_content_cache;
@@ -215,6 +214,8 @@ mod session_track_reorder_ui_test;
 mod signed_frame_viewport;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod snap_nudge_ui_test;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod stream_read_failure_ui_test;
 mod tempo_input;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tempo_input_ui_test;

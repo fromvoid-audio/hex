@@ -3370,7 +3370,7 @@ fn render_checkpoint_prefix(playback: &mut SessionPlayback, frames: usize) -> Ve
     rendered
 }
 
-fn render_checkpoint_partitioned(
+pub(super) fn render_checkpoint_partitioned(
     playback: &mut SessionPlayback,
     pattern: &[usize],
     total_frames: usize,
@@ -12179,7 +12179,7 @@ fn mutable_feedback_with_stateful_track_and_return() -> Arc<PreparedRevision> {
     mutable_feedback_with_stateful_track_and_return_edited(|_| {})
 }
 
-fn mutable_feedback_with_stateful_track_and_return_edited(
+pub(super) fn mutable_feedback_with_stateful_track_and_return_edited(
     edit: impl FnOnce(&mut Snapshot),
 ) -> Arc<PreparedRevision> {
     use hex_devices::utility::{UTILITY_DEFINITION, parameter};
@@ -13525,15 +13525,15 @@ fn meter_capture_combines_each_owner_before_advancing_and_discards_refused_block
         observation
             .track_output_meter(first)
             .unwrap()
-            .take_track_output(),
-        0.25
+            .take_track_output_stereo(),
+        [0.1, 0.25]
     );
     assert_eq!(
         observation
             .track_output_meter(second)
             .unwrap()
-            .take_track_output(),
-        0.9
+            .take_track_output_stereo(),
+        [0.0, 0.9]
     );
 
     capture
@@ -13547,8 +13547,8 @@ fn meter_capture_combines_each_owner_before_advancing_and_discards_refused_block
         observation
             .track_output_meter(first)
             .unwrap()
-            .take_track_output(),
-        0.7
+            .take_track_output_stereo(),
+        [0.7, 0.0]
     );
 
     capture
@@ -13563,8 +13563,8 @@ fn meter_capture_combines_each_owner_before_advancing_and_discards_refused_block
         observation
             .track_output_meter(first)
             .unwrap()
-            .take_track_output(),
-        0.0
+            .take_track_output_stereo(),
+        [0.0; 2]
     );
     capture
         .add(OutputCaptureId::Track(first), 0, &[[0.7, 0.0]])
@@ -13574,8 +13574,8 @@ fn meter_capture_combines_each_owner_before_advancing_and_discards_refused_block
         observation
             .track_output_meter(first)
             .unwrap()
-            .take_track_output(),
-        0.0
+            .take_track_output_stereo(),
+        [0.0; 2]
     );
 }
 

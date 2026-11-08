@@ -229,6 +229,7 @@ pub struct NumericControlConfig {
     dial_layout: DialLayout,
     command_fine_steps: bool,
     value_drag_steps: bool,
+    slider_center_mark: bool,
 }
 
 impl NumericControlConfig {
@@ -256,6 +257,7 @@ impl NumericControlConfig {
             dial_layout: DialLayout::ReadoutGap,
             command_fine_steps: false,
             value_drag_steps: false,
+            slider_center_mark: true,
         })
     }
 
@@ -274,6 +276,13 @@ impl NumericControlConfig {
     /// Every control supports stepping a valid local text draft.
     pub fn with_command_fine_steps(mut self) -> Self {
         self.command_fine_steps = true;
+        self
+    }
+
+    /// Show or hide the center line of bipolar filled fields. The fill still
+    /// grows from the center; input geometry and all value semantics stay intact.
+    pub fn with_slider_center_mark(mut self, visible: bool) -> Self {
+        self.slider_center_mark = visible;
         self
     }
 
@@ -368,6 +377,7 @@ pub struct NumericControl {
     tab_navigation: bool,
     command_fine_steps: bool,
     value_drag_steps: bool,
+    slider_center_mark: bool,
     pub(crate) focus: FocusHandle,
     focus_blur: Option<gpui::Subscription>,
     window_activation: Option<gpui::Subscription>,
@@ -440,6 +450,7 @@ impl NumericControl {
             dial_layout,
             command_fine_steps,
             value_drag_steps,
+            slider_center_mark,
         } = config;
         Self {
             accessibility_binding: None,
@@ -476,6 +487,7 @@ impl NumericControl {
             tab_navigation: false,
             command_fine_steps,
             value_drag_steps,
+            slider_center_mark,
             focus: cx.focus_handle(),
             focus_blur: None,
             window_activation: None,
@@ -1509,6 +1521,7 @@ impl NumericControl {
             SliderPresentation {
                 value,
                 bipolar: self.spec.scale() == crate::NumericScale::Bipolar,
+                center_mark: self.slider_center_mark,
                 field: ValueFieldPresentation {
                     invalid: self.invalid_text,
                     editing: self.editing.is_editing(),
@@ -2231,6 +2244,7 @@ fn value_field_sized(
 struct SliderPresentation {
     value: f32,
     bipolar: bool,
+    center_mark: bool,
     field: ValueFieldPresentation,
 }
 
@@ -2243,6 +2257,7 @@ fn filled_slider(
     let SliderPresentation {
         value,
         bipolar,
+        center_mark,
         field,
     } = presentation;
     let origin = if bipolar { 0.5 } else { 0.0 };
@@ -2272,7 +2287,7 @@ fn filled_slider(
         .overflow_hidden()
         .bg(rgb(field.style.rail))
         .child(fill)
-        .when(bipolar, |bar| {
+        .when(bipolar && center_mark, |bar| {
             bar.child(
                 div()
                     .debug_selector(move || center_id.clone())

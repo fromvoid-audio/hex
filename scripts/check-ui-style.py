@@ -98,6 +98,8 @@ widgets = (
 
     'folder_dialog)', 'self.browser.search.clone())', 'rows.flex_1()',
     'resize)', 'panel)', 'div().w(px(4.0))', 'canvas(', 'BrowserSearchElement',
+    # Records resting clip geometry; no text or paint content.
+    'clip_drag_span(',
     'layout::resize_divider_line(', 'resize_divider_line(',
     'scene_rows)', 'cell)', 'session_scenes_header()', 'scene_column)',
     'musical_control_row(', 'musical_control_label(', 'super::musical_audio_controls::view(',
@@ -201,10 +203,10 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
         header_mixer_component = (
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/tracks.rs'
             and suffix.startswith(('utilities)', 'activator)', 'solo)', 'arm)',
-                                   'self.track_pan(', 'header_content)'))
+                                   'self.track_pan(', 'header_content)', 'toggle_button_with_style('))
         ) or (
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/return_tracks.rs'
-            and suffix.startswith(('self.return_volume(', 'gain_control)'))
+            and suffix.startswith(('self.return_volume(', 'gain_control)', 'super::waveform::toggle_button_with_style('))
         ) or (
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/mixer.rs'
             and suffix.startswith(('super::track_meters::render(', 'toggle_button_with_style('))
@@ -294,11 +296,17 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/log_viewer.rs'
             and suffix.startswith(('display)', 'session)', 'detail)', 'status)', 'self.query.clone())', 'list)', 'self.log_scrollbar('))
         )
+        # Passive track channel wells and their wrapper contain no text; the
+        # tooltip still passes through theme::text at its own child boundary.
+        track_meter_component = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/track_meters.rs'
+            and suffix.startswith(('bar)', 'bars.id('))
+        )
         plugin_parameter_search = (
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel/vst3_parameters.rs'
             and suffix.startswith('panel.search.clone())')
         )
-        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component and not browser_vector_component and not browser_scrollbar_component and not transport_vector_component and not limiter_component and not device_insertion_component and not log_viewer_source and not plugin_parameter_search:
+        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component and not browser_vector_component and not browser_scrollbar_component and not transport_vector_component and not limiter_component and not device_insertion_component and not log_viewer_source and not plugin_parameter_search and not track_meter_component:
             line = source.count('\n', 0, match.start()) + 1
             errors.append(f'{path.relative_to(ROOT)}:{line}: route text through theme::text or add an explicit view component')
     for match in re.finditer(r'\.font_family\(([^)]*)\)', source):

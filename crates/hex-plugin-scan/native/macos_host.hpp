@@ -3,6 +3,7 @@
 #include "macos_host_messages.hpp"
 #include "pluginterfaces/vst/ivsteditcontroller.h"
 #include "pluginterfaces/vst/ivsthostapplication.h"
+#include <CommonCrypto/CommonDigest.h>
 #include <algorithm>
 #include <limits>
 #include <memory>
@@ -25,7 +26,33 @@ struct ParameterSnapshot {
     std::unique_ptr<Parameter[]> parameters;
     uint32 count=0;
     uint64 revision=0;
+    std::array<unsigned char,32> descriptor_signature{};
 };
+// Main-lane display-cache identity only. Encode validated semantic fields,
+// including enumeration order, rather than SDK struct padding. Runtime values,
+// edit sequences and observation revisions deliberately do not participate.
+inline std::array<unsigned char,32> parameter_descriptor_signature(const ParameterSnapshot& snapshot) {
+    CC_SHA256_CTX hash{};CC_SHA256_Init(&hash);
+    const auto number=[&](uint64 value,size_t bytes) {
+        std::array<unsigned char,8> encoded{};
+        for(size_t n=0;n<bytes;++n) encoded[n]=static_cast<unsigned char>(value>>(8*n));
+        CC_SHA256_Update(&hash,encoded.data(),static_cast<CC_LONG>(bytes));
+    };
+    const auto text=[&](const String128& value) {
+        for(size_t n=0;n<128 && value[n];++n) number(static_cast<uint16>(value[n]),2);
+        number(0,2);
+    };
+    number(1,4); // Signature encoding version, separate from the saved format.
+    number(snapshot.count,4);
+    for(uint32 n=0;n<snapshot.count;++n) {
+        const auto& info=snapshot.parameters[n].info;
+        number(info.id,4);number(static_cast<uint32>(info.flags),4);
+        number(static_cast<uint32>(info.stepCount),4);number(static_cast<uint32>(info.unitId),4);
+        uint64 bits=0;std::memcpy(&bits,&info.defaultNormalizedValue,8);number(bits,8);
+        text(info.title);text(info.shortTitle);text(info.units);
+    }
+    std::array<unsigned char,32> result{};CC_SHA256_Final(result.data(),&hash);return result;
+}
 // Copied DSP-facing facts contain no controller pointers or strings. Main owns
 // the rich snapshot; its one processing reader uses these published copies.
 struct ProcessingParameterSnapshot {
@@ -505,6 +532,7 @@ private:
         if(!publish_processing_snapshot(next)) {
             result.disposition=HostDisposition::Pending;return result;
         }
+        staged.descriptor_signature=parameter_descriptor_signature(staged);
         metadata=std::move(staged);
         result.metadata_revision=metadata.revision; result.disposition=HostDisposition::Refreshed;
         return result;

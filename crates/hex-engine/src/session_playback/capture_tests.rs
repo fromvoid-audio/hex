@@ -1,6 +1,8 @@
 use super::*;
 #[path = "capture_tests/render_work_tests.rs"]
 mod render_work_tests;
+#[path = "capture_tests/stereo_meter_tests.rs"]
+mod stereo_meter_tests;
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 use hex_project::{ReturnTrackSnapshot, SendLevelSnapshot};
 

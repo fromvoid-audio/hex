@@ -1,3 +1,4 @@
+use super::clip_boundary::{clip_boundary_shell, pixel_boundary_shell};
 use super::drag::{self, ClipDrag, ClipPosition, LaneBounds};
 use super::time_move_preview::{
     clip_fragments_outside, clip_intersection, clip_intersects_exclusions, move_exclusions,
@@ -16,110 +17,26 @@ use gpui::{
 };
 use hex_project::{BeatTime, Clip, MidiClip, Track};
 
-/// Keep the time interval's layout and input bounds unchanged while painting
-/// its trailing stroke on the same physical column as the next interval.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn clip_boundary_shell<T: gpui::IntoElement + gpui::Styled>(
-    mut body: T,
-    left: f32,
-    width: f32,
-    stroke: f32,
-    color: u32,
-    hover: u32,
-    visible: bool,
-    native_leading: bool,
-    bottom_inset: f32,
-    selector: impl FnOnce() -> String,
-) -> Div {
-    // A sub-pixel interval may round to an empty child. Keep its paint edges
-    // anchored in the lane, without giving the clip a minimum hit width.
-    let (outer_left, outer_width, leading, trailing) = if native_leading {
-        (left, width, 0.0, 1.0)
-    } else {
-        body = body.left(relative(left)).w(relative(width));
-        (0.0, 1.0, left, left + width)
-    };
-    let hoverable = native_leading && hover != color;
-    let mut outer = div()
-        .absolute()
-        .top_0()
-        .bottom_0()
-        .left(relative(outer_left))
-        .w(relative(outer_width))
-        .when(hoverable, |outer| outer.group("clip-boundary"))
-        .child(body);
-    if visible && !native_leading {
-        outer = outer.child(
-            div()
-                .absolute()
-                .left(relative(leading))
-                .top_0()
-                .bottom(px(bottom_inset))
-                .w(px(stroke))
-                .bg(rgb(color))
-                .when(hoverable, |line| {
-                    line.group_hover("clip-boundary", move |style| style.bg(rgb(hover)))
-                }),
-        );
-    }
-    if visible {
-        outer = outer.child(
-            div()
-                .debug_selector(selector)
-                .absolute()
-                .left(relative(trailing))
-                .top_0()
-                .bottom(px(bottom_inset))
-                .w(px(stroke))
-                .bg(rgb(color))
-                .when(hoverable, |line| {
-                    line.group_hover("clip-boundary", move |style| style.bg(rgb(hover)))
-                }),
-        );
-    }
-    outer
-}
-
-/// Floating previews use the same physical-pixel boundary without changing
-/// the rectangle used for their contents or pointer geometry.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn pixel_boundary_shell(
-    body: impl gpui::IntoElement,
-    left: f32,
-    top: f32,
-    width: f32,
-    height: f32,
-    stroke: f32,
-    color: u32,
-    native_leading: bool,
-) -> Div {
-    let mut outer = div()
-        .absolute()
-        .left(px(left))
-        .top(px(top))
-        .w(px(width))
-        .h(px(height))
-        .child(body);
-    if !native_leading {
-        outer = outer.child(
-            div()
-                .absolute()
-                .left_0()
-                .top_0()
-                .bottom_0()
-                .w(px(stroke))
-                .bg(rgb(color)),
-        );
-    }
-    outer.child(
-        div()
-            .absolute()
-            .left(relative(1.0))
-            .top_0()
-            .bottom_0()
-            .w(px(stroke))
-            .bg(rgb(color)),
+/// Observe the actual pixel-rounded resting clip rectangle. A clip's move hit
+/// strip excludes handles and cannot define its horizontal thirds. The canvas
+/// includes the parent's leading stroke; the trailing stroke belongs to the
+/// separate boundary shell, so there is no trailing layout border to expand.
+fn clip_drag_span(payload: &ClipDrag, leading_border: f32) -> impl IntoElement + use<> {
+    let span = std::rc::Rc::clone(&payload.source_span);
+    canvas(
+        move |bounds, _, _| {
+            span.set(Some((
+                f32::from(bounds.left()),
+                f32::from(bounds.size.width),
+            )));
+        },
+        |_, _, _, _| {},
     )
+    .absolute()
+    .left(px(-leading_border))
+    .right_0()
+    .top_0()
+    .bottom_0()
 }
 
 struct ClipGhostGeometry {
@@ -1661,7 +1578,10 @@ impl EditorView {
             .debug_selector(move || format!("track-mute-{}", track_id.value()))
             .flex_1()
             .min_w_0()
-            .h(px(18.0))
+            .h(px(14.0))
+            .text_size(px(10.0))
+            .border_1()
+            .border_color(rgb(theme::control_style().border))
             .child(theme::text((track_index + 1).to_string()))
             .on_click(cx.listener(move |view, _, _, cx| {
                 cx.stop_propagation();
@@ -1675,8 +1595,11 @@ impl EditorView {
                 theme::action_style().with_state_colors(solo_background, solo_text),
             )
             .debug_selector(move || format!("track-solo-{}", track_id.value()))
-            .w(px(28.0))
-            .h(px(18.0))
+            .w(px(16.0))
+            .h(px(14.0))
+            .text_size(px(10.0))
+            .border_1()
+            .border_color(rgb(theme::control_style().border))
             .on_click(cx.listener(move |view, event: &gpui::ClickEvent, _, cx| {
                 cx.stop_propagation();
                 view.toggle_solo(track_id, !event.modifiers().platform);
@@ -1685,8 +1608,11 @@ impl EditorView {
             let arm = div()
                 .id(("track-arm-unavailable", track_id.value()))
                 .debug_selector(move || format!("track-arm-unavailable-{}", track_id.value()))
-                .w(px(28.0))
-                .h(px(18.0))
+                .w(px(16.0))
+                .h(px(14.0))
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+                .border_1()
+                .border_color(rgb(theme::control_style().border))
                 .flex_shrink_0()
                 .flex()
                 .items_center()
@@ -1789,21 +1715,27 @@ impl EditorView {
                 )
                 .child(self.track_volume(track, cx))
                 .child(
-                    button(
-                        "●",
+                    toggle_button_with_style(
+                        "",
                         if track.muted() {
                             "unmute track"
                         } else {
                             "mute track"
                         },
                         ("track-mute", track_id.value()),
+                        {
+                            let (background, text) =
+                                super::track_gain::activator_colors(!track.muted());
+                            theme::action_style().with_state_colors(background, text)
+                        },
                     )
+                    .w(px(20.0))
+                    .h(px(14.0))
+                    .text_size(px(10.0))
+                    .border_1()
+                    .border_color(rgb(theme::control_style().border))
+                    .child(theme::text((track_index + 1).to_string()))
                     .debug_selector(move || format!("track-mute-{}", track_id.value()))
-                    .text_color(rgb(if track.muted() {
-                        theme::color(theme::PaletteRole::Primary)
-                    } else {
-                        theme::color(theme::PaletteRole::Muted)
-                    }))
                     .on_click(cx.listener(move |view, _, _, cx| {
                         cx.stop_propagation();
                         view.toggle_mute(track_id);
@@ -1811,17 +1743,23 @@ impl EditorView {
                     })),
                 )
                 .child(
-                    button(
+                    toggle_button_with_style(
                         "s",
                         "solo track · s · cmd+click additive",
                         ("track-solo", track_id.value()),
+                        {
+                            let (background, text) = super::track_gain::activator_colors(
+                                self.displayed_solo(track_id, track.soloed()),
+                            );
+                            theme::action_style().with_state_colors(background, text)
+                        },
                     )
+                    .w(px(16.0))
+                    .h(px(14.0))
+                    .text_size(px(10.0))
+                    .border_1()
+                    .border_color(rgb(theme::control_style().border))
                     .debug_selector(move || format!("track-solo-{}", track_id.value()))
-                    .text_color(rgb(if self.displayed_solo(track_id, track.soloed()) {
-                        theme::color(theme::PaletteRole::Primary)
-                    } else {
-                        theme::color(theme::PaletteRole::Muted)
-                    }))
                     .on_click(cx.listener(
                         move |view, event: &gpui::ClickEvent, _, cx| {
                             cx.stop_propagation();
@@ -2440,6 +2378,7 @@ impl EditorView {
             if let Some((payload, lane)) = midi_drag_payload {
                 let border = hex_widgets::rectangle_border_width(pixel_width);
                 let left_border = if border > 0.0 { stroke } else { 0.0 };
+                midi = midi.child(clip_drag_span(&payload, left_border));
                 let move_surface = self
                     .clip_drag_surface(
                         payload,
@@ -2728,6 +2667,8 @@ impl EditorView {
                             duration: clip.duration(),
                         },
                         grab_offset: std::rc::Rc::new(std::cell::Cell::new(None)),
+                        snap_edge: std::rc::Rc::new(std::cell::Cell::new(None)),
+                        source_span: Default::default(),
                         capture: std::rc::Rc::new(std::cell::Cell::new(None)),
                         viewport_start: viewport.start,
                         viewport_length: viewport.length,
@@ -2901,6 +2842,7 @@ impl EditorView {
         if let Some((payload, lane)) = drag_payload {
             let border = hex_widgets::rectangle_border_width(clip_pixel_width);
             let left_border = if border > 0.0 { stroke } else { 0.0 };
+            content = content.child(clip_drag_span(&payload, left_border));
             let move_surface = self
                 .clip_drag_surface(
                     payload,
@@ -3218,6 +3160,8 @@ impl EditorView {
                 clip: clip.id(),
                 position: ClipPosition::Midi { start, length },
                 grab_offset: std::rc::Rc::new(std::cell::Cell::new(None)),
+                snap_edge: std::rc::Rc::new(std::cell::Cell::new(None)),
+                source_span: Default::default(),
                 capture: std::rc::Rc::new(std::cell::Cell::new(None)),
                 viewport_start: viewport.start,
                 viewport_length: viewport.length,
@@ -3288,6 +3232,26 @@ impl EditorView {
                             None,
                             f32::from(event.position.x),
                         );
+                        let edge = (|| {
+                            let (left, width) = mouse_down_payload.source_span.get()?;
+                            let bounds = drag::preview_for(
+                                &view.state.as_ref()?.project,
+                                mouse_down_payload.source_track,
+                                mouse_down_payload.position,
+                            )?;
+                            drag::clip_snap_edge(
+                                f32::from(event.position.x),
+                                left,
+                                width,
+                                visible_start,
+                                visible_end,
+                                bounds.start_frame,
+                                bounds.end_frame,
+                            )
+                        })();
+                        if let Some(press) = view.pointer_down.as_mut() {
+                            press.snap_edge = edge;
+                        }
                     } else {
                         view.clear_pointer_down(
                             mouse_down_payload.project_generation,
@@ -3326,7 +3290,10 @@ impl EditorView {
                     }
                 });
                 payload.capture.set(capture);
-                let original_down_x = capture.map(|capture| capture.origin_x);
+                payload
+                    .snap_edge
+                    .set(capture.and_then(|press| press.snap_edge));
+                let original_down_x = capture.map(drag::PointerDown::origin_x);
                 let frame_offset = original_down_x.and_then(|x| {
                     drag::grab_offset_from_pointer(
                         x,
