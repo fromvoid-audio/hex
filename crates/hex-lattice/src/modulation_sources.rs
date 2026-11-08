@@ -164,6 +164,23 @@ impl ModulationLfoBank {
         Ok(())
     }
 
+    /// Change a source's prepared rate at a chunk boundary, preserving its
+    /// speculative phase. Rollback restores the previously committed rate.
+    pub fn retarget(&mut self, prepared: PreparedLfoSource) -> Result<(), Error> {
+        if !self.active {
+            return Err(Error::InvalidParameterValue);
+        }
+        let index = self
+            .sources
+            .binary_search_by_key(&prepared.id, |source| source.id)
+            .map_err(|_| Error::InvalidId)?;
+        let source = self.sources.get_mut(index).ok_or(Error::InvalidId)?;
+        let mut next = prepared.lfo;
+        next.inherit_phase(&source.scratch);
+        source.scratch = next;
+        Ok(())
+    }
+
     /// Borrow the last rendered chunk for one source, without transferring ownership.
     pub fn samples(&self, id: ModulationSourceId) -> Option<&[f32]> {
         if !self.active {
@@ -293,6 +310,33 @@ mod tests {
     }
 
     #[test]
+    fn tempo_change_is_speculative_and_keeps_phase() {
+        let id = ModulationSourceId::new(1).unwrap();
+        let original = PreparedLfoSource::tempo(id, 8.0, 120.0, 1.0, 0.0).unwrap();
+        let changed = PreparedLfoSource::tempo(id, 8.0, 60.0, 1.0, 0.0).unwrap();
+        let mut bank = ModulationLfoBank::new(&[original], 8).unwrap();
+        assert!(bank.retarget(changed).is_err());
+        bank.begin();
+        bank.render_chunk(1).unwrap();
+        bank.retarget(changed).unwrap();
+        bank.render_chunk(2).unwrap();
+        let samples = bank.samples(original.id).unwrap();
+        assert!((samples[0] - 1.0).abs() < 1e-6);
+        assert!((samples[1] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+        bank.rollback();
+        bank.begin();
+        bank.render_chunk(2).unwrap();
+        assert_eq!(bank.samples(original.id).unwrap(), &[0.0, 1.0]);
+        bank.retarget(changed).unwrap();
+        bank.commit().unwrap();
+        bank.begin();
+        bank.render_chunk(2).unwrap();
+        let samples = bank.samples(original.id).unwrap();
+        assert!(samples[0].abs() < 1e-6);
+        assert!((samples[1] + std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+    }
+
+    #[test]
     fn invalid_requests_do_not_advance_committed_or_speculative_state() {
         assert!(ModulationSourceId::new(0).is_err());
         let prepared = source(1, 12_000.0, 0.0);
@@ -308,6 +352,9 @@ mod tests {
         bank.begin();
         assert!(bank.render_chunk(9).is_err());
         assert!(bank.reset(prepared.id, 0.0).is_err());
+        assert!(bank.retarget(source(2, 100.0, 0.0)).is_err());
+        let mut replacement = ModulationLfoBank::new(&[prepared], 8).unwrap();
+        assert!(replacement.inherit_committed(&bank).is_err());
         bank.render_chunk(2).unwrap();
         assert_eq!(bank.samples(prepared.id).unwrap(), &[0.0, 1.0]);
         assert!(bank.render_chunk(9).is_err());

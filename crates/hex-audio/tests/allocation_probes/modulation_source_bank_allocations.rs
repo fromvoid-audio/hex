@@ -16,6 +16,7 @@ fn source_bank_render_commit_rollback_and_inherit_do_not_allocate() {
             first.rollback();
             first.begin();
             first.render_chunk(128).unwrap();
+            first.retarget(source).unwrap();
             first.commit().unwrap();
             second.inherit_committed(&first).unwrap();
         }

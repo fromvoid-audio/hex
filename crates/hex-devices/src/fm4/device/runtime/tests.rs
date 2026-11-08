@@ -323,3 +323,72 @@ fn occurrence_gain_is_applied_after_original_velocity_law_and_released_ids_retir
     let mut ids = [0; VOICES];
     assert_eq!(pair.active_occurrence_ids(&mut ids).unwrap(), 0);
 }
+
+#[test]
+fn sparse_high_slot_and_reused_low_slot_match_source_and_partition_history() {
+    let mut settings = Fm4Settings::defaults();
+    settings.envelope = [0.0, 0.0, 1.0, 0.0];
+    let tuning = hex_lattice::TuningTable::default();
+    let (factory, inline) = prepared(48000, settings, &tuning);
+    let mut whole = NativeInstrumentRuntimePair::new(factory.as_ref(), LIMITS).unwrap();
+    let mut split = NativeInstrumentRuntimePair::new(factory.as_ref(), LIMITS).unwrap();
+    let resources = BorrowedDeviceResources(&[]);
+    let events = (1..=64).map(|id| on(id, 0, 60, 100)).collect::<Vec<_>>();
+    for pair in [&mut whole, &mut split] {
+        pair.begin_block();
+        pair.process_block(&events, &mut [[0.0; 2]; 1], &resources)
+            .unwrap();
+        pair.commit_block();
+    }
+    let mut events = (1..64)
+        .map(|id| NativeInstrumentEvent::NoteOff {
+            frame_offset: 0,
+            occurrence_id: id,
+        })
+        .collect::<Vec<_>>();
+    events.push(on(65, 17, 60, 100));
+    events.push(NativeInstrumentEvent::NoteOff {
+        frame_offset: 29,
+        occurrence_id: 64,
+    });
+    whole.begin_block();
+    split.begin_block();
+    let mut expected = [[0.0; 2]; 64];
+    let mut actual = expected;
+    whole
+        .process_block(&events, &mut expected, &resources)
+        .unwrap();
+    split
+        .process_block(&events[..63], &mut actual[..17], &resources)
+        .unwrap();
+    let remaining = [
+        on(65, 0, 60, 100),
+        NativeInstrumentEvent::NoteOff {
+            frame_offset: 12,
+            occurrence_id: 64,
+        },
+    ];
+    split
+        .process_block(&remaining, &mut actual[17..], &resources)
+        .unwrap();
+    assert_eq!(actual, expected);
+    let note = inline.prepare_note(60, 100).unwrap();
+    for (offset, actual) in actual.iter().enumerate() {
+        let old = if offset < 29 {
+            note.sample(offset as u64 + 1, u64::MAX, &resources)[0]
+        } else {
+            0.0
+        };
+        let new = if offset >= 17 {
+            note.sample((offset - 17) as u64, u64::MAX, &resources)[0]
+        } else {
+            0.0
+        };
+        assert_eq!(*actual, [(f64::from(old) + f64::from(new)) as f32; 2]);
+    }
+    whole.commit_block();
+    split.rollback_block();
+    let mut ids = [0; VOICES];
+    assert_eq!(whole.active_occurrence_ids(&mut ids).unwrap(), 1);
+    assert_eq!(ids[0], 65);
+}
