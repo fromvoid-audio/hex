@@ -38,7 +38,7 @@ mod pending;
 pub use pending::{PendingStreamDomain, StreamPreparationAllowance, StreamPreparationBound};
 mod disposal;
 #[cfg(test)]
-mod read_cancellation_tests;
+mod read_outcome_tests;
 pub use disposal::{PreparedStreamDisposal, StreamDisposalError, StreamDisposalPhase};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
