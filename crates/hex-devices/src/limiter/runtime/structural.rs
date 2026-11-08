@@ -154,8 +154,9 @@ impl Layout {
         self.routing.index() * 3 + self.look.index()
     }
 }
-/// Control-prepared lookahead/routing factory with exact structural eligibility. Each created owner retains its own
-/// immutable configurations and both histories, independent of factory life.
+/// Control-prepared lookahead/routing factory with exact structural eligibility.
+/// Each created owner retains its configurations and both histories, independent
+/// of factory life.
 /// This constructor alone grants no host metadata/publication capability.
 #[derive(Clone, Copy)]
 pub struct PreparedStructuralLimiter {
