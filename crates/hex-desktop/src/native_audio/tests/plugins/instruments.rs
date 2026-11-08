@@ -164,18 +164,36 @@ fn native_vst3_instrument_bounces_to_new_track() {
 }
 
 fn render_completed_block(harness: &ResidentHarness) -> [hex_engine::Frame; 256] {
-    let previous = harness.plugin_completed.load(Acquire);
     let frames = harness.render_plugin_block();
     let deadline = Instant::now() + Duration::from_millis(800);
-    while harness.plugin_completed.load(Acquire) <= previous {
+    // Session's optional diagnostic is sampled on a different control cadence.
+    // An increase can describe an older request, leaving this request in flight.
+    // Pace the headless host by the exact installed endpoints' published prefix.
+    while harness
+        .callback
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .native_workers_idle_on_control()
+        != Some(true)
+    {
         let status = harness.audio.as_ref().unwrap().status().unwrap();
         assert!(
             Instant::now() < deadline,
-            "worker did not complete next block after {previous}; playing={} source={:?} fault={:?}",
+            "worker did not publish the committed prefix; playing={} source={:?} fault={:?}",
             status.playing.load(Acquire),
             status.native_effect_source(),
             status.render_fault_snapshot(),
         );
+        std::thread::yield_now();
+    }
+    // Give the other asynchronous owner a real turn after the published DSP
+    // prefix. Commit cleanup can enqueue Release only after observing that
+    // prefix; accelerated headless quanta must not starve this control lane.
+    let polled = harness.control_polls.load(Acquire);
+    while harness.control_polls.load(Acquire) == polled {
+        assert!(Instant::now() < deadline, "native control did not poll");
         std::thread::yield_now();
     }
     frames
@@ -696,7 +714,7 @@ fn confirmed_point_survives_output_close_while_sdk_ack_is_pending() {
 fn recorded_touch_admission_and_exclusive_restoration_use_actual_output() {
     const CASE: &str = "HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE";
     if std::env::var_os(CASE).is_none() {
-        for case in ["touch", "touch_empty", "touch_commit"] {
+        for case in ["touch", "touch_empty", "touch_commit", "touch_control_lag"] {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
@@ -723,7 +741,12 @@ fn recorded_touch_admission_and_exclusive_restoration_use_actual_output() {
             CONFIRMED_TEST_ENDS, CONFIRMED_TEST_NOOPS, CONFIRMED_TEST_POINTS, CONFIRMED_TEST_READY,
         };
         assert!(CONFIRMED_TEST_READY.load(Acquire) > 0);
-        if std::env::var(CASE).unwrap() == "touch_empty" {
+        if std::env::var(CASE).unwrap() == "touch_stress" {
+            assert_eq!(CONFIRMED_TEST_READY.load(Acquire), 100);
+            assert_eq!(CONFIRMED_TEST_POINTS.load(Acquire), 100);
+            assert_eq!(CONFIRMED_TEST_ENDS.load(Acquire), 100);
+            assert_eq!(CONFIRMED_TEST_NOOPS.load(Acquire), 0);
+        } else if std::env::var(CASE).unwrap() == "touch_empty" {
             assert_eq!(CONFIRMED_TEST_POINTS.load(Acquire), 0);
             assert!(CONFIRMED_TEST_NOOPS.load(Acquire) > 0);
         } else {
@@ -1535,7 +1558,17 @@ fn assert_instrument_takeover_begin(
 }
 
 /// Deliberately vary callback sizes while the worker owns complete SDK quanta.
-fn render_takeover_partial(h: &ResidentHarness, frames: usize, held: bool) {
+fn render_takeover_partial(
+    h: &ResidentHarness,
+    frames: usize,
+    held: bool,
+    label: &str,
+    request: Option<&hex_session::device_gesture::GestureRequest>,
+) {
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    let start = status.position.load(Acquire);
+    let performance_start = status.performance_frame.load(Acquire);
+    let binding = h.plugin_progress.lock().unwrap().binding;
     let mut pcm = [[0.0; 2]; 256];
     let mut host = [0.0; 512];
     let mut slot = h.callback.lock().unwrap();
@@ -1560,7 +1593,15 @@ fn render_takeover_partial(h: &ResidentHarness, frames: usize, held: bool) {
                 .iter()
                 .flatten()
                 .all(|sample| sample.abs() > 1.0e-6),
-            "the constant signed instrument must not drop its held gate at a publication cut"
+            "held gate dropped: case={label} request={request:?} frames={frames} position={start}->{} performance={performance_start}->{} playing={} source={:?} fault={:?} phase={:?} source_fault={:?} head={:?}",
+            status.position.load(Acquire),
+            status.performance_frame.load(Acquire),
+            status.playing.load(Acquire),
+            status.recording_source(),
+            status.render_fault_snapshot(),
+            callback.native_worker_phase_for_test(),
+            binding.and_then(|binding| callback.native_source_fault_on_control(binding)),
+            &pcm[..frames.min(5)],
         );
     }
 }
@@ -1679,7 +1720,13 @@ fn verify_instrument_takeover(
             let until = Instant::now() + Duration::from_secs(3);
             let mut fragment = 0;
             let mut step = |h: &mut ResidentHarness| {
-                render_takeover_partial(h, [3, 5, 117, 1, 130][fragment % 5], true);
+                render_takeover_partial(
+                    h,
+                    [3, 5, 117, 1, 130][fragment % 5],
+                    true,
+                    "live authoring",
+                    None,
+                );
                 fragment += 1;
                 while h
                     .callback
@@ -1792,6 +1839,8 @@ fn verify_instrument_takeover(
                 h,
                 [3, 5, 117, 1, 130][fragment % 5],
                 playing && case != "delivery_retire",
+                &case,
+                Some(&request),
             );
             fragment += 1;
             // The native worker is asynchronous; wait only on this test/control
@@ -1812,7 +1861,8 @@ fn verify_instrument_takeover(
         }
     };
     let mut client = GestureClient::default();
-    for request_id in [12, 13] {
+    let touches = if case == "touch_stress" { 100 } else { 2 };
+    for request_id in 12..12 + touches {
         client.begin_plugin(query(h, request_id)).unwrap();
         assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
         if case == "touch_empty" {
@@ -1859,7 +1909,13 @@ fn verify_instrument_takeover(
             );
         }
     }
-    if case == "touch" {
+    if matches!(
+        case.as_str(),
+        "touch" | "touch_stress" | "touch_control_lag"
+    ) {
+        if case == "touch_control_lag" {
+            assert_eq!(h.plugin_completed.load(Acquire), 0);
+        }
         return;
     }
     client.begin_plugin(query(h, 14)).unwrap();
@@ -1920,9 +1976,28 @@ fn verify_instrument_takeover(
     assert_eq!(undone.state.project.as_ref(), &before);
     applied = h.applied(applied).0;
     if playing {
+        let restored = peak(h);
         assert!(
-            (peak(h) - baseline).abs() < 0.0001,
-            "undo must restore audible authored input"
+            (restored - baseline).abs() < 0.0001,
+            "undo must restore audible authored input: case={case} actual={restored} expected={baseline} phase={:?} source={:?} fault={:?}",
+            h.callback
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .native_worker_phase_for_test(),
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .recording_source(),
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .render_fault_snapshot(),
         );
     }
     let redone = super::automation::edit_with_running_callback(h, Request::Redo);
