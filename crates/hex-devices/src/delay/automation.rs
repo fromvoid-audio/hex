@@ -82,7 +82,7 @@ impl LfoControls {
 impl ControlValues {
     // Timing is compared after linkage projection: an inactive raw lane must
     // not restart the shared scalar ramp. Exhaustive fields keep this audited.
-    pub(super) fn other_targets(self) -> (f32, f32, f32, f32, LfoControls) {
+    pub(super) fn other_targets_changed(&self, other: &Self) -> bool {
         let Self {
             feedback,
             mix,
@@ -91,7 +91,11 @@ impl ControlValues {
             lfo,
             timing: _,
         } = self;
-        (feedback, mix, frequency, width, lfo)
+        *feedback != other.feedback
+            || *mix != other.mix
+            || *frequency != other.frequency
+            || *width != other.width
+            || lfo != &other.lfo
     }
     pub(super) fn new(settings: Settings) -> Self {
         Self {

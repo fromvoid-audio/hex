@@ -278,11 +278,11 @@ impl Runtime {
         }
     }
     fn restore_controls(&mut self) {
-        let old = self.speculative.controls.effective().other_targets();
+        let old = self.speculative.controls.effective();
         let old_timing = self.speculative.timing;
         self.speculative.controls.reset();
         self.speculative.timing = automation::timing(&self.speculative.controls);
-        if old != self.speculative.controls.effective().other_targets()
+        if old.other_targets_changed(self.speculative.controls.effective_ref())
             || old_timing != self.speculative.timing
         {
             self.speculative.ramp_left = self.rate.div_ceil(100);
@@ -339,8 +339,9 @@ impl Runtime {
                 values,
                 offset,
             )? {
-                let changed = next.effective().other_targets()
-                    != self.speculative.controls.effective().other_targets();
+                let changed = next
+                    .effective_ref()
+                    .other_targets_changed(self.speculative.controls.effective_ref());
                 self.speculative.controls.install(next);
                 let mut retime = changed;
                 if refresh_timing {
@@ -381,7 +382,7 @@ impl Runtime {
             fade_frames,
         } = block;
         let s = &mut self.speculative;
-        let targets = s.controls.effective();
+        let targets = s.controls.effective_ref();
         if let Some(tempo) = tempo.filter(|v| *v > 0) {
             s.tempo = tempo;
         }
