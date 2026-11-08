@@ -290,6 +290,10 @@ pub struct Event {
     pub sampler_edit_complete: Option<u64>,
     /// At most two exact terminals: a refused new request and an invalidated pending one.
     pub plugin_effect_complete: Vec<PluginEffectCompletion>,
+    /// This response consumed a read-only parameter query or continuation.
+    /// Its request completion never acknowledges an editor mutation. Canonical
+    /// state and unrelated completions still follow the normal ordered contract.
+    pub plugin_parameter_observation: bool,
     pub plugin_parameters: Option<PluginParameterResult>,
     pub computer_keyboard_complete: Option<u64>,
     /// Exact terminal for a retained MIDI take commit, including refusal.
@@ -2369,6 +2373,7 @@ fn run_worker(
                 sampler_load_complete: None,
                 sampler_edit_complete: None,
                 plugin_effect_complete: Vec::new(),
+                plugin_parameter_observation: false,
                 plugin_parameters: None,
                 computer_keyboard_complete: None,
                 midi_take_complete: None,
@@ -2411,6 +2416,7 @@ fn run_worker(
             sampler_load_complete: None,
             sampler_edit_complete: None,
             plugin_effect_complete: Vec::new(),
+            plugin_parameter_observation: false,
             plugin_parameters: None,
             computer_keyboard_complete: None,
             midi_take_complete: None,
@@ -2708,6 +2714,10 @@ fn run_worker(
                 | Request::ContinueStoppedPlaybackRestore
         );
         let mut plugin_effect_complete = Vec::new();
+        let plugin_parameter_observation = matches!(
+            &request,
+            Request::QueryPluginParameters(_) | Request::ContinuePluginParameters
+        );
         let mut plugin_parameters = None;
         let mut sampler_edit_complete = None;
         if matches!(
@@ -8368,6 +8378,7 @@ fn run_worker(
                 sampler_load_complete,
                 sampler_edit_complete,
                 plugin_effect_complete,
+                plugin_parameter_observation,
                 plugin_parameters,
                 computer_keyboard_complete,
                 midi_take_complete,
