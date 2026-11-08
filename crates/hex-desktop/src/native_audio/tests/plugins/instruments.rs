@@ -2048,7 +2048,8 @@ fn verify_instrument_takeover(
         assert!(blocks < 512, "bounded signed replay fixture");
         let replay = |h: &mut ResidentHarness, path: &std::path::Path| -> Vec<[f32; 2]> {
             let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
-            let opened = h.run(Request::Open(path.to_owned()));
+            let opened =
+                super::automation::edit_with_running_callback(h, Request::Open(path.to_owned()));
             super::super::resident_lifecycle::finish_replacement(h, &opened, old_output);
             let restored = h.next();
             assert!(restored.error.is_none(), "{:?}", restored.error);

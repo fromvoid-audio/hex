@@ -88,6 +88,8 @@ fn active(scope: DeviceAutomationTakeScope, source: DeviceAutomationSource) -> S
             scope,
             source,
             has_points: false,
+            path: PathBuf::from("model-draft"),
+            source_lost: false,
             pending: None,
             released: false,
             ended: false,
@@ -388,4 +390,91 @@ fn stationary_recording_observes_writer_interruption_without_inventing_sdk_end()
     assert_eq!(sink.restorations, 0);
     assert_eq!(session.project(), &before);
     assert!(!lane.busy());
+}
+
+#[test]
+fn source_loss_drains_original_then_interruption_and_releases_the_completed_writer_owner() {
+    let (files, mut session, scope, source) = fixture();
+    let before = session.project().clone();
+    let mut lane = Lane::default();
+    lane.begin(&session, None, scope, source, &files.0).unwrap();
+    let path = lane.path().unwrap().to_owned();
+    let mut state = active(scope, source);
+    state.active.as_mut().unwrap().path = path.clone();
+    let DeviceCaptureTarget::Vst3(target) = scope.target else {
+        panic!("foreign fixture");
+    };
+    let snapshot = gesture(scope);
+    let mut sink = Sink {
+        observations: VecDeque::from([
+            PluginParameterObservation::Delivered(delivery(
+                scope,
+                source,
+                8,
+                Vst3ApplicationValue::Value(0.75),
+            )),
+            PluginParameterObservation::Interrupted {
+                key: snapshot.key,
+                context: scope.context(),
+                target,
+                source,
+                sequence: 9,
+            },
+        ]),
+        ..Sink::default()
+    };
+    let result = Preparation {
+        state: &mut state,
+        lane: &mut lane,
+        document_base: None,
+        recovery: None,
+        may_defer: false,
+        deferred: false,
+    }
+    .after(
+        &mut session,
+        PluginGesturePreparation::Preview(snapshot),
+        scope.context(),
+        &mut sink,
+        Err(PluginParameterGestureError::SourceLost(
+            "model output closed".into(),
+        )),
+        &mut None,
+        sampler_export::Admission::default(),
+    );
+    assert!(
+        matches!(result, Err(SessionError::PluginSourceLost(ref reason)) if reason.contains(&path.display().to_string()))
+    );
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while state.pending() {
+        Preparation {
+            state: &mut state,
+            lane: &mut lane,
+            document_base: None,
+            recovery: None,
+            may_defer: false,
+            deferred: false,
+        }
+        .drive(&session, scope.context(), &mut sink);
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert!(!lane.busy());
+    assert!(state.failed.is_none());
+    assert!(path.is_file());
+    let reader = hex_storage::automation_draft::DraftReader::open(
+        &path,
+        hex_storage::automation_draft::DraftReadLimits {
+            max_source_bytes: 64 * 1024,
+        },
+    )
+    .unwrap();
+    assert_eq!(reader.progress().durable_events, 1);
+    assert_eq!(
+        reader.outcome(),
+        hex_storage::automation_draft::DraftOutcome::Aborted(
+            hex_storage::automation_draft::DraftAbortReason::OutputFailed
+        )
+    );
+    assert_eq!(session.project(), &before);
 }

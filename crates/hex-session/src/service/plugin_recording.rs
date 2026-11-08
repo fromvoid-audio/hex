@@ -21,6 +21,8 @@ struct Active {
     scope: DeviceAutomationTakeScope,
     source: DeviceAutomationSource,
     has_points: bool,
+    path: PathBuf,
+    source_lost: bool,
     pending: Option<DeviceAutomationTakeAction>,
     released: bool,
     ended: bool,
@@ -247,6 +249,12 @@ impl Preparation<'_> {
                     scope,
                     source,
                     has_points: false,
+                    path: self
+                        .lane
+                        .path()
+                        .ok_or("admitted automation draft has no recovery identity")?
+                        .to_owned(),
+                    source_lost: false,
                     pending: None,
                     released: false,
                     ended: false,
@@ -296,8 +304,23 @@ impl Preparation<'_> {
             }
             return Ok(None);
         }
+        let lost_path = if matches!(result, Err(PluginParameterGestureError::SourceLost(_))) {
+            self.state.active.as_mut().map(|active| {
+                active.source_lost = true;
+                active.path.clone()
+            })
+        } else {
+            None
+        };
         self.drive(session, context, sink);
-        result.map_err(host_error)?;
+        result.map_err(|error| match (error, lost_path) {
+            (PluginParameterGestureError::SourceLost(reason), Some(path)) => {
+                SessionError::PluginSourceLost(native_automation_recording::retained_error(
+                    &path, &reason,
+                ))
+            }
+            (error, _) => host_error(error),
+        })?;
         if matches!(
             operation,
             PluginGesturePreparation::Commit(_) | PluginGesturePreparation::Restore { .. }
@@ -321,6 +344,7 @@ impl Preparation<'_> {
             .is_some_and(|active| matches!(active.outcome, Some(Err(_))))
         {
             self.retain_failed_observations(context, sink);
+            self.retire_detached(context);
             return;
         }
         let Some(active) = self.state.active.as_mut() else {
@@ -423,11 +447,32 @@ impl Preparation<'_> {
                     .into(),
             ));
         }
+        self.retire_detached(context);
+    }
+
+    fn retire_detached(&mut self, context: hex_engine::AudioSourceContext) {
+        if self.state.active.as_ref().is_some_and(|active| {
+            (active.source_lost || context != active.scope.context())
+                && active.ended
+                && active.outcome.is_some()
+        }) && let Some(active) = self.state.active.take()
+        {
+            self.state.terminal = None;
+            if active.pending.is_some()
+                || matches!(active.outcome, Some(Err(_)))
+                || active.failed_observations.iter().any(Option::is_some)
+                || self.lane.busy()
+            {
+                self.state.failed = Some(active);
+            }
+            // Otherwise all original receipts are in the sealed recovery file.
+            // No SDK/controller custody or canonical edit survives this source.
+        }
     }
 
     fn retain_failed_observations(
         &mut self,
-        context: hex_engine::AudioSourceContext,
+        _context: hex_engine::AudioSourceContext,
         sink: &mut dyn WorkerAudioSink,
     ) {
         let Some(active) = self.state.active.as_mut() else {
@@ -442,7 +487,7 @@ impl Preparation<'_> {
             };
             let matches = |point: PluginParameterDelivery| {
                 DeviceAutomationTakeScope::from_plugin_ready(
-                    context,
+                    active.scope.context(),
                     &PluginParameterObservation::Ready {
                         key: point.key,
                         context: point.context,
@@ -466,6 +511,26 @@ impl Preparation<'_> {
                 PluginParameterObservation::Unchanged { key }
                     if key == active.key && !active.has_points =>
                 {
+                    active.ended = true;
+                }
+                PluginParameterObservation::Interrupted {
+                    key,
+                    context,
+                    target,
+                    source,
+                    ..
+                } if DeviceAutomationTakeScope::from_plugin_ready(
+                    active.scope.context(),
+                    &PluginParameterObservation::Ready {
+                        key,
+                        context,
+                        target,
+                        source,
+                    },
+                )
+                .is_ok_and(|scope| scope == active.scope) =>
+                {
+                    active.interrupted = true;
                     active.ended = true;
                 }
                 PluginParameterObservation::Delivered(_) => {
