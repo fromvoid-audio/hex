@@ -29,6 +29,7 @@ mod cache;
 #[derive(Default)]
 pub(super) struct State {
     serial: u64,
+    reconciled: Option<(AudioSourceContext, Option<u64>)>,
     panels: HashMap<DeviceId, Panel>,
     in_flight: Option<(DeviceId, PluginParameterQuery)>,
     deferred_result: Option<(PluginParameterResult, u64)>,
@@ -316,11 +317,13 @@ fn ensure_panel(view: &mut EditorView, device: DeviceId, cx: &mut Context<Editor
                     panel.key == completion_key
                         && panel.query.context.project_generation
                             == query.context.project_generation
-                        && panel.query.output_identity == query.output_identity
                 })
             else {
                 return;
             };
+            // This result contains display metadata only. Output replacement
+            // cannot strand the load: live capabilities still require a fresh
+            // page on the current output below.
             panel.cache_loading = false;
             match cache {
                 Ok(Some(cached)) => {
@@ -593,6 +596,12 @@ fn reconcile_panels(view: &mut EditorView, cx: &Context<EditorView>) {
         .audio
         .as_ref()
         .and_then(|audio| audio.control.output_identity());
+    // Canonical snapshots are immutable within this typed context. Reconcile
+    // membership/identity only when that snapshot or the output changes;
+    // polling values must not search every previously opened device each tick.
+    if view.device_panel.vst3_parameters.reconciled == Some((context, output_identity)) {
+        return;
+    }
     let stale = view
         .device_panel
         .vst3_parameters
@@ -623,6 +632,7 @@ fn reconcile_panels(view: &mut EditorView, cx: &Context<EditorView>) {
             panel.mark_values_stale();
         }
     }
+    view.device_panel.vst3_parameters.reconciled = Some((context, output_identity));
 }
 
 fn submit_query(
