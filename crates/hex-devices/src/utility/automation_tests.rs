@@ -637,7 +637,7 @@ fn shared_lfo_drives_two_utility_controls_on_each_sample() {
     )
     .unwrap();
     let source_id = ModulationSourceId::new(1).unwrap();
-    let source = PreparedLfoSource::free(source_id, 48_000.0, 12_000.0, 0.0).unwrap();
+    let source = PreparedLfoSource::tempo(source_id, 48_000.0, 120.0, 1.0 / 6_000.0, 0.0).unwrap();
 
     let declaration = hex_lattice::PreparedModulationState::new(vec![source], program, 2).unwrap();
     let instance = hex_lattice::PreparedRuntimeInstance {
@@ -718,5 +718,37 @@ fn shared_lfo_drives_two_utility_controls_on_each_sample() {
     let mut reset = input;
     replacement.process_block(&mut reset).unwrap();
     assert_eq!(reset, output);
+    struct StepTempo;
+    impl hex_lattice::NativeInstrumentClock for StepTempo {
+        fn beat_at_offset(&self, _: usize) -> Option<u64> {
+            None
+        }
+        fn tempo_micro_bpm_at_offset(&self, offset: usize) -> Option<u32> {
+            Some(if offset < 3 { 120_000_000 } else { 60_000_000 })
+        }
+    }
+    replacement.reset();
+    replacement.begin_block();
+    let mut tempo_output = input;
+    replacement
+        .process_range_with_clock(0..1, &mut tempo_output, Some(&StepTempo), Some(&StepTempo))
+        .unwrap();
+    for (index, lfo) in [0.0, 1.0, 0.0, -1.0, -std::f32::consts::FRAC_1_SQRT_2]
+        .into_iter()
+        .enumerate()
+    {
+        let gain = (1.0 + lfo * 0.01 * MAX_UTILITY_GAIN).clamp(0.0, MAX_UTILITY_GAIN);
+        let state = UTILITY_DEFINITION
+            .patch_parameter(&base, ids[0], ParameterValue::Float(gain))
+            .unwrap();
+        let state = UTILITY_DEFINITION
+            .patch_parameter(&state, ids[1], ParameterValue::Float(lfo * 0.4))
+            .unwrap();
+        let expected = static_render(&state, &input[index..index + 1])[0];
+        for channel in 0..2 {
+            assert!((tempo_output[index][channel] - expected[channel]).abs() < 1e-5);
+        }
+    }
+
     assert_eq!(UTILITY_DEFINITION.default_state().unwrap(), base);
 }

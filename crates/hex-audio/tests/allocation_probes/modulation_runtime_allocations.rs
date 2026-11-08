@@ -126,9 +126,14 @@ fn utility_graph_modulation_transactions_do_not_allocate_or_free() {
             1,
         )
         .unwrap();
-        let source =
-            PreparedLfoSource::free(ModulationSourceId::new(1).unwrap(), 48_000.0, 7.0, 0.0)
-                .unwrap();
+        let source = PreparedLfoSource::tempo(
+            ModulationSourceId::new(1).unwrap(),
+            48_000.0,
+            120.0,
+            4.0,
+            0.0,
+        )
+        .unwrap();
 
         let prepared = PreparedRuntimeInstance {
             modulation: Some(PreparedModulationState::new(vec![source], program, 17).unwrap()),
@@ -149,6 +154,19 @@ fn utility_graph_modulation_transactions_do_not_allocate_or_free() {
     let (prepared, mut first) = build();
     let (_, mut second) = build();
     let mut frames = [[0.1, -0.1]; 128];
+    struct Tempo;
+    impl hex_lattice::NativeInstrumentClock for Tempo {
+        fn beat_at_offset(&self, _: usize) -> Option<u64> {
+            None
+        }
+        fn tempo_micro_bpm_at_offset(&self, offset: usize) -> Option<u32> {
+            Some(if offset % 2 == 0 {
+                120_000_000
+            } else {
+                180_000_000
+            })
+        }
+    }
     let counts = allocation_counter::measure(|| {
         for _ in 0..8 {
             assert!(
@@ -158,10 +176,14 @@ fn utility_graph_modulation_transactions_do_not_allocate_or_free() {
                     .all(|entry| entry.matches_prepared_runtime_storage(&prepared))
             );
             first.begin_block();
-            first.process_block(black_box(&mut frames)).unwrap();
+            first
+                .process_range_with_clock(0..1, black_box(&mut frames), Some(&Tempo), Some(&Tempo))
+                .unwrap();
             first.rollback_block();
             first.begin_block();
-            first.process_block(black_box(&mut frames)).unwrap();
+            first
+                .process_range_with_clock(0..1, black_box(&mut frames), Some(&Tempo), Some(&Tempo))
+                .unwrap();
             first.commit_block();
             second.inherit_from(&first);
             second.transfer_history_from(&mut first);

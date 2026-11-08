@@ -3278,24 +3278,29 @@ impl NativeRuntimeChain {
                             .ok_or(DeviceContractError::InvalidDescriptor)
                     })
                     .transpose()?;
-                modulation.render_chunk(chunk.len(), chunk_values, |values| {
-                    if let Some(key) = chunk_key {
-                        runtime.process_auxiliary(
-                            StereoAuxiliaryBlock::paired(chunk, key),
-                            chunk_clock,
-                            (!values.parameter_ids().is_empty()).then_some(values),
-                            entry.bypassed,
-                        )
-                    } else if values.parameter_ids().is_empty() {
-                        if entry.bypassed {
-                            runtime.process_bypassed_with_clock(chunk, chunk_clock)
+                modulation.render_chunk_with_clock(
+                    chunk.len(),
+                    chunk_values,
+                    chunk_clock,
+                    |values| {
+                        if let Some(key) = chunk_key {
+                            runtime.process_auxiliary(
+                                StereoAuxiliaryBlock::paired(chunk, key),
+                                chunk_clock,
+                                (!values.parameter_ids().is_empty()).then_some(values),
+                                entry.bypassed,
+                            )
+                        } else if values.parameter_ids().is_empty() {
+                            if entry.bypassed {
+                                runtime.process_bypassed_with_clock(chunk, chunk_clock)
+                            } else {
+                                runtime.process_with_clock(chunk, chunk_clock)
+                            }
                         } else {
-                            runtime.process_with_clock(chunk, chunk_clock)
+                            runtime.process_automation(chunk, chunk_clock, values, entry.bypassed)
                         }
-                    } else {
-                        runtime.process_automation(chunk, chunk_clock, values, entry.bypassed)
-                    }
-                })?;
+                    },
+                )?;
                 offset = end;
             }
             Ok(())

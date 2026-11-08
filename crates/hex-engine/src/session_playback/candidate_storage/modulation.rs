@@ -98,7 +98,7 @@ mod tests {
         let original = bytes(&short_chain, &short);
         assert_eq!(
             bytes(&long_chain, &long) - original,
-            (128 - 17) * std::mem::size_of::<f32>()
+            (128 - 17) * (std::mem::size_of::<f32>() + std::mem::size_of::<u32>())
         );
         short_chain.begin_block();
         short_chain.process_block(&mut [[0.1; 2]; 97]).unwrap();

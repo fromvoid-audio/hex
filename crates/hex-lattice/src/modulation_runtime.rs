@@ -77,6 +77,19 @@ impl ModulationRuntime {
         upstream: Option<&dyn NativeParameterAutomation>,
         consume: impl FnOnce(&dyn NativeParameterAutomation) -> Result<(), Error>,
     ) -> Result<(), Error> {
+        self.render_chunk_with_clock(frames, upstream, None, consume)
+    }
+
+    /// Render with the host's sample-local tempo; unavailable tempo uses each
+    /// source's prepared fallback. The clock is borrowed only during this call.
+    /// Refused tempo leaves the bank unchanged so the host can retry or roll back.
+    pub fn render_chunk_with_clock(
+        &mut self,
+        frames: usize,
+        upstream: Option<&dyn NativeParameterAutomation>,
+        clock: Option<&dyn crate::NativeInstrumentClock>,
+        consume: impl FnOnce(&dyn NativeParameterAutomation) -> Result<(), Error>,
+    ) -> Result<(), Error> {
         if frames > self.bank.chunk_frames() || frames > MAX_MODULATION_BLOCK_FRAMES {
             return Err(Error::RuntimeBudgetExceeded);
         }
@@ -90,7 +103,7 @@ impl ModulationRuntime {
                 return Err(Error::UnknownParameter);
             }
         }
-        self.bank.render_chunk(frames)?;
+        self.bank.render_chunk_with_clock(frames, clock)?;
         let result = (|| {
             let mut sources: [&[f32]; MAX_MODULATION_SOURCES] = [&[]; MAX_MODULATION_SOURCES];
             for (index, slot) in sources
