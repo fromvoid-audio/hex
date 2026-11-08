@@ -1,5 +1,6 @@
 mod compensated;
 mod computer_keyboard;
+mod instrument_automation;
 mod shared_source;
 mod source_live;
 use super::capture::CaptureSink;
@@ -1566,6 +1567,7 @@ impl SessionPlayback {
                             render_output,
                             &timing,
                             true,
+                            None,
                         )?;
                     }
                     render_mutable_instrument_chunk(
@@ -2474,49 +2476,50 @@ fn process_mutable_tail<T: MidiTiming + ?Sized>(
     playing: bool,
 ) -> Result<(), SessionPlaybackError> {
     onsets.clear();
-    if !playing && tail.runtime.is_source_owner() {
-        let clock = tail
-            .runtime
-            .source_monitor_clock(
-                timing
-                    .frame_to_beat(performance_frame)
-                    .map_err(|_| SessionPlaybackError::TempoConversion)?
-                    .raw(),
-                timing
-                    .tempo_micro_bpm_at_frame(performance_frame)
-                    .ok_or(SessionPlaybackError::TempoConversion)?,
-                timing.sample_rate(),
-            )
-            .map_err(|error| error.render_error())?;
-        return tail
-            .runtime
-            .process_source_segment(
-                performance_frame,
-                output,
-                onsets,
-                &[],
-                events,
-                Some(&clock),
-                &hex_lattice::EMPTY_DEVICE_RESOURCES,
-                None,
-            )
-            .map_err(crate::mutable_instrument::MutableInstrumentRuntimeError::render_error);
-    }
     tail.runtime
-        .process_segment_with_clock(
-            tail.track_id,
-            performance_frame,
-            performance_frame,
-            output,
-            onsets,
-            &[],
-            events,
-            Some(&InstrumentClock {
-                timing,
-                start: performance_frame,
-            }),
-        )
-        .map_err(crate::mutable_instrument::MutableInstrumentRuntimeError::render_error)
+        .with_frozen_parameters(|runtime, values| {
+            if !playing && runtime.is_source_owner() {
+                let clock = runtime
+                    .source_monitor_clock(
+                        timing
+                            .frame_to_beat(performance_frame)
+                            .map_err(|_| SessionPlaybackError::TempoConversion)?
+                            .raw(),
+                        timing
+                            .tempo_micro_bpm_at_frame(performance_frame)
+                            .ok_or(SessionPlaybackError::TempoConversion)?,
+                        timing.sample_rate(),
+                    )
+                    .map_err(|error| error.render_error())?;
+                runtime
+                    .process_frozen_tail_segment(
+                        None,
+                        performance_frame,
+                        output,
+                        onsets,
+                        events,
+                        Some(&clock),
+                        values,
+                    )
+                    .map_err(|error| error.render_error())
+            } else {
+                runtime
+                    .process_frozen_tail_segment(
+                        Some(tail.track_id),
+                        performance_frame,
+                        output,
+                        onsets,
+                        events,
+                        Some(&InstrumentClock {
+                            timing,
+                            start: performance_frame,
+                        }),
+                        values,
+                    )
+                    .map_err(|error| error.render_error())
+            }
+        })
+        .map_err(|error| error.render_error())?
 }
 
 struct MutableInstrumentChunkContext<'a, T: ?Sized> {
@@ -2742,6 +2745,21 @@ fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?
             .is_some_and(|(_, _, prepared)| prepared.volume_program().is_some()),
         _ => false,
     };
+    let parameter_context = instrument_automation::SourceAutomation::new(
+        revision,
+        index,
+        instrument_automation::Origin {
+            arrangement: Some(arrangement_frame),
+            performance: performance_frame,
+            pass: arrangement_loop_pass,
+            running: true,
+        },
+        output.len(),
+    )?;
+    let parameter_block = parameter_context.block();
+    let parameter_values = parameter_block
+        .as_ref()
+        .map(|values| values as &dyn hex_lattice::NativeParameterAutomation);
     let clock = InstrumentClock {
         timing,
         start: performance_frame,
@@ -2758,6 +2776,7 @@ fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?
                 events,
                 Some(&clock),
                 resources,
+                parameter_values,
             )
             .map_err(crate::mutable_instrument::MutableInstrumentRuntimeError::render_error);
     }
@@ -2912,6 +2931,7 @@ fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?
             Some(&clock),
             resources,
             &mut lookup,
+            parameter_values,
         )
         .map_err(crate::mutable_instrument::MutableInstrumentRuntimeError::render_error)
 }

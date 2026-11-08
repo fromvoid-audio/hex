@@ -415,10 +415,15 @@ impl Program {
                 .map(|lane| touch::Overlay::prepare(&lane.touch, &knots, parameter.steps, tempo))
                 .transpose()?
                 .flatten();
-            point_budget += overlay.as_ref().map_or_else(
-                || point_bound(&knots, profile),
-                |overlay| overlay.point_bound(profile),
-            );
+            point_budget += if overlay.is_none() && knots.len() == 1 {
+                // The SDK retains a constant value across slices and origin runs.
+                1
+            } else {
+                overlay.as_ref().map_or_else(
+                    || point_bound(&knots, profile),
+                    |overlay| overlay.point_bound(profile),
+                )
+            };
             if point_budget > MAX_POINTS {
                 return Err(Invalid(
                     "foreign automation exceeds the quantum point budget",
@@ -462,7 +467,9 @@ impl Program {
     /// Fill caller-owned storage in physical frame order. The SDK interpolates
     /// between points for one parameter. Points on both sides of each adjacent
     /// discontinuity prevent an unintended ramp. Missing origins emit nothing.
-    /// A missing span requires an SDK slice cut before chasing again.
+    /// A missing span requires an SDK slice cut before chasing again. Constant
+    /// lanes need only one value at the first valid origin: the SDK retains it
+    /// across slices, wraps and missing spans within this physical quantum.
     pub fn render_quantum(
         &self,
         origins: &[Option<u64>],
@@ -501,6 +508,7 @@ impl Program {
             return Err(Invalid("foreign automation origin runs exceed admission"));
         }
 
+        let first_origin = origins.iter().position(Option::is_some);
         let mut count = 0;
         let mut start = 0;
         while start < origins.len() {
@@ -516,7 +524,15 @@ impl Program {
                 end += 1;
             }
             for lane in &self.lanes {
-                lane.render_run(start, end, origin, output, &mut count)?;
+                if let [knot] = lane.knots.as_slice()
+                    && lane.overlay.is_none()
+                {
+                    if first_origin == Some(start) {
+                        lane.emit(start, knot.value, output, &mut count)?;
+                    }
+                } else {
+                    lane.render_run(start, end, origin, output, &mut count)?;
+                }
             }
             start = end;
         }

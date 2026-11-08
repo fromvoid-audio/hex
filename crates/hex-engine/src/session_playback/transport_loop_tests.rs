@@ -28,6 +28,7 @@ fn audio_loop_change_with_limiter_preserves_samples_and_clock() {
         fade: ClipFade::neutral(8192).unwrap(),
     }]);
     snapshot.tracks[0].devices.push(DeviceSnapshot {
+        parent: None,
         automation: Vec::new(),
         comparison: None,
         id: 7,
@@ -162,6 +163,7 @@ fn paused_loop_change_with_limiter_refuses_active_instrument_tail_without_corrup
     let id = snapshot.next_id;
     snapshot.next_id += 1;
     snapshot.tracks[0].devices.push(DeviceSnapshot {
+        parent: None,
         automation: Vec::new(),
         comparison: None,
         id,

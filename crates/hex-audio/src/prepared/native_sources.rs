@@ -10,7 +10,72 @@ use hex_plugin_scan::macos::build_identity::InstanceBuild;
 
 mod parameter_extension;
 
+/// A copied callback observation correlated with a particular stopped fence.
+/// It proves neither graph membership nor continued validity after that fence
+/// changes, and grants no ownership or publication authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FencedNativeQuantum {
+    source: AppliedAudioSource,
+    fence: StoppedEditFence,
+    quantum: crate::plugin_worker::CommittedQuantum,
+}
+
+impl FencedNativeQuantum {
+    pub fn observation(&self) -> crate::plugin_worker::CommittedQuantum {
+        self.quantum
+    }
+}
+
 impl PublicationControl {
+    fn stopped_native_quantum_fence_matches(
+        &self,
+        source: AppliedAudioSource,
+        fence: StoppedEditFence,
+    ) -> bool {
+        self.native_custody
+            && !self.status.closing.load(Acquire)
+            && !self.status.playing.load(Acquire)
+            && self.status.pending_stop_marker.load(Acquire) == 0
+            && self.status.transport_epoch.load(Acquire)
+                == self.status.sampler_edit.ready_transport_epoch.load(Acquire)
+            && self.status.native_effect_source() == Some(source)
+            && self.status.sampler_edit.native_epoch_active()
+            && self.status.sampler_edit.matches_source(fence, source)
+            && self.stopped_edit_fence_state(fence) == StoppedEditFenceState::Ready
+    }
+
+    /// Read only while the exact stopped native fence remains ready. The
+    /// observation may advance as the callback runs even while the graph is
+    /// fenced; callers must independently prove graph membership and the
+    /// lifetime of any history selected from it.
+    pub fn try_fenced_native_quantum_on_control(
+        &self,
+        source: AppliedAudioSource,
+        fence: StoppedEditFence,
+        binding: Binding,
+    ) -> Result<Option<FencedNativeQuantum>, &'static str> {
+        if binding.root != source.output_identity
+            || !self.stopped_native_quantum_fence_matches(source, fence)
+        {
+            return Err("native quantum fence is not current");
+        }
+        let quantum = self.try_native_source_committed_quantum_on_control(binding)?;
+        if !self.stopped_native_quantum_fence_matches(source, fence) {
+            return Err("native quantum fence is not current");
+        }
+        Ok(quantum.map(|quantum| FencedNativeQuantum {
+            source,
+            fence,
+            quantum,
+        }))
+    }
+
+    /// Recheck the correlated fence only; this does not assert the callback
+    /// observation is still the most recent quantum.
+    pub fn fenced_native_quantum_fence_is_ready(&self, checkpoint: FencedNativeQuantum) -> bool {
+        self.stopped_native_quantum_fence_matches(checkpoint.source, checkpoint.fence)
+    }
+
     /// Definite correspondence or a specific unavailable/busy observation.
     /// A control caller must not turn contention into a negative approval or
     /// use this observation as graph/native admission authority.
@@ -1042,6 +1107,19 @@ impl PublicationControl {
         }
         self.candidate_root
             .try_native_source_received_program(binding)
+    }
+    /// Observe the last accepted quantum of the exact live loaned endpoint.
+    /// None means no coherent callback observation; busy, stale, retired and
+    /// closing sources are errors. This grants no graph or pruning authority.
+    pub fn try_native_source_committed_quantum_on_control(
+        &self,
+        binding: Binding,
+    ) -> Result<Option<crate::plugin_worker::CommittedQuantum>, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native automation output is closing");
+        }
+        self.candidate_root
+            .try_native_source_committed_quantum(binding)
     }
     /// Exact worker reply publication, still distinct from final Main delivery.
     pub fn native_source_processed_program_on_control(

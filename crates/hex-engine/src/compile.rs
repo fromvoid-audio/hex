@@ -6,6 +6,20 @@ use std::{collections::BTreeMap, sync::Arc};
 
 pub use crate::midi_compile::midi_events;
 
+/// Unit admission uses the caller's actual effect registry. Live revisions
+/// compile Arrangement and Session together before canonical publication.
+fn validate_serial_effect_units(
+    project: &hex_project::Project,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+) -> Result<(), Invalid> {
+    if crate::device_automation::effect_devices(project).any(|device| {
+        device.parent().is_some() && registry.definition(device.state().type_id()).is_none()
+    }) {
+        return Err(Invalid("serial child is not a supported effect"));
+    }
+    Ok(())
+}
+
 /// One prepared Arrangement audio dependency. Streamed entries must come from
 /// the caller's verified catalog for the requested project-open generation.
 #[derive(Clone, Debug)]
@@ -558,6 +572,7 @@ fn compile_project_inner<'a>(
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
     // #2740 supplies the pitch-aware runtime. Refuse until then rather than
     // accepting a saved tuned project and silently playing equal temperament.
+    validate_serial_effect_units(snapshot, registry)?;
     crate::device_automation::validate_project_with_registry(snapshot, registry)?;
     let (foreign_bytes, _) = crate::foreign_automation::candidate::quote_ordinary(snapshot)
         .map_err(|_| Invalid("authored vst3 project exceeds its preparation bounds"))?;
@@ -1184,7 +1199,8 @@ fn compile_effect_devices(
         .map_err(|_| Invalid("could not reserve prepared device chain"))?;
 
     let mut admission_matrix = hex_lattice::StereoMatrix::identity();
-    for device in source_devices {
+    for entry in crate::serial_effect_power::EffectPower::new(source_devices)? {
+        let (device, bypassed) = entry?;
         let identity = hex_lattice::ProcessorInstanceIdentity::new(owner, device.id().value())
             .map_err(|_| Invalid("invalid prepared device identity"))?;
         let migrated = registry
@@ -1249,7 +1265,7 @@ fn compile_effect_devices(
             return Err(Invalid("authored vst3 source metadata is unavailable"));
         }
 
-        let prepared = if device.bypassed() {
+        let prepared = if bypassed {
             hex_lattice::StereoMatrix::identity()
         } else {
             prepared_device.matrix
@@ -1259,7 +1275,7 @@ fn compile_effect_devices(
         admission_matrix = admission_matrix
             .then(prepared)
             .map_err(|error| Invalid(error.0))?;
-        if !device.bypassed() {
+        if !bypassed {
             let gain = migrated.output_gain_linear() * migrated.input_gain_linear();
             let trim = hex_lattice::StereoMatrix::new([[gain, 0.0], [0.0, gain]])
                 .map_err(|error| Invalid(error.0))?;
@@ -1274,7 +1290,7 @@ fn compile_effect_devices(
             device_id: device.id().value(),
             device_type: migrated.type_id(),
             matrix: prepared,
-            bypassed: device.bypassed(),
+            bypassed,
             sample_rate,
             configuration: Some(std::sync::Arc::new(migrated)),
             definition: processor,

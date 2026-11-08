@@ -723,12 +723,12 @@ fn registered_sampler_fixture(streamed: bool, shared: bool) {
             .unwrap()
             .prepare_note(60, 127)
             .unwrap();
-        // Seeks start mutable voices empty: the held sampler note retriggers at
-        // the destination, while the analytic vector note and the frame-anchored
-        // audio clip keep their authored positions (the Play-from law).
+        // Interactive Play-from starts both mutable sampler and FM4 voices
+        // empty at the destination. The frame-anchored audio clip keeps its
+        // authored position; no instrument prefix history is replayed.
         for (age, actual) in sought_pcm.into_iter().enumerate() {
             let sampler = derivative[age];
-            let vector = vector.sample(age as u64 + 3, 8000, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            let vector = vector.sample(age as u64, 8000, &hex_lattice::EMPTY_DEVICE_RESOURCES);
             let audio = derivative[age + 3];
             for lane in 0..2 {
                 assert!((actual[lane] - (sampler[lane] + vector[lane] + audio[lane])).abs() < 1e-6);
@@ -952,4 +952,122 @@ fn pcm_retired_output_book_retains_backing_until_control_releases_custody() {
     assert_eq!(pcm_inventory(&[book.admission_on_control()], &[]), 4);
     drop(book);
     assert!(weak.upgrade().is_none());
+}
+
+#[test]
+fn native_source_program_bytes_remain_charged_through_refusal_and_matching_retirement() {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let registry = hex_devices::native_instrument_registry().unwrap();
+            let mut editor = Editor::new(Project::new(48000).unwrap(), 16).unwrap();
+            let Created::Track(track) = editor
+                .execute(Command::InsertTrackWithDevice {
+                    name: "program custody".into(),
+                    before_track: None,
+                    slot: hex_project::TrackDeviceSlot::Instrument,
+                    state: registry
+                        .default_state(hex_devices::fm4::device::FM4_TYPE_ID)
+                        .unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("track")
+            };
+            let device = editor
+                .project()
+                .track(track)
+                .unwrap()
+                .instrument()
+                .unwrap()
+                .id();
+            let plain = editor.project().clone();
+            editor
+                .execute(Command::ReplaceDeviceAutomation {
+                    device,
+                    parameter: hex_devices::fm4::device::parameter::carrier(1),
+                    points: vec![hex_project::AutomationPoint {
+                        beat: BeatTime::ZERO,
+                        value: hex_project::AutomationValue::new(0.75).unwrap(),
+                        outgoing: hex_project::AutomationInterpolation::Linear,
+                    }],
+                })
+                .unwrap();
+            let cancel = AtomicBool::new(false);
+            let store = ResidentDeviceAssets::default();
+            let resources = PreparedDeviceResources::prepare_on_control(
+                &store,
+                editor.project(),
+                20_000_000,
+                &cancel,
+            )
+            .unwrap();
+            let prepare = |project: &Project| {
+                crate::device_automation::with_fm4_source_curves(|| {
+                    Arc::new(
+                        PreparedRevision::prepare_with_device_resources(
+                            project,
+                            &BTreeMap::new(),
+                            Arc::new(SineTable::new()),
+                            None,
+                            &crate::audio_transform::AudioTransformPreparation::default(),
+                            &resources,
+                            resources.compiler_scan_work_on_control(project).unwrap(),
+                            &cancel,
+                        )
+                        .unwrap(),
+                    )
+                })
+            };
+            let plain = prepare(&plain);
+            let automated = prepare(editor.project());
+            let bytes = automated.session().instrument_automation_storage_bytes();
+            assert!(bytes > 0);
+            let graph = |revision: &Arc<PreparedRevision>| {
+                crate::playback::Playback::try_from_prepared_with_device_resources(
+                    Arc::clone(revision),
+                    &resources,
+                )
+                .unwrap()
+            };
+            let plain_graph = graph(&plain);
+            let curve_graph = graph(&automated);
+            let base_bytes = plain_graph
+                .resource_control_metadata_bytes_on_control()
+                .unwrap();
+            assert_eq!(
+                curve_graph
+                    .resource_control_metadata_bytes_on_control()
+                    .unwrap(),
+                base_bytes + bytes
+            );
+            let mut book =
+                DeviceResourcePublication::reserve_on_control(pcm_limits(), 8, 3).unwrap();
+            let empty = book.inspect(None).unwrap().data_bytes;
+            let accept = |result| match result {
+                Ok(graph) => graph,
+                Err(_) => panic!("publication"),
+            };
+            let plain_graph = accept(book.publish_on_control(plain_graph, Ok::<_, ()>));
+            let curve_graph = accept(book.publish_on_control(curve_graph, Ok::<_, ()>));
+            let held = book.inspect(None).unwrap().data_bytes;
+            assert_eq!(held - empty, base_bytes * 2 + bytes);
+            let refused = book.publish_on_control(graph(&automated), Err::<(), _>);
+            let Err(DeviceResourcePublishError::Publication(returned)) = refused else {
+                panic!("queue refusal")
+            };
+            assert_eq!(book.inspect(None).unwrap().data_bytes, held);
+            assert!(book.retire_on_control(Box::new(returned)).is_err());
+            assert_eq!(book.inspect(None).unwrap().data_bytes, held);
+            assert!(book.retire_on_control(Box::new(plain_graph)).is_ok());
+            assert_eq!(
+                book.inspect(None).unwrap().data_bytes - empty,
+                base_bytes + bytes
+            );
+            assert!(book.retire_on_control(Box::new(curve_graph)).is_ok());
+            assert_eq!(book.inspect(None).unwrap().data_bytes, empty);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }

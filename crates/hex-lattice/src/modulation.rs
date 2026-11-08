@@ -48,6 +48,7 @@ struct Target {
 struct Route {
     source: usize,
     target_index: usize,
+    order: usize,
     amount: f32,
 }
 
@@ -73,8 +74,13 @@ impl PreparedModulation {
         {
             return Err(Error::RuntimeBudgetExceeded);
         }
-        let mut ids = Vec::with_capacity(targets.len());
-        let mut prepared_targets = Vec::with_capacity(targets.len());
+        let mut ids = Vec::new();
+        ids.try_reserve_exact(targets.len())
+            .map_err(|_| Error::RuntimeAllocation)?;
+        let mut prepared_targets = Vec::new();
+        prepared_targets
+            .try_reserve_exact(targets.len())
+            .map_err(|_| Error::RuntimeAllocation)?;
         for &target in targets {
             let descriptor = target.descriptor;
             target.semantics.validate(descriptor)?;
@@ -101,8 +107,11 @@ impl PreparedModulation {
                 route_end: 0,
             });
         }
-        let mut prepared_routes = Vec::with_capacity(routes.len());
-        for route in routes {
+        let mut prepared_routes = Vec::new();
+        prepared_routes
+            .try_reserve_exact(routes.len())
+            .map_err(|_| Error::RuntimeAllocation)?;
+        for (order, route) in routes.iter().enumerate() {
             if route.source >= source_count
                 || !route.amount.is_finite()
                 || !(-1.0..=1.0).contains(&route.amount)
@@ -115,12 +124,13 @@ impl PreparedModulation {
             prepared_routes.push(Route {
                 source: route.source,
                 target_index,
+                order,
                 amount: route.amount,
             });
         }
-        // Control-side stable ordering retains the caller's summation order for
-        // routes of the same target while avoiding a full route scan per sample.
-        prepared_routes.sort_by_key(|route| route.target_index);
+        // Include original order in the key so sorting uses no scratch
+        // allocation and preserves the caller's summation order per target.
+        prepared_routes.sort_unstable_by_key(|route| (route.target_index, route.order));
         let mut next = 0;
         for (index, target) in prepared_targets.iter_mut().enumerate() {
             target.route_start = next;
@@ -138,6 +148,50 @@ impl PreparedModulation {
             routes: prepared_routes,
             source_count,
         })
+    }
+
+    /// Reserved vector capacities, excluding inline state and allocator bookkeeping.
+    /// The owning graph must include this quote in its own admission budget.
+    pub fn storage_bytes(&self) -> Option<usize> {
+        self.ids
+            .capacity()
+            .checked_mul(std::mem::size_of::<ParameterId>())?
+            .checked_add(
+                self.targets
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<Target>())?,
+            )?
+            .checked_add(
+                self.routes
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<Route>())?,
+            )
+    }
+
+    /// Stable provider IDs, sorted and unique for runtime admission.
+    pub fn parameter_ids(&self) -> &[ParameterId] {
+        &self.ids
+    }
+
+    /// Descriptor the host must compare with the live provider before use.
+    pub fn descriptor(&self, id: ParameterId) -> Option<ParameterDescriptor> {
+        let index = self.ids.binary_search(&id).ok()?;
+        self.targets
+            .get(index)
+            .map(|target| target.authored.descriptor)
+    }
+
+    /// Semantics the host must revalidate against the current provider state.
+    pub fn semantics(&self, id: ParameterId) -> Option<ParameterSemantics> {
+        let index = self.ids.binary_search(&id).ok()?;
+        self.targets
+            .get(index)
+            .map(|target| target.authored.semantics)
+    }
+
+    /// Number of source buffers required by this prepared program.
+    pub fn source_count(&self) -> usize {
+        self.source_count
     }
 
     /// Borrow a block. Every input is checked before it is exposed to a provider.
@@ -326,6 +380,22 @@ mod tests {
             },
         ];
         let program = PreparedModulation::new(&targets, &routes, 2).unwrap();
+        assert!(program.storage_bytes().unwrap() > 0);
+        assert_eq!(
+            program.parameter_ids(),
+            &[targets[0].descriptor.id, targets[1].descriptor.id]
+        );
+        assert_eq!(
+            program.descriptor(targets[0].descriptor.id),
+            Some(targets[0].descriptor)
+        );
+        assert_eq!(program.descriptor(ParameterId::from_static(3)), None);
+        assert_eq!(
+            program.semantics(targets[0].descriptor.id),
+            Some(targets[0].semantics)
+        );
+        assert_eq!(program.semantics(ParameterId::from_static(3)), None);
+        assert_eq!(program.source_count(), 2);
         let a = [0.0, 1.0, -1.0];
         let b = [0.0, -1.0, 1.0];
         let samples = [&a[..], &b[..]];
@@ -418,6 +488,23 @@ mod tests {
             block.value_at(t.descriptor.id, 1),
             Some(ParameterValue::Float(8.0))
         );
+    }
+
+    #[test]
+    fn same_target_routes_keep_the_authored_summation_order() {
+        let target = target(1, 0.0);
+        let routes = [0, 1, 2].map(|source| ModulationRoute {
+            source,
+            target: target.descriptor.id,
+            amount: 1.0,
+        });
+        let program = PreparedModulation::new(&[target], &routes, 3).unwrap();
+        let a = [1.0];
+        let b = [1.0e-20];
+        let c = [-1.0];
+        let sources = [&a[..], &b[..], &c[..]];
+        let block = program.block(None, &sources, 1).unwrap();
+        assert_eq!(block.value_at(target.descriptor.id, 0), Some(target.base));
     }
 
     #[test]

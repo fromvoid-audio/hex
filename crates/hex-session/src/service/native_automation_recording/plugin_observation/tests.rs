@@ -368,7 +368,7 @@ fn failed_plugin_copy_preserves_originals_and_real_restoration() {
 
 #[test]
 fn recovery_copy_receipt_refuses_replaced_damaged_or_incomplete_files() {
-    let (files, scope, source, outcome) = failed_copy_fixture();
+    let (files, scope, source, mut outcome) = failed_copy_fixture();
     let original = std::fs::read(&outcome.path).unwrap();
     let retained = outcome.retained[0].events().to_vec();
     let delivered = point(scope, source, 16, Vst3ApplicationValue::Value(0.75));
@@ -398,6 +398,11 @@ fn recovery_copy_receipt_refuses_replaced_damaged_or_incomplete_files() {
     );
     receipt.verify_on_control(&finished, limits, 3).unwrap();
     assert!(receipt.verify_on_control(&finished, limits, 2).is_err());
+    assert!(
+        receipt
+            .open_completed_on_control(&finished, limits, 2)
+            .is_err()
+    );
 
     let interrupted = files.0.join("receipt-interrupted");
     let interrupted_receipt = copy_failed_plugin_with_receipt_on_control(
@@ -415,6 +420,11 @@ fn recovery_copy_receipt_refuses_replaced_damaged_or_incomplete_files() {
         .verify_on_control(&interrupted, limits, 3)
         .unwrap();
     assert!(receipt.verify_on_control(&interrupted, limits, 3).is_err());
+    assert!(
+        interrupted_receipt
+            .open_completed_on_control(&interrupted, limits, 3)
+            .is_err()
+    );
 
     let mut changed = delivered;
     changed.application.value = Vst3ApplicationValue::Value(0.625);
@@ -433,6 +443,11 @@ fn recovery_copy_receipt_refuses_replaced_damaged_or_incomplete_files() {
     )
     .unwrap();
     assert!(receipt.verify_on_control(&replacement, limits, 3).is_err());
+    assert!(
+        receipt
+            .open_completed_on_control(&replacement, limits, 3)
+            .is_err()
+    );
 
     let mut reader = DraftReader::open(&finished, limits).unwrap();
     let different_header = files.0.join("receipt-valid-other-header");
@@ -464,14 +479,56 @@ fn recovery_copy_receipt_refuses_replaced_damaged_or_incomplete_files() {
     bad.push(0);
     std::fs::write(&appended, &bad).unwrap();
     assert!(receipt.verify_on_control(&appended, limits, 3).is_err());
+    assert!(
+        receipt
+            .open_completed_on_control(&appended, limits, 3)
+            .is_err()
+    );
     let truncated = files.0.join("receipt-truncated");
     std::fs::write(&truncated, &bytes[..bytes.len() - 1]).unwrap();
     assert!(receipt.verify_on_control(&truncated, limits, 3).is_err());
+    assert!(
+        receipt
+            .open_completed_on_control(&truncated, limits, 3)
+            .is_err()
+    );
     let wrong_header = files.0.join("receipt-header");
     let mut bad = bytes;
     bad[0] ^= 1;
     std::fs::write(&wrong_header, &bad).unwrap();
     assert!(receipt.verify_on_control(&wrong_header, limits, 3).is_err());
+    let mut take = receipt
+        .open_completed_on_control(&finished, limits, 3)
+        .unwrap();
+    assert_eq!(take.event_count(), 3);
+    std::fs::rename(&replacement, &finished).unwrap();
+    assert_eq!(
+        take.value_at_on_control(16).unwrap().unwrap().value.get(),
+        0.75
+    );
+    assert!(
+        receipt
+            .open_completed_on_control(&finished, limits, 3)
+            .is_err()
+    );
+    drop(take);
+    outcome.requested_terminal = DraftTerminal::Aborted(DraftAbortReason::Cancelled);
+    let aborted = files.0.join("receipt-aborted");
+    let aborted_receipt = copy_failed_plugin_with_receipt_on_control(
+        &outcome,
+        &aborted,
+        limits,
+        3,
+        scope,
+        source,
+        &[],
+    )
+    .unwrap();
+    assert!(
+        aborted_receipt
+            .open_completed_on_control(&aborted, limits, 3)
+            .is_err()
+    );
     assert_eq!(std::fs::read(&outcome.path).unwrap(), original);
     assert_eq!(outcome.retained[0].events(), retained);
 }

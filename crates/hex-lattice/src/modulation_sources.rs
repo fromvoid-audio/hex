@@ -91,13 +91,21 @@ impl ModulationLfoBank {
         if sources.windows(2).any(|pair| pair[0].id >= pair[1].id) {
             return Err(Error::InvalidId);
         }
-        let mut prepared = Vec::with_capacity(sources.len());
+        let mut prepared = Vec::new();
+        prepared
+            .try_reserve_exact(sources.len())
+            .map_err(|_| Error::RuntimeAllocation)?;
         for source in sources {
+            let mut samples = Vec::new();
+            samples
+                .try_reserve_exact(chunk_frames)
+                .map_err(|_| Error::RuntimeAllocation)?;
+            samples.resize(chunk_frames, 0.0);
             prepared.push(Source {
                 id: source.id,
                 committed: source.lfo,
                 scratch: source.lfo,
-                samples: vec![0.0; chunk_frames],
+                samples,
             });
         }
         let bank = Self {
@@ -106,20 +114,23 @@ impl ModulationLfoBank {
             last_frames: 0,
             active: false,
         };
-        if bank.storage_bytes()? > MAX_MODULATION_LFO_STORAGE_BYTES {
+        if bank
+            .storage_bytes()?
+            .checked_add(std::mem::size_of::<Self>())
+            .is_none_or(|bytes| bytes > MAX_MODULATION_LFO_STORAGE_BYTES)
+        {
             return Err(Error::RuntimeBudgetExceeded);
         }
         Ok(bank)
     }
 
-    /// Actual reserved element capacities and inline state, for host admission.
-    /// Allocator bookkeeping is outside this count.
+    /// Reserved vector capacities for host admission, excluding the inline
+    /// bank header and allocator bookkeeping.
     pub fn storage_bytes(&self) -> Result<usize, Error> {
         let mut bytes = self
             .sources
             .capacity()
             .checked_mul(std::mem::size_of::<Source>())
-            .and_then(|size| size.checked_add(std::mem::size_of::<Self>()))
             .ok_or(Error::RuntimeBudgetExceeded)?;
         for source in &self.sources {
             bytes = source
@@ -130,6 +141,21 @@ impl ModulationLfoBank {
                 .ok_or(Error::RuntimeBudgetExceeded)?;
         }
         Ok(bytes)
+    }
+
+    /// Source count for comparing this bank with an admitted route program.
+    pub fn source_count(&self) -> usize {
+        self.sources.len()
+    }
+
+    /// The stable identity at this bank's sorted, transient source index.
+    pub fn source_id(&self, index: usize) -> Option<ModulationSourceId> {
+        self.sources.get(index).map(|source| source.id)
+    }
+
+    /// Maximum frames in one render chunk; longer segments require chunking.
+    pub fn chunk_frames(&self) -> usize {
+        self.chunk_frames
     }
 
     /// Start or restart a transaction from committed phase, discarding scratch.
@@ -311,8 +337,9 @@ mod tests {
 
     #[test]
     fn tempo_change_is_speculative_and_keeps_phase() {
-        let original = source(1, 12_000.0, 0.0);
-        let changed = source(1, 6_000.0, 0.0);
+        let id = ModulationSourceId::new(1).unwrap();
+        let original = PreparedLfoSource::tempo(id, 8.0, 120.0, 1.0, 0.0).unwrap();
+        let changed = PreparedLfoSource::tempo(id, 8.0, 60.0, 1.0, 0.0).unwrap();
         let mut bank = ModulationLfoBank::new(&[original], 8).unwrap();
         assert!(bank.retarget(changed).is_err());
         bank.begin();
@@ -339,18 +366,27 @@ mod tests {
     fn invalid_requests_do_not_advance_committed_or_speculative_state() {
         assert!(ModulationSourceId::new(0).is_err());
         let prepared = source(1, 12_000.0, 0.0);
+        assert!(PreparedLfoSource::tempo(prepared.id, 48_000.0, f64::NAN, 1.0, 0.0).is_err());
+        assert!(PreparedLfoSource::tempo(prepared.id, 48_000.0, 120.0, 0.0, 0.0).is_err());
         assert!(ModulationLfoBank::new(&[prepared, prepared], 8).is_err());
         assert!(ModulationLfoBank::new(&[prepared], 0).is_err());
         assert!(ModulationLfoBank::new(&[prepared], usize::MAX).is_err());
         let many: Vec<_> = (1..=32).map(|id| source(id, 1.0, 0.0)).collect();
         assert!(ModulationLfoBank::new(&many, 8192).is_err());
         let mut bank = ModulationLfoBank::new(&[prepared], 8).unwrap();
+        assert_eq!(bank.source_count(), 1);
+        assert_eq!(bank.source_id(0), Some(prepared.id));
+        assert_eq!(bank.source_id(1), None);
+        assert_eq!(bank.chunk_frames(), 8);
         assert!(bank.render_chunk(1).is_err());
         assert!(bank.commit().is_err());
         assert!(bank.reset(prepared.id, f64::NAN).is_err());
         bank.begin();
         assert!(bank.render_chunk(9).is_err());
         assert!(bank.reset(prepared.id, 0.0).is_err());
+        assert!(bank.retarget(source(2, 100.0, 0.0)).is_err());
+        let mut replacement = ModulationLfoBank::new(&[prepared], 8).unwrap();
+        assert!(replacement.inherit_committed(&bank).is_err());
         bank.render_chunk(2).unwrap();
         assert_eq!(bank.samples(prepared.id).unwrap(), &[0.0, 1.0]);
         assert!(bank.render_chunk(9).is_err());

@@ -39,7 +39,7 @@ fn rendered_harmonic_stroke_is_atomic_and_shift_preserves_other_columns(cx: &mut
         .debug_bounds(graph_id)
         .expect("64-column painter is visible");
     assert!(bounds.size.height >= px(80.0));
-    assert!(bounds.size.width >= px(200.0));
+    assert!(bounds.size.width >= px(180.0));
     // The painter owns the upper display; optional tools stay inactive.
     for index in 0..4 {
         let tool =
@@ -47,7 +47,10 @@ fn rendered_harmonic_stroke_is_atomic_and_shift_preserves_other_columns(cx: &mut
         assert!(visual.debug_bounds(tool).is_none());
     }
     let tab_bounds = visual.debug_bounds(tab).unwrap();
-    assert!(bounds.bottom() <= tab_bounds.top());
+    let cycle = visual.debug_bounds("operator-waveform-cycle").unwrap();
+    assert!(bounds.left() >= tab_bounds.right());
+    assert!(cycle.bottom() <= bounds.top());
+    assert!(visual.debug_bounds("operator-envelope-graph").is_some());
     assert!(visual.debug_bounds("operator-fixed-anchors").is_none());
     let envelope = visual.debug_bounds("operator-envelope-fields").unwrap();
     let oscillator = visual

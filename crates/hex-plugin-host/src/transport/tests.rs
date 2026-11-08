@@ -1223,3 +1223,151 @@ fn received_program_snapshot_is_coherent_during_worker_slot_reuse() {
     control.revoke();
     assert_eq!(control.received_program(), None);
 }
+
+#[test]
+fn committed_quantum_is_published_only_after_accepted_callback() {
+    let (control, mut callback, _worker) = channel(BINDING, 8).unwrap();
+    let (other, _, _) = channel(BINDING, 8).unwrap();
+    assert_eq!(control.committed_quantum(), None);
+    let mut output = [[0.0; 2]; 8];
+    callback
+        .stage(&[[0.0; 2]; 3], &[], &mut output[..3])
+        .unwrap();
+    assert_eq!(
+        control.committed_quantum(),
+        None,
+        "staging is not acceptance"
+    );
+    callback.finish(true).unwrap();
+    assert_eq!(
+        control.committed_quantum(),
+        Some(CommittedQuantum {
+            binding: BINDING,
+            state: CommittedQuantumState::OpenUnprogrammed,
+        })
+    );
+    assert_eq!(
+        other.committed_quantum(),
+        None,
+        "equal binding does not share custody"
+    );
+    let serial = control.revoked.quantum_serial.load(Acquire);
+    callback
+        .stage(&[[0.0; 2]; 1], &[], &mut output[..1])
+        .unwrap();
+    callback.finish(true).unwrap();
+    assert_eq!(
+        control.revoked.quantum_serial.load(Acquire),
+        serial,
+        "unchanged state need not republish"
+    );
+    callback
+        .stage(&[[0.0; 2]; 4], &[], &mut output[..4])
+        .unwrap();
+    callback.finish(true).unwrap();
+    assert_eq!(
+        control.committed_quantum(),
+        Some(CommittedQuantum {
+            binding: BINDING,
+            state: CommittedQuantumState::Closed,
+        })
+    );
+    callback
+        .stage(&[[0.0; 2]; 1], &[], &mut output[..1])
+        .unwrap();
+    assert!(callback.finish(false).is_err());
+    assert_eq!(
+        control.committed_quantum(),
+        None,
+        "revoked callbacks grant no observation"
+    );
+}
+
+#[test]
+fn committed_quantum_snapshot_is_bounded_and_coherent() {
+    use std::sync::{Barrier, atomic::AtomicBool};
+    let (control, _callback, _) = channel(BINDING, 8).unwrap();
+    control.revoked.quantum_serial.store(1, Release);
+    control.revoked.quantum_program.store(99, Release);
+    assert_eq!(
+        control.committed_quantum(),
+        None,
+        "an in-progress publication is unavailable"
+    );
+    control.revoked.quantum_serial.store(0, Release);
+    let barrier = Barrier::new(2);
+    let finished = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let revoked = &control.revoked;
+        scope.spawn(|| {
+            for index in 1_u64..=32_768 {
+                let state = if index.is_multiple_of(2) {
+                    CommittedQuantumState::Closed
+                } else {
+                    CommittedQuantumState::OpenProgram(NonZeroU64::MIN)
+                };
+                revoked.publish_quantum(state);
+                if index == 1024 {
+                    barrier.wait();
+                    barrier.wait();
+                }
+            }
+            finished.store(true, Release);
+        });
+        barrier.wait();
+        assert_eq!(
+            control.committed_quantum().unwrap().state,
+            CommittedQuantumState::Closed
+        );
+        barrier.wait();
+        while !finished.load(Acquire) {
+            if let Some(snapshot) = control.committed_quantum() {
+                assert_eq!(snapshot.binding, BINDING);
+                assert!(matches!(
+                    snapshot.state,
+                    CommittedQuantumState::Closed
+                        | CommittedQuantumState::OpenProgram(NonZeroU64::MIN)
+                ));
+            }
+        }
+    });
+    control.revoked.quantum_serial.store(u64::MAX - 1, Release);
+    control
+        .revoked
+        .publish_quantum(CommittedQuantumState::OpenUnprogrammed);
+    assert_eq!(
+        control.committed_quantum(),
+        None,
+        "serial exhaustion is not an acknowledgement"
+    );
+}
+
+#[test]
+#[ignore = "release-only callback timing observation"]
+fn callback_quantum_observation_timing() {
+    use std::time::Instant;
+
+    const QUANTUM: usize = 256;
+    const WARMUP: usize = 2_000;
+    const BLOCKS: usize = 20_000;
+    let (_control, mut callback, mut worker) = channel(BINDING, QUANTUM as u16).unwrap();
+    let input = [[0.25, -0.25]; QUANTUM];
+    let mut output = [[0.0; 2]; QUANTUM];
+    let mut elapsed = std::time::Duration::ZERO;
+    for block in 0..WARMUP + BLOCKS {
+        let start = Instant::now();
+        callback.stage(&input, &[], &mut output).unwrap();
+        callback.finish(true).unwrap();
+        if block >= WARMUP {
+            elapsed += start.elapsed();
+        }
+        if let Some(reply) = worker.receive().unwrap() {
+            worker.complete(reply).unwrap();
+        }
+    }
+    std::hint::black_box(output);
+    println!(
+        "callback quantum: frames={QUANTUM} warmup={WARMUP} blocks={BLOCKS} ns_per_block={}",
+        elapsed.as_nanos() / BLOCKS as u128
+    );
+}

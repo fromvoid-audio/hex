@@ -86,6 +86,7 @@ impl DeviceInitialization {
 fn state(command: &Command) -> Result<&NativeDeviceState, Invalid> {
     match command {
         Command::InsertDevice { state, .. }
+        | Command::InsertNestedDevice { state, .. }
         | Command::InsertInstrument { state, .. }
         | Command::LoadInstrument { state, .. }
         | Command::InsertMainDevice { state, .. }

@@ -86,6 +86,25 @@ fn successive_native_takes_keep_the_arm_and_refusals_keep_the_recovery_file() {
     }));
     assert!(authored.error.is_none(), "{:?}", authored.error);
     let revision = authored.state.revision;
+    assert!(Request::QueryFailedPluginAutomation { request_id: 912 }.is_read_only_observation());
+    assert!(Request::ContinuePluginParameters.is_read_only_observation());
+    assert!(!Request::Undo.is_read_only_observation());
+    let mut queried = submit(Request::QueryFailedPluginAutomation { request_id: 912 });
+    assert!(queried.error.is_none());
+    assert!(queried.plugin_parameter_observation);
+    let completion = queried.device_automation_take_complete.take().unwrap();
+    assert_eq!(completion.request_id, 912);
+    assert_eq!(completion.progress, Progress::FailedPluginUnavailable);
+    assert_eq!(queried.state.revision, revision);
+    let close_safety = || {
+        let mut event = submit(Request::QueryDeviceAutomationCloseSafety { request_id: 913 });
+        assert!(event.error.is_none());
+        assert!(event.plugin_parameter_observation);
+        let completion = event.device_automation_take_complete.take().unwrap();
+        assert_eq!(completion.request_id, 913);
+        completion.progress
+    };
+    assert_eq!(close_safety(), Progress::CloseSafe);
     let scope = || {
         let armed = submit(Request::ArmNativeParameterRecording {
             project_generation: 0,
@@ -134,6 +153,13 @@ fn successive_native_takes_keep_the_arm_and_refusals_keep_the_recovery_file() {
     };
     let draft_directory = scratch.0.join("automation-drafts");
     let initial_scope = scope();
+    let (no_output, no_output_progress) = send(
+        initial_scope,
+        Action::AdoptFailedPluginCopy { max_events: 2 },
+    );
+    assert_eq!(no_output_progress, Progress::Refused);
+    assert!(no_output.error.is_some());
+    assert_eq!(no_output.state.revision, revision);
     let missing_copy = scratch.0.join("missing-plugin-copy");
     let (missing_event, missing_progress) = send(
         initial_scope,
@@ -171,6 +197,7 @@ fn successive_native_takes_keep_the_arm_and_refusals_keep_the_recovery_file() {
         };
     let record = |scope, frame| {
         assert_eq!(send(scope, Action::Begin).1, Progress::Started);
+        assert_eq!(close_safety(), Progress::CloseBlocked);
         let value = NativeTransientValue::HostOutputGain(HostGain::from_normalized(0.25).unwrap());
         let points = Arc::from([(
             1,
@@ -209,6 +236,7 @@ fn successive_native_takes_keep_the_arm_and_refusals_keep_the_recovery_file() {
         Progress::Sealing
     );
     let (aborted, result) = wait(initial_scope);
+    assert_eq!(close_safety(), Progress::CloseSafe);
     let Progress::Retained(path) = result else {
         panic!("{:?}", aborted.error)
     };

@@ -721,6 +721,7 @@ impl SessionPlayback {
                                 &mut generator,
                                 &timing,
                                 true,
+                                None,
                             )?;
                         }
                         render_mutable_instrument_chunk(
@@ -771,6 +772,18 @@ impl SessionPlayback {
                     }
                     if !self.playing {
                         if self.source_input_receiver() == Some(index) {
+                            let parameter_context = instrument_automation::SourceAutomation::new(
+                                &self.revision,
+                                index,
+                                instrument_automation::Origin {
+                                    arrangement: Some(arrangement_frame),
+                                    performance: performance_frame,
+                                    pass: loop_pass,
+                                    running: false,
+                                },
+                                generator.len(),
+                            )?;
+                            let parameter_block = parameter_context.block();
                             source_live::render_source_live_input(
                                 self.computer_keyboard.as_mut().map(Box::as_mut),
                                 self.mutable_instruments[index].as_mut(),
@@ -781,6 +794,9 @@ impl SessionPlayback {
                                 &mut generator,
                                 &timing,
                                 false,
+                                parameter_block.as_ref().map(|values| {
+                                    values as &dyn hex_lattice::NativeParameterAutomation
+                                }),
                             )?;
                         } else if let Some(runtime) = self.mutable_instruments[index]
                             .as_mut()
@@ -799,6 +815,18 @@ impl SessionPlayback {
                                     timing.sample_rate(),
                                 )
                                 .map_err(|error| error.render_error())?;
+                            let parameter_context = instrument_automation::SourceAutomation::new(
+                                &self.revision,
+                                index,
+                                instrument_automation::Origin {
+                                    arrangement: Some(arrangement_frame),
+                                    performance: performance_frame,
+                                    pass: loop_pass,
+                                    running: false,
+                                },
+                                generator.len(),
+                            )?;
+                            let parameter_block = parameter_context.block();
                             runtime
                                 .process_source_segment(
                                     performance_frame,
@@ -809,6 +837,9 @@ impl SessionPlayback {
                                     Some(&source_clock),
                                     &hex_lattice::EMPTY_DEVICE_RESOURCES,
                                     None,
+                                    parameter_block.as_ref().map(|values| {
+                                        values as &dyn hex_lattice::NativeParameterAutomation
+                                    }),
                                 )
                                 .map_err(|error| error.render_error())?;
                         }

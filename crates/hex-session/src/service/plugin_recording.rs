@@ -76,6 +76,169 @@ pub(super) fn start_failed_copy(
     lane.copy_failed_plugin(scope, destination, max_events, observations)
 }
 
+pub(super) fn generic_sealed_recovery_idle(state: &State, lane: &Lane) -> bool {
+    !state.pending() && state.failed.is_none() && !lane.busy() && !lane.has_failed_custody()
+}
+
+/// Discover original custody without changing the writer, SDK receipts or files.
+pub(super) fn failed_custody(
+    state: &State,
+    lane: &Lane,
+    gesture_active: bool,
+) -> Result<DeviceAutomationTakeProgress, String> {
+    use DeviceAutomationTakeProgress as Progress;
+    let Some((scope, path)) = lane.failed_plugin_identity() else {
+        return Ok(
+            if state.failed.is_some()
+                || state
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.outcome.as_ref().is_some_and(Result::is_err))
+            {
+                Progress::FailedPluginPending
+            } else {
+                Progress::FailedPluginUnavailable
+            },
+        );
+    };
+    if gesture_active
+        || state.active.is_some()
+        || state.terminal.is_some()
+        || state.failed.as_ref().is_some_and(|failed| !failed.ended)
+    {
+        return Ok(Progress::FailedPluginPending);
+    }
+    let source = lane.failed_source(scope)?;
+    if state
+        .failed
+        .as_ref()
+        .is_some_and(|failed| failed.path != path)
+    {
+        return Err("vst3 recovery draft identities disagree".into());
+    }
+    state.failed_observations(scope, source)?;
+    Ok(Progress::FailedPluginCustody {
+        scope: Box::new(scope),
+        path: path.to_owned(),
+    })
+}
+
+pub(super) fn inspect_failed_copy(
+    state: &State,
+    lane: &Lane,
+    scope: DeviceAutomationTakeScope,
+    gesture_active: bool,
+) -> Result<Step, String> {
+    if gesture_active {
+        return Err("vst3 recovery requires a quiescent gesture".into());
+    }
+    let source = lane.failed_source(scope)?;
+    let observations = state.failed_observations(scope, source)?;
+    lane.inspect_failed_plugin_copy(scope, &observations)
+}
+
+pub(super) struct RecoveryAdoption {
+    scope: DeviceAutomationTakeScope,
+    pub(super) path: PathBuf,
+    receipt: automation_draft::RecoveryCopyReceipt,
+    outcome: Arc<automation_draft::DraftWorkerOutcome>,
+}
+
+pub(super) fn prepare_failed_adoption(
+    state: &State,
+    lane: &Lane,
+    session: &Session,
+    document_base: Option<&Path>,
+    scope: DeviceAutomationTakeScope,
+    live_source: Option<DeviceAutomationSource>,
+    max_events: u64,
+) -> Result<(Box<hex_project::Command>, RecoveryAdoption), String> {
+    if Some(lane.failed_source(scope)?) != live_source {
+        return Err("vst3 recovery live source changed".into());
+    }
+    let Step::Progress(DeviceAutomationTakeProgress::VerifiedCopy { path, receipt }) =
+        inspect_failed_copy(state, lane, scope, false)?
+    else {
+        return Err("verified VST3 recovery copy is unavailable".into());
+    };
+    let command = native_automation_recording::prepare_verified_vst3_recovery_on_control(
+        session,
+        document_base,
+        scope,
+        &path,
+        receipt,
+        max_events,
+    )?;
+    let outcome = Arc::clone(lane.failed_outcome(scope)?);
+    Ok((
+        Box::new(command),
+        RecoveryAdoption {
+            scope,
+            path,
+            receipt,
+            outcome,
+        },
+    ))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RecoveryPublication {
+    Refused,
+    Unchanged,
+    Committed,
+}
+
+pub(super) fn classify_recovery_publication(
+    error: bool,
+    previous_revision: u64,
+    current_revision: u64,
+    callback_confirmed: bool,
+) -> RecoveryPublication {
+    if error {
+        RecoveryPublication::Refused
+    } else if previous_revision == current_revision {
+        RecoveryPublication::Unchanged
+    } else if callback_confirmed && previous_revision.checked_add(1) == Some(current_revision) {
+        RecoveryPublication::Committed
+    } else {
+        RecoveryPublication::Refused
+    }
+}
+
+/// Retain both owners unless the confirmed resident transaction changed history.
+pub(super) fn finish_failed_adoption(
+    state: &mut State,
+    lane: &mut Lane,
+    adoption: &RecoveryAdoption,
+    publication: RecoveryPublication,
+) -> Result<(), String> {
+    match publication {
+        RecoveryPublication::Refused | RecoveryPublication::Unchanged => Ok(()),
+        RecoveryPublication::Committed => release_failed_adoption(state, lane, adoption),
+    }
+}
+
+/// Called only after the resident transaction confirmed application and committed.
+pub(super) fn release_failed_adoption(
+    state: &mut State,
+    lane: &mut Lane,
+    adoption: &RecoveryAdoption,
+) -> Result<(), String> {
+    let source = lane.failed_source(adoption.scope)?;
+    if !Arc::ptr_eq(lane.failed_outcome(adoption.scope)?, &adoption.outcome) {
+        return Err("original VST3 recovery custody changed".into());
+    }
+    let observations = state.failed_observations(adoption.scope, source)?;
+    lane.release_failed_plugin_copy(
+        adoption.scope,
+        &adoption.path,
+        adoption.receipt,
+        &observations,
+    )?;
+    state.failed = None;
+    Ok(())
+}
+
 fn snapshot(operation: PluginGesturePreparation) -> GestureSnapshot {
     match operation {
         PluginGesturePreparation::Begin { snapshot, .. }
@@ -85,6 +248,9 @@ fn snapshot(operation: PluginGesturePreparation) -> GestureSnapshot {
     }
 }
 impl State {
+    pub(super) fn close_safe(&self) -> bool {
+        self.active.is_none() && self.failed.is_none() && self.terminal.is_none()
+    }
     /// Copy the bounded receipts only after the original gesture is quiescent.
     /// The owner retains every original; an empty result never clears custody.
     pub(super) fn failed_observations(
