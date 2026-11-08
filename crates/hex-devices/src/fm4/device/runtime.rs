@@ -475,6 +475,9 @@ impl MutableInstrumentRuntime for Runtime {
     fn parameter_automation(&mut self) -> Option<&mut dyn InstrumentParameterRuntime> {
         Some(self)
     }
+    fn parameter_automation_readonly(&self) -> Option<&dyn InstrumentParameterRuntime> {
+        Some(self)
+    }
     fn supports_active_occurrence_ids(&self) -> bool {
         true
     }
@@ -631,6 +634,16 @@ impl MutableInstrumentRuntime for Runtime {
     }
 }
 impl InstrumentParameterRuntime for Runtime {
+    fn copy_targets(&self, output: &mut [Option<ParameterValue>]) -> Result<(), Error> {
+        if output.len() != CARRIERS.len() {
+            return Err(Error::InvalidParameterAutomation);
+        }
+        for (slot, control) in output.iter_mut().zip(self.controls) {
+            *slot = Some(ParameterValue::Float(control.target as f32));
+        }
+        Ok(())
+    }
+
     fn descriptors(&self) -> &[ParameterDescriptor] {
         &CARRIERS
     }
