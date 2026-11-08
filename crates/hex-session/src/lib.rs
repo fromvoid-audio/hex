@@ -73,6 +73,10 @@ pub enum SessionError {
     NativeAudio(String),
     /// Exact hosted source loss, never a retained preview or restoration ACK.
     PluginSourceLost(String),
+    /// A recorded terminal failed after its original SDK/final-output release.
+    /// The caller must observe that release before returning this error. The
+    /// source remains available; the completed preview cannot be retained.
+    PluginRecordingReleased(String),
     NativeResource(hex_engine::native_device_resources::ResourcePreparationError),
     DeviceAssetClipUnsupported(AssetId),
 }
@@ -83,6 +87,7 @@ impl fmt::Display for SessionError {
             Self::Invalid(message) => f.write_str(message),
             Self::NativeAudio(message) => f.write_str(message),
             Self::PluginSourceLost(message) => f.write_str(message),
+            Self::PluginRecordingReleased(message) => f.write_str(message),
             Self::Project(error) => write!(f, "project edit failed: {error}"),
             Self::Media(error) => write!(f, "media preparation failed: {error}"),
             Self::Engine(error) => write!(f, "playback compile failed: {error}"),
@@ -108,6 +113,7 @@ impl Error for SessionError {
             Self::Invalid(_)
             | Self::NativeAudio(_)
             | Self::PluginSourceLost(_)
+            | Self::PluginRecordingReleased(_)
             | Self::Allocation
             | Self::NativeResource(_)
             | Self::DeviceAssetClipUnsupported(_) => None,
