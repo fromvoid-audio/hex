@@ -6,12 +6,12 @@ use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue};
 #[test]
 fn delay_mix_automation_callback_publication_history_and_save_reopen() -> Result<(), Box<dyn Error>>
 {
-    for lfo in [false, true] {
-        callback_case(lfo)?;
+    for variant in 0..3 {
+        callback_case(variant)?;
     }
     Ok(())
 }
-fn callback_case(lfo: bool) -> Result<(), Box<dyn Error>> {
+fn callback_case(variant: u8) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
     let Created::Imported { track, asset, .. } =
         editor.execute(Command::ImportPreparedAudioTrack {
@@ -101,8 +101,22 @@ fn callback_case(lfo: bool) -> Result<(), Box<dyn Error>> {
     let mut old_out = [[0.0; 2]; BLOCK];
     measured_block(&mut old_callback, &mut old_out);
     assert_eq!(out, old_out);
-    // Publish only filter or LFO lanes first, so feedback/mix cannot mask absent delivery.
-    if lfo {
+    // Publish only filter, LFO or timing lanes first, so feedback/mix cannot mask absent delivery.
+    if variant == 2 {
+        for (parameter, value) in [
+            (p::TIME, 2.5_f32.ln() / 5000.0_f32.ln()),
+            (p::RIGHT_TIME, 5.0_f32.ln() / 5000.0_f32.ln()),
+            (p::LEFT_SYNC, 0.0),
+            (p::RIGHT_SYNC, 0.0),
+            (p::LEFT_DIVISION, 0.0),
+            (p::RIGHT_DIVISION, 0.0),
+            (p::LEFT_OFFSET, 0.8),
+            (p::RIGHT_OFFSET, 0.2),
+            (p::LINK, 0.0),
+        ] {
+            editor.execute(lane(parameter, value)?)?;
+        }
+    } else if variant == 1 {
         for (parameter, value) in [
             (p::LFO_DELAY, 0.8),
             (p::LFO_FILTER, 0.8),
