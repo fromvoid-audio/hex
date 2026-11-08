@@ -168,6 +168,24 @@ impl PreparedModulation {
             )
     }
 
+    /// Stable provider IDs, sorted and unique for runtime admission.
+    pub fn parameter_ids(&self) -> &[ParameterId] {
+        &self.ids
+    }
+
+    /// Descriptor the host must compare with the live provider before use.
+    pub fn descriptor(&self, id: ParameterId) -> Option<ParameterDescriptor> {
+        let index = self.ids.binary_search(&id).ok()?;
+        self.targets
+            .get(index)
+            .map(|target| target.authored.descriptor)
+    }
+
+    /// Number of source buffers required by this prepared program.
+    pub fn source_count(&self) -> usize {
+        self.source_count
+    }
+
     /// Borrow a block. Every input is checked before it is exposed to a provider.
     /// Upstream IDs must be sorted, unique and contained in this program.
     pub fn block<'a>(
@@ -355,6 +373,16 @@ mod tests {
         ];
         let program = PreparedModulation::new(&targets, &routes, 2).unwrap();
         assert!(program.storage_bytes().unwrap() > 0);
+        assert_eq!(
+            program.parameter_ids(),
+            &[targets[0].descriptor.id, targets[1].descriptor.id]
+        );
+        assert_eq!(
+            program.descriptor(targets[0].descriptor.id),
+            Some(targets[0].descriptor)
+        );
+        assert_eq!(program.descriptor(ParameterId::from_static(3)), None);
+        assert_eq!(program.source_count(), 2);
         let a = [0.0, 1.0, -1.0];
         let b = [0.0, -1.0, 1.0];
         let samples = [&a[..], &b[..]];
