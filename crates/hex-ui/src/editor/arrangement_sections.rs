@@ -39,6 +39,8 @@ use hex_widgets::{
 };
 use std::sync::Arc;
 
+mod clipboard;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SectionEdge {
     Single(SectionId, hex_project::TrimEdge),
@@ -191,6 +193,7 @@ pub(super) struct Sections {
     // Shift ranges start here; ignored once it leaves the selection.
     anchor: Option<SectionId>,
     cursor: Option<SectionCursor>,
+    clipboard: Option<clipboard::Reference>,
     gesture: Option<Gesture>,
     pending: Option<Pending>,
     // One keyboard/menu follow-up typed while an edit is in flight (latest
@@ -237,6 +240,8 @@ enum MenuKind {
     Remove,
     Delete,
     Duplicate,
+    Copy,
+    Paste,
     Merge,
 }
 
@@ -507,6 +512,7 @@ impl EditorView {
                     | Command::DeleteArrangementSection(_)
                     | Command::DuplicateArrangementSection(_)
                     | Command::DuplicateArrangementSectionAt { .. }
+                    | Command::AppendArrangementSectionCopy { .. }
             )
         }) || self
             .audio
@@ -1354,6 +1360,20 @@ impl EditorView {
                 self.sections.selected = Some(kept.id());
                 self.sections.selection = vec![kept.id()];
             }
+            if event.error.is_none()
+                && !event.project_replaced
+                && let (Some(reference), Some(pending)) = (
+                    self.sections.clipboard.as_mut(),
+                    self.sections.pending.as_ref(),
+                )
+            {
+                reference.acknowledge_copy(
+                    &pending.command,
+                    pending.generation,
+                    pending.revision,
+                    &event.state,
+                );
+            }
             let copy_source = self.sections.pending.as_ref().and_then(|pending| {
                 if pending
                     .selection_intent_epoch
@@ -1361,10 +1381,7 @@ impl EditorView {
                 {
                     return None;
                 }
-                match pending.command {
-                    Command::DuplicateArrangementSectionAt { section, .. } => Some(section),
-                    _ => None,
-                }
+                copied_section_source(&pending.command)
             });
             let select_copy = event.error.is_none()
                 && !event.project_replaced
@@ -1795,6 +1812,7 @@ impl EditorView {
             | Command::DeleteArrangementSection(_)
             | Command::DuplicateArrangementSection(_)
             | Command::DuplicateArrangementSectionAt { .. }
+            | Command::AppendArrangementSectionCopy { .. }
             | Command::SplitArrangementSection { .. }
             | Command::MergeArrangementSections(_) => {
                 match state.project.preview_arrangement_section_edit(&command) {
@@ -1854,6 +1872,18 @@ impl EditorView {
                 swatch: None,
                 checked: false,
                 action: make(MenuKind::Duplicate),
+            },
+            MenuItem {
+                label: "copy section · cmd-c",
+                swatch: None,
+                checked: false,
+                action: make(MenuKind::Copy),
+            },
+            MenuItem {
+                label: "paste section at cursor · cmd-v",
+                swatch: None,
+                checked: false,
+                action: make(MenuKind::Paste),
             },
             MenuItem {
                 label: "delete section and close time",
@@ -1942,6 +1972,14 @@ impl EditorView {
             MenuKind::Duplicate => {
                 self.focus.focus(window);
                 self.duplicate_section(window);
+            }
+            MenuKind::Copy => {
+                self.focus.focus(window);
+                self.copy_section(window);
+            }
+            MenuKind::Paste => {
+                self.focus.focus(window);
+                self.paste_section(window);
             }
             MenuKind::Merge => {
                 self.focus.focus(window);
@@ -2033,7 +2071,7 @@ impl EditorView {
             if end <= start {
                 continue;
             }
-            let copy_preview = self
+            let copy_command = self
                 .sections
                 .gesture
                 .as_ref()
@@ -2047,13 +2085,18 @@ impl EditorView {
                                 .is_some_and(|epoch| Some(epoch) == self.selection_intent_epoch)
                         })
                         .map(|p| &p.command)
-                })
-                .is_some_and(|c| matches!(c, Command::DuplicateArrangementSectionAt { .. }));
+                });
+            let copy_preview = copy_command.and_then(copied_section_source).is_some();
+            let new_copy = m.id.is_none()
+                && copy_command.is_some_and(|command| match command {
+                    Command::AppendArrangementSectionCopy { start, .. } => m.start == *start,
+                    Command::DuplicateArrangementSectionAt { .. } => true,
+                    _ => false,
+                });
             let canonical_selected = m.id.is_some_and(|id| {
                 self.sections.selection.contains(&id) || self.sections.selected == Some(id)
             });
-            let selected =
-                (copy_preview && m.id.is_none()) || (!copy_preview && canonical_selected);
+            let selected = (copy_preview && new_copy) || (!copy_preview && canonical_selected);
             let focused = self.arrangement_focus.projection.enabled && canonical_selected;
             let owned_hover = crate::section_surface::Hover {
                 held: display.held,
@@ -2240,8 +2283,30 @@ impl EditorView {
         elements
     }
 }
+fn copied_section_source(command: &Command) -> Option<SectionId> {
+    match command {
+        Command::DuplicateArrangementSectionAt { section, .. }
+        | Command::AppendArrangementSectionCopy { section, .. } => Some(*section),
+        _ => None,
+    }
+}
+
 fn same_command(a: &Command, b: &Command) -> bool {
     match (a, b) {
+        (
+            Command::AppendArrangementSectionCopy {
+                section: a,
+                start: at,
+                gap_name: an,
+                gap_color: ac,
+            },
+            Command::AppendArrangementSectionCopy {
+                section: b,
+                start: bt,
+                gap_name: bn,
+                gap_color: bc,
+            },
+        ) => (a, at, an, ac) == (b, bt, bn, bc),
         (
             Command::DuplicateArrangementSectionAt {
                 section: a,
