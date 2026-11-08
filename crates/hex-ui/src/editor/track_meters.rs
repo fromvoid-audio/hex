@@ -102,7 +102,7 @@ fn selected_console_meter(project: &Project, selected: Option<TrackId>) -> Optio
 }
 
 /// Use the grid's bounded page, including its frozen reorder projection. The
-/// selected fallback serves the existing footer until it moves into columns.
+/// selected fallback keeps its observation warm across Console page changes.
 /// Reuse the caller's staging storage; this helper owns no meter or audio state.
 fn console_meter_tracks(
     project: &Project,

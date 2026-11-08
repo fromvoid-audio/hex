@@ -251,8 +251,12 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/session_grid.rs'
             and suffix.startswith(('self.console_column_edge(',
                                    'self.console_column_surface(', 'self.console_reorder_layer(',
-                                   'self.track_reorder_events(', 'tail)', 'session_clip_backdrop(',
+                                   'self.track_reorder_events(', 'self.console_mixer_row(', 'tail)', 'session_clip_backdrop(',
                                    'super::clip_boundary::backdrop_shell('))
+        )
+        console_column_component = console_column_component or (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/console_mixer.rs'
+            and suffix.startswith(('activator)', 'solo)', 'self.sample_arm_button(', 'gain)', 'pan)', 'toggles)', 'controls)', 'column)', 'super::track_meters::render('))
         )
         # Reverb's grouped panel passes bound controls and provider plot data;
         # titles and numeric/toggle labels normalize through theme::text.
