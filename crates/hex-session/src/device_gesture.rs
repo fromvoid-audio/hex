@@ -32,6 +32,7 @@ pub struct GestureKey {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GestureTarget {
+    MainGain,
     TrackGain {
         track: TrackId,
     },
@@ -1246,6 +1247,7 @@ enum ActiveKind {
     TrackGains,
     TrackBalance,
     ReturnGain,
+    MainGain,
     Device {
         class: NativeDeviceClass,
         type_id: DeviceTypeId,
@@ -1715,6 +1717,14 @@ impl GestureMachine {
                             Some(second_value),
                         )
                     }
+                    GestureTarget::MainGain => {
+                        require_resident_mix(session)?;
+                        (
+                            ActiveKind::MainGain,
+                            ParameterValue::Float(session.project().master_gain()),
+                            None,
+                        )
+                    }
                     GestureTarget::TrackBalance { track } => (
                         ActiveKind::TrackBalance,
                         ParameterValue::Float(static_track_balance(session, track)?),
@@ -1949,6 +1959,9 @@ impl GestureMachine {
                         "eq creation target changed native class",
                     ));
                 }
+            }
+            (GestureTarget::MainGain, ActiveKind::MainGain) => {
+                require_resident_mix(session)?;
             }
             (GestureTarget::TrackBalance { track }, ActiveKind::TrackBalance) => {
                 static_track_balance(session, track)?;
@@ -2418,6 +2431,12 @@ fn preview_target(
     previous: Option<&PreparedRevision>,
 ) -> Result<(Arc<Project>, Arc<PreparedRevision>), SessionError> {
     match target {
+        GestureTarget::MainGain => session.preview_mix_command(
+            hex_project::Command::MasterGain {
+                gain: mix_value(value, 0.0, 2.0)?,
+            },
+            previous,
+        ),
         GestureTarget::TrackBalance { track } => {
             session.preview_track_balance(track, mix_value(value, -1.0, 1.0)?, previous)
         }
@@ -2451,6 +2470,14 @@ fn commit_target(
     previous: Option<&PreparedRevision>,
 ) -> Result<Arc<PreparedRevision>, SessionError> {
     match target {
+        GestureTarget::MainGain => session
+            .command_prepared_revision(
+                hex_project::Command::MasterGain {
+                    gain: mix_value(value, 0.0, 2.0)?,
+                },
+                previous,
+            )
+            .map(|(_, prepared)| prepared),
         GestureTarget::TrackBalance { track } => {
             session.commit_track_balance(track, mix_value(value, -1.0, 1.0)?, previous)
         }

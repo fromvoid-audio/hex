@@ -971,6 +971,7 @@ fn render_track(
         | GestureTarget::TrackGain { .. }
         | GestureTarget::TrackGains { .. }
         | GestureTarget::TrackBalance { .. }
+        | GestureTarget::MainGain
         | GestureTarget::ReturnGain { .. } => false,
     }) || stale_keys.iter().any(|key| {
         matches!(

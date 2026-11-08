@@ -76,6 +76,12 @@ pub fn commit_owned_numeric_edit(
         || view.device_gesture.has_pending_terminal()
     {
         let command = match target {
+            GestureTarget::MainGain => Request::Edit(Command::MasterGain {
+                gain: match value {
+                    ParameterValue::Float(gain) => gain,
+                    _ => return Err("main gain requires a float value"),
+                },
+            }),
             GestureTarget::TrackBalance { track } => Request::Edit(Command::Balance {
                 track,
                 balance: match value {
