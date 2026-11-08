@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "recovery_tests.rs"]
-mod tests;
+pub(in crate::editor) mod tests;
 
 impl EditorView {
     pub(super) fn has_resident_vst3(&self) -> bool {

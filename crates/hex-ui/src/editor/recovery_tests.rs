@@ -107,6 +107,23 @@ struct Sink {
     cancellation_done: Arc<AtomicBool>,
 }
 
+/// Existing production-path test sink with neutral gates. Callers retain the
+/// real resource reservation, output carriers and protected observation channel.
+pub(in crate::editor) fn worker_fixture_sink(
+    output: hex_audio::WorkerPreparedOutput,
+    events: SyncSender<EditorAudioEvent>,
+) -> Box<dyn WorkerAudioSink> {
+    Box::new(Sink {
+        output,
+        events,
+        hold: Arc::new(AtomicBool::new(false)),
+        held: Arc::new(Mutex::new(None)),
+        reject_next_fresh: Arc::new(AtomicBool::new(false)),
+        cancel_next_fresh: Arc::new(AtomicBool::new(false)),
+        cancellation_done: Arc::new(AtomicBool::new(false)),
+    })
+}
+
 #[gpui::test]
 fn restart_uses_fault_cursor_instead_of_rewound_transport(cx: &mut gpui::TestAppContext) {
     restart_from_fault(cx, false);
@@ -376,6 +393,7 @@ impl WorkerAudioSink for Sink {
                         && actual.expected_active_revision() == expected.active_audio_revision
                         && actual.route_state_generation() == expected.route_generation
                         && actual.admitted_command_ticket() == expected.admitted_command_ticket
+                        && actual.output_fault_epoch() == expected.output_fault_epoch
                 }) else {
                     return Err(ResidentPublicationRefusal {
                         playback,
