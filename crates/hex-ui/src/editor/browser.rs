@@ -497,6 +497,7 @@ fn browser_audio_drag_ghost(
         stroke,
         theme::color(theme::PaletteRole::ClipOutline),
         true,
+        move || format!("{selector}-trailing"),
     )
     .opacity(0.9)
 }

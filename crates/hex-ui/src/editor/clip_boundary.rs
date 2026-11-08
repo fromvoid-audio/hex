@@ -162,8 +162,8 @@ fn boundary_shell<T: gpui::IntoElement + gpui::Styled>(
 /// Floating previews use the same physical-pixel boundary without changing
 /// the rectangle used for their contents or pointer geometry.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn pixel_boundary_shell(
-    body: impl gpui::IntoElement,
+pub(super) fn pixel_boundary_shell<T: gpui::IntoElement + gpui::Styled>(
+    body: T,
     left: f32,
     top: f32,
     width: f32,
@@ -171,31 +171,36 @@ pub(super) fn pixel_boundary_shell(
     stroke: f32,
     color: u32,
     native_leading: bool,
+    selector: impl FnOnce() -> String,
 ) -> Div {
-    let mut outer = div()
-        .absolute()
-        .left(px(left))
-        .top(px(top))
-        .w(px(width))
-        .h(px(height))
-        .child(body);
+    // Keep the body and both columns in the same coordinate space. A
+    // percentage offset inside an already rounded fractional parent can
+    // advance the trailing column by another physical pixel.
+    let mut outer = div().absolute().inset_0().child(
+        body.absolute()
+            .left(px(left))
+            .top(px(top))
+            .w(px(width))
+            .h(px(height)),
+    );
     if !native_leading {
         outer = outer.child(
             div()
                 .absolute()
-                .left_0()
-                .top_0()
-                .bottom_0()
+                .left(px(left))
+                .top(px(top))
+                .h(px(height))
                 .w(px(stroke))
                 .bg(rgb(color)),
         );
     }
     outer.child(
         div()
+            .debug_selector(selector)
             .absolute()
-            .left(relative(1.0))
-            .top_0()
-            .bottom_0()
+            .left(px(left + width))
+            .top(px(top))
+            .h(px(height))
             .w(px(stroke))
             .bg(rgb(color)),
     )
