@@ -157,6 +157,10 @@ pub struct ParameterPage {
     pub revision: u64,
     pub total: u16,
     pub first: u16,
+    /// Stable SHA-256 of the complete validated descriptor inventory and order.
+    /// Excludes live values and observation revisions. Display-cache invalidation
+    /// only: this digest grants no parameter edit or source admission authority.
+    pub descriptor_signature: [u8; 32],
     values: [ControllerParameter; PARAMETER_PAGE_SIZE],
     len: u8,
 }
@@ -397,6 +401,7 @@ pub fn parameter_page(
             default_display: (format_flags & 2 != 0).then_some(default_display),
         };
     }
+    page.descriptor_signature = reader.array()?;
     reader.end()?;
     Ok(ParameterPageProgress::Page(Box::new(page)))
 }
