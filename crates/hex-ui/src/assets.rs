@@ -7,7 +7,11 @@ use std::borrow::Cow;
 /// The fixed, bounded vector library used by Hex windows.
 pub struct HexAssets;
 
-const ICONS: [(&str, &[u8]); 19] = [
+const ICONS: [(&str, &[u8]); 20] = [
+    (
+        "icons/midi/audition.svg",
+        include_bytes!("../../../assets/icons/midi/audition.svg"),
+    ),
     (
         "icons/device/keyboard.svg",
         include_bytes!("../../../assets/icons/device/keyboard.svg"),
