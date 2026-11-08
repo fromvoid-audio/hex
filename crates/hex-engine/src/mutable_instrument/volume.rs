@@ -236,7 +236,7 @@ impl MutableInstrumentTrackRuntime {
             events,
             clock,
             resources,
-            lookup,
+            Some(lookup),
             automation,
         )
     }
@@ -264,13 +264,13 @@ impl MutableInstrumentTrackRuntime {
             events,
             clock,
             resources,
-            lookup,
+            Some(lookup),
             automation,
         )
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn process_volume_scope(
+    pub(super) fn process_volume_scope(
         &mut self,
         track: Option<TrackId>,
         performance_start: u64,
@@ -281,7 +281,7 @@ impl MutableInstrumentTrackRuntime {
         events: &mut Vec<NativeInstrumentEvent>,
         clock: Option<&dyn NativeInstrumentClock>,
         resources: &dyn hex_lattice::DeviceResources,
-        lookup: &mut VolumeLookup<'_>,
+        mut lookup: Option<&mut VolumeLookup<'_>>,
         automation: Option<&dyn hex_lattice::NativeParameterAutomation>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
         let mut offset = 0;
@@ -308,8 +308,9 @@ impl MutableInstrumentTrackRuntime {
                 let delta = onset.source_start - source;
                 if delta > 0 {
                     count = count.min(usize::try_from(delta).unwrap_or(usize::MAX));
-                } else if let Some(slice) =
-                    lookup(MutableOccurrenceSignature::new(onset), performance, count)?
+                } else if let Some(lookup) = lookup.as_mut()
+                    && let Some(slice) =
+                        lookup(MutableOccurrenceSignature::new(onset), performance, count)?
                 {
                     count = count.min(slice.remaining(count)?);
                 }
@@ -318,7 +319,9 @@ impl MutableInstrumentTrackRuntime {
                 if proof.gain_frozen {
                     continue;
                 }
-                if let Some(slice) = lookup(proof.signature, performance, count)? {
+                if let Some(lookup) = lookup.as_mut()
+                    && let Some(slice) = lookup(proof.signature, performance, count)?
+                {
                     count = count.min(slice.remaining(count)?);
                 }
             }
@@ -338,7 +341,7 @@ impl MutableInstrumentTrackRuntime {
                 events,
                 shifted.as_ref().map(|c| c as &dyn NativeInstrumentClock),
                 resources,
-                Some(lookup),
+                lookup.as_deref_mut(),
                 shifted_values
                     .as_ref()
                     .map(|values| values as &dyn hex_lattice::NativeParameterAutomation),

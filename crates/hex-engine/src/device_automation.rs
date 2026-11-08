@@ -235,6 +235,44 @@ fn supported(
                 })
             })
 }
+// Narrow fixture seam until production source admission opens. It is consulted
+// only on control during validation, never while rendering prepared programs.
+#[cfg(test)]
+thread_local! {
+    static FM4_SOURCE_CURVES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+#[cfg(test)]
+pub(crate) fn with_fm4_source_curves<R>(run: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            FM4_SOURCE_CURVES.with(|slot| slot.set(self.0));
+        }
+    }
+    let _restore = Restore(FM4_SOURCE_CURVES.with(|slot| slot.replace(true)));
+    run()
+}
+fn fixture_source_lane(device: &hex_project::Device, target: DeviceAutomationTarget) -> bool {
+    #[cfg(test)]
+    if FM4_SOURCE_CURVES.with(std::cell::Cell::get)
+        && device.state().type_id() == hex_devices::fm4::device::FM4_TYPE_ID
+        && let DeviceAutomationTarget::Parameter(id) = target
+        && (29..=32).any(|value| id == ParameterId::from_static(value))
+        && let Ok(registry) = hex_devices::native_instrument_registry()
+        && let Some(definition) = registry.definition(device.state().type_id())
+    {
+        return hex_lattice_contract::validated_parameter_semantics(definition, device.state(), id)
+            .is_ok_and(|value| {
+                value.is_some_and(|semantics| {
+                    semantics.access == hex_lattice_contract::ParameterAccess::ReadWrite
+                        && semantics.automation
+                            == hex_lattice_contract::ParameterAutomation::DeviceArrangementEnvelope
+                })
+            });
+    }
+    let _ = (device, target);
+    false
+}
 pub(crate) fn validate_project(project: &hex_project::Project) -> Result<(), Invalid> {
     let registry =
         hex_devices::native_registry().map_err(|_| Invalid("native effect registry is invalid"))?;
@@ -248,8 +286,9 @@ pub(crate) fn validate_project_with_registry(
         source.devices().any(|device| {
             device.automation().iter().any(|lane| {
                 device.id() != source.instrument().id()
-                    || !crate::compile::is_vst3_instrument(device)
-                    || !matches!(lane.target, DeviceAutomationTarget::Vst3 { .. })
+                    || !(crate::compile::is_vst3_instrument(device)
+                        && matches!(lane.target, DeviceAutomationTarget::Vst3 { .. })
+                        || fixture_source_lane(device, lane.target))
             })
         })
     }) {
