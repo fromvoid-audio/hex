@@ -1,10 +1,14 @@
 //! Existing 32-slot FIFO, with a scalar accepted-source-intent stamp. This
 //! permits ordered native preparation to poll cancellation without consuming a
 //! later request, adding a queue or emitting an out-of-order ordinary terminal.
+//! Fresh catalog requests also retain their configured data directory at accepted
+//! submission; later configuration never changes an already queued construction.
 use super::*;
 use std::sync::atomic::AtomicU64;
 
 pub(super) struct QueuedRequest {
+    /// Frozen application configuration for fresh catalog creation only.
+    pub native_device_defaults: Option<Arc<PathBuf>>,
     pub request: Request,
     pub recording_barrier: Option<super::recording_barrier::Completion>,
     pub(super) publication_wait_failure: Option<&'static str>,
@@ -17,6 +21,7 @@ pub(super) struct QueuedRequest {
 impl QueuedRequest {
     pub(super) fn continuation(request: Request, intent: &AtomicU64) -> Self {
         Self {
+            native_device_defaults: None,
             request,
             recording_barrier: None,
             publication_wait_failure: None,
@@ -74,6 +79,7 @@ impl RequestCancellation {
 /// queued New/Open/audio restart advances cancellation intent. Full/closed sends return the
 /// original request without cancelling any admitted operation. No extra queue.
 pub(super) struct Sender {
+    device_defaults_directory: Option<Arc<PathBuf>>,
     channel: SyncSender<QueuedRequest>,
     document_intent: Arc<AtomicU64>,
     single_producer: std::marker::PhantomData<std::cell::Cell<()>>,
@@ -81,10 +87,14 @@ pub(super) struct Sender {
 impl Sender {
     pub(super) fn new(channel: SyncSender<QueuedRequest>, document_intent: Arc<AtomicU64>) -> Self {
         Self {
+            device_defaults_directory: None,
             channel,
             document_intent,
             single_producer: std::marker::PhantomData,
         }
+    }
+    pub(super) fn set_device_defaults_directory(&mut self, root: PathBuf) {
+        self.device_defaults_directory = Some(Arc::new(root));
     }
     #[allow(clippy::result_large_err)] // Exact original request on bounded admission refusal.
     #[cfg(test)]
@@ -127,7 +137,22 @@ impl Sender {
         } else {
             None
         };
+        let native_device_defaults = matches!(
+            &request,
+            Request::AddNativeDevice { .. }
+                | Request::ReplaceNativeDevice { .. }
+                | Request::InsertBrowserInstrumentTrack { .. }
+                | Request::InsertEffectBusDevice { .. }
+                | Request::DropBrowserDeviceOnArrangement { .. }
+                | Request::DropNativeDevice {
+                    source: NativeDeviceDropSource::Browser { .. },
+                    ..
+                }
+        )
+        .then(|| self.device_defaults_directory.clone())
+        .flatten();
         match self.channel.try_send(QueuedRequest {
+            native_device_defaults,
             request,
             recording_barrier: None,
             publication_wait_failure: None,
@@ -155,6 +180,55 @@ impl Sender {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fresh_defaults_capture_configuration_at_submission_without_leaking_to_supplied_state() {
+        let (channel, receiver) = mpsc::sync_channel(4);
+        let intent = Arc::new(AtomicU64::new(0));
+        let mut sender = Sender::new(channel, intent);
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 4).unwrap();
+        let hex_project::Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "fixture".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let fresh = || Request::AddNativeDevice {
+            track,
+            class: hex_engine::NativeDeviceClass::Effect,
+            type_id: Box::new(hex_lattice_contract::DeviceTypeId::from_static(
+                "hex.utility",
+            )),
+            before: None,
+        };
+        sender.submit(fresh()).unwrap();
+        sender.set_device_defaults_directory(PathBuf::from("/first"));
+        sender.submit(fresh()).unwrap();
+        sender.set_device_defaults_directory(PathBuf::from("/second"));
+        sender.submit(fresh()).unwrap();
+        sender
+            .submit(Request::Edit(Command::InsertMainDevice {
+                before: None,
+                state: hex_engine::default_native_device_state(
+                    hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+                )
+                .unwrap(),
+            }))
+            .unwrap();
+        assert!(receiver.recv().unwrap().native_device_defaults.is_none());
+        assert_eq!(
+            receiver.recv().unwrap().native_device_defaults.as_deref(),
+            Some(&PathBuf::from("/first"))
+        );
+        assert_eq!(
+            receiver.recv().unwrap().native_device_defaults.as_deref(),
+            Some(&PathBuf::from("/second"))
+        );
+        assert!(receiver.recv().unwrap().native_device_defaults.is_none());
+    }
 
     #[test]
     fn correlated_save_uses_existing_bounded_fifo_and_retains_identity() {
