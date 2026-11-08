@@ -13,6 +13,8 @@ use hex_project::TrackId;
 use hex_session::service::{NativeDeviceDropSource, Request};
 
 impl EditorView {
+    // A validated plugin effect uses the separate asynchronous insertion path;
+    // native devices return their existing typed request.
     fn header_device_request(
         &self,
         drag: &NativeDeviceDrag,
@@ -21,7 +23,7 @@ impl EditorView {
         track: TrackId,
         copy: bool,
         cx: &App,
-    ) -> Result<Request, &'static str> {
+    ) -> Result<Option<Request>, &'static str> {
         if generation != drag.project_generation
             || revision != Some(drag.revision)
             || !self.native_device_drag_is_current(drag)
@@ -37,29 +39,43 @@ impl EditorView {
         {
             return Err("device drop canceled · project or source changed");
         }
+        if let NativeDeviceDragSource::PluginEffect(selection) = &drag.source {
+            self.check_device_append_target(track, cx)?;
+            if self.pending_plugin_effect.is_some() {
+                return Err("wait for the pending vst3 insertion");
+            }
+            if selection.role != hex_plugin_catalog::PluginRole::Effect {
+                return Err("drop a vst3 effect on the track header");
+            }
+            return Ok(None);
+        }
         let NativeDeviceDragSource::Browser { class, type_id } = drag.source else {
             self.check_device_append_target(track, cx)?;
             if copy {
-                return self.duplicate_device_drag_request(
-                    drag,
-                    hex_project::DeviceChainOwner::Track(track),
-                    None,
-                );
+                return self
+                    .duplicate_device_drag_request(
+                        drag,
+                        hex_project::DeviceChainOwner::Track(track),
+                        None,
+                    )
+                    .map(Some);
             }
             return Err("hold option to copy devices onto a track");
         };
         if class != NativeDeviceClass::Instrument {
-            return self.browser_device_append_request(track, class, type_id, cx);
+            return self
+                .browser_device_append_request(track, class, type_id, cx)
+                .map(Some);
         }
         let target = self.check_device_append_target(track, cx)?;
-        Ok(Request::DropNativeDevice {
+        Ok(Some(Request::DropNativeDevice {
             project_generation: generation,
             revision: drag.revision,
             source: NativeDeviceDropSource::Browser { class, type_id },
             track,
             before: None,
             replace: target.instrument().map(hex_project::Device::id),
-        })
+        }))
     }
 
     fn check_device_append_target(
@@ -168,10 +184,22 @@ impl EditorView {
                     view.clear_native_device_drag(drag);
                     cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
                     match request {
-                        Ok(request) => {
+                        Ok(Some(request)) => {
                             if view.enqueue_device_barrier(request) {
                                 view.error = None;
                                 view.status = "adding device to track".into();
+                            }
+                        }
+                        Ok(None) => {
+                            if let NativeDeviceDragSource::PluginEffect(selection) = &drag.source {
+                                view.insert_plugin_effect(
+                                    selection,
+                                    hex_session::service::PluginEffectDestination::Track(track),
+                                    None,
+                                    cx,
+                                );
+                            } else {
+                                view.error = Some("device drop source changed".into());
                             }
                         }
                         Err(reason) => view.error = Some(reason.into()),
