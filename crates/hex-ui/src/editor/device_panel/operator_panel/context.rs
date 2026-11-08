@@ -117,6 +117,11 @@ pub(super) fn select_page(
         .operator_pages
         .entry(owner.device)
         .or_default();
+    let page = if page == OperatorPage::Oscillator && state.page == OperatorPage::Oscillator {
+        OperatorPage::Envelope
+    } else {
+        page
+    };
     if state.page != page {
         state.page = page;
         cx.notify();
