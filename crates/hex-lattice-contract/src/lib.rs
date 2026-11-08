@@ -10,6 +10,8 @@
 //! Does not construct processors, resolve assets, schedule notes or perform storage migrations.
 //! Opaque payloads and asset references require provider and host validation before processing.
 mod automation_target;
+mod descriptor_validation;
+pub use descriptor_validation::validate_parameter_descriptors;
 mod device_assets;
 pub use automation_target::DeviceAutomationTarget;
 mod host_gain;
@@ -571,26 +573,6 @@ impl fmt::Display for DeviceContractError {
     }
 }
 impl std::error::Error for DeviceContractError {}
-
-/// Validate a complete device-owned descriptor set, including dynamic overrides.
-/// Host input/output controls are outside this device parameter namespace.
-pub fn validate_parameter_descriptors(
-    descriptors: &[ParameterDescriptor],
-) -> Result<(), DeviceContractError> {
-    if descriptors.len() > MAX_PARAMETERS_PER_DEVICE {
-        return Err(DeviceContractError::InvalidDescriptor);
-    }
-    for (index, descriptor) in descriptors.iter().enumerate() {
-        descriptor.validate_descriptor()?;
-        if descriptors[..index]
-            .iter()
-            .any(|prior| prior.id == descriptor.id)
-        {
-            return Err(DeviceContractError::InvalidDescriptor);
-        }
-    }
-    Ok(())
-}
 
 /// Enumerate and validate state-owned descriptors on the control side. Callers
 /// must use this boundary even when a definition overrides enumeration.
