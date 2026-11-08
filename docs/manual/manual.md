@@ -154,9 +154,14 @@ soloed; turning solo off restores its muted state. solo does not change the stor
 track activator setting.
 
 in arrange, select a track or clip before editing it. drag a clip to move it and
-drag its left or right edge within the clip header (the top third) to adjust its
-extent; hold **shift** to stretch instead. lower down, the edge belongs to the clip
-body and its fade handles.
+drag its left or right edge within the clip header to adjust its extent; hold
+**shift** to stretch instead. lower down, the edge belongs to the clip body and
+its fade handles.
+
+when moving a clip near its original time, it snaps back to that exact position,
+even on another track or with the grid off. move farther away to use the chosen
+grid. hold **command** to bypass both the original-position target and grid
+snapping for the move.
 work at a zoom level where the intended edge
 and grid position are clear. use **command+z** to undo and
 **command+shift+z** to redo admitted edits.
