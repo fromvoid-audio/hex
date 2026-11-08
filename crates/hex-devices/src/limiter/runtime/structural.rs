@@ -283,7 +283,7 @@ impl PreparedOwnedProcessorRuntime for PreparedStructuralLimiter {
             .map(|i| BINDINGS[i].descriptor)
     }
     fn runtime_version(&self) -> u32 {
-        2
+        3
     }
     fn declared_pair_bytes(&self) -> usize {
         self.bytes
