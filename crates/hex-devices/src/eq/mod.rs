@@ -180,6 +180,26 @@ impl NativeDeviceMetadata for EqDefinition {
         })
     }
 }
+impl EqDefinition {
+    /// Control-only exact-grant component preparation. The returned processor
+    /// uses the existing native checkpoint/runtime custody; no resource ownership
+    /// transfers. Standard registry admission remains a separate capability check.
+    /// Known node fields and output gain are accepted; mode and legacy-shelf
+    /// kind/gain/q remain unsupported. Grants are sorted, unique and bounded by
+    /// the neutral descriptor limit. No authored state or curves are rewritten.
+    pub fn prepare_automation_component(
+        state: &NativeDeviceState,
+        sample_rate: u32,
+        parameters: &[ParameterId],
+    ) -> Result<Arc<dyn PreparedNativeProcessor>, DeviceContractError> {
+        state.require_asset_free_processing()?;
+        Ok(Arc::new(runtime::PreparedEq::automated(
+            EqState::decode(state)?,
+            sample_rate,
+            parameters,
+        )?))
+    }
+}
 impl NativeDeviceDefinition for EqDefinition {
     fn supports_parameter_automation(
         &self,
@@ -196,18 +216,17 @@ impl NativeDeviceDefinition for EqDefinition {
         context: &hex_lattice::DevicePreparationContext<'_>,
         parameters: &[ParameterId],
     ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
-        state.require_asset_free_processing()?;
+        if parameters != [OUTPUT_GAIN] {
+            return Err(DeviceContractError::UnsupportedProcessingClass);
+        }
         Ok(hex_lattice::PreparedRuntimeDevice {
             matrix: StereoMatrix::identity(),
-            processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(Arc::new(
-                runtime::PreparedEq::automated(
-                    EqState::decode(state)?,
-                    context.sample_rate,
-                    parameters,
-                )?,
-            ))),
+            processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(
+                Self::prepare_automation_component(state, context.sample_rate, parameters)?,
+            )),
         })
     }
+
     fn prepare_matrix(&self, _: &NativeDeviceState) -> Result<StereoMatrix, DeviceContractError> {
         Err(DeviceContractError::UnsupportedProcessingClass)
     }
