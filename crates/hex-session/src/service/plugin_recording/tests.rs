@@ -581,3 +581,69 @@ fn retiring_a_source_preserves_its_deferred_terminal_until_the_exact_attempt() {
     );
     assert_eq!(sink.restorations, 0);
 }
+
+#[test]
+fn cached_interruption_retires_the_exact_gesture_without_claiming_a_retained_preview() {
+    use crate::device_gesture::{
+        GestureClient, GestureMachine, GesturePreparation, PluginParameterOrigin,
+    };
+    let (_files, mut session, scope, source) = fixture();
+    let snapshot = gesture(scope);
+    let DeviceCaptureTarget::Vst3(target) = scope.target else {
+        panic!("foreign fixture");
+    };
+    let origin = PluginParameterOrigin {
+        context: scope.context(),
+        device: target.device,
+        parameter: target.parameter,
+        page_first: 0,
+        metadata_revision: 1,
+        initial: snapshot.plugin_value.unwrap(),
+    };
+    let mut state = active(scope, source);
+    let active = state.active.as_mut().unwrap();
+    active.source_lost = true;
+    active.interrupted = true;
+    active.ended = true;
+    let mut machine = GestureMachine::default();
+    let mut client = GestureClient::default();
+    client.begin_plugin_recording(origin).unwrap();
+    let begin = client.next_request().unwrap();
+    client.mark_submitted();
+    let begun = machine.handle_prepared(
+        &mut session,
+        begin,
+        None,
+        scope.stamp.project_generation,
+        |_, _| Ok(None),
+    );
+    assert!(begun.ack.accepted);
+    assert!(client.acknowledge_with_snapshot(&begun.ack, machine.snapshot()));
+    client
+        .finish_plugin(PluginParameterValue::new(0.75).unwrap())
+        .unwrap();
+    let terminal = client.next_request().unwrap();
+    client.mark_submitted();
+    let ended = machine.handle_prepared(
+        &mut session,
+        terminal,
+        None,
+        scope.stamp.project_generation,
+        |_, operation| match operation {
+            GesturePreparation::Plugin(PluginGesturePreparation::Commit(_)) => Err(active
+                .terminal_error(SessionError::NativeAudio(
+                    "original recording scope ended; draft retained".into(),
+                ))),
+            _ => Ok(None),
+        },
+    );
+    assert!(!ended.ack.accepted);
+    assert!(
+        ended.ack.source_lost,
+        "a cached source interruption must not become a retained-preview refusal"
+    );
+    assert!(!ended.ack.preview_retained);
+    assert!(machine.snapshot().is_none());
+    assert!(client.acknowledge_with_snapshot(&ended.ack, machine.snapshot()));
+    assert!(client.begin_plugin_recording(origin).is_ok());
+}

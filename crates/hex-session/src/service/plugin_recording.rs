@@ -33,6 +33,16 @@ struct Active {
     deadline: Option<Instant>,
 }
 
+impl Active {
+    fn terminal_error(&self, error: SessionError) -> SessionError {
+        if self.ended && !self.interrupted && !matches!(error, SessionError::PluginSourceLost(_)) {
+            SessionError::PluginRecordingReleased(error.to_string())
+        } else {
+            error
+        }
+    }
+}
+
 pub(super) struct Preparation<'a> {
     pub state: &'a mut State,
     pub lane: &'a mut Lane,
@@ -655,16 +665,7 @@ impl Preparation<'_> {
                 result.is_ok(),
             );
         }
-        let result = result.map_err(|error: SessionError| {
-            if active.ended
-                && !active.interrupted
-                && !matches!(error, SessionError::PluginSourceLost(_))
-            {
-                SessionError::PluginRecordingReleased(error.to_string())
-            } else {
-                error
-            }
-        });
+        let result = result.map_err(|error| active.terminal_error(error));
         if active.pending.is_some()
             || self.lane.busy()
             || active.failed_observations.iter().any(Option::is_some)
