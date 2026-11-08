@@ -173,6 +173,7 @@ impl RectangleDemo {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        let edit = crate::section_input::EditModifiers::from(modifiers);
         if !self.enabled
             || self.pending.is_some()
             || (self.kind == Kind::Section && self.section_fixture.is_none())
@@ -342,7 +343,7 @@ impl RectangleDemo {
             let Some(fixture) = self.section_fixture.as_ref() else {
                 return false;
             };
-            let anchor = match fixture.snapped_beat(x, left, width, modifiers.control) {
+            let anchor = match fixture.snapped_beat(x, left, width, edit.invert_snap) {
                 Ok(anchor) => anchor,
                 Err(error) => {
                     self.status = error.0;
@@ -393,7 +394,7 @@ impl RectangleDemo {
             let Some(fixture) = self.section_fixture.as_ref() else {
                 return false;
             };
-            match fixture.snapped_beat(x, left, width, modifiers.control) {
+            match fixture.snapped_beat(x, left, width, edit.invert_snap) {
                 Ok(anchor) => Some(anchor),
                 Err(error) => {
                     self.status = error.0;
@@ -405,7 +406,7 @@ impl RectangleDemo {
             None
         };
         self.capture = RectangleCapture::begin(Target::Rectangle(index), part, x, true);
-        self.section_marker_latched = self.kind == Kind::Section && modifiers.platform;
+        self.section_marker_latched = self.kind == Kind::Section && edit.marker_only;
         self.section_last_pointer = (self.kind == Kind::Section).then_some((x, y));
         self.preview = self.canonical.clone();
         if let Some(fixture) = self.section_fixture.as_ref() {
@@ -417,6 +418,7 @@ impl RectangleDemo {
         true
     }
     fn change(&mut self, x: f32, y: f32, modifiers: Modifiers, cx: &mut Context<Self>) -> bool {
+        let edit = crate::section_input::EditModifiers::from(modifiers);
         let section_rectangle = self.kind == Kind::Section
             && self.capture.is_some_and(|capture| {
                 matches!(capture.key, Target::Rectangle(_) | Target::SectionPaint)
@@ -486,10 +488,10 @@ impl RectangleDemo {
                     .ok_or(hex_project::Invalid("section grid anchor unavailable"))
                     .and_then(|anchor| {
                         fixture
-                            .snapped_beat(intent.pointer_x, left, width, modifiers.control)
+                            .snapped_beat(intent.pointer_x, left, width, edit.invert_snap)
                             .and_then(|position| {
                                 fixture
-                                    .paint_point_end(anchor, width, modifiers.control)
+                                    .paint_point_end(anchor, width, edit.invert_snap)
                                     .and_then(|end| {
                                         fixture.plan_paint(anchor, position, end, name, *color)
                                     })
@@ -514,7 +516,7 @@ impl RectangleDemo {
             return true;
         };
         if self.kind == Kind::Section {
-            if modifiers.platform {
+            if edit.marker_only {
                 self.section_marker_latched = true;
             }
             self.section_command = None;
@@ -534,7 +536,7 @@ impl RectangleDemo {
                             .ok_or(hex_project::Invalid("section grid anchor unavailable"))
                             .and_then(|anchor| {
                                 fixture
-                                    .snapped_beat(intent.pointer_x, left, width, modifiers.control)
+                                    .snapped_beat(intent.pointer_x, left, width, edit.invert_snap)
                                     .and_then(|beat| {
                                         fixture.plan_marker_move(section.id(), anchor, beat)
                                     })
@@ -547,19 +549,19 @@ impl RectangleDemo {
                                     section.id(),
                                     intent.part,
                                     beat,
-                                    modifiers.alt,
+                                    edit.copy_content,
                                     self.section_marker_latched,
                                 )
                             })
                     } else {
                         fixture
-                            .snapped_beat(intent.pointer_x, left, width, modifiers.control)
+                            .snapped_beat(intent.pointer_x, left, width, edit.invert_snap)
                             .and_then(|beat| {
                                 fixture.plan_at_beat(
                                     section.id(),
                                     intent.part,
                                     beat,
-                                    modifiers.alt,
+                                    edit.copy_content,
                                     self.section_marker_latched,
                                 )
                             })
@@ -2110,7 +2112,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn command_seam_drag_latches_marker_only_until_terminal(cx: &mut TestAppContext) {
+    fn option_command_seam_drag_latches_marker_only_until_terminal(cx: &mut TestAppContext) {
         let handle = cx.add_window(|_, cx| {
             RectangleDemo::new(Kind::Section, "section-marker-edge".into(), cx)
         });
@@ -2122,6 +2124,7 @@ mod tests {
         let at = |x: f32| point(area.left() + area.size.width * x, area.top() + px(5.0));
         let command = Modifiers {
             platform: true,
+            alt: true,
             ..Modifiers::default()
         };
         let original = view.read_with(cx, |view, _| {
@@ -2231,7 +2234,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn command_header_drag_latches_marker_movement_until_terminal(cx: &mut TestAppContext) {
+    fn option_command_header_drag_latches_marker_movement_until_terminal(cx: &mut TestAppContext) {
         let handle = cx.add_window(|_, cx| {
             RectangleDemo::new(Kind::Section, "section-marker-move".into(), cx)
         });
@@ -2243,6 +2246,7 @@ mod tests {
         let at = |x: f32| point(area.left() + area.size.width * x, area.top() + px(5.0));
         let command = Modifiers {
             platform: true,
+            alt: true,
             ..Modifiers::default()
         };
         let (before, original_start, original_end, other) = view.read_with(cx, |view, _| {
@@ -2330,11 +2334,13 @@ mod tests {
         let at = |x: f32| point(area.left() + area.size.width * x, area.top() + px(5.0));
         let both = Modifiers {
             platform: true,
+            alt: true,
             control: true,
             ..Modifiers::default()
         };
         let command = Modifiers {
             platform: true,
+            alt: true,
             ..Modifiers::default()
         };
         let control = Modifiers {
@@ -2486,6 +2492,7 @@ mod tests {
         let outside = point(area.right() + px(50.0), area.top() - px(10.0));
         let command = Modifiers {
             platform: true,
+            alt: true,
             ..Modifiers::default()
         };
         visual.simulate_mouse_down(at(0.3), MouseButton::Left, Modifiers::default());
