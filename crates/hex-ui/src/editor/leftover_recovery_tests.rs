@@ -137,9 +137,7 @@ fn startup_offers_the_leftover_keep_leaves_it_and_recover_opens_it(cx: &mut gpui
 }
 
 #[gpui::test]
-fn discard_needs_confirmation_and_sets_the_work_aside_where_it_can_be_reopened(
-    cx: &mut gpui::TestAppContext,
-) {
+fn discard_once_sets_the_work_aside_where_it_can_be_reopened(cx: &mut gpui::TestAppContext) {
     let root = dir();
     let slot = root.0.join("recovery/untitled.hex-journal");
     let bytes = leave_untitled_journal(&slot);
@@ -160,20 +158,14 @@ fn discard_needs_confirmation_and_sets_the_work_aside_where_it_can_be_reopened(
             std::thread::yield_now();
         }
     };
-    // Cancelling the confirmation keeps everything in place.
+    // The initial discard is the explicit choice; no second prompt is needed.
     offer(cx);
-    cx.simulate_prompt_answer("discard…");
-    cx.run_until_parked();
-    assert!(cx.has_pending_prompt(), "discard asks for confirmation");
-    cx.simulate_prompt_answer("cancel");
-    cx.run_until_parked();
-    assert_eq!(std::fs::read(&slot).unwrap(), bytes);
-    // Confirmed discard sets the journal aside, byte-exact, and stops offering it.
-    offer(cx);
-    cx.simulate_prompt_answer("discard…");
-    cx.run_until_parked();
     cx.simulate_prompt_answer("discard");
     cx.run_until_parked();
+    assert!(
+        !cx.has_pending_prompt(),
+        "discard must complete in one choice"
+    );
     assert!(!slot.exists(), "no longer offered");
     let status = editor.read_with(cx, |view, _| {
         hex_session::service::text::plain(&view.status)
