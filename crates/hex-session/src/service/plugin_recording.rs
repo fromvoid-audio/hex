@@ -664,7 +664,7 @@ impl Preparation<'_> {
                 let (_, snapshot) = session
                     .device_take_resident_snapshot(
                         *command,
-                        active.scope.target,
+                        active.scope.target.into(),
                         hex_engine::AudioSourceContext {
                             editor_revision: next,
                             ..context
