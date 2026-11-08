@@ -2039,8 +2039,16 @@ fn verify_instrument_takeover(
                     h.render_worker_step();
                     if let Ok(export) = h.service.try_export_event() {
                         assert_eq!(export.revision, completed.state.revision);
-                        assert!(export.result.is_ok(), "{:?}", export.result);
-                        assert!(std::fs::metadata(&path).unwrap().len() > 44);
+                        // Offline foreign automation has a separate Engine/SDK
+                        // owner (#2955). This barrier must preserve its explicit
+                        // refusal at the exact committed revision, never export
+                        // the old curve or publish a misleading file.
+                        assert!(
+                            export.result.unwrap_err().contains(
+                                "vst3 automation requires interactive arrangement playback"
+                            )
+                        );
+                        assert!(!path.exists());
                         break;
                     }
                     assert!(Instant::now() < deadline, "export timed out");
@@ -2078,7 +2086,7 @@ fn verify_instrument_takeover(
                     if let Some(ack) = event.gesture_ack.as_ref() {
                         assert!(!terminal);
                         terminal = true;
-                        assert!(!ack.accepted && !ack.preview_retained);
+                        assert!(!ack.accepted && !ack.preview_retained, "{case}: {ack:?}");
                     }
                     if event.save_complete {
                         assert!(terminal && event.error.is_some());
