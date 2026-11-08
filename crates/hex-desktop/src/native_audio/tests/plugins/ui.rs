@@ -1277,6 +1277,7 @@ fn live_vst3_pointer_drag_reaches_native_device_during_playback(cx: &mut gpui::T
             .env(CHILD, "1")
             .env("HEX_ORIGINAL_INSTANCE_VARIANT", "37")
             .env("HEX_ORIGINAL_RESTORE_TRACE", files.0.join("restore-trace"))
+            .env("HOME", files.0.join("home"))
             .output()
             .unwrap();
         assert!(
@@ -1341,10 +1342,8 @@ fn live_vst3_pointer_drag_reaches_native_device_during_playback(cx: &mut gpui::T
         pcm
     };
     click(&mut visual, "main-track-header");
-    let parameters = Box::leak(format!("vst3-parameters-{}", device.value()).into_boxed_str());
-    click(&mut visual, parameters);
     let knob = Box::leak(format!("vst3-knob-{}-7-knob", device.value()).into_boxed_str());
-    until("actual controller knob paints", || {
+    until("actual controller knob paints automatically", || {
         repaint(cx, &mut visual);
         assert!(view(cx).error.is_none(), "{:?}", view(cx).error);
         visual.debug_bounds(knob).is_some()

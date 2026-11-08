@@ -1199,6 +1199,7 @@ fn parameter_inventory_reaches_session_from_the_hosted_controller() {
         device,
         output_identity: h.audio.as_ref().unwrap().control.output_identity().unwrap(),
         request_id: 1,
+        page_first: None,
     };
     let admitted = h.run(Request::QueryPluginParameters(query));
     assert_eq!(admitted.state.revision, accepted.state.revision);
@@ -1207,10 +1208,23 @@ fn parameter_inventory_reaches_session_from_the_hosted_controller() {
         .plugin_parameters
         .expect("native controller inventory");
     assert_eq!(received.query, query);
+    let source = received.source.expect("exact loaded controller source");
+    assert_eq!(received.total, 1);
     let rows = received.rows.expect("original controller reply");
     assert_eq!(rows.len(), 1);
     assert_eq!((rows[0].id, rows[0].name.as_str()), (7, "gain"));
     assert!(!rows[0].value.is_empty());
+    let selected = hex_session::service::PluginParameterQuery {
+        page_first: Some(0),
+        request_id: 2,
+        ..query
+    };
+    h.run(Request::QueryPluginParameters(selected));
+    let page = h.next().plugin_parameters.expect("single live page");
+    assert_eq!(page.query, selected);
+    assert_eq!(page.source, Some(source));
+    assert_eq!(page.total, 1);
+    assert_eq!(page.rows.unwrap(), rows);
     let stale = hex_session::service::PluginParameterQuery {
         context: initial
             .state
@@ -1218,7 +1232,7 @@ fn parameter_inventory_reaches_session_from_the_hosted_controller() {
             .as_ref()
             .unwrap()
             .context(),
-        request_id: 2,
+        request_id: 3,
         ..query
     };
     let refused = h

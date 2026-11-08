@@ -64,10 +64,11 @@ impl Inventory {
         rows: Vec<PluginParameterRow>,
     ) -> Result<(), &'static str> {
         let count = usize::from(total);
-        if usize::from(first) != self.rows.len()
-            || self.rows.len().saturating_add(rows.len()) > count
+        let offset = self.query.page_first.map_or(self.rows.len(), usize::from);
+        if usize::from(first) != offset
+            || offset.saturating_add(rows.len()) > count
             || self.total.is_some_and(|expected| expected != total)
-            || (rows.is_empty() && self.rows.len() < count)
+            || (rows.is_empty() && offset < count)
             || rows
                 .iter()
                 .any(|row| self.rows.iter().any(|prior| prior.id == row.id))
@@ -87,6 +88,11 @@ impl Plugins {
         control: &mut hex_audio::prepared::PublicationControl,
         query: PluginParameterQuery,
     ) -> Result<(), String> {
+        if let Some(first) = query.page_first {
+            ControllerRequest::SelectedParameters { first }
+                .validate()
+                .map_err(|error| error.to_string())?;
+        }
         // The editor can see the exact callback ACK before the worker's next
         // poll. Release the submitted fence before accepting a renewed query.
         if self
@@ -141,13 +147,36 @@ impl Plugins {
         }
         let inventory = self.parameters.take()?;
         let rows = inventory.terminal?.map(|()| inventory.rows);
-        self.observed_parameters = rows.as_ref().ok().map(|rows| ObservedInventory {
-            query: inventory.query,
-            binding: inventory.binding,
-            rows: rows.clone(),
-        });
+        if let Ok(rows) = &rows {
+            if inventory.query.page_first.is_some()
+                && let Some(observed) = self.observed_parameters.iter_mut().find(|observed| {
+                    observed.binding == inventory.binding
+                        && observed.query.context == inventory.query.context
+                        && observed.query.device == inventory.query.device
+                        && observed.query.output_identity == inventory.query.output_identity
+                })
+            {
+                for row in rows {
+                    if let Some(old) = observed.rows.iter_mut().find(|old| old.id == row.id) {
+                        *old = row.clone();
+                    } else if observed.rows.len() < usize::from(inventory.total.unwrap_or(0)) {
+                        observed.rows.push(row.clone());
+                    }
+                }
+            } else {
+                self.observed_parameters
+                    .retain(|observed| observed.query.device != inventory.query.device);
+                self.observed_parameters.push(ObservedInventory {
+                    query: inventory.query,
+                    binding: inventory.binding,
+                    rows: rows.clone(),
+                });
+            }
+        }
         Some(PluginParameterResult {
             query: inventory.query,
+            source: rows.as_ref().ok().map(|_| inventory.binding),
+            total: inventory.total.unwrap_or(0),
             rows,
         })
     }
@@ -157,6 +186,16 @@ impl Plugins {
         control: &mut hex_audio::prepared::PublicationControl,
         context: Option<AudioSourceContext>,
     ) {
+        // One bounded inventory per currently accepted source/device. Retiring
+        // workers and replaced documents never retain display capabilities.
+        self.observed_parameters.retain(|observed| {
+            context.is_some_and(|context| {
+                context.project_generation == observed.query.context.project_generation
+            }) && control.output_identity() == Some(observed.query.output_identity)
+                && self.sources.iter().any(|source| {
+                    source.binding == observed.binding && source.accepted && !source.retiring
+                })
+        });
         let Some(inventory) = self
             .parameters
             .as_mut()
@@ -183,7 +222,11 @@ impl Plugins {
         } else if !current {
             Err("vst3 parameter target changed")
         } else {
-            let Ok(first) = u16::try_from(inventory.rows.len()) else {
+            let Ok(first) = inventory
+                .query
+                .page_first
+                .map_or_else(|| u16::try_from(inventory.rows.len()), Ok)
+            else {
                 inventory.terminal = Some(Err("vst3 parameter inventory exceeds its limit".into()));
                 return;
             };
@@ -250,7 +293,9 @@ impl Plugins {
                     inventory.terminal = Some(Err(error.into()));
                     return;
                 }
-                if inventory.rows.len() == usize::from(page.total) {
+                if inventory.query.page_first.is_some()
+                    || inventory.rows.len() == usize::from(page.total)
+                {
                     inventory.terminal = Some(Ok(()));
                 } else {
                     inventory.deadline = Instant::now() + Duration::from_millis(250);
@@ -294,6 +339,7 @@ mod tests {
                 device,
                 output_identity: 1,
                 request_id: 1,
+                page_first: None,
             },
             binding: Binding {
                 root: 1,
@@ -403,5 +449,69 @@ mod tests {
             1,
             "failed page must not append partial data"
         );
+    }
+
+    #[test]
+    fn cached_views_read_one_live_page_and_keep_other_device_observations() {
+        let now = Instant::now();
+        let mut plugins = Plugins::default();
+        let mut first = inventory(now);
+        first.query.page_first = Some(0);
+        let query = first.query;
+        let binding = first.binding;
+        first.rows = (1..=4).map(|id| row(id, 1)).collect();
+        first.total = Some(6);
+        first.terminal = Some(Ok(()));
+        plugins.parameters = Some(first);
+        let result = plugins.take_parameters().unwrap();
+        assert_eq!(result.source, Some(binding));
+        assert_eq!(result.total, 6);
+
+        // A second device must not evict the first device's gesture evidence.
+        let mut second = inventory(now);
+        let mut project =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 1).unwrap();
+        for _ in 0..2 {
+            project
+                .execute(hex_project::Command::InsertMainDevice {
+                    before: None,
+                    state: hex_engine::default_native_device_state(
+                        hex_engine::DeviceTypeId::from_static("hex.utility"),
+                    )
+                    .unwrap(),
+                })
+                .unwrap();
+        }
+        second.query.device = project.project().main_devices()[1].id();
+        second.rows = vec![row(8, 2)];
+        second.total = Some(1);
+        second.terminal = Some(Ok(()));
+        plugins.parameters = Some(second);
+        plugins.take_parameters().unwrap();
+        assert_eq!(plugins.observed_parameters.len(), 2);
+
+        let mut selected = inventory(now);
+        selected.query = PluginParameterQuery {
+            page_first: Some(4),
+            ..query
+        };
+        selected
+            .accept_page(4, 6, 3, vec![row(9, 3), row(10, 3)])
+            .unwrap();
+        selected.terminal = Some(Ok(()));
+        plugins.parameters = Some(selected);
+        let result = plugins.take_parameters().unwrap();
+        assert_eq!(result.total, 6);
+        assert_eq!(result.rows.unwrap().len(), 2);
+        let observed = plugins
+            .observed_parameters
+            .iter()
+            .find(|item| item.query.device == query.device)
+            .unwrap();
+        assert_eq!(
+            observed.rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+            [1, 2, 3, 4, 9, 10]
+        );
+        assert_eq!(plugins.observed_parameters.len(), 2);
     }
 }
