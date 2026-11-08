@@ -2268,6 +2268,11 @@ impl EditorView {
                         );
                     }),
                 );
+            if border {
+                midi = midi
+                    .bg(gpui::transparent_black())
+                    .border_color(gpui::transparent_black());
+            }
             midi = loop_handles::surface(midi, clip.looping());
             if self.track_body_height(track_id) > super::track_layout::HEADER_ONLY_HEIGHT {
                 midi = midi.children(
@@ -2359,13 +2364,14 @@ impl EditorView {
                     clip.looping(),
                 ));
             }
-            midi = midi.child(self.clip_name_header(
-                track_id,
-                clip.id(),
-                clip.name(),
-                header_fill,
-                cx,
-            ));
+            let header = if border {
+                self.clip_name_header_on_backdrop(track_id, clip.id(), clip.name(), header_fill, cx)
+                    .into_any_element()
+            } else {
+                self.clip_name_header(track_id, clip.id(), clip.name(), header_fill, cx)
+                    .into_any_element()
+            };
+            midi = midi.child(header);
             midi = midi.when(clip.looping(), |midi| {
                 midi.child(loop_handles::midi_markers(
                     clip,
@@ -2409,22 +2415,43 @@ impl EditorView {
             } else {
                 theme::color(theme::PaletteRole::ClipOutline)
             };
-            clip_area = clip_area.child(clip_boundary_shell(
-                midi,
-                left as f32,
-                width as f32,
-                stroke,
-                color,
-                color,
-                trim_preview.is_none(),
-                border,
-                if clip.looping() {
-                    loop_handles::BOTTOM_RADIUS
-                } else {
-                    0.0
-                },
-                move || format!("midi-clip-trailing-{}", midi_clip_id.value()),
-            ));
+            let bottom_radius = if clip.looping() {
+                loop_handles::BOTTOM_RADIUS
+            } else {
+                0.0
+            };
+            let framed_clip = if border {
+                super::clip_boundary::backdrop_shell(
+                    midi,
+                    left as f32,
+                    width as f32,
+                    super::clip_boundary::Backdrop {
+                        body: fill,
+                        header: header_fill,
+                        outline: color,
+                        hover_outline: color,
+                        stroke,
+                        bottom_radius,
+                        header_height: super::clip_name::CLIP_NAME_HEIGHT,
+                    },
+                    trim_preview.is_none(),
+                    move || format!("midi-clip-trailing-{}", midi_clip_id.value()),
+                )
+            } else {
+                clip_boundary_shell(
+                    midi,
+                    left as f32,
+                    width as f32,
+                    stroke,
+                    color,
+                    color,
+                    trim_preview.is_none(),
+                    false,
+                    bottom_radius,
+                    move || format!("midi-clip-trailing-{}", midi_clip_id.value()),
+                )
+            };
+            clip_area = clip_area.child(framed_clip);
             if selected_clip && trim_preview.is_none() {
                 let id = clip.id();
                 selected_edges.push(
@@ -2716,17 +2743,27 @@ impl EditorView {
                 .border_r(px(0.0))
                 .bg(rgb(fill))
                 .hover(move |style| {
-                    style.border_color(rgb(theme::color(if selected {
-                        theme::PaletteRole::Primary
+                    style.border_color(if border {
+                        gpui::transparent_black()
                     } else {
-                        theme::PaletteRole::Text
-                    })))
+                        rgb(theme::color(if selected {
+                            theme::PaletteRole::Primary
+                        } else {
+                            theme::PaletteRole::Text
+                        }))
+                        .into()
+                    })
                 });
         content = content.border_color(rgb(if selected {
             theme::color(theme::PaletteRole::Primary)
         } else {
             theme::color(theme::PaletteRole::ClipOutline)
         }));
+        if border {
+            content = content
+                .bg(gpui::transparent_black())
+                .border_color(gpui::transparent_black());
+        }
         let looping = loop_handles::audio_repeats(clip);
         content = loop_handles::surface(content, looping);
         if !active_trim_preview
@@ -2802,8 +2839,15 @@ impl EditorView {
             cx,
         );
         let hover_generation = self.project_generation;
+        let header = if border {
+            self.clip_name_header_on_backdrop(track, clip.id(), clip.name(), header_fill, cx)
+                .into_any_element()
+        } else {
+            self.clip_name_header(track, clip.id(), clip.name(), header_fill, cx)
+                .into_any_element()
+        };
         let mut content = content
-            .child(self.clip_name_header(track, clip.id(), clip.name(), header_fill, cx))
+            .child(header)
             .when(!active_trim_preview && looping, |content| {
                 content.child(loop_handles::audio_markers(
                     clip,
@@ -2929,22 +2973,45 @@ impl EditorView {
             theme::PaletteRole::Text
         });
         (
-            clip_boundary_shell(
-                content,
-                left as f32,
-                width as f32,
-                stroke,
-                color,
-                hover,
-                !active_trim_preview,
-                border,
-                if looping {
-                    loop_handles::BOTTOM_RADIUS
-                } else {
-                    0.0
-                },
-                move || format!("clip-trailing-{}", clip_id.value()),
-            )
+            if border {
+                super::clip_boundary::backdrop_shell(
+                    content,
+                    left as f32,
+                    width as f32,
+                    super::clip_boundary::Backdrop {
+                        body: fill,
+                        header: header_fill,
+                        outline: color,
+                        hover_outline: hover,
+                        stroke,
+                        bottom_radius: if looping {
+                            loop_handles::BOTTOM_RADIUS
+                        } else {
+                            0.0
+                        },
+                        header_height: super::clip_name::CLIP_NAME_HEIGHT,
+                    },
+                    !active_trim_preview,
+                    move || format!("clip-trailing-{}", clip_id.value()),
+                )
+            } else {
+                clip_boundary_shell(
+                    content,
+                    left as f32,
+                    width as f32,
+                    stroke,
+                    color,
+                    hover,
+                    !active_trim_preview,
+                    false,
+                    if looping {
+                        loop_handles::BOTTOM_RADIUS
+                    } else {
+                        0.0
+                    },
+                    move || format!("clip-trailing-{}", clip_id.value()),
+                )
+            }
             .into_any_element(),
             foreground,
         )

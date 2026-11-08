@@ -35,7 +35,8 @@ pub enum ArrangementSeekMode {
     #[default]
     LinearArrangement,
     /// Replay bounded linear Arrangement history on control, retaining an
-    /// interactive runtime. Enabled loops and file-backed preparation refuse.
+    /// interactive runtime. Enabled loops refuse; file-backed requests require
+    /// their bounded page preparer to honor this exact policy.
     HistoryPreservingInteractive,
     Interactive,
     /// Fresh playing section loop. The region must be enabled, destination must
@@ -526,13 +527,7 @@ fn run_worker(shared: Arc<Shared>, preparer: Box<Preparer>) {
         let (mut work, cancelled) = work;
         let job = work.resident.as_ref().map(|r| r.job);
         let result = if let Some(resident) = work.resident.take() {
-            let result = if resident.files.is_some()
-                && work.spec.mode == ArrangementSeekMode::HistoryPreservingInteractive
-            {
-                Err(ArrangementPrerollError::MediaPreparation(
-                    "history-preserving seek requires bounded streamed-page preparation",
-                ))
-            } else if let Some((sources, prepare)) = &resident.files {
+            let result = if let Some((sources, prepare)) = &resident.files {
                 prepare(crate::service::ResidentFileSeekRequest {
                     spec: &work.spec,
                     resources: &resident.resources,
@@ -1299,12 +1294,16 @@ mod tests {
             .unwrap();
     }
     #[test]
-    fn resident_history_mode_honors_budget_and_refuses_file_preparation_without_coercion() {
+    fn resident_history_mode_honors_budget_and_forwards_file_policy_without_coercion() {
         use crate::service::{ResidentFileInput, ResidentFileMetadata, ResidentFileSet};
         static FILE_PREPARER_CALLS: AtomicUsize = AtomicUsize::new(0);
         fn unexpected_file_preparer(
-            _: crate::service::ResidentFileSeekRequest<'_>,
+            request: crate::service::ResidentFileSeekRequest<'_>,
         ) -> Result<Playback, ArrangementPrerollError> {
+            assert_eq!(
+                request.spec().mode,
+                ArrangementSeekMode::HistoryPreservingInteractive
+            );
             FILE_PREPARER_CALLS.fetch_add(1, Ordering::Relaxed);
             Err(ArrangementPrerollError::MediaPreparation(
                 "unexpected file preparer",
@@ -1359,7 +1358,7 @@ mod tests {
                 17,
                 true,
                 Err(ArrangementPrerollError::MediaPreparation(
-                    "history-preserving seek requires bounded streamed-page preparation",
+                    "unexpected file preparer",
                 )),
             ),
             (
@@ -1398,7 +1397,7 @@ mod tests {
             assert!(Arc::ptr_eq(&result.prepared_revision, &graph));
             assert_eq!(result.result.map(|playback| playback.position()), expected);
         }
-        assert_eq!(FILE_PREPARER_CALLS.load(Ordering::Relaxed), 0);
+        assert_eq!(FILE_PREPARER_CALLS.load(Ordering::Relaxed), 1);
         worker.shutdown_and_join_on_control();
     }
 }
