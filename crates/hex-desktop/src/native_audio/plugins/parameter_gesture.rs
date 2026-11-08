@@ -157,6 +157,11 @@ impl Plugins {
         cancellation: Option<&RequestCancellation>,
         clock: Option<(u32, hex_session::service::ResidentRuntimeLoop)>,
     ) -> Result<Prepared, Error> {
+        if input.requires_delivery_confirmation() {
+            self.confirmed_parameters
+                .try_reserve(2)
+                .map_err(|_| refused("could not reserve confirmed vst3 observations"))?;
+        }
         if !self.confirmed_parameters.is_empty()
             && !matches!(input.operation(), PluginGesturePreparation::Restore { .. })
         {
