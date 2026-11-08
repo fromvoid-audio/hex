@@ -215,6 +215,8 @@ mod session_track_reorder_ui_test;
 mod signed_frame_viewport;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod snap_nudge_ui_test;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod stream_read_failure_ui_test;
 mod tempo_input;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tempo_input_ui_test;
