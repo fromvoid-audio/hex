@@ -25,6 +25,7 @@ use std::{collections::BTreeMap, sync::Arc};
 #[derive(Clone, PartialEq, Eq)]
 struct PreparedDeviceIdentity {
     id: DeviceId,
+    parent: Option<DeviceId>,
     state: hex_lattice_contract::NativeDeviceState,
     bypassed: bool,
 }
@@ -33,6 +34,7 @@ impl From<&Device> for PreparedDeviceIdentity {
     fn from(device: &Device) -> Self {
         Self {
             id: device.id(),
+            parent: device.parent(),
             state: device.state().clone().without_host_gains(),
             bypassed: device.bypassed(),
         }
@@ -1955,3 +1957,7 @@ fn keyboard_source_facts_match(source: &PreparedRevision, target: &PreparedRevis
 
 #[cfg(test)]
 mod ordinary_streaming_tests;
+
+#[cfg(test)]
+#[path = "prepared_revision/serial_unit_tests.rs"]
+mod serial_unit_tests;
