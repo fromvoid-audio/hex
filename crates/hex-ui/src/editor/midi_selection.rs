@@ -102,6 +102,10 @@ impl Marquee {
         self.context
     }
 
+    pub(super) fn additive(&self) -> bool {
+        self.additive
+    }
+
     /// Surfaces supply their own bounded hit geometry; selection, additive preview,
     /// epoch validation and release stay with this single selection owner.
     /// The supplier returns sorted, unique canonical note IDs.
