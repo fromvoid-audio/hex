@@ -431,6 +431,9 @@ impl EditorView {
                             {
                                 return (false, false);
                             }
+                            if view.pointer_hits_section_launch(x, y) {
+                                return (false, false);
+                            }
                             if view.time_selection_key_held {
                                 let started = view.begin_main_time_selection_gesture(
                                     x,
