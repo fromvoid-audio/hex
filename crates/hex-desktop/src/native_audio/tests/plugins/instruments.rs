@@ -718,6 +718,7 @@ fn recorded_touch_admission_and_exclusive_restoration_use_actual_output() {
             "touch_close_begin",
             "touch_close_point",
             "touch_close_pending",
+            "touch_close_queued",
             "touch",
             "touch_empty",
             "touch_commit",
@@ -1856,6 +1857,7 @@ fn verify_instrument_takeover(
                         case.as_str(),
                         "delivery_retire"
                             | "touch_close_pending"
+                            | "touch_close_queued"
                             | "touch_close_point"
                             | "touch_close_begin"
                     ),
@@ -1900,7 +1902,10 @@ fn verify_instrument_takeover(
             send(
                 h,
                 &mut client,
-                !matches!(case.as_str(), "delivery_retire" | "touch_close_pending")
+                !matches!(
+                    case.as_str(),
+                    "delivery_retire" | "touch_close_pending" | "touch_close_queued"
+                )
             )
             .state
             .project
@@ -1909,7 +1914,7 @@ fn verify_instrument_takeover(
         );
         if matches!(
             case.as_str(),
-            "delivery_retire" | "touch_close_point" | "touch_close_pending"
+            "delivery_retire" | "touch_close_point" | "touch_close_pending" | "touch_close_queued"
         ) {
             return;
         }

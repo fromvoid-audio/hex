@@ -241,7 +241,13 @@ impl Gesture {
                 }
             }
         }
-        if delivery.receipt.is_none()
+        #[cfg(all(test, feature = "allocation-probe"))]
+        let receipt_ready = std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").as_deref()
+            != Ok("touch_close_queued");
+        #[cfg(not(all(test, feature = "allocation-probe")))]
+        let receipt_ready = true;
+        if receipt_ready
+            && delivery.receipt.is_none()
             && let Some(receipt) = control.try_native_source_parameter_delivery_on_control()
         {
             let actual = match receipt {
