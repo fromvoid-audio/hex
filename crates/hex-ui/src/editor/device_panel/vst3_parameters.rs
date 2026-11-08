@@ -43,7 +43,7 @@ struct ReportedStatus {
     message: String,
     error: Option<String>,
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TouchObservation {
     source: AppliedAudioSource,
     binding: hex_lattice_contract::ForeignProcessorBinding,
@@ -290,6 +290,36 @@ pub(in crate::editor) fn touched(
     }
     view.device_panel.vst3_parameters.last_touched_device = Some(device);
     if let Some(panel) = view.device_panel.vst3_parameters.panels.get_mut(&device) {
+        queue_native_touch(panel, touch);
+    }
+}
+
+// Called only after the current applied source and binding have been checked.
+// Repeated Perform notifications are refresh hints, not new touch identities.
+fn queue_native_touch(panel: &mut Panel, touch: TouchObservation) {
+    if panel.queued_touch == Some(touch)
+        || panel.queued_touch.is_none() && panel.pending_touch == Some(touch)
+    {
+        // An earlier request can return a useful intermediate value while the
+        // pointer is still moving. Do not orphan that request on every Perform.
+        return;
+    }
+    let page = (panel.query.context == touch.source.context
+        && panel.source == Some(touch.binding)
+        && panel.last_touched == Some(touch.parameter))
+    .then(|| {
+        panel.rows()?.iter().find_map(|row| {
+            (row.id == touch.parameter && row.metadata_revision != 0).then_some(row.page_first)
+        })
+    })
+    .flatten();
+    if let Some(page) = page {
+        panel.queued_touch = None;
+        panel.pending_touch = None;
+        panel.pending_touch_request = None;
+        panel.priority_page = Some(page);
+        panel.next_query_at = Instant::now();
+    } else {
         panel.queued_touch = Some(touch);
         panel.pending_touch_request = None;
     }
@@ -2199,37 +2229,8 @@ mod tests {
     fn vst3_header_and_list_bounds_stay_fixed_across_touch_states(cx: &mut gpui::TestAppContext) {
         use crate::editor::{clip_drag_ui_test, device_panel::DevicePanelOwner};
         use gpui::VisualTestContext;
-        use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
-        use hex_project::{Command, Created, Editor, Project};
-
-        let mut model = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
-        let Created::Track(track) = model
-            .execute(Command::AddMidiTrack {
-                name: "owner".into(),
-            })
-            .unwrap()
-        else {
-            panic!("track")
-        };
-        let mut payload = vec![0; 96];
-        payload[..4].copy_from_slice(b"HXVS");
-        payload[4] = 1;
-        payload[8..24].fill(2);
-        payload[24..88].fill(3);
-        let state =
-            NativeDeviceState::new(DeviceTypeId::from_static("hex.vst3"), 1, payload).unwrap();
-        let Created::Device(device) = model
-            .execute(Command::InsertDevice {
-                track,
-                before: None,
-                state,
-            })
-            .unwrap()
-        else {
-            panic!("device")
-        };
-        let (handle, editor) =
-            clip_drag_ui_test::editor_window(cx, model.project().clone(), Arc::default());
+        let (project, track, device) = parameter_project();
+        let (handle, editor) = clip_drag_ui_test::editor_window(cx, project, Arc::default());
         // Exercise the parameter card itself without an audio publication. The
         // full editor intentionally hides this card until a native source exists.
         struct ParameterCard {
@@ -2532,6 +2533,127 @@ mod tests {
                 "stale rows cannot retain editable controls"
             );
         });
+    }
+
+    #[cfg(feature = "ui-test-support")]
+    #[gpui::test]
+    fn repeated_native_performs_keep_the_inflight_touch_and_established_target(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::editor::{clip_drag_ui_test, device_panel::DevicePanelOwner};
+        let (project, track, device) = parameter_project();
+        let (_, editor) = clip_drag_ui_test::editor_window(cx, project, Arc::default());
+        editor.update(cx, |view, cx| {
+            view.device_panel.owner = Some(DevicePanelOwner::Track(track));
+            ensure_panel(view, device, cx);
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap();
+            panel.cache_loading = false;
+            panel.query.output_identity = 7;
+            let binding = hex_lattice_contract::ForeignProcessorBinding {
+                root: 1,
+                instance: 2,
+                graph: 3,
+                epoch: 4,
+            };
+            let touch = TouchObservation {
+                source: AppliedAudioSource {
+                    context: panel.query.context,
+                    audio_revision: 1,
+                    output_identity: 7,
+                },
+                binding,
+                parameter: 7,
+            };
+            let row = layout_row(0.2, true, 7);
+            panel.source = Some(binding);
+            panel.result = Some(Arc::new(vec![row.clone()]));
+            queue_touch_refresh(panel, touch, Some(&row));
+            panel.pending_touch_request = Some(9);
+            for _ in 0..8 {
+                queue_native_touch(panel, touch);
+                assert_eq!(panel.pending_touch_request, Some(9));
+                assert_eq!(panel.queued_touch, None);
+            }
+            let intermediate = layout_row(0.4, true, 7);
+            let is_touch_query = panel.pending_touch_request == Some(9);
+            let (_, observed) = resolve_pending_touch(
+                panel,
+                binding,
+                std::slice::from_ref(&intermediate),
+                Some(0),
+                is_touch_query,
+            )
+            .expect("an in-flight page can resolve before the touch stream ends");
+            assert_eq!(observed.normalized, 0.4);
+            panel.result = Some(Arc::new(vec![intermediate]));
+            for _ in 0..8 {
+                queue_native_touch(panel, touch);
+                assert_eq!(panel.last_touched, Some(7));
+                assert_eq!(panel.pending_touch, None);
+                assert_eq!(panel.queued_touch, None);
+                assert_eq!(panel.priority_page, Some(0));
+            }
+            // Different raw IDs and source identities must restart validation.
+            let other = TouchObservation {
+                parameter: 0,
+                ..touch
+            };
+            queue_native_touch(panel, other);
+            assert_eq!(panel.queued_touch, Some(other));
+            queue_native_touch(panel, touch);
+            assert_eq!(panel.queued_touch, None);
+            let replacement = TouchObservation {
+                binding: hex_lattice_contract::ForeignProcessorBinding {
+                    instance: 8,
+                    ..binding
+                },
+                ..touch
+            };
+            queue_native_touch(panel, replacement);
+            assert_eq!(panel.queued_touch, Some(replacement));
+            queue_touch_refresh(panel, replacement, Some(&row));
+            panel.pending_touch_request = Some(10);
+            assert!(resolve_pending_touch(panel, binding, &[row], Some(0), true).is_none());
+            assert_eq!(panel.last_touched, None);
+        });
+    }
+
+    #[cfg(feature = "ui-test-support")]
+    fn parameter_project() -> (hex_project::Project, hex_project::TrackId, DeviceId) {
+        use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
+        use hex_project::{Command, Created, Editor, Project};
+        let mut model = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = model
+            .execute(Command::AddMidiTrack {
+                name: "owner".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let mut payload = vec![0; 96];
+        payload[..4].copy_from_slice(b"HXVS");
+        payload[4] = 1;
+        payload[8..24].fill(2);
+        payload[24..88].fill(3);
+        let state =
+            NativeDeviceState::new(DeviceTypeId::from_static("hex.vst3"), 1, payload).unwrap();
+        let Created::Device(device) = model
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state,
+            })
+            .unwrap()
+        else {
+            panic!("device")
+        };
+        (model.project().clone(), track, device)
     }
 
     #[cfg(feature = "ui-test-support")]
