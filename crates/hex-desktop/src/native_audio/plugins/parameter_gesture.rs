@@ -57,6 +57,8 @@ pub(super) struct Gesture {
     capture_class: Option<[u8; 16]>,
     deliveries: Vec<hex_session::service::PluginParameterObservation>,
     retired_delivery: Option<hex_audio::foreign_parameter_delivery::Retired>,
+    recording: bool,
+    recorded_release: bool,
 }
 
 fn refused(reason: impl Into<String>) -> Error {
@@ -264,7 +266,7 @@ impl Plugins {
                 binding,
                 origin,
                 steps,
-                input.reading_class().is_some(),
+                input.reading_class().is_some() || input.records_touch(),
             )?;
             let mut uses_hold = self
                 .sources
@@ -344,9 +346,26 @@ impl Plugins {
                 capture_class: automation_class,
                 deliveries: Vec::new(),
                 retired_delivery: None,
+                recording: input.records_touch(),
+                recorded_release: false,
             };
             if !gesture.current(self, control, input.context()) {
                 return Err(lost());
+            }
+            if gesture.recording {
+                if input.reading_class().is_none()
+                    || gesture
+                        .live
+                        .as_ref()
+                        .is_none_or(|live| !live.playing || !live.uses_hold)
+                {
+                    return Err(refused(
+                        "recording requires an eligible reading vst3 lane during playback",
+                    ));
+                }
+                let capture = delivery::Context::new(&gesture, control, input.context(), clock)?;
+                self.confirmed_parameters
+                    .push_back(capture.ready(gesture.key));
             }
             self.parameter_gesture = Some(gesture);
             return Ok(Prepared::Applied);
@@ -438,6 +457,9 @@ impl Gesture {
         clock: Option<(u32, hex_session::service::ResidentRuntimeLoop)>,
     ) -> Result<Prepared, Error> {
         let context = input.context();
+        if self.recording != input.records_touch() {
+            return Err(refused("vst3 gesture recording mode changed"));
+        }
         let (snapshot, value, restore, commit) = match input.operation() {
             PluginGesturePreparation::Preview(snapshot) => {
                 (snapshot, snapshot.plugin_value, false, false)
@@ -458,6 +480,9 @@ impl Gesture {
         }
         if self.live.is_some() {
             if restore {
+                if self.recording {
+                    return self.release_recorded(control, context, clock);
+                }
                 return self.restore_override(control);
             }
             let live = self.live.as_ref().ok_or_else(lost)?;
@@ -477,6 +502,13 @@ impl Gesture {
         if commit {
             if snapshot.sequence != self.sequence || value != self.last {
                 return Err(refused("vst3 final point has not been processed"));
+            }
+            if self.recording {
+                let result = self.release_recorded(control, context, clock);
+                if result.is_ok() {
+                    self.commit = Some((context, snapshot.sequence));
+                }
+                return result;
             }
             if self.live.is_some() {
                 self.commit = Some((context, snapshot.sequence));
@@ -540,6 +572,7 @@ impl Gesture {
                             target: delivery,
                             context: source,
                             receipt: None,
+                            kind: delivery::Kind::Point,
                         }),
                     )
                 } else {
@@ -571,6 +604,7 @@ impl Gesture {
                             target: delivery,
                             context: source,
                             receipt: None,
+                            kind: delivery::Kind::Point,
                         }),
                     )
                 } else {
