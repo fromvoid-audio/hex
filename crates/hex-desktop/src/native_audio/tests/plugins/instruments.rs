@@ -789,6 +789,7 @@ fn recorded_session_gesture_commits_one_take_and_reopens() {
                 "session_record"
                     | "session_record_changed"
                     | "session_barriers"
+                    | "session_stop"
                     | "session_refused"
                     | "session_cancel"
                     | "session_empty"
@@ -1886,7 +1887,10 @@ fn verify_instrument_takeover(
                     status.native_parameter_source(playing),
                     status.render_fault_snapshot()
                 );
-                assert!(!ack.source_lost, "{case}: {ack:?}");
+                assert!(
+                    !ack.source_lost || case == "session_stop",
+                    "{case}: {ack:?}"
+                );
                 assert!(client.acknowledge_with_snapshot(ack, event.active_device_gesture));
                 return event;
             }
@@ -1897,7 +1901,10 @@ fn verify_instrument_takeover(
             render_takeover_partial(
                 h,
                 [3, 5, 117, 1, 130][fragment % 5],
-                playing && case != "delivery_retire" && !case.starts_with("touch_close_"),
+                playing
+                    && case != "delivery_retire"
+                    && case != "session_stop"
+                    && !case.starts_with("touch_close_"),
                 &case,
                 Some(&request),
             );
@@ -1937,6 +1944,43 @@ fn verify_instrument_takeover(
                 .unwrap();
             assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
             assert!((peak(h) - baseline * value as f32 / 0.25).abs() < 0.0001);
+        }
+        if case == "session_stop" {
+            let before_stop = h
+                .audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .applied_revision
+                .load(Acquire);
+            h.audio.as_ref().unwrap().control.stop();
+            h.render_plugin_block();
+            client.cancel().unwrap();
+            let lost = send(h, &mut client, false);
+            assert!(lost.gesture_ack.unwrap().source_lost);
+            assert_eq!(lost.state.project.as_ref(), &before);
+            let mut restored = h.run(Request::RestoreStoppedPlayback);
+            if !restored.stopped_playback_restore_complete {
+                restored = restored_terminal(h);
+            }
+            assert!(restored.error.is_none(), "{:?}", restored.error);
+            h.applied(before_stop);
+            wait(|| {
+                h.pump();
+                h.audio
+                    .as_mut()
+                    .unwrap()
+                    .control
+                    .command(PlaybackCommand::Play)
+                    .is_ok()
+            });
+            assert!((peak(h) - baseline).abs() < 0.0001);
+            client.begin_plugin_recording(query(h, 24)).unwrap();
+            send(h, &mut client, true);
+            client.cancel().unwrap();
+            send(h, &mut client, true);
+            return;
         }
         if case == "session_barriers" {
             let files = Files::new();

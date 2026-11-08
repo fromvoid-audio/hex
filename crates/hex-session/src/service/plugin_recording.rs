@@ -383,6 +383,10 @@ impl Preparation<'_> {
                             **observation,
                             PluginParameterObservation::Interrupted { .. }
                         );
+                        active.source_lost |= matches!(
+                            **observation,
+                            PluginParameterObservation::Interrupted { .. }
+                        );
                         active.ended |= matches!(
                             **observation,
                             PluginParameterObservation::Restored(_)
@@ -540,6 +544,7 @@ impl Preparation<'_> {
                 .is_ok_and(|scope| scope == active.scope) =>
                 {
                     active.interrupted = true;
+                    active.source_lost = true;
                     active.ended = true;
                 }
                 PluginParameterObservation::Delivered(_) => {

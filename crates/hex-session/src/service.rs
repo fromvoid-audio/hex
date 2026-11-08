@@ -8227,10 +8227,14 @@ fn run_worker(
             }
             stopped_playback_restore_complete = true;
         }
-        native_automation_take.interrupt_if_source_changed(hex_engine::AudioSourceContext {
-            project_generation,
-            editor_revision: revision,
-        });
+        if !plugin_recording.pending() {
+            // Recorded SDK input retains its original writer until the actual
+            // source observation has drained its last point and interruption.
+            native_automation_take.interrupt_if_source_changed(hex_engine::AudioSourceContext {
+                project_generation,
+                editor_revision: revision,
+            });
+        }
         if let Some(completion) = device_automation_take_complete.as_mut() {
             if let Some((path, _)) = adopted_device_draft {
                 if error.is_none() && revision != revision_before_request {
