@@ -1,4 +1,4 @@
-use super::clip_boundary::{clip_boundary_shell, pixel_boundary_shell};
+use super::clip_boundary::clip_boundary_shell;
 use super::drag::{self, ClipDrag, ClipPosition, LaneBounds};
 use super::time_move_preview::{
     clip_fragments_outside, clip_intersection, clip_intersects_exclusions, move_exclusions,
@@ -49,6 +49,8 @@ struct ClipGhostGeometry {
 
 struct ClipGhostDecor {
     fill: u32,
+    looping: bool,
+    notched: bool,
     selector: &'static str,
     grid: Option<(Vec<super::musical_time::GridLine>, u64, u64)>,
     contents: Option<Div>,
@@ -85,6 +87,14 @@ pub(super) fn alias_drag_badge() -> Div {
         .child(theme::text("alias"))
 }
 
+fn clip_repeats(project: &hex_project::Project, clip: hex_project::ClipId) -> bool {
+    project
+        .clip(clip)
+        .map(loop_handles::audio_repeats)
+        .or_else(|| project.midi_clip(clip).map(|clip| clip.looping()))
+        .unwrap_or(false)
+}
+
 fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipGhostDecor) -> Div {
     let ClipGhostGeometry {
         left,
@@ -95,12 +105,32 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
     } = geometry;
     let ClipGhostDecor {
         fill,
+        looping,
+        notched,
         selector,
         grid,
         contents,
     } = decor;
     let stroke = 1.0 / scale.max(1.0);
     let has_border = hex_widgets::rectangle_border_width(width) > 0.0;
+    let bounds = gpui::Bounds::new(
+        point(px(left), px(top)),
+        gpui::size(px(width), px(height.max(3.0))),
+    );
+    let backdrop = super::clip_boundary::Backdrop {
+        body: fill,
+        header: fill,
+        outline: theme::color(theme::PaletteRole::Primary),
+        hover_outline: theme::color(theme::PaletteRole::Primary),
+        stroke,
+        bottom_radius: if looping {
+            loop_handles::BOTTOM_RADIUS
+        } else {
+            0.0
+        },
+        header_height: super::clip_name::CLIP_NAME_HEIGHT,
+        notch: super::clip_boundary::Notch::new(has_border && notched),
+    };
     let mut ghost = hex_widgets::rectangle_surface_pixels(left, top, width, height)
         .left_0()
         .top_0()
@@ -112,70 +142,54 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
         .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
         .bg(rgb(fill));
     if let Some((lines, start, end)) = grid {
-        ghost = ghost.children(aligned_clip_grid_layer(
-            &lines, start, end, stroke, has_border,
-        ));
+        ghost = ghost.children(
+            aligned_clip_grid_layer(&lines, start, end, stroke, has_border)
+                .map(|grid| loop_handles::body(grid, looping)),
+        );
     }
     if let Some(content) = contents {
-        ghost = ghost.child(content);
+        ghost = ghost.child(loop_handles::body(content, looping));
         if payload.alias_copy() {
             ghost = ghost.children([alias_drag_badge()]);
         }
-        return pixel_boundary_shell(
+        return super::clip_boundary::pixel_backdrop_shell(
             ghost,
-            left,
-            top,
-            width,
-            height.max(3.0),
-            stroke,
-            theme::color(theme::PaletteRole::Primary),
+            bounds,
+            backdrop,
             has_border,
             move || format!("{selector}-trailing"),
         );
     } else if let Some(waveform) = &payload.ghost_waveform {
-        ghost = ghost.children([waveform_body_below(
-            waveform_summary_view(std::sync::Arc::clone(waveform)),
-            10.0,
+        ghost = ghost.children([loop_handles::body(
+            clip_waveform_body(waveform_summary_view(std::sync::Arc::clone(waveform))),
+            looping,
         )]);
     } else {
-        ghost = ghost.child(
-            div()
-                .absolute()
-                .top(relative(0.5))
-                .left(px(4.0))
-                .right(px(4.0))
-                .h(px(1.0))
-                .bg(rgb(theme::color(theme::PaletteRole::ClipText))),
-        );
+        ghost = ghost.child(clip_waveform_body(
+            div().child(
+                div()
+                    .absolute()
+                    .top(relative(0.5))
+                    .left(px(4.0))
+                    .right(px(4.0))
+                    .h(px(1.0))
+                    .bg(rgb(theme::color(theme::PaletteRole::ClipText))),
+            ),
+        ));
     }
-    let ghost = ghost.child(
-        div()
-            .absolute()
-            .left(px(4.0))
-            .top_0()
-            .right(px(3.0))
-            .h(px(10.0))
-            .text_xs()
-            .text_color(rgb(theme::color(theme::PaletteRole::ClipText)))
-            .line_clamp(1)
-            .child(theme::text(payload.ghost_label.clone())),
-    );
+    let ghost = ghost.child(super::clip_name::passive_name_header(
+        &payload.ghost_label,
+        fill,
+        has_border,
+    ));
     let ghost = if payload.alias_copy() {
         ghost.children([alias_drag_badge()])
     } else {
         ghost
     };
-    pixel_boundary_shell(
-        ghost,
-        left,
-        top,
-        width,
-        height.max(3.0),
-        stroke,
-        theme::color(theme::PaletteRole::Primary),
-        has_border,
-        move || format!("{selector}-trailing"),
-    )
+    super::clip_boundary::pixel_backdrop_shell(ghost, bounds, backdrop, has_border, move || {
+        format!("{selector}-trailing")
+    })
 }
 
 fn midi_note_body(
@@ -3280,6 +3294,8 @@ impl EditorView {
                     scale,
                 },
                 ClipGhostDecor {
+                    looping: clip_repeats(&state.project, payload.clip),
+                    notched: visible_end == preview.end_frame,
                     fill: theme::clip_activity_fill(
                         hex_project::ElementColor::default(),
                         state.project.clip_flavor(payload.clip).unwrap_or_default(),
@@ -3323,7 +3339,7 @@ impl EditorView {
                                 width as f32,
                                 scale,
                                 false,
-                                false,
+                                hex_widgets::rectangle_border_width(width as f32) > 0.0,
                             )
                         })
                     },
@@ -3352,6 +3368,11 @@ impl EditorView {
                 scale,
             },
             ClipGhostDecor {
+                looping: self
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| clip_repeats(&state.project, payload.clip)),
+                notched: true,
                 fill: theme::clip_activity_fill(
                     self.state
                         .as_ref()
@@ -3401,7 +3422,7 @@ impl EditorView {
                         164.0,
                         scale,
                         false,
-                        false,
+                        true,
                     )
                 }),
             },
@@ -4291,6 +4312,23 @@ mod overlap_tests {
             });
             visual.run_until_parked();
             let bounds = visual.debug_bounds(selector).expect("real clone surface");
+            if selector == "clip-drag-floating-preview" {
+                super::super::clip_boundary::tests::assert_open_upper_right(
+                    &mut visual,
+                    selector,
+                    "clip-drag-floating-preview-trailing",
+                    Some(Box::leak(
+                        format!("clip-drag-name-{}", clip.value()).into_boxed_str(),
+                    )),
+                );
+                let (corners, _) = visual.rendered_surface_geometry(selector).unwrap();
+                assert_eq!(
+                    corners.bottom_left > gpui::ScaledPixels::default(),
+                    loop_handles::audio_repeats(&source),
+                    "floating source keeps its loop-bottom tier"
+                );
+            }
+
             let title = visual
                 .debug_bounds(Box::leak(
                     format!("clip-drag-name-{}", clip.value()).into_boxed_str(),

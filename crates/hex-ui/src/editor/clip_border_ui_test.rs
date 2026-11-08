@@ -81,14 +81,22 @@ fn pixel_ghosts_keep_authored_endpoints_on_shared_physical_columns(cx: &mut Test
                     .border_l(px(if native { stroke } else { 0.0 }))
                     .border_r(px(0.0))
                     .bg(gpui::rgb(0x856050));
-                root = root.child(super::pixel_boundary_shell(
+                root = root.child(super::pixel_backdrop_shell(
                     body,
-                    left,
-                    20.25,
-                    width,
-                    32.0,
-                    stroke,
-                    0x222222,
+                    gpui::Bounds::new(
+                        gpui::point(px(left), px(20.25)),
+                        gpui::size(px(width), px(32.0)),
+                    ),
+                    super::Backdrop {
+                        body: 0x856050,
+                        header: 0x856050,
+                        outline: 0x222222,
+                        hover_outline: 0x222222,
+                        stroke,
+                        bottom_radius: 0.0,
+                        header_height: 14.0,
+                        notch: super::Notch::new(native),
+                    },
                     native,
                     move || tail.into(),
                 ));
@@ -118,6 +126,13 @@ fn pixel_ghosts_keep_authored_endpoints_on_shared_physical_columns(cx: &mut Test
         );
         assert_eq!(f64::from(edge.scale(scale).size.width), 1.0);
     }
+    assert_open_upper_right(&mut visual, "pixel-normal", "pixel-normal-tail", None);
+    assert_open_upper_right(
+        &mut visual,
+        "pixel-fractional",
+        "pixel-fractional-tail",
+        None,
+    );
 }
 
 fn click(visual: &mut VisualTestContext, clip: ClipId, modifiers: Modifiers) {
