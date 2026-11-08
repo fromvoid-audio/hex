@@ -1,7 +1,8 @@
 //! Control-prepared, bounded Arrangement preroll.
 //!
-//! Linear export candidates replay the song prefix to reconstruct exact
-//! history. Interactive seeks and section launches construct a fresh runtime
+//! Linear export and explicitly history-preserving interactive candidates replay
+//! the song prefix to reconstruct exact history. Ordinary interactive seeks and
+//! section launches construct a fresh runtime
 //! and apply the interactive Play-from discontinuity at the destination: device
 //! chains, return tails and mutable voices start empty, gate-active notes are
 //! chased on the first played block, and no prefix is rendered.
@@ -9,8 +10,9 @@ use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Maximum forward replay work permitted by one Arrangement preroll request.
-/// Only prefix-replaying owners (linear export, private control samplers)
-/// spend it; interactive and section destinations render no prefix.
+/// Only prefix-replaying owners (linear export, explicit history-preserving
+/// interactive candidates, private control samplers) spend it; ordinary
+/// interactive and section destinations render no prefix.
 pub const MAX_ARRANGEMENT_PREROLL_FRAMES: u64 = 8_388_608;
 /// Maximum accounted owned runtime storage for the returned candidate.
 /// Shared immutable prepared graph data and allocator bookkeeping are excluded.
@@ -22,6 +24,7 @@ pub(super) const PREROLL_SCRATCH_BYTES: usize =
 #[derive(Clone, Copy)]
 enum PrerollRuntimePolicy {
     LinearExport,
+    HistoryPreservingInteractive,
     Interactive,
     SectionLoop(hex_project::LoopRegion),
 }
@@ -193,6 +196,39 @@ impl SessionPlayback {
         )
     }
 
+    /// Prepare an explicitly requested history-preserving interactive candidate.
+    /// Unlike ordinary Play-from, this replays the linear Arrangement prefix on
+    /// control, retaining held/released voices and Track/Return effect history.
+    /// The result remains an interactive owner accepting Session commands and
+    /// compatible successor handoff. It preserves the exact revision Arc.
+    ///
+    /// Replay, storage and cancellation obey the same limits as linear preroll.
+    /// Enabled transport loops refuse: no loop-history reconstruction is claimed.
+    /// Resources must belong to the exact compiler scope; missing resources or
+    /// unavailable media refuse rather than substituting a source. This method
+    /// provides no page preparation, live route fencing or audio publication.
+    /// Run on the existing adequately sized control-worker stack, never callback.
+    pub fn prepare_history_preserving_arrangement_preroll(
+        revision: Arc<PreparedRevision>,
+        resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
+        destination_frame: u64,
+        work_budget_frames: u64,
+        start_playing: bool,
+        cancelled: &AtomicBool,
+    ) -> Result<Self, ArrangementPrerollError> {
+        Self::prepare_arrangement_preroll_from_revision_with_policy(
+            revision,
+            destination_frame,
+            work_budget_frames,
+            start_playing,
+            MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+            PrerollRuntimePolicy::HistoryPreservingInteractive,
+            resources,
+            || cancelled.load(Ordering::Acquire),
+            |candidate, output| candidate.render(output).map_err(Into::into),
+        )
+    }
+
     #[cfg(test)]
     pub(super) fn prepare_arrangement_preroll_checked(
         &self,
@@ -332,12 +368,14 @@ impl SessionPlayback {
         // Interactive seeks and section launches start device history empty:
         // the interactive Play-from discontinuity resets chains, return tails
         // and voices at the destination and chases gate-active notes on the
-        // first rendered block. Only linear export and private control-sampler
-        // owners, which refuse that discontinuity, replay the song prefix, so
-        // only they spend the replay work budget. Other destinations are
+        // first rendered block. Linear export, explicitly history-preserving
+        // interactive candidates and private control-sampler owners instead
+        // replay the song prefix and spend its work budget. Other destinations are
         // bounded by Play-from's own arithmetic and tempo conversion.
-        let replay_history = matches!(policy, PrerollRuntimePolicy::LinearExport)
-            || revision.requires_control_sampler_sources();
+        let replay_history = matches!(
+            policy,
+            PrerollRuntimePolicy::LinearExport | PrerollRuntimePolicy::HistoryPreservingInteractive
+        ) || revision.requires_control_sampler_sources();
         if replay_history {
             if destination_frame > work_budget_frames
                 || work_budget_frames > MAX_ARRANGEMENT_PREROLL_FRAMES
@@ -352,11 +390,13 @@ impl SessionPlayback {
                 return Err(ArrangementPrerollError::WorkBudgetExceeded);
             }
         }
-        if matches!(policy, PrerollRuntimePolicy::LinearExport)
-            && revision
-                .arrangement()
-                .loop_region()
-                .is_some_and(|region| region.enabled())
+        if matches!(
+            policy,
+            PrerollRuntimePolicy::LinearExport | PrerollRuntimePolicy::HistoryPreservingInteractive
+        ) && revision
+            .arrangement()
+            .loop_region()
+            .is_some_and(|region| region.enabled())
         {
             return Err(ArrangementPrerollError::UnsupportedTransportLoop);
         }
@@ -886,3 +926,6 @@ fn checked_add(total: &mut usize, bytes: usize) -> Option<()> {
     *total = total.checked_add(bytes)?;
     Some(())
 }
+
+#[cfg(test)]
+mod tests;

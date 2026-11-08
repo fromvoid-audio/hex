@@ -3370,7 +3370,7 @@ fn render_checkpoint_prefix(playback: &mut SessionPlayback, frames: usize) -> Ve
     rendered
 }
 
-fn render_checkpoint_partitioned(
+pub(super) fn render_checkpoint_partitioned(
     playback: &mut SessionPlayback,
     pattern: &[usize],
     total_frames: usize,
@@ -12179,7 +12179,7 @@ fn mutable_feedback_with_stateful_track_and_return() -> Arc<PreparedRevision> {
     mutable_feedback_with_stateful_track_and_return_edited(|_| {})
 }
 
-fn mutable_feedback_with_stateful_track_and_return_edited(
+pub(super) fn mutable_feedback_with_stateful_track_and_return_edited(
     edit: impl FnOnce(&mut Snapshot),
 ) -> Arc<PreparedRevision> {
     use hex_devices::utility::{UTILITY_DEFINITION, parameter};
