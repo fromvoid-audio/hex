@@ -607,8 +607,8 @@ fn bypass_advances_the_same_filter_and_automated_control_history() {
 #[test]
 fn shared_lfo_drives_two_utility_controls_on_each_sample() {
     use hex_lattice::{
-        ModulationLfoBank, ModulationRoute, ModulationSourceId, ModulationTarget,
-        PreparedLfoSource, PreparedModulation,
+        ModulationLfoBank, ModulationRoute, ModulationRuntime, ModulationSourceId,
+        ModulationTarget, PreparedLfoSource, PreparedModulation,
     };
     let base = UTILITY_DEFINITION.default_state().unwrap();
     let ids = [parameter::GAIN, parameter::BALANCE];
@@ -639,22 +639,22 @@ fn shared_lfo_drives_two_utility_controls_on_each_sample() {
     .unwrap();
     let source_id = ModulationSourceId::new(1).unwrap();
     let source = PreparedLfoSource::free(source_id, 48_000.0, 12_000.0, 0.0).unwrap();
-    let mut bank = ModulationLfoBank::new(&[source], 5).unwrap();
-    bank.begin();
-    bank.render_chunk(5).unwrap();
-    let sources = [bank.samples(source_id).unwrap()];
-    let block = program.block(None, &sources, 5).unwrap();
+    let bank = ModulationLfoBank::new(&[source], 5).unwrap();
+    let mut modulation = ModulationRuntime::new(bank, program).unwrap();
+    modulation.begin();
     let factory = UtilityDefinition::prepare_owned_automated_filter(&base, 48_000).unwrap();
     let mut runtime = factory.create_runtime();
     let input = [[0.25, -0.1]; 5];
     let mut output = input;
-    runtime
-        .process_block_with_automation(
-            &mut output,
-            None,
-            &block,
-            &hex_lattice::EMPTY_DEVICE_RESOURCES,
-        )
+    modulation
+        .render_chunk(5, None, |block| {
+            runtime.process_block_with_automation(
+                &mut output,
+                None,
+                block,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+        })
         .unwrap();
     for (index, lfo) in [0.0, 1.0, 0.0, -1.0, 0.0].into_iter().enumerate() {
         let gain = (1.0 + lfo * 0.01 * MAX_UTILITY_GAIN).clamp(0.0, MAX_UTILITY_GAIN);
@@ -670,22 +670,21 @@ fn shared_lfo_drives_two_utility_controls_on_each_sample() {
             assert!((output[index][channel] - expected[channel]).abs() < 1e-5);
         }
     }
-    bank.rollback();
-    bank.begin();
-    bank.render_chunk(5).unwrap();
-    let retry_sources = [bank.samples(source_id).unwrap()];
-    let retry_block = program.block(None, &retry_sources, 5).unwrap();
+    modulation.rollback();
+    modulation.begin();
     let mut retry = input;
     let mut retry_runtime = factory.create_runtime();
-    retry_runtime
-        .process_block_with_automation(
-            &mut retry,
-            None,
-            &retry_block,
-            &hex_lattice::EMPTY_DEVICE_RESOURCES,
-        )
+    modulation
+        .render_chunk(5, None, |block| {
+            retry_runtime.process_block_with_automation(
+                &mut retry,
+                None,
+                block,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+        })
         .unwrap();
     assert_eq!(retry, output);
-    bank.commit().unwrap();
+    modulation.commit().unwrap();
     assert_eq!(UTILITY_DEFINITION.default_state().unwrap(), base);
 }
