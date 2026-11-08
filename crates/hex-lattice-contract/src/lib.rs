@@ -15,6 +15,8 @@ pub use descriptor_validation::validate_parameter_descriptors;
 mod device_assets;
 pub use automation_target::DeviceAutomationTarget;
 mod host_gain;
+mod modulation_source_id;
+pub use modulation_source_id::ModulationSourceId;
 pub use host_gain::HostGain;
 mod foreign_binding;
 mod foreign_parameter;
