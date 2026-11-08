@@ -243,8 +243,16 @@ fn every_bank_slot_field_host_metadata_touch_and_history_converts_atomically() {
                 .unwrap();
             for n in [0.0, 0.13, 0.5, 0.91, 1.0] {
                 assert_eq!(
-                    a.semantics.unwrap().denormalize(a.descriptor, n).unwrap(),
-                    b.semantics.unwrap().denormalize(b.descriptor, n).unwrap()
+                    a.semantics
+                        .unwrap()
+                        .normalization
+                        .denormalize(a.descriptor, n)
+                        .unwrap(),
+                    b.semantics
+                        .unwrap()
+                        .normalization
+                        .denormalize(b.descriptor, n)
+                        .unwrap()
                 );
             }
         } else {

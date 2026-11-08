@@ -173,6 +173,7 @@ fn kind(source: &NativeDeviceParameterView, normalized: f32) -> Result<(u32, u32
     let value = source
         .semantics
         .ok_or(Invalid("eq8 kind normalization is undeclared"))?
+        .normalization
         .denormalize(source.descriptor, normalized)
         .map_err(|_| Invalid("eq8 kind value is invalid"))?;
     match value {
@@ -192,6 +193,7 @@ fn normalize(target: &NativeDeviceParameterView, value: ParameterValue) -> Resul
     target
         .semantics
         .ok_or(Invalid("eq target normalization is undeclared"))?
+        .normalization
         .normalize(target.descriptor, value)
         .map_err(|_| Invalid("eq target value is invalid"))
 }
