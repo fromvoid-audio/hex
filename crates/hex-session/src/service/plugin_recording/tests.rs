@@ -199,7 +199,7 @@ fn failed_recovery_dispatch_copies_receipts_without_releasing_custody() {
     use crate::service::native_automation_recording::tests::failed_lane_for_test;
     use hex_storage::automation_draft::{DraftOutcome, DraftReadLimits, DraftReader};
 
-    let (files, session, scope, source) = fixture();
+    let (files, mut session, scope, source) = fixture();
     let original_path = files.0.join("worker-original");
     let mut lane = failed_lane_for_test(
         &session,
@@ -322,11 +322,87 @@ fn failed_recovery_dispatch_copies_receipts_without_releasing_custody() {
         reader.outcome(),
         DraftOutcome::Finished(restored.application.origin)
     );
-    assert_eq!(std::fs::read(original_path).unwrap(), original);
+    drop(reader);
+    assert_eq!(std::fs::read(&original_path).unwrap(), original);
     let failed = state.failed.as_ref().unwrap();
     assert!(failed.pending.is_some());
     assert!(failed.failed_observations.iter().all(Option::is_some));
     assert!(lane.begin(&session, None, scope, source, &files.0).is_err());
+    let before = session.project().clone();
+    let mut wrong_source = source;
+    wrong_source.transport_epoch += 1;
+    assert!(
+        prepare_failed_adoption(&state, &lane, &session, None, scope, Some(wrong_source), 3)
+            .is_err()
+    );
+    assert!(prepare_failed_adoption(&state, &lane, &session, None, scope, None, 3).is_err());
+    assert!(
+        prepare_failed_adoption(&state, &lane, &session, None, scope, Some(source), 2).is_err()
+    );
+    let (command, adoption) =
+        prepare_failed_adoption(&state, &lane, &session, None, scope, Some(source), 3).unwrap();
+    assert_eq!(session.project(), &before);
+    assert!(lane.has_failed_custody());
+    assert!(state.failed.is_some());
+    for (failed, previous, current, confirmed, expected) in [
+        (true, 2, 2, false, RecoveryPublication::Refused),
+        (true, 2, 3, true, RecoveryPublication::Refused),
+        (false, 2, 2, true, RecoveryPublication::Unchanged),
+        (false, 2, 3, false, RecoveryPublication::Refused),
+        (false, 2, 4, true, RecoveryPublication::Refused),
+        (false, u64::MAX, 0, true, RecoveryPublication::Refused),
+    ] {
+        let publication = classify_recovery_publication(failed, previous, current, confirmed);
+        assert_eq!(publication, expected);
+        finish_failed_adoption(&mut state, &mut lane, &adoption, publication).unwrap();
+        assert!(lane.has_failed_custody());
+        assert!(state.failed.is_some());
+        assert_eq!(session.project(), &before);
+    }
+    session.editor.execute(*command).unwrap();
+    let after = session.project().clone();
+    assert_ne!(after, before);
+    let saved = state.failed.as_mut().unwrap().failed_observations[1].take();
+    assert_eq!(
+        classify_recovery_publication(false, 2, 3, true),
+        RecoveryPublication::Committed
+    );
+    assert!(
+        finish_failed_adoption(
+            &mut state,
+            &mut lane,
+            &adoption,
+            RecoveryPublication::Committed
+        )
+        .is_err()
+    );
+    assert!(lane.has_failed_custody());
+    assert!(state.failed.is_some());
+    state.failed.as_mut().unwrap().failed_observations[1] = saved;
+    finish_failed_adoption(
+        &mut state,
+        &mut lane,
+        &adoption,
+        RecoveryPublication::Committed,
+    )
+    .unwrap();
+    assert!(!lane.has_failed_custody());
+    assert!(state.failed.is_none());
+    assert!(
+        finish_failed_adoption(
+            &mut state,
+            &mut lane,
+            &adoption,
+            RecoveryPublication::Committed
+        )
+        .is_err()
+    );
+    assert!(session.editor.undo());
+    assert_eq!(session.project(), &before);
+    assert!(session.editor.redo());
+    assert_eq!(session.project(), &after);
+    assert_eq!(std::fs::read(&original_path).unwrap(), original);
+    assert!(output.exists());
 }
 
 #[test]
