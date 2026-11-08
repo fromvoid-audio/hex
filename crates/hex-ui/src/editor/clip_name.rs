@@ -286,13 +286,9 @@ impl EditorView {
         fill: u32,
         on_backdrop: bool,
     ) -> impl IntoElement + use<> {
-        clip_name_surface(fill)
-            .when(on_backdrop, |header| {
-                header.bg(gpui::transparent_black()).pr(px(6.0))
-            })
+        passive_name_header(name, fill, on_backdrop)
             .id(("clip-drag-name", clip.value()))
             .debug_selector(move || format!("clip-drag-name-{}", clip.value()))
-            .child(clip_name_text(name))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -342,6 +338,16 @@ impl EditorView {
                     .map(|indicator| indicator.when(notched, |indicator| indicator.right(px(7.0)))),
             )
     }
+}
+
+/// A passive caption without an authored identity; clip and sample callers add
+/// only their own diagnostic IDs. It never mounts a live rename input.
+pub(super) fn passive_name_header(name: &str, fill: u32, on_backdrop: bool) -> gpui::Div {
+    clip_name_surface(fill)
+        .when(on_backdrop, |header| {
+            header.bg(gpui::transparent_black()).pr(px(6.0))
+        })
+        .child(clip_name_text(name))
 }
 
 fn clip_name_surface(fill: u32) -> gpui::Div {
