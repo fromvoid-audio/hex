@@ -138,8 +138,23 @@ pub(crate) const TIME_SELECTION_OPACITY: f32 = 0.42;
 /// Move-destination ranges stay quieter than the committed selection.
 pub(crate) const TIME_SELECTION_PREVIEW_OPACITY: f32 = 0.2;
 
-/// Explicit track membership stays quieter than time/clip selection overlays.
-pub(crate) const TRACK_SELECTION_OPACITY: f32 = 0.06;
+/// Pale cyan distinguishes explicit track membership on the graphite workspace.
+/// Keep an explicitly customized secondary color instead of imposing that hue.
+pub(crate) fn track_selection_fill() -> u32 {
+    let secondary = color(PaletteRole::Secondary);
+    if secondary
+        == hex_preferences::ThemePreferences::default()
+            .secondary
+            .packed()
+    {
+        0xa4ccd7
+    } else {
+        secondary
+    }
+}
+
+/// Track membership paints below clips, independently of the brighter time band.
+pub(crate) const TRACK_SELECTION_OPACITY: f32 = 0.28;
 
 /// Editable palette roles used throughout the native UI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -830,6 +845,7 @@ mod tests {
         assert_eq!(color(PaletteRole::Text), defaults.text.packed());
         assert_eq!(color(PaletteRole::Primary), defaults.primary.packed());
         assert_eq!(color(PaletteRole::Secondary), defaults.secondary.packed());
+        assert_eq!(track_selection_fill(), 0xa4ccd7);
         assert_eq!(color(PaletteRole::ClipOutline), 0x000000);
         assert!(colors_are_legible(defaults));
         assert!(contrast_ratio(color(PaletteRole::ClipFill), color(PaletteRole::ClipText)) >= 4.5);
