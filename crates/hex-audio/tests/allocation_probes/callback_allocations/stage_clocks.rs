@@ -274,8 +274,10 @@ fn limiter_publication_case(original: bool) -> Result<(), Box<dyn Error>> {
     assert!(editor.undo());
     assert!(editor.redo());
     assert_eq!(editor.project().snapshot(), authored);
-    let path =
-        std::env::temp_dir().join(format!("hex-limiter-automation-{}.hex", std::process::id()));
+    let path = std::env::temp_dir().join(format!(
+        "hex-limiter-automation-{}-{original}.hex",
+        std::process::id()
+    ));
     hex_storage::save_new(&path, editor.project())?;
     let loaded = hex_storage::load(&path);
     std::fs::remove_file(path)?;
@@ -286,6 +288,12 @@ fn limiter_publication_case(original: bool) -> Result<(), Box<dyn Error>> {
         .map_err(|_| "automation publication")?;
     measured_block(&mut callback, &mut out);
     measured_block(&mut old_callback, &mut old_out);
+    if !original {
+        // Boolean lanes step at their authored endpoint. Cross that content
+        // point before judging whether the maximize controls became audible.
+        measured_block(&mut callback, &mut out);
+        measured_block(&mut old_callback, &mut old_out);
+    }
     assert!(out.iter().flatten().all(|v| v.is_finite()));
     assert!(
         out.iter()
