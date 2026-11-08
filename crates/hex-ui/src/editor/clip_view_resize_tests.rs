@@ -488,6 +488,20 @@ fn editor_picker_fits_bottom_right_and_closed_pane_has_no_header(cx: &mut TestAp
                     assert!(view.clip_view_open);
                     assert_eq!(view.device_panel_active, selector == "device-detail-tab");
                 });
+                let frame = visual.debug_bounds("workspace-editor-panel").unwrap();
+                let main = visual.debug_bounds("workspace-main-panel").unwrap();
+                let content = visual.debug_bounds("clip-view").unwrap();
+                assert_eq!(frame.top(), main.bottom() + px(3.0));
+                assert_eq!(content.top(), frame.top() + px(4.0));
+                assert_eq!(content.left(), frame.left() + px(4.0));
+                assert_eq!(content.right(), frame.right() - px(4.0));
+                assert_eq!(content.bottom(), frame.bottom() - px(4.0));
+                let scale = visual.update(|window, _| window.scale_factor());
+                let (corners, _) = visual
+                    .rendered_surface_geometry("workspace-editor-panel")
+                    .unwrap();
+                assert_eq!(corners.top_left, px(4.0).scale(scale));
+                assert_eq!(corners.bottom_right, px(4.0).scale(scale));
                 let toggle = visual.debug_bounds("clip-view-toggle").unwrap().center();
                 visual.simulate_click(toggle, Modifiers::default());
                 assert_eq!(
