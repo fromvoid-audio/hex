@@ -1465,6 +1465,14 @@ pub(super) fn request(value: &Request) -> Description {
         } => {
             describe!("device_automation_take"; ["request_id" => request_id, "gesture_serial" => scope.stamp.gesture_serial]; omitted="delivery data")
         }
+        Request::RecoverDeviceAutomationTake {
+            request_id,
+            context,
+            expected,
+            ..
+        } => {
+            describe!("recover_device_automation_take"; ["request_id" => request_id, "project_generation" => context.project_generation, "revision" => context.editor_revision, "gesture_serial" => expected.gesture_serial]; omitted="path and captured source")
+        }
         Request::ArmNativeParameterRecording {
             project_generation,
             revision,

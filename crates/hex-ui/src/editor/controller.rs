@@ -2332,6 +2332,11 @@ impl EditorView {
     }
 
     pub(super) fn receive(&mut self, mut event: Event) -> Option<std::path::PathBuf> {
+        // Read acknowledgements must not retire any edit's ordered completion
+        // custody, even if the worker consumed the query while an edit queued.
+        if event.plugin_parameter_observation {
+            event.request_complete = false;
+        }
         if !event.project_replaced
             && let Some(previous) = self.state.as_ref()
             && let Some(proof) = event.state.comparison_audio.as_ref()
@@ -2501,7 +2506,7 @@ impl EditorView {
         if event.save_complete {
             self.saving_project = false;
         }
-        if event.request_complete {
+        if event.request_complete && !event.plugin_parameter_observation {
             self.worker_requests_pending = self.worker_requests_pending.saturating_sub(1);
         }
         if let Some(input) = &event.live_expression_complete {
@@ -3465,6 +3470,24 @@ impl EditorView {
 
     fn enqueue_request(&mut self, request: Request, duplicate_continuation: bool) -> bool {
         self.wake_poll();
+        if matches!(&request, Request::QueryPluginParameters(_)) {
+            // The panel owns retryable read intent. A full/busy service must
+            // not move observations into the edit queue or interrupt a gesture.
+            return match self.submit_to_service(request) {
+                Ok(()) => true,
+                Err(submission::Refused {
+                    error: SubmitError::Full(_) | SubmitError::Busy(_, _),
+                    ..
+                }) => false,
+                Err(submission::Refused {
+                    error: SubmitError::Closed(request),
+                    kinds,
+                }) => {
+                    self.on_request_refused(kinds, &request, submission::Refusal::Closed);
+                    false
+                }
+            };
+        }
         if self.update_preparing() {
             self.error = Some("cancel update before editing".into());
             return false;

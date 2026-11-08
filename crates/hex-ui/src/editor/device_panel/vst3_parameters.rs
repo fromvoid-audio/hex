@@ -78,6 +78,12 @@ struct Knob {
     _subscription: Subscription,
 }
 
+/// Metadata reads keep the control poll active without claiming edit custody.
+pub(in crate::editor) fn query_pending(view: &EditorView) -> bool {
+    view.device_panel.vst3_parameters.in_flight.is_some()
+        || view.device_panel.vst3_parameters.deferred_result.is_some()
+}
+
 impl Panel {
     fn rows(&self) -> Option<&[PluginParameterRow]> {
         self.result.as_ref().map(|rows| rows.as_slice())

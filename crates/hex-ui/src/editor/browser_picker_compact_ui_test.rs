@@ -1,5 +1,6 @@
 //! Pointer resize and painted compact-heading contract; no native GPU claim.
 use super::*;
+use crate::theme;
 
 fn picker(
     cx: &mut TestAppContext,
@@ -31,6 +32,90 @@ fn picker(
         assert_eq!(view.sample_roots(), vec![samples]);
     });
     (handle, editor, directory)
+}
+
+#[gpui::test]
+fn browser_picker_compact_rows_share_blue_selection_and_readable_ink(cx: &mut TestAppContext) {
+    #[cfg(target_os = "macos")]
+    {
+        cx.use_native_text_system()
+            .expect("native bundled-font shaping");
+        cx.update(|cx| theme::load_fonts(cx).expect("bundled ioskeley mono"));
+    }
+    let (handle, editor, _directory) = picker(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let rows = [
+        "browser-section-all",
+        "browser-section-samples",
+        "browser-section-devices",
+        "browser-section-projects",
+        "browser-section-vst3",
+        "browser-place-0",
+        "browser-collection-0",
+        "browser-collection-1",
+        "browser-collection-2",
+    ];
+    let fill = theme::color(theme::PaletteRole::Secondary);
+    let ink = theme::readable_text(fill, theme::color(theme::PaletteRole::Background));
+    for width in [124.0, 23.0] {
+        resize(visual, width);
+        for row in rows {
+            assert_eq!(visual.debug_bounds(row).unwrap().size.height, px(18.0));
+        }
+        for (row, label, glyph) in [
+            (
+                "browser-section-devices",
+                "browser-picker-label-section-1",
+                Some("browser-picker-glyph-section-1"),
+            ),
+            (
+                "browser-place-0",
+                "browser-picker-label-place-0",
+                Some("browser-picker-glyph-place-0"),
+            ),
+            (
+                "browser-collection-1",
+                "browser-picker-label-collection-1",
+                None,
+            ),
+        ] {
+            let bounds = visual.debug_bounds(row).unwrap();
+            visual.simulate_click(bounds.center(), Modifiers::default());
+            visual.run_until_parked();
+            assert_eq!(
+                visual.rendered_background(row),
+                Some(gpui::Background::from(gpui::rgb(fill)))
+            );
+            if width > 23.0 {
+                let label_bounds = visual.debug_bounds(label).unwrap();
+                assert!(
+                    label_bounds.left() >= bounds.left() && label_bounds.right() <= bounds.right()
+                );
+                #[cfg(target_os = "macos")]
+                assert!(
+                    visual
+                        .rendered_monochrome_colors(label)
+                        .contains(&gpui::rgb(ink).into()),
+                    "selected label ink: {label}; expected={ink:x}; actual={:?}",
+                    visual.rendered_monochrome_colors(label)
+                );
+            }
+            if let Some(glyph) = glyph {
+                assert!(
+                    visual
+                        .rendered_monochrome_colors(glyph)
+                        .contains(&gpui::rgb(ink).into()),
+                    "selected glyph ink: {glyph}"
+                );
+                let icon = visual.debug_bounds(glyph).unwrap();
+                assert!((f32::from(icon.center().y - bounds.center().y)).abs() <= 0.5);
+                assert!(icon.top() >= bounds.top() && icon.bottom() <= bounds.bottom());
+            }
+            let focus = editor.read_with(visual, |view, _| view.browser.results_focus.clone());
+            assert!(visual.update(|window, _| focus.is_focused(window)));
+        }
+    }
 }
 
 #[gpui::test]
