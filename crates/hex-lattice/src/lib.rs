@@ -18,6 +18,7 @@ mod foreign_processor;
 mod host_output_gain_ramp;
 mod matrix_ramp;
 mod meter;
+mod modulation;
 mod owned_processor;
 mod parameter_automation;
 #[cfg(test)]
@@ -45,6 +46,10 @@ use hex_lattice_contract::{
 };
 pub use hex_tuning::{TuningTable, Waveform as TuningWaveform};
 pub use meter::{DeviceMeter, DevicePeaks, DynamicsMeter, RenderWorkMeter, RenderWorkSample};
+pub use modulation::{
+    MAX_MODULATION_BLOCK_FRAMES, MAX_MODULATION_ROUTES, MAX_MODULATION_SOURCES, ModulationBlock,
+    ModulationRoute, ModulationTarget, PreparedModulation,
+};
 pub use owned_processor::{
     MAX_RESERVED_BYPASS_FRAMES, OwnedProcessorRuntime, PreparedOwnedProcessorRuntime,
     PreparedProcessorFactory, PreparedRuntimeDevice, PreparedRuntimeInstance,

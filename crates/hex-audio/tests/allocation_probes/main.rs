@@ -20,6 +20,7 @@ mod manual_host_gain_allocations;
 
 mod midi_once_allocations;
 mod midi_source_prefix;
+mod modulation_compositor_allocations;
 mod modulation_lfo_allocations;
 mod operator_filter_proof_allocations;
 mod operator_fixed_allocations;
