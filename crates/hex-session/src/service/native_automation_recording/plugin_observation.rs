@@ -8,6 +8,63 @@ use hex_storage::automation_draft::DraftClock;
 
 const MAX_FAILED_OBSERVATIONS: usize = 3;
 
+/// Copy failed writer custody and the original retained SDK observations to a
+/// new draft. The original file, batches and observations remain with the caller.
+/// This blocks on storage and must run on a control worker, never the callback.
+pub fn copy_failed_plugin_on_control(
+    outcome: &DraftWorkerOutcome,
+    destination: &Path,
+    limits: DraftReadLimits,
+    max_events: u64,
+    scope: DeviceAutomationTakeScope,
+    source: DeviceAutomationSource,
+    observations: &[Observation],
+) -> Result<DraftTerminal, String> {
+    use hex_storage::automation_draft::DraftTarget;
+
+    let DeviceCaptureTarget::Vst3(target) = scope.target else {
+        return Err("plugin recovery requires a vst3 target".into());
+    };
+    if max_events > hex_project::MAX_DEVICE_AUTOMATION_POINTS as u64 {
+        return Err("plugin recovery event budget exceeds project limit".into());
+    }
+    super::super::automation_draft::copy_failed_with_tail_on_control(
+        outcome,
+        destination,
+        limits,
+        max_events,
+        |reader, previous| {
+            let expected = DraftTarget::Device {
+                device: target.device,
+                target: hex_project::DeviceAutomationTarget::Vst3 {
+                    parameter: target.parameter,
+                },
+            };
+            if reader.provenance() != scope.stamp
+                || reader.target() != expected
+                || reader.capture_clock()
+                    != Some(CaptureClock {
+                        sample_rate: source.sample_rate,
+                        loop_region: source.section_loop,
+                    })
+                || reader
+                    .target()
+                    .vst3_class_in_source(reader.source())
+                    .map_err(|error| error.to_string())?
+                    != Some(target.class)
+            {
+                return Err("plugin recovery source does not match failed draft".into());
+            }
+            let tail = prepare_failed_plugin_continuation(scope, source, previous, observations)
+                .map_err(str::to_owned)?;
+            Ok((
+                tail.events().collect(),
+                tail.terminal().unwrap_or(DraftTerminal::Interrupted),
+            ))
+        },
+    )
+}
+
 /// Validated, bounded continuation; original SDK observations remain with their owner.
 pub struct FailedPluginContinuation {
     events: [Option<AppliedEvent>; MAX_FAILED_OBSERVATIONS],

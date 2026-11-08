@@ -58,6 +58,272 @@ fn send(
     )
 }
 
+fn failed_copy_fixture() -> (
+    crate::service::native_automation_recording::tests::Files,
+    DeviceAutomationTakeScope,
+    DeviceAutomationSource,
+    DraftWorkerOutcome,
+) {
+    use crate::service::automation_draft::tests::failed_outcome;
+    use hex_storage::automation_draft::{DraftTarget, DraftWriter};
+
+    let (files, session, scope, source) = fixture();
+    let DeviceCaptureTarget::Vst3(target) = scope.target else {
+        panic!("foreign")
+    };
+    let path = files.0.join("failed-copy-source");
+    let mut writer = DraftWriter::create_with_clock(
+        &path,
+        session.project(),
+        DraftTarget::Device {
+            device: target.device,
+            target: hex_project::DeviceAutomationTarget::Vst3 {
+                parameter: target.parameter,
+            },
+        },
+        scope.stamp,
+        CaptureClock {
+            sample_rate: source.sample_rate,
+            loop_region: source.section_loop,
+        },
+    )
+    .unwrap();
+    let base = AppliedEvent {
+        sequence: 1,
+        performance_frame: 8,
+        content_frame: 0,
+        loop_pass: 0,
+        value: hex_project::AutomationValue::new(0.25).unwrap(),
+    };
+    writer.append(&[base]).unwrap();
+    let identity = writer.durable_prefix_identity();
+    drop(writer);
+    let retained = AppliedEvent {
+        sequence: 2,
+        performance_frame: 10,
+        content_frame: 2,
+        loop_pass: 0,
+        value: hex_project::AutomationValue::new(0.5).unwrap(),
+    };
+    let outcome = failed_outcome(path, 1, identity, &[retained]);
+    (files, scope, source, outcome)
+}
+
+#[test]
+fn failed_plugin_copy_preserves_originals_and_real_restoration() {
+    let (files, scope, source, outcome) = failed_copy_fixture();
+    let original = std::fs::read(&outcome.path).unwrap();
+    let retained = outcome.retained[0].events().to_vec();
+    let delivered = point(scope, source, 16, Vst3ApplicationValue::Value(0.75));
+    let mut restored = point(scope, source, 24, Vst3ApplicationValue::Restored);
+    restored.sequence = delivered.sequence;
+    let observations = [
+        Observation::Delivered(delivered),
+        Observation::Restored(restored),
+    ];
+    let limits = DraftReadLimits {
+        max_source_bytes: 65536,
+    };
+    let path = files.0.join("completed-copy");
+    assert_eq!(
+        copy_failed_plugin_on_control(&outcome, &path, limits, 3, scope, source, &observations)
+            .unwrap(),
+        DraftTerminal::Finished(restored.application.origin)
+    );
+    let mut reader = DraftReader::open(&path, limits).unwrap();
+    assert_eq!(
+        reader.outcome(),
+        DraftOutcome::Finished(restored.application.origin)
+    );
+    let mut events = [None; 4];
+    assert_eq!(reader.read_events(0, &mut events).unwrap(), 3);
+    assert_eq!(events[0].unwrap().sequence, 1);
+    assert_eq!(events[1], Some(retained[0]));
+    assert_eq!(events[2].unwrap().sequence, delivered.sequence);
+    assert_eq!(events[2].unwrap().value.get(), 0.75);
+    assert_eq!(std::fs::read(&outcome.path).unwrap(), original);
+    assert_eq!(outcome.retained[0].events(), retained);
+    assert!(
+        matches!(observations[1], Observation::Restored(original) if original.sequence == delivered.sequence)
+    );
+}
+
+#[test]
+fn failed_plugin_copy_refuses_bad_custody_and_never_invents_an_end() {
+    let (files, scope, source, outcome) = failed_copy_fixture();
+    let original = std::fs::read(&outcome.path).unwrap();
+    let limits = DraftReadLimits {
+        max_source_bytes: 65536,
+    };
+    let delivered = point(scope, source, 16, Vst3ApplicationValue::Value(0.75));
+    let observations = [Observation::Delivered(delivered)];
+    let interrupted = files.0.join("interrupted-copy");
+    assert_eq!(
+        copy_failed_plugin_on_control(
+            &outcome,
+            &interrupted,
+            limits,
+            3,
+            scope,
+            source,
+            &observations
+        )
+        .unwrap(),
+        DraftTerminal::Interrupted
+    );
+    let reader = DraftReader::open(&interrupted, limits).unwrap();
+    assert_eq!(reader.outcome(), DraftOutcome::Interrupted);
+    assert_eq!(reader.progress().durable_events, 3);
+    let second = point(scope, source, 20, Vst3ApplicationValue::Value(0.625));
+    let third = point(scope, source, 24, Vst3ApplicationValue::Value(0.5));
+    let full = files.0.join("full-incomplete-copy");
+    assert_eq!(
+        copy_failed_plugin_on_control(
+            &outcome,
+            &full,
+            limits,
+            5,
+            scope,
+            source,
+            &[
+                Observation::Delivered(delivered),
+                Observation::Delivered(second),
+                Observation::Delivered(third),
+            ],
+        )
+        .unwrap(),
+        DraftTerminal::Interrupted
+    );
+    let reader = DraftReader::open(&full, limits).unwrap();
+    assert_eq!(reader.progress().durable_events, 5);
+    assert_eq!(reader.outcome(), DraftOutcome::Interrupted);
+    let terminal = Observation::Interrupted {
+        key: delivered.key,
+        context: delivered.context,
+        target: delivered.target,
+        source: delivered.source,
+        sequence: delivered.sequence,
+    };
+    assert_eq!(
+        copy_failed_plugin_on_control(
+            &outcome,
+            &files.0.join("sdk-interrupted-copy"),
+            limits,
+            3,
+            scope,
+            source,
+            &[Observation::Delivered(delivered), terminal],
+        )
+        .unwrap(),
+        DraftTerminal::Interrupted
+    );
+    let collision = files.0.join("collision");
+    std::fs::write(&collision, b"keep").unwrap();
+    assert!(
+        copy_failed_plugin_on_control(
+            &outcome,
+            &collision,
+            limits,
+            3,
+            scope,
+            source,
+            &observations
+        )
+        .is_err()
+    );
+    assert_eq!(std::fs::read(&collision).unwrap(), b"keep");
+    assert!(
+        copy_failed_plugin_on_control(
+            &outcome,
+            &files.0.join("budget"),
+            limits,
+            2,
+            scope,
+            source,
+            &observations
+        )
+        .is_err()
+    );
+    let mut bad = delivered;
+    bad.sequence = 2;
+    assert!(
+        copy_failed_plugin_on_control(
+            &outcome,
+            &files.0.join("sequence"),
+            limits,
+            3,
+            scope,
+            source,
+            &[Observation::Delivered(bad)]
+        )
+        .is_err()
+    );
+    let mut wrong_scope = scope;
+    wrong_scope.stamp.gesture_serial += 1;
+    assert!(
+        copy_failed_plugin_on_control(
+            &outcome,
+            &files.0.join("scope"),
+            limits,
+            3,
+            wrong_scope,
+            source,
+            &observations
+        )
+        .is_err()
+    );
+    let mut wrong_class = scope;
+    if let DeviceCaptureTarget::Vst3(ref mut target) = wrong_class.target {
+        target.class[0] ^= 1;
+    }
+    assert!(
+        copy_failed_plugin_on_control(
+            &outcome,
+            &files.0.join("class"),
+            limits,
+            3,
+            wrong_class,
+            source,
+            &observations,
+        )
+        .is_err()
+    );
+    let mut invalid = delivered;
+    invalid.application.value = Vst3ApplicationValue::Value(f64::NAN);
+    assert!(
+        copy_failed_plugin_on_control(
+            &outcome,
+            &files.0.join("invalid-value"),
+            limits,
+            3,
+            scope,
+            source,
+            &[Observation::Delivered(invalid)],
+        )
+        .is_err()
+    );
+    assert_eq!(std::fs::read(&outcome.path).unwrap(), original);
+    assert_eq!(outcome.retained[0].events().len(), 1);
+    let mut damaged = original;
+    let last = damaged.len() - 1;
+    damaged[last] ^= 1;
+    std::fs::write(&outcome.path, &damaged).unwrap();
+    assert!(
+        copy_failed_plugin_on_control(
+            &outcome,
+            &files.0.join("damaged-copy"),
+            limits,
+            3,
+            scope,
+            source,
+            &observations,
+        )
+        .is_err()
+    );
+    assert_eq!(std::fs::read(&outcome.path).unwrap(), damaged);
+    assert_eq!(outcome.retained[0].events().len(), 1);
+}
+
 #[test]
 fn failed_plugin_continuation_preserves_points_and_equal_sequence_restoration() {
     let (_files, _session, scope, source) = fixture();

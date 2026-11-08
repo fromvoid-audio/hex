@@ -1,5 +1,5 @@
 //! Bounded, non-destructive copies of failed writer custody.
-use super::{DraftTerminal, DraftWorkerOutcome, EVENTS_PER_BATCH};
+use super::{AppliedEvent, DraftTerminal, DraftWorkerOutcome, EVENTS_PER_BATCH};
 use hex_storage::automation_draft::{DraftOutcome, DraftReadLimits, DraftReader, DraftWriter};
 use std::path::Path;
 
@@ -17,6 +17,24 @@ pub fn copy_failed_on_control(
     limits: DraftReadLimits,
     max_events: u64,
 ) -> Result<(), String> {
+    copy_failed_with_tail_on_control(outcome, destination, limits, max_events, |_, _| {
+        Ok((Vec::new(), DraftTerminal::Interrupted))
+    })
+    .map(|_| ())
+}
+
+/// The callback validates the source and bounded tail against the actual copied
+/// predecessor. It runs on the control worker while the original reader is held.
+pub(in crate::service) fn copy_failed_with_tail_on_control(
+    outcome: &DraftWorkerOutcome,
+    destination: &Path,
+    limits: DraftReadLimits,
+    max_events: u64,
+    prepare: impl FnOnce(
+        &DraftReader,
+        Option<AppliedEvent>,
+    ) -> Result<(Vec<AppliedEvent>, DraftTerminal), String>,
+) -> Result<DraftTerminal, String> {
     if outcome.failure.is_none() || outcome.retained.len() > super::BATCH_SLOTS {
         return Err("automation writer outcome is not a bounded failure".into());
     }
@@ -68,6 +86,7 @@ pub fn copy_failed_on_control(
     .map_err(|error| error.to_string())?;
     let mut page = [None; EVENTS_PER_BATCH];
     let mut ordinal = 0_u64;
+    let mut previous = None;
     while ordinal < prefix {
         let count = reader
             .read_events(ordinal, &mut page)
@@ -82,6 +101,7 @@ pub fn copy_failed_on_control(
                 return Err("automation retained events do not match the draft prefix".into());
             }
             events.push(event);
+            previous = Some(event);
             ordinal += 1;
         }
         writer.append(&events).map_err(|error| error.to_string())?;
@@ -91,23 +111,39 @@ pub fn copy_failed_on_control(
         if events.is_empty() {
             break;
         }
+        previous = events.last().copied();
         writer.append(&events).map_err(|error| error.to_string())?;
     }
-    writer
-        .finish(DraftTerminal::Interrupted)
-        .map_err(|error| error.to_string())?;
+    let (tail, terminal) = prepare(&reader, previous)?;
+    if tail.len() > 3
+        || outcome
+            .admitted_events
+            .checked_add(tail.len() as u64)
+            .is_none_or(|count| count > max_events)
+    {
+        return Err("automation recovery continuation exceeds budget".into());
+    }
+    if !tail.is_empty() {
+        writer.append(&tail).map_err(|error| error.to_string())?;
+    }
+    writer.finish(terminal).map_err(|error| error.to_string())?;
     let copied = writer.durable_prefix_identity();
     drop(writer);
     let mut verified = DraftReader::open_bounded(destination, limits, max_events)
         .map_err(|error| error.to_string())?;
-    if verified.outcome() != DraftOutcome::Interrupted
-        || verified.progress().durable_terminal != Some(DraftTerminal::Interrupted)
-        || copied.events() != outcome.admitted_events
+    let expected = match terminal {
+        DraftTerminal::Finished(clock) => DraftOutcome::Finished(clock),
+        DraftTerminal::Aborted(reason) => DraftOutcome::Aborted(reason),
+        DraftTerminal::Interrupted => DraftOutcome::Interrupted,
+    };
+    if verified.outcome() != expected
+        || verified.progress().durable_terminal != Some(terminal)
+        || copied.events() != outcome.admitted_events + tail.len() as u64
         || !verified
             .matches_prefix(copied)
             .map_err(|error| error.to_string())?
     {
         return Err("automation recovery copy did not verify; preserve both drafts".into());
     }
-    Ok(())
+    Ok(terminal)
 }
