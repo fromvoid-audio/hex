@@ -40,6 +40,7 @@ pub(super) struct ClipAliasAction {
 
 #[derive(Clone)]
 pub(super) enum EditorContextAction {
+    HistoryPlayback(super::history_playback::MenuAction),
     Tags(super::track_tags::Action),
     Automation(super::device_automation::Action),
     ClipAlias(ClipAliasAction),
@@ -607,6 +608,9 @@ impl EditorView {
     ) {
         self.dismiss_context_menu(window, cx);
         match action {
+            EditorContextAction::HistoryPlayback(action) => {
+                self.history_playback_menu_action(action, cx)
+            }
             EditorContextAction::Tags(action) => self.perform_tag_action(action, window, cx),
             EditorContextAction::Automation(action) => {
                 self.automation_menu_action(action, window, cx)
@@ -912,6 +916,9 @@ impl EditorView {
     ) -> Option<Div> {
         if self.context_menu.as_ref().is_some_and(|menu| {
             menu.items.iter().any(|item| match &item.action {
+                EditorContextAction::HistoryPlayback(action) => {
+                    !self.history_playback_menu_current(action)
+                }
                 EditorContextAction::Tags(action) => action.stale(self),
                 EditorContextAction::Automation(action) => self.automation_action_stale(action),
                 EditorContextAction::ClipAlias(target) => !self.clip_alias_menu_current(target),

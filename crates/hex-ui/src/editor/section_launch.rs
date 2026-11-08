@@ -22,11 +22,11 @@ impl EditorView {
             && (self
                 .prepared_seek
                 .as_ref()
-                .is_some_and(|seek| seek.section.is_some())
+                .is_some_and(|seek| seek.kind.section().is_some())
                 || self
                     .latched_seek_intent
                     .as_ref()
-                    .is_some_and(|seek| seek.section.is_some()))
+                    .is_some_and(|seek| seek.kind.section().is_some()))
         {
             self.invalidate_prepared_seek();
         }
