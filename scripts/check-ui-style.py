@@ -221,7 +221,7 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             and suffix.startswith(('paint)', 'trailing_edge('))
         )
         header_mixer_component = header_mixer_component or (
-            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/browser.rs'
+            path.relative_to(ROOT).as_posix() in ('crates/hex-ui/src/editor/browser.rs', 'crates/hex-ui/src/editor/time_move_preview.rs')
             and suffix.startswith('super::clip_name::passive_name_header(')
         )
         header_mixer_component = header_mixer_component or (

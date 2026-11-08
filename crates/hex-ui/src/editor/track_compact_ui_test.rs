@@ -656,7 +656,25 @@ fn compact_time_range_copy_projects_named_audio_and_midi_fragments_without_mutat
             .debug_bounds(name)
             .expect("named compact time fragment");
         assert_eq!(fragment.size.height, px(23.0));
-        assert_title(&mut f.visual, "clip-drag-name", f.clips[index], fragment);
+        // Fragment captions are passive and uniquely scoped, rather than
+        // mounting the same authored clip identity in multiple residuals.
+        let title_name = if index == 0 {
+            Box::leak(format!("{name}-name").into_boxed_str()) as &'static str
+        } else {
+            selector("time-move-midi-fragment-name", f.clips[index].value())
+        };
+        let title = f
+            .visual
+            .debug_bounds(title_name)
+            .expect("passive fragment title");
+        assert!(title.size.width > px(30.0));
+        assert_title_rail_height(title, title_name);
+        assert!(title.top() >= fragment.top() - px(1.0));
+        assert!(title.bottom() <= fragment.bottom());
+        assert!(
+            f.visual.rendered_background(title_name).is_some(),
+            "fragment title strip actually paints"
+        );
     }
     assert_no_bodies(&mut f);
     f.visual.simulate_keystrokes("escape");
