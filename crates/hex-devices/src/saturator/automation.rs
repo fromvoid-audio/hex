@@ -83,7 +83,7 @@ impl SaturatorRuntime {
         base.check_inline_ownership();
         controls.check_inline(SaturatorSettings::check_inline);
         settings.check_inline();
-        let _: (&u32, &f64, &f64, &u32) =
+        let _: (&u32, &f64, &f64, &[u32; 2]) =
             (sample_rate, drive_gain, output_gain, gain_ramp_remaining);
         let _: (
             &Kernel,
@@ -102,26 +102,42 @@ impl SaturatorRuntime {
             return Ok(());
         };
         let settings = next.effective();
-        // Constant/held controls reuse scalar coefficients; only a changing dB
-        // value evaluates the original bounded gain conversion.
-        let drive = if (!self.base.supports(parameter::DRIVE) && self.gain_ramp_remaining != 0)
-            || settings.drive_db == self.settings.drive_db
-        {
-            self.drive_gain
-        } else {
-            amplitude_from_db(settings.drive_db)?
-        };
-        let output = if (!self.base.supports(parameter::OUTPUT) && self.gain_ramp_remaining != 0)
-            || settings.output_db == self.settings.output_db
-        {
-            self.output_gain
-        } else {
-            amplitude_from_db(settings.output_db)?
-        };
+        // Held controls reuse scalar coefficients once direct ramps settle.
+        // Changes use the original bounded gain conversion.
+        let targets = [
+            if settings.drive_db == self.settings.drive_db && self.gain_ramp_remaining[0] == 0 {
+                self.drive_gain
+            } else {
+                amplitude_from_db(settings.drive_db)?
+            },
+            if settings.output_db == self.settings.output_db && self.gain_ramp_remaining[1] == 0 {
+                self.output_gain
+            } else {
+                amplitude_from_db(settings.output_db)?
+            },
+        ];
+        let was_present = [self.controls.has_value(0), self.controls.has_value(1)];
         self.controls.install(next);
+        for (index, (gain, target)) in [
+            (&mut self.drive_gain, targets[0]),
+            (&mut self.output_gain, targets[1]),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if self.controls.has_value(index) {
+                *gain = target;
+                self.gain_ramp_remaining[index] = 0;
+            } else {
+                if was_present[index] && self.gain_ramp_remaining[index] == 0 && *gain != target {
+                    self.gain_ramp_remaining[index] = gain_ramp_frames(self.sample_rate);
+                }
+                if self.gain_ramp_remaining[index] == 0 {
+                    *gain = target;
+                }
+            }
+        }
         self.settings = settings;
-        self.drive_gain = drive;
-        self.output_gain = output;
         Ok(())
     }
 }
