@@ -1390,7 +1390,16 @@ impl GestureMachine {
         match result {
             Ok(()) => outcome.ack.accepted = true,
             Err(error) => {
-                if matches!(error, SessionError::PluginSourceLost(_))
+                let source_lost = matches!(error, SessionError::PluginSourceLost(_));
+                // A recorded terminal may already have restored authored input
+                // before durable take publication refuses. Its completed SDK
+                // preview cannot be retained, and the source is still alive.
+                let recording_released = matches!(error, SessionError::PluginRecordingReleased(_))
+                    && matches!(request.phase(), GesturePhase::Commit | GesturePhase::Cancel)
+                    && self.active.as_ref().is_some_and(|active| {
+                        matches!(active.kind, ActiveKind::Plugin { recording: true })
+                    });
+                if (source_lost || recording_released)
                     && self.snapshot().is_some_and(|active| {
                         active.key == request.key()
                             && matches!(active.target, GestureTarget::PluginParameter { .. })
@@ -1399,7 +1408,7 @@ impl GestureMachine {
                     self.active = None;
                     outcome.playback = None;
                     outcome.preview_project = None;
-                    outcome.ack.source_lost = true;
+                    outcome.ack.source_lost = source_lost;
                 }
                 outcome.ack.reason = Some(hex_storage::text::lowercase_outside_verbatim(
                     &error.to_string(),

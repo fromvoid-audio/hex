@@ -230,6 +230,10 @@ fn released_recording_refusal_ends_only_its_matching_terminal_without_source_los
                 },
             );
             assert!(!refused.ack.accepted && !refused.ack.source_lost);
+            assert_eq!(
+                refused.ack.reason.as_deref(),
+                Some("recording retained after publication refusal")
+            );
             assert_eq!(refused.ack.preview_retained, !recording);
             assert_eq!(machine.snapshot().is_none(), recording);
             assert!(refused.playback.is_none() && !refused.canonical_changed);
