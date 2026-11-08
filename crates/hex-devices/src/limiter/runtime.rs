@@ -47,7 +47,8 @@
 //! layout, including silent attenuation and parameter ramps. A layout change
 //! (lookahead, routing or true-peak latency) is admitted only when the donor has
 //! no queued output in either stage; it explicitly resets both candidate
-//! histories to the new configuration. That transition discards only silent
+//! histories to the new configuration. Physical storage layouts must also match
+//! before copying a nonempty history. That transition discards only silent
 //! future gain/program influence. In-flight transactions and rate changes
 //! refuse; the host retains its existing PDC, publication and retirement rules.
 use super::automation;
@@ -145,12 +146,19 @@ impl Stage {
         self.signal.fill(Sample::default());
         self.scalar = Scalar::default();
     }
-    fn maximum(&mut self, lane: usize, value: f64) -> f64 {
+    fn same_storage_layout(&self, previous: &Self) -> bool {
+        self.signal.len() == previous.signal.len()
+            && self
+                .peaks
+                .iter()
+                .zip(&previous.peaks)
+                .all(|(a, b)| a.len() == b.len())
+    }
+    fn maximum(&mut self, lane: usize, value: f64, window: usize) -> f64 {
         let s = &mut self.scalar;
         let queue = &mut self.peaks[lane];
         let capacity = queue.len();
-        while s.len[lane] > 0 && s.stamp.wrapping_sub(queue[s.head[lane]].stamp) >= capacity as u64
-        {
+        while s.len[lane] > 0 && s.stamp.wrapping_sub(queue[s.head[lane]].stamp) >= window as u64 {
             s.head[lane] = (s.head[lane] + 1) % capacity;
             s.len[lane] -= 1;
         }
@@ -193,7 +201,13 @@ impl Stage {
                 detector[1] = detector[1].max(bound[1].abs());
             }
         }
-        let maxima = [self.maximum(0, detector[0]), self.maximum(1, detector[1])];
+        // Construction validates this logical window against both backing
+        // stores. Physical capacity does not define latency or peak lifetime.
+        let window = config.delay + 1;
+        let maxima = [
+            self.maximum(0, detector[0], window),
+            self.maximum(1, detector[1], window),
+        ];
         let worst = maxima[0].max(maxima[1]);
         sample.detector = detector;
         let s = &mut self.scalar;
@@ -204,14 +218,14 @@ impl Stage {
             s.nonzero += 1;
         }
         self.signal[s.next] = sample;
-        s.next = (s.next + 1) % self.signal.len();
+        s.next = (s.next + 1) % window;
         let mut delayed = self.signal[s.next];
         // Current-output constraints are separate from the long anticipation
         // maximum, allowing a smooth attack before the transient reaches output.
         let mut immediate = delayed.signal.map(f64::abs);
         if config.true_peak {
             for offset in 0..TAPS {
-                let detector = self.signal[(s.next + offset) % self.signal.len()].detector;
+                let detector = self.signal[(s.next + offset) % window].detector;
                 for lane in 0..2 {
                     immediate[lane] = immediate[lane].max(detector[lane]);
                 }
@@ -484,12 +498,36 @@ impl History {
         config: Config,
         admitted: [bool; automation::COUNT],
     ) -> Result<Self, DeviceContractError> {
+        Self::with_capacity(config, admitted, config.delay + 1, config.mid_side)
+    }
+    /// Allocate bounded backing independently of the initial logical window.
+    /// An unused final stage may be reserved; it stays silent until its owning
+    /// layout is selected after a reset. No processing operation resizes storage.
+    fn with_capacity(
+        config: Config,
+        admitted: [bool; automation::COUNT],
+        capacity: usize,
+        reserve_final_stage: bool,
+    ) -> Result<Self, DeviceContractError> {
+        if !(8000..=192000).contains(&config.rate) {
+            return Err(DeviceContractError::InvalidParameterValue);
+        }
+        let maximum = usize::try_from((u64::from(config.rate) * 6).div_ceil(1000))
+            .map_err(|_| DeviceContractError::InvalidParameterValue)?
+            .checked_add(TAPS)
+            .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
+        if capacity < config.delay + 1
+            || capacity > maximum
+            || (config.mid_side && !reserve_final_stage)
+        {
+            return Err(DeviceContractError::InvalidParameterValue);
+        }
         Ok(Self {
             controls: crate::parameter_binding::Controls::new(config.settings, admitted),
             parameters: config.parameters,
-            first: Stage::new(config.delay + 1)?,
-            final_stage: if config.mid_side {
-                Some(Stage::new(config.delay + 1)?)
+            first: Stage::new(capacity)?,
+            final_stage: if reserve_final_stage {
+                Some(Stage::new(capacity)?)
             } else {
                 None
             },
@@ -497,6 +535,14 @@ impl History {
             gain: config.parameters.gain,
             output: config.parameters.output,
         })
+    }
+    fn same_storage_layout(&self, previous: &Self) -> bool {
+        self.first.same_storage_layout(&previous.first)
+            && match (&self.final_stage, &previous.final_stage) {
+                (Some(a), Some(b)) => a.same_storage_layout(b),
+                (None, None) => true,
+                _ => false,
+            }
     }
     fn copy_from(&mut self, old: &Self) {
         self.controls = old.controls;
@@ -545,6 +591,8 @@ impl Runtime {
         self.config.delay == previous.config.delay
             && self.config.mid_side == previous.config.mid_side
             && self.config.true_peak == previous.config.true_peak
+            && self.primary.same_storage_layout(&previous.primary)
+            && self.scratch.same_storage_layout(&previous.scratch)
     }
 }
 struct BlockStats {
@@ -671,7 +719,9 @@ impl Runtime {
             false,
         );
         let mut attenuation = first_gain.map(meter_factor);
-        if let Some(final_stage) = &mut history.final_stage {
+        if config.mid_side
+            && let Some(final_stage) = &mut history.final_stage
+        {
             // The final stage delays this exact first-stage factor together
             // with its signal; its own factor is applied only on output.
             sample.attenuation = attenuation.map(|gain| gain as f32);
@@ -835,3 +885,6 @@ impl OwnedProcessorRuntime for Runtime {
         Some(result)
     }
 }
+
+#[cfg(test)]
+mod storage_tests;
