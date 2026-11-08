@@ -293,6 +293,14 @@ impl NativeEffectReference<'_> {
             Self::Loaned(control) => control.worker.received_program_on_control(),
         }
     }
+    pub(crate) fn committed_quantum_on_control(
+        &self,
+    ) -> Option<crate::plugin_worker::CommittedQuantum> {
+        match self {
+            Self::Unsplit(effect) => effect.worker.committed_quantum_on_control(),
+            Self::Loaned(control) => control.worker.committed_quantum_on_control(),
+        }
+    }
     pub(crate) fn processed_program_on_control(
         &self,
     ) -> Option<crate::plugin_worker::ReceivedProgram> {
