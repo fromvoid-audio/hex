@@ -39,6 +39,7 @@ mod operator_harmonic_ui_tests;
 mod operator_keytrack_ui_tests;
 mod operator_navigation_tests;
 mod operator_preview_navigation_tests;
+mod operator_routing_picker_tests;
 mod operator_selector_keys_ui_tests;
 mod operator_tab_tests;
 mod operator_tuning_ui_tests;
@@ -1833,15 +1834,15 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.device_panel.operator_pages[&instrument_id].page,
-            operator_panel::OperatorPage::Routing,
-            "global routing icon opens the canonical routing view"
+            operator_panel::OperatorPage::Envelope,
+            "routing picker preserves the selected editor context"
         );
     });
     let envelope_tab =
         Box::leak(format!("operator-page-{}-envelope", instrument_id.value()).into_boxed_str());
     assert!(
-        visual.debug_bounds(envelope_tab).is_none(),
-        "global panel dedicates its middle to modulation"
+        visual.debug_bounds(envelope_tab).is_some(),
+        "routing popup leaves the envelope working surface mounted"
     );
     let shell = visual
         .debug_bounds(Box::leak(
@@ -2062,7 +2063,11 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         format!("operator-preview-row-{}-global", instrument_id.value()).into_boxed_str(),
     );
     let tab_bounds = visual.debug_bounds(routing_rail).expect("routing rail");
-    visual.simulate_click(tab_bounds.center(), Modifiers::default());
+    let routing = visual.debug_bounds(route_link).expect("routing picker");
+    visual.simulate_click(
+        point(routing.right() + px(2.0), tab_bounds.center().y),
+        Modifiers::default(),
+    );
     visual.run_until_parked();
     assert!(
         visual
