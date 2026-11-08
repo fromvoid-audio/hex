@@ -68,6 +68,12 @@ impl ModulationLfo {
         self.rate = rate;
     }
 
+    /// Inherit phase without replacing this source's prepared rate.
+    /// The host must first establish that both sources have the same identity.
+    pub fn inherit_phase(&mut self, previous: &Self) {
+        self.phase = previous.phase;
+    }
+
     /// Explicitly retrigger at a phase in cycles, in the half-open range [0, 1).
     pub fn reset(&mut self, phase: f64) -> Result<(), InvalidLfo> {
         if !phase.is_finite() || !(0.0..1.0).contains(&phase) {
@@ -113,6 +119,10 @@ mod tests {
         assert!((lfo.next_sample() - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
         lfo.reset(0.25).unwrap();
         assert!((lfo.next_sample() - 1.0).abs() < 1e-6);
+        let mut replacement = ModulationLfo::new(LfoRate::free(8.0, 2.0).unwrap(), 0.0).unwrap();
+        replacement.inherit_phase(&lfo);
+        assert!((replacement.next_sample() - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+        assert!((replacement.next_sample() + std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
     }
 
     #[test]
