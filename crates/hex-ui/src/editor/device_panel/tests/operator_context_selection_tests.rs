@@ -14,8 +14,9 @@ pub(super) fn row_background(
             device.value()
         )))
         .unwrap();
-    // The bottom inset is a real section-selection target outside every control.
-    point(row.center().x, row.bottom() - px(1.0))
+    // The bottom strip is content, below the numeric fields. Its left end also
+    // stays clear of the waveform popup; the structural side border is not a hit target.
+    point(row.left() + px(16.0), row.bottom() - px(1.0))
 }
 
 #[gpui::test]
