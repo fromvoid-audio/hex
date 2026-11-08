@@ -2,6 +2,56 @@
 use super::*;
 
 #[test]
+fn final_main_observer_reads_both_channels_after_main_device_and_fader() {
+    for gain in [0.0, 0.25, 1.0, 2.0] {
+        let mut snapshot = audio_fixture_project(false, false, false).snapshot();
+        snapshot.master_gain = gain;
+        let utility = &hex_devices::utility::UTILITY_DEFINITION;
+        let state = utility
+            .patch_parameter(
+                &utility.default_state().unwrap(),
+                hex_devices::utility::parameter::GAIN,
+                ParameterValue::Float(0.5),
+            )
+            .unwrap();
+        snapshot.main_devices.push(DeviceSnapshot {
+            automation: Vec::new(),
+            comparison: None,
+            id: 30,
+            bypassed: false,
+            state,
+        });
+        snapshot.next_id = 31;
+        let project = Project::from_snapshot(snapshot).unwrap();
+        let mut runtime = linear(prepare_audio(&project));
+        let mut output = [[0.0; 2]; 64];
+        let mut peaks = [0.0_f32; 2];
+        runtime
+            .render_with_post_node_and_main_observers(
+                &mut output,
+                None,
+                Some(&mut |frames: &[crate::Frame]| {
+                    for frame in frames {
+                        for channel in 0..2 {
+                            peaks[channel] = peaks[channel].max(frame[channel].abs());
+                        }
+                    }
+                }),
+            )
+            .unwrap();
+        // Independently sum the two asymmetric source channels through their
+        // track faders/pans, then apply the main device's half gain and fader.
+        let expected = [0.4 * 0.5 * gain, 0.175 * 0.5 * gain];
+        for channel in 0..2 {
+            assert!(
+                (peaks[channel] - expected[channel]).abs() < 1e-6,
+                "gain={gain} actual={peaks:?} expected={expected:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn track_channels_follow_real_fader_and_mute_without_main_gain() {
     for (gain, muted) in [(1.0, false), (0.25, false), (0.0, false), (1.0, true)] {
         let mut snapshot = audio_fixture_project(false, false, false).snapshot();
