@@ -6,6 +6,7 @@ use crate::operator_waveform::{
 };
 mod context;
 mod feedback;
+mod keytrack;
 mod retarget;
 mod tuning;
 pub use context::{PreparedOperatorConfiguration, PreparedOperatorNote};

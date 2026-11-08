@@ -11,6 +11,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT_CONFIGURATION_ID: AtomicU64 = AtomicU64::new(1);
 const MAX_CONFIGURATION_ID: u64 = u64::MAX >> 1;
 
+fn next_configuration_id() -> Result<u64, Invalid> {
+    NEXT_CONFIGURATION_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            if current < MAX_CONFIGURATION_ID {
+                current.checked_add(1)
+            } else {
+                None
+            }
+        })
+        .map_err(|_| Invalid("operator configuration identity exhausted"))
+}
+
 /// Immutable rate-specific original Operator configuration, with no heap owners.
 /// The caller keeps it alive for every note prepared against it. Native host
 /// identity, ownership and retirement are separate Lattice responsibilities.
@@ -21,6 +33,7 @@ pub struct PreparedOperatorConfiguration {
     ratios: [f64; OPERATORS],
     tuning: [OperatorTuning; OPERATORS],
     fine_offsets_hz: [f32; OPERATORS],
+    pitch_keytrack: super::keytrack::Amounts,
     configuration: PreparedFmConfiguration,
     oscillator_levels: [f64; OPERATORS],
     envelopes: PreparedOperatorEnvelopes,
@@ -132,21 +145,14 @@ impl PreparedOperatorConfiguration {
         } else {
             None
         };
-        let configuration_id = NEXT_CONFIGURATION_ID
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                if current < MAX_CONFIGURATION_ID {
-                    current.checked_add(1)
-                } else {
-                    None
-                }
-            })
-            .map_err(|_| Invalid("operator configuration identity exhausted"))?;
+        let configuration_id = next_configuration_id()?;
         Ok(Self {
             sample_rate,
             configuration_id,
             ratios: oscillators.map(|oscillator| oscillator.ratio),
             tuning,
             fine_offsets_hz: [0.0; OPERATORS],
+            pitch_keytrack: [None; OPERATORS],
             configuration: PreparedFmConfiguration::new(oscillators, routing),
             oscillator_levels: oscillators.map(|oscillator| oscillator.level),
             envelopes,
@@ -157,6 +163,25 @@ impl PreparedOperatorConfiguration {
             oscillator_velocity: [0.0; OPERATORS],
             oscillator_quantize: [false; OPERATORS],
         })
+    }
+
+    /// Prepare independent 0–100% note-pitch tracking. Every anchor must be a
+    /// validated `Fixed` tuning: 0% uses it exactly, 100% uses note Hz × ratio.
+    /// Fractional amounts interpolate base frequency and multiplier in log space;
+    /// velocity/quantization then modify the multiplier, followed by fine Hz.
+    /// A changed policy receives a new configuration identity before publication.
+    pub fn with_pitch_keytrack(
+        mut self,
+        amounts_percent: [f32; OPERATORS],
+        fixed_anchors: [OperatorTuning; OPERATORS],
+    ) -> Result<Self, Invalid> {
+        let prepared = super::keytrack::prepare(amounts_percent, fixed_anchors)?;
+        if self.tuning != prepared.tuning || self.pitch_keytrack != prepared.tracking {
+            self.configuration_id = next_configuration_id()?;
+            self.tuning = prepared.tuning;
+            self.pitch_keytrack = prepared.tracking;
+        }
+        Ok(self)
     }
 
     /// Add signed Hz after ratio/fixed multiplication during control-side note preparation.
@@ -221,7 +246,10 @@ impl PreparedOperatorConfiguration {
         velocity: u8,
         table: Option<&hex_lattice::TuningTable>,
     ) -> Result<super::tuning::NoteSteps, Invalid> {
-        if self.oscillator_velocity == [0.0; 4] && self.fine_offsets_hz == [0.0; 4] {
+        if self.oscillator_velocity == [0.0; 4]
+            && self.fine_offsets_hz == [0.0; 4]
+            && self.pitch_keytrack == [None; OPERATORS]
+        {
             return super::tuning::prepared_steps_with_table(
                 self.sample_rate,
                 pitch,
@@ -247,12 +275,16 @@ impl PreparedOperatorConfiguration {
             } else {
                 2.0_f64.powf(4.0 * amount * f64::from(velocity) / 127.0)
             };
-            let (base, multiplier) = match self.tuning[i] {
-                OperatorTuning::Ratio => (note_hz, self.ratios[i]),
-                OperatorTuning::Fixed {
-                    frequency_hz,
-                    multiplier,
-                } => (frequency_hz, multiplier),
+            let (base, multiplier) = if let Some(tracking) = self.pitch_keytrack[i] {
+                tracking.base_and_multiplier(note_hz, self.ratios[i])
+            } else {
+                match self.tuning[i] {
+                    OperatorTuning::Ratio => (note_hz, self.ratios[i]),
+                    OperatorTuning::Fixed {
+                        frequency_hz,
+                        multiplier,
+                    } => (frequency_hz, multiplier),
+                }
             };
             let mut multiplier = multiplier * factor;
             if amount != 0.0 && self.oscillator_quantize[i] {
@@ -637,6 +669,7 @@ impl PreparedOperatorConfiguration {
             && self.ratios == target.ratios
             && self.tuning == target.tuning
             && self.fine_offsets_hz == target.fine_offsets_hz
+            && self.pitch_keytrack == target.pitch_keytrack
             && self.configuration.phases == target.configuration.phases
             && self.configuration.routing.modulation == target.configuration.routing.modulation
             && self.configuration.routing.order == target.configuration.routing.order
