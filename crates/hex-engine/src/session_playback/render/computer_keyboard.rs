@@ -270,6 +270,7 @@ impl SessionPlayback {
                             Some(&source_clock),
                             &hex_lattice::EMPTY_DEVICE_RESOURCES,
                             None,
+                            None,
                         )
                         .map_err(|error| error.render_error())?;
                 }

@@ -27,6 +27,7 @@ fn reverb_bypass_track_return_main_matches_single_wet_history_and_dry_reference(
             state = DEFINITION.patch_parameter(&state, id, value).unwrap();
         }
         let device = DeviceSnapshot {
+            parent: None,
             id,
             automation: Vec::new(),
             comparison: None,

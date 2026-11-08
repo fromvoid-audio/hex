@@ -586,6 +586,7 @@ class ScopeTests(unittest.TestCase):
         self.assertTrue(stream)
         self.assertTrue(all(a[:2] == ("cargo", "clippy") for a in stream))
         self.assertTrue(any("hex-stream/test-support" in ",".join(a) and a[1] == "clippy" for a in commands))
+        self.assertTrue(any("hex-media/test-support" in ",".join(a) and a[1] == "clippy" for a in commands))
         self.assertIn("hex-midi", boundary["excluded_packages"])
         with tempfile.TemporaryDirectory() as directory:
             fixture_root = Path(directory)
@@ -601,6 +602,9 @@ class ScopeTests(unittest.TestCase):
         new_feature = [{**p, "features": {"new-configuration": []}} if p["name"] == "hex-devices" else p
                        for p in inventory]
         self.assertEqual(plan.boundary_selection(root, [path], new_feature, affected)["kind"], "packages")
+        new_media_feature = [{**p, "features": {**p["features"], "unreviewed": []}}
+                             if p["name"] == "hex-media" else p for p in inventory]
+        self.assertEqual(plan.boundary_selection(root, [path], new_media_feature, affected)["kind"], "packages")
         with self.assertRaisesRegex(ValueError, "runtime consumers missing"):
             plan.boundary_selection(root, [path], [p for p in inventory if p["name"] != "hex-storage"], affected)
         for change in ("crates/hex-devices/src/lib.rs", "crates/hex-lattice-contract/src/lib.rs",
