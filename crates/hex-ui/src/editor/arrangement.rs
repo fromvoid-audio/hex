@@ -909,6 +909,10 @@ impl EditorView {
                             .child(theme::text("main")),
                     )
                     .child(div().flex_1())
+                    .children([super::track_meters::render_main(
+                        self.track_meters.main_level(),
+                        self.main_track_height(),
+                    )])
                     .children(self.track_latency_indicator(super::track_latency::Owner::Main))
                     .child(self.sample_arm_button(super::sample_recorder::Arm::Main, cx))
                     .children(

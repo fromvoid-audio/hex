@@ -29,6 +29,8 @@ fn main_shrinks_to_header_only_expands_and_keeps_pin_alignment_and_controls(
     let lane = visual.debug_bounds("main-track-lane").unwrap();
     assert_eq!(header.size.height, lane.size.height);
     assert_eq!(header.top(), lane.top());
+    let meter = visual.debug_bounds("main-output-meter").unwrap();
+    assert!(meter.top() >= header.top() && meter.bottom() <= header.bottom());
     assert!(
         visual.debug_bounds("main-track-controls").is_none(),
         "compact controls have no hidden hits"
