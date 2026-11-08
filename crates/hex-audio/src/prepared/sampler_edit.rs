@@ -410,6 +410,14 @@ impl Callback {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         if self.status.sampler_edit.native_epoch.load(Acquire) {
             let source = self.current_native_epoch_fence_source();
+            // Pin the transport at this operation's first callback witness.
+            // A later Stop must not refresh an already acknowledged fence.
+            if self.status.sampler_edit.ack.load(SeqCst) != operation {
+                self.status
+                    .sampler_edit
+                    .ready_transport_epoch
+                    .store(self.status.transport_epoch.load(Acquire), SeqCst);
+            }
             let playing = match self.active.as_ref() {
                 Some(ActivePublication::Eligible(active)) => active
                     .runtime()

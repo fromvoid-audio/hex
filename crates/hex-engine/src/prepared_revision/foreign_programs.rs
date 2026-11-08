@@ -6,15 +6,27 @@ use hex_lattice::{PreparedProcessorFactory, PreparedRuntimeInstance};
 use hex_lattice_contract::ForeignProcessorBinding as Binding;
 use std::num::NonZeroU64;
 
+/// Actual original-worker pickup, never a queued graph key or final Main ACK.
+/// Empty is an observed absence, distinct from unavailable observation. It
+/// does not assert that the callback has no unfinished keyed quantum.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ForeignProgramFrontier {
+    #[default]
+    Unknown,
+    Empty,
+    Program(NonZeroU64),
+}
+
 impl PreparedRevision {
     /// Preserve programs needed to finish the original worker's open quantum.
     /// Call before sharing/publication, using the actual preceding revision.
-    /// `received` must query that exact worker; None conservatively retains all
-    /// bounded history. Failure consumes only this unpublished candidate.
+    /// `received` must query that exact worker. Unknown/Empty conservatively
+    /// retain bounded history; only actual Empty can admit a matching first
+    /// programme. Failure consumes only this unpublished candidate.
     pub fn with_foreign_program_history_from(
         mut self,
         previous: &Self,
-        mut received: impl FnMut(Binding) -> Option<NonZeroU64>,
+        mut received: impl FnMut(Binding) -> ForeignProgramFrontier,
     ) -> Result<Self, Invalid> {
         if !self.foreign_automation.is_empty() || !previous.foreign_automation.is_empty() {
             return Err(Invalid("legacy foreign program history is unsupported"));
@@ -49,7 +61,7 @@ fn nodes(project: &PlaybackProject) -> impl Iterator<Item = &PreparedRuntimeInst
 fn retain_node(
     node: &mut PreparedRuntimeInstance,
     previous: &PlaybackProject,
-    received: &mut dyn FnMut(Binding) -> Option<NonZeroU64>,
+    received: &mut dyn FnMut(Binding) -> ForeignProgramFrontier,
 ) -> Result<(), Invalid> {
     let Some(program) = node.automation.foreign() else {
         return Ok(());
@@ -79,18 +91,29 @@ fn retain_node(
     {
         return Err(Invalid("foreign program predecessor source differs"));
     }
+    let frontier = received(binding);
     if old_node.automation.foreign().is_none() {
-        return Err(Invalid("foreign program predecessor has no frozen program"));
+        return if frontier == ForeignProgramFrontier::Empty {
+            Ok(())
+        } else {
+            Err(Invalid(
+                "first foreign program requires an observed empty worker frontier",
+            ))
+        };
     }
+    let key = match frontier {
+        ForeignProgramFrontier::Program(key) => Some(key),
+        ForeignProgramFrontier::Unknown | ForeignProgramFrontier::Empty => None,
+    };
     node.automation
-        .retain_foreign_history_on_control(&old_node.automation, received(binding))
+        .retain_foreign_history_on_control(&old_node.automation, key)
         .map_err(|_| Invalid("foreign program history or frontier exceeds its contract"))
 }
 
 pub(crate) fn retain_project(
     project: &mut PlaybackProject,
     previous: &PlaybackProject,
-    received: &mut dyn FnMut(Binding) -> Option<NonZeroU64>,
+    received: &mut dyn FnMut(Binding) -> ForeignProgramFrontier,
 ) -> Result<(), Invalid> {
     if project.sample_rate != previous.sample_rate {
         return Err(Invalid("foreign program predecessor sample rate differs"));

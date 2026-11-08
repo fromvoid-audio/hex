@@ -99,9 +99,23 @@ impl Plugins {
         control: &mut PublicationControl,
         context: Option<AudioSourceContext>,
     ) {
+        self.collect_parameter_observations();
         let Some(gesture) = self.parameter_gesture.as_mut() else {
             return;
         };
+        if gesture.has_retired_delivery() {
+            return;
+        }
+        if gesture
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.delivery.is_some())
+            && gesture.poll_point(control).is_err()
+            && let Some(live) = gesture.live.as_mut()
+        {
+            live.invalidated = true;
+            live.discard = true;
+        }
         let Some(live) = gesture.live.as_mut() else {
             return;
         };
@@ -142,7 +156,9 @@ impl Plugins {
                 != Some((live.source, live.transport_epoch));
         }
         let discard = live.discard;
-        if live.invalidated && gesture.poll_override_cleanup(control) && discard {
+        let finished = live.invalidated && gesture.poll_override_cleanup(control) && discard;
+        self.collect_parameter_observations();
+        if finished {
             self.parameter_gesture = None;
         }
     }
@@ -218,6 +234,11 @@ impl Gesture {
                         value: self.origin.initial,
                         sequence: self.sequence,
                         opening_hold: false,
+                        delivery: None,
+                        processed: false,
+                        sdk_finished: false,
+                        #[cfg(all(test, feature = "allocation-probe"))]
+                        hold_sdk_ack: false,
                     })
                 }
                 Err(reason) if source_gone(reason) => live.discard = true,

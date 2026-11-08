@@ -923,7 +923,7 @@ fn loop_review_session_cell_selection_is_not_a_stale_arrangement_selection(
         assert_eq!(v.selected_cell, Some((track, scene)));
     });
     let position = visual
-        .debug_bounds("show arrange view · tab")
+        .debug_bounds("workspace-view-toggle")
         .unwrap()
         .center();
     visual.simulate_click(position, Modifiers::default());

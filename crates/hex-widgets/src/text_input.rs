@@ -253,6 +253,9 @@ impl TextInput {
             .w(px(20.0))
             .h(px(20.0))
             .flex_shrink_0()
+            .flex()
+            .items_center()
+            .justify_center()
             .children(active.then(|| {
                 let button = action(self.config.clear_glyph.clone(), self.config.action_style)
                     .id(gpui::SharedString::from(format!(
@@ -263,7 +266,7 @@ impl TextInput {
                         let id = format!("{}-clear", self.config.id);
                         move || id.clone()
                     })
-                    .size(px(20.0))
+                    .size(px(14.0))
                     .tooltip({
                         let label = self.config.clear_name.clone();
                         let style = self.config.style;
@@ -926,7 +929,7 @@ impl gpui::Render for TextInput {
             .flex()
             .min_w_0()
             .overflow_hidden()
-            .h(px(if self.preserve_source { 16.0 } else { 24.0 }))
+            .h(px(if self.preserve_source { 16.0 } else { 20.0 }))
             .px_1()
             .items_center()
             .bg(gpui::rgb(self.config.style.raised))
@@ -936,6 +939,9 @@ impl gpui::Render for TextInput {
             .key_context("hex_text_input")
             .border_1()
             .border_color(gpui::rgb(self.config.style.border))
+            .when(self.config.kind == TextInputKind::Search, |input| {
+                input.border_0().rounded(px(crate::CONTROL_CORNER_RADIUS))
+            })
             .track_focus(&self.focus)
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))

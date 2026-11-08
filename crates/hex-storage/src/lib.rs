@@ -78,7 +78,7 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = VST3_AUTOMATION_TOUCH_SCHEMA_VERSION;
 
 /// Schema70 stores an independent original source span for signed musical event placement.
 pub const MUSICAL_EVENT_SOURCE_SCHEMA_VERSION: u32 = 70;
@@ -100,6 +100,8 @@ pub const SAMPLE_RATE_MODE_SCHEMA_VERSION: u32 = 76;
 pub const VST3_AUTOMATION_SCHEMA_VERSION: u32 = 77;
 /// Native Arrangement touch overlays above the original authored envelope.
 pub const DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION: u32 = 78;
+/// Class-bound raw VST3 touch overlays; schema78 retains its native-only contract.
+pub const VST3_AUTOMATION_TOUCH_SCHEMA_VERSION: u32 = 79;
 
 fn contains_larger_device_state(project: &Project) -> bool {
     schema::device_assets::authored_states(project)
@@ -154,7 +156,9 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// [`SINC_V2_SCHEMA_VERSION`] when it contains sinc v2 media, otherwise
 /// [`CURRENT_SCHEMA_VERSION`].
 pub fn schema_version_for(project: &Project) -> u32 {
-    if schema::device_automation_touch::contains(project) {
+    if schema::device_automation_touch::contains_vst3(project) {
+        VST3_AUTOMATION_TOUCH_SCHEMA_VERSION
+    } else if schema::device_automation_touch::contains(project) {
         DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION
     } else if schema::vst3_automation::contains(project) {
         VST3_AUTOMATION_SCHEMA_VERSION
@@ -611,7 +615,9 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("unsupported project format"));
     }
     let project = match header.version {
-        DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION => schema::device_automation_touch::decode(bytes),
+        DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION | VST3_AUTOMATION_TOUCH_SCHEMA_VERSION => {
+            schema::device_automation_touch::decode(bytes, header.version)
+        }
         VST3_AUTOMATION_SCHEMA_VERSION => schema::vst3_automation::decode(bytes),
         SAMPLE_RATE_MODE_SCHEMA_VERSION => schema::sample_rate_mode::decode(bytes),
         VST3_STATE_SIZE_SCHEMA_VERSION | GROUP_OUTPUT_MUTE_SCHEMA_VERSION => {

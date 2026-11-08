@@ -3,8 +3,8 @@ use crate::fm4::PreparedOperatorNote;
 #[test]
 fn suffix_migration_preserves_every_prefix_and_catalog_version_boundary() {
     let current = crate::operator_state::tests::legacy_state();
-    assert_eq!(current.payload().len(), 1728);
-    assert_eq!(OPERATOR_METADATA.descriptors().len(), 424);
+    assert_eq!(current.payload().len(), 1744);
+    assert_eq!(OPERATOR_METADATA.descriptors().len(), 428);
     for (version, length) in [
         (1, 224),
         (2, 240),

@@ -8,13 +8,10 @@ use super::gesture_adapter::{
 use super::*;
 use std::{cell::Cell, rc::Rc};
 
-pub(super) type NumericBeginHook =
-    Box<dyn Fn(&mut EditorView, &mut Context<EditorView>, ParameterKey)>;
 pub(super) struct BindingPolicy {
     pub(super) tab_navigation: bool,
     pub(super) toggle_appearance: ToggleAppearance,
     pub(super) choice_order: Option<Vec<u32>>,
-    pub(super) numeric_begin: Option<NumericBeginHook>,
 }
 
 pub(super) type BindingPolicyFactory = fn(
@@ -195,6 +192,7 @@ pub(super) enum ControlPresentation {
     Standard,
     CompactDial,
     MicroDial,
+    FilledSlider,
     InlineValue,
     MeterFader,
     ChoiceDial,
@@ -419,6 +417,7 @@ pub(super) fn render_parameter(
                     hex_widgets::INLINE_VALUE_HEIGHT,
                 ),
                 ControlPresentation::MeterFader => (60.0, 154.0),
+                ControlPresentation::FilledSlider => (60.0, 18.0),
                 _ => (136.0, 26.0),
             };
             div().w(px(width)).h(px(height)).child(entity.clone())
@@ -591,7 +590,6 @@ fn create_parameter_control(
         tab_navigation,
         toggle_appearance,
         choice_order,
-        numeric_begin,
     } = policy(view, key, identity, descriptor, presentation, display);
     let style = parameter_style(presentation);
     let ControlText {
@@ -614,7 +612,13 @@ fn create_parameter_control(
                     NumericScale::LinearAmplitudeDecibels
                 }
                 ParameterPresentation::Logarithmic => NumericScale::Logarithmic,
-                ParameterPresentation::Linear if min < 0.0 && max > 0.0 => NumericScale::Bipolar,
+                ParameterPresentation::Linear
+                    if min < 0.0
+                        && max > 0.0
+                        && presentation != ControlPresentation::FilledSlider =>
+                {
+                    NumericScale::Bipolar
+                }
                 ParameterPresentation::Linear => NumericScale::Linear,
             };
             let mut spec = NumericSpec::new_f32(
@@ -634,6 +638,7 @@ fn create_parameter_control(
                 ControlPresentation::MicroDial => NumericControlPresentation::MicroDial,
                 ControlPresentation::InlineValue => NumericControlPresentation::InlineValue,
                 ControlPresentation::MeterFader => NumericControlPresentation::MeterFader,
+                ControlPresentation::FilledSlider => NumericControlPresentation::FilledSlider,
                 _ => NumericControlPresentation::HorizontalSlider,
             };
             let config = NumericControlConfig::new(
@@ -672,14 +677,6 @@ fn create_parameter_control(
                                 Some(ParameterControl::Float { entity, .. })
                                     if entity.entity_id() == emitter.entity_id())
                     };
-                    if !is_current(view) {
-                        return;
-                    }
-                    if event.phase == NumericEventPhase::Begin
-                        && let Some(hook) = numeric_begin.as_ref()
-                    {
-                        hook(view, cx, key);
-                    }
                     if !is_current(view) {
                         return;
                     }

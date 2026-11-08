@@ -188,13 +188,33 @@ pub(crate) struct TestWorkerHooks {
 pub(crate) struct TestReadGate {
     pub(crate) key: PageKey,
     pub(crate) after_checks: usize,
+    failure_after_page_reads: Option<u32>,
+    used: std::cell::Cell<bool>,
     pub(crate) entered: SyncSender<()>,
     pub(crate) release: std::sync::mpsc::Receiver<()>,
 }
 
 #[cfg(test)]
 impl TestReadGate {
+    pub(crate) fn new(
+        key: PageKey,
+        after_checks: usize,
+        entered: SyncSender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+        failure_after_page_reads: Option<u32>,
+    ) -> Self {
+        Self {
+            key,
+            after_checks,
+            entered,
+            release,
+            failure_after_page_reads,
+            used: std::cell::Cell::new(false),
+        }
+    }
+
     fn wait(&self, stop: &AtomicBool) {
+        self.used.set(true);
         if self.entered.try_send(()).is_err() {
             return;
         }
@@ -997,6 +1017,12 @@ fn render_page(
     }
     let input = &mut source_scratch[..source_count];
     #[cfg(test)]
+    let read_gate = read_gate.filter(|gate| gate.key == key && !gate.used.get());
+    #[cfg(test)]
+    if let Some(after) = read_gate.and_then(|gate| gate.failure_after_page_reads) {
+        source.reader.fail_page_read_after(after);
+    }
+    #[cfg(test)]
     let mut checks = 0;
     source
         .reader
@@ -1100,8 +1126,8 @@ pub(crate) mod tests {
             Self::pcm_frames(frames, 16)
         }
 
-        pub(crate) fn pcm32() -> Self {
-            Self::pcm_frames(4096, 32)
+        pub(crate) fn pcm32_frames(frames: u16) -> Self {
+            Self::pcm_frames(frames, 32)
         }
 
         fn pcm_frames(frames: u16, bits: u16) -> Self {

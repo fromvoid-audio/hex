@@ -3,12 +3,13 @@ use crate::theme;
 use gpui::{App, ClickEvent, Div, Stateful, Window, div, prelude::*, px, rgb};
 use std::path::Path;
 
-pub(super) const TITLE_HEIGHT: f32 = 22.0;
-pub(super) const TOOLBAR_HEIGHT: f32 = 26.0;
+pub(super) const TOOLBAR_HEIGHT: f32 = 22.0;
+/// Overlays leave the first toolbar row clear for native window controls.
+pub(super) const WINDOW_CONTROL_HEIGHT: f32 = TOOLBAR_HEIGHT;
 // Keep every transport action, full view name and useful output status at the
 // minimum window width. Reserve the wide line for the longest input policy,
 // position readout and output/loading indicators as well as fixed controls.
-pub(super) const WIDE_TOOLBAR_MIN_WIDTH: f32 = 1_200.0;
+pub(super) const WIDE_TOOLBAR_MIN_WIDTH: f32 = 1_600.0;
 pub(super) fn toolbar_height(width: f32) -> f32 {
     if width < WIDE_TOOLBAR_MIN_WIDTH {
         // Two full rows plus the existing bottom divider.
@@ -17,7 +18,7 @@ pub(super) fn toolbar_height(width: f32) -> f32 {
         TOOLBAR_HEIGHT
     }
 }
-pub(super) const CONTROL_SIZE: f32 = 20.0;
+pub(super) const CONTROL_SIZE: f32 = 18.0;
 
 pub(super) fn project_title(document_path: Option<&Path>) -> String {
     document_path
@@ -34,12 +35,9 @@ pub(super) enum TitlebarControl {
     Fullscreen,
 }
 
-pub(super) fn title_bar(
-    title: impl AsRef<str>,
-    cpu_meter: impl IntoElement,
+pub(super) fn window_controls(
     on_control: impl Fn(TitlebarControl) -> Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>,
 ) -> Stateful<Div> {
-    let title_inset = crate::build_info::HEADER_INSET.max(theme::TITLEBAR_LEADING_INSET);
     let controls = [
         (TitlebarControl::Close, "close window", 0xe65c4f),
         (TitlebarControl::Minimize, "minimize window", 0xd8a63b),
@@ -49,7 +47,8 @@ pub(super) fn title_bar(
         .id("window-controls")
         .absolute()
         .left_2()
-        .h_full()
+        .top_0()
+        .h(px(TOOLBAR_HEIGHT))
         .flex()
         .items_center()
         .gap(px(4.0));
@@ -99,55 +98,7 @@ pub(super) fn title_bar(
         );
     }
 
-    div()
-        .id("project-title-bar")
-        .debug_selector(|| "project-title-bar".into())
-        .relative()
-        .h(px(TITLE_HEIGHT))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        // Equal padding on both sides keeps the title centered while protecting
-        // the first row beneath macOS traffic lights.
-        .px(px(title_inset + 68.0))
-        .border_b_1()
-        .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-        .bg(rgb(theme::color(theme::PaletteRole::Surface)))
-        .on_click(|event, window, cx| {
-            // Follow the macOS "double-click a window's title bar to" setting
-            // (zoom, minimize or nothing) rather than forcing fullscreen.
-            if event.standard_click() && event.click_count() == 2 {
-                cx.stop_propagation();
-                window.titlebar_double_click();
-            }
-        })
-        .child(lights)
-        .child(
-            div()
-                .absolute()
-                .right_2()
-                .top_0()
-                .h_full()
-                .flex()
-                .items_center()
-                .children([cpu_meter])
-                .child(crate::build_info::editor_label()),
-        )
-        .child(
-            div()
-                .id("project-title-label")
-                .debug_selector(|| "project-title-label".into())
-                .w_full()
-                .min_w_0()
-                .max_w(px(720.0))
-                .text_center()
-                .text_xs()
-                .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                .line_clamp(1)
-                .text_ellipsis()
-                .child(theme::text(title)),
-        )
+    lights
 }
 
 pub(super) fn toolbar_row() -> Stateful<Div> {
@@ -158,12 +109,18 @@ pub(super) fn toolbar_row() -> Stateful<Div> {
         .flex_shrink_0()
         .flex()
         .items_center()
-        // Contiguous compact controls keep the audio status readable at minimum width.
-        // The toolbar is below the title row and does not need the traffic-light inset.
+        // Every first-row control stays clear of native window chrome.
+        .pl(px(theme::TITLEBAR_LEADING_INSET))
         .pr_2()
         .border_b_1()
         .border_color(rgb(theme::color(theme::PaletteRole::Border)))
         .bg(rgb(theme::color(theme::PaletteRole::Surface)))
+        .on_click(|event, window, cx| {
+            if event.standard_click() && event.click_count() == 2 {
+                cx.stop_propagation();
+                window.titlebar_double_click();
+            }
+        })
 }
 
 #[cfg(test)]
@@ -279,7 +236,7 @@ mod ui_tests {
     }
 
     #[gpui::test]
-    fn compact_header_centers_project_title_and_keeps_toolbar_controls_clear_of_traffic_lights(
+    fn compact_top_toolbar_and_bottom_project_title_preserve_chrome_and_controls(
         cx: &mut TestAppContext,
     ) {
         let (handle, editor) = super::super::clip_drag_ui_test::editor_window(
@@ -309,143 +266,85 @@ mod ui_tests {
             cx.notify();
         });
         let mut visual = VisualTestContext::from_window(handle, cx);
-        // Exercise common rendered geometry on every platform, including the
-        // actual minimum width. Only the OS-specific lights are conditional.
-        for width in [880.0, 960.0, 1440.0] {
+        for width in [
+            880.0,
+            960.0,
+            1440.0,
+            super::WIDE_TOOLBAR_MIN_WIDTH - 1.0,
+            super::WIDE_TOOLBAR_MIN_WIDTH,
+            1920.0,
+        ] {
             visual.simulate_resize(size(px(width), px(540.0)));
             visual.run_until_parked();
-
-            let title = visual
-                .debug_bounds("project-title-bar")
-                .expect("project title row");
-            let title_label = visual
-                .debug_bounds("project-title-label")
-                .expect("centered title label");
-            let version = visual
-                .debug_bounds("application-build-version")
-                .expect("build version remains visible at minimum width");
-            let cpu = visual
-                .debug_bounds("editor-cpu-meter")
-                .expect("cpu meter remains visible at minimum width");
-            let debug = visual
-                .debug_bounds("open-session-log")
-                .expect("debug button remains visible beside the version");
-            let changelog = visual
-                .debug_bounds("open-changelog")
-                .expect("changelog button");
-            let help = visual
-                .debug_bounds("help-tooltip-toggle")
-                .expect("help button");
-            let toolbar = visual
-                .debug_bounds("editor-toolbar")
-                .expect("compact toolbar row");
-            let tempo = visual
-                .debug_bounds("project-tempo-field")
-                .expect("first toolbar field");
-            let import = visual
-                .debug_bounds("import audio · cmd+i")
-                .expect("toolbar action remains visible");
-            let restart = visual
-                .debug_bounds("restart default audio output · stays stopped")
-                .expect("right-side audio control remains visible");
-            let output_status = visual
-                .debug_bounds("audio output status")
-                .expect("output status remains visible");
+            assert!(visual.debug_bounds("project-title-bar").is_none());
+            let toolbar = visual.debug_bounds("editor-toolbar").unwrap();
+            let status = visual.debug_bounds("editor-status-bar").unwrap();
+            let title = visual.debug_bounds("project-title-label").unwrap();
+            let tempo = visual.debug_bounds("project-tempo-field").unwrap();
+            let mode = visual.debug_bounds("workspace-view-toggle").unwrap();
             let window = visual.update(|window, _| window.bounds());
-            eprintln!(
-                "header bounds window={window:?} title={title_label:?} version={version:?} log={debug:?} changelog={changelog:?} tempo={tempo:?} import={import:?}"
-            );
-            let title_bottom = f32::from(title.origin.y + title.size.height);
-            let toolbar_top = f32::from(toolbar.origin.y);
-            let title_center = f32::from(title_label.origin.x + title_label.size.width / 2.0);
-            let window_center = f32::from(window.origin.x + window.size.width / 2.0);
-            assert!((f32::from(title.size.height) - super::TITLE_HEIGHT).abs() < 1.0);
-            assert!(
-                (f32::from(toolbar.size.height)
-                    - super::toolbar_height(f32::from(window.size.width)))
-                .abs()
-                    < 1.0
-            );
-            assert!((toolbar_top - title_bottom).abs() < 1.0);
-            assert!((title_center - window_center).abs() < 1.0);
-            assert!(title_label.origin.x + title_label.size.width + px(8.0) <= cpu.origin.x);
-            assert!(cpu.origin.x + cpu.size.width <= version.origin.x);
-            assert!(version.size.width > px(0.0));
-            assert!(
-                (f32::from(window.origin.x + window.size.width - help.origin.x - help.size.width)
-                    - 8.0)
-                    .abs()
-                    < 1.0
-            );
-            assert!(version.origin.y >= title.origin.y);
-            assert!(version.origin.y + version.size.height <= title.origin.y + title.size.height);
-            // Help is rightmost; Changelog and Log retain their compact neighbors.
-            assert_eq!(
-                debug.origin.x - (version.origin.x + version.size.width),
-                px(4.0)
-            );
-            assert_eq!(
-                changelog.origin.x - (debug.origin.x + debug.size.width),
-                px(4.0)
-            );
-            assert_eq!(
-                help.origin.x - (changelog.origin.x + changelog.size.width),
-                px(4.0)
-            );
-            assert_eq!(help.size, gpui::size(px(20.0), px(20.0)));
-            assert!(help.origin.y >= title.origin.y);
-            assert!(help.bottom() <= title.bottom());
-            assert!(changelog.size.width > px(0.0));
-            assert_eq!(changelog.size.height, px(super::CONTROL_SIZE));
-            assert!(changelog.origin.y >= title.origin.y);
-            assert!(
-                changelog.origin.y + changelog.size.height <= title.origin.y + title.size.height
-            );
-            assert_eq!(debug.size.width, px(20.0));
-            assert!(debug.origin.y >= title.origin.y);
-            assert!(debug.origin.y + debug.size.height <= title.origin.y + title.size.height);
-            assert!((f32::from(import.size.width) - super::CONTROL_SIZE).abs() < 1.0);
-            assert!((f32::from(import.size.height) - super::CONTROL_SIZE).abs() < 1.0);
-            // Tempo now leads the toolbar; Import follows Tempo and Tuning.
-            // The first field still starts at the row edge, without the title inset.
-            assert_eq!(tempo.origin.x, toolbar.origin.x);
-            assert!(f32::from(tempo.origin.x) < crate::theme::TITLEBAR_LEADING_INSET);
-            assert!(tempo.origin.x + tempo.size.width <= import.origin.x);
-            assert!(import.origin.x + import.size.width <= toolbar.origin.x + toolbar.size.width);
-            assert!(f32::from(title_label.size.width) <= 720.0);
-            assert!(
-                f32::from(restart.origin.x + restart.size.width)
-                    <= f32::from(toolbar.origin.x + toolbar.size.width)
-            );
-            assert!(
-                f32::from(output_status.origin.x + output_status.size.width)
-                    <= f32::from(toolbar.origin.x + toolbar.size.width)
-            );
-            assert!(f32::from(output_status.size.width) > 0.0);
-            if cfg!(target_os = "macos") {
-                let close = visual
-                    .debug_bounds("window-control-close")
-                    .expect("custom close control");
-                let minimize = visual
-                    .debug_bounds("window-control-minimize")
-                    .expect("custom minimize control");
-                let fullscreen = visual
-                    .debug_bounds("window-control-fullscreen")
-                    .expect("custom fullscreen control");
-                assert!((f32::from(close.size.width) - 16.0).abs() < 1.0);
-                assert!((f32::from(minimize.size.width) - 16.0).abs() < 1.0);
-                assert!((f32::from(fullscreen.size.width) - 16.0).abs() < 1.0);
-                assert!(f32::from(close.origin.x) < f32::from(minimize.origin.x));
-                assert!(f32::from(minimize.origin.x) < f32::from(fullscreen.origin.x));
-                assert!(f32::from(fullscreen.origin.x + fullscreen.size.width) < window_center);
-                assert!(fullscreen.origin.x + fullscreen.size.width <= title_label.origin.x);
+            assert_eq!(toolbar.top(), window.top());
+            assert_eq!(toolbar.size.height, px(super::toolbar_height(width)));
+            let old_chrome = 22.0 + if width < 1200.0 { 53.0 } else { 26.0 };
+            assert!(toolbar.size.height < px(old_chrome));
+            assert!(title.top() >= status.top() && title.bottom() <= status.bottom());
+            assert!(title.left() >= status.left() && title.right() <= status.right());
+            assert!(title.size.width <= px(120.0));
+            assert!(tempo.left() >= toolbar.left() + px(crate::theme::TITLEBAR_LEADING_INSET));
+            assert!(mode.right() <= toolbar.right());
+            let mut previous_right = None;
+            for selector in [
+                "editor-cpu-meter",
+                "application-build-version",
+                "open-session-log",
+                "open-changelog",
+                "help-tooltip-toggle",
+            ] {
+                let control = visual.debug_bounds(selector).unwrap();
+                assert!(control.size.width > px(0.0));
+                assert!(
+                    control.top() >= toolbar.top() && control.bottom() <= toolbar.bottom(),
+                    "{width}: {selector}={control:?}, toolbar={toolbar:?}"
+                );
+                assert!(control.right() <= mode.left());
+                if let Some(previous) = previous_right {
+                    assert!(control.left() >= previous);
+                }
+                previous_right = Some(control.right());
             }
-            assert!(!gpui::TitlebarOptions::default().hide_native_window_controls);
+            let import = visual.debug_bounds("import audio · cmd+i").unwrap();
+            assert_eq!(
+                import.size,
+                gpui::size(px(super::CONTROL_SIZE), px(super::CONTROL_SIZE))
+            );
+            assert!(tempo.right() <= import.left());
+            for selector in [
+                "restart default audio output · stays stopped",
+                "audio output status",
+            ] {
+                let control = visual.debug_bounds(selector).unwrap();
+                assert!(control.size.width > px(0.0));
+                assert!(control.left() >= toolbar.left() && control.right() <= toolbar.right());
+            }
+            if cfg!(target_os = "macos") {
+                let mut right = toolbar.left();
+                for selector in [
+                    "window-control-close",
+                    "window-control-minimize",
+                    "window-control-fullscreen",
+                ] {
+                    let control = visual.debug_bounds(selector).unwrap();
+                    assert_eq!(control.size, gpui::size(px(16.0), px(16.0)));
+                    assert!(control.left() >= right && control.right() <= tempo.left());
+                    assert!(control.bottom() <= toolbar.top() + px(super::WINDOW_CONTROL_HEIGHT));
+                    right = control.right();
+                }
+            }
         }
     }
 
     #[gpui::test]
-    fn compact_toolbar_keeps_names_status_and_controls_visible_in_both_workspaces(
+    fn compact_toolbar_keeps_view_toggle_status_and_controls_visible_in_both_workspaces(
         cx: &mut TestAppContext,
     ) {
         let _output_fixture_guard = crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
@@ -525,12 +424,7 @@ mod ui_tests {
                     visual.run_until_parked();
                     let toolbar = visual.debug_bounds("editor-toolbar").unwrap();
                     assert_eq!(toolbar.size.height, px(super::toolbar_height(width)));
-                    let name = visual
-                        .debug_bounds(match mode {
-                            EditorMode::Arrangement => "arrange view",
-                            EditorMode::Session => "console view",
-                        })
-                        .unwrap();
+                    let name = visual.debug_bounds("workspace-view-toggle").unwrap();
                     let status = visual.debug_bounds("audio output status").unwrap();
                     let restart = visual
                         .debug_bounds("restart default audio output · stays stopped")
@@ -538,18 +432,18 @@ mod ui_tests {
                     // Ioskeley Mono: enough actual shaped width for all seven
                     // characters of 'offline', not an invisible sliver.
                     assert!(
-                        status.size.width >= name.size.width * (7.0 / 12.0),
+                        status.size.width >= px(80.0) * (7.0 / 12.0),
                         "{width} {mode:?}: status={status:?} name={name:?}"
                     );
-                    assert!(name.size.width >= px(80.0), "full canonical view name");
-                    assert!(name.right() <= restart.left());
+                    assert_eq!(name.size.width, px(super::CONTROL_SIZE));
+                    assert!(status.right() <= name.left());
                     assert!(restart.right() <= status.left());
                     assert!(status.right() <= toolbar.right() - px(8.0));
                     assert!(status.size.height <= toolbar.size.height);
                     let policy = visual.debug_bounds("input-quantization").unwrap();
                     let label_chars = format!("in {} ▾", input.label()).chars().count();
                     assert!(
-                        policy.size.width >= name.size.width * (label_chars as f32 / 12.0),
+                        policy.size.width >= px(80.0) * (label_chars as f32 / 12.0),
                         "the complete input policy label remains visible"
                     );
                     for selector in [
@@ -561,21 +455,24 @@ mod ui_tests {
                         "section-focus-control",
                     ] {
                         let control = visual.debug_bounds(selector).unwrap();
-                        assert!(control.size.width >= px(19.0) && control.size.height >= px(20.0));
+                        assert!(
+                            control.size.width >= px(super::CONTROL_SIZE - 1.0)
+                                && control.size.height >= px(super::CONTROL_SIZE)
+                        );
                         assert!(
                             control.left() >= toolbar.left()
                                 && control.right() <= toolbar.right()
                                 && control.top() >= toolbar.top()
                                 && control.bottom() <= toolbar.bottom()
                                 && (control.bottom() <= name.top()
-                                    || control.right() <= name.left())
+                                    || control.right() <= name.left()),
+                            "{width} {mode:?} {selector}: control={control:?} toolbar={toolbar:?} view={name:?}"
                         );
                     }
                     for selector in [
                         "project tuning · cmd+alt+t",
                         "import audio · cmd+i",
-                        "show arrange view · tab",
-                        "show console view · tab",
+                        "workspace-view-toggle",
                         "restart default audio output · stays stopped",
                     ] {
                         let control = visual.debug_bounds(selector).unwrap();
@@ -724,12 +621,7 @@ mod ui_tests {
                     visual.simulate_resize(size(px(width), px(540.0)));
                     visual.run_until_parked();
                     let toolbar = visual.debug_bounds("editor-toolbar").unwrap();
-                    let name = visual
-                        .debug_bounds(match mode {
-                            EditorMode::Arrangement => "arrange view",
-                            EditorMode::Session => "console view",
-                        })
-                        .unwrap();
+                    let name = visual.debug_bounds("workspace-view-toggle").unwrap();
                     let status = visual.debug_bounds("audio output status").unwrap();
                     let restart = visual
                         .debug_bounds("restart default audio output · stays stopped")
@@ -738,7 +630,7 @@ mod ui_tests {
                     eprintln!(
                         "actual startup loading={loading} width={width} mode={mode:?} status={status:?} name={name:?} restart={restart:?}"
                     );
-                    let seven_chars = name.size.width * (7.0 / 12.0);
+                    let seven_chars = px(80.0) * (7.0 / 12.0);
                     assert!(
                         status.size.width >= seven_chars,
                         "both project loading and full offline status must remain visible: {width} {mode:?} loading={loading} status={status:?}"
@@ -746,11 +638,11 @@ mod ui_tests {
                     let readout = visual.debug_bounds("project position").unwrap();
                     assert!(readout.size.width >= seven_chars);
                     assert!(readout.right() <= restart.left());
-                    assert!(name.right() <= readout.left());
+                    assert!(readout.right() <= restart.left());
                     assert!(restart.right() <= status.left());
                     assert!(status.right() <= toolbar.right() - px(8.0));
                     assert!(status.size.height <= toolbar.size.height);
-                    assert!(name.size.width >= px(80.0));
+                    assert_eq!(name.size.width, px(super::CONTROL_SIZE));
                     // The real None branch omits the bound tempo field; the
                     // appended loading label does not compete with a loaded row.
                     let tempo = visual.debug_bounds("project-tempo-field");
@@ -768,8 +660,7 @@ mod ui_tests {
                     }
                     for selector in [
                         "import audio · cmd+i",
-                        "show arrange view · tab",
-                        "show console view · tab",
+                        "workspace-view-toggle",
                         "restart default audio output · stays stopped",
                     ] {
                         let control = visual.debug_bounds(selector).unwrap();

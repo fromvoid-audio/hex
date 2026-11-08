@@ -22,8 +22,9 @@ use hex_session::{
 use std::sync::atomic::Ordering::Acquire;
 use std::time::{Duration, Instant};
 
+mod delivery;
 mod manual_override;
-mod metadata;
+pub(super) mod metadata;
 use manual_override::LiveOverride;
 
 struct PendingPoint {
@@ -31,6 +32,11 @@ struct PendingPoint {
     value: PluginParameterValue,
     sequence: u64,
     opening_hold: bool,
+    delivery: Option<delivery::PendingDelivery>,
+    processed: bool,
+    sdk_finished: bool,
+    #[cfg(all(test, feature = "allocation-probe"))]
+    hold_sdk_ack: bool,
 }
 
 pub(super) struct Gesture {
@@ -48,6 +54,11 @@ pub(super) struct Gesture {
     pub(super) commit: Option<(AudioSourceContext, u64)>,
     pub(super) next_program: Option<std::num::NonZeroU64>,
     commit_accepted: bool,
+    capture_class: Option<[u8; 16]>,
+    deliveries: Vec<hex_session::service::PluginParameterObservation>,
+    retired_delivery: Option<hex_audio::foreign_parameter_delivery::Retired>,
+    recording: bool,
+    recorded_release: bool,
 }
 
 fn refused(reason: impl Into<String>) -> Error {
@@ -55,6 +66,24 @@ fn refused(reason: impl Into<String>) -> Error {
 }
 fn lost() -> Error {
     Error::SourceLost("vst3 parameter source changed".into())
+}
+
+/// Stopped unlaned instruments retain full-state capture. Running instruments
+/// need isolation even before their first lane, to preserve the original MIDI
+/// worker. Saved identity chooses the mode; SDK/Root still admit the target.
+fn isolation_class(
+    input: &PluginParameterGestureInput<'_>,
+    playing: bool,
+) -> Result<Option<[u8; 16]>, Error> {
+    if let Some(class) = input.isolated_class() {
+        Ok(Some(class))
+    } else if input.is_instrument() && playing {
+        Hosting::saved_identity_on_control(input.canonical_state())
+            .map(|identity| Some(identity.class.bytes()))
+            .map_err(refused)
+    } else {
+        Ok(None)
+    }
 }
 
 fn admit<T>(
@@ -128,7 +157,18 @@ impl Plugins {
         control: &mut PublicationControl,
         input: PluginParameterGestureInput<'_>,
         cancellation: Option<&RequestCancellation>,
+        clock: Option<(u32, hex_session::service::ResidentRuntimeLoop)>,
     ) -> Result<Prepared, Error> {
+        if input.requires_delivery_confirmation() {
+            self.confirmed_parameters
+                .try_reserve(2)
+                .map_err(|_| refused("could not reserve confirmed vst3 observations"))?;
+        }
+        if !self.confirmed_parameters.is_empty()
+            && !matches!(input.operation(), PluginGesturePreparation::Restore { .. })
+        {
+            return Err(refused("retain confirmed vst3 points before another input"));
+        }
         if let PluginGesturePreparation::Begin { origin, snapshot } = input.operation() {
             let restored_revision = self
                 .restore
@@ -199,10 +239,13 @@ impl Plugins {
             if !edits::original_state(control, binding, cancellation)
                 .map_err(refused)?
                 .processing_eq(input.canonical_state())
-                && control.native_source_approves_captured_state_on_control(
+                && !edits::captured_state_approved(
+                    control,
                     binding,
                     input.canonical_state(),
-                ) != Some(true)
+                    cancellation,
+                )
+                .map_err(refused)?
             {
                 return Err(lost());
             }
@@ -223,7 +266,7 @@ impl Plugins {
                 binding,
                 origin,
                 steps,
-                input.reading_class().is_some(),
+                input.reading_class().is_some() || input.records_touch(),
             )?;
             let mut uses_hold = self
                 .sources
@@ -233,8 +276,10 @@ impl Plugins {
                 .is_some_and(|armed| {
                     automation_class.is_some_and(|class| armed.contains(class, origin.parameter))
                 });
-            if input.is_instrument() && control.status.playing.load(Acquire) && !uses_hold {
-                let class = input.isolated_class()
+            let playing = control.status.playing.load(Acquire);
+            let isolated_class = isolation_class(&input, playing)?;
+            if input.is_instrument() && playing && !uses_hold {
+                let class = isolated_class
                     .filter(|class| automation_class == Some(*class))
                     .ok_or_else(|| refused("create an automation lane for this parameter before editing during playback"))?;
                 let selection = metadata::extend(
@@ -255,8 +300,7 @@ impl Plugins {
                     .authored = Some(selection);
                 uses_hold = true;
             }
-            let live = if let Some(class) = input.isolated_class() {
-                let playing = control.status.playing.load(Acquire);
+            let live = if let Some(class) = isolated_class {
                 let (source, transport_epoch) = control
                     .status
                     .native_parameter_source(playing)
@@ -299,9 +343,29 @@ impl Plugins {
                 commit: None,
                 next_program: None,
                 commit_accepted: false,
+                capture_class: automation_class,
+                deliveries: Vec::new(),
+                retired_delivery: None,
+                recording: input.records_touch(),
+                recorded_release: false,
             };
             if !gesture.current(self, control, input.context()) {
                 return Err(lost());
+            }
+            if gesture.recording {
+                if input.reading_class().is_none()
+                    || gesture
+                        .live
+                        .as_ref()
+                        .is_none_or(|live| !live.playing || !live.uses_hold)
+                {
+                    return Err(refused(
+                        "recording requires an eligible reading vst3 lane during playback",
+                    ));
+                }
+                let capture = delivery::Context::new(&gesture, control, input.context(), clock)?;
+                self.confirmed_parameters
+                    .push_back(capture.ready(gesture.key));
             }
             self.parameter_gesture = Some(gesture);
             return Ok(Prepared::Applied);
@@ -310,8 +374,10 @@ impl Plugins {
         let result = if !gesture.current(self, control, input.context()) {
             Err(lost())
         } else {
-            gesture.apply(control, self.host.as_ref(), &input, cancellation)
+            gesture.apply(control, self.host.as_ref(), &input, cancellation, clock)
         };
+        self.confirmed_parameters
+            .extend(gesture.deliveries.drain(..));
         let source_lost = matches!(&result, Err(Error::SourceLost(_)));
         let restored =
             result.is_ok() && matches!(input.operation(), PluginGesturePreparation::Restore { .. });
@@ -388,8 +454,12 @@ impl Gesture {
         host: Option<&Hosting>,
         input: &PluginParameterGestureInput<'_>,
         cancellation: Option<&RequestCancellation>,
+        clock: Option<(u32, hex_session::service::ResidentRuntimeLoop)>,
     ) -> Result<Prepared, Error> {
         let context = input.context();
+        if self.recording != input.records_touch() {
+            return Err(refused("vst3 gesture recording mode changed"));
+        }
         let (snapshot, value, restore, commit) = match input.operation() {
             PluginGesturePreparation::Preview(snapshot) => {
                 (snapshot, snapshot.plugin_value, false, false)
@@ -410,11 +480,14 @@ impl Gesture {
         }
         if self.live.is_some() {
             if restore {
+                if self.recording {
+                    return self.release_recorded(control, context, clock);
+                }
                 return self.restore_override(control);
             }
             let live = self.live.as_ref().ok_or_else(lost)?;
             if live.invalidated
-                || input.isolated_class() != Some(live.class)
+                || isolation_class(input, live.playing)? != Some(live.class)
                 || input.reading_class().is_some() != live.reading
                 || control.status.native_parameter_source(live.playing)
                     != Some((live.source, live.transport_epoch))
@@ -429,6 +502,13 @@ impl Gesture {
         if commit {
             if snapshot.sequence != self.sequence || value != self.last {
                 return Err(refused("vst3 final point has not been processed"));
+            }
+            if self.recording {
+                let result = self.release_recorded(control, context, clock);
+                if result.is_ok() {
+                    self.commit = Some((context, snapshot.sequence));
+                }
+                return result;
             }
             if self.live.is_some() {
                 self.commit = Some((context, snapshot.sequence));
@@ -455,7 +535,15 @@ impl Gesture {
                 self.before = Some(self.capture(control)?);
             }
             let actual = self.sdk_value(value);
-            let (token, opening_hold) = if let Some(live) = self
+            let source = if input.requires_delivery_confirmation() {
+                self.deliveries
+                    .try_reserve(2)
+                    .map_err(|_| refused("could not reserve vst3 delivery observations"))?;
+                Some(delivery::Context::new(self, control, context, clock)?)
+            } else {
+                None
+            };
+            let (token, opening_hold, delivery) = if let Some(live) = self
                 .live
                 .as_ref()
                 .filter(|live| live.uses_hold && live.playing)
@@ -470,29 +558,80 @@ impl Gesture {
                         normalized: actual,
                     },
                 );
-                let token = admit(control, |control| {
-                    control.native_source_parameter_hold_on_control(
-                        live.source,
-                        self.binding,
-                        command,
+                let (token, delivery) = if let Some(source) = source {
+                    let (token, delivery) = admit(control, |control| {
+                        control.native_source_parameter_hold_with_delivery_on_control(
+                            source.applied,
+                            self.binding,
+                            command,
+                        )
+                    })?;
+                    (
+                        token,
+                        Some(delivery::PendingDelivery {
+                            target: delivery,
+                            context: source,
+                            receipt: None,
+                            kind: delivery::Kind::Point,
+                        }),
                     )
-                })?;
-                (token, live.hold.is_none())
+                } else {
+                    (
+                        admit(control, |control| {
+                            control.native_source_parameter_hold_on_control(
+                                live.source,
+                                self.binding,
+                                command,
+                            )
+                        })?,
+                        None,
+                    )
+                };
+                (token, live.hold.is_none(), delivery)
             } else {
-                let token = admit(control, |control| {
-                    control.begin_native_source_parameter_change_on_control(
-                        self.binding,
-                        self.origin.parameter,
-                        actual,
+                let (token, delivery) = if let Some(source) = source {
+                    let (token, delivery) = admit(control, |control| {
+                        control.begin_native_source_parameter_change_with_delivery_on_control(
+                            source.applied,
+                            self.binding,
+                            self.origin.parameter,
+                            actual,
+                        )
+                    })?;
+                    (
+                        token,
+                        Some(delivery::PendingDelivery {
+                            target: delivery,
+                            context: source,
+                            receipt: None,
+                            kind: delivery::Kind::Point,
+                        }),
                     )
-                })?;
-                (token, false)
+                } else {
+                    (
+                        admit(control, |control| {
+                            control.begin_native_source_parameter_change_on_control(
+                                self.binding,
+                                self.origin.parameter,
+                                actual,
+                            )
+                        })?,
+                        None,
+                    )
+                };
+                (token, false, delivery)
             };
             self.pending = Some(PendingPoint {
                 token,
                 value,
                 sequence: snapshot.sequence,
                 opening_hold,
+                delivery,
+                processed: false,
+                sdk_finished: false,
+                #[cfg(all(test, feature = "allocation-probe"))]
+                hold_sdk_ack: std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").as_deref()
+                    == Ok("delivery_retire"),
             });
             self.drain_point(control)?;
         }
@@ -519,6 +658,13 @@ impl Gesture {
     }
 
     fn poll_point(&mut self, control: &mut PublicationControl) -> Result<bool, Error> {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.delivery.is_some())
+        {
+            return self.poll_delivered_point(control);
+        }
         let Some(pending) = self.pending.as_ref() else {
             return Ok(true);
         };

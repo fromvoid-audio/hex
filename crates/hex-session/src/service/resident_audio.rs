@@ -1273,9 +1273,9 @@ pub(super) enum PluginParameterCommit {
 
 enum Transition {
     Command(Box<Command>),
-    NativeAutomationTake {
+    DeviceAutomationTake {
         command: Box<Command>,
-        target: hex_engine::NativeParameterInputTarget,
+        target: super::DeviceCaptureTarget,
     },
     PluginParameter(PluginParameterCommit),
     PluginEffect {
@@ -2118,17 +2118,17 @@ impl Session {
 
     /// Keep the same input only across adoption of its delivered take. A
     /// replacement output must publish the exact target at its new revision.
-    pub(super) fn native_take_resident_snapshot(
+    pub(super) fn device_take_resident_snapshot(
         &mut self,
         command: Command,
-        target: hex_engine::NativeParameterInputTarget,
+        target: super::DeviceCaptureTarget,
         context: hex_engine::AudioSourceContext,
         sink: &mut dyn WorkerAudioSink,
         admission: sampler_export::Admission<'_>,
         current: Option<&Snapshot>,
     ) -> Result<(Created, Snapshot), SessionError> {
         self.resident_transition(
-            Transition::NativeAutomationTake {
+            Transition::DeviceAutomationTake {
                 command: Box::new(command),
                 target,
             },
@@ -2306,7 +2306,7 @@ impl Session {
         let mut prepare_time = Duration::ZERO;
         let mut publish_time = Duration::ZERO;
         if let Transition::Command(command)
-        | Transition::NativeAutomationTake { command, .. }
+        | Transition::DeviceAutomationTake { command, .. }
         | Transition::PluginEffect { command, .. }
         | Transition::MidiCommand(command)
         | Transition::SectionCommand { command, .. } = &transition
@@ -2324,7 +2324,7 @@ impl Session {
             _ => None,
         };
         let native_parameter_input = match &transition {
-            Transition::NativeAutomationTake { target, .. } => Some(*target),
+            Transition::DeviceAutomationTake { target, .. } => target.native(),
             _ => None,
         };
         let inputs = Inputs {
@@ -2459,7 +2459,7 @@ impl Session {
             }
             Transition::Command(command)
             | Transition::PluginParameter(PluginParameterCommit::Override(command))
-            | Transition::NativeAutomationTake { command, .. }
+            | Transition::DeviceAutomationTake { command, .. }
             | Transition::PluginEffect { command, .. }
             | Transition::SectionCommand { command, .. } => self
                 .editor
@@ -2687,10 +2687,11 @@ pub(super) mod tests {
                 Err(error) => Err(ResidentPublicationRefusal { playback, error }),
             }
         }
-        fn native_automation_source(
+        fn device_automation_source(
             &mut self,
             context: hex_engine::AudioSourceContext,
-        ) -> Result<Option<NativeAutomationSource>, String> {
+            requested: DeviceCaptureTarget,
+        ) -> Result<Option<DeviceAutomationSource>, String> {
             let publications = self.observed.publications.lock().unwrap();
             if !self.observed.native_capture_playing.load(Ordering::Acquire)
                 || publications
@@ -2704,8 +2705,9 @@ pub(super) mod tests {
                 .native_parameter_input
                 .lock()
                 .unwrap()
-                .map(|target| NativeAutomationSource {
-                    target,
+                .filter(|target| Some(*target) == requested.native())
+                .map(|target| DeviceAutomationSource {
+                    target: target.into(),
                     sample_rate: 48_000,
                     output_identity: 7,
                     audio_revision: publications.len() as u64,

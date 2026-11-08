@@ -41,9 +41,7 @@ impl Gallery {
         .w(px(
             self.entry.width() + hex_widgets::DEVICE_FRAME_HEADER_WIDTH
         ))
-        .h(px(device_composition::BODY_HEIGHT
-            + hex_widgets::DEVICE_FRAME_HEADER_HEIGHT
-            + 2.0))
+        .h(px(device_composition::FRAME_HEIGHT))
         .flex_shrink_0()
         .capture_any_mouse_down(cx.listener(
             |view, event: &gpui::MouseDownEvent, _, cx| {

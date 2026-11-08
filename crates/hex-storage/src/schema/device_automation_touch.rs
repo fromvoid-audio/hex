@@ -1,8 +1,12 @@
 //! Schema 78 adds exact half-open native touch spans. Older schemas migrate
 //! with an empty overlay and preserve the original authored curve and read
-//! selection. The schema 77 codec still owns all other project data.
+//! selection. Schema79 extends only this inventory with class-bound raw VST3
+//! targets, including zero. Historical78 explicitly refuses those targets.
+//! The schema77 codec still owns all other project data.
 use super::{automation_read::Selection, device_automation};
-use crate::{DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION, Project, StorageError};
+#[cfg(test)]
+use crate::DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION;
+use crate::{Project, StorageError};
 use hex_lattice_contract::ParameterId;
 use hex_project::{
     AutomationValue, BeatTime, DeviceAutomation, DeviceAutomationTarget, DeviceAutomationTouchSpan,
@@ -13,33 +17,53 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 enum Target {
     Parameter(u32),
     HostInputGain,
     HostOutputGain,
+    Vst3 { parameter: u32, class: [u8; 16] },
 }
 impl Target {
-    fn from_target(target: DeviceAutomationTarget) -> Result<Self, StorageError> {
-        Ok(match target {
+    fn from_lane(lane: &DeviceAutomation) -> Result<Self, StorageError> {
+        Ok(match lane.target {
             DeviceAutomationTarget::Parameter(id) => Self::Parameter(id.value()),
             DeviceAutomationTarget::HostInputGain => Self::HostInputGain,
             DeviceAutomationTarget::HostOutputGain => Self::HostOutputGain,
-            DeviceAutomationTarget::Vst3 { .. } => {
-                return Err(StorageError::Invalid("vst3 touch overlays are unsupported"));
-            }
+            DeviceAutomationTarget::Vst3 { parameter } => Self::Vst3 {
+                parameter,
+                class: lane
+                    .vst3_class
+                    .ok_or(StorageError::Invalid("vst3 touch class missing"))?,
+            },
         })
     }
 
-    fn into_target(self) -> Result<DeviceAutomationTarget, StorageError> {
-        Ok(match self {
+    fn into_target(
+        self,
+        version: u32,
+    ) -> Result<(DeviceAutomationTarget, Option<[u8; 16]>), StorageError> {
+        let class = match &self {
+            Self::Vst3 { class, .. } if version == crate::VST3_AUTOMATION_TOUCH_SCHEMA_VERSION => {
+                Some(*class)
+            }
+            Self::Vst3 { .. } => {
+                return Err(StorageError::Invalid(
+                    "schema78 does not support vst3 touches",
+                ));
+            }
+            _ => None,
+        };
+        let target = match self {
             Self::Parameter(id) => DeviceAutomationTarget::Parameter(
                 ParameterId::new(id)
                     .map_err(|_| StorageError::Invalid("invalid touch parameter id"))?,
             ),
             Self::HostInputGain => DeviceAutomationTarget::HostInputGain,
             Self::HostOutputGain => DeviceAutomationTarget::HostOutputGain,
-        })
+            Self::Vst3 { parameter, .. } => DeviceAutomationTarget::Vst3 { parameter },
+        };
+        Ok((target, class))
     }
 }
 
@@ -85,6 +109,14 @@ pub(crate) fn contains(project: &Project) -> bool {
     })
 }
 
+pub(crate) fn contains_vst3(project: &Project) -> bool {
+    project.automation_devices().any(|device| {
+        device.automation().iter().any(|lane| {
+            !lane.touch.is_empty() && matches!(lane.target, DeviceAutomationTarget::Vst3 { .. })
+        })
+    })
+}
+
 pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
     let mut snapshot = project.snapshot();
     let mut rows = Vec::new();
@@ -95,7 +127,7 @@ pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
                     (device.id, lane.target),
                     Lane {
                         device: device.id,
-                        target: Target::from_target(lane.target)?,
+                        target: Target::from_lane(lane)?,
                         read_selection: lane.read_selection.into(),
                         spans: std::mem::take(&mut lane.touch)
                             .into_iter()
@@ -121,13 +153,13 @@ pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
     rows.sort_unstable_by_key(|(key, _)| *key);
     let core = Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))?;
     let mut value = super::vst3_automation::encode(&core)?;
-    value["version"] = DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION.into();
+    value["version"] = crate::schema_version_for(project).into();
     value["device_automation_touch"] =
         serde_json::to_value(rows.into_iter().map(|(_, lane)| lane).collect::<Vec<_>>())?;
     Ok(value)
 }
 
-pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
+pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError> {
     let mut value = super::audio_events::parse_unique(bytes)?;
     let Rows(rows) = serde_json::from_value(
         value
@@ -147,7 +179,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     let mut by_device = BTreeMap::<u64, Vec<DeviceAutomation>>::new();
     let mut previous = None;
     for row in rows {
-        let target = row.target.into_target()?;
+        let (target, vst3_class) = row.target.into_target(version)?;
         let key = (row.device, target);
         if previous.is_some_and(|previous| previous >= key)
             || row.spans.is_empty()
@@ -193,7 +225,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             .push(DeviceAutomation {
                 read_selection: row.read_selection.into(),
                 target,
-                vst3_class: None,
+                vst3_class,
                 points: Vec::new(),
                 touch,
             });
@@ -209,7 +241,9 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             {
                 Ok(index) => {
                     let base = &mut device.automation[index];
-                    if base.read_selection != row.read_selection {
+                    if base.read_selection != row.read_selection
+                        || base.vst3_class != row.vst3_class
+                    {
                         return Err(StorageError::Invalid(
                             "device automation touch and base read selections differ",
                         ));
@@ -262,6 +296,7 @@ mod tests {
         let target = DeviceAutomationTarget::HostInputGain;
         editor
             .execute(Command::SpliceDeviceAutomationTouch {
+                vst3_class: None,
                 device,
                 target,
                 spans: vec![DeviceAutomationTouchSpan {
@@ -362,6 +397,7 @@ mod tests {
         assert_eq!(crate::decode(&previous).unwrap(), *editor.project());
         editor
             .execute(Command::SpliceDeviceAutomationTouch {
+                vst3_class: None,
                 device: native,
                 target,
                 spans: vec![DeviceAutomationTouchSpan {
@@ -378,5 +414,107 @@ mod tests {
         assert_eq!(&reopened, editor.project());
         assert!(editor.undo());
         assert_eq!(crate::encode(editor.project()).unwrap(), previous);
+    }
+    #[test]
+    fn schema79_vst3_touch_only_and_base_overlays_round_trip_and_78_stays_strict() {
+        let class = [9; 16];
+        let state = hex_plugin_state::encode(hex_plugin_state::State {
+            identity: hex_plugin_state::Identity {
+                class: hex_plugin_state::ClassId::new(class).unwrap(),
+                binary: hex_plugin_state::BinaryIdentity {
+                    executable_sha256: [6; 32],
+                    info_sha256: [7; 32],
+                },
+            },
+            component: Some(&[42; 12]),
+            controller: Some(&[]),
+        })
+        .unwrap();
+        for with_base in [false, true] {
+            let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+            let Created::Device(device) = editor
+                .execute(Command::InsertMainDevice {
+                    before: None,
+                    state: state.clone(),
+                })
+                .unwrap()
+            else {
+                panic!("device")
+            };
+            let target = DeviceAutomationTarget::Vst3 { parameter: 0 };
+            if with_base {
+                editor
+                    .execute(Command::ReplaceDeviceAutomationTarget {
+                        device,
+                        target,
+                        points: vec![
+                            hex_project::AutomationPoint {
+                                beat: BeatTime::ZERO,
+                                value: AutomationValue::new(0.25).unwrap(),
+                                outgoing: hex_project::AutomationInterpolation::Linear,
+                            },
+                            hex_project::AutomationPoint {
+                                beat: BeatTime::from_quarters(2).unwrap(),
+                                value: AutomationValue::new(0.5).unwrap(),
+                                outgoing: hex_project::AutomationInterpolation::Step,
+                            },
+                        ],
+                    })
+                    .unwrap();
+            }
+            let previous = crate::encode(editor.project()).unwrap();
+            editor
+                .execute(Command::SpliceDeviceAutomationTouch {
+                    device,
+                    target,
+                    vst3_class: Some(class),
+                    spans: vec![DeviceAutomationTouchSpan {
+                        start: BeatTime::ZERO,
+                        end: BeatTime::ONE,
+                        steps: vec![DeviceAutomationTouchStep {
+                            beat: BeatTime::ZERO,
+                            value: AutomationValue::new(0.875).unwrap(),
+                        }],
+                    }],
+                })
+                .unwrap();
+            let bytes = crate::encode(editor.project()).unwrap();
+            assert_eq!(
+                crate::schema_version_for(editor.project()),
+                crate::VST3_AUTOMATION_TOUCH_SCHEMA_VERSION
+            );
+            assert_eq!(crate::decode(&bytes).unwrap(), *editor.project());
+            let path = std::env::temp_dir().join(format!(
+                "hex-vst3-touch-{}-{with_base}.hex",
+                std::process::id()
+            ));
+            crate::files::save_new(&path, editor.project()).unwrap();
+            let loaded = crate::files::load(&path);
+            std::fs::remove_file(path).unwrap();
+            assert_eq!(loaded.unwrap(), *editor.project());
+            let original: Value = serde_json::from_slice(&bytes).unwrap();
+            for version in [
+                DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION,
+                crate::NEWEST_SCHEMA_VERSION + 1,
+            ] {
+                let mut bad = original.clone();
+                bad["version"] = version.into();
+                let rejected = serde_json::to_vec(&bad).unwrap();
+                let retained = rejected.clone();
+                assert!(crate::decode(&rejected).is_err());
+                assert_eq!(rejected, retained);
+            }
+            let mut bad = original.clone();
+            bad["device_automation_touch"][0]["target"]["vst3"]["class"] =
+                serde_json::to_value([2; 16]).unwrap();
+            assert!(crate::decode(&serde_json::to_vec(&bad).unwrap()).is_err());
+            let mut bad = original;
+            bad["device_automation_touch"][0]["target"]["vst3"]["unknown"] = true.into();
+            assert!(crate::decode(&serde_json::to_vec(&bad).unwrap()).is_err());
+            assert!(editor.undo());
+            assert_eq!(crate::encode(editor.project()).unwrap(), previous);
+            assert!(editor.redo());
+            assert_eq!(crate::encode(editor.project()).unwrap(), bytes);
+        }
     }
 }

@@ -72,13 +72,20 @@ fn quote_devices<'a>(
         rows = rows.checked_add(1).ok_or(Error::Overflow)?;
         for lane in lanes(device) {
             let knots = super::knot_reservation(&lane.points, project.tempo_map())
-                .ok_or(Error::Overflow)?;
+                .ok_or(Error::Overflow)?
+                .max(1);
             bytes = bytes
                 .checked_add(
                     knots
                         .checked_mul(std::mem::size_of::<Knot>())
                         .ok_or(Error::Overflow)?,
                 )
+                .and_then(|bytes| {
+                    bytes.checked_add(super::touch::Overlay::reservation_bytes(
+                        &lane.touch,
+                        knots,
+                    )?)
+                })
                 .ok_or(Error::Overflow)?;
         }
     }

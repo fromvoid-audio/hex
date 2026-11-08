@@ -142,6 +142,9 @@ pub(super) struct Plugins {
     parameters: Option<parameters::Inventory>,
     observed_parameters: Option<parameters::ObservedInventory>,
     parameter_gesture: Option<parameter_gesture::Gesture>,
+    // At most two control records: a late prior point and the current point.
+    confirmed_parameters:
+        std::collections::VecDeque<hex_session::service::PluginParameterObservation>,
     editor_checked: Option<AudioSourceContext>,
     restore: Option<Restore>,
     reopen: Option<Reopen>,
@@ -233,7 +236,14 @@ impl Plugins {
         }
         self.configured = false;
         self.observed_parameters = None;
-        self.parameter_gesture = None;
+        self.collect_parameter_observations();
+        if !self
+            .parameter_gesture
+            .as_ref()
+            .is_some_and(parameter_gesture::Gesture::has_retired_delivery)
+        {
+            self.parameter_gesture = None;
+        }
         for source in &mut self.sources {
             source.edit_backlog = false;
         }
@@ -354,6 +364,25 @@ impl Plugins {
     }
     /// The exact successor has applied. Keep the old bindings until Root
     /// returns their graph, tail and endpoint obligations on control.
+    /// Copied source observation only; actual target SDK/delivery admission
+    /// remains in the parameter gesture adapter and Root.
+    pub(super) fn matches_capture_source(
+        &self,
+        context: AudioSourceContext,
+        target: hex_session::service::automation_draft::Vst3CaptureTarget,
+    ) -> bool {
+        self.sources
+            .iter()
+            .rev()
+            .find(|source| {
+                source.accepted
+                    && !source.retiring
+                    && source.project_generation == context.project_generation
+                    && source.device == target.device.value()
+            })
+            .is_some_and(|source| source.binding == target.binding)
+    }
+
     pub(super) fn retire_document_sources(&mut self, generation: u64) {
         for source in self
             .sources
@@ -870,7 +899,7 @@ impl Plugins {
                 return Ok(());
             };
             if !edits::original_state(control, source.binding, cancellation)?.processing_eq(state) {
-                let selection = edits::armed_selection(control, source.binding)?
+                let selection = edits::armed_selection(control, source.binding, cancellation)?
                     .ok_or("vst3 canonical program selection unavailable")?;
                 canonical.push(edits::canonical_bases(
                     self.host
@@ -881,6 +910,7 @@ impl Plugins {
                     state,
                     &selection,
                     cancellation,
+                    self.restored_canonical_source(input.context()),
                 )?);
             }
             Ok(())
@@ -1010,6 +1040,87 @@ fn advance_source(
 #[cfg(test)]
 mod idle_tests {
     use super::*;
+
+    #[test]
+    fn recording_source_observation_rejects_pending_retiring_and_replaced_bindings() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+        let mut insert = || {
+            let hex_project::Created::Device(device) = editor
+                .execute(hex_project::Command::InsertMainDevice {
+                    before: None,
+                    state: hex_engine::default_native_device_state(
+                        hex_engine::DeviceTypeId::from_static("hex.utility"),
+                    )
+                    .unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("device")
+            };
+            device
+        };
+        let device = insert();
+        let other = insert();
+        let mut plugins = Plugins::default();
+        let binding = Binding {
+            root: 1,
+            instance: 2,
+            graph: 3,
+            epoch: 4,
+        };
+        let context = AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 7,
+        };
+        let target = hex_session::service::automation_draft::Vst3CaptureTarget {
+            device,
+            class: [9; 16],
+            parameter: 0,
+            binding,
+        };
+        plugins.sources.push(Source {
+            binding,
+            owner: ProcessorChainOwner::Main,
+            device: device.value(),
+            project_generation: 1,
+            operation: SourceOperation::Reopen,
+            authored: None,
+            accepted: false,
+            retiring: false,
+            queued: true,
+            observes_latency: true,
+            editor_open: false,
+            edit_backlog: false,
+            #[cfg(feature = "allocation-probe")]
+            observed_latency_receipt: false,
+            #[cfg(feature = "allocation-probe")]
+            attempts: 0,
+        });
+        assert!(!plugins.matches_capture_source(context, target));
+        plugins.sources[0].accepted = true;
+        assert!(plugins.matches_capture_source(context, target));
+        plugins.sources[0].retiring = true;
+        assert!(!plugins.matches_capture_source(context, target));
+        plugins.sources[0].retiring = false;
+        plugins.sources[0].binding.epoch += 1;
+        assert!(!plugins.matches_capture_source(context, target));
+        plugins.sources[0].binding = binding;
+        assert!(!plugins.matches_capture_source(
+            AudioSourceContext {
+                project_generation: 2,
+                ..context
+            },
+            target
+        ));
+        assert!(!plugins.matches_capture_source(
+            context,
+            hex_session::service::automation_draft::Vst3CaptureTarget {
+                device: other,
+                ..target
+            }
+        ));
+    }
 
     #[test]
     fn stopped_editor_backlog_keeps_polling_busy_until_drained_or_output_closes() {

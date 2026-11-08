@@ -219,6 +219,7 @@ fn recorded_touch_replays_half_open_and_preserves_original_pcm_across_partitions
     let base = render(editor.project(), 64);
     editor
         .execute(Command::SpliceDeviceAutomationTouch {
+            vst3_class: None,
             device,
             target,
             spans: vec![DeviceAutomationTouchSpan {

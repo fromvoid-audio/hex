@@ -367,9 +367,12 @@ fn selected_lane_palette_and_paint_order_preserve_clip_fill_and_outer_selection_
         );
         let fill = editor.read_with(&visual, |v, _| {
             let p = &v.state.as_ref().unwrap().project;
-            theme::clip_fill(
-                p.track(source).unwrap().color(),
-                p.clip(clip).unwrap().flavor(),
+            theme::arrangement_clip_body_fill(
+                theme::clip_fill(
+                    p.track(source).unwrap().color(),
+                    p.clip(clip).unwrap().flavor(),
+                    false,
+                ),
                 true,
             )
         });

@@ -66,6 +66,8 @@ impl EditorView {
         );
         let field = self.project_tempo_input(cx);
         let controls = div()
+            .id("transport-primary-controls")
+            .on_click(|_, _, cx| cx.stop_propagation())
             .flex()
             .items_center()
             .flex_shrink_0()
@@ -78,10 +80,6 @@ impl EditorView {
                 cx,
             ))
             .child(self.icon("↓", "import audio · cmd+i", ImportAudio, cx))
-            .child(
-                self.icon("▤", "toggle browser · cmd+alt+b", ToggleBrowser, cx)
-                    .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
-            )
             .child(self.control_icon(
                 "↑",
                 "export wav · cmd+shift+e",
@@ -118,7 +116,7 @@ impl EditorView {
                 .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
                 .text_color(rgb(theme::color(
                     if self.midi_recorder.blocks_edits() {
-                        theme::PaletteRole::Primary
+                        theme::PaletteRole::Recording
                     } else {
                         theme::PaletteRole::Muted
                     },
@@ -293,49 +291,12 @@ impl EditorView {
             .child(self.zoom_fit_button(super::zoom_fit::Target::Arrange, false, cx))
             .child(self.zoom_fit_button(super::zoom_fit::Target::Arrange, true, cx));
         let mut status = div()
+            .id("transport-status-controls")
+            .on_click(|_, _, cx| cx.stop_propagation())
             .flex()
             .items_center()
             .min_w_0()
             .flex_1()
-            .child(
-                self.control_icon(
-                    "▤",
-                    "show arrange view · tab",
-                    |view, _, _| view.set_mode(EditorMode::Arrangement),
-                    cx,
-                )
-                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
-                .text_color(rgb(if self.mode == EditorMode::Arrangement {
-                    theme::color(theme::PaletteRole::SecondaryText)
-                } else {
-                    theme::color(theme::PaletteRole::Muted)
-                })),
-            )
-            .child(
-                self.control_icon(
-                    "▦",
-                    "show console view · tab",
-                    |view, _, _| view.set_mode(EditorMode::Session),
-                    cx,
-                )
-                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
-                .text_color(rgb(if self.mode == EditorMode::Session {
-                    theme::color(theme::PaletteRole::SecondaryText)
-                } else {
-                    theme::color(theme::PaletteRole::Muted)
-                })),
-            )
-            .child(
-                div()
-                    .debug_selector({
-                        let name = self.workspace_view_name();
-                        move || name.to_owned()
-                    })
-                    .flex_shrink_0()
-                    .whitespace_nowrap()
-                    .text_xs()
-                    .child(theme::text(self.workspace_view_name())),
-            )
             .child(
                 div()
                     .debug_selector(|| "project position".into())
@@ -393,10 +354,16 @@ impl EditorView {
                     .child(theme::text("loading")),
             );
         }
+        status = status
+            .child(self.header_diagnostics(cx))
+            .child(self.workspace_view_toggle(cx));
         let narrow = f32::from(window.viewport_size().width) < header::WIDE_TOOLBAR_MIN_WIDTH;
-        let row = header::toolbar_row().h(px(header::toolbar_height(f32::from(
-            window.viewport_size().width,
-        ))));
+        let row = header::toolbar_row()
+            .relative()
+            .child(self.window_controls(cx))
+            .h(px(header::toolbar_height(f32::from(
+                window.viewport_size().width,
+            ))));
         if narrow {
             row.flex_col()
                 .items_start()
@@ -410,11 +377,37 @@ impl EditorView {
         }
     }
 
-    pub(super) fn title_bar(&self, cx: &mut Context<Self>) -> Stateful<Div> {
-        let title = header::project_title(
-            self.state()
-                .and_then(|state| state.document_path.as_deref()),
-        );
+    pub(super) fn browser_toggle_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        self.icon("▤", "toggle browser · cmd+alt+b", ToggleBrowser, cx)
+            .size(px(18.0))
+            .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+            .text_color(rgb(theme::color(if self.browser.open {
+                theme::PaletteRole::Primary
+            } else {
+                theme::PaletteRole::Muted
+            })))
+    }
+
+    fn workspace_view_toggle(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let (glyph, next, next_name) = match self.mode {
+            EditorMode::Arrangement => ("▤", EditorMode::Session, "console view"),
+            EditorMode::Session => ("▦", EditorMode::Arrangement, "arrange view"),
+        };
+        self.control_icon_description(
+            glyph,
+            "workspace-view-toggle",
+            theme::text(format!(
+                "{} · switch to {next_name} · tab",
+                self.workspace_view_name()
+            )),
+            theme::action_style(),
+            move |view, _, _| view.set_mode(next),
+            cx,
+        )
+        .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+    }
+
+    fn header_diagnostics(&self, cx: &mut Context<Self>) -> Div {
         let description = theme::text(self.cpu_meter.description());
         let cpu_meter = div()
             .id("editor-cpu-meter")
@@ -466,7 +459,16 @@ impl EditorView {
                     }))),
             )
             .child(theme::text(self.cpu_meter.label()));
-        header::title_bar(title, cpu_meter, |control| match control {
+        div()
+            .flex()
+            .items_center()
+            .flex_shrink_0()
+            .children([cpu_meter])
+            .child(crate::build_info::editor_label())
+    }
+
+    fn window_controls(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        header::window_controls(|control| match control {
             header::TitlebarControl::Close => Box::new(cx.listener(|view, _, window, cx| {
                 if view.request_window_close(window, cx) {
                     window.remove_window();

@@ -4,7 +4,7 @@
 use super::*;
 use crate::{
     NativeSourcePreparationProgress as Progress,
-    prepared::{AppliedAudioSource, PublicationControl},
+    prepared::{AppliedAudioSource, PublicationControl, StoppedEditFence},
 };
 
 enum Phase {
@@ -20,12 +20,16 @@ enum Phase {
 pub struct CapturedCanonicalBases {
     binding: Binding,
     source: (AppliedAudioSource, u64, bool),
+    fence: Option<StoppedEditFence>,
     canonical: NativeDeviceState,
     prepared: PreparedForeignProcessor,
     sample_rate: u32,
     pub(super) capabilities: automation::SourceCapabilities,
 }
 impl CapturedCanonicalBases {
+    pub(crate) fn matches_output_on_control(&self, output: &PublicationControl) -> bool {
+        output.canonical_source_matches_on_control(self.source, self.fence)
+    }
     pub fn binding(&self) -> Binding {
         self.binding
     }
@@ -61,6 +65,7 @@ pub struct CanonicalBasesCapture {
     original: Binding,
     identity: ProcessorInstanceIdentity,
     source: (AppliedAudioSource, u64, bool),
+    fence: Option<StoppedEditFence>,
     canonical: Option<NativeDeviceState>,
     selection: AuthoredSelection,
     presentation: hex_plugin_host::protocol::PresentationPlan,
@@ -84,12 +89,53 @@ impl Hosting {
         selection: &AuthoredSelection,
         playing: bool,
     ) -> Result<CanonicalBasesCapture, String> {
+        self.begin_canonical_query(output, source, binding, canonical, selection, playing, None)
+    }
+
+    /// Query a renewed original source after its ordinary graph returned.
+    /// The exact acknowledged restore fence must remain held through scratch
+    /// disposal and processing approval. This grants no graph admission.
+    pub fn begin_stopped_canonical_bases_capture_on_control(
+        &self,
+        output: &mut PublicationControl,
+        source: AppliedAudioSource,
+        fence: StoppedEditFence,
+        binding: Binding,
+        canonical: &NativeDeviceState,
+        selection: &AuthoredSelection,
+    ) -> Result<CanonicalBasesCapture, String> {
+        self.begin_canonical_query(
+            output,
+            source,
+            binding,
+            canonical,
+            selection,
+            false,
+            Some(fence),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // Exact source plus its optional held restore fence.
+    fn begin_canonical_query(
+        &self,
+        output: &mut PublicationControl,
+        source: AppliedAudioSource,
+        binding: Binding,
+        canonical: &NativeDeviceState,
+        selection: &AuthoredSelection,
+        playing: bool,
+        fence: Option<StoppedEditFence>,
+    ) -> Result<CanonicalBasesCapture, String> {
         let identity = Self::saved_identity_on_control(canonical)?;
         if selection.parameters().0 != identity.class {
             return Err("native canonical base class differs".into());
         }
-        let (rate, epoch, original) =
-            output.native_base_capture_source(source, binding, canonical, playing)?;
+        let (rate, epoch, original) = match fence {
+            Some(fence) => {
+                output.native_fenced_base_capture_source(source, fence, binding, canonical)?
+            }
+            None => output.native_base_capture_source(source, binding, canonical, playing)?,
+        };
         let scratch = self.begin_on_control(
             output,
             original.metadata.selection(),
@@ -105,6 +151,7 @@ impl Hosting {
             original: binding,
             identity: original.identity,
             source: (source, epoch, playing),
+            fence,
             canonical: Some(canonical.clone()),
             selection: selection.clone(),
             presentation: original.presentation,
@@ -130,9 +177,7 @@ impl CanonicalBasesCapture {
         )
     }
     fn source_matches(&self, output: &PublicationControl) -> bool {
-        output.output_identity() == Some(self.source.0.output_identity)
-            && output.status.native_parameter_source(self.source.2)
-                == Some((self.source.0, self.source.1))
+        output.canonical_source_matches_on_control(self.source, self.fence)
     }
 
     /// Return once, after disposal/recovery and a final source check. Capacity,
@@ -227,6 +272,7 @@ impl CanonicalBasesCapture {
         let mut facts = CapturedCanonicalBases {
             binding: self.original,
             source: self.source,
+            fence: self.fence,
             canonical: canonical.clone(),
             prepared: self.prepared,
             sample_rate: self.sample_rate,

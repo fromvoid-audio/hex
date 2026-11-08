@@ -3,6 +3,16 @@ use super::*;
 use crate::plugin_effects::manual_base_capture::CompletedManualBase;
 
 impl CandidateRoot {
+    pub(crate) fn try_native_source_approves_captured_state(
+        &self,
+        binding: Binding,
+        state: &NativeDeviceState,
+    ) -> Result<bool, &'static str> {
+        self.require_native_source_control_open()?;
+        self.try_with_native_source_endpoint(binding, |_, source| {
+            source.approves_captured_state_on_control(state)
+        })
+    }
     pub(crate) fn approve_native_canonical_processing(
         &self,
         facts: &crate::plugin_effects::CapturedCanonicalBases,

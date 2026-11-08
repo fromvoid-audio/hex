@@ -48,6 +48,11 @@ mod eq_panel;
 mod limiter_panel;
 pub(super) use eq_panel::after_scroll_worker_event as eq_scroll_after_worker_event;
 pub(super) use eq_panel::reconcile_spectrum as reconcile_eq_spectrum;
+mod device_add;
+mod device_picker;
+pub(super) use device_picker::{
+    bind_keys as bind_picker_keys, is_open as picker_is_open, overlay as picker_overlay,
+};
 mod device_meter;
 mod gate_panel;
 mod keyboard;
@@ -71,16 +76,16 @@ mod utility_panel;
 pub(super) use send_controls::finalize_send_controls_for_track;
 pub(super) use send_controls::return_send_numeric_control;
 
-pub(super) const DEVICE_PANEL_HEIGHT: f32 = 213.0;
 const DEVICE_PANEL_BORDER_WIDTH: f32 = 1.0;
 const DEVICE_PANEL_HEADER_HEIGHT: f32 = 22.0;
 const DEVICE_CHAIN_PADDING: f32 = 3.0;
+pub(super) const DEVICE_PANEL_HEIGHT: f32 = crate::device_composition::FRAME_HEIGHT
+    + DEVICE_PANEL_BORDER_WIDTH
+    + DEVICE_PANEL_HEADER_HEIGHT
+    + DEVICE_CHAIN_PADDING * 2.0;
 const DEVICE_FRAME_WIDTH: f32 = crate::device_composition::GENERIC_FRAME_WIDTH;
 pub(super) const UTILITY_FRAME_WIDTH: f32 = crate::device_composition::UTILITY_FRAME_WIDTH;
-const DEVICE_FRAME_HEIGHT: f32 = DEVICE_PANEL_HEIGHT
-    - DEVICE_PANEL_BORDER_WIDTH
-    - DEVICE_PANEL_HEADER_HEIGHT
-    - (DEVICE_CHAIN_PADDING * 2.0);
+const DEVICE_FRAME_HEIGHT: f32 = crate::device_composition::FRAME_HEIGHT;
 const DEVICE_FRAME_BODY_HEIGHT: f32 = crate::device_composition::BODY_HEIGHT;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -146,7 +151,6 @@ pub(super) struct DevicePanelState {
         HashMap<(DeviceId, operator_panel::NavigationTarget), gpui::FocusHandle>,
     operator_section_focus:
         HashMap<(DeviceId, operator_panel::Section), operator_panel::context::SectionFocus>,
-    operator_context_focus: HashMap<DeviceId, HashMap<gpui::EntityId, Subscription>>,
     operator_previews: HashMap<DeviceId, operator_panel::preview::State>,
     operator_preview_inventory: Option<OperatorPreviewInventory>,
     operator_harmonics: HashMap<(DeviceId, usize), operator_panel::harmonics::Control>,
@@ -176,6 +180,8 @@ pub(super) struct DevicePanelState {
     /// Retained per-tick read buffer for the latest spectrum pairs.
     pub(super) spectrum_scratch: Vec<hex_audio::spectrum_worker::PublishedSpectra>,
     add_menu_open: bool,
+    add_menu_target: Option<device_add::Target>,
+    add_search: Option<device_picker::Search>,
     message: Option<String>,
 }
 
@@ -628,7 +634,6 @@ pub(super) fn view(
         view.device_panel.operator_pages.clear();
         view.device_panel.operator_navigation_focus.clear();
         view.device_panel.operator_section_focus.clear();
-        view.device_panel.operator_context_focus.clear();
         operator_panel::preview::cancel_all(view, cx);
         view.device_panel.operator_preview_inventory = None;
         operator_panel::envelope::cancel_all(view, cx);
@@ -739,7 +744,6 @@ pub(super) fn view(
         view.device_panel.operator_pages.clear();
         view.device_panel.operator_navigation_focus.clear();
         view.device_panel.operator_section_focus.clear();
-        view.device_panel.operator_context_focus.clear();
         operator_panel::preview::cancel_interactions(view, cx);
         operator_panel::envelope::cancel_all(view, cx);
         operator_panel::harmonics::retire(view, cx, |_| false);
@@ -902,7 +906,6 @@ fn render_track(
     let Some(track) = state.project.track(track_id) else {
         return empty_panel("selected track is no longer available");
     };
-    let instrument = track.instrument().cloned();
     let identities: HashMap<_, _> = track
         .ordered_device_chain()
         .map(|node| match node {
@@ -1025,9 +1028,6 @@ fn render_track(
             .then_some(*device)
         })
         .collect();
-    view.device_panel
-        .operator_context_focus
-        .retain(|device, _| alive_operator.contains(device));
     operator_panel::envelope::retire_removed(view, cx, &alive_operator);
     operator_panel::harmonics::retire(view, cx, |key| alive_operator.contains(&key.0));
     let alive_eq8: HashSet<_> = identities
@@ -1257,8 +1257,14 @@ fn render_track(
             .into()
         })
         .child(theme::text(if add_open { "×" } else { "+" }))
-        .on_click(cx.listener(|view, _, _, cx| {
-            view.device_panel.add_menu_open = !view.device_panel.add_menu_open;
+        .on_click(cx.listener(|view, _, window, cx| {
+            view.device_panel.add_menu_target = None;
+            if view.device_panel.add_menu_open {
+                view.device_panel.add_menu_open = false;
+                view.focus.focus(window);
+            } else {
+                device_picker::open(view, window, cx);
+            }
             cx.notify();
         }));
     let title = view
@@ -1288,15 +1294,6 @@ fn render_track(
         header = header.child(menu_message("device catalog unavailable"));
     }
     root = root.child(header).child(chain);
-    if add_open {
-        root = root.child(render_add_menu(
-            cx,
-            track_id,
-            instrument.as_ref().map(|device| device.id()),
-            effect_catalog,
-            instrument_catalog,
-        ));
-    }
     root
 }
 
@@ -2847,9 +2844,9 @@ fn instrument_actions(
             theme::DeviceActionRole::Normal,
             selected,
         )
-        .on_click(cx.listener(|view, _, _, cx| {
-            view.device_panel.add_menu_open = true;
-            cx.notify();
+        .on_click(cx.listener(|view, _, window, cx| {
+            view.device_panel.add_menu_target = None;
+            device_picker::open(view, window, cx);
         })),
     );
     let actions = if presets_available {
@@ -2887,104 +2884,6 @@ fn instrument_actions(
             cx.notify();
         })),
     )
-}
-
-fn render_add_menu(
-    cx: &mut Context<EditorView>,
-    track: TrackId,
-    instrument: Option<DeviceId>,
-    effects: Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>,
-    instruments: Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>,
-) -> impl IntoElement {
-    let mut menu = div()
-        .id("device-add-menu")
-        .debug_selector(|| "device-add-menu".into())
-        .absolute()
-        .top(px(DEVICE_PANEL_HEADER_HEIGHT))
-        .left(px(4.0))
-        .right(px(4.0))
-        .max_h(px(crate::device_composition::BODY_HEIGHT))
-        .overflow_y_scroll()
-        .occlude()
-        .flex()
-        .flex_wrap()
-        .items_center()
-        .gap(px(3.0))
-        .px(px(4.0))
-        .py(px(2.0))
-        .bg(rgb(theme::color(theme::PaletteRole::Raised)));
-    let mut any_entry = false;
-    for (class, entries) in [
-        (NativeDeviceClass::Instrument, instruments),
-        (NativeDeviceClass::Effect, effects),
-    ] {
-        match entries {
-            Ok(entries) => {
-                for entry in entries {
-                    any_entry = true;
-                    let type_id = entry.type_id;
-                    let type_label = type_id.as_str().unwrap_or("invalid device").to_owned();
-                    let class_label = match class {
-                        NativeDeviceClass::Effect => "effect",
-                        NativeDeviceClass::Instrument => "instrument",
-                    };
-                    let action_id = format!("add-native-{class_label}-{type_label}");
-                    let label = if class == NativeDeviceClass::Instrument && instrument.is_some() {
-                        format!("replace · {}", entry.name)
-                    } else {
-                        format!("{class_label} · {}", entry.name)
-                    };
-                    menu = menu.child(
-                        div()
-                            .id(ElementId::Name(action_id.clone().into()))
-                            .debug_selector(move || action_id.clone())
-                            .h(px(18.0))
-                            .flex_shrink_0()
-                            .whitespace_nowrap()
-                            .px(px(5.0))
-                            .flex()
-                            .items_center()
-                            .text_xs()
-                            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
-                            .cursor(gpui::CursorStyle::PointingHand)
-                            .child(theme::text(label))
-                            .on_click(cx.listener(move |view, _, _, cx| {
-                                let request = match (class, instrument) {
-                                    (NativeDeviceClass::Instrument, Some(device)) => {
-                                        Request::ReplaceNativeDevice {
-                                            device,
-                                            class,
-                                            type_id: Box::new(type_id),
-                                        }
-                                    }
-                                    _ => Request::AddNativeDevice {
-                                        track,
-                                        class,
-                                        type_id: Box::new(type_id),
-                                        before: None,
-                                    },
-                                };
-                                if finalize_controls(view, cx)
-                                    && view.enqueue_device_barrier(request)
-                                {
-                                    view.device_panel.add_menu_open = false;
-                                    view.device_panel.message = None;
-                                }
-                                cx.notify();
-                            })),
-                    );
-                }
-            }
-            Err(error) => {
-                menu = menu.child(menu_message(&format!("device catalog error · {error}")));
-            }
-        }
-    }
-    if !any_entry {
-        menu = menu.child(menu_message("no native devices available"));
-    }
-    menu
 }
 
 fn bypass_action(
@@ -3139,35 +3038,14 @@ fn button_details(surface: Div, id: String, tooltip: &'static str) -> Stateful<D
 
 // Host-specific composition policy stays outside the shared bindings.
 fn binding_policy(
-    view: &EditorView,
-    key: ParameterKey,
+    _view: &EditorView,
+    _key: ParameterKey,
     identity: DeviceControlIdentity,
     descriptor: ParameterDescriptor,
     presentation: ControlPresentation,
     display: ControlText,
 ) -> bindings::BindingPolicy {
     let tab_navigation = identity.type_id.as_str() == Ok("hex.instrument.operator");
-    let numeric_begin = if identity.class == NativeDeviceClass::Instrument
-        && identity.type_id.as_str() == Ok("hex.instrument.operator")
-    {
-        operator_panel::shell_operator_for_numeric_parameter(key.parameter).and_then(|operator| {
-            operator_panel::context::Owner::capture(view, key.device).map(|owner| {
-                Box::new(
-                    move |view: &mut EditorView, cx: &mut Context<EditorView>, key| {
-                        operator_panel::context::select_oscillator(
-                            view,
-                            cx,
-                            owner,
-                            operator,
-                            &[key],
-                        );
-                    },
-                ) as bindings::NumericBeginHook
-            })
-        })
-    } else {
-        None
-    };
     let toggle_appearance = if presentation == ControlPresentation::CompactButton {
         match display.label {
             Some("") => ToggleAppearance::MicroSquare,
@@ -3189,7 +3067,6 @@ fn binding_policy(
         tab_navigation,
         toggle_appearance,
         choice_order,
-        numeric_begin,
     }
 }
 

@@ -3,6 +3,15 @@
 use crate::theme;
 use gpui::{App, Context, Entity};
 use hex_widgets::{TextInput, TextInputConfig, TextInputKind};
+fn clear_action_style() -> hex_widgets::ActionStyle {
+    let style = theme::control_style();
+    hex_widgets::ActionStyle {
+        background: style.muted,
+        text: style.raised,
+        hover_background: style.text,
+        hover_text: Some(style.raised),
+    }
+}
 fn config(kind: TextInputKind) -> TextInputConfig {
     TextInputConfig {
         id: if kind == TextInputKind::Search {
@@ -13,7 +22,7 @@ fn config(kind: TextInputKind) -> TextInputConfig {
         .into(),
         kind,
         style: theme::control_style(),
-        action_style: theme::action_style(),
+        action_style: clear_action_style(),
         font_family: theme::FONT_FAMILY.into(),
         placeholder: theme::text("search · cmd+f"),
         clear_name: theme::text("clear search"),
@@ -35,6 +44,14 @@ pub(super) fn plugin_parameter_search(cx: &mut Context<TextInput>) -> TextInput 
     settings.max_bytes = 256;
     TextInput::new(cx, settings)
 }
+pub(super) fn device_search(cx: &mut Context<TextInput>) -> TextInput {
+    let mut settings = config(TextInputKind::Search);
+    settings.id = "device-picker-search".into();
+    settings.placeholder = theme::text("search devices");
+    settings.clear_name = theme::text("clear device search");
+    settings.max_bytes = 256;
+    TextInput::new(cx, settings)
+}
 pub(super) fn name(content: String, cx: &mut Context<TextInput>) -> TextInput {
     let mut input = TextInput::new(cx, config(TextInputKind::Value));
     input.set_text(&content, cx);
@@ -52,7 +69,7 @@ pub(super) fn tags(content: String, cx: &mut Context<TextInput>) -> TextInput {
 }
 pub(super) fn restyle(input: &Entity<TextInput>, cx: &mut App) {
     input.update(cx, |input, cx| {
-        let _ = input.set_external_style(theme::control_style(), theme::action_style(), cx);
+        let _ = input.set_external_style(theme::control_style(), clear_action_style(), cx);
     });
 }
 

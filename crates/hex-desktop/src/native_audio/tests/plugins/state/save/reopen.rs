@@ -190,24 +190,23 @@ fn idle_vst3_drag_survives_undo_save_reopen() {
 
 fn gesture_fixture() -> SavedEffectFixture {
     // Keep resident backing below this harness's 8192-frame source budget.
-    // Reusing the same source gives native control work a longer audible run.
+    // A long loop of the same source keeps native control work audible even
+    // when headless callback driving runs much faster than wall time.
     let mut fixture = nondefault_fixture_with_frames(8192);
     let track = fixture.project.tracks()[0].id();
     let asset = fixture.project.assets().next().unwrap().id();
     let mut editor = hex_project::Editor::new(fixture.project.clone(), 8).unwrap();
-    for start in [8192, 16384] {
-        editor
-            .execute(Command::PlaceClip {
-                track,
-                asset,
-                start,
-                duration: 8192,
-                source_offset: 0,
-                source_length: 8192,
-                looping: false,
-            })
-            .unwrap();
-    }
+    editor
+        .execute(Command::PlaceClip {
+            track,
+            asset,
+            start: 8192,
+            duration: 8192 * 256,
+            source_offset: 0,
+            source_length: 8192,
+            looping: true,
+        })
+        .unwrap();
     fixture.project = editor.project().clone();
     fixture.path = fixture.files.0.join("gesture.hex");
     hex_storage::save_new(&fixture.path, &fixture.project).unwrap();
@@ -309,15 +308,24 @@ fn vst3_drag_roundtrip(playing: bool, stopped: bool, changed_steps: bool) {
             .command(PlaybackCommand::Play)
             .unwrap();
     }
-    let mut blocks = h.plugin_completed.load(Acquire);
-    let mut render = |h: &ResidentHarness| {
+    let render = |h: &ResidentHarness| {
         if !playing {
             h.render_worker_step();
             return [[0.0; 2]; 256];
         }
         let samples = h.render_plugin_block();
-        blocks += 1;
-        wait(|| h.plugin_completed.load(Acquire) >= blocks);
+        // The Session worker is waiting for this gesture's PCM point. Its
+        // copied completion counter cannot advance until the request returns;
+        // wait on the actual endpoint before offering the next callback.
+        wait(|| {
+            h.callback
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .native_workers_idle_on_control()
+                == Some(true)
+        });
         samples
     };
     for _ in 0..3 {

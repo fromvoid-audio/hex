@@ -180,49 +180,6 @@ impl EditorView {
             vec![primary]
         }
     }
-    /// Whole-clip selection supplies Play's start, as in Live: the earliest
-    /// selected Arrangement clip start in frames, across tracks. Audio starts
-    /// are frame-anchored; MIDI beat starts convert through the tempo map, and
-    /// one that maps beyond the frame range is skipped. An offscreen start still
-    /// applies and the viewport does not move. Stale and Session IDs are ignored.
-    /// A non-empty time selection outranks this in `playback_start_frame`; a
-    /// point cursor placed inside the selected clip afterwards keeps its frame,
-    /// so split-at-cursor stays visible. While this applies the point cursor is
-    /// hidden but retained, and returns when the clip selection clears.
-    pub(super) fn selected_clip_play_start(&self) -> Option<u64> {
-        let primary = self.selected_clip?;
-        // Any newly placed cursor restores the ordinary precedence below.
-        if self.loop_start_over_clip == Some(primary) && self.edit_cursor.is_none() {
-            return None;
-        }
-        if self.edit_cursor_in_selected_clip == Some(primary)
-            && self
-                .edit_cursor
-                .is_some_and(|cursor| cursor.generation == self.project_generation)
-        {
-            return None;
-        }
-        let project = &self.state.as_ref()?.project;
-        let tempo = project.tempo_map();
-        project
-            .tracks()
-            .iter()
-            .flat_map(|track| {
-                let audio = track
-                    .clips()
-                    .iter()
-                    .filter(|clip| self.clip_is_selected(clip.id()))
-                    .map(|clip| Some(clip.start()));
-                let midi = track
-                    .midi_clips()
-                    .iter()
-                    .filter(|clip| self.clip_is_selected(clip.id()))
-                    .map(|clip| tempo.beat_to_frame(clip.start()).ok());
-                audio.chain(midi)
-            })
-            .flatten()
-            .min()
-    }
     pub(super) fn select_clip_header(
         &mut self,
         track: TrackId,
@@ -384,7 +341,10 @@ mod tests {
                     paints.push((
                         id,
                         prefix,
-                        crate::theme::clip_fill(track.color(), flavor, members.contains(&id)),
+                        crate::theme::arrangement_clip_body_fill(
+                            crate::theme::clip_fill(track.color(), flavor, false),
+                            members.contains(&id),
+                        ),
                     ));
                 }
             }

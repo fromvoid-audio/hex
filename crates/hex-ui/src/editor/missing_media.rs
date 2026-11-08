@@ -789,7 +789,7 @@ impl EditorView {
                 .debug_selector(|| "missing-media-overlay".into())
                 .absolute()
                 .inset_0()
-                .pt(px(super::header::TITLE_HEIGHT))
+                .pt(px(super::header::WINDOW_CONTROL_HEIGHT))
                 .flex()
                 .justify_center()
                 .bg(rgb(theme::color(PaletteRole::Background)))

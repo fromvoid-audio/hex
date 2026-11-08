@@ -218,7 +218,7 @@ impl Plugins {
         for mut entry in wanted {
             // All tokens have reached their actual terminals. A late source
             // close/replacement still refuses data before snapshot publication.
-            let selection = edits::armed_selection(control, entry.binding)?;
+            let selection = edits::armed_selection(control, entry.binding, Some(cancellation))?;
             if let Some(selection) = selection.as_ref() {
                 let host = self
                     .host
@@ -241,6 +241,7 @@ impl Plugins {
                             &entry.expected,
                             selection,
                             Some(cancellation),
+                            None,
                         )?)
                     };
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);

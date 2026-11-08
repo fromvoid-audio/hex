@@ -347,7 +347,7 @@ fn clip_fade_layer(samples: Vec<(f32, f32)>, active: bool) -> impl IntoElement +
             }
             shade.close();
             if let Ok(shade) = shade.build() {
-                window.paint_path(shade, rgba(0x00000038));
+                window.paint_path(shade, rgba(theme::CLIP_FADE_SHADE));
             }
             if let Some(path) = path
                 && let Ok(path) = path.build()
@@ -696,6 +696,10 @@ impl EditorView {
                 .h(px(1.0))
                 .bg(rgb(theme::color(theme::PaletteRole::Border))),
         );
+        if track.is_group() {
+            clip_area =
+                clip_area.children([super::group_overview::view(self, state, track, viewport)]);
+        }
         // Keep the divider out of layout: clips, pointer projection and the Main
         // lane must all use the complete timeline width. Paint beneath clips to
         // preserve their selection stroke at the viewport edge.
@@ -2229,12 +2233,9 @@ impl EditorView {
             );
             let midi_drag_payload =
                 self.midi_drag_payload(state, track_id, clip, start, end, viewport);
-            let fill = theme::clip_activity_fill(
-                track.color(),
-                clip.flavor(),
-                selected_clip,
-                clip.active(),
-            );
+            let header_fill =
+                theme::clip_activity_fill(track.color(), clip.flavor(), false, clip.active());
+            let fill = theme::arrangement_clip_body_fill(header_fill, selected_clip);
             let stroke = 1.0 / scale_factor.max(1.0);
             let border = hex_widgets::rectangle_border_width(pixel_width) > 0.0;
             let mut midi = hex_widgets::rectangle_surface(left as f32, width as f32, pixel_width)
@@ -2356,7 +2357,13 @@ impl EditorView {
                     clip.looping(),
                 ));
             }
-            midi = midi.child(self.clip_name_header(track_id, clip.id(), clip.name(), fill, cx));
+            midi = midi.child(self.clip_name_header(
+                track_id,
+                clip.id(),
+                clip.name(),
+                header_fill,
+                cx,
+            ));
             midi = midi.when(clip.looping(), |midi| {
                 midi.child(loop_handles::midi_markers(
                     clip,
@@ -2679,15 +2686,16 @@ impl EditorView {
                     lane,
                 )
             });
-        let fill = theme::clip_activity_fill(
+        let header_fill = theme::clip_activity_fill(
             state
                 .project
                 .track(track)
                 .map_or(hex_project::ElementColor::default(), |t| t.color()),
             clip.flavor(),
-            selected,
+            false,
             clip.active(),
         );
+        let fill = theme::arrangement_clip_body_fill(header_fill, selected);
         let clip_pixel_width = self.drag_lanes.get(&track).map_or(0.0, |lane| {
             super::trim::rendered_clip_width(lane.width, width)
         });
@@ -2790,7 +2798,7 @@ impl EditorView {
         );
         let hover_generation = self.project_generation;
         let mut content = content
-            .child(self.clip_name_header(track, clip.id(), clip.name(), fill, cx))
+            .child(self.clip_name_header(track, clip.id(), clip.name(), header_fill, cx))
             .when(!active_trim_preview && looping, |content| {
                 content.child(loop_handles::audio_markers(
                     clip,
@@ -2801,20 +2809,21 @@ impl EditorView {
             })
             .id(("clip", clip_id.value()))
             .debug_selector(|| format!("clip-visual-{}", clip_id.value()))
-            .on_hover(cx.listener(move |view, hovered, _, cx| {
-                if *hovered && view.project_generation != hover_generation {
-                    return;
-                }
-                let hovered_clip = (hover_generation, clip_id);
-                let next = if *hovered {
-                    Some(hovered_clip)
-                } else if view.hovered_fade_clip == Some(hovered_clip) {
-                    None
-                } else {
-                    view.hovered_fade_clip
-                };
-                if view.hovered_fade_clip != next {
-                    view.hovered_fade_clip = next;
+            .on_mouse_move(
+                cx.listener(move |view, event: &gpui::MouseMoveEvent, _, cx| {
+                    if view.update_fade_hover(
+                        track,
+                        clip_id,
+                        hover_generation,
+                        Some(f32::from(event.position.y)),
+                    ) {
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_hover(cx.listener(move |view, hovered: &bool, window, cx| {
+                let pointer_y = hovered.then(|| f32::from(window.mouse_position().y));
+                if view.update_fade_hover(track, clip_id, hover_generation, pointer_y) {
                     cx.notify();
                 }
             }))

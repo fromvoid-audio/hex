@@ -191,6 +191,15 @@ impl<C: Copy + PartialEq, const N: usize> Controls<C, N> {
     pub fn effective(&self) -> C {
         self.effective
     }
+    /// Presence from the last installed bulk sample, distinct from the
+    /// canonical fallback. This never re-queries or advances a producer.
+    pub fn has_value(&self, index: usize) -> bool {
+        index < N
+            && self
+                .present
+                .get(index / (u64::BITS as usize))
+                .is_some_and(|word| word & (1_u64 << (index % (u64::BITS as usize))) != 0)
+    }
     pub fn admitted(&self, index: usize) -> bool {
         self.admitted.get(index).copied().unwrap_or(false)
     }
@@ -628,6 +637,16 @@ mod tests {
             let pending = c.sample(&table, &mut map, &input, 0).unwrap().unwrap();
             c.install(pending);
             assert_eq!(c.effective(), expected);
+            assert_eq!(
+                c.has_value(0),
+                input.ids.contains(&ParameterId::from_static(1))
+            );
+            assert_eq!(
+                c.has_value(65),
+                input.ids.contains(&ParameterId::from_static(66))
+            );
+            assert!(!c.has_value(70));
+            assert!(!c.has_value(usize::MAX));
         }
     }
 }

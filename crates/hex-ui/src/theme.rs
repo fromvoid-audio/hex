@@ -145,6 +145,10 @@ pub enum PaletteRole {
     Text,
     Muted,
     Primary,
+    /// Recording is red independently of the editable interaction highlight.
+    Recording,
+    /// Validation must remain recognizable when the highlight is changed.
+    Error,
     PrimaryDark,
     Waveform,
     WaveBackground,
@@ -167,6 +171,7 @@ struct ThemeTokens {
     clip_outline: u32,
     muted: u32,
     primary_dark: u32,
+    error: u32,
     waveform: u32,
 }
 
@@ -193,6 +198,10 @@ impl ThemeTokens {
             clip_outline: mix(0x000000, darken(background, 42), 0.25),
             muted: mix(background, text, 0.68),
             primary_dark: mix(background, primary, 0.08),
+            error: [0xe35c5c, 0xb32828, 0x7a1111, 0x4c0000, 0xffcccc]
+                .into_iter()
+                .find(|red| contrast_ratio(*red, background) >= 4.5)
+                .unwrap_or_else(|| contrast_text(background, 0xe35c5c)),
             waveform: contrast_text(mix(primary, text, 0.15), text),
         }
     }
@@ -212,6 +221,8 @@ impl ThemeTokens {
             PaletteRole::Text => self.colors.text.packed(),
             PaletteRole::Muted => self.muted,
             PaletteRole::Primary => self.colors.primary.packed(),
+            PaletteRole::Recording => 0xc33737,
+            PaletteRole::Error => self.error,
             PaletteRole::PrimaryDark => self.primary_dark,
             PaletteRole::Waveform => self.waveform,
             PaletteRole::Secondary => self.colors.secondary.packed(),
@@ -389,17 +400,26 @@ pub fn element_colors(identity: hex_project::ElementColor) -> ElementColors {
 }
 fn resolve_element_colors(identity: hex_project::ElementColor, surface: u32) -> ElementColors {
     use hex_project::ElementColor;
+    // Frame r188's eight hue families use the bright clip shade as the accent;
+    // the existing surface mix and contrast-bound darkening resolve the other tiers.
     let hue = match identity {
-        ElementColor::Gray => 0xa4aaa8,
-        ElementColor::Red => 0xcf7773,
-        ElementColor::Orange => 0xd58d69,
-        ElementColor::Amber => 0xc5aa70,
-        ElementColor::Olive => 0xa3ad79,
-        ElementColor::Green => 0x7eae94,
-        ElementColor::Cyan => 0x77b6bb,
+        ElementColor::Gray => 0xa4a4a4,
+        ElementColor::Red => 0xce7967,
+        ElementColor::Orange => 0xd79659,
+        ElementColor::Amber => 0xc5ae5b,
+        ElementColor::Olive => 0x95b56b,
+        ElementColor::Green => 0x6bb68b,
+        ElementColor::Cyan => 0x6bb3aa,
         ElementColor::Blue => 0x809fca,
-        ElementColor::Violet => 0xa195c3,
-        ElementColor::Rose => 0xc18fa6,
+        ElementColor::Violet => 0xb780ad,
+        ElementColor::Rose => 0xd37c94,
+    };
+    // Neutral markers stay neutral even when a custom surface is tinted.
+    let surface = if identity == ElementColor::Gray {
+        let channel = ((surface >> 16 & 255) + (surface >> 8 & 255) + (surface & 255)) / 3;
+        channel * 0x010101
+    } else {
+        surface
     };
     let muted = mix(surface, hue, 0.82);
     let accent = mix(surface, hue, 0.98);
@@ -421,8 +441,32 @@ fn muted_clip_fill(accent: u32) -> u32 {
         .unwrap_or(accent)
 }
 
-/// Shared audio/MIDI body, Console cell, drag preview and title fill. The persisted
-/// `Muted` flavor is darker and more saturated; Accent keeps the track hue.
+/// Black shading above a clip's fade envelope, at 40 percent opacity. Shared
+/// canonical and projected clip layers use it independently of curve/handle ink.
+pub(crate) const CLIP_FADE_SHADE: u32 = 0x00000066;
+
+const CLIP_SELECTION_LIFT: u32 = 22;
+
+/// Additional white mixed into selected Arrangement bodies after the ordinary
+/// selection lift. Header strips and Console cells retain their own fills.
+const SELECTED_CLIP_BODY_WHITENING: f32 = 0.35;
+
+/// Derive the Arrangement content surface from its unselected header color.
+/// This changes no geometry or content ink, and requires no project traversal.
+pub(crate) fn arrangement_clip_body_fill(header: u32, selected: bool) -> u32 {
+    if selected {
+        mix(
+            lighten(header, CLIP_SELECTION_LIFT),
+            0xffffff,
+            SELECTED_CLIP_BODY_WHITENING,
+        )
+    } else {
+        header
+    }
+}
+
+/// Shared clip palette for Console cells, drag previews and unselected titles.
+/// The persisted `Muted` flavor is darker and more saturated; Accent keeps the track hue.
 /// Track strips, sections and browser marker palettes retain their own surfaces.
 pub fn clip_fill(
     color: hex_project::ElementColor,
@@ -436,7 +480,11 @@ pub fn clip_fill(
             hex_project::ClipFlavor::Accent => theme.elements[color as usize].accent,
         }
     });
-    if selected { lighten(base, 22) } else { base }
+    if selected {
+        lighten(base, CLIP_SELECTION_LIFT)
+    } else {
+        base
+    }
 }
 
 /// Activation is independent of the persisted color flavor. Keep inactive clips
@@ -547,6 +595,42 @@ mod tests {
                 color(PaletteRole::SecondaryText)
             ) >= 4.5
         );
+    }
+
+    #[test]
+    fn graphite_defaults_are_neutral_and_recording_errors_ignore_custom_highlights() {
+        let _restore = RestoreTheme(preferences());
+        let defaults = hex_preferences::ThemePreferences::default();
+        apply_preferences(defaults);
+        for role in [
+            PaletteRole::Background,
+            PaletteRole::Surface,
+            PaletteRole::Raised,
+            PaletteRole::Hover,
+            PaletteRole::Border,
+            PaletteRole::Text,
+            PaletteRole::Muted,
+        ] {
+            let rgb = color(role);
+            assert_eq!((rgb >> 16) & 255, (rgb >> 8) & 255);
+            assert_eq!((rgb >> 8) & 255, rgb & 255);
+        }
+        assert_eq!(color(PaletteRole::Primary), 0x3b95df);
+        assert_eq!(color(PaletteRole::Secondary), 0x75baff);
+        let recording = color(PaletteRole::Recording);
+        let error = color(PaletteRole::Error);
+        assert!(contrast_ratio(recording, color(PaletteRole::Background)) >= 3.0);
+        assert!(contrast_ratio(error, color(PaletteRole::Raised)) >= 4.5);
+        let custom = hex_preferences::ThemePreferences {
+            primary: hex_preferences::RgbColor::new(0x90, 0xdd, 0x60),
+            ..defaults
+        };
+        apply_preferences(custom);
+        assert_eq!(preferences(), custom);
+        assert_eq!(color(PaletteRole::Recording), recording);
+        assert_eq!(color(PaletteRole::Error), error);
+        assert_ne!(color(PaletteRole::Primary), recording);
+        assert_eq!(control_style().invalid, error);
     }
 
     #[test]
@@ -700,10 +784,15 @@ mod tests {
                             .all(|(muted, accent)| muted < accent),
                         "muted clips must be darker for {hue:?}"
                     );
-                    assert!(
-                        saturation(regular) > saturation(accent),
-                        "muted clips must be more saturated for {hue:?}"
-                    );
+                    if hue == hex_project::ElementColor::Gray {
+                        assert_eq!(saturation(regular), 0.0);
+                        assert_eq!(saturation(accent), 0.0);
+                    } else {
+                        assert!(
+                            saturation(regular) > saturation(accent),
+                            "muted clips must be more saturated for {hue:?}"
+                        );
+                    }
                     weakest = weakest.min(separation);
                     for (fill, cell_text) in
                         [(regular, colors.muted_text), (accent, colors.accent_text)]
@@ -736,6 +825,18 @@ mod tests {
 #[cfg(test)]
 mod element_palette_tests {
     use super::*;
+    #[test]
+    fn neutral_markers_do_not_inherit_custom_surface_tint() {
+        for surface in [0x000000, 0x202020, 0xf5f0e6, 0x2a1438] {
+            let colors = resolve_element_colors(hex_project::ElementColor::Gray, surface);
+            for fill in [colors.muted, colors.accent] {
+                assert_eq!(fill >> 16 & 255, fill >> 8 & 255);
+                assert_eq!(fill >> 8 & 255, fill & 255);
+                assert!(contrast_ratio(fill, 0x000000) >= 4.5);
+            }
+        }
+    }
+
     #[test]
     fn both_flavors_keep_ink_legible_and_identities_distinct() {
         let mut hues = std::collections::BTreeSet::new();

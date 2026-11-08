@@ -25,38 +25,16 @@ pub(in crate::editor::device_panel) enum Field {
     Time,
     Tone,
     Volume,
-    FineA,
-    FineB,
-    FineC,
-    FineD,
 }
 
 impl Field {
-    pub(super) const fn operator(self) -> Option<usize> {
-        match self {
-            Self::FineA => Some(0),
-            Self::FineB => Some(1),
-            Self::FineC => Some(2),
-            Self::FineD => Some(3),
-            _ => None,
-        }
-    }
-
-    pub(super) const fn is_global(self) -> bool {
-        matches!(self, Self::Time | Self::Tone | Self::Volume)
-    }
-
-    pub(in crate::editor::device_panel) const ALL: [Self; 10] = [
+    pub(in crate::editor::device_panel) const ALL: [Self; 6] = [
         Self::PitchEnvelope,
         Self::Spread,
         Self::Transpose,
         Self::Time,
         Self::Tone,
         Self::Volume,
-        Self::FineA,
-        Self::FineB,
-        Self::FineC,
-        Self::FineD,
     ];
 
     const fn spec(self) -> FieldSpec {
@@ -67,9 +45,6 @@ impl Field {
             Self::Time => FieldSpec::new("time", 0.0, 100.0, 23.0, "%", 0, false),
             Self::Tone => FieldSpec::new("tone", 0.0, 100.0, 100.0, "%", 0, false),
             Self::Volume => FieldSpec::new("volume", -60.0, 6.0, -16.0, "db", 0, false),
-            Self::FineA | Self::FineB | Self::FineC | Self::FineD => {
-                FieldSpec::new("fine", -100.0, 100.0, 0.0, "", 0, false)
-            }
         }
     }
 }
@@ -134,7 +109,7 @@ pub(in crate::editor::device_panel) struct State {
     pub(in crate::editor::device_panel) controls: HashMap<Field, NumericPreview>,
     pub(in crate::editor::device_panel) toggles: HashMap<Switch, TogglePreview>,
     pub(in crate::editor::device_panel) routing_focus: Option<gpui::FocusHandle>,
-    pub(in crate::editor::device_panel) values: [f64; 10],
+    pub(in crate::editor::device_panel) values: [f64; 6],
     pub(in crate::editor::device_panel) enabled: [bool; 1],
 }
 
@@ -414,13 +389,6 @@ pub(super) fn control(
                     if !current {
                         return;
                     }
-                    if event.phase == hex_widgets::NumericEventPhase::Begin {
-                        if let Some(operator) = field.operator() {
-                            super::context::select_oscillator(view, cx, owner, operator, &[]);
-                        } else if field.is_global() {
-                            super::context::select_routing(view, cx, owner);
-                        }
-                    }
                 }
                 if let Some(state) = view.device_panel.operator_previews.get_mut(&key.0) {
                     state.values[key.1 as usize] = event.value;
@@ -458,7 +426,6 @@ pub(super) fn control(
         control.set_tab_navigation(true, cx);
         let _ = control.set_external_value(value, cx);
     });
-    let owner = super::context::Owner::capture(view, device);
     div()
         .id(ElementId::Name(
             format!("operator-preview-{}-{}", device.value(), field as usize).into(),
@@ -468,16 +435,7 @@ pub(super) fn control(
         .h(px(ROW_HEIGHT))
         .flex_shrink_0()
         .child(control.entity.clone())
-        .on_mouse_down(
-            gpui::MouseButton::Left,
-            cx.listener(move |view, _, _, cx| {
-                if let Some(owner) = owner
-                    && let Some(operator) = field.operator()
-                {
-                    super::context::select_oscillator(view, cx, owner, operator, &[]);
-                }
-            }),
-        )
+        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
 }
 
 fn toggle(

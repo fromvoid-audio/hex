@@ -1425,7 +1425,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn track_header_offers_nine_non_gray_swatches_and_stale_clip_action_is_ignored(
+    fn track_header_offers_eight_non_blue_swatches_and_stale_clip_action_is_ignored(
         cx: &mut TestAppContext,
     ) {
         let (project, track, _, clip) = audio_project();
@@ -1455,7 +1455,7 @@ mod tests {
                     .iter()
                     .filter(|item| item.swatch.is_some())
                     .count(),
-                9
+                8
             );
             let choices: Vec<_> = menu
                 .items
@@ -1465,8 +1465,9 @@ mod tests {
                     _ => None,
                 })
                 .collect();
-            assert_eq!(choices, ElementColor::ALL[1..]);
+            assert_eq!(choices, ElementColor::TRACK_CHOICES);
             assert!(!choices.contains(&ElementColor::Gray));
+            assert!(!choices.contains(&ElementColor::Blue));
             // Color and density are independent checkmark groups in one popup.
             let checked_colors: Vec<_> = menu
                 .items

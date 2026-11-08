@@ -1,5 +1,7 @@
 //! Instrumented headless callback allocation regression; no device is opened.
 
+#[path = "callback_allocations/compressor.rs"]
+mod compressor;
 #[path = "callback_allocations/cursor_loop.rs"]
 mod cursor_loop;
 #[path = "callback_allocations/finite_bounce.rs"]
@@ -8,10 +10,14 @@ mod finite_bounce;
 mod gate;
 #[path = "callback_allocations/output_capture.rs"]
 mod output_capture;
+#[path = "callback_allocations/overdrive.rs"]
+mod overdrive;
 #[path = "callback_allocations/probe.rs"]
 pub(super) mod probe;
 #[path = "callback_allocations/project_tuning.rs"]
 mod project_tuning;
+#[path = "callback_allocations/reverb_outputs.rs"]
+mod reverb_outputs;
 #[path = "../../../hex-engine/examples/support/session_audio_fixture.rs"]
 #[allow(dead_code)]
 mod session_audio_fixture;
@@ -1505,6 +1511,7 @@ fn reverb_automation_publication_and_render_are_allocation_free() -> Result<(), 
     let start = map.frame_to_beat((BLOCK + 5) as u64)?;
     let end = map.frame_to_beat((BLOCK + 19) as u64)?;
     editor.execute(Command::SpliceDeviceAutomationTouch {
+        vst3_class: None,
         device,
         target: DeviceAutomationTarget::Parameter(parameter::DRY_WET),
         spans: vec![DeviceAutomationTouchSpan {
@@ -3660,3 +3667,5 @@ fn mutable_arrangement_source_and_transport_loops_are_callback_allocation_free()
     control.reclaim();
     Ok(())
 }
+
+mod eq8_gain;

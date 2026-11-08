@@ -712,7 +712,7 @@ mod tests {
         let operator_view =
             native_device_view_for_class(NativeDeviceClass::Instrument, &operator_state).unwrap();
         assert_eq!(operator_view.name, "vector");
-        assert_eq!(operator_view.parameters.len(), 424);
+        assert_eq!(operator_view.parameters.len(), 428);
         let enables: Vec<_> = operator_view
             .parameters
             .iter()

@@ -258,10 +258,11 @@ impl RectangleDemo {
         let time_range = if self.kind == Kind::Section {
             let Some(time_range) = crate::section_input::routes_to_time_range(
                 hit.is_some_and(|(_, part)| part != RectanglePart::Body),
+                double && hit.is_none(),
                 y,
                 f32::from(bounds.top()),
                 f32::from(bounds.size.height),
-                44.0 * hex_widgets::RANGE_HANDLE_FRACTION,
+                14.0,
             ) else {
                 return false;
             };
@@ -979,33 +980,28 @@ impl Render for RectangleDemo {
                     start,
                     end - start,
                     pixel_width,
-                    1.0 / window.scale_factor().max(1.0),
+                    crate::section_surface::CHAMFER,
                     identity,
                     selected,
                     hovered,
                 )
                 .cursor(RectanglePart::Body.cursor())
                 .child(
-                    crate::section_surface::header(
-                        identity,
-                        selected,
-                        hovered,
-                        44.0 * hex_widgets::RANGE_HANDLE_FRACTION,
-                    )
-                    .debug_selector({
-                        let id = self.id.clone();
-                        move || format!("{id}-section-header-{index}")
-                    })
-                    .child(theme::text(section_paint.get(index).map_or_else(
-                        || "section".to_owned(),
-                        |section| {
-                            if selected {
-                                format!("✓ {}", section.name())
-                            } else {
-                                section.name().to_owned()
-                            }
-                        },
-                    ))),
+                    crate::section_surface::header(identity, selected, hovered, 14.0)
+                        .debug_selector({
+                            let id = self.id.clone();
+                            move || format!("{id}-section-header-{index}")
+                        })
+                        .child(theme::text(section_paint.get(index).map_or_else(
+                            || "section".to_owned(),
+                            |section| {
+                                if selected {
+                                    format!("✓ {}", section.name())
+                                } else {
+                                    section.name().to_owned()
+                                }
+                            },
+                        ))),
                 )
             } else {
                 rectangle_surface(start, end - start, pixel_width)
@@ -2447,7 +2443,12 @@ mod tests {
         visual.update(|window, _| window.activate_window());
         visual.run_until_parked();
         let area = visual.debug_bounds("section-paint-area").unwrap();
-        let at = |x: f32| point(area.left() + area.size.width * x, area.top() + px(5.0));
+        let at = |x: f32| {
+            point(
+                area.left() + area.size.width * x,
+                area.top() + area.size.height * 0.9,
+            )
+        };
         let outside = point(area.right() + px(20.0), area.top() - px(10.0));
         let double_down = |visual: &mut VisualTestContext| {
             visual.simulate_event(gpui::MouseDownEvent {
