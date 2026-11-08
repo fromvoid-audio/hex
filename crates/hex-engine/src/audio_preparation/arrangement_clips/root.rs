@@ -132,6 +132,7 @@ impl ArrangementRootAssembly {
                 project.sample_rate(),
                 effects,
                 native_input,
+                Some(project),
             )?;
             let (chain, declaration) = chain.into_paired_parts_on_control();
             self.main_chain = Some(chain);

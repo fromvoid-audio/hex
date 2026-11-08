@@ -1,9 +1,31 @@
 use crate::ControlStyle;
 use gpui::{
-    AnchoredPositionMode, Context, Corner, EventEmitter, FocusHandle, Focusable, MouseButton,
-    MouseDownEvent, PathBuilder, SharedString, Window, anchored, canvas, deferred, div, point,
-    prelude::*, px, rgb,
+    AnchoredPositionMode, App, Context, Corner, EventEmitter, FocusHandle, Focusable, KeyBinding,
+    MouseButton, MouseDownEvent, PathBuilder, SharedString, Window, anchored, canvas, deferred,
+    div, point, prelude::*, px, rgb,
 };
+
+gpui::actions!(
+    hex_widgets_selector,
+    [
+        SelectorToggle,
+        SelectorCancel,
+        SelectorNext,
+        SelectorPrevious
+    ]
+);
+
+/// Install focused popup shortcuts before the host's more general actions.
+/// Closed popups leave Escape and arrows with their host.
+pub fn bind_selector_keys(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("enter", SelectorToggle, Some("hex_selector")),
+        KeyBinding::new("space", SelectorToggle, Some("hex_selector")),
+        KeyBinding::new("escape", SelectorCancel, Some("hex_selector_open")),
+        KeyBinding::new("down", SelectorNext, Some("hex_selector_open")),
+        KeyBinding::new("up", SelectorPrevious, Some("hex_selector_open")),
+    ]);
+}
 
 #[derive(Debug, Clone)]
 pub struct ToggleChanged {
@@ -536,8 +558,8 @@ impl SelectorConfig {
         if choices.is_empty() || selected >= choices.len() {
             return Err("selector requires a valid selected option");
         }
-        if choices.len() > 128 {
-            return Err("selector exceeds 128 options");
+        if choices.len() > 257 {
+            return Err("selector exceeds 257 options");
         }
         Ok(Self {
             accessibility_name: "choice".into(),
@@ -719,6 +741,10 @@ impl Selector {
     }
 
     fn open_or_close(&mut self, _: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_popup(window, cx);
+    }
+
+    fn toggle_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.enabled {
             self.open = !self.open;
             self.focus.focus(window);
@@ -1126,6 +1152,34 @@ impl gpui::Render for Selector {
             .min_w_0()
             .relative()
             .track_focus(&self.focus)
+            .when(self.enabled, |root| {
+                root.key_context(if self.open {
+                    "hex_selector hex_selector_open"
+                } else {
+                    "hex_selector"
+                })
+            })
+            .on_action(cx.listener(|selector, _: &SelectorToggle, window, cx| {
+                selector.toggle_popup(window, cx);
+                cx.stop_propagation();
+            }))
+            .on_action(cx.listener(|selector, _: &SelectorCancel, _, cx| {
+                selector.open = false;
+                cx.notify();
+                cx.stop_propagation();
+            }))
+            .on_action(cx.listener(|selector, _: &SelectorNext, window, cx| {
+                selector.choose((selector.selected + 1) % selector.choices.len(), window, cx);
+                cx.stop_propagation();
+            }))
+            .on_action(cx.listener(|selector, _: &SelectorPrevious, window, cx| {
+                selector.choose(
+                    (selector.selected + selector.choices.len() - 1) % selector.choices.len(),
+                    window,
+                    cx,
+                );
+                cx.stop_propagation();
+            }))
             .rounded(px(2.0))
             .border_1()
             .border_color(rgb(if self.focus.is_focused(window) {

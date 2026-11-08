@@ -44,6 +44,7 @@ fn values(frequency: f32, gain: f32) -> DeviceParameterSnapshot {
 fn ack(request: GestureRequest) -> GestureAck {
     GestureAck {
         preview_retained: false,
+        source_lost: false,
         key: request.key(),
         phase: request.phase(),
         sequence: request.sequence(),
@@ -324,11 +325,12 @@ fn snapshot_control_storage_and_coalescing_are_finitely_bounded() {
         32 * size_of::<crate::service::Request>(),
         start.elapsed().as_nanos()
     );
-    assert!(size_of::<GestureRequest>() <= 832);
-    // The bounded 32-slot service queue must not grow when snapshot intent grows.
-    assert!(size_of::<crate::service::Request>() <= 832);
-    assert!(32 * size_of::<crate::service::Request>() <= 26_624);
-    assert!(size_of::<GestureClient>() < 8192);
+    // The largest inline intent is now the 256-member frozen gain cohort.
+    // It stays control-side; the same 32-slot FIFO and coalescing rules apply.
+    assert!(size_of::<GestureRequest>() <= 3200);
+    assert!(size_of::<crate::service::Request>() <= 3200);
+    assert!(32 * size_of::<crate::service::Request>() <= 102_400);
+    assert!(size_of::<GestureClient>() < 20_480);
     assert_eq!(client.snapshot().unwrap().sequence, 100_000);
     assert!(client.latest_change.is_some());
     assert!(client.in_flight.is_none());

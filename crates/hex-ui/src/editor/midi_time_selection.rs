@@ -87,6 +87,19 @@ impl Capture {
     }
 }
 impl EditorView {
+    pub(in crate::editor) fn shift_midi_time_selection_origin(&mut self, delta: i128) {
+        self.midi_time_selection.gesture = None;
+        if let Some(selection) = self.midi_time_selection.selection.as_mut() {
+            let shift = |raw: u64| u64::try_from(i128::from(raw).saturating_add(delta)).ok();
+            if let Some((start, end)) = shift(selection.start).zip(shift(selection.end)) {
+                selection.start = start;
+                selection.end = end;
+            } else {
+                self.midi_time_selection.clear();
+            }
+        }
+    }
+
     pub(in crate::editor) fn clear_midi_time_selection(&mut self) -> bool {
         self.midi_time_selection.clear()
     }
@@ -127,19 +140,17 @@ impl EditorView {
         // A successful duplicate must remain visible even after it grows beyond
         // the old viewport. Move only as far as needed; this is view state.
         let span = self.piano_beat_span.raw().max(end - start);
-        let old = self.piano_beat_start.raw();
-        let reveal = if start < old {
-            start
-        } else if end > old.saturating_add(span) {
-            end.saturating_sub(span)
+        let old = self.piano_beat_start;
+        let reveal = if i128::from(start) < old {
+            i128::from(start)
+        } else if i128::from(end) > old.saturating_add(i128::from(span)) {
+            i128::from(end.saturating_sub(span))
         } else {
             old
         };
-        if let Some(source) = self.midi_clip() {
-            let length = source.source_length().raw();
+        if self.midi_clip().is_some() {
             self.piano_beat_span = BeatTime::from_raw(span);
-            self.piano_beat_start =
-                BeatTime::from_raw(super::super::midi_scene::clamp_start(reveal, length, span));
+            self.piano_beat_start = super::super::midi_scene::clamp_start(reveal, span);
         }
     }
     pub(in crate::editor) fn midi_time_selection_bounds(&self) -> Option<(u64, u64)> {
@@ -324,7 +335,7 @@ impl EditorView {
             && clip == g.context.clip
             && !self.edit_pending()
             && self.context_menu.is_none()
-            && self.piano_beat_start.raw() == g.context.start
+            && self.piano_beat_start == g.context.start
             && self.piano_beat_span.raw() == g.context.span
             && self.midi_snap_grid == g.context.grid
             && self.midi_selection.epoch() == g.note_epoch

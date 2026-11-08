@@ -15,8 +15,13 @@
 //! custody; producing a durable draft alone does not implement a playable recording workflow.
 use super::{Session, recovery};
 use hex_storage::automation_draft::DraftWriter;
+mod native_device;
 pub use hex_storage::automation_draft::{
-    AppliedEvent, DraftProgress, DraftProvenance, DraftTarget, DraftTerminal,
+    AppliedEvent, DraftAbortReason, DraftClock, DraftProgress, DraftProvenance, DraftTarget,
+    DraftTerminal,
+};
+pub use native_device::{
+    DeviceDraftInput, Vst3ApplicationValue, Vst3CaptureTarget, Vst3ParameterApplication,
 };
 use std::{
     collections::VecDeque,
@@ -367,10 +372,10 @@ fn spawn_with_start(
                     }
                 }
             };
-            if failure.is_none() {
-                if let Err(error) = writer.finish(terminal) {
-                    failure = Some(error.to_string());
-                }
+            if failure.is_none()
+                && let Err(error) = writer.finish(terminal)
+            {
+                failure = Some(error.to_string());
             }
             let progress = writer.progress();
             let path = writer.path().to_path_buf();
@@ -612,13 +617,13 @@ impl DraftWorker {
     }
     fn join(&mut self) -> Result<(), String> {
         let _ = self.shared.finish(DraftTerminal::Interrupted);
-        if let Some(thread) = self.thread.take() {
-            if thread.join().is_err() {
-                let mut state = self.shared.state();
-                state.failed = true;
-                state.finished = true;
-                return Err("automation writer failed; recover its retained file".to_owned());
-            }
+        if let Some(thread) = self.thread.take()
+            && thread.join().is_err()
+        {
+            let mut state = self.shared.state();
+            state.failed = true;
+            state.finished = true;
+            return Err("automation writer failed; recover its retained file".to_owned());
         }
         Ok(())
     }

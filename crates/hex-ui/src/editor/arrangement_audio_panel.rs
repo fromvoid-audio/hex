@@ -1,5 +1,5 @@
 //! Arrangement audio Clip View with canonical source and timeline controls.
-use super::{EditorView, viewport::Viewport};
+use super::{EditorView, signed_frame_viewport::SignedFrameViewport};
 use crate::theme;
 use gpui::{Context, Div, div, prelude::*, px, relative, rgb};
 use hex_project::{AssetId, AudioViewMode, ClipId, Command, TrackId};
@@ -66,6 +66,17 @@ pub(super) fn view(
     let (track, clip_id, position, length, source_start, source_length) =
         view.detail_audio_clip_data()?;
     let clip = state.project.clip(clip_id)?;
+    let identity = state.project.track(track)?.color();
+    let waveform_ink = theme::clip_waveform_ink(
+        identity,
+        theme::ClipWaveformBackground::Source,
+        clip.active(),
+    );
+    let event_ink = theme::clip_waveform_ink(
+        identity,
+        theme::ClipWaveformBackground::Events,
+        clip.active(),
+    );
     let retained_source_count = clip
         .audio_edit()
         .and_then(|edit| edit.domain.events.as_ref())
@@ -239,8 +250,12 @@ pub(super) fn view(
             .children(source_view.then(|| source_navigation(view, cx))),
     );
     if !source_view {
-        waveform_panel =
-            waveform_panel.child(super::audio_event_editor::view(view, render_window, cx)?);
+        waveform_panel = waveform_panel.child(super::audio_event_editor::view(
+            view,
+            render_window,
+            cx,
+            event_ink,
+        )?);
         return Some(details.child(waveform_panel));
     }
     if let Some(prepared) = state.audio_clip_waveforms.get(&clip_id) {
@@ -251,6 +266,7 @@ pub(super) fn view(
                 clip.start(),
                 clip.start() + clip.duration(),
                 std::rc::Rc::clone(&view.waveform_geometry_cache),
+                waveform_ink,
             ),
         ));
         waveform_panel = waveform_panel.child(div().text_xs().child(theme::text(
@@ -318,29 +334,25 @@ pub(super) fn view(
     .absolute()
     .inset_0()]);
     if let Some(waveform) = waveform {
-        let end = viewport
-            .end()
-            .unwrap_or(viewport.start)
-            .min(window.asset_frames);
-        if end > viewport.start && viewport.length > 0 {
+        if let Some((first, end)) = viewport.intersect(0, window.asset_frames)
+            && let Some(left) = viewport.fraction(i128::from(first))
+        {
             let visible = super::waveform::waveform_source_segment_gain_view_cached(
                 waveform,
                 0,
-                viewport.start,
-                end,
+                first..end,
                 window.gain,
                 false,
                 std::rc::Rc::clone(&view.waveform_geometry_cache),
+                waveform_ink,
             );
             canvas_region = canvas_region.child(
                 div()
                     .absolute()
-                    .left_0()
+                    .left(relative(left as f32))
                     .top_0()
                     .bottom_0()
-                    .w(relative(
-                        (end - viewport.start) as f32 / viewport.length as f32,
-                    ))
+                    .w(relative((end - first) as f32 / viewport.length as f32))
                     .overflow_hidden()
                     .debug_selector(|| "audio-source-visible-waveform".into())
                     .children([visible]),
@@ -442,10 +454,11 @@ fn lowercase_path_tail(path: &Path) -> String {
         .to_lowercase()
 }
 
-fn format_frame_time(frames: u64, sample_rate: u32) -> String {
-    let rate = u64::from(sample_rate.max(1));
-    let millis = frames.saturating_mul(1_000) / rate;
-    format!("{frames} · {}.{:03}s", millis / 1_000, millis % 1_000)
+fn format_frame_time(frames: i128, sample_rate: u32) -> String {
+    let rate = u128::from(sample_rate.max(1));
+    let millis = frames.unsigned_abs().saturating_mul(1_000) / rate;
+    let sign = if frames < 0 { "-" } else { "" };
+    format!("{frames} · {sign}{}.{:03}s", millis / 1_000, millis % 1_000)
 }
 
 fn frame_step(sample_rate: u32, fine: bool) -> u64 {
@@ -633,7 +646,7 @@ fn clip_window_is_current(view: &EditorView, captured: ClipWindow) -> bool {
     })
 }
 
-fn time_ruler(window: ClipWindow, viewport: Viewport) -> Div {
+fn time_ruler(window: ClipWindow, viewport: SignedFrameViewport) -> Div {
     let mut ruler = super::timeline_strip::ruler_surface()
         .w_full()
         .debug_selector(|| "arrangement-audio-time-ruler".into());
@@ -641,9 +654,7 @@ fn time_ruler(window: ClipWindow, viewport: Viewport) -> Div {
         return ruler;
     }
     for index in 0..=4_u64 {
-        let frame = viewport
-            .start
-            .saturating_add((u128::from(viewport.length) * u128::from(index) / 4) as u64);
+        let frame = viewport.start + i128::from(viewport.length) * i128::from(index) / 4;
         let x = index as f32 / 4.0;
         ruler = ruler.children(super::timeline_strip::ruler_tick(
             x,
@@ -656,8 +667,17 @@ fn time_ruler(window: ClipWindow, viewport: Viewport) -> Div {
     ruler
 }
 
-fn source_marker(frame: u64, viewport: Viewport, id: &'static str, color: u32) -> Option<Div> {
-    let fraction = viewport.fraction(frame)?;
+fn source_marker(
+    frame: u64,
+    viewport: SignedFrameViewport,
+    id: &'static str,
+    color: u32,
+) -> Option<Div> {
+    let frame = i128::from(frame);
+    if !viewport.contains(frame) {
+        return None;
+    }
+    let fraction = viewport.fraction(frame)? as f32;
     let marker = div().debug_selector(move || id.into()).absolute();
     let marker = if fraction == 1.0 {
         marker.right_0()

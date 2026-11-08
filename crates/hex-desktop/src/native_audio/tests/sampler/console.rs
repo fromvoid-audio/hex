@@ -370,19 +370,36 @@ fn sampler_console_held_quantized_cut_is_literal_partition_independent_and_callb
                 super::envelope::render(backend, &mut block);
                 pcm.extend(block);
             }
-            assert_eq!(
-                pcm,
-                [
-                    [-0.0625, 0.125],
-                    [0.0; 2],
-                    [0.0625, -0.125],
-                    [0.25, -0.5],
-                    [0.65625, -0.0625],
-                    [-0.125, 0.25],
-                    [0.0; 2],
-                    [0.125, -0.25]
-                ]
-            );
+            // The held root loops its 8-frame phase; at the frame-32000 cut
+            // (index 3) the incoming octave starts at phase 0 and the held
+            // voice releases over its authored 2 frames raised to the
+            // prepared floor.
+            let held = [
+                [0.125, -0.25],
+                [0.3125, -0.125],
+                [0.5, 0.0],
+                [0.1875, 0.125],
+                [-0.125, 0.25],
+                [-0.0625, 0.125],
+                [0.0, 0.0],
+                [0.0625, -0.125],
+            ];
+            let incoming = [[0.125, -0.25], [0.5, 0.0], [-0.125, 0.25], [0.0, 0.0]];
+            for (index, frame) in pcm.iter().enumerate() {
+                for c in 0..2 {
+                    let root = held[(index + 5) % 8][c];
+                    let expected = match index.checked_sub(3) {
+                        None => root,
+                        Some(age) => {
+                            incoming[age % 4][c] + root * super::floored_release_level(age, 2)
+                        }
+                    };
+                    assert!(
+                        (frame[c] - expected).abs() < 1e-6,
+                        "cut {index}: {frame:?} != {expected}"
+                    );
+                }
+            }
             let count = backend
                 .status()
                 .unwrap()

@@ -93,6 +93,12 @@ pub enum AudioEventEdit {
         event: u64,
         start: u64,
     },
+    /// Copy one event to a signed root-clock position with a fresh identity.
+    /// The destination may overwrite other events but must leave the source intact.
+    Duplicate {
+        event: u64,
+        start: i64,
+    },
     MoveRange {
         start: u64,
         end: u64,
@@ -118,6 +124,21 @@ pub enum AudioEventEdit {
         at: u64,
         length: u64,
         events: Vec<AudioEvent>,
+    },
+    /// Place one event anywhere on its clip's free event timeline. `start` is a
+    /// signed root-clock position relative to the current root origin; a frame
+    /// one-shot root first becomes a grouped timeline. A raw source loop keeps
+    /// its source phase. The destination grows within the processing budget.
+    Place {
+        event: u64,
+        start: i64,
+    },
+    /// Move a half-open selection to a signed root coordinate. Complete
+    /// events keep their IDs. A split gives the right fragment a fresh ID.
+    PlaceRange {
+        start: u64,
+        end: u64,
+        destination: i64,
     },
 }
 impl AudioEvents {
@@ -312,6 +333,14 @@ impl AudioEvents {
         if self.events.len() > MAX_AUDIO_EVENTS + 2 {
             return Err(Invalid("audio event view limit reached"));
         }
+        if matches!(
+            operation,
+            AudioEventEdit::Place { .. } | AudioEventEdit::PlaceRange { .. }
+        ) {
+            return Err(Invalid(
+                "free audio event placement edits the clip's whole timeline",
+            ));
+        }
         let next = self.edited_inner(operation, length)?;
         next.validate(length)?;
         Ok(next)
@@ -337,6 +366,11 @@ impl AudioEvents {
         self.validate_geometry(length)?;
         let mut next = self.clone();
         match operation {
+            AudioEventEdit::Place { .. } | AudioEventEdit::PlaceRange { .. } => {
+                return Err(Invalid(
+                    "free audio event placement edits the clip's whole timeline",
+                ));
+            }
             AudioEventEdit::SetRetainedPathActive {
                 sources,
                 events,
@@ -498,6 +532,31 @@ impl AudioEvents {
                     length,
                 )?;
             }
+            AudioEventEdit::Duplicate { event, start } => {
+                let source = next
+                    .events
+                    .iter()
+                    .find(|item| item.id == event)
+                    .copied()
+                    .ok_or(Invalid("audio event no longer exists"))?;
+                let start = u64::try_from(start)
+                    .map_err(|_| Invalid("audio event duplicate precedes its container"))?;
+                let end = start
+                    .checked_add(source.length())
+                    .filter(|end| *end <= length)
+                    .ok_or(Invalid("audio event duplicate exceeds its container"))?;
+                if start < source.end && source.start < end {
+                    return Err(Invalid("audio event duplicate overlaps its source"));
+                }
+                next.carve(start, end)?;
+                let id = next.id()?;
+                next.events.push(AudioEvent {
+                    id,
+                    start,
+                    end,
+                    ..source
+                });
+            }
             AudioEventEdit::Move { event, start } => {
                 let index = next
                     .events
@@ -624,6 +683,30 @@ impl AudioEvents {
         next.validate_geometry(length)?;
         Ok(next)
     }
+    pub(crate) fn place_range(
+        self,
+        start: u64,
+        end: u64,
+        destination: u64,
+        length: u64,
+    ) -> Result<Self, Invalid> {
+        // Split before removing the selection so complete events and
+        // untouched left fragments keep their original identities.
+        let mut next = self.edited_inner(AudioEventEdit::SplitRange { start, end }, length)?;
+        let first = next.events.partition_point(|event| event.start < start);
+        let last = next.events.partition_point(|event| event.start < end);
+        let moved: Vec<_> = next.events.drain(first..last).collect();
+        next.carve(destination, destination + (end - start))?;
+        next.events
+            .extend(moved.into_iter().map(|event| AudioEvent {
+                start: destination + (event.start - start),
+                end: destination + (event.end - start),
+                ..event
+            }));
+        next.events.sort_by_key(|event| event.start);
+        next.validate(length)?;
+        Ok(next)
+    }
     pub fn copy_range(&self, start: u64, end: u64) -> Vec<AudioEvent> {
         self.events
             .iter()
@@ -688,6 +771,16 @@ pub(crate) fn apply(
             Invalid("clip no longer exists")
         }
     })?;
+    if matches!(
+        operation,
+        AudioEventEdit::Place { .. }
+            | AudioEventEdit::PlaceRange { .. }
+            | AudioEventEdit::Duplicate { .. }
+    ) {
+        let candidate = crate::audio_event_timeline::prepare(project, clip, &operation)?;
+        *project.clip_mut(clip)? = candidate;
+        return Ok(());
+    }
     let mut edit = original
         .audio_edit()
         .cloned()
