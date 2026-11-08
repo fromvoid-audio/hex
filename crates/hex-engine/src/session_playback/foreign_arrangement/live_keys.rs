@@ -23,6 +23,10 @@ struct Key {
 pub(super) struct Gates {
     keys: [Option<Key>; COMPUTER_KEY_COUNT],
     epoch: Option<u64>,
+    audition_age: u64,
+    audition_gate_frames: u64,
+    audition_started: bool,
+    audition_finished: bool,
 }
 
 impl Gates {
@@ -32,6 +36,28 @@ impl Gates {
 
     pub(super) fn disconnect(&mut self) {
         self.epoch = None;
+        self.audition_age = 0;
+        self.audition_gate_frames = 0;
+        self.audition_started = false;
+        self.audition_finished = false;
+    }
+
+    /// Called once per rendered frame on scratch state. Offsets are quantized to
+    /// the next worker quantum; rollback discards all accumulated gate time.
+    pub(super) fn advance_audition(&mut self) {
+        if self.audition_started && !self.audition_finished {
+            self.audition_age = self.audition_age.saturating_add(1);
+            self.audition_finished = self.audition_age >= self.audition_gate_frames;
+        }
+    }
+
+    pub(super) fn commit_audition(&self, input: &Input) {
+        if let Some((_, previously_started, _)) = input.root.foreign_audition_gate() {
+            input.root.commit_foreign_audition_gate(
+                self.audition_started,
+                self.audition_finished || (previously_started && !self.audition_started),
+            );
+        }
     }
 
     pub(super) fn stage(
@@ -41,11 +67,21 @@ impl Gates {
         events: &mut Vec<ForeignNote>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
         let snapshot = input.map_or(NoteSnapshot::Inactive, |input| input.root.note_snapshot());
-        let (epoch, words) = match snapshot {
+        let (epoch, mut words) = match snapshot {
             NoteSnapshot::Active(epoch, words) => (Some(epoch), words),
             NoteSnapshot::Deferred(epoch) if self.epoch == Some(epoch) => return Ok(()),
             _ => (None, [0; COMPUTER_KEY_COUNT]),
         };
+        if let Some((gate_frames, started, finished)) =
+            input.and_then(|input| input.root.foreign_audition_gate())
+        {
+            self.audition_gate_frames = gate_frames;
+            if finished || self.audition_finished || (started && !self.audition_started) {
+                words.fill(0);
+            } else if words.iter().any(|word| *word != 0) {
+                self.audition_started = true;
+            }
+        }
         for (held, word) in self.keys.iter_mut().zip(words) {
             if let Some(key) = *held
                 && (self.epoch != epoch || key.word != word)
