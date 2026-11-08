@@ -661,7 +661,7 @@ fn grouped_repeat_transaction_prepares_complete_multi_source_waveform_root() {
         .unwrap();
     let views = session.audio_clip_waveforms.borrow();
     let root = views[&group].preview_root.as_ref().unwrap();
-    assert_eq!(root.waveform.source_frames, 8_192);
+    assert_eq!(root.waveform.source_frames(), 8_192);
     assert_eq!(
         root.waveform
             .peaks_for_frames(8_000, 8_064)
@@ -680,7 +680,7 @@ fn grouped_repeat_transaction_prepares_complete_multi_source_waveform_root() {
     // The looped clip still exposes outer-clip peaks, built from the shared
     // root rather than a materialized repeat, and distinct from its root preview.
     assert_eq!(views[&group].offset, 0);
-    assert_eq!(views[&group].waveform.source_frames, 10_000);
+    assert_eq!(views[&group].waveform.source_frames(), 10_000);
     assert!(!Arc::ptr_eq(&views[&group].waveform, &root.waveform));
     drop(views);
     let mut renderer = hex_engine::Renderer::new(cropped.arrangement());
@@ -748,7 +748,7 @@ fn directed_clip_previews_share_the_total_waveform_leaf_budget() {
     let total: usize = views
         .values()
         .map(|view| {
-            view.waveform.bins.len() + view.preview_root.as_ref().unwrap().waveform.bins.len()
+            view.waveform.bins().len() + view.preview_root.as_ref().unwrap().waveform.bins().len()
         })
         .sum();
     assert!(
@@ -1030,7 +1030,15 @@ fn accepted_sparse_root_peaks_keep_exact_samples_and_silence_at_distant_edges() 
     assert!(prepared.sparse.is_some());
     let views = session.audio_clip_waveforms.borrow();
     let waveform = &views[&clip].waveform;
-    assert_eq!(waveform.source_frames, 4_001_000);
+    assert_eq!(waveform.source_frames(), 4_001_000);
+    assert_eq!(
+        waveform.has_identical_channels(),
+        prepared
+            .audio
+            .frames()
+            .iter()
+            .all(|frame| frame[0].to_bits() == frame[1].to_bits())
+    );
     let exact = |a, b, budget| {
         waveform
             .bounded_exact_peaks_for_frames(a, b, budget)

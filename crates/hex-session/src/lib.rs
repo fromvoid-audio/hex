@@ -1346,7 +1346,7 @@ impl Session {
         if self.media.len() >= MAX_ASSETS {
             return Err(SessionError::Invalid("resident asset limit reached"));
         }
-        let frames = u64::try_from(prepared.waveform.source_frames)
+        let frames = u64::try_from(prepared.waveform.source_frames())
             .map_err(|_| SessionError::Invalid("decoded frame count exceeds project range"))?;
         let new_resident_frames = self
             .resident_frames
@@ -1529,7 +1529,7 @@ impl Session {
         if self.media.len() >= MAX_ASSETS {
             return Err(SessionError::Invalid("resident asset limit reached"));
         }
-        let frames = u64::try_from(prepared.waveform.source_frames)
+        let frames = u64::try_from(prepared.waveform.source_frames())
             .map_err(|_| SessionError::Invalid("decoded frame count exceeds project range"))?;
         let new_resident_frames = self
             .resident_frames
@@ -1674,7 +1674,7 @@ impl Session {
         if self.media.len() >= MAX_ASSETS {
             return Err(SessionError::Invalid("resident asset limit reached"));
         }
-        let frames = u64::try_from(prepared.waveform.source_frames)
+        let frames = u64::try_from(prepared.waveform.source_frames())
             .map_err(|_| SessionError::Invalid("decoded frame count exceeds project range"))?;
         let new_resident_frames = self
             .resident_frames
@@ -2075,7 +2075,7 @@ fn prepare_with_waveforms_using(
         for view in prepared.arrangement().audio_clip_views() {
             if let Some(map) = &view.sparse {
                 let waveform = if let Some(existing) = old.get(&view.clip).filter(|entry| {
-                    entry.waveform.bins.len() <= requested_bins
+                    entry.waveform.bins().len() <= requested_bins
                         && entry.waveform.shares_sparse_with(&view.audio, map)
                 }) {
                     Arc::clone(&existing.waveform)
@@ -2124,7 +2124,7 @@ fn prepare_with_waveforms_using(
             } else {
                 // Existing summaries retain exact PCM identity for safe cross-revision reuse.
                 let existing = old.values().find(|entry| {
-                    entry.waveform.bins.len() <= requested_bins
+                    entry.waveform.bins().len() <= requested_bins
                         && match shape {
                             None => entry.waveform.shares_audio_with(&view.audio),
                             Some((repeat, frames)) => {

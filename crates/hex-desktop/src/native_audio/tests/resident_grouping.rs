@@ -194,7 +194,7 @@ fn resident_grouping_publishes_exact_pcm_with_atomic_refusal_history_and_reopen(
         .preview_root
         .as_ref()
         .unwrap();
-    assert_eq!(preview.waveform.source_frames, 144);
+    assert_eq!(preview.waveform.source_frames(), 144);
     let mut repeated = expected.clone();
     for (index, frame) in repeated.iter_mut().take(200).enumerate() {
         *frame = expected[index % 144];

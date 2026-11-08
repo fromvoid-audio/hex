@@ -583,12 +583,12 @@ pub(super) fn prepare_waveform_geometry(
             .max(start.saturating_add(1));
         let peaks = match mapping {
             WaveformMapping::MusicalEvent(projection) => {
-                let ranges = projection.ranges(start..end, waveform.source_frames);
+                let ranges = projection.ranges(start..end, waveform.source_frames());
                 aggregate_ranges(waveform, ranges.as_slice())
             }
             WaveformMapping::Loop(projection) => projection.peaks(waveform, start..end),
             WaveformMapping::Stretch(projection) => {
-                let ranges = projection.ranges(start..end, waveform.source_frames);
+                let ranges = projection.ranges(start..end, waveform.source_frames());
                 aggregate_ranges(waveform, ranges.as_slice())
             }
             WaveformMapping::Prepared {
@@ -601,7 +601,7 @@ pub(super) fn prepare_waveform_geometry(
                 // translation before clamping; subtracting origin first erases
                 // valid edge bins and changes their shape during a left trim.
                 let translation = i128::from(*root_offset) - i128::from(*timeline_origin);
-                let available = waveform.source_frames as i128;
+                let available = waveform.source_frames() as i128;
                 let start = (i128::from(start) + translation).clamp(0, available) as usize;
                 let end = (i128::from(end) + translation).clamp(0, available) as usize;
                 if waveform.is_repeated() {
@@ -621,7 +621,7 @@ pub(super) fn prepare_waveform_geometry(
                     clip,
                     *timeline_origin,
                     start..end,
-                    waveform.source_frames,
+                    waveform.source_frames(),
                 );
                 aggregate_ranges(waveform, ranges.as_slice())
             }
@@ -1705,7 +1705,7 @@ mod tests {
         let extent = bounds();
         let mapping = WaveformMapping::Source { timeline_origin: 0 };
         let visible_start = 0;
-        let visible_end = source.source_frames as u64;
+        let visible_end = source.source_frames() as u64;
         let columns = waveform_column_count(f32::from(extent.size.width), 2.0);
         let cache = RefCell::new(WaveformGeometryCache::default());
         let request = WaveformGeometryRequest {
@@ -1719,14 +1719,18 @@ mod tests {
         };
         let rounds = 20;
 
-        let sampled = aggregate_peaks(&source, 0, source.source_frames)
+        let sampled = aggregate_peaks(&source, 0, source.source_frames())
             .expect("fixture extrema survive cache preparation");
         assert!(sampled.iter().any(|peak| peak.min < -0.9 && peak.max > 0.7));
-        let digest = source.bins.iter().step_by(127).fold(0_u64, |digest, pair| {
-            digest.rotate_left(7)
-                ^ u64::from(pair[0].min.to_bits())
-                ^ u64::from(pair[0].max.to_bits()).rotate_left(17)
-        });
+        let digest = source
+            .bins()
+            .iter()
+            .step_by(127)
+            .fold(0_u64, |digest, pair| {
+                digest.rotate_left(7)
+                    ^ u64::from(pair[0].min.to_bits())
+                    ^ u64::from(pair[0].max.to_bits()).rotate_left(17)
+            });
 
         for _ in 0..2 {
             black_box(prepare_waveform_geometry(
