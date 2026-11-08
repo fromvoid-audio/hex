@@ -380,6 +380,7 @@ pub struct PreparedSessionInventory {
     mutable_instruments: Vec<PreparedMutableTrackInstrument>,
     mutable_history_retarget_storage_bytes: usize,
     instrument_automation_storage_bytes: usize,
+    instrument_automation_indices: [Option<u16>; hex_project::MAX_TRACKS],
     audio_clips: Vec<PreparedSessionAudioClip>,
     work: SessionWorkEnvelope,
     contains_streamed_sources: bool,
@@ -1260,7 +1261,8 @@ impl PreparedSessionInventory {
             .try_reserve_exact(mutable_count)
             .map_err(|_| crate::Invalid("could not reserve mutable instrument factories"))?;
         let mut mutable_history_retarget_storage_bytes = 0usize;
-        for config in &mut instrument_configs {
+        let mut instrument_automation_indices = [None; hex_project::MAX_TRACKS];
+        for (index, config) in instrument_configs.iter_mut().enumerate() {
             if let Some(factory) = config.mutable_runtime.take() {
                 let proof = config.history_retarget_target.take();
                 if let Some(proof) = proof.as_deref() {
@@ -1277,6 +1279,17 @@ impl PreparedSessionInventory {
                         .ok_or(crate::Invalid(
                             "mutable instrument retarget proof exceeds its bounded storage",
                         ))?;
+                }
+                if config.automation.is_some() {
+                    let slot =
+                        instrument_automation_indices
+                            .get_mut(index)
+                            .ok_or(crate::Invalid(
+                                "instrument program track index exceeds capacity",
+                            ))?;
+                    *slot = Some(u16::try_from(mutable_instruments.len()).map_err(|_| {
+                        crate::Invalid("instrument program index exceeds capacity")
+                    })?);
                 }
                 mutable_instruments.push(PreparedMutableTrackInstrument {
                     automation: config.automation.take(),
@@ -1307,6 +1320,7 @@ impl PreparedSessionInventory {
             mutable_instruments,
             mutable_history_retarget_storage_bytes,
             instrument_automation_storage_bytes,
+            instrument_automation_indices,
             audio_clips,
             work,
             contains_streamed_sources,
@@ -1373,6 +1387,29 @@ impl PreparedSessionInventory {
         self.mutable_instruments
             .iter()
             .find(|entry| entry.track == receiver)?
+            .automation
+            .as_ref()
+            .filter(|program| program.device == device)
+            .map(|program| &program.values)
+    }
+
+    /// Constant-time receiving-track view for per-frame compensated generation.
+    /// The fixed index owns no program and is populated only on control.
+    pub(crate) fn instrument_automation_at(
+        &self,
+        index: usize,
+        device: DeviceId,
+    ) -> Option<&hex_lattice::PreparedParameterAutomation> {
+        let slot = self
+            .instrument_automation_indices
+            .get(index)
+            .copied()
+            .flatten()?;
+        let entry = self.mutable_instruments.get(usize::from(slot))?;
+        if self.tracks.get(index)?.id != entry.track {
+            return None;
+        }
+        entry
             .automation
             .as_ref()
             .filter(|program| program.device == device)
@@ -2256,5 +2293,78 @@ mod tests {
             changed_timing.midi_clip(first).unwrap().source_template(),
             different_kernel.midi_clip(first).unwrap().source_template()
         ));
+    }
+    #[test]
+    fn indexed_program_query_checks_receiver_device_and_bounds() {
+        use hex_lattice_contract::NativeDeviceMetadata;
+        let mut editor = Editor::new(Project::new(48000).unwrap(), 16).unwrap();
+        let state = hex_devices::fm4::device::FM4_DEFINITION
+            .default_state()
+            .unwrap();
+        let first = add_track(&mut editor, "first");
+        let second = add_track(&mut editor, "second");
+        for track in [first, second] {
+            editor
+                .execute(Command::InsertInstrument {
+                    track,
+                    state: state.clone(),
+                })
+                .unwrap();
+        }
+        let device = editor
+            .project()
+            .track(first)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        let other = editor
+            .project()
+            .track(second)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        let mut inventory =
+            PreparedSessionInventory::prepare(editor.project(), Arc::new(SineTable::new()), None)
+                .unwrap();
+        editor
+            .execute(Command::ReplaceDeviceAutomation {
+                device,
+                parameter: hex_devices::fm4::device::parameter::carrier(1),
+                points: vec![hex_project::AutomationPoint {
+                    beat: BeatTime::ZERO,
+                    value: hex_project::AutomationValue::new(0.25).unwrap(),
+                    outgoing: hex_project::AutomationInterpolation::Step,
+                }],
+            })
+            .unwrap();
+        let program = instrument_automation::prepare(
+            editor.project().device(device).unwrap(),
+            &hex_devices::fm4::device::FM4_DEFINITION,
+            inventory.mutable_instruments[0].factory.as_ref(),
+        )
+        .unwrap();
+        inventory.instrument_automation_storage_bytes = program
+            .as_ref()
+            .and_then(|program| program.values.storage_bytes())
+            .unwrap();
+        inventory.mutable_instruments[0].automation = program;
+        inventory.instrument_automation_indices[0] = Some(0);
+        assert!(std::ptr::eq(
+            inventory.instrument_automation_at(0, device).unwrap(),
+            inventory.instrument_automation(first, device).unwrap(),
+        ));
+        assert!(inventory.instrument_automation_at(0, other).is_none());
+        assert!(
+            inventory
+                .instrument_automation_at(usize::MAX, device)
+                .is_none()
+        );
+        inventory.instrument_automation_indices[1] = Some(0);
+        assert!(
+            inventory.instrument_automation_at(1, device).is_none(),
+            "misbound receiver index refuses"
+        );
     }
 }
