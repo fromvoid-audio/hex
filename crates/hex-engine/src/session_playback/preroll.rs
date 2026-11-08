@@ -329,24 +329,35 @@ impl SessionPlayback {
             ),
             Some(resources),
             || cancelled.load(Ordering::Acquire),
-            |candidate, output| {
-                let mut offset = 0;
-                while offset < output.len() {
-                    if cancelled.load(Ordering::Acquire) {
-                        return Err(ArrangementPrerollError::Cancelled);
-                    }
-                    let count = pages.prepare_chunk(candidate, output.len() - offset, cancelled)?;
-                    if count == 0 || count > output.len() - offset {
-                        return Err(ArrangementPrerollError::MediaPreparation(
-                            "invalid preroll page demand width",
-                        ));
-                    }
-                    candidate.render_with_pages(&mut output[offset..offset + count], pages)?;
-                    pages.complete_chunk()?;
-                    offset += count;
-                }
-                Ok(())
-            },
+            |candidate, output| render_preroll_pages(candidate, output, cancelled, pages),
+        )
+    }
+
+    /// Explicit history-preserving interactive preparation with caller-owned
+    /// bounded pages. Each protected chunk is rendered and completed before the
+    /// next demand; zero/oversized widths, page failures and cancellation refuse.
+    /// The caller retains/join-reclaims its reader/page owner on control and must
+    /// finish source verification before publication. Exact resource scope,
+    /// replay/storage ceilings and enabled-loop refusal match the no-pages API.
+    pub fn prepare_history_preserving_arrangement_preroll_with_pages<P: PreparedPrerollPages>(
+        revision: Arc<PreparedRevision>,
+        resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
+        destination_frame: u64,
+        work_budget_frames: u64,
+        start_playing: bool,
+        cancelled: &AtomicBool,
+        pages: &mut P,
+    ) -> Result<Self, ArrangementPrerollError> {
+        Self::prepare_arrangement_preroll_from_revision_with_policy(
+            revision,
+            destination_frame,
+            work_budget_frames,
+            start_playing,
+            MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+            PrerollRuntimePolicy::HistoryPreservingInteractive,
+            resources,
+            || cancelled.load(Ordering::Acquire),
+            |candidate, output| render_preroll_pages(candidate, output, cancelled, pages),
         )
     }
 
@@ -553,6 +564,30 @@ impl SessionPlayback {
         }
         .bytes()
     }
+}
+
+fn render_preroll_pages(
+    candidate: &mut SessionPlayback,
+    output: &mut [Frame],
+    cancelled: &AtomicBool,
+    pages: &mut impl PreparedPrerollPages,
+) -> Result<(), ArrangementPrerollError> {
+    let mut offset = 0;
+    while offset < output.len() {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(ArrangementPrerollError::Cancelled);
+        }
+        let count = pages.prepare_chunk(candidate, output.len() - offset, cancelled)?;
+        if count == 0 || count > output.len() - offset {
+            return Err(ArrangementPrerollError::MediaPreparation(
+                "invalid preroll page demand width",
+            ));
+        }
+        candidate.render_with_pages(&mut output[offset..offset + count], pages)?;
+        pages.complete_chunk()?;
+        offset += count;
+    }
+    Ok(())
 }
 
 /// One borrowed formula for the assembled runtime and its preassembly locals. Capacities and
