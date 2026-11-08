@@ -198,7 +198,11 @@ impl Gesture {
                 sequence: pending.sequence,
             }
         };
+        if matches!(observation, Observation::Interrupted { .. }) {
+            self.recording_interrupted = true;
+        }
         self.deliveries.push(observation);
+        self.finish_closed_recording();
         if delivered { Ok(()) } else { Err(lost()) }
     }
     pub(super) fn poll_delivered_point(
@@ -315,6 +319,41 @@ impl Gesture {
         } else {
             Err(lost())
         }
+    }
+    /// Output closure is a terminal without an invented application clock.
+    /// Preserve the original pending point first; a point interruption already
+    /// terminates the take. The queue holds at most that point plus this end.
+    pub(in crate::native_audio::plugins) fn recording_output_closed(&mut self) {
+        self.recording_closed = true;
+        self.finish_closed_recording();
+    }
+    fn finish_closed_recording(&mut self) {
+        if !self.recording_closed
+            || self.recorded_release
+            || self.recording_interrupted
+            || self.pending.is_some()
+            || self.retired_delivery.is_some()
+        {
+            return;
+        }
+        let Some(capture) = self.recording_context else {
+            return;
+        };
+        self.recording_interrupted = true;
+        self.deliveries.push(Observation::Interrupted {
+            key: self.key,
+            context: capture.applied.context,
+            target: capture.target,
+            source: DeviceAutomationSource {
+                target: DeviceCaptureTarget::Vst3(capture.target),
+                sample_rate: capture.sample_rate,
+                output_identity: capture.applied.output_identity,
+                audio_revision: capture.applied.audio_revision,
+                transport_epoch: capture.transport_epoch,
+                section_loop: capture.clock.section_loop,
+            },
+            sequence: self.sequence,
+        });
     }
     fn poll_retired(&mut self) {
         let Some(outcome) = self

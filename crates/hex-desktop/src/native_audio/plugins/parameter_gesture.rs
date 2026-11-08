@@ -59,6 +59,9 @@ pub(super) struct Gesture {
     retired_delivery: Option<hex_audio::foreign_parameter_delivery::Retired>,
     recording: bool,
     recorded_release: bool,
+    recording_context: Option<delivery::Context>,
+    recording_closed: bool,
+    recording_interrupted: bool,
 }
 
 fn refused(reason: impl Into<String>) -> Error {
@@ -330,7 +333,7 @@ impl Plugins {
                 // moving authored envelope changed it beneath that list.
                 origin.initial = current_value;
             }
-            let gesture = Gesture {
+            let mut gesture = Gesture {
                 key: snapshot.key,
                 origin,
                 binding,
@@ -350,6 +353,9 @@ impl Plugins {
                 retired_delivery: None,
                 recording: input.records_touch(),
                 recorded_release: false,
+                recording_context: None,
+                recording_closed: false,
+                recording_interrupted: false,
             };
             if !gesture.current(self, control, input.context()) {
                 return Err(lost());
@@ -366,6 +372,7 @@ impl Plugins {
                     ));
                 }
                 let capture = delivery::Context::new(&gesture, control, input.context(), clock)?;
+                gesture.recording_context = Some(capture);
                 self.confirmed_parameters
                     .push_back(capture.ready(gesture.key));
             }
