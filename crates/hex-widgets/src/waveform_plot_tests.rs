@@ -274,7 +274,7 @@ fn zero_line_refuses_malformed_spans_and_invalid_or_overflowing_scales() {
 }
 
 #[test]
-fn layer_batches_only_proven_disjoint_geometry_with_conservative_trace_bounds() {
+fn layer_batches_only_proven_disjoint_fills_with_conservative_bounds() {
     let lane = |top, bottom, flat: bool| {
         let upper = [point(px(0.0), px(top)), point(px(100.0), px(top))];
         let lower = upper.map(|p| point(p.x, px(bottom)));
@@ -292,11 +292,11 @@ fn layer_batches_only_proven_disjoint_geometry_with_conservative_trace_bounds() 
     };
     let separate = WaveformGeometry::stereo([lane(10.0, 20.0, false), lane(30.0, 40.0, false)]);
     let layer = envelope_layer(&separate, 2.0).unwrap();
-    assert_eq!(layer.origin, point(px(-1.5), px(8.5)));
-    assert_eq!(layer.bottom_right(), point(px(101.5), px(41.5)));
+    assert_eq!(layer.origin, point(px(-0.5), px(9.5)));
+    assert_eq!(layer.bottom_right(), point(px(100.5), px(40.5)));
     // A lower display scale expands the physical antialiasing margin.
-    assert_eq!(envelope_layer(&separate, 0.5).unwrap().top(), px(7.0));
-    let overlap = WaveformGeometry::stereo([lane(10.0, 20.0, false), lane(21.0, 30.0, false)]);
+    assert_eq!(envelope_layer(&separate, 0.5).unwrap().top(), px(8.0));
+    let overlap = WaveformGeometry::stereo([lane(10.0, 20.0, false), lane(20.5, 30.0, false)]);
     assert!(envelope_layer(&overlap, 2.0).is_none());
     let flat = WaveformGeometry::stereo([lane(10.0, 20.0, true), lane(30.0, 40.0, false)]);
     assert!(envelope_layer(&flat, 2.0).is_none());

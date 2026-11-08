@@ -43,7 +43,6 @@ pub struct WaveformEnvelope<'a> {
 pub struct WaveformChannel {
     envelope: Path<Pixels>,
     envelope_bounds: Option<Bounds<Pixels>>,
-    trace_width: Pixels,
     centerline: Option<WaveformZeroLine>,
     zero_ranges: Option<Path<Pixels>>,
 }
@@ -117,8 +116,7 @@ impl WaveformChannel {
         }
         Some(Self {
             envelope: path,
-            envelope_bounds,
-            trace_width,
+            envelope_bounds: envelope_bounds.filter(|_| mode == WaveformEnvelopeMode::Filled),
             centerline,
             zero_ranges: if spans > 0 {
                 Some(flat.build().ok()?)
@@ -211,9 +209,9 @@ fn disjoint_layer(a: Bounds<Pixels>, b: Bounds<Pixels>) -> Option<Bounds<Pixels>
     finite_bounds(union).then_some(union)
 }
 // GPUI layers require non-overlapping geometry at one draw order. Include a
-// conservative physical AA pixel plus trace width; uncertain/overlapping spans
-// retain their original independent submission. Separate DC traces may overlap
-// their envelope, so those channels never enter this batch.
+// conservative physical AA pixel; uncertain/overlapping spans retain their
+// original independent submission. Stroked paths have join extents beyond their
+// point envelope, and separate DC traces may overlap a fill, so neither batches.
 fn envelope_layer(geometry: &WaveformGeometry, scale: f32) -> Option<Bounds<Pixels>> {
     if !scale.is_finite() || scale <= 0.0 {
         return None;
