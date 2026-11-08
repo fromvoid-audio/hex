@@ -1354,7 +1354,9 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &CopyTimeSelection, window, cx| {
-                view.copy_time_selection(false, window);
+                if !view.copy_section(window) {
+                    view.copy_time_selection(false, window);
+                }
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &CutTimeSelection, window, cx| {
@@ -1362,7 +1364,9 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &PasteTimeSelection, window, cx| {
-                view.paste_time_selection(window);
+                if !view.paste_section(window) {
+                    view.paste_time_selection(window);
+                }
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &InsertTimeSelection, window, cx| {

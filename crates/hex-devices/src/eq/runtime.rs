@@ -810,22 +810,13 @@ impl NativeProcessorRuntime for EqRuntime {
             self.pristine = old.pristine;
             return;
         }
+        // Stable identity owns effective DSP history. Canonical kind/bank can
+        // differ behind an authored value; the first refresh compares effective
+        // shape/bank and owns any genuine discontinuity exactly once.
         for (index, node) in self.configuration.nodes.iter().enumerate() {
-            if let Some(prior) = old
-                .configuration
-                .nodes
-                .iter()
-                .position(|n| n.id == node.id && n.bank == node.bank)
-            {
-                if old.configuration.nodes[prior].kind == node.kind {
-                    self.bands[index] = old.bands[prior];
-                } else {
-                    self.bands[index].current = old.bands[prior].current;
-                    self.bands[index].remaining = coefficient_smooth_frames(self.sample_rate);
-                    self.bands[index].stages_used = self.bands[index]
-                        .stages_used
-                        .max(old.bands[prior].stages_used);
-                }
+            if let Some(prior) = old.configuration.nodes.iter().position(|n| n.id == node.id) {
+                self.bands[index] = old.bands[prior];
+                self.effective_banks[index] = old.effective_banks[prior];
             }
         }
         if old
