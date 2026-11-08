@@ -435,6 +435,16 @@ fn console_audio_midi_flavors_follow_shared_fill_and_history_without_geometry_ch
             format!("console-cell-{}-{}", f.track.value(), scene.value()).into_boxed_str(),
         );
         let bounds = visual.debug_bounds(cell).unwrap();
+        let surface = selector("console-clip", clip);
+        let painted = visual.debug_bounds(surface).unwrap();
+        assert_eq!(painted.size.height, bounds.size.height - gpui::px(4.0));
+        assert!(painted.left() > bounds.left() && painted.right() < bounds.right());
+        super::super::clip_boundary::tests::assert_open_upper_right(
+            &mut visual,
+            surface,
+            selector("console-clip-trailing", clip),
+            None,
+        );
         let label = visual
             .debug_bounds(selector("clip-name-label", clip))
             .unwrap();
@@ -463,7 +473,7 @@ fn console_audio_midi_flavors_follow_shared_fill_and_history_without_geometry_ch
                     });
                     visual.run_until_parked();
                     assert_eq!(
-                        visual.rendered_background(cell).unwrap(),
+                        visual.rendered_background(surface).unwrap(),
                         gpui::Background::from(gpui::rgb(theme::clip_fill(hue, flavor, selected)))
                     );
                     assert_eq!(visual.debug_bounds(cell).unwrap(), bounds);
@@ -494,7 +504,7 @@ fn console_audio_midi_flavors_follow_shared_fill_and_history_without_geometry_ch
                     v.selected_cell == Some((f.track, scene))
                 });
                 assert_eq!(
-                    visual.rendered_background(cell).unwrap(),
+                    visual.rendered_background(surface).unwrap(),
                     gpui::Background::from(gpui::rgb(theme::clip_fill(
                         hue,
                         flavor.toggled(),
@@ -502,6 +512,57 @@ fn console_audio_midi_flavors_follow_shared_fill_and_history_without_geometry_ch
                     )))
                 );
             }
+        }
+        f.editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(Command::SetClipActive {
+                clip,
+                active: false
+            })));
+        });
+        pump(&f.editor, &mut visual);
+        let inactive_fill = f.editor.read_with(&visual, |v, _| {
+            let project = &v.state.as_ref().unwrap().project;
+            theme::clip_activity_fill(
+                project.track(f.track).unwrap().color(),
+                project.clip_flavor(clip).unwrap(),
+                v.selected_cell == Some((f.track, scene)),
+                false,
+            )
+        });
+        assert_eq!(
+            visual.rendered_background(surface),
+            Some(gpui::rgb(inactive_fill).into())
+        );
+        for command in [
+            Command::ClearSessionCell {
+                track: f.track,
+                scene,
+            },
+            Command::SetSessionStopCell {
+                track: f.track,
+                scene,
+            },
+        ] {
+            f.editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::Edit(command)))
+            });
+            pump(&f.editor, &mut visual);
+            assert!(
+                visual.debug_bounds(surface).is_none(),
+                "empty/stop cells have no colored clip"
+            );
+            let role = f.editor.read_with(&visual, |v, _| {
+                if v.selected_cell == Some((f.track, scene)) {
+                    theme::PaletteRole::Raised
+                } else {
+                    theme::PaletteRole::Background
+                }
+            });
+            assert_eq!(
+                visual.rendered_background(cell),
+                Some(gpui::rgb(theme::color(role)).into())
+            );
+            assert_eq!(visual.debug_bounds(cell).unwrap(), bounds);
         }
     }
 }
