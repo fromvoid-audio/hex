@@ -348,3 +348,44 @@ fn expired_failed_release_refuses_without_discarding_original_or_claiming_restor
     ));
     assert_eq!(session.project(), &before);
 }
+
+#[test]
+fn stationary_recording_observes_writer_interruption_without_inventing_sdk_end() {
+    let (files, session, scope, source) = fixture();
+    let before = session.project().clone();
+    let mut lane = Lane::default();
+    lane.begin(&session, None, scope, source, &files.0).unwrap();
+    lane.receive(
+        &session,
+        None,
+        scope.context(),
+        scope,
+        &DeviceAutomationTakeAction::Interrupt,
+    )
+    .unwrap();
+    let mut state = active(scope, source);
+    let mut sink = Sink::default();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        Preparation {
+            state: &mut state,
+            lane: &mut lane,
+            document_base: None,
+            recovery: None,
+            may_defer: false,
+            deferred: false,
+        }
+        .drive(&session, scope.context(), &mut sink);
+        if state.active.as_ref().unwrap().outcome.is_some() {
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    let active = state.active.as_ref().unwrap();
+    assert!(matches!(active.outcome, Some(Err(_))));
+    assert!(!active.ended && !active.released);
+    assert_eq!(sink.restorations, 0);
+    assert_eq!(session.project(), &before);
+    assert!(!lane.busy());
+}

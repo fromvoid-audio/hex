@@ -382,7 +382,10 @@ impl Preparation<'_> {
                 }
             }
         }
-        if active.sealing && active.outcome.is_none() {
+        // Poll writer ACKs even while the pointer is stationary. A failed
+        // append must release its loans and report interruption without waiting
+        // for another SDK point; SDK release still has independent custody.
+        if active.outcome.is_none() {
             match self.lane.receive(
                 session,
                 self.document_base,
@@ -391,6 +394,15 @@ impl Preparation<'_> {
                 &DeviceAutomationTakeAction::Poll,
             ) {
                 Ok(Step::Progress(DeviceAutomationTakeProgress::Pending)) => {}
+                Ok(Step::Progress(DeviceAutomationTakeProgress::Retained(path)))
+                    if !active.ended =>
+                {
+                    active.sealing = true;
+                    active.outcome = Some(Err(native_automation_recording::retained_error(
+                        &path,
+                        "vst3 take writer ended before its SDK terminal",
+                    )));
+                }
                 outcome => active.outcome = Some(outcome),
             }
         }

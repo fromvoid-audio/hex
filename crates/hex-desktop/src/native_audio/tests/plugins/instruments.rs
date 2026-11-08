@@ -2036,7 +2036,7 @@ fn verify_instrument_takeover(
                     .into_iter()
                     .map(|(beat, value)| AutomationPoint {
                         beat,
-                        value: AutomationValue::new(value).unwrap(),
+                        value: AutomationValue::new(value as f32).unwrap(),
                         outgoing: AutomationInterpolation::Step,
                     })
                     .collect(),
@@ -2046,7 +2046,7 @@ fn verify_instrument_takeover(
         hex_storage::save_new(&reference_path, reference.project()).unwrap();
         let blocks = usize::try_from(end_frame.unwrap() / 256 + 8).unwrap();
         assert!(blocks < 512, "bounded signed replay fixture");
-        let replay = |h: &mut ResidentHarness, path: &Path| {
+        let replay = |h: &mut ResidentHarness, path: &std::path::Path| -> Vec<[f32; 2]> {
             let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
             let opened = h.run(Request::Open(path.to_owned()));
             super::super::resident_lifecycle::finish_replacement(h, &opened, old_output);
