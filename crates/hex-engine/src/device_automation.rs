@@ -1,4 +1,6 @@
 //! Canonical device-envelope admission and control-side native program preparation.
+//! Retained native/host targets keep their preparation eligibility when reading
+//! base values; only authored/touch readings change, not the target union.
 //! Utility effect controls are consumed by the existing closed processor family.
 //! Host trims are consumed at native effect boundaries (track/main/return).
 //! Foreign processors and source-owned instruments/effects refuse host targets;
@@ -268,8 +270,9 @@ pub(crate) fn validate_project_with_registry(
 pub(crate) fn quote(device: &hex_project::Device) -> Result<usize, crate::AudioStorageError> {
     quote_with_input(device, None)
 }
-/// Persistent flat backing after arm preparation. Only a missing provider
-/// reading slot adds an ID and opaque metadata lane; host input adds neither.
+/// Persistent flat backing for retained target eligibility and optional arming.
+/// Unread targets keep zero-point base-fallback metadata; a missing live provider
+/// adds one ID/metadata slot. A host input arm adds neither.
 pub(crate) fn quote_with_input(
     device: &hex_project::Device,
     input: Option<NativeParameterInputTarget>,
@@ -292,9 +295,9 @@ pub(crate) fn quote_with_inputs_and_external(
         })
         .ok_or(crate::AudioStorageError::Overflow)
 }
-/// Additional temporary old-vector backing during insertion of a provider
-/// fallback. Normal envelope construction already accounts raw metadata/points;
-/// this charge covers the old compiled IDs/lanes during arm-time reallocation.
+/// Additional temporary old-vector backing while unread targets, live input or
+/// external targets add fallback slots. Points/touch buffers are not duplicated;
+/// the final union bounds old ID/metadata vectors during sequential insertion.
 /// The normalized/compiled point vectors are not duplicated by insertion.
 pub(crate) fn input_construction_growth_overlap(
     device: &hex_project::Device,
@@ -308,7 +311,11 @@ pub(crate) fn input_and_external_growth_overlap(
     external: &[NativeParameterInputTarget],
 ) -> Result<usize, crate::AudioStorageError> {
     let (provider, host, _, added_external) = counts_with_external(device, input, external)?;
-    if added_external {
+    if added_external
+        || device.automation().iter().any(|lane| {
+            !lane.is_reading() && !matches!(lane.target, DeviceAutomationTarget::Vst3 { .. })
+        })
+    {
         // Any previous vector during sequential insertion is no larger than
         // the final union. This bound covers its overlap with the new backing.
         return hex_lattice::PreparedParameterAutomation::quoted_storage_bytes_with_host(
@@ -319,7 +326,7 @@ pub(crate) fn input_and_external_growth_overlap(
     if !input_needs_provider_fallback(device, input)? {
         return Ok(0);
     }
-    let (provider, host, _) = reading_counts(device)?;
+    let (provider, host, _) = prepared_counts(device)?;
     hex_lattice::PreparedParameterAutomation::quoted_storage_bytes_with_host(provider, host, 0)
         .ok_or(crate::AudioStorageError::Overflow)
 }
@@ -332,7 +339,7 @@ fn counts_with_external(
     if external.len() > MAX_EXTERNAL_PARAMETER_TARGETS {
         return Err(crate::AudioStorageError::Capacity);
     }
-    let (mut provider, mut host, points) = reading_counts(device)?;
+    let (mut provider, mut host, points) = prepared_counts(device)?;
     let live_fallback = input_needs_provider_fallback(device, input)?;
     provider = provider
         .checked_add(usize::from(live_fallback))
@@ -351,7 +358,8 @@ fn counts_with_external(
             return Err(crate::AudioStorageError::SourceMismatch);
         }
         if device
-            .reading_automation()
+            .automation()
+            .iter()
             .any(|lane| lane.target == target.target)
             || (live_fallback
                 && input.is_some_and(|live| {
@@ -385,7 +393,8 @@ fn input_needs_provider_fallback(
     }
     Ok(input.target.provider_parameter().is_some()
         && !device
-            .reading_automation()
+            .automation()
+            .iter()
             .any(|lane| lane.target == input.target))
 }
 fn reading_touch_count(device: &hex_project::Device) -> usize {
@@ -395,22 +404,22 @@ fn reading_touch_count(device: &hex_project::Device) -> usize {
         .sum()
 }
 
-fn reading_counts(
+fn prepared_counts(
     device: &hex_project::Device,
 ) -> Result<(usize, usize, usize), crate::AudioStorageError> {
     let points = device
         .reading_automation()
         .try_fold(0usize, |sum, lane| sum.checked_add(lane.point_count()))
         .ok_or(crate::AudioStorageError::Overflow)?;
-    let provider = device
-        .reading_automation()
-        .filter(|lane| !lane.target.is_host())
-        .count();
-    Ok((
-        provider,
-        device.reading_automation().count() - provider,
-        points,
-    ))
+    // Foreign programs retain their separate preflight/representation. Native
+    // and host metadata remains eligible even while its authored data is muted.
+    let eligible = || {
+        device.automation().iter().filter(|lane| {
+            lane.is_reading() || !matches!(lane.target, DeviceAutomationTarget::Vst3 { .. })
+        })
+    };
+    let provider = eligible().filter(|lane| !lane.target.is_host()).count();
+    Ok((provider, eligible().count() - provider, points))
 }
 pub(crate) fn prepare(
     device: &hex_project::Device,
@@ -438,7 +447,7 @@ pub(crate) fn prepare_with_registry_and_input(
     prepare_with_registry_inputs_and_external(device, registry, input, &[])
 }
 
-/// Compile the factory's reading union once while retaining a separate single
+/// Compile the factory's retained target union with reading data and one separate
 /// live-input arm. External targets only add reading slots; they do not arm a
 /// gesture, add authored points or own a source. Budget callers must account
 /// for each missing slot and transient vector growth before using this path.
@@ -470,6 +479,28 @@ fn prepare_with_reading_routes(
         return Err(Invalid("recorded parameter target limit exceeded"));
     }
     let mut program = prepare_envelopes_with_registry(device, registry, foreign_preflighted)?;
+    // Reading selects values; retained targets keep the same prepared family,
+    // latency and resource promise through Base/Authored changes. Existing
+    // base-fallback slots hold metadata without points, a clock or a live arm.
+    for lane in device.automation().iter().filter(|lane| !lane.is_reading()) {
+        match lane.target {
+            DeviceAutomationTarget::Parameter(parameter) => {
+                let (descriptor, semantics) = provider_description(device, registry, parameter)?;
+                program
+                    .prepare_external_provider(descriptor, semantics)
+                    .map_err(|_| {
+                        Invalid("retained native target preparation exceeds its budget")
+                    })?;
+            }
+            DeviceAutomationTarget::HostInputGain | DeviceAutomationTarget::HostOutputGain => {
+                program
+                    .prepare_external_host(lane.target)
+                    .map_err(|_| Invalid("retained host target preparation exceeds its budget"))?;
+            }
+            DeviceAutomationTarget::Vst3 { .. } => {}
+        }
+    }
+
     if let Some(input) = input.filter(|input| input.device == device.id()) {
         if input.device_type != device.state().type_id()
             || !target_supported(registry, device.state(), input.target)
