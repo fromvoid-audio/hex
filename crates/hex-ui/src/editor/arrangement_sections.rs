@@ -2189,7 +2189,7 @@ fn same_command(a: &Command, b: &Command) -> bool {
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use gpui::{
         Modifiers, MouseButton, MouseDownEvent, TestAppContext, VisualTestContext, point, px,
@@ -2199,7 +2199,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[track_caller]
-    fn next(service: &Service) -> Event {
+    pub(in crate::editor) fn next(service: &Service) -> Event {
         let deadline = crate::test_wait::hang_deadline();
         loop {
             if let Ok(event) = service.try_event() {
@@ -2209,7 +2209,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(2));
         }
     }
-    fn fixture(
+    pub(in crate::editor) fn fixture(
         cx: &mut TestAppContext,
     ) -> (gpui::AnyWindowHandle, Entity<EditorView>, [SectionId; 2]) {
         cx.update(super::super::bind_editor_keys);
@@ -2272,7 +2272,10 @@ mod tests {
             .unwrap();
         (handle, editor, [ids[0], ids[1]])
     }
-    fn position(view: &EditorView, quarters: u64) -> gpui::Point<gpui::Pixels> {
+    pub(in crate::editor) fn position(
+        view: &EditorView,
+        quarters: u64,
+    ) -> gpui::Point<gpui::Pixels> {
         let [left, top, width, _] = view.section_layout().unwrap();
         let state = view.state.as_ref().unwrap();
         let viewport = view.visible_viewport(state.timeline_frames);

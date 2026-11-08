@@ -48,6 +48,7 @@ mod leftover_recovery;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod navigation_metrics;
 mod plugin_effect;
+mod selection_play_start;
 mod truncated_import;
 #[cfg(feature = "ui-test-support")]
 pub(crate) use plugin_effect::fixture_catalog as plugin_effect_fixture_catalog;
@@ -1077,7 +1078,7 @@ pub(super) struct EditorView {
     /// Transient Arrangement play-start lock; never seeks the active transport.
     locked_play_start: Option<edit_cursor::EditCursor>,
     /// The selected clip a point cursor was deliberately placed inside; that
-    /// cursor then outranks the clip's play start (see `selected_clip_play_start`).
+    /// cursor then outranks the clip's play start (see `selected_arrangement_play_start`).
     edit_cursor_in_selected_clip: Option<ClipId>,
     /// The selected clip whose in-clip cursor a loop enable retired; the loop
     /// start then keeps outranking that clip's play start until a new click.
@@ -1976,11 +1977,11 @@ impl EditorView {
         // The user's placed position wins, even outside an enabled loop; the
         // acknowledged canonical loop only supplies a start when none is placed.
         // Enabling the loop retires an earlier point cursor (Pulse #3838).
-        // A whole-clip selection replaces the point cursor, not a time range.
+        // A whole-rectangle selection replaces the point cursor, not a time range.
         if let Some(selection) = self.normalized_time_selection() {
             return selection.start();
         }
-        if let Some(frame) = self.selected_clip_play_start() {
+        if let Some(frame) = self.selected_arrangement_play_start() {
             return frame;
         }
         if let Some(cursor) = self

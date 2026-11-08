@@ -284,9 +284,9 @@ impl EditorView {
         }
         // A completed range belongs to Arrangement even while Console is shown.
         // Its stale-source checks above still run; hidden point cursors need no pulse.
-        // A point cursor hidden behind a clip play start needs no pulse either.
+        // A point cursor hidden behind a rectangle play start needs no pulse either.
         self.mode == EditorMode::Arrangement
-            && self.selected_clip_play_start().is_none()
+            && self.selected_arrangement_play_start().is_none()
             && self
                 .edit_cursor
                 .as_mut()
@@ -324,7 +324,7 @@ impl EditorView {
         if guide.is_none()
             && locked.is_none()
             && start == end
-            && self.selected_clip_play_start().is_some()
+            && self.selected_arrangement_play_start().is_some()
         {
             return None;
         }
@@ -361,7 +361,7 @@ impl EditorView {
             markers.push(marker.into_any_element());
         }
         let point = locked.or_else(|| {
-            (guide.is_none() && start == end && self.selected_clip_play_start().is_none())
+            (guide.is_none() && start == end && self.selected_arrangement_play_start().is_none())
                 .then_some(cursor)
                 .flatten()
         });
