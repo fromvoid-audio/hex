@@ -63,6 +63,7 @@ struct SessionRowContext {
     routes_ready: bool,
     transport_playing: bool,
     stroke: f32,
+    return_width: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -421,10 +422,17 @@ impl EditorView {
             self.session_routes
                 .routes_available(snapshot, &state.project, revision, generation)
         });
-        let visible_columns = ((f32::from(window.bounds().size.width)
-            - self.browser_content_width(window)
-            - SCENE_HEADER_WIDTH
-            - 12.0)
+        let available_width =
+            f32::from(window.bounds().size.width) - self.browser_content_width(window);
+        let pending_return = self.track_gain_controls.pending_return_gain(generation, cx);
+        let return_page = self.console_returns.page(
+            &state.project,
+            generation,
+            available_width - TRACK_COLUMN_WIDTH - SCENE_HEADER_WIDTH - 12.0,
+            pending_return,
+        );
+        let return_width = return_page.width();
+        let visible_columns = ((available_width - return_width - SCENE_HEADER_WIDTH - 12.0)
             / TRACK_COLUMN_WIDTH)
             .floor()
             .max(1.0) as usize;
@@ -451,6 +459,7 @@ impl EditorView {
             routes_ready,
             transport_playing,
             stroke: 1.0 / window.scale_factor().max(1.0),
+            return_width,
         };
         let header = div()
             .relative()
@@ -710,12 +719,13 @@ impl EditorView {
                     cx,
                 ),
             )
-            .child(self.console_main_header(SCENE_HEADER_WIDTH, cx))
+            .child(div().w(px(return_width)).flex_shrink_0())
+            .child(self.console_main_header(SCENE_HEADER_WIDTH, &return_page, frame, cx))
             .child(self.console_reorder_layer(
                 page.clone(),
                 frame,
                 TRACK_COLUMN_WIDTH,
-                SCENE_HEADER_WIDTH,
+                SCENE_HEADER_WIDTH + return_width,
                 cx,
             ));
 
@@ -741,7 +751,30 @@ impl EditorView {
         } else {
             Some("audio updating")
         };
-        let grid = div()
+        let body = div()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(div().flex_shrink_0().flex().overflow_hidden().child(header))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .flex()
+                    .child(scene_rows),
+            )
+            .child(self.console_mixer_row(
+                &page,
+                TRACK_COLUMN_WIDTH,
+                SCENE_HEADER_WIDTH,
+                return_width,
+                cx,
+            ))
+            .children(self.console_return_bank(&return_page, frame, SCENE_HEADER_WIDTH, cx));
+        div()
             .relative()
             .flex_1()
             .min_h_0()
@@ -754,17 +787,8 @@ impl EditorView {
                 track_count,
                 route_feedback,
             ))
-            .child(div().flex_shrink_0().flex().overflow_hidden().child(header));
-        grid.child(
-            div()
-                .flex_1()
-                .min_h_0()
-                .overflow_hidden()
-                .flex()
-                .child(scene_rows),
-        )
-        .child(self.console_mixer_row(&page, TRACK_COLUMN_WIDTH, SCENE_HEADER_WIDTH, cx))
-        .child(self.track_reorder_events(cx))
+            .child(body)
+            .child(self.track_reorder_events(cx))
     }
 
     fn session_toolbar(
@@ -1120,12 +1144,13 @@ impl EditorView {
             routes_ready,
             transport_playing,
             stroke,
+            return_width,
         } = context;
         let Some(state) = self.state.as_ref() else {
             return div().id(("session-scene-row-empty", index));
         };
         let Some(scene) = state.project.scenes().get(index) else {
-            return self.console_append_row(&page, frame, cx);
+            return self.console_append_row(&page, frame, return_width, cx);
         };
         let scene_id = scene.id();
         let next_scene = state
@@ -1591,7 +1616,10 @@ impl EditorView {
             false,
             cx,
         );
-        row = row.child(tail).child(scene_column);
+        row = row
+            .child(tail)
+            .child(div().w(px(return_width)).flex_shrink_0())
+            .child(scene_column);
         row
     }
 
@@ -1627,6 +1655,7 @@ impl EditorView {
         &self,
         page: &TrackPage,
         frame: ColumnFrame,
+        return_width: f32,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let mut row = div()
@@ -1701,16 +1730,18 @@ impl EditorView {
             false,
             cx,
         );
-        row.child(tail).child(
-            div()
-                .w(px(SCENE_HEADER_WIDTH))
-                .px_2()
-                .flex()
-                .items_center()
-                .text_xs()
-                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                .child(theme::text("add scene")),
-        )
+        row.child(tail)
+            .child(div().w(px(return_width)).flex_shrink_0())
+            .child(
+                div()
+                    .w(px(SCENE_HEADER_WIDTH))
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .text_xs()
+                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                    .child(theme::text("add scene")),
+            )
     }
 
     fn session_icon(

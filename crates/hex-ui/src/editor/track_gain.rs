@@ -12,7 +12,7 @@ use hex_widgets::{
 use std::{cell::Cell, collections::BTreeMap, rc::Rc};
 
 #[cfg(all(test, feature = "ui-test-support"))]
-mod tests;
+pub(super) mod tests;
 
 #[derive(Default)]
 pub(super) struct Controls {
@@ -32,6 +32,20 @@ impl Controls {
         self.bindings
             .iter()
             .find_map(|(id, binding)| binding.entity.read(cx).is_interacting().then_some(*id))
+    }
+    pub(super) fn pending_return_gain(&self, generation: u64, cx: &gpui::App) -> Option<ReturnId> {
+        if self.generation != generation {
+            return None;
+        }
+        self.mixer.iter().find_map(|(key, binding)| match key {
+            MixerKey::ReturnGain(id)
+                if binding.entity.read(cx).is_interacting()
+                    || binding.entity.read(cx).is_editing() =>
+            {
+                Some(*id)
+            }
+            _ => None,
+        })
     }
     /// Read-only admission check; drafts remain with their numeric owners.
     /// Unlike finalization, it does not collect bindings or commit values.
