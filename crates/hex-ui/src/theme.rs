@@ -34,6 +34,20 @@ pub(crate) fn meter_colors() -> hex_widgets::MeterColors {
     }
 }
 
+/// Quiet track/Return signal wells, separate from editable gain controls.
+/// The live signal stays desaturated blue through the meter's +6 dB headroom.
+pub(crate) fn track_meter_style() -> hex_widgets::ControlStyle {
+    let rail = mix(color(PaletteRole::Background), 0x000000, 0.8);
+    let text = color(PaletteRole::Text);
+    hex_widgets::ControlStyle {
+        rail,
+        accent: mix(text, color(PaletteRole::Secondary), 0.35),
+        border: mix(rail, text, 0.18),
+        text: mix(rail, text, 0.45),
+        ..control_style()
+    }
+}
+
 /// Common workspace action colors, resolved from the native widget palette.
 pub(crate) fn action_style() -> hex_widgets::ActionStyle {
     let style = control_style();
