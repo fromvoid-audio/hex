@@ -35,6 +35,67 @@ impl Entry {
     }
 }
 
+impl EditorView {
+    /// Keep the touched VST3 target as the main Arrangement preview. This is
+    /// transient view state; it never writes authored automation points.
+    pub(in crate::editor) fn remember_touched_vst3(
+        &mut self,
+        owner: Owner,
+        device: DeviceId,
+        row: &PluginParameterRow,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(entry) = self.state.as_ref().and_then(|state| {
+            Entry::vst3(&state.project, self.project_generation, owner, device, row)
+        }) else {
+            self.automation_view
+                .devices
+                .main
+                .retain(|old| old.target.owner != owner);
+            self.automation_view.devices.known.retain(|old| {
+                old.target.owner != owner
+                    || old.target.device != device
+                    || !matches!(old.target.kind, DeviceAutomationTarget::Vst3 { parameter } if parameter == row.id)
+            });
+            self.automation_view.enabled = true;
+            if self.mode == crate::editor::EditorMode::Arrangement {
+                self.track_scroll.remeasure();
+            }
+            cx.notify();
+            return false;
+        };
+        let target = entry.target;
+        let lanes = &mut self.automation_view.devices;
+        lanes.main.retain(|old| old.target.owner != owner);
+        lanes.main.push(entry.clone());
+        if let Some(known) = lanes.known.iter_mut().find(|old| old.target == target) {
+            *known = entry;
+        } else {
+            lanes.known.push(entry);
+        }
+        self.automation_view.enabled = true;
+        if self.mode == crate::editor::EditorMode::Arrangement {
+            self.track_scroll.remeasure();
+        }
+        cx.notify();
+        true
+    }
+
+    #[cfg(feature = "ui-test-support")]
+    pub(in crate::editor) fn test_touched_vst3_lane(
+        &self,
+        owner: Owner,
+        device: DeviceId,
+        parameter: u32,
+    ) -> bool {
+        self.automation_view.devices.main.iter().any(|entry| {
+            entry.target.owner == owner
+                && entry.target.device == device
+                && matches!(entry.target.kind, DeviceAutomationTarget::Vst3 { parameter: id } if id == parameter)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

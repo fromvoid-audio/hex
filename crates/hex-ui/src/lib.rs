@@ -137,6 +137,10 @@ pub struct PluginEffectTestView {
     pub parameter_controls: Vec<(u64, u32, gpui::EntityId)>,
     /// A controller parameter enumeration/page query is awaiting its terminal.
     pub parameter_query_pending: bool,
+    /// (device, parameter, displayed value, independent follow control, arranger lane).
+    pub parameter_touches: Vec<(u64, u32, f64, Option<gpui::EntityId>, bool)>,
+    /// Normalized plugin intent held by the existing keyed gesture owner.
+    pub parameter_gesture: Option<f64>,
     /// Weak request identity only; it retains no request or native owner.
     pub operation: Option<std::sync::Weak<hex_session::service::PluginEffectControl>>,
     pub error: Option<String>,

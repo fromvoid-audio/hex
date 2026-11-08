@@ -79,6 +79,17 @@ pub enum EditorAudioEvent {
     NativeLatencyRestart {
         source: hex_audio::prepared::AppliedAudioSource,
     },
+    /// Latest native editor touch observed on an exact retained source. This
+    /// copied hint requests fresh controller values; it authors no automation.
+    /// The desktop coalesces per device under UI backpressure, never native
+    /// gesture receipts or their processing order.
+    PluginParameterTouched {
+        source: hex_audio::prepared::AppliedAudioSource,
+        binding: hex_lattice_contract::ForeignProcessorBinding,
+        device: u64,
+        parameter: u32,
+        sequence: u64,
+    },
     /// The complete set of vst3 device ids for this document on this output whose endpoint
     /// faulted and now passes audio through (#3977). Sent when the set
     /// changes; an empty set clears every degraded marker.

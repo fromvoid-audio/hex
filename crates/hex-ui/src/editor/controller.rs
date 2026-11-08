@@ -740,6 +740,18 @@ impl EditorView {
             };
             crate::diagnostics::record_audio_backend_event(cx, &event);
             match event {
+                crate::EditorAudioEvent::PluginParameterTouched {
+                    source,
+                    binding,
+                    device,
+                    parameter,
+                    sequence,
+                } => {
+                    super::device_panel::vst3_parameters::touched(
+                        self, source, binding, device, parameter, sequence,
+                    );
+                    changed = true;
+                }
                 crate::EditorAudioEvent::RelinquishClient {
                     old_output_identity,
                     target,
