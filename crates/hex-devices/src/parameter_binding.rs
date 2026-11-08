@@ -455,10 +455,11 @@ mod tests {
         // installed cache remains unchanged, then admit a later candidate.
         let v = values(Some(5.0), Some(6.0));
         let mut map = c.resolve(&TABLE, &v).unwrap();
-        let next = c.sample(&TABLE, &mut map, &v, 0).unwrap().unwrap();
-        assert_eq!(*next.effective_ref(), Pair { a: 5.0, b: 6.0 });
-        assert_eq!(*c.effective_ref(), Pair { a: 3.0, b: 4.0 });
-        drop(next);
+        {
+            let next = c.sample(&TABLE, &mut map, &v, 0).unwrap().unwrap();
+            assert_eq!(*next.effective_ref(), Pair { a: 5.0, b: 6.0 });
+            assert_eq!(*c.effective_ref(), Pair { a: 3.0, b: 4.0 });
+        }
         assert_eq!(*c.effective_ref(), Pair { a: 3.0, b: 4.0 });
         let next = c.sample(&TABLE, &mut map, &v, 0).unwrap().unwrap();
         c.install(next);
