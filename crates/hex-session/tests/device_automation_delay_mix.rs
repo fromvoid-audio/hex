@@ -25,7 +25,7 @@ fn delay_feedback_lane_edits_preserve_base_value_history_and_refuse_stale_reques
 }
 #[test]
 fn limiter_scalar_lane_edits_preserve_history_and_refuse_stale_requests() {
-    for parameter in 1..=3 {
+    for parameter in [1, 2, 3, 4, 5, 9, 10, 11, 12] {
         lane_case("hex.limiter", parameter);
     }
 }

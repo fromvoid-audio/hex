@@ -171,6 +171,14 @@ fn limiter_output_gain_uses_delayed_content_clock_without_callback_allocations()
 #[test]
 fn limiter_native_targets_publish_audibly_without_callback_allocations()
 -> Result<(), Box<dyn Error>> {
+    limiter_publication_case(true)
+}
+#[test]
+fn limiter_additional_value_targets_publish_audibly_without_callback_allocations()
+-> Result<(), Box<dyn Error>> {
+    limiter_publication_case(false)
+}
+fn limiter_publication_case(original: bool) -> Result<(), Box<dyn Error>> {
     const BLOCK: usize = 1024;
     use hex_devices::limiter::{DEFINITION as D, parameter as p};
     use hex_lattice_contract::NativeDeviceMetadata;
@@ -220,11 +228,28 @@ fn limiter_native_targets_publish_audibly_without_callback_allocations()
     measured_block(&mut callback, &mut out);
     measured_block(&mut old_callback, &mut old_out);
     assert_eq!(out, old_out);
-    for (parameter, a, b) in [
-        (p::GAIN, 0.5, 0.75),
-        (p::CEILING, 1.0, 0.875),
-        (p::RELEASE, 0.6, 0.4),
-    ] {
+    let original_lanes: &[_] = if original {
+        &[
+            (p::GAIN, 0.5, 0.75),
+            (p::CEILING, 1.0, 0.875),
+            (p::RELEASE, 0.6, 0.4),
+        ]
+    } else {
+        &[]
+    };
+    let extra_lanes: &[_] = if original {
+        &[]
+    } else {
+        &[
+            (p::AUTO_RELEASE, 0.0, 1.0),
+            (p::LINK, 0.2, 0.8),
+            (p::MAXIMIZE, 0.0, 1.0),
+            (p::THRESHOLD, 0.5, 0.25),
+            (p::OUTPUT, 1.0, 0.625),
+            (p::LINK_MID_SIDE, 0.0, 1.0),
+        ]
+    };
+    for &(parameter, a, b) in original_lanes.iter().chain(extra_lanes) {
         editor.execute(Command::ReplaceDeviceAutomation {
             device,
             parameter,

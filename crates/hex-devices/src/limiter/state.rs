@@ -1,6 +1,6 @@
 //! Strict version-1 twelve-parameter opaque payload; no saved-project model change.
 //! Inactive values (including independent l/r and m/s links) remain authored state.
-//! Gain, ceiling and release expose shared envelope delivery without changing
+//! Nine scalar/switch controls expose shared envelope delivery without changing
 //! latency or reconstructing fixed detector coefficients on the callback.
 use super::LimiterDefinition;
 use hex_lattice_contract::*;
