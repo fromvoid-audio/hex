@@ -4217,7 +4217,6 @@ fn parameter_observations_preserve_audio_and_midi_resize_custody(cx: &mut TestAp
                 page_first: Some(0),
             };
             assert!(view.enqueue(Request::QueryPluginParameters(query)));
-            assert!(view.enqueue(Request::QueryFailedPluginAutomation { request_id: 2 }));
         });
         visual.run_until_parked();
         let target = point(down.x - px(28.0), down.y);

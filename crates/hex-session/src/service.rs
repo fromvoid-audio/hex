@@ -965,6 +965,15 @@ impl ControlledExport {
 }
 
 impl Request {
+    /// Read responses do not acknowledge ordered editor mutations.
+    pub fn is_read_only_observation(&self) -> bool {
+        matches!(
+            self,
+            Self::QueryPluginParameters(_)
+                | Self::ContinuePluginParameters
+                | Self::QueryFailedPluginAutomation { .. }
+        )
+    }
     /// The canonical `ExportRange` parts of an export request; `Export` is its
     /// automatic whole-project Main spelling. Other requests return `None`.
     fn into_export_range(self) -> Option<ExportRangeParts> {
@@ -2742,12 +2751,7 @@ fn run_worker(
                 | Request::ContinueStoppedPlaybackRestore
         );
         let mut plugin_effect_complete = Vec::new();
-        let plugin_parameter_observation = matches!(
-            &request,
-            Request::QueryPluginParameters(_)
-                | Request::ContinuePluginParameters
-                | Request::QueryFailedPluginAutomation { .. }
-        );
+        let plugin_parameter_observation = request.is_read_only_observation();
         let mut plugin_parameters = None;
         let mut sampler_edit_complete = None;
         if matches!(
