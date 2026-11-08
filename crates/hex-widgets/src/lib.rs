@@ -159,7 +159,7 @@ mod waveform_plot;
 pub use waveform_plot::{
     MAX_WAVEFORM_COLUMNS, MAX_WAVEFORM_ENVELOPE_POINTS, WaveformChannel, WaveformColors,
     WaveformEmphasis, WaveformEnvelope, WaveformEnvelopeMode, WaveformGeometry, WaveformRange,
-    WaveformStroke, WaveformViewport, waveform_plot,
+    WaveformViewport, WaveformZeroLine, waveform_plot,
 };
 
 #[cfg(test)]

@@ -3,7 +3,7 @@
 use gpui::{Bounds, Div, Pixels, point, prelude::*, px};
 use hex_widgets::{
     ControlStyle, WaveformChannel, WaveformColors, WaveformEmphasis, WaveformEnvelope,
-    WaveformEnvelopeMode, WaveformGeometry, WaveformRange, WaveformStroke, waveform_plot,
+    WaveformEnvelopeMode, WaveformGeometry, WaveformRange, WaveformZeroLine, waveform_plot,
 };
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -134,9 +134,8 @@ fn prepare(
                     WaveformEnvelopeMode::Trace
                 },
                 trace_width: px(1.0 / scale),
-                centerline: Some(WaveformStroke {
+                centerline: Some(WaveformZeroLine {
                     points: [point(bounds.left(), center), point(bounds.right(), center)],
-                    width: px(0.5),
                 }),
             },
             flat,

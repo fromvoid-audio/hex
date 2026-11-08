@@ -23,9 +23,9 @@ pub enum WaveformEnvelopeMode {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct WaveformStroke {
+/// Horizontal guide projected to one device pixel at the current paint scale.
+pub struct WaveformZeroLine {
     pub points: [Point<Pixels>; 2],
-    pub width: Pixels,
 }
 
 /// Already projected upper/lower envelopes in window-local logical pixels.
@@ -35,14 +35,14 @@ pub struct WaveformEnvelope<'a> {
     pub lower: &'a [Point<Pixels>],
     pub mode: WaveformEnvelopeMode,
     pub trace_width: Pixels,
-    pub centerline: Option<WaveformStroke>,
+    pub centerline: Option<WaveformZeroLine>,
 }
 
 /// Checked paths for one channel. Construction is bounded and fallible; the
 /// painter cannot receive malformed point arrays or an unbounded iterator.
 pub struct WaveformChannel {
     envelope: Path<Pixels>,
-    centerline: Option<Path<Pixels>>,
+    centerline: Option<WaveformZeroLine>,
     zero_ranges: Option<Path<Pixels>>,
 }
 impl WaveformChannel {
@@ -78,17 +78,11 @@ impl WaveformChannel {
         {
             return None;
         }
-        let centerline = if let Some(line) = centerline {
-            if !valid_width(line.width) || !valid_span(line.points) {
-                return None;
-            }
-            let mut path = PathBuilder::stroke(line.width);
-            path.move_to(line.points[0]);
-            path.line_to(line.points[1]);
-            Some((path.build().ok()?, line.points[0]))
-        } else {
-            None
-        };
+        if let Some(line) = centerline
+            && !valid_span(line.points)
+        {
+            return None;
+        }
         let path = if mode == WaveformEnvelopeMode::Filled && !upper.is_empty() {
             filled_band(upper, lower)
         } else if let Some(first) = upper.first().copied() {
@@ -102,7 +96,7 @@ impl WaveformChannel {
             if mode != WaveformEnvelopeMode::Trace {
                 return None;
             }
-            Path::new(centerline.as_ref()?.1)
+            Path::new(centerline.as_ref()?.points[0])
         };
         let mut flat = PathBuilder::stroke(trace_width);
         let mut spans = 0;
@@ -116,13 +110,33 @@ impl WaveformChannel {
         }
         Some(Self {
             envelope: path,
-            centerline: centerline.map(|(path, _)| path),
+            centerline,
             zero_ranges: if spans > 0 {
                 Some(flat.build().ok()?)
             } else {
                 None
             },
         })
+    }
+
+    /// Device-aligned guide bounds for the retained horizontal span. The paint
+    /// scale is deliberately evaluated here, not baked into cached paths.
+    pub fn zero_line_bounds(&self, scale: f32) -> Option<Bounds<Pixels>> {
+        let line = self.centerline?;
+        if !scale.is_finite() || scale <= 0.0 {
+            return None;
+        }
+        let left = (f32::from(line.points[0].x) * scale).ceil();
+        let right = (f32::from(line.points[1].x) * scale).floor();
+        let top = (f32::from(line.points[0].y) * scale).floor();
+        let bounds = Bounds::new(
+            gpui::point(px(left / scale), px(top / scale)),
+            gpui::size(px((right - left) / scale), px(1.0 / scale)),
+        );
+        (valid_point(bounds.origin)
+            && valid_width(bounds.size.width)
+            && valid_width(bounds.size.height))
+        .then_some(bounds)
     }
 
     pub fn has_zero_range_trace(&self) -> bool {
@@ -263,11 +277,18 @@ fn regions(emphasis: WaveformEmphasis, colors: WaveformColors) -> [(f64, f64, u3
         }
     }
 }
-fn paint_channels(geometry: &WaveformGeometry, color: u32, centerline: u32, window: &mut Window) {
+// Guides are shared by every emphasis region and submitted only once per lane.
+fn zero_line_quads(
+    geometry: &WaveformGeometry,
+    scale: f32,
+) -> impl Iterator<Item = Bounds<Pixels>> {
+    geometry
+        .channels()
+        .iter()
+        .filter_map(move |channel| channel.zero_line_bounds(scale))
+}
+fn paint_channels(geometry: &WaveformGeometry, color: u32, window: &mut Window) {
     for channel in geometry.channels() {
-        if let Some(path) = &channel.centerline {
-            window.paint_path(path.clone(), rgb(centerline));
-        }
         window.paint_path(channel.envelope.clone(), rgb(color));
         if let Some(path) = &channel.zero_ranges {
             window.paint_path(path.clone(), rgb(color));
@@ -315,8 +336,11 @@ where
                 let geometry = data.deref().as_ref();
                 // Timeline geometry deliberately includes neighboring columns. Its
                 // existing ancestor mask, not another canvas-bound mask, crops them.
+                for bounds in zero_line_quads(geometry, scale) {
+                    window.paint_quad(gpui::fill(bounds, rgb(colors.centerline)));
+                }
                 if emphasis == WaveformEmphasis::Uniform {
-                    paint_channels(geometry, colors.waveform, colors.centerline, window);
+                    paint_channels(geometry, colors.waveform, window);
                     return;
                 }
                 for (left, right, color) in regions(emphasis, colors) {
@@ -328,7 +352,7 @@ where
                         gpui::size(px((right - left) as f32 * width), bounds.size.height),
                     );
                     window.with_content_mask(Some(ContentMask { bounds: mask }), |window| {
-                        paint_channels(geometry, color, colors.centerline, window);
+                        paint_channels(geometry, color, window);
                     });
                 }
             },

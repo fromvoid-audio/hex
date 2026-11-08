@@ -4,7 +4,7 @@ use hex_project::Clip;
 use hex_session::{CachedPeak, CachedWaveform};
 use hex_widgets::{
     MAX_WAVEFORM_COLUMNS, MAX_WAVEFORM_ENVELOPE_POINTS, WaveformChannel, WaveformEnvelope,
-    WaveformEnvelopeMode, WaveformStroke,
+    WaveformEnvelopeMode, WaveformZeroLine,
 };
 #[cfg(test)]
 use std::hint::black_box;
@@ -710,10 +710,9 @@ pub(super) fn prepare_waveform_geometry(
                     WaveformEnvelopeMode::Trace
                 },
                 trace_width: px(1.0),
-                // Coarse overview bins already show the signed envelope (or
-                // the DC/silence trace). Avoid another path per channel just
-                // for its zero-line guide; fine/detail views keep that guide.
-                centerline: (!grid.binned).then_some(WaveformStroke {
+                // A retained span paints as one device-pixel quad in either
+                // sampling mode; it never prepares an extra stroke path.
+                centerline: (!grid.binned).then_some(WaveformZeroLine {
                     points: [
                         point(bounds.origin.x, bounds.origin.y + px(center)),
                         point(
@@ -721,7 +720,6 @@ pub(super) fn prepare_waveform_geometry(
                             bounds.origin.y + px(center),
                         ),
                     ],
-                    width: px(0.5),
                 }),
             },
             std::iter::empty(),
@@ -829,6 +827,46 @@ mod tests {
             )
             .expect("waveform geometry"),
         )
+    }
+
+    #[test]
+    fn fine_and_binned_lanes_retain_device_aligned_zero_line_quads() {
+        let source = waveform();
+        let extent = Bounds::new(point(px(12.3), px(34.7)), size(px(100.4), px(81.3)));
+        for binned in [false, true] {
+            let grid = WaveformGrid {
+                start: 0,
+                end: 96_000,
+                left: f32::from(extent.left()),
+                width: f32::from(extent.size.width),
+                columns: 32,
+                binned,
+            };
+            let geometry = prepare_waveform_geometry(
+                &source,
+                &WaveformMapping::Source { timeline_origin: 0 },
+                0,
+                96_000,
+                extent,
+                32,
+                Some(grid),
+            )
+            .unwrap();
+            assert_eq!(geometry.display.channels().len(), 2);
+            for scale in [1.0, 1.5, 2.0] {
+                for (lane, channel) in geometry.display.channels().iter().enumerate() {
+                    let line = channel
+                        .zero_line_bounds(scale)
+                        .expect("zero line at every zoom");
+                    let center = f32::from(extent.top())
+                        + f32::from(extent.size.height) * (lane as f32 * 0.5 + 0.25);
+                    assert!((f32::from(line.top()) - center).abs() < 1.0 / scale);
+                    assert!((f32::from(line.size.height) * scale - 1.0).abs() < 1e-5);
+                    let device_y = f32::from(line.top()) * scale;
+                    assert!((device_y - device_y.round()).abs() < 1e-4);
+                }
+            }
+        }
     }
 
     #[test]

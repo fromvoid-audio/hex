@@ -158,7 +158,20 @@ fn retained_geometry_fills_its_parent_and_receives_actual_paint_bounds(cx: &mut 
     let observed = Rc::new(RefCell::new(Vec::new()));
     let upper = [point(px(0.0), px(10.0)), point(px(180.0), px(15.0))];
     let lower = upper.map(|point| point + gpui::point(px(0.0), px(20.0)));
-    let geometry = Rc::new(WaveformGeometry::mono(channel(&upper, &lower).unwrap()));
+    let lane = WaveformChannel::new(
+        WaveformEnvelope {
+            upper: &upper,
+            lower: &lower,
+            mode: WaveformEnvelopeMode::Filled,
+            trace_width: px(0.5),
+            centerline: Some(WaveformZeroLine {
+                points: [point(px(0.0), px(20.3)), point(px(180.0), px(20.3))],
+            }),
+        },
+        std::iter::empty(),
+    )
+    .unwrap();
+    let geometry = Rc::new(WaveformGeometry::mono(lane));
     let handle = cx.add_window(|_, _| Fixture {
         observed: observed.clone(),
         geometry: geometry.clone(),
@@ -175,6 +188,11 @@ fn retained_geometry_fills_its_parent_and_receives_actual_paint_bounds(cx: &mut 
             .all(|paint| paint.bounds == bounds && paint.scale > 0.0)
     );
     assert!(!observed.borrow().is_empty());
+    let scale = observed.borrow().last().unwrap().scale;
+    let guides: Vec<_> = zero_line_quads(&geometry, scale).collect();
+    assert_eq!(guides.len(), 1);
+    assert_eq!(f32::from(guides[0].size.height) * scale, 1.0);
+
     for _ in 0..3 {
         view.update(cx, |_, cx| cx.notify());
         visual.run_until_parked();
@@ -183,4 +201,72 @@ fn retained_geometry_fills_its_parent_and_receives_actual_paint_bounds(cx: &mut 
         &geometry,
         &view.read_with(cx, |view, _| view.geometry.clone())
     ));
+}
+
+#[test]
+fn zero_line_quad_plan_is_one_device_pixel_per_lane_in_both_envelope_modes() {
+    for mode in [WaveformEnvelopeMode::Filled, WaveformEnvelopeMode::Trace] {
+        for scale in [1.0, 1.25, 1.5, 2.0, 3.0] {
+            let lane = |y| {
+                let upper = [point(px(0.2), px(y - 4.0)), point(px(100.8), px(y - 2.0))];
+                let lower = upper.map(|p| p + point(px(0.0), px(6.0)));
+                WaveformChannel::new(
+                    WaveformEnvelope {
+                        upper: &upper,
+                        lower: &lower,
+                        mode,
+                        trace_width: px(0.5),
+                        centerline: Some(WaveformZeroLine {
+                            points: [point(px(0.2), px(y)), point(px(100.8), px(y))],
+                        }),
+                    },
+                    std::iter::empty(),
+                )
+                .unwrap()
+            };
+            let geometry = WaveformGeometry::stereo([lane(10.3), lane(30.7)]);
+            let lines: Vec<_> = zero_line_quads(&geometry, scale).collect();
+            assert_eq!(lines.len(), 2);
+            for (line, y) in lines.iter().zip([10.3, 30.7]) {
+                assert!((f32::from(line.size.height) * scale - 1.0).abs() < 1e-5);
+                for value in [line.left(), line.right(), line.top(), line.bottom()] {
+                    let device = f32::from(value) * scale;
+                    assert!((device - device.round()).abs() < 1e-4);
+                }
+                assert!(line.left() >= px(0.2) && line.right() <= px(100.8));
+                assert!((f32::from(line.top()) - y).abs() < 1.0 / scale);
+            }
+        }
+    }
+}
+
+#[test]
+fn zero_line_refuses_malformed_spans_and_invalid_or_overflowing_scales() {
+    let flat = [point(px(-0.2), px(7.3)), point(px(20.8), px(7.3))];
+    let build = |points| {
+        WaveformChannel::new(
+            WaveformEnvelope {
+                upper: &flat,
+                lower: &flat,
+                mode: WaveformEnvelopeMode::Trace,
+                trace_width: px(1.0),
+                centerline: Some(WaveformZeroLine { points }),
+            },
+            std::iter::empty(),
+        )
+    };
+    assert!(build([flat[1], flat[0]]).is_none());
+    assert!(build([flat[0], point(px(20.0), px(8.0))]).is_none());
+    assert!(build([flat[0], point(px(f32::NAN), px(7.3))]).is_none());
+    let channel = build(flat).unwrap();
+    for scale in [
+        0.0,
+        -1.0,
+        f32::NAN,
+        f32::INFINITY,
+        f32::MAX,
+        f32::MIN_POSITIVE / 16.0,
+    ] {
+        assert!(channel.zero_line_bounds(scale).is_none());
+    }
 }
