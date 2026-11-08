@@ -1,5 +1,7 @@
 //! Independent native device preset envelope. Payload bytes are never interpreted
 //! here; native provider validation and prepared admission belong to the session.
+pub mod defaults;
+
 use hex_lattice_contract::{
     DeviceTypeId, MAX_DEVICE_TYPE_ID_BYTES, MAX_NATIVE_DEVICE_STATE_BYTES, NativeDeviceState,
 };
@@ -291,6 +293,27 @@ pub fn save_new(path: &Path, preset: &Preset) -> Result<(), Error> {
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
+    let temporary = stage(parent, &bytes)?;
+    let published = crate::publication::publish_new(&temporary.0, path)?;
+    let cleanup_error = published
+        .staging_remains()
+        .then(|| fs::remove_file(&temporary.0).err())
+        .flatten();
+    #[cfg(unix)]
+    let sync_error = File::open(parent).and_then(|file| file.sync_all()).err();
+    #[cfg(not(unix))]
+    let sync_error = None;
+    if let Some(source) = cleanup_error.or(sync_error) {
+        return Err(Error::PublishedButNotDurable {
+            path: path.into(),
+            source,
+        });
+    }
+    Ok(())
+}
+
+/// A bounded same-directory staging file, fully written and synced before publication.
+fn stage(parent: &Path, bytes: &[u8]) -> Result<Temporary, Error> {
     let mut reserved = None;
     for _ in 0..32 {
         let id = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
@@ -311,25 +334,10 @@ pub fn save_new(path: &Path, preset: &Preset) -> Result<(), Error> {
     let (temporary, mut file) = reserved.ok_or(Error::Invalid(
         "could not reserve device preset temporary file",
     ))?;
-    file.write_all(&bytes)?;
+    file.write_all(bytes)?;
     file.sync_all()?;
     drop(file);
-    let published = crate::publication::publish_new(&temporary.0, path)?;
-    let cleanup_error = published
-        .staging_remains()
-        .then(|| fs::remove_file(&temporary.0).err())
-        .flatten();
-    #[cfg(unix)]
-    let sync_error = File::open(parent).and_then(|file| file.sync_all()).err();
-    #[cfg(not(unix))]
-    let sync_error = None;
-    if let Some(source) = cleanup_error.or(sync_error) {
-        return Err(Error::PublishedButNotDurable {
-            path: path.into(),
-            source,
-        });
-    }
-    Ok(())
+    Ok(temporary)
 }
 
 #[cfg(test)]
