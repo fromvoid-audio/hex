@@ -69,8 +69,16 @@ fn every_node_field_first_assignment_reading_deletion_undo_bypass_and_shutdown_a
         let variant = entry.active_variant();
         let next = e.project().next_identity();
         let node_id = NodeId::new(next)?;
-        let mut settings = EqState::default();
-        let mut node = Node::new(node_id, 700.0, 6.0, 0)?;
+        let mut settings = EqState {
+            mode: if field == NodeParameter::Bank { 2 } else { 0 },
+            ..EqState::default()
+        };
+        let mut node = Node::new(
+            node_id,
+            700.0,
+            6.0,
+            if field == NodeParameter::Bank { 3 } else { 0 },
+        )?;
         if field == NodeParameter::Slope {
             node.kind = NodeKind::LowCut;
         }
@@ -232,6 +240,9 @@ fn every_node_field_first_assignment_reading_deletion_undo_bypass_and_shutdown_a
                 )?)?)
                 .map_err(|_| "retained output row")?;
             tick(&mut out);
+            // A unity output row cannot reset an already-audible node, including
+            // side-bank history when its authored bank differs from base.
+            close(&out[0], &out[2]);
             control.reclaim();
             let before_delete = e.project().snapshot();
             let entry = e.project().device(device).ok_or("eq missing")?;
