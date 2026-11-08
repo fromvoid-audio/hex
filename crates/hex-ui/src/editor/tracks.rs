@@ -1561,6 +1561,8 @@ impl EditorView {
                 })
                 .into()
             });
+        let group_plate = track.is_group()
+            && self.document_audio_mode == hex_session::DocumentAudioMode::Resident;
         let name_area = div()
             .id(("track-name-area", track_id.value()))
             .cursor_pointer()
@@ -1571,6 +1573,10 @@ impl EditorView {
             .px(px(2.))
             .bg(rgb(name_fill))
             .text_color(rgb(name_text))
+            .when(track.is_group(), |plate| {
+                plate.rounded_tr(px(6.0)).rounded_br(px(6.0))
+            })
+            .when(group_plate, |plate| plate.h_full().justify_center())
             .child(track_name_view);
         let sample_source =
             super::sample_recorder::Arm::Output(hex_engine::OutputCaptureId::Track(track_id));
@@ -1699,6 +1705,7 @@ impl EditorView {
                 .child(theme::text("○"));
             div()
                 .id(("arrangement-track-controls", track_id.value()))
+                .when(group_plate, |controls| controls.h_full())
                 .debug_selector(move || format!("track-controls-{}", track_id.value()))
                 .w_full()
                 .flex()
@@ -1848,22 +1855,40 @@ impl EditorView {
         let click_focus = header_focus.clone();
         let header_height = self.track_body_height(track_id);
         let expanded_header = header_height > TRACK_ROW_HEIGHT;
+        let next_ancestors = self
+            .arrangement_row_index(track_index)
+            .and_then(|row| self.arrangement_track_index(row + 1))
+            .and_then(|index| state.project.tracks().get(index))
+            .map_or(&[][..], |next| {
+                self.track_hierarchy_indent.ancestors(next.id())
+            });
+        let branch_ends = |ancestor| !next_ancestors.iter().any(|(id, _)| *id == ancestor);
+        let own_branch_ends = branch_ends(track_id);
         let group_rails = self
             .track_hierarchy_indent
             .ancestors(track_id)
             .iter()
             .enumerate()
             .map(|(depth, &(ancestor, color))| {
+                let identity = theme::element_colors(color);
+                let fill = if self.track_selection.contains(ancestor) {
+                    identity.accent
+                } else {
+                    identity.muted
+                };
                 div()
                     .absolute()
                     .left(px(depth as f32 * super::track_hierarchy_indent::RAIL_WIDTH))
-                    .top(px(1.0))
+                    .top_0()
                     .bottom_0()
                     .w(px(super::track_hierarchy_indent::RAIL_WIDTH))
                     .debug_selector(move || {
                         format!("track-group-rail-{}-{}", track_id.value(), ancestor.value())
                     })
-                    .bg(rgb(theme::element_colors(color).accent))
+                    .when(branch_ends(ancestor), |rail| {
+                        rail.rounded_bl(px(super::track_hierarchy_indent::RAIL_WIDTH / 2.0))
+                    })
+                    .bg(rgb(fill))
             })
             .collect::<Vec<_>>();
         let header = super::track_header::surface(
@@ -1874,6 +1899,10 @@ impl EditorView {
             expanded_header.then_some(name_fill),
         )
         .when(expanded_header, |header| header.justify_start())
+        .when(track.is_group() || hierarchy_indent > 0.0, |header| {
+            header.border_b_0()
+        })
+        .when(group_plate, |header| header.pb_0())
         .debug_selector(move || format!("arrangement-track-header-{}", track_id.value()))
         .track_focus(&header_focus)
         .key_context("hex_track_header")
@@ -1890,6 +1919,7 @@ impl EditorView {
                 // Keep the compact content slot, excluding its bottom inset
                 // and border, anchored to the top when the row grows.
                 .when(expanded_header, |row| row.h(px(TRACK_ROW_HEIGHT - 4.0)))
+                .when(group_plate, |row| row.h_full())
                 .flex()
                 .items_center()
                 .gap(px(2.0))
@@ -1913,11 +1943,25 @@ impl EditorView {
             div()
                 .absolute()
                 .left(px(hierarchy_indent))
-                .top(px(1.0))
+                .top(px(if track.is_group() || hierarchy_indent > 0.0 {
+                    0.0
+                } else {
+                    1.0
+                }))
                 .bottom_0()
+                .when(track.is_group(), |rail| {
+                    rail.rounded_tl(px(super::track_hierarchy_indent::RAIL_WIDTH / 2.0))
+                })
+                .when(track.is_group() && own_branch_ends, |rail| {
+                    rail.rounded_bl(px(super::track_hierarchy_indent::RAIL_WIDTH / 2.0))
+                })
                 .w(px(4.0))
                 .debug_selector(move || format!("track-color-strip-{}", track_id.value()))
-                .bg(rgb(theme::element_colors(track.color()).accent)),
+                .bg(rgb(if track.is_group() {
+                    name_fill
+                } else {
+                    theme::element_colors(track.color()).accent
+                })),
         )
         .on_mouse_down(
             MouseButton::Right,
