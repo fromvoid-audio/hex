@@ -78,7 +78,7 @@ pub fn meter_indicator(
         let peak_id = format!("{well_id}-peak");
         let peak = channel.held_peak_dbfs.and_then(fraction);
         wells = wells.child(
-            crate::level_meter::meter_body(
+            crate::level_meter::signal_meter(
                 well_id.clone().into(),
                 fraction(channel.level_dbfs).unwrap_or(0.0),
                 LevelMeterStyle {

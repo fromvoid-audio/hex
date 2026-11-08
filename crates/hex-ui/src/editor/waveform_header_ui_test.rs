@@ -313,6 +313,7 @@ fn waveform_body_painter_omits_header_only_rows_and_clips_tiny_bodies(cx: &mut T
                         96_000,
                         Some(Rc::clone(&cache)),
                         None,
+                        crate::theme::color(crate::theme::PaletteRole::Waveform),
                     )))
                     .into_element()
             },
@@ -338,5 +339,101 @@ fn waveform_body_painter_omits_header_only_rows_and_clips_tiny_bodies(cx: &mut T
                 }
             }
         }
+    }
+}
+
+#[gpui::test]
+fn clip_waveform_palette_uses_a_contrasting_hue(cx: &mut TestAppContext) {
+    use crate::theme::{self, ClipWaveformBackground};
+    let (_files, handle, editor, track, clip) = fixture(cx, false);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(800.0)));
+    visual.run_until_parked();
+    for identity in [
+        hex_project::ElementColor::Green,
+        hex_project::ElementColor::Rose,
+    ] {
+        editor.update(&mut visual, |view, _| {
+            view.waveform_geometry_cache
+                .borrow_mut()
+                .clear_paint_samples();
+            assert!(view.enqueue(Request::Edit(Command::SetTrackColor {
+                track,
+                color: identity
+            })));
+        });
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            let state = view.state.as_ref().unwrap();
+            let model = state.project.clip(clip).unwrap();
+            let expected = theme::clip_waveform_ink(
+                identity,
+                ClipWaveformBackground::Arrangement {
+                    flavor: model.flavor(),
+                    selected: view.selected_clip == Some(clip),
+                },
+                true,
+            );
+            let cache = view.waveform_geometry_cache.borrow();
+            let paint = cache
+                .painted_waveforms()
+                .back()
+                .expect("actual completed Arrangement paint");
+            assert_eq!(
+                paint.colors.waveform, expected,
+                "latest Arrangement paint follows canonical hue without clearing geometry"
+            );
+            assert_ne!(paint.colors.waveform, 0);
+            let fill = theme::arrangement_clip_body_fill(
+                theme::clip_activity_fill(identity, model.flavor(), false, true),
+                view.selected_clip == Some(clip),
+            );
+            assert!(theme::contrast_ratio(paint.colors.waveform, fill) >= 3.0);
+        });
+    }
+    for source in [false, true] {
+        editor.update(&mut visual, |view, cx| {
+            view.selected_track = Some(track);
+            view.selected_clip = Some(clip);
+            view.clip_view_open = true;
+            view.device_panel_active = false;
+            view.audio_event_editor.source_view = source;
+            view.waveform_geometry_cache
+                .borrow_mut()
+                .clear_paint_samples();
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let panel = visual.debug_bounds("arrangement-audio-clip-view").unwrap();
+        editor.read_with(&visual, |view, _| {
+            let expected = theme::clip_waveform_ink(
+                hex_project::ElementColor::Rose,
+                if source {
+                    ClipWaveformBackground::Source
+                } else {
+                    ClipWaveformBackground::Events
+                },
+                true,
+            );
+            let cache = view.waveform_geometry_cache.borrow();
+            let paints: Vec<_> = cache
+                .painted_waveforms()
+                .iter()
+                .filter(|p| p.bounds.top() >= panel.top())
+                .collect();
+            assert!(
+                !paints.is_empty(),
+                "actual clip-editor painter must run: source={source}"
+            );
+            for paint in paints {
+                assert_eq!(paint.colors.waveform, expected);
+                let fill = theme::color(if source {
+                    theme::PaletteRole::Surface
+                } else {
+                    theme::PaletteRole::Clip
+                });
+                assert!(theme::contrast_ratio(paint.colors.waveform, fill) >= 3.0);
+            }
+        });
     }
 }

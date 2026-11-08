@@ -11,7 +11,7 @@ pub(crate) fn process_with_native_input_and_external(
     offset: usize,
     clock: Option<&dyn NativeInstrumentClock>,
     input: Option<&mut crate::native_parameter_input::Processing>,
-    external: Option<hex_lattice::NativeExternalAutomation<'_>>,
+    external: Option<&dyn hex_lattice::NativeExternalAutomationSet>,
     observer: &mut Option<&mut NodeSignalObserver<'_>>,
 ) -> Result<(), crate::Invalid> {
     let range = 0..chain.len();

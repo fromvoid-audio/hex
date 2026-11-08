@@ -256,7 +256,7 @@ fn piano_focus_keeps_arrow_and_enter_out_of_session_navigation_and_launch(cx: &m
 fn scene_column_stays_pinned_and_aligned_at_small_and_large_window_widths(cx: &mut TestAppContext) {
     let (handle, _, _, _) = session_window(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
-    for width in [880.0, 1440.0] {
+    for width in [640.0, 880.0, 1440.0] {
         visual.simulate_resize(size(px(width), px(700.0)));
         visual.run_until_parked();
         let header = visual
@@ -266,7 +266,7 @@ fn scene_column_stays_pinned_and_aligned_at_small_and_large_window_widths(cx: &m
             .debug_bounds("session-scene-column")
             .expect("scene row bounds");
         let window = visual.update(|window, _| window.bounds());
-        let window_right = window.origin.x + window.size.width;
+        let window_right = window.origin.x + window.size.width - px(4.0);
         assert!(near(header.origin.x, row.origin.x));
         assert!(near(header.origin.x + header.size.width, window_right));
         assert!(near(row.origin.x + row.size.width, window_right));

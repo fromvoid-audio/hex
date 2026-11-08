@@ -82,7 +82,9 @@ impl EditorView {
                             match divider {
                                 Divider::Outer => {
                                     view.browser.width = clamped_panel_width(
-                                        view.browser.layout.base_width_for_total(x),
+                                        view.browser.layout.base_width_for_total(
+                                            x - hex_widgets::PANEL_FRAME_INSET,
+                                        ),
                                         available,
                                     )
                                 }

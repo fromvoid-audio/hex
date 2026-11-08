@@ -812,6 +812,8 @@ pub(super) fn export_harmonic_history(
     };
     let spectrum = builtin_spectrum(&base)?;
     Some(Legacy {
+        fine_offsets: runtime.configuration.fine_offsets_hz(),
+        pitch_keytrack: runtime.configuration.pitch_keytrack_percent(),
         tuning: None,
         rate: runtime.sample_rate,
         companion: super::companion::Settings::default(),

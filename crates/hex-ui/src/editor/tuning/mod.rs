@@ -431,7 +431,7 @@ impl EditorView {
                         && std::rc::Rc::ptr_eq(&view.tuning.control_epoch, &epoch)
                         && !matches!(field, Field::Hz(i) | Field::Cents(i) if i >= view.tuning.value.scale().count())
                     {
-                        view.tuning_numeric(field, *event, cx);
+                        view.tuning_numeric(field, event.clone(), cx);
                     }
                 });
             self.tuning.controls.insert(
@@ -548,7 +548,7 @@ impl EditorView {
         match self.service.submit(Request::TuningGesture(request)) {
             Ok(()) => {
                 self.tuning.client.mark_submitted();
-                self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
+                self.worker_submitted();
                 true
             }
             Err(SubmitError::Full(_)) => false,
@@ -1066,14 +1066,13 @@ impl EditorView {
                     cx.listener(move |view, _, _, cx| {
                         let a = view.tuning.value.audition();
                         if let Ok(a) = Audition::new(wave, a.level(), a.attack_ms(), a.release_ms())
-                        {
-                            if let Ok(next) = ProjectTuning::new(
+                            && let Ok(next) = ProjectTuning::new(
                                 view.tuning.value.enabled(),
                                 view.tuning.value.scale(),
                                 a,
-                            ) {
-                                view.tuning_change(next, NumericEventPhase::Commit);
-                            }
+                            )
+                        {
+                            view.tuning_change(next, NumericEventPhase::Commit);
                         }
                         cx.notify();
                     }),
@@ -1288,7 +1287,7 @@ impl EditorView {
                 .id("tuning-overlay")
                 .absolute()
                 .inset_0()
-                .pt(px(super::header::TITLE_HEIGHT))
+                .pt(px(super::header::WINDOW_CONTROL_HEIGHT))
                 .bg(rgb(theme::color(theme::PaletteRole::Background)))
                 .child(content),
         )
