@@ -149,6 +149,18 @@ impl HeadlessBackend {
         owner.run(|callback, _| phase = callback.native_worker_phase_for_test());
         phase
     }
+    /// Observe the exact endpoint's contained fault on test control. This
+    /// copies diagnostics only; no source, endpoint or readiness is admitted.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn native_source_fault_on_control(
+        &mut self,
+        binding: hex_lattice_contract::ForeignProcessorBinding,
+    ) -> Option<hex_plugin_host::transport::Fault> {
+        let owner = self.data.as_mut().and_then(Guard::owner_mut)?;
+        let mut fault = None;
+        owner.run(|callback, _| fault = callback.native_source_fault_for_test(binding));
+        fault
+    }
     /// Hold original native Work on a separate test control thread. The
     /// callback entry ends before taking that exclusion; native state and its
     /// actual owners remain in Root. Never call from a measured render scope.
