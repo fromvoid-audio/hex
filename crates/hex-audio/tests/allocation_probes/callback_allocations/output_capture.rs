@@ -444,14 +444,18 @@ fn direct_saturator_gain_edit_handoff_ramp_is_allocation_free() -> Result<(), Bo
     std::thread::Builder::new()
         .stack_size(16 * 1024 * 1024)
         .spawn(|| {
-            run_direct_saturator_edit_probe(false).map_err(|e| e.to_string())?;
-            run_direct_saturator_edit_probe(true).map_err(|e| e.to_string())
+            run_direct_saturator_edit_probe(false, false).map_err(|e| e.to_string())?;
+            run_direct_saturator_edit_probe(true, false).map_err(|e| e.to_string())?;
+            run_direct_saturator_edit_probe(true, true).map_err(|e| e.to_string())
         })?
         .join()
         .map_err(|_| "direct saturator allocation probe panicked")?
         .map_err(Into::into)
 }
-fn run_direct_saturator_edit_probe(wet_automated: bool) -> Result<(), Box<dyn Error>> {
+fn run_direct_saturator_edit_probe(
+    wet_automated: bool,
+    retained_gains: bool,
+) -> Result<(), Box<dyn Error>> {
     use hex_devices::saturator::{SATURATOR_DEFINITION, parameter};
     use hex_lattice_contract::NativeDeviceMetadata;
     use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue};
@@ -474,6 +478,22 @@ fn run_direct_saturator_edit_probe(wet_automated: bool) -> Result<(), Box<dyn Er
             }],
         })?;
     }
+    if retained_gains {
+        for (parameter, normalized) in [
+            (parameter::DRIVE, 42.0 / 72.0),
+            (parameter::OUTPUT, 33.0 / 42.0),
+        ] {
+            editor.execute(Command::ReplaceDeviceAutomation {
+                device,
+                parameter,
+                points: vec![AutomationPoint {
+                    beat: BeatTime::ZERO,
+                    value: AutomationValue::new(normalized)?,
+                    outgoing: AutomationInterpolation::Step,
+                }],
+            })?;
+        }
+    }
     let revision = prepare(editor.project())?;
     let (mut control, mut callback) = prepared::channel(RATE)?;
     control
@@ -494,10 +514,21 @@ fn run_direct_saturator_edit_probe(wet_automated: bool) -> Result<(), Box<dyn Er
         parameter::OUTPUT,
         ParameterValue::Float(-6.0),
     )?;
-    editor.execute(Command::ReplaceDeviceState {
-        device,
-        state: edited,
-    })?;
+    if retained_gains {
+        editor.execute(Command::ManualDeviceEdit {
+            device,
+            state: edited,
+            targets: vec![
+                hex_lattice_contract::DeviceAutomationTarget::Parameter(parameter::DRIVE),
+                hex_lattice_contract::DeviceAutomationTarget::Parameter(parameter::OUTPUT),
+            ],
+        })?;
+    } else {
+        editor.execute(Command::ReplaceDeviceState {
+            device,
+            state: edited,
+        })?;
+    }
     control
         .publish(Playback::try_from_prepared_with_session(prepare(
             editor.project(),
@@ -506,6 +537,21 @@ fn run_direct_saturator_edit_probe(wet_automated: bool) -> Result<(), Box<dyn Er
     // Small blocks keep the 5 ms ramp active across several callbacks.
     let mut small = [[0.0; 2]; 64];
     for _ in 0..8 {
+        measured_block(&mut callback, &mut small);
+    }
+    if retained_gains {
+        for parameter in [parameter::DRIVE, parameter::OUTPUT] {
+            editor.execute(Command::SetDeviceAutomationReadSelection {
+                device,
+                target: hex_lattice_contract::DeviceAutomationTarget::Parameter(parameter),
+                selection: hex_project::AutomationReadSelection::Authored,
+            })?;
+        }
+        control
+            .publish(Playback::try_from_prepared_with_session(prepare(
+                editor.project(),
+            )?)?)
+            .map_err(|_| "reenable publication")?;
         measured_block(&mut callback, &mut small);
     }
     assert!(control.status.rejected_revision().is_none());
