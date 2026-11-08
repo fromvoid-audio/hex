@@ -218,9 +218,9 @@ fn compressor_generic_ab_return_mix_banks_copy_and_persistence(cx: &mut TestAppC
     compressor_banks_roundtrip(cx, true);
 }
 
-struct Directory(std::path::PathBuf);
+pub(super) struct Directory(pub(super) std::path::PathBuf);
 impl Directory {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
             "hex-device-ab-ui-{}-{}",
@@ -231,7 +231,7 @@ impl Directory {
         std::fs::create_dir(path.join("samples")).unwrap();
         Self(path)
     }
-    fn window(
+    pub(super) fn window(
         &self,
         cx: &mut TestAppContext,
         service: Service,
