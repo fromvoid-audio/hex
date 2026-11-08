@@ -210,6 +210,8 @@ fn failed_custody_query_preserves_original_identity_and_rejects_mismatch() {
     );
     let bytes = std::fs::read(&path).unwrap();
     let mut state = active(scope, source);
+    assert!(!state.close_safe());
+    assert!(!lane.close_safe());
     assert_eq!(
         failed_custody(&state, &lane, false).unwrap(),
         Progress::FailedPluginPending
@@ -235,6 +237,8 @@ fn failed_custody_query_preserves_original_identity_and_rejects_mismatch() {
     );
     state.failed.as_mut().unwrap().source.transport_epoch += 1;
     assert!(failed_custody(&state, &lane, false).is_err());
+    assert!(!state.close_safe());
+    assert!(!lane.close_safe());
     state.failed.as_mut().unwrap().source = source;
     state.failed.as_mut().unwrap().path = files.0.join("other");
     assert!(failed_custody(&state, &lane, false).is_err());
@@ -244,6 +248,17 @@ fn failed_custody_query_preserves_original_identity_and_rejects_mismatch() {
         Progress::FailedPluginPending
     );
     state.failed = None;
+    assert!(state.close_safe());
+    assert!(empty.close_safe());
+    let pending = GestureRequest::CommitPlugin {
+        key: gesture(scope).key,
+        sequence: 1,
+        value: PluginParameterValue::new(0.25).unwrap(),
+    };
+    state.defer(pending);
+    assert!(!state.close_safe());
+    state.attempt(pending);
+    assert!(state.close_safe());
     assert_eq!(
         failed_custody(&state, &empty, false).unwrap(),
         Progress::FailedPluginUnavailable
@@ -290,6 +305,8 @@ fn failed_recovery_dispatch_copies_receipts_without_releasing_custody() {
         start_failed_copy(&state, &mut lane, scope, &output, 3, false).unwrap(),
         Step::Progress(DeviceAutomationTakeProgress::Pending)
     ));
+    assert!(!lane.close_safe());
+    assert!(!state.close_safe());
     assert!(inspect_failed_copy(&state, &lane, scope, false).is_err());
     assert!(start_failed_copy(&state, &mut lane, scope, &output, 3, false).is_err());
     let deadline = Instant::now() + Duration::from_secs(2);

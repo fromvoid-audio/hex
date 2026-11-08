@@ -96,6 +96,15 @@ fn successive_native_takes_keep_the_arm_and_refusals_keep_the_recovery_file() {
     assert_eq!(completion.request_id, 912);
     assert_eq!(completion.progress, Progress::FailedPluginUnavailable);
     assert_eq!(queried.state.revision, revision);
+    let close_safety = || {
+        let mut event = submit(Request::QueryDeviceAutomationCloseSafety { request_id: 913 });
+        assert!(event.error.is_none());
+        assert!(event.plugin_parameter_observation);
+        let completion = event.device_automation_take_complete.take().unwrap();
+        assert_eq!(completion.request_id, 913);
+        completion.progress
+    };
+    assert_eq!(close_safety(), Progress::CloseSafe);
     let scope = || {
         let armed = submit(Request::ArmNativeParameterRecording {
             project_generation: 0,
@@ -188,6 +197,7 @@ fn successive_native_takes_keep_the_arm_and_refusals_keep_the_recovery_file() {
         };
     let record = |scope, frame| {
         assert_eq!(send(scope, Action::Begin).1, Progress::Started);
+        assert_eq!(close_safety(), Progress::CloseBlocked);
         let value = NativeTransientValue::HostOutputGain(HostGain::from_normalized(0.25).unwrap());
         let points = Arc::from([(
             1,
@@ -226,6 +236,7 @@ fn successive_native_takes_keep_the_arm_and_refusals_keep_the_recovery_file() {
         Progress::Sealing
     );
     let (aborted, result) = wait(initial_scope);
+    assert_eq!(close_safety(), Progress::CloseSafe);
     let Progress::Retained(path) = result else {
         panic!("{:?}", aborted.error)
     };
