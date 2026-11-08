@@ -211,18 +211,22 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/mixer.rs'
             and suffix.startswith(('super::track_meters::render(', 'toggle_button_with_style('))
         )
-        # These typed clip/backdrop components emit no direct captions. Name
-        # text and its input are still checked at clip_name's own boundary.
+        # Typed clip/backdrop and passive-title components route captions and
+        # rename input through clip_name's own checked boundary.
         header_mixer_component = header_mixer_component or (
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/tracks.rs'
-            and suffix.startswith('framed_clip)')
+            and suffix.startswith(('framed_clip)', 'super::clip_name::passive_name_header('))
         ) or (
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/clip_boundary.rs'
-            and suffix.startswith(('paint)', 'trailing_edge(', 'body.absolute('))
+            and suffix.startswith(('paint)', 'trailing_edge('))
+        )
+        header_mixer_component = header_mixer_component or (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/browser.rs'
+            and suffix.startswith('super::clip_name::passive_name_header(')
         )
         header_mixer_component = header_mixer_component or (
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/clip_border_ui_test.rs'
-            and suffix.startswith('super::pixel_boundary_shell(')
+            and suffix.startswith('super::pixel_backdrop_shell(')
         )
         # Track meters compose a text-free shared gauge and its rendered fixture.
         # Tooltip text still passes through MiniTooltip's theme::text boundary.
