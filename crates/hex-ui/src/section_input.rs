@@ -1,5 +1,4 @@
 //! Section header/body routing; hosts retain capture, selection and edit custody.
-use hex_widgets::RangeSelectionZones;
 
 /// An edge wins anywhere in the lane. With no edge, the lower body belongs to
 /// the time-range owner, except a double press in empty space starts painting.
@@ -12,10 +11,18 @@ pub(crate) fn routes_to_time_range(
     height: f32,
     minimum_header: f32,
 ) -> Option<bool> {
-    if !y.is_finite() || !top.is_finite() {
+    if !y.is_finite()
+        || !top.is_finite()
+        || !height.is_finite()
+        || height <= 0.0
+        || !minimum_header.is_finite()
+        || minimum_header < 0.0
+    {
         return None;
     }
-    let boundary = top + RangeSelectionZones::new(height, minimum_header)?.handle_height();
+    // Match the compact fixed-height painted header; increasing Main's
+    // height grows the selection body rather than its reorder hit target.
+    let boundary = top + minimum_header.min(height);
     boundary
         .is_finite()
         .then_some(!edge && !paint_empty && y >= boundary)
@@ -28,11 +35,11 @@ mod tests {
     #[test]
     fn body_starts_at_the_header_boundary_and_edges_win() {
         assert_eq!(
-            routes_to_time_range(false, false, 33.9, 10.0, 72.0, 14.0),
+            routes_to_time_range(false, false, 23.9, 10.0, 72.0, 14.0),
             Some(false)
         );
         assert_eq!(
-            routes_to_time_range(false, false, 34.0, 10.0, 72.0, 14.0),
+            routes_to_time_range(false, false, 24.0, 10.0, 72.0, 14.0),
             Some(true)
         );
         assert_eq!(
