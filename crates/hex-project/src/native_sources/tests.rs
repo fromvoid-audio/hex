@@ -399,6 +399,24 @@ fn retained_devices_share_the_existing_project_device_budget() {
         Invalid("project device limit reached")
     );
     assert_eq!(candidate.snapshot(), before);
+    // Leave room in this source while keeping the global node budget full.
+    let mut full = project.snapshot();
+    let spare = full.native_sources[0].devices.pop().unwrap();
+    full.main_devices.push(spare);
+    let mut candidate = Editor::new(Project::from_snapshot(full).unwrap(), 1).unwrap();
+    let parent = candidate.project().native_sources()[0].instrument().id();
+    let before = candidate.project().snapshot();
+    assert_eq!(
+        candidate
+            .execute(Command::InsertNestedDevice {
+                parent,
+                state: default_instrument_state().unwrap(),
+            })
+            .unwrap_err(),
+        Invalid("project device limit reached")
+    );
+    assert_eq!(candidate.project().snapshot(), before);
+    assert!(!candidate.can_undo());
     let target = project.tracks()[0].id();
     let mut editor = Editor::new(project, 1).unwrap();
     let before = editor.project().clone();
