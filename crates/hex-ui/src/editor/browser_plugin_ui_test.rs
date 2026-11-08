@@ -42,6 +42,91 @@ fn original_plugin_catalog(path: std::path::PathBuf) -> hex_plugin_catalog::Cata
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[gpui::test]
+fn browser_result_rows_use_compact_native_text_and_keep_selected_hover(cx: &mut TestAppContext) {
+    use crate::theme;
+    cx.use_native_text_system().expect("native text shaping");
+    cx.update(|cx| {
+        theme::load_fonts(cx).expect("bundled ioskeley mono");
+        crate::editor::bind_editor_keys(cx);
+    });
+    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    wait_for_plugin_scan(&mut visual, &editor);
+    editor.update(&mut visual, |view, cx| {
+        view.browser.auto_audition = false;
+        view.apply_plugin_catalog(
+            original_plugin_catalog(directory.0.join("Original.vst3")),
+            cx,
+        );
+    });
+    let fill = theme::color(theme::PaletteRole::Secondary);
+    let ink = theme::readable_text(fill, theme::color(theme::PaletteRole::Background));
+    for (source, query, row, label, icon) in [
+        (
+            BrowserSection::All,
+            "loop",
+            "browser-entry-0",
+            "browser-entry-label-0",
+            Some("browser-file-icon-0"),
+        ),
+        (
+            BrowserSection::All,
+            "utility",
+            "browser-device-effect-hex.utility",
+            "browser-device-label-effect-hex.utility",
+            None,
+        ),
+        (
+            BrowserSection::Plugins,
+            "",
+            "browser-vst3-row-0",
+            "browser-vst3-name-0",
+            None,
+        ),
+    ] {
+        editor.update(&mut visual, |view, cx| {
+            view.select_browser_source(source.clone(), cx);
+            view.browser
+                .search
+                .update(cx, |input, cx| input.set_text(query, cx));
+            view.sync_browser_query(cx);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let bounds = visual.debug_bounds(row).expect("actual projected result");
+        assert_eq!(bounds.size.height, px(18.0));
+        visual.simulate_click(bounds.center(), Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_mouse_move(bounds.center(), None, Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            visual.rendered_background(row),
+            Some(gpui::Background::from(gpui::rgb(fill)))
+        );
+        assert!(
+            visual
+                .rendered_monochrome_colors(label)
+                .contains(&gpui::rgb(ink).into()),
+            "selected text: {label}"
+        );
+        let label_bounds = visual.debug_bounds(label).unwrap();
+        assert!(label_bounds.top() >= bounds.top() && label_bounds.bottom() <= bounds.bottom());
+        if let Some(icon) = icon {
+            assert!(
+                visual
+                    .rendered_monochrome_colors(icon)
+                    .contains(&gpui::rgb(ink).into())
+            );
+        }
+        editor.read_with(&visual, |view, _| {
+            assert!(view.pending_audio_commands.is_empty())
+        });
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[gpui::test]
 fn vst3_groups_are_visible_without_becoming_keyboard_items(cx: &mut TestAppContext) {
     use crate::editor::browser::BrowserItemKey;
     cx.update(crate::editor::bind_editor_keys);
