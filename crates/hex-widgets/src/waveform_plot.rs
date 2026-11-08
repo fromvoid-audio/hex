@@ -223,8 +223,9 @@ fn envelope_layer(geometry: &WaveformGeometry, scale: f32) -> Option<Bounds<Pixe
         return None;
     }
     let padded = |channel: &WaveformChannel| {
-        let padding = channel.trace_width * 0.5 + px(1.0 / scale);
-        channel.envelope_bounds.map(|bounds| bounds.dilate(padding))
+        channel
+            .envelope_bounds
+            .map(|bounds| bounds.dilate(px(1.0 / scale)))
     };
     disjoint_layer(padded(a)?, padded(b)?)
 }
