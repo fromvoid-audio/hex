@@ -256,6 +256,18 @@ before or after another section, or beside the source. changing option during th
 switches between moving and copying. the source stays in place when copying, and
 one undo restores the entire operation.
 
+with the section lane focused, select one section and press **command+c**, then click
+the lane to place the edit cursor and press **command+v**. paste inserts at the nearest
+section boundary before or within the song. after the last marker, it lands at the
+cursor and gives any intervening marker gap a new section. all tracks are copied,
+and one undo removes the whole paste. the section cursor keeps the snapping chosen
+when you clicked it; command+v does not invert the grid again.
+
+the section clipboard stays available after successful copies of the same section. place the
+cursor again for another paste. other project edits, undo or redo make the reference
+stale; copy the section again before pasting. opening another project clears it.
+right-click a section for **copy section** and **paste section at cursor**.
+
 section edits apply while playing. when an edit changes the tempo, a sampler's held
 notes or a device's latency, audio briefly restarts at the playhead: effect tails
 cut and sounding notes start again, and playback keeps running.
