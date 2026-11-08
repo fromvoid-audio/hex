@@ -495,6 +495,16 @@ fn browser_and_spectrum_share_columns_in_both_workspaces(cx: &mut TestAppContext
             let toolbar = visual.debug_bounds("editor-toolbar").unwrap();
             let browser = visual.debug_bounds("resize-browser-hit-region").unwrap();
             let spectrum = visual.debug_bounds("project-spectrum").unwrap();
+            let plot = visual.debug_bounds("project-spectrum-plot").unwrap();
+            assert_eq!(plot.top(), spectrum.top(), "no reserved title row");
+            let controls = visual.debug_bounds("project-spectrum-controls").unwrap();
+            assert_eq!(controls.top(), spectrum.top());
+            assert_eq!(controls.right(), spectrum.right());
+            assert!(controls.size.width < spectrum.size.width / 2.0);
+            for selector in ["project-spectrum-toggle", "sample-recorder-mode"] {
+                let control = visual.debug_bounds(selector).unwrap();
+                assert!(spectrum.contains(&control.center()));
+            }
             let status = visual.debug_bounds("editor-status-bar").unwrap();
             assert_eq!(browser.top(), toolbar.bottom());
             assert_eq!(spectrum.top(), browser.top());
