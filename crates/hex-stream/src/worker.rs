@@ -409,14 +409,18 @@ pub(crate) fn run_worker(
             continue;
         };
         #[cfg(feature = "test-support")]
-        if page_gate.as_ref().is_some_and(|gate| {
+        let read_failure_after = if let Some(gate) = page_gate.take_if(|gate| {
             key.source == StreamResourceKey::Audio(gate.key.source)
                 && key.page_index == gate.key.page_index
-        }) && let Some(gate) = page_gate.take()
-            && !gate.wait(&stop)
-        {
-            break;
-        }
+        }) {
+            let failure = gate.read_failure_after;
+            if !gate.wait(&stop) {
+                break;
+            }
+            failure
+        } else {
+            None
+        };
         if matches!(key.source, StreamResourceKey::Scalar(_)) && scalar_job.is_some() {
             if deferred_scalar.len() < deferred_scalar.capacity() {
                 deferred_scalar.push_back(key);
@@ -500,7 +504,11 @@ pub(crate) fn run_worker(
             continue;
         };
         let source = &mut sources[source_index];
-        match render_page(
+        #[cfg(feature = "test-support")]
+        if let Some(after) = read_failure_after {
+            source.reader.fail_page_read_after(after);
+        }
+        let rendered = render_page(
             source,
             PageKey {
                 source: audio_key,
@@ -513,7 +521,12 @@ pub(crate) fn run_worker(
             test_hooks
                 .as_ref()
                 .and_then(|hooks| hooks.read_gate.as_ref()),
-        ) {
+        );
+        #[cfg(feature = "test-support")]
+        if read_failure_after.is_some() {
+            source.reader.clear_page_read_failure();
+        }
+        match rendered {
             Ok(()) => {
                 match queues.ready.push(page) {
                     Ok(()) => {}
