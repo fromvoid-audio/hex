@@ -1505,6 +1505,9 @@ pub(super) fn request(value: &Request) -> Description {
         Request::QueryFailedPluginAutomation { request_id } => {
             describe!("query_failed_plugin_automation"; ["request_id" => request_id]; omitted="none")
         }
+        Request::QueryDeviceAutomationCloseSafety { request_id } => {
+            describe!("query_device_automation_close_safety"; ["request_id" => request_id]; omitted="none")
+        }
         Request::RecoverDeviceAutomationTake {
             request_id,
             context,

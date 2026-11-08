@@ -248,6 +248,9 @@ fn snapshot(operation: PluginGesturePreparation) -> GestureSnapshot {
     }
 }
 impl State {
+    pub(super) fn close_safe(&self) -> bool {
+        self.active.is_none() && self.failed.is_none() && self.terminal.is_none()
+    }
     /// Copy the bounded receipts only after the original gesture is quiescent.
     /// The owner retains every original; an empty result never clears custody.
     pub(super) fn failed_observations(

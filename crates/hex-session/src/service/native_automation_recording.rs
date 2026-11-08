@@ -176,6 +176,10 @@ pub enum DeviceAutomationTakeProgress {
         scope: Box<DeviceAutomationTakeScope>,
         path: PathBuf,
     },
+    /// An ordered observation found no device automation custody.
+    CloseSafe,
+    /// Device automation custody is active, retained or being copied.
+    CloseBlocked,
     Retained(PathBuf),
     VerifiedCopy {
         path: PathBuf,
@@ -255,6 +259,9 @@ pub(super) enum Step {
 }
 
 impl Lane {
+    pub(super) fn close_safe(&self) -> bool {
+        self.active.is_none() && self.failed.is_none() && self.copy_destination.is_none()
+    }
     pub(super) fn failed_plugin_identity(&self) -> Option<(DeviceAutomationTakeScope, &Path)> {
         let failed = self.failed.as_ref()?;
         matches!(failed.scope.target, DeviceCaptureTarget::Vst3(_))
