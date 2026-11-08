@@ -76,6 +76,24 @@ pub(super) fn start_failed_copy(
     lane.copy_failed_plugin(scope, destination, max_events, observations)
 }
 
+pub(super) fn generic_sealed_recovery_idle(state: &State, lane: &Lane) -> bool {
+    !state.pending() && state.failed.is_none() && !lane.busy() && !lane.has_failed_custody()
+}
+
+pub(super) fn inspect_failed_copy(
+    state: &State,
+    lane: &Lane,
+    scope: DeviceAutomationTakeScope,
+    gesture_active: bool,
+) -> Result<Step, String> {
+    if gesture_active {
+        return Err("vst3 recovery requires a quiescent gesture".into());
+    }
+    let source = lane.failed_source(scope)?;
+    let observations = state.failed_observations(scope, source)?;
+    lane.inspect_failed_plugin_copy(scope, &observations)
+}
+
 fn snapshot(operation: PluginGesturePreparation) -> GestureSnapshot {
     match operation {
         PluginGesturePreparation::Begin { snapshot, .. }

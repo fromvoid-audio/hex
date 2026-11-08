@@ -118,6 +118,7 @@ mod clip_fragment;
 mod conversion;
 mod device;
 mod device_automation;
+mod device_inventory;
 pub use device_automation::{
     AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
     DeviceAutomation, DeviceAutomationReplacement, DeviceAutomationTarget,
@@ -1030,15 +1031,6 @@ impl Project {
             .iter_mut()
             .find(|t| t.id == id)
             .ok_or(Invalid("track no longer exists"))
-    }
-    pub fn device(&self, id: DeviceId) -> Option<&Device> {
-        self.tracks
-            .iter()
-            .flat_map(|t| t.devices())
-            .chain(self.returns.iter().flat_map(|t| t.devices()))
-            .chain(self.main_devices())
-            .chain(self.native_sources.iter().flat_map(|s| s.devices()))
-            .find(|d| d.id() == id)
     }
     /// Mutate authored device state at its canonical owner; a retained source
     /// update replaces every immutable binding only after the edit succeeds.
