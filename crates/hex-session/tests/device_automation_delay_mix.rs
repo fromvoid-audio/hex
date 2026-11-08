@@ -19,6 +19,11 @@ fn event(service: &Service) -> Event {
 }
 #[test]
 fn delay_feedback_lane_edits_preserve_base_value_history_and_refuse_stale_requests() {
+    for parameter in [2, 16, 17] {
+        lane_case(parameter);
+    }
+}
+fn lane_case(raw_parameter: u32) {
     let service = Service::new(48000, 16, 0).unwrap();
     event(&service);
     service
@@ -41,7 +46,7 @@ fn delay_feedback_lane_edits_preserve_base_value_history_and_refuse_stale_reques
     let Created::Device(device) = added.created.unwrap() else {
         panic!("device")
     };
-    let parameter = ParameterId::new(2).unwrap();
+    let parameter = ParameterId::new(raw_parameter).unwrap();
     let points = vec![AutomationPoint {
         beat: BeatTime::ZERO,
         value: AutomationValue::new(0.8 / 0.95).unwrap(),

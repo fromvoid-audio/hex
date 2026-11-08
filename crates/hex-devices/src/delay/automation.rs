@@ -1,4 +1,4 @@
-//! Shared feedback/mix targets live in the owned committed/speculative scalar.
+//! Shared feedback, mix and filter targets live in the owned committed/speculative scalar.
 //! Admission/base stay with the incoming factory; cached targets follow history.
 //! Rollback restores both DSP and control caches. Missing views use canonical
 //! targets; detached tails keep their last targets and existing Freeze release.
@@ -8,17 +8,21 @@ use hex_lattice_contract::{
     ParameterDescriptor, ParameterId, ParameterSemantics, ParameterSmoothing,
 };
 
-pub(super) const COUNT: usize = 2;
+pub(super) const COUNT: usize = 4;
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct Mix {
+pub(super) struct ControlValues {
     pub feedback: f32,
     pub mix: f32,
+    pub frequency: f32,
+    pub width: f32,
 }
-impl Mix {
+impl ControlValues {
     pub(super) fn new(settings: Settings) -> Self {
         Self {
             feedback: settings.value(FEEDBACK),
             mix: settings.value(DRY_WET),
+            frequency: settings.value(FREQUENCY),
+            width: settings.value(WIDTH),
         }
     }
 }
@@ -26,7 +30,7 @@ const SEMANTICS: ParameterSemantics = ParameterSemantics {
     smoothing: ParameterSmoothing::DeviceManaged,
     ..SCALAR_ENVELOPE
 };
-pub(super) const BINDINGS: [Binding<Mix>; COUNT] = [
+pub(super) const BINDINGS: [Binding<ControlValues>; COUNT] = [
     Binding::float(
         state::DESCRIPTORS[1],
         SEMANTICS,
@@ -38,6 +42,21 @@ pub(super) const BINDINGS: [Binding<Mix>; COUNT] = [
         SEMANTICS,
         |s| s.mix,
         |s, v| s.mix = v,
+    ),
+    Binding::float(
+        state::DESCRIPTORS[15],
+        ParameterSemantics {
+            normalization: hex_lattice_contract::ParameterNormalization::PositiveLogarithmic,
+            ..SEMANTICS
+        },
+        |s| s.frequency,
+        |s, v| s.frequency = v,
+    ),
+    Binding::float(
+        state::DESCRIPTORS[16],
+        SEMANTICS,
+        |s| s.width,
+        |s, v| s.width = v,
     ),
 ];
 pub(super) fn slot(id: ParameterId) -> Option<usize> {
@@ -356,6 +375,205 @@ mod tests {
         assert!((out[0][0] - (0.25 * (1.0 - m)) as f32).abs() < 1e-7);
         fork.reset();
         assert!(fork.committed_is_quiescent());
+    }
+    struct FilterValues {
+        start: usize,
+        held: Option<[f32; 2]>,
+        bad: bool,
+        missing: bool,
+    }
+    impl NativeParameterAutomation for FilterValues {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            &[FEEDBACK, DRY_WET, FREQUENCY, WIDTH]
+        }
+        fn value_at(&self, id: ParameterId, offset: usize) -> Option<ParameterValue> {
+            if self.missing {
+                return None;
+            }
+            let i = self.start + offset;
+            if self.bad && i == 17 && id == FREQUENCY {
+                return Some(ParameterValue::Float(f32::NAN));
+            }
+            let pair = self
+                .held
+                .unwrap_or([100.0 + (i % 29) as f32 * 100.0, 0.5 + (i % 17) as f32 * 0.5]);
+            Some(ParameterValue::Float(if id == FEEDBACK {
+                0.7
+            } else if id == DRY_WET {
+                0.8
+            } else if id == FREQUENCY {
+                pair[0]
+            } else {
+                pair[1]
+            }))
+        }
+    }
+    fn filtered(frequency: f32, width: f32) -> NativeDeviceState {
+        let mut s = decode(&state(0.5, 0.4)).unwrap();
+        s.set(FILTER, 1.0);
+        s.set(FREQUENCY, frequency);
+        s.set(WIDTH, width);
+        state::encode(s).unwrap()
+    }
+    fn filter_values(held: Option<[f32; 2]>) -> FilterValues {
+        FilterValues {
+            start: 0,
+            held,
+            bad: false,
+            missing: false,
+        }
+    }
+    fn filter_render(
+        rt: &mut dyn OwnedProcessorRuntime,
+        input: &[StereoFrame],
+        v: &mut FilterValues,
+        width: usize,
+    ) -> Vec<StereoFrame> {
+        let mut out = input.to_vec();
+        for (i, block) in out.chunks_mut(width).enumerate() {
+            v.start = i * width;
+            rt.begin_block();
+            rt.process_block_with_automation(block, None, v, &R)
+                .unwrap();
+            rt.commit_block();
+        }
+        out
+    }
+    #[test]
+    fn filter_targets_match_canonical_edits_and_missing_views_restore_incoming_base() {
+        let ids = [FEEDBACK, DRY_WET, FREQUENCY, WIDTH];
+        for rate in [8000, 96000] {
+            let base = filtered(500.0, 8.0);
+            let mut old = runtime(&base, rate, None);
+            plain(old.as_mut(), &signal(257));
+            let mut a = runtime(&base, rate, Some(&ids));
+            a.inherit_from(old.as_ref());
+            let mut target = decode(&filtered(2500.0, 1.0)).unwrap();
+            target.set(FEEDBACK, 0.7);
+            target.set(DRY_WET, 0.8);
+            let target = state::encode(target).unwrap();
+            let mut expected = runtime(&target, rate, None);
+            expected.inherit_from(old.as_ref());
+            let input = signal(1024);
+            assert_eq!(
+                filter_render(
+                    a.as_mut(),
+                    &input,
+                    &mut filter_values(Some([2500.0, 1.0])),
+                    13
+                ),
+                plain(expected.as_mut(), &input)
+            );
+            let changed = filtered(150.0, 4.0);
+            let mut b = runtime(&changed, rate, Some(&ids));
+            b.inherit_from(a.as_ref());
+            let mut stable = runtime(&base, rate, Some(&ids));
+            stable.inherit_from(a.as_ref());
+            assert_eq!(
+                filter_render(
+                    b.as_mut(),
+                    &signal(31),
+                    &mut filter_values(Some([2500.0, 1.0])),
+                    31
+                ),
+                filter_render(
+                    stable.as_mut(),
+                    &signal(31),
+                    &mut filter_values(Some([2500.0, 1.0])),
+                    13
+                )
+            );
+            let mut missing = filter_values(None);
+            missing.missing = true;
+            let mut fallback = runtime(&changed, rate, None);
+            fallback.inherit_from(b.as_ref());
+            assert_eq!(
+                filter_render(b.as_mut(), &input, &mut missing, 13),
+                plain(fallback.as_mut(), &input)
+            );
+            b.reset();
+            let mut fresh = runtime(&changed, rate, Some(&ids));
+            assert_eq!(
+                filter_render(b.as_mut(), &input, &mut filter_values(None), 13),
+                filter_render(fresh.as_mut(), &input, &mut filter_values(None), 1024)
+            );
+        }
+    }
+    #[test]
+    fn dense_filter_targets_follow_canonical_ramps_and_transaction_history() {
+        let ids = [FEEDBACK, DRY_WET, FREQUENCY, WIDTH];
+        let rate = 8000;
+        let base = filtered(500.0, 8.0);
+        let input = signal(257);
+        let mut whole = runtime(&base, rate, Some(&ids));
+        let mut split = runtime(&base, rate, Some(&ids));
+        let out = filter_render(whole.as_mut(), &input, &mut filter_values(None), 257);
+        assert_eq!(
+            out,
+            filter_render(split.as_mut(), &input, &mut filter_values(None), 13)
+        );
+        let mut oracle = runtime(&base, rate, None);
+        let values = filter_values(None);
+        for (i, frame) in input[..65].iter().enumerate() {
+            let mut state = decode(&base).unwrap();
+            for id in ids {
+                let Some(ParameterValue::Float(v)) = values.value_at(id, i) else {
+                    panic!("float")
+                };
+                state.set(id, v);
+            }
+            let mut next = runtime(&state::encode(state).unwrap(), rate, None);
+            next.inherit_from(oracle.as_ref());
+            assert_eq!(plain(next.as_mut(), &[*frame])[0], out[i], "frame {i}");
+            oracle = next;
+        }
+        let mut bad = filter_values(None);
+        bad.bad = true;
+        whole.begin_block();
+        assert!(
+            whole
+                .process_block_with_automation(&mut signal(31), None, &bad, &R)
+                .is_err()
+        );
+        whole.rollback_block();
+        assert_eq!(
+            filter_render(whole.as_mut(), &input, &mut filter_values(None), 257),
+            filter_render(split.as_mut(), &input, &mut filter_values(None), 13)
+        );
+        let mut donated = runtime(&base, rate, Some(&ids));
+        donated.transfer_history_from(whole.as_mut());
+        assert!(whole.committed_is_quiescent());
+        let mut live = runtime(&base, rate, Some(&ids));
+        live.inherit_from(donated.as_ref());
+        let mut dry = signal(31);
+        let original = dry.clone();
+        donated.begin_block();
+        donated
+            .process_bypassed_block_with_automation(
+                &mut dry,
+                None,
+                &filter_values(Some([300.0, 2.0])),
+                &R,
+            )
+            .unwrap();
+        donated.commit_block();
+        assert_eq!(dry, original);
+        filter_render(
+            live.as_mut(),
+            &original,
+            &mut filter_values(Some([300.0, 2.0])),
+            31,
+        );
+        donated.begin_output_tail();
+        assert_eq!(
+            plain(donated.as_mut(), &[[0.0; 2]; 257]),
+            filter_render(
+                live.as_mut(),
+                &[[0.0; 2]; 257],
+                &mut filter_values(Some([300.0, 2.0])),
+                13
+            )
+        );
     }
     #[test]
     #[ignore = "release-only targeted delivery microbenchmark"]
