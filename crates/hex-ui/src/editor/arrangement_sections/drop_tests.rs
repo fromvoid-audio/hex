@@ -149,3 +149,72 @@ fn drop_feedback_switches_edges_body_self_marker_only_and_cancel(cx: &mut TestAp
         assert!(v.sections.pending.is_none());
     });
 }
+
+#[gpui::test]
+fn queued_tempo_completion_keeps_drop_feedback_frozen_until_exact_refusal(cx: &mut TestAppContext) {
+    let (handle, editor, _) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.update(cx, |v, cx| {
+        v.viewport = Some(v.visible_viewport(v.state.as_ref().unwrap().timeline_frames));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let (from, to) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 10)));
+    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let frozen = visual.debug_bounds("section-drop-replace").unwrap();
+    editor.update(cx, |v, _| {
+        let g = v.sections.gesture.take().unwrap();
+        let mut receipt = Receipt::new(v.project_generation);
+        assert!(receipt.submitted(2));
+        v.sections.pending = Some(Pending {
+            generation: v.project_generation,
+            revision: g.revision,
+            command: g.command.unwrap(),
+            display: g.display,
+            layout: None,
+            receipt,
+            selection_intent_epoch: v.selection_intent_epoch,
+        });
+        v.worker_requests_pending = 2;
+    });
+    let (earlier, terminal) = editor.update(cx, |v, _| {
+        v.service
+            .submit(Request::Edit(Command::SetProjectTempo {
+                tempo: hex_project::Tempo::from_bpm(60).unwrap(),
+            }))
+            .unwrap();
+        let earlier = next(&v.service);
+        assert!(earlier.error.is_none());
+        let p = v.sections.pending.as_ref().unwrap();
+        v.service
+            .submit(Request::EditArrangementSection {
+                project_generation: p.generation,
+                revision: p.revision,
+                command: p.command.clone(),
+            })
+            .unwrap();
+        let terminal = next(&v.service);
+        assert!(terminal.error.is_some());
+        (earlier, terminal)
+    });
+    editor.update(cx, |v, cx| {
+        v.receive(earlier);
+        assert!(v.sections.pending.is_some());
+        cx.notify();
+    });
+    for _ in 0..3 {
+        visual.update(|w, _| w.refresh());
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds("section-drop-replace").unwrap(), frozen);
+    }
+    editor.update(cx, |v, cx| {
+        v.receive(terminal);
+        assert!(v.sections.pending.is_none());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("section-drop-replace").is_none());
+}
