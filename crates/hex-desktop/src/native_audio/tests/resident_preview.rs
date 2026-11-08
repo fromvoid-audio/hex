@@ -233,8 +233,10 @@ impl WorkerAudioSink for ResidentSink {
         hex_session::service::PluginParameterGestureError,
     > {
         use hex_session::device_gesture::PluginGesturePreparation;
-        let confirm = std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").as_deref()
-            == Ok("delivery")
+        let retire = std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").as_deref()
+            == Ok("delivery_retire");
+        let confirm = (retire
+            || std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").as_deref() == Ok("delivery"))
             && matches!(input.operation(), PluginGesturePreparation::Preview(_));
         let expected = match input.operation() {
             PluginGesturePreparation::Preview(snapshot) => Some(snapshot),
@@ -246,6 +248,10 @@ impl WorkerAudioSink for ResidentSink {
             input
         });
         if confirm {
+            if retire {
+                assert!(result.is_err());
+                self.inner.relinquish_output();
+            }
             let snapshot = expected.unwrap();
             while let Some(observation) = self.inner.take_plugin_parameter_observation() {
                 let hex_session::service::PluginParameterObservation::Delivered(point) =

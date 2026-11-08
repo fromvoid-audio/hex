@@ -142,7 +142,11 @@ impl Gesture {
         // The final-output witness and SDK mailbox ACK have separate custody.
         // Drain the ACK even if output was already confirmed, before Release
         // can reuse that mailbox. Retain an early witness while ACK is busy.
-        if !pending.sdk_finished {
+        #[cfg(all(test, feature = "allocation-probe"))]
+        let ack_ready = !pending.hold_sdk_ack;
+        #[cfg(not(all(test, feature = "allocation-probe")))]
+        let ack_ready = true;
+        if !pending.sdk_finished && ack_ready {
             match poll_input(control, self.binding, &pending.token) {
                 Ok(
                     NativeWorkerParameterProgress::Processed(_)

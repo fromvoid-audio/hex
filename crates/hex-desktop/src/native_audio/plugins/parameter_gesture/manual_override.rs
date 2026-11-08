@@ -239,6 +239,8 @@ impl Gesture {
                         delivery: None,
                         processed: false,
                         sdk_finished: false,
+                        #[cfg(all(test, feature = "allocation-probe"))]
+                        hold_sdk_ack: false,
                     })
                 }
                 Err(reason) if source_gone(reason) => live.discard = true,

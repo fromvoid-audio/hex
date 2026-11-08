@@ -658,6 +658,38 @@ fn instrument_gesture_points_are_confirmed_at_final_output() {
     }
 }
 
+#[test]
+#[ignore = "explicit source-bound signed SDK receipts required"]
+fn confirmed_point_survives_output_close_while_sdk_ack_is_pending() {
+    const CASE: &str = "HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE";
+    if std::env::var_os(CASE).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(CASE, "delivery_retire")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
+    instrument_entrypoint(InstrumentWorkflow::Takeover);
+    if std::env::var_os("HEX_DESKTOP_TEST_INSTRUMENT_CHILD").is_some() {
+        assert!(
+            crate::native_audio::tests::resident_preview::CONFIRMED_TEST_POINTS.load(Acquire) > 0
+        );
+    }
+}
+
 #[derive(Clone, Copy)]
 enum InstrumentWorkflow {
     Playback,
@@ -1732,7 +1764,16 @@ fn verify_instrument_takeover(
         client
             .change_plugin(PluginParameterValue::new(0.75).unwrap())
             .unwrap();
-        assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
+        assert_eq!(
+            send(h, &mut client, case != "delivery_retire")
+                .state
+                .project
+                .as_ref(),
+            &before
+        );
+        if case == "delivery_retire" {
+            return;
+        }
         if playing {
             assert!(
                 (peak(h) - baseline * 3.0).abs() < 0.0001,

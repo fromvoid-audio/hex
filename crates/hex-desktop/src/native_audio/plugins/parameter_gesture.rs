@@ -35,6 +35,8 @@ struct PendingPoint {
     delivery: Option<delivery::PendingDelivery>,
     processed: bool,
     sdk_finished: bool,
+    #[cfg(all(test, feature = "allocation-probe"))]
+    hold_sdk_ack: bool,
 }
 
 pub(super) struct Gesture {
@@ -588,6 +590,9 @@ impl Gesture {
                 delivery,
                 processed: false,
                 sdk_finished: false,
+                #[cfg(all(test, feature = "allocation-probe"))]
+                hold_sdk_ack: std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").as_deref()
+                    == Ok("delivery_retire"),
             });
             self.drain_point(control)?;
         }
