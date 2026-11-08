@@ -2039,6 +2039,22 @@ mod tests {
             RectangleDemo::new(Kind::Section, "section-reorder-pointer".into(), cx)
         });
         let view = handle.root(cx).unwrap();
+        // Preserve the float/frame insertion-tie regression in a true gap;
+        // the old midpoint inside the second section now means replacement.
+        view.update(cx, |view, cx| {
+            let fixture = view.section_fixture.as_mut().unwrap();
+            let id = fixture.project().arrangement_sections()[1].id();
+            fixture
+                .commit(Command::SetArrangementSectionRange {
+                    section: id,
+                    start: BeatTime::from_quarters(9).unwrap(),
+                    end: BeatTime::from_quarters(10).unwrap(),
+                })
+                .unwrap();
+            view.canonical = fixture.display();
+            view.preview = view.canonical.clone();
+            cx.notify();
+        });
         let mut visual = VisualTestContext::from_window(*handle, cx);
         visual.update(|window, _| window.activate_window());
         visual.run_until_parked();
