@@ -435,7 +435,10 @@ pub(super) fn aligned_clip_grid_layer(
     has_border: bool,
 ) -> Option<Div> {
     clip_grid_layer_impl(lines, start, end, Some(stroke)).map(|grid| {
-        grid.left(px(if has_border { -stroke } else { 0.0 }))
+        // The title content is transparent on a shared backdrop. Restrict
+        // timeline strokes to the body instead of relying on an opaque title.
+        grid.top(px(super::clip_name::CLIP_NAME_HEIGHT))
+            .left(px(if has_border { -stroke } else { 0.0 }))
             .right_0()
     })
 }
@@ -3563,6 +3566,72 @@ mod overlap_tests {
     use super::*;
     use crate::editor::clip_drag_ui_test::{audio_project, editor_window};
     use hex_project::{Command, Editor};
+
+    #[gpui::test]
+    fn audio_and_midi_grid_paint_stays_below_titles_on_shared_lane_columns(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (project, track, _, audio) = audio_project();
+        let asset = project.clip(audio).unwrap().asset();
+        let mut canonical = Editor::new(project, 16).unwrap();
+        let hex_project::Created::Clip(midi) = canonical
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::from_quarters(4).unwrap(),
+                length: BeatTime::from_quarters(4).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("midi clip")
+        };
+        let media = std::collections::BTreeMap::from([(
+            asset,
+            hex_engine::Audio::new(48_000, vec![[0.0; 2]; 96_000]).unwrap(),
+        )]);
+        let (_, preview) =
+            hex_engine::compile::project_with_midi_preview(canonical.project(), &media).unwrap();
+        let (handle, editor) = editor_window(
+            cx,
+            canonical.project().clone(),
+            std::sync::Arc::new(preview),
+        );
+        let mut visual = gpui::VisualTestContext::from_window(handle, cx);
+        editor.update(&mut visual, |view, cx| {
+            view.viewport = Some(Viewport {
+                start: 0,
+                length: 192_000,
+            });
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let scale = visual.update(|window, _| window.scale_factor());
+        for (clip, frame) in [(audio, 48_000), (midi, 144_000)] {
+            let selector =
+                |prefix| Box::leak(format!("{prefix}-{frame}").into_boxed_str()) as &'static str;
+            let header = Box::leak(format!("clip-name-{}", clip.value()).into_boxed_str());
+            let header = visual.debug_bounds(header).unwrap().scale(scale);
+            let grid_selector = selector("clip-grid-line");
+            let grid = visual.debug_bounds(grid_selector).unwrap().scale(scale);
+            let lane = visual
+                .debug_bounds(selector("arrangement-grid-line"))
+                .unwrap()
+                .scale(scale);
+            assert!(
+                grid.top() >= header.bottom(),
+                "grid paint must not cross the transparent title or its corner cut"
+            );
+            assert_eq!(
+                grid.left(),
+                lane.left(),
+                "body restriction preserves physical timeline columns"
+            );
+            assert_eq!(f64::from(grid.size.width), 1.0);
+            assert!(
+                visual.rendered_surface_geometry(grid_selector).is_some(),
+                "actual completed scene contains the grid stroke"
+            );
+        }
+    }
 
     struct ThumbnailOracle(hex_project::ClipId);
     impl gpui::Render for ThumbnailOracle {
