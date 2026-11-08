@@ -278,7 +278,10 @@ impl ChainCustody {
             return Err(AudioStorageError::UnknownStorage);
         }
         let mut admission = StereoMatrix::identity();
-        for device in devices {
+        for entry in crate::serial_effect_power::EffectPower::new(devices)
+            .map_err(|_| AudioStorageError::UnsupportedGraph)?
+        {
+            let (device, bypassed) = entry.map_err(|_| AudioStorageError::UnsupportedGraph)?;
             let mut automation = if let Some(effects) = effects {
                 crate::device_automation::prepare_closed_effect(device, effects, native_input)
             } else if native_input.is_some() {
@@ -383,7 +386,7 @@ impl ChainCustody {
             let automation_bytes = automation
                 .storage_bytes()
                 .ok_or(AudioStorageError::Overflow)?;
-            let matrix = if device.bypassed()
+            let matrix = if bypassed
                 || !native
                 || !automation.parameter_ids().is_empty()
                 || saturator
@@ -402,7 +405,7 @@ impl ChainCustody {
             admission = admission
                 .then(matrix)
                 .map_err(|_| AudioStorageError::UnsupportedGraph)?;
-            if !device.bypassed() {
+            if !bypassed {
                 let gain = migrated.input_gain_linear() * migrated.output_gain_linear();
                 let trim = StereoMatrix::new([[gain, 0.0], [0.0, gain]])
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?;
@@ -502,7 +505,7 @@ impl ChainCustody {
                 device_id: device.id().value(),
                 device_type: migrated_type,
                 matrix,
-                bypassed: device.bypassed(),
+                bypassed,
                 sample_rate: rate,
                 configuration: Some(configuration),
                 definition: foreign
@@ -704,6 +707,58 @@ fn copy_state(
 mod tests {
     use crate::audio_preparation::*;
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    #[test]
+    fn serial_parent_power_reaches_prepared_flags_and_matrices_without_mutating_authored_state() {
+        use hex_project::{Command, Created, Editor, Project};
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "chain".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let definition = &hex_devices::utility::UTILITY_DEFINITION;
+        let state = definition
+            .patch_parameter(
+                &definition.default_state().unwrap(),
+                hex_devices::utility::parameter::GAIN,
+                ParameterValue::Float(2.0),
+            )
+            .unwrap();
+        for _ in 0..3 {
+            editor
+                .execute(Command::InsertDevice {
+                    track,
+                    before: None,
+                    state: state.clone(),
+                })
+                .unwrap();
+        }
+        let mut snapshot = editor.project().snapshot();
+        snapshot.tracks[0].devices[1].parent = Some(snapshot.tracks[0].devices[0].id);
+        snapshot.tracks[0].devices[0].bypassed = true;
+        let project = Project::from_snapshot(snapshot).unwrap();
+        let authored = project.snapshot();
+        let devices = project.track(track).unwrap().devices();
+        let mut custody = super::ChainCustody::default();
+        let prepared = custody.prepare(devices, track, 48_000).unwrap();
+        assert_eq!(
+            prepared.iter().map(|d| d.bypassed).collect::<Vec<_>>(),
+            [true, true, false]
+        );
+        assert_eq!(prepared[0].matrix, hex_lattice::StereoMatrix::identity());
+        assert_eq!(prepared[1].matrix, hex_lattice::StereoMatrix::identity());
+        assert_ne!(prepared[2].matrix, hex_lattice::StereoMatrix::identity());
+        assert_eq!(
+            prepared.iter().map(|d| d.device_id).collect::<Vec<_>>(),
+            devices.iter().map(|d| d.id().value()).collect::<Vec<_>>()
+        );
+        assert!(!devices[1].bypassed());
+        assert_eq!(project.snapshot(), authored);
+        custody.bytes(&prepared).unwrap();
+    }
     #[test]
     fn reverb_feedback_live_input_uses_scoped_closed_factory_and_tail_quote() {
         use hex_devices::reverb::{REVERB_DEFINITION as D, parameter as p};
