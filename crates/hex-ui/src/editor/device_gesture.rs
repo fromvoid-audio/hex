@@ -212,6 +212,19 @@ impl EditorView {
         ack: &hex_session::device_gesture::GestureAck,
         snapshot: Option<hex_session::device_gesture::GestureSnapshot>,
     ) -> bool {
+        let committed_plugin = (ack.phase == GesturePhase::Commit
+            && ack.accepted
+            && !ack.preview_retained
+            && !ack.source_lost)
+            .then(|| {
+                let active = self.device_gesture.snapshot()?;
+                (active.key == ack.key
+                    && active.sequence == ack.sequence
+                    && active.plugin_value.is_some()
+                    && self.device_gesture.terminal() == Some((GesturePhase::Commit, ack.sequence)))
+                .then_some(active)
+            })
+            .flatten();
         let terminal =
             matches!(ack.phase, GesturePhase::Commit | GesturePhase::Cancel) || ack.source_lost;
         let plugin = self.device_gesture.snapshot().is_some_and(|active| {
@@ -223,6 +236,9 @@ impl EditorView {
                 "effect insertion canceled · device acknowledgment did not match",
             );
             return false;
+        }
+        if let Some(snapshot) = committed_plugin {
+            self.accept_touched_vst3_commit(snapshot);
         }
         if plugin
             && !ack.preview_retained

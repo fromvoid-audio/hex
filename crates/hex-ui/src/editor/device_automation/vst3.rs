@@ -68,6 +68,9 @@ impl EditorView {
         let lanes = &mut self.automation_view.devices;
         lanes.main.retain(|old| old.target.owner != owner);
         lanes.main.push(entry.clone());
+        for extra in lanes.extra.iter_mut().filter(|extra| extra.target == target) {
+            *extra = entry.clone();
+        }
         if let Some(known) = lanes.known.iter_mut().find(|old| old.target == target) {
             *known = entry;
         } else {
@@ -79,6 +82,53 @@ impl EditorView {
         }
         cx.notify();
         true
+    }
+
+    /// Install an accepted plugin commit into existing transient lane entries.
+    /// It never adds or changes authored automation points.
+    pub(in crate::editor) fn accept_touched_vst3_commit(
+        &mut self,
+        snapshot: hex_session::device_gesture::GestureSnapshot,
+    ) -> bool {
+        let hex_session::device_gesture::GestureTarget::PluginParameter { device, parameter } =
+            snapshot.target
+        else {
+            return false;
+        };
+        if snapshot.key.generation != self.project_generation {
+            return false;
+        }
+        let Some(value) = snapshot.plugin_value else {
+            return false;
+        };
+        let Ok(base) = AutomationValue::new(value.normalized() as f32) else {
+            return false;
+        };
+        let Some(project) = self.state.as_ref().map(|state| &state.project) else {
+            return false;
+        };
+        let mut updated = false;
+        for entry in self
+            .automation_view
+            .devices
+            .main
+            .iter_mut()
+            .chain(self.automation_view.devices.extra.iter_mut())
+            .chain(self.automation_view.devices.known.iter_mut())
+        {
+            if entry.target.generation == snapshot.key.generation
+                && entry.target.device == device
+                && entry.target.kind == (DeviceAutomationTarget::Vst3 { parameter })
+                && entry
+                    .target
+                    .identity_current(project, self.project_generation)
+                    .is_some()
+            {
+                entry.base = base.get();
+                updated = true;
+            }
+        }
+        updated
     }
 
     #[cfg(feature = "ui-test-support")]
