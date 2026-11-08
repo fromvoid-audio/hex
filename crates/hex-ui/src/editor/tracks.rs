@@ -683,6 +683,14 @@ impl EditorView {
                     let pixel_width = self.drag_lanes.get(&track_id).map_or(0.0, |lane| {
                         super::trim::rendered_clip_width(lane.width, width)
                     });
+                    let has_border = hex_widgets::rectangle_border_width(pixel_width) > 0.0;
+                    let fill = theme::clip_activity_fill(
+                        track.color(),
+                        clip.flavor(),
+                        false,
+                        clip.active(),
+                    );
+                    let notched = has_border && visible_end == end;
                     let mut overlay =
                         hex_widgets::rectangle_surface(left as f32, width as f32, pixel_width)
                             .left_0()
@@ -702,12 +710,12 @@ impl EditorView {
                             } else {
                                 theme::color(theme::PaletteRole::ClipOutline)
                             }))
-                            .bg(rgb(theme::clip_activity_fill(
-                                track.color(),
-                                clip.flavor(),
-                                false,
-                                clip.active(),
-                            )))
+                            .bg(rgb(fill))
+                            .when(has_border, |overlay| {
+                                overlay
+                                    .bg(gpui::transparent_black())
+                                    .border_color(gpui::transparent_black())
+                            })
                             .children(
                                 aligned_clip_grid_layer(
                                     grid,
@@ -745,6 +753,9 @@ impl EditorView {
                         track_id,
                         clip.id(),
                         clip.name(),
+                        fill,
+                        has_border,
+                        notched,
                         cx,
                     ));
                     overlay = overlay.when(looping, |overlay| {
@@ -761,22 +772,47 @@ impl EditorView {
                     } else {
                         theme::color(theme::PaletteRole::ClipOutline)
                     };
-                    clip_area = clip_area.child(clip_boundary_shell(
-                        overlay,
-                        left as f32,
-                        width as f32,
-                        1.0 / scale_factor.max(1.0),
-                        color,
-                        color,
-                        true,
-                        hex_widgets::rectangle_border_width(pixel_width) > 0.0,
-                        if looping {
-                            loop_handles::BOTTOM_RADIUS
-                        } else {
-                            0.0
-                        },
-                        || "midi-trim-preview-trailing".into(),
-                    ));
+                    let framed_clip = if has_border {
+                        super::clip_boundary::backdrop_shell(
+                            overlay,
+                            left as f32,
+                            width as f32,
+                            super::clip_boundary::Backdrop {
+                                body: fill,
+                                header: fill,
+                                outline: color,
+                                hover_outline: color,
+                                stroke: 1.0 / scale_factor.max(1.0),
+                                bottom_radius: if looping {
+                                    loop_handles::BOTTOM_RADIUS
+                                } else {
+                                    0.0
+                                },
+                                header_height: super::clip_name::CLIP_NAME_HEIGHT,
+                                notch: super::clip_boundary::Notch::new(notched),
+                            },
+                            true,
+                            || "midi-trim-preview-trailing".into(),
+                        )
+                    } else {
+                        clip_boundary_shell(
+                            overlay,
+                            left as f32,
+                            width as f32,
+                            1.0 / scale_factor.max(1.0),
+                            color,
+                            color,
+                            true,
+                            hex_widgets::rectangle_border_width(pixel_width) > 0.0,
+                            if looping {
+                                loop_handles::BOTTOM_RADIUS
+                            } else {
+                                0.0
+                            },
+                            || "midi-trim-preview-trailing".into(),
+                        )
+                    };
+                    clip_area = clip_area.child(framed_clip);
                 }
             }
         }
@@ -792,6 +828,14 @@ impl EditorView {
                     let pixel_width = self.drag_lanes.get(&track_id).map_or(0.0, |lane| {
                         super::trim::rendered_clip_width(lane.width, width)
                     });
+                    let has_border = hex_widgets::rectangle_border_width(pixel_width) > 0.0;
+                    let fill = theme::clip_activity_fill(
+                        track.color(),
+                        preview_clip.flavor(),
+                        false,
+                        preview_clip.active(),
+                    );
+                    let notched = has_border && visible_end == preview_end;
                     let mut preview =
                         hex_widgets::rectangle_surface(left as f32, width as f32, pixel_width)
                             .left_0()
@@ -811,12 +855,12 @@ impl EditorView {
                             } else {
                                 theme::color(theme::PaletteRole::ClipOutline)
                             }))
-                            .bg(rgb(theme::clip_activity_fill(
-                                track.color(),
-                                preview_clip.flavor(),
-                                false,
-                                preview_clip.active(),
-                            )))
+                            .bg(rgb(fill))
+                            .when(has_border, |preview| {
+                                preview
+                                    .bg(gpui::transparent_black())
+                                    .border_color(gpui::transparent_black())
+                            })
                             .children(
                                 aligned_clip_grid_layer(
                                     grid,
@@ -856,6 +900,9 @@ impl EditorView {
                         track_id,
                         original_clip.id(),
                         original_clip.name(),
+                        fill,
+                        has_border,
+                        notched,
                         cx,
                     ));
                     preview = preview.when(looping, |preview| {
@@ -871,22 +918,47 @@ impl EditorView {
                     } else {
                         theme::color(theme::PaletteRole::ClipOutline)
                     };
-                    clip_area = clip_area.child(clip_boundary_shell(
-                        preview,
-                        left as f32,
-                        width as f32,
-                        1.0 / scale_factor.max(1.0),
-                        color,
-                        color,
-                        true,
-                        hex_widgets::rectangle_border_width(pixel_width) > 0.0,
-                        if looping {
-                            loop_handles::BOTTOM_RADIUS
-                        } else {
-                            0.0
-                        },
-                        || "trim-preview-trailing".into(),
-                    ));
+                    let framed_clip = if has_border {
+                        super::clip_boundary::backdrop_shell(
+                            preview,
+                            left as f32,
+                            width as f32,
+                            super::clip_boundary::Backdrop {
+                                body: fill,
+                                header: fill,
+                                outline: color,
+                                hover_outline: color,
+                                stroke: 1.0 / scale_factor.max(1.0),
+                                bottom_radius: if looping {
+                                    loop_handles::BOTTOM_RADIUS
+                                } else {
+                                    0.0
+                                },
+                                header_height: super::clip_name::CLIP_NAME_HEIGHT,
+                                notch: super::clip_boundary::Notch::new(notched),
+                            },
+                            true,
+                            || "trim-preview-trailing".into(),
+                        )
+                    } else {
+                        clip_boundary_shell(
+                            preview,
+                            left as f32,
+                            width as f32,
+                            1.0 / scale_factor.max(1.0),
+                            color,
+                            color,
+                            true,
+                            hex_widgets::rectangle_border_width(pixel_width) > 0.0,
+                            if looping {
+                                loop_handles::BOTTOM_RADIUS
+                            } else {
+                                0.0
+                            },
+                            || "trim-preview-trailing".into(),
+                        )
+                    };
+                    clip_area = clip_area.child(framed_clip);
                 }
             }
         }
