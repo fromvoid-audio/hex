@@ -195,3 +195,14 @@ fn flexible_eq_node_lanes_preserve_typed_edits_history_stale_refusal_and_storage
         assert_eq!(&loaded.unwrap(), project.as_ref());
     }
 }
+
+#[test]
+fn flexible_eq_mode_lane_preserves_typed_edits_history_stale_refusal_and_storage() {
+    let state = hex_engine::eq::EqState::default().encode().unwrap();
+    let project = lane_case_state(state, hex_engine::eq::MODE.value());
+    let path = std::env::temp_dir().join(format!("hex-eq-mode-session-{}.hex", std::process::id()));
+    hex_storage::save_new(&path, &project).unwrap();
+    let loaded = hex_storage::load(&path);
+    std::fs::remove_file(path).unwrap();
+    assert_eq!(&loaded.unwrap(), project.as_ref());
+}

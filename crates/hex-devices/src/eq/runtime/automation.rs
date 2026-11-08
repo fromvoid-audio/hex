@@ -418,7 +418,7 @@ mod tests {
                 .unwrap()
         );
         assert!(
-            !EQ_DEFINITION
+            EQ_DEFINITION
                 .supports_parameter_automation(&state, MODE)
                 .unwrap()
         );
