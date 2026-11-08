@@ -488,7 +488,7 @@ fn browser_audio_drag_ghost(
             .child(theme::text(payload.label.clone()))
             .child(theme::text(status)),
     );
-    super::tracks::pixel_boundary_shell(
+    super::clip_boundary::pixel_boundary_shell(
         ghost,
         left,
         top,

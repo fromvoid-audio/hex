@@ -1,5 +1,5 @@
 //! Border assertions read completed GPUI scene quads, including retained scenes.
-use super::{
+use crate::editor::{
     EditorView,
     clip_drag_ui_test::{audio_project, editor_window},
     viewport::Viewport,
@@ -19,7 +19,7 @@ fn click(visual: &mut VisualTestContext, clip: ClipId, modifiers: Modifiers) {
 fn selected_audio_midi_borders_cover_visible_bounds_and_restore_each_member(
     cx: &mut TestAppContext,
 ) {
-    cx.update(super::bind_editor_keys);
+    cx.update(crate::editor::bind_editor_keys);
     let (project, track, _, imported) = audio_project();
     let asset = project.clip(imported).unwrap().asset();
     let mut canonical = Editor::new(project, 16).unwrap();
@@ -73,7 +73,7 @@ fn selected_audio_midi_borders_cover_visible_bounds_and_restore_each_member(
             start: 18_000,
             length: 144_000,
         });
-        view.snap_grid = super::musical_time::SnapGrid::Off;
+        view.snap_grid = crate::editor::musical_time::SnapGrid::Off;
         cx.notify();
     });
     visual.run_until_parked();
@@ -253,7 +253,7 @@ fn selected_audio_midi_borders_cover_visible_bounds_and_restore_each_member(
 }
 
 type BorderFixture = (
-    super::external_audio_drop_ui_test::BatchFiles,
+    crate::editor::external_audio_drop_ui_test::BatchFiles,
     gpui::AnyWindowHandle,
     gpui::Entity<EditorView>,
     hex_project::TrackId,
@@ -278,8 +278,8 @@ fn bottom_border_fixture(cx: &mut TestAppContext) -> BorderFixture {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
     }
-    cx.update(super::bind_editor_keys);
-    let files = super::external_audio_drop_ui_test::BatchFiles::new();
+    cx.update(crate::editor::bind_editor_keys);
+    let files = crate::editor::external_audio_drop_ui_test::BatchFiles::new();
     let wav = files.wav("border.wav", 48_000, 96_000);
     let directory = wav.parent().unwrap();
     std::fs::create_dir(directory.join("samples")).unwrap();
@@ -577,7 +577,7 @@ fn all_four_clip_edges_paint_above_actual_row_separator_without_geometry_changes
 fn selected_track_header_has_no_selection_outline_and_color_strip_stays_distinct(
     cx: &mut TestAppContext,
 ) {
-    let (_files, handle, editor) = super::clip_drag_ui_test::upper_rail_owned_fixture(cx);
+    let (_files, handle, editor) = crate::editor::clip_drag_ui_test::upper_rail_owned_fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let tracks = editor.read_with(&visual, |view, _| {
@@ -619,7 +619,7 @@ fn selected_track_header_has_no_selection_outline_and_color_strip_stays_distinct
         });
     }
     editor.update(&mut visual, |view, cx| {
-        view.mode = super::EditorMode::Session;
+        view.mode = crate::editor::EditorMode::Session;
         cx.notify();
     });
     visual.run_until_parked();
