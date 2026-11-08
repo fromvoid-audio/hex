@@ -392,8 +392,7 @@ impl ForeignArrangement {
                         candidate.committed.hardware.disconnect();
                     }
                 } else {
-                    // A stopped reset has no held gates, but the retained
-                    // worker still needs monotonically increasing note IDs.
+                    // Restart arrangement history while retaining worker note IDs.
                     candidate.committed.next_id = donor.committed.next_id;
                     candidate.committed.quantum_offset = donor.committed.quantum_offset;
                     // The retained worker still owns monitor notes even when the
