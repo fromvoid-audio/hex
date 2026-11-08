@@ -150,6 +150,14 @@ pub(super) fn keep_failed_copy(
     if max_events > hex_project::MAX_DEVICE_AUTOMATION_POINTS as u64 {
         return Err("device automation recovery exceeds the event budget".into());
     }
+    let DeviceAutomationTakeProgress::FailedPluginCustody { scope: found, .. } =
+        failed_custody(state, lane, gesture_active)?
+    else {
+        return Err("no failed device automation custody is available for resolution".into());
+    };
+    if *found != scope {
+        return Err("device automation recovery belongs to another take".into());
+    }
     let Step::Progress(DeviceAutomationTakeProgress::VerifiedCopy { path, receipt }) =
         inspect_failed_copy(state, lane, scope, gesture_active)?
     else {

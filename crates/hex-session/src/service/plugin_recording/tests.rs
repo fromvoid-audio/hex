@@ -506,6 +506,7 @@ fn keeping_verified_copy_resolves_only_exact_custody_and_preserves_each_outcome(
         let mut state = active(scope, source);
         let mut failed = state.active.take().unwrap();
         failed.ended = true;
+        failed.path = original_path.clone();
         state.failed = Some(failed);
         assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, false).is_err());
         let output = files.0.join("kept-copy");
@@ -540,6 +541,9 @@ fn keeping_verified_copy_resolves_only_exact_custody_and_preserves_each_outcome(
         assert!(keep_failed_copy(&mut state, &mut lane, wrong, 1, false).is_err());
         assert!(keep_failed_copy(&mut state, &mut lane, scope, 0, false).is_err());
         assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, true).is_err());
+        state.failed.as_mut().unwrap().path = files.0.join("another-original");
+        assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, false).is_err());
+        state.failed.as_mut().unwrap().path = original_path.clone();
         state.failed.as_mut().unwrap().ended = false;
         assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, false).is_err());
         state.failed.as_mut().unwrap().ended = true;
