@@ -850,6 +850,110 @@ mod tests {
         assert_eq!(crate::encode(editor.project()).unwrap(), previous);
     }
     #[test]
+    fn grouped_vst3_touch_commits_both_lanes_and_rejects_a_partial_candidate() {
+        use hex_project::{AutomationInterpolation, AutomationPoint};
+        let class = [3; 16];
+        let state = hex_plugin_state::encode(hex_plugin_state::State {
+            identity: hex_plugin_state::Identity {
+                class: hex_plugin_state::ClassId::new(class).unwrap(),
+                binary: hex_plugin_state::BinaryIdentity {
+                    executable_sha256: [4; 32],
+                    info_sha256: [5; 32],
+                },
+            },
+            component: Some(&[1]),
+            controller: None,
+        })
+        .unwrap();
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Device(device) = editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state,
+            })
+            .unwrap()
+        else {
+            panic!("vst3 device")
+        };
+        let target = |parameter| DeviceAutomationTarget::Vst3 { parameter };
+        for (id, value) in [(0, 0.25), (11, 0.5), (23, 0.625)] {
+            editor
+                .execute(Command::ReplaceDeviceAutomationTarget {
+                    device,
+                    target: target(id),
+                    points: vec![AutomationPoint {
+                        beat: BeatTime::ZERO,
+                        value: AutomationValue::new(value).unwrap(),
+                        outgoing: AutomationInterpolation::Step,
+                    }],
+                })
+                .unwrap();
+        }
+        let before = editor.project().clone();
+        let touch = |value| {
+            vec![DeviceAutomationTouchSpan {
+                start: BeatTime::ONE,
+                end: BeatTime::from_quarters(2).unwrap(),
+                steps: vec![DeviceAutomationTouchStep {
+                    beat: BeatTime::ONE,
+                    value: AutomationValue::new(value).unwrap(),
+                }],
+            }]
+        };
+        let lanes = vec![(0, touch(0.75)), (11, touch(0.125))];
+        let command = |class, lanes| Command::SpliceVst3AutomationTouchGroup {
+            device,
+            class,
+            lanes,
+        };
+        assert!(editor.execute(command([1; 16], lanes.clone())).is_err());
+        assert!(
+            editor
+                .execute(command(class, vec![(0, touch(0.75)), (0, touch(0.125))]))
+                .is_err()
+        );
+        assert!(
+            editor
+                .execute(command(class, vec![(0, touch(0.75)), (11, Vec::new())]))
+                .is_err()
+        );
+        assert!(
+            editor
+                .execute_validated::<hex_project::Invalid>(command(class, lanes.clone()), |_| Err(
+                    hex_project::Invalid("rejected playback preparation")
+                ),)
+                .is_err()
+        );
+        assert_eq!(editor.project(), &before);
+        editor.execute(command(class, lanes)).unwrap();
+        let recorded = editor.project().clone();
+        let actual = recorded.device(device).unwrap();
+        let original = before.device(device).unwrap();
+        for (id, value) in [(0, 0.75), (11, 0.125)] {
+            let lane = actual.automation_target(target(id)).unwrap();
+            assert_eq!(
+                lane.points,
+                original.automation_target(target(id)).unwrap().points
+            );
+            assert_eq!(lane.value_at(BeatTime::ONE).unwrap().get(), value);
+        }
+        assert_eq!(
+            actual.automation_target(target(23)),
+            original.automation_target(target(23))
+        );
+        assert!(editor.undo());
+        assert_eq!(editor.project(), &before);
+        assert!(editor.redo());
+        assert_eq!(editor.project(), &recorded);
+        assert_eq!(
+            crate::schema_version_for(&recorded),
+            crate::VST3_AUTOMATION_TOUCH_SCHEMA_VERSION
+        );
+        let bytes = crate::encode(&recorded).unwrap();
+        assert_eq!(crate::decode(&bytes).unwrap(), recorded);
+    }
+
+    #[test]
     fn schema79_vst3_touch_only_and_base_overlays_round_trip_and_78_stays_strict() {
         let class = [9; 16];
         let state = hex_plugin_state::encode(hex_plugin_state::State {

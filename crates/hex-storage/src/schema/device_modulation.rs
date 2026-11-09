@@ -6,7 +6,9 @@
 //! payload versions newer than sine v1, requires every slot's color, and admits
 //! bound source units through the same flat membership envelope. Schemas85 and
 //! 86 admit free and synced LFO rate assignments. Schema87 requires an Audio
-//! Rate source and can contain all earlier bank configurations. Module payloads
+//! Rate source and can contain all earlier bank configurations. Schema89
+//! admits FM4 source banks and optionally wraps the complete schema88 instrument
+//! touch envelope. Prior versions keep their exact inner-schema rules. Module payloads
 //! stay opaque here; playback admission validates the provider's exact codec.
 use crate::{Project, StorageError};
 use hex_lattice_contract::{DeviceAutomationTarget, DeviceTypeId, NativeDeviceState, ParameterId};
@@ -367,6 +369,16 @@ pub(crate) fn contains_colors(project: &Project) -> bool {
 }
 const AUDIO_RATE: DeviceTypeId = DeviceTypeId::from_static("hex.modulator.audio-rate");
 
+/// Only the newly playable FM4 bank requires a new reader floor. Prior codecs
+/// could already retain opaque banks on other instruments without playing them.
+pub(crate) fn contains_instrument_modulation(project: &Project) -> bool {
+    const FM4: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.fm4");
+    project.native_sources().iter().any(|source| {
+        let instrument = source.instrument();
+        instrument.state().type_id() == FM4 && !instrument.modulation().is_empty()
+    })
+}
+
 pub(crate) fn contains_audio_rate(project: &Project) -> bool {
     project.devices().any(|device| {
         device
@@ -429,7 +441,9 @@ pub(crate) fn refuse_legacy(project: &Project) -> Result<(), StorageError> {
     Ok(())
 }
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
-    let version = if contains_audio_rate(project) {
+    let version = if contains_instrument_modulation(project) {
+        crate::INSTRUMENT_MODULATION_SCHEMA_VERSION
+    } else if contains_audio_rate(project) {
         crate::AUDIO_RATE_MODULATOR_SCHEMA_VERSION
     } else if let Some(version) = lfo_rate_route_schema(project) {
         version
@@ -450,7 +464,15 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
         })
         .collect::<Result<Vec<_>, StorageError>>()?;
     let flat = Project::from_snapshot(snapshot).map_err(invalid)?;
-    let mut value: serde_json::Value = serde_json::from_slice(&crate::encode_base(&flat)?)?;
+    let core = if version == crate::INSTRUMENT_MODULATION_SCHEMA_VERSION
+        && (super::device_automation_touch::contains_native_instrument(&flat)
+            || super::device_automation_touch::contains_extended(&flat))
+    {
+        crate::encode(&flat)?
+    } else {
+        crate::encode_base(&flat)?
+    };
+    let mut value: serde_json::Value = serde_json::from_slice(&core)?;
     let base = value["version"].clone();
     value["version"] = version.into();
     value["modulation_base_version"] = base;
@@ -470,6 +492,10 @@ pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError
             (u64::from(crate::CURRENT_SCHEMA_VERSION)
                 ..u64::from(crate::DEVICE_MODULATION_SCHEMA_VERSION))
                 .contains(v)
+                || version == crate::INSTRUMENT_MODULATION_SCHEMA_VERSION
+                    && (u64::from(crate::NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION)
+                        ..u64::from(crate::INSTRUMENT_MODULATION_SCHEMA_VERSION))
+                        .contains(v)
         })
         .ok_or(StorageError::Invalid("invalid modulation base schema"))?;
     let Rows(rows) = serde_json::from_value(
@@ -478,7 +504,12 @@ pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError
             .ok_or(StorageError::Invalid("modulation inventory missing"))?,
     )?;
     object.insert("version".into(), base.into());
-    let flat = crate::decode_base(&serde_json::to_vec(&value)?)?;
+    let core = serde_json::to_vec(&value)?;
+    let flat = if base >= u64::from(crate::NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION) {
+        crate::decode(&core)?
+    } else {
+        crate::decode_base(&core)?
+    };
     let mut snapshot = flat.snapshot();
     let mut rows = rows.into_iter();
     for device in super::device_automation::devices(&mut snapshot) {
@@ -502,6 +533,15 @@ pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError
         return Err(StorageError::Invalid(
             "modulation inventory must be nonempty",
         ));
+    }
+    let instrument_schema = version == crate::INSTRUMENT_MODULATION_SCHEMA_VERSION;
+    if instrument_schema && !contains_instrument_modulation(&project) {
+        return Err(StorageError::Invalid(
+            "instrument modulation requires its matching project schema",
+        ));
+    }
+    if instrument_schema {
+        return Ok(project);
     }
     let audio_rate_schema = version == crate::AUDIO_RATE_MODULATOR_SCHEMA_VERSION;
     if contains_audio_rate(&project) != audio_rate_schema {

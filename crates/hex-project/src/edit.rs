@@ -423,6 +423,13 @@ pub enum Command {
         vst3_class: Option<[u8; 16]>,
         spans: Vec<crate::DeviceAutomationTouchSpan>,
     },
+    /// Adopt a complete group of two to eight distinct raw VST3 ParamIDs on
+    /// one exact device and class. Lanes are ordered by raw ID, including zero.
+    SpliceVst3AutomationTouchGroup {
+        device: DeviceId,
+        class: [u8; 16],
+        lanes: Vec<(u32, Vec<crate::DeviceAutomationTouchSpan>)>,
+    },
     /// Replace a complete validated module/route bank in one history edge.
     ReplaceDeviceModulation {
         device: DeviceId,
@@ -2191,6 +2198,11 @@ impl Project {
                 vst3_class,
                 spans,
             } => self.splice_device_automation_touch(device, target, vst3_class, spans),
+            Command::SpliceVst3AutomationTouchGroup {
+                device,
+                class,
+                lanes,
+            } => self.splice_vst3_automation_touch_group(device, class, lanes),
             Command::ReplaceDeviceModulation { device, modulation } => {
                 self.replace_device_modulation(device, modulation)
             }

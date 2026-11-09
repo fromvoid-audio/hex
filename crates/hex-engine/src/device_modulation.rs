@@ -1,15 +1,15 @@
-//! Translate a saved effect bank into a bounded device-local render declaration.
+//! Translate a saved device bank into a bounded device-local render declaration.
 //! Control preparation resolves stable IDs and validates real factory bindings.
 //! Prepared declarations borrow no project data and never enter project history.
 use hex_devices::modulation::{audio_rate, envelope_follower, lfo, macro_value, random_hold};
 use hex_lattice::{
     HostGainModulationRoute, ModulationRoute, ModulationTarget, PreparedModulation,
-    PreparedModulationSource, PreparedModulationState, PreparedProcessorFactory,
-    SourceModulationParameter, SourceModulationRoute,
+    PreparedModulationSource, PreparedModulationState, PreparedMutableInstrumentRuntime,
+    PreparedProcessorFactory, SourceModulationParameter, SourceModulationRoute,
 };
 use hex_lattice_contract::{
-    DeviceAutomationTarget, HostGain, NativeDeviceMetadata, NativeDeviceState, ParameterId,
-    ParameterModulation,
+    DeviceAutomationTarget, HostGain, NativeDeviceMetadata, NativeDeviceState, ParameterDescriptor,
+    ParameterId, ParameterModulation, ParameterSemantics,
 };
 use hex_project::{
     Device, DeviceId, DeviceLocation, DeviceOwner, DeviceUnitClass, Invalid, ModulationDestination,
@@ -62,6 +62,19 @@ pub fn project_device_modulation_target_supported(
         return false;
     };
     let state = device.state();
+    let migrated;
+    let state = if state.state_version() == definition.state_version() {
+        state
+    } else {
+        let Ok(current) = definition
+            .migrate_state(state)
+            .and_then(|current| current.with_host_metadata_from(state))
+        else {
+            return false;
+        };
+        migrated = current;
+        &migrated
+    };
     hex_lattice_contract::validated_parameter_semantics(definition, state, parameter)
         .ok()
         .flatten()
@@ -110,6 +123,11 @@ fn source_provider_mapping_supported(state: &NativeDeviceState, parameter: Param
     id == hex_devices::auto_pan::AUTO_PAN_TYPE_ID
         || id == hex_devices::gate::GATE_TYPE_ID
         || id == hex_devices::compressor::COMPRESSOR_TYPE_ID
+        || id == hex_devices::delay::TYPE_ID
+            && matches!(
+                parameter,
+                hex_devices::delay::FEEDBACK | hex_devices::delay::DRY_WET
+            )
         || id == hex_devices::reverb::REVERB_TYPE_ID
         || id == hex_devices::utility::UTILITY_TYPE_ID
             && hex_devices::utility::UtilityDefinition::supports_source_matrix_modulation(
@@ -121,11 +139,19 @@ pub(super) fn validate_source_owners(project: &Project) -> Result<(), Invalid> {
     for source in project.native_sources() {
         if source
             .devices()
-            .take(source.instrument_index() + 1)
+            .take(source.instrument_index())
             .any(|device| !device.modulation().is_empty())
         {
+            return Err(Invalid("source prefix modulation is unsupported"));
+        }
+        let instrument = source.instrument();
+        // An unbound instrument stays in the retained source inventory. Keep
+        // its bank for a later binding and compile it only for a real receiver.
+        if !instrument.modulation().is_empty()
+            && instrument.state().type_id() != hex_devices::fm4::device::FM4_TYPE_ID
+        {
             return Err(Invalid(
-                "modulation requires a post-instrument source effect",
+                "instrument modulation requires a supported provider",
             ));
         }
         for device in source.post_instrument_effects() {
@@ -389,33 +415,16 @@ impl EffectModulation {
         if matches!(factory, Some(PreparedProcessorFactory::Foreign(_))) {
             return Err(Invalid("foreign effect modulation is unsupported"));
         }
-        let mut targets = reserved(self.parameters.len())?;
-        for parameter in self.parameters {
-            let unsupported =
-                || Invalid("processor does not support sample-rate modulation for this parameter");
-            let factory = factory.ok_or_else(unsupported)?;
+        let targets = self.prepare_targets(state, metadata, |parameter| {
+            let factory = factory?;
             let descriptor = factory
                 .parameter_automation_descriptor(parameter)
-                .filter(|_| factory.supports_parameter_automation(parameter))
-                .ok_or_else(unsupported)?;
-            let semantics = if self.routes.iter().any(|route| route.target == parameter) {
-                factory
-                    .parameter_modulation_semantics(parameter)
-                    .filter(|semantics| semantics.modulation == ParameterModulation::SampleRate)
-            } else {
-                hex_lattice_contract::validated_parameter_semantics(metadata, state, parameter)
-                    .map_err(|_| unsupported())?
-            }
-            .ok_or_else(unsupported)?;
-            let base = metadata
-                .read_parameter(state, parameter)
-                .map_err(|_| Invalid("authored modulation base value is invalid"))?;
-            targets.push(ModulationTarget {
+                .filter(|_| factory.supports_parameter_automation(parameter))?;
+            Some((
                 descriptor,
-                semantics,
-                base,
-            });
-        }
+                factory.parameter_modulation_semantics(parameter),
+            ))
+        })?;
         let host_gain = |millidb, routes: &[HostGainModulationRoute]| {
             if routes.is_empty() {
                 return Ok(None);
@@ -450,6 +459,68 @@ impl EffectModulation {
             &self.source_routes,
         )
         .map_err(|_| Invalid("modulation declaration exceeds its capacity"))
+    }
+    pub(super) fn prepare_instrument(
+        self,
+        state: &NativeDeviceState,
+        metadata: &dyn NativeDeviceMetadata,
+        factory: &dyn PreparedMutableInstrumentRuntime,
+    ) -> Result<PreparedModulationState, Invalid> {
+        if !self.host_input_routes.is_empty()
+            || !self.host_output_routes.is_empty()
+            || self
+                .sources
+                .iter()
+                .any(PreparedModulationSource::reads_audio_input)
+        {
+            return Err(Invalid(
+                "instrument modulation requires sources independent of audio input and provider targets",
+            ));
+        }
+        let targets = self.prepare_targets(state, metadata, |parameter| {
+            let descriptor = *factory
+                .parameter_automation_descriptors()
+                .iter()
+                .find(|descriptor| descriptor.id == parameter)?;
+            Some((
+                descriptor,
+                factory.parameter_modulation_semantics(parameter),
+            ))
+        })?;
+        let program = PreparedModulation::new(&targets, &self.routes, self.sources.len())
+            .map_err(|_| Invalid("instrument modulation program is invalid"))?;
+        // Session source generation splits at the existing 256-frame boundary.
+        PreparedModulationState::with_source_routes(self.sources, program, 256, &self.source_routes)
+            .map_err(|_| Invalid("instrument modulation exceeds its bounded storage"))
+    }
+
+    fn prepare_targets(
+        &self,
+        state: &NativeDeviceState,
+        metadata: &dyn NativeDeviceMetadata,
+        grant: impl Fn(ParameterId) -> Option<(ParameterDescriptor, Option<ParameterSemantics>)>,
+    ) -> Result<Vec<ModulationTarget>, Invalid> {
+        let mut targets = reserved(self.parameters.len())?;
+        for &parameter in &self.parameters {
+            let unsupported = || Invalid("provider does not grant this sample-rate parameter");
+            let (descriptor, semantics) = grant(parameter).ok_or_else(unsupported)?;
+            let semantics = if self.routes.iter().any(|route| route.target == parameter) {
+                semantics.filter(|value| value.modulation == ParameterModulation::SampleRate)
+            } else {
+                hex_lattice_contract::validated_parameter_semantics(metadata, state, parameter)
+                    .map_err(|_| unsupported())?
+            }
+            .ok_or_else(unsupported)?;
+            let base = metadata
+                .read_parameter(state, parameter)
+                .map_err(|_| Invalid("authored modulation base value is invalid"))?;
+            targets.push(ModulationTarget {
+                descriptor,
+                semantics,
+                base,
+            });
+        }
+        Ok(targets)
     }
 }
 
