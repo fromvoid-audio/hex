@@ -1130,8 +1130,11 @@ fn ordinary_sampler_gain_on_control(host_output: bool) {
         gate: hex_devices::sampler::GateMode::Trigger,
     };
     authored.gain = if host_output { 0.5 } else { 0.0 };
+    let base_trim = if host_output { -3_000 } else { 0 };
     let original = authored
         .to_native()
+        .unwrap()
+        .with_output_gain_millidb(base_trim)
         .unwrap()
         .with_asset_references(vec![DeviceAssetReference {
             slot: DeviceAssetSlot::new(1).unwrap(),
@@ -1329,7 +1332,7 @@ fn ordinary_sampler_gain_on_control(host_output: bool) {
         let positive = index % 4 < 2;
         let gain = if host_output {
             let depth = if new_depth { 12_000 } else { 6_000 };
-            let millidb = if positive { depth } else { -depth };
+            let millidb = base_trim + if positive { depth } else { -depth };
             0.5 * HostGain::from_millidb(millidb).unwrap().linear()
         } else if !positive {
             0.0
