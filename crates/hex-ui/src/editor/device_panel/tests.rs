@@ -2539,12 +2539,13 @@ fn operator_envelope_release_drag_cancels_and_commits_after_outside_release(
     visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     assert!(editor.read_with(cx, |view, _| view.device_gesture.snapshot().is_some()));
+    // The oscillator page retains the envelope; routing actually hides it.
     editor.update(cx, |view, cx| {
         view.device_panel
             .operator_pages
             .get_mut(&device)
             .expect("Operator page")
-            .page = operator_panel::OperatorPage::Oscillator;
+            .page = operator_panel::OperatorPage::Routing;
         cx.notify();
     });
     visual.run_until_parked();
@@ -2573,7 +2574,7 @@ fn operator_envelope_release_drag_cancels_and_commits_after_outside_release(
                 .get(&device)
                 .expect("page")
                 .page,
-            operator_panel::OperatorPage::Oscillator
+            operator_panel::OperatorPage::Routing
         );
         assert!(view.device_panel.operator_envelope_graphs.is_empty());
     });
