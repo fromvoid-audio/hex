@@ -1074,16 +1074,27 @@ fn native_source_program_bytes_remain_charged_through_refusal_and_matching_retir
 fn ordinary_registered_sampler_delivers_saved_gain_in_arrangement_and_session() {
     std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
-        .spawn(ordinary_sampler_gain_on_control)
+        .spawn(|| ordinary_sampler_gain_on_control(false))
         .unwrap()
         .join()
         .unwrap();
 }
 
-fn ordinary_sampler_gain_on_control() {
+#[test]
+fn ordinary_registered_sampler_delivers_saved_host_output_trim() {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| ordinary_sampler_gain_on_control(true))
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+fn ordinary_sampler_gain_on_control(host_output: bool) {
     use crate::{LaunchQuantization, PlaybackAction, PlaybackCommand};
     use hex_devices::modulation::lfo;
     use hex_devices::sampler::{catalog::GAIN, state::TYPE_ID};
+    use hex_lattice_contract::HostGain;
     use hex_project::{
         DeviceAutomationTarget, DeviceModulation, DeviceModulationRoute, ModulationAmount,
         ModulationDestination, ModulationOutputId, ModulationRange, ModulationRouteId,
@@ -1118,7 +1129,7 @@ fn ordinary_sampler_gain_on_control() {
     authored.mode = hex_devices::sampler::state::AuthoredMode::OneShot {
         gate: hex_devices::sampler::GateMode::Trigger,
     };
-    authored.gain = 0.0;
+    authored.gain = if host_output { 0.5 } else { 0.0 };
     let original = authored
         .to_native()
         .unwrap()
@@ -1252,7 +1263,7 @@ fn ordinary_sampler_gain_on_control() {
                 output: ModulationOutputId::MAIN,
                 destination: ModulationDestination::Device {
                     device_type: TYPE_ID,
-                    target: DeviceAutomationTarget::Parameter(target),
+                    target,
                     vst3_class: None,
                 },
                 amount: ModulationAmount::new(amount).unwrap(),
@@ -1262,17 +1273,35 @@ fn ordinary_sampler_gain_on_control() {
         )
         .unwrap(),
     };
-    let (_, first) = editor.execute_prepared(edit(GAIN, 0.125), prepare).unwrap();
+    let (target, first_depth, second_depth) = if host_output {
+        (
+            DeviceAutomationTarget::HostOutputGain,
+            6.0 / 84.0,
+            12.0 / 84.0,
+        )
+    } else {
+        (DeviceAutomationTarget::Parameter(GAIN), 0.125, 0.25)
+    };
+    let (_, first) = editor
+        .execute_prepared(edit(target, first_depth), prepare)
+        .unwrap();
     assert_eq!(
         super::super::current_sampler::validate_project(editor.project()),
         Err(AudioStorageError::UnsupportedGraph),
     );
-    let (_, second) = editor.execute_prepared(edit(GAIN, 0.25), prepare).unwrap();
+    let (_, second) = editor
+        .execute_prepared(edit(target, second_depth), prepare)
+        .unwrap();
     let stable = editor.project().clone();
     assert!(
         editor
             .execute_prepared(
-                edit(hex_lattice_contract::ParameterId::from_static(2), 0.25),
+                edit(
+                    DeviceAutomationTarget::Parameter(
+                        hex_lattice_contract::ParameterId::from_static(2)
+                    ),
+                    0.25,
+                ),
                 prepare
             )
             .is_err()
@@ -1296,17 +1325,25 @@ fn ordinary_sampler_gain_on_control() {
     previous.render(&mut actual[..3]).unwrap();
     current.try_inherit_runtime_from(&mut previous).unwrap();
     current.render(&mut actual[3..]).unwrap();
-    let expected = std::array::from_fn(|index| {
-        let gain = if index % 4 >= 2 {
+    let expected_frame = |index: usize, new_depth: bool| {
+        let positive = index % 4 < 2;
+        let gain = if host_output {
+            let depth = if new_depth { 12_000 } else { 6_000 };
+            let millidb = if positive { depth } else { -depth };
+            0.5 * HostGain::from_millidb(millidb).unwrap().linear()
+        } else if !positive {
             0.0
-        } else if index < 3 {
-            0.5
-        } else {
+        } else if new_depth {
             1.0
+        } else {
+            0.5
         };
         pcm[index].map(|sample| sample * gain)
-    });
-    assert_eq!(actual, expected);
+    };
+    assert_eq!(
+        actual,
+        std::array::from_fn(|index| expected_frame(index, index >= 3))
+    );
 
     let mut console = SessionPlayback::new_with_device_resources(first, &resources).unwrap();
     console
@@ -1320,9 +1357,7 @@ fn ordinary_sampler_gain_on_control() {
     console.render(&mut actual[1..]).unwrap();
     assert_eq!(
         actual,
-        std::array::from_fn(|index| {
-            pcm[index].map(|sample| if index % 4 < 2 { sample * 0.5 } else { 0.0 })
-        })
+        std::array::from_fn(|index| expected_frame(index, false))
     );
     assert_eq!(console.device_resource_leases().count(), 1);
 
@@ -1352,6 +1387,6 @@ fn ordinary_sampler_gain_on_control() {
         .unwrap();
     assert_eq!(
         actual,
-        std::array::from_fn(|index| { if index % 4 < 2 { pcm[index] } else { [0.0; 2] } })
+        std::array::from_fn(|index| expected_frame(index, true))
     );
 }
