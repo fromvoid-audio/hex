@@ -123,6 +123,8 @@ pub use device_modulation::{
     project_device_can_add_note_pressure, project_device_has_modulation_note_events,
     project_device_host_gain_modulation_supported, project_device_modulation_target_supported,
 };
+/// The authored aggregate note-gate ADSR settings.
+pub use hex_devices::modulation::adsr as adsr_modulator;
 /// The authored note-release attack, hold and decay settings.
 pub use hex_devices::modulation::ahd_release as ahd_release_modulator;
 /// Versioned, control-side settings for the built-in envelope follower.

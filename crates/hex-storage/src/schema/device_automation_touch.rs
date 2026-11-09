@@ -13,12 +13,13 @@
 //! prior project. The exact stored source owner may be dormant; the codec grants
 //! no authority to arm or play a source without a receiver. Schema102 uses
 //! that envelope over a required schema101 Ramp bank. Schema104 requires a
-//! schema103 AHD release bank.
+//! schema103 AHD release bank. Schema106 requires a schema105 ADSR bank.
 use super::{automation_read::Selection, device_automation};
 use crate::{
-    AHD_RELEASE_MODULATOR_SCHEMA_VERSION, DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION,
-    EXTENDED_AUTOMATION_TOUCH_SCHEMA_VERSION, NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION,
-    NATIVE_SOURCE_EFFECT_TOUCH_SCHEMA_VERSION, Project, RAMP_MODULATOR_SCHEMA_VERSION,
+    ADSR_MODULATOR_SCHEMA_VERSION, AHD_RELEASE_MODULATOR_SCHEMA_VERSION,
+    DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION, EXTENDED_AUTOMATION_TOUCH_SCHEMA_VERSION,
+    NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION, NATIVE_SOURCE_EFFECT_TOUCH_SCHEMA_VERSION, Project,
+    RAMP_MODULATOR_SCHEMA_VERSION, SOURCE_EFFECT_TOUCH_WITH_ADSR_SCHEMA_VERSION,
     SOURCE_EFFECT_TOUCH_WITH_AHD_RELEASE_SCHEMA_VERSION,
     SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION, StorageError,
     VST3_AUTOMATION_TOUCH_SCHEMA_VERSION,
@@ -475,7 +476,9 @@ pub(crate) fn encode_extended(project: &Project) -> Result<Value, StorageError> 
 }
 
 pub(crate) fn source_effect_schema_version(project: &Project) -> u32 {
-    if super::device_modulation::contains_ahd_release(project) {
+    if super::device_modulation::contains_adsr(project) {
+        SOURCE_EFFECT_TOUCH_WITH_ADSR_SCHEMA_VERSION
+    } else if super::device_modulation::contains_ahd_release(project) {
         SOURCE_EFFECT_TOUCH_WITH_AHD_RELEASE_SCHEMA_VERSION
     } else if super::device_modulation::contains_ramp(project) {
         SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION
@@ -545,6 +548,9 @@ fn decode_envelope(bytes: &[u8], envelope: Envelope) -> Result<Project, StorageE
         .remove(base_field)
         .and_then(|base| base.as_u64())
         .filter(|base| match envelope.version() {
+            SOURCE_EFFECT_TOUCH_WITH_ADSR_SCHEMA_VERSION => {
+                *base == u64::from(ADSR_MODULATOR_SCHEMA_VERSION)
+            }
             SOURCE_EFFECT_TOUCH_WITH_AHD_RELEASE_SCHEMA_VERSION => {
                 *base == u64::from(AHD_RELEASE_MODULATOR_SCHEMA_VERSION)
             }
@@ -842,6 +848,49 @@ mod tests {
             AHD_RELEASE_MODULATOR_SCHEMA_VERSION
         );
         document["version"] = SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION.into();
+        assert!(crate::decode(&serde_json::to_vec(&document).unwrap()).is_err());
+        let mut slots = with_ahd
+            .device(instrument)
+            .unwrap()
+            .modulation()
+            .sources()
+            .to_vec();
+        let mut payload: Vec<_> = [0_u32, 125, 250]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect();
+        payload.extend_from_slice(&0.375_f32.to_le_bytes());
+        payload.push(1);
+        slots.push(Modulator {
+            id: ModulationSourceId::new(with_ahd.next_identity()).unwrap(),
+            color: ElementColor::Cyan,
+            enabled: true,
+            state: NativeDeviceState::new(
+                DeviceTypeId::from_static("hex.modulator.adsr"),
+                1,
+                payload,
+            )
+            .unwrap(),
+        });
+        editor
+            .execute(Command::ReplaceDeviceModulation {
+                device: instrument,
+                modulation: DeviceModulation::new(slots, Vec::new()).unwrap(),
+            })
+            .unwrap();
+        let with_adsr = editor.project();
+        assert_eq!(
+            crate::schema_version_for(with_adsr),
+            SOURCE_EFFECT_TOUCH_WITH_ADSR_SCHEMA_VERSION
+        );
+        let bytes = crate::encode(with_adsr).unwrap();
+        assert_eq!(crate::decode(&bytes).unwrap(), *with_adsr);
+        let mut document: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            document["native_source_effect_touch_base_version"],
+            ADSR_MODULATOR_SCHEMA_VERSION
+        );
+        document["version"] = SOURCE_EFFECT_TOUCH_WITH_AHD_RELEASE_SCHEMA_VERSION.into();
         assert!(crate::decode(&serde_json::to_vec(&document).unwrap()).is_err());
     }
 

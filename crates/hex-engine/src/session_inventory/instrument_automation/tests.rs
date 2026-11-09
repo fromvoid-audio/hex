@@ -782,6 +782,32 @@ fn saved_ahd_release_drives_a_real_fm4_carrier_from_each_note_off() {
     });
 }
 
+#[test]
+fn saved_adsr_holds_a_real_fm4_carrier_until_the_last_note_off() {
+    use hex_devices::modulation::adsr;
+    const NOTE_LENGTH: usize = 24;
+    let settings = adsr::Settings {
+        durations_micros: [125; 3],
+        sustain: 0.5,
+        single_trigger: true,
+    };
+    let levels: [f32; 19] = std::array::from_fn(|index| match index {
+        0..=5 => index as f32 / 6.0,
+        6..=11 => 1.0 - 0.5 * (index - 6) as f32 / 6.0,
+        12 => 0.5,
+        _ => 0.5 * (1.0 - (index - 13) as f32 / 6.0),
+    });
+    check_saved_fm4_note_event_source(settings.encode().unwrap(), NOTE_LENGTH, &levels, |frame| {
+        let final_off = NOTE_EVENT_SECOND_ONSET + NOTE_LENGTH;
+        match frame {
+            0..=11 => frame,
+            frame if frame < final_off => 12,
+            frame if frame < final_off + 6 => 13 + frame - final_off,
+            _ => 0,
+        }
+    });
+}
+
 fn check_saved_fm4_note_event_source(
     settings: hex_lattice_contract::NativeDeviceState,
     note_length: usize,
@@ -937,7 +963,7 @@ fn check_saved_fm4_note_event_source(
     };
     let mut playback = SessionPlayback::new(revision).unwrap();
     playback.apply(SessionPlaybackCommand::Play).unwrap();
-    let mut output = [[0.0; 2]; 43];
+    let mut output = [[0.0; 2]; 52];
     for block in output.chunks_mut(11) {
         playback.render(block).unwrap();
     }
