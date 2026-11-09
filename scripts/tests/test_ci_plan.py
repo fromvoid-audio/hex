@@ -1645,7 +1645,7 @@ class ModuleScopeTests(unittest.TestCase):
         filters = plan.module_test_filters(root, [path], inventory, [owner])
         self.assertEqual(filters, {owner: ["editor::pending_edit::"]})
         viewport = "editor::viewport::"
-        timeline = ["editor::musical_time::", "editor::signed_frame_viewport::", viewport]
+        timeline = ["editor::musical_time::", "editor::seek::", "editor::signed_frame_viewport::", viewport]
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/src/editor/viewport.rs"], inventory, [owner]),
             {owner: timeline})
@@ -1713,7 +1713,7 @@ class ModuleScopeTests(unittest.TestCase):
             if unit:
                 self.assertTrue(ci.module_scoped(unit[0].argv))
                 for name in names:
-                    if name != recovery_integration and name not in timeline[:2]:
+                    if name != recovery_integration and name not in timeline[:3]:
                         self.assertIn(name, unit[0].argv)
                 if recovery in names:
                     library = next(step for step in steps if step.step_id == "ui-feature-tests")
@@ -1736,8 +1736,8 @@ class ModuleScopeTests(unittest.TestCase):
         inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
                       "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
                       "targets": [{"kind": ["lib"]}]}]
-        timeline = ["editor::musical_time::", "editor::signed_frame_viewport::", "editor::viewport::"]
-        for path in ("musical_time.rs", "signed_frame_viewport.rs", "viewport.rs"):
+        timeline = ["editor::musical_time::", "editor::seek::", "editor::signed_frame_viewport::", "editor::viewport::"]
+        for path in ("musical_time.rs", "seek.rs", "signed_frame_viewport.rs", "viewport.rs"):
             self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner]),
                              {owner: timeline})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_timeline.rs"], inventory, [owner]),
