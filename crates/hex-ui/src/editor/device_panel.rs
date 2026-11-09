@@ -2094,7 +2094,7 @@ fn render_effect(
                 leading,
                 header_actions,
                 body,
-                modulators::panel(view, cx, device, device_view),
+                modulators::panel(view, cx, device, device_view, true),
             )
         }
         Err(error) => {
@@ -2805,8 +2805,15 @@ fn render_instrument(
                         },
                         device_view,
                     );
-
-                    device_frame(
+                    let modulation = (device_view.type_id.as_str() == Ok("hex.instrument.fm4")
+                        && view
+                            .state
+                            .as_ref()
+                            .and_then(|state| state.project.track(track))
+                            .is_some_and(hex_project::Track::receives_source_audio))
+                    .then(|| modulators::panel(view, cx, device, device_view, false))
+                    .flatten();
+                    hex_widgets::device_frame_with_modulators(
                         device_drag_title(
                             view,
                             cx,
@@ -2818,6 +2825,7 @@ fn render_instrument(
                         leading,
                         header_actions,
                         body,
+                        modulation,
                     )
                 }
             }

@@ -43,7 +43,7 @@ impl EditorPerforms {
 pub struct EditorPcm {
     pub block: Block,
     pub performs: EditorPerforms,
-    pub restoration: Option<EditorRestoration>,
+    pub restorations: EditorRestorations,
 }
 
 /// The canonical restoration choice for one original worker target.
@@ -70,13 +70,98 @@ impl EditorTouchPlan {
     }
 }
 
+/// One raw ParamID and its prepared read/base restoration choice.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EditorTouchTarget {
+    pub parameter: u32,
+    pub base: f64,
+    pub reading: bool,
+}
+
+/// All declared targets of one source-bound group scope. Construction
+/// refuses duplicate, unsorted or invalid targets before sending any input.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EditorTouchPlanSet {
+    scope: NonZeroU64,
+    targets: [EditorTouchTarget; MAX_PARAMETER_EDITS],
+    len: usize,
+}
+impl EditorTouchPlanSet {
+    pub fn new(scope: NonZeroU64, targets: &[EditorTouchTarget]) -> Result<Self> {
+        if !(2..=MAX_PARAMETER_EDITS).contains(&targets.len())
+            || targets
+                .windows(2)
+                .any(|rows| rows[0].parameter >= rows[1].parameter)
+            || targets.iter().any(|target| {
+                target.parameter > i32::MAX as u32 || !(0.0..=1.0).contains(&target.base)
+            })
+        {
+            return Err(Error::Protocol("invalid editor touch group"));
+        }
+        let mut plan = Self {
+            scope,
+            targets: Default::default(),
+            len: targets.len(),
+        };
+        plan.targets[..plan.len].copy_from_slice(targets);
+        Ok(plan)
+    }
+
+    pub fn scope(&self) -> NonZeroU64 {
+        self.scope
+    }
+
+    pub fn targets(&self) -> &[EditorTouchTarget] {
+        &self.targets[..self.len]
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) const WIRE_BYTES: usize = 16 + 16 * MAX_PARAMETER_EDITS;
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn wire(&self) -> [u8; Self::WIRE_BYTES] {
+        let mut bytes = [0; Self::WIRE_BYTES];
+        bytes[..8].copy_from_slice(&self.scope.get().to_le_bytes());
+        bytes[8] = self.len as u8;
+        for (row, target) in bytes[16..].chunks_exact_mut(16).zip(self.targets()) {
+            row[..4].copy_from_slice(&target.parameter.to_le_bytes());
+            row[4] = u8::from(target.reading);
+            row[8..].copy_from_slice(&target.base.to_bits().to_le_bytes());
+        }
+        bytes
+    }
+}
+
 /// An actual restored SDK sample following the exact ordered gesture End.
 /// The subsequent compensated Main delivery remains a separate witness.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EditorRestoration {
     pub sequence: u64,
     pub gesture: u64,
     pub parameter: u32,
+}
+
+/// Effective restorations in the same physical quantum, ordered by the
+/// original SDK End sequences, with at most one row for each raw target.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EditorRestorations {
+    rows: [EditorRestoration; MAX_PARAMETER_EDITS],
+    len: usize,
+}
+impl EditorRestorations {
+    pub fn as_slice(&self) -> &[EditorRestoration] {
+        &self.rows[..self.len]
+    }
+
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+    pub(crate) fn push(&mut self, row: EditorRestoration) -> Result<()> {
+        *self
+            .rows
+            .get_mut(self.len)
+            .ok_or(Error::Protocol("editor restoration capacity exceeded"))? = row;
+        self.len += 1;
+        Ok(())
+    }
 }
 
 // Native main-thread FIFO plus the eight worker handoff slots. Completed
