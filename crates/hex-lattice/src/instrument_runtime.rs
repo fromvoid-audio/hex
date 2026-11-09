@@ -179,6 +179,15 @@ pub trait PreparedMutableInstrumentRuntime: Send + Sync {
     fn parameter_automation_descriptors(&self) -> &[hex_lattice_contract::ParameterDescriptor] {
         &[]
     }
+    /// Exact sample-rate semantics for one parameter of this prepared instance.
+    /// The parameter must also appear in the borrowed automation descriptors,
+    /// and both actual twins must agree with the factory at admission.
+    fn parameter_modulation_semantics(
+        &self,
+        _parameter: hex_lattice_contract::ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        None
+    }
 
     /// Immutable opt-in for exact read-only active occurrence IDs. Both actual
     /// twins must agree before the pair is admitted; the default is unsupported.
@@ -459,6 +468,7 @@ pub enum NativeInstrumentRuntimeError {
     InvalidOccurrenceGain,
     UnsupportedOccurrenceGain,
     UnsupportedParameterAutomation,
+    UnsupportedParameterModulation,
     InvalidParameterAutomation,
     RuntimeBudgetExceeded,
     InvalidEventBatch,
@@ -484,6 +494,9 @@ impl NativeInstrumentRuntimeError {
             }
             Self::InvalidOccurrenceGain => "native instrument occurrence gain is invalid",
             Self::UnsupportedOccurrenceGain => "native instrument occurrence gain is unsupported",
+            Self::UnsupportedParameterModulation => {
+                "native instrument sample-rate modulation is unsupported"
+            }
             Self::UnsupportedParameterAutomation => {
                 "native instrument parameter automation is unsupported"
             }
@@ -564,8 +577,8 @@ impl NativeInstrumentRuntimePair {
         let mut primary = prepared.create_runtime();
         let mut scratch = prepared.create_runtime();
         let parameter_automation = !descriptors.is_empty();
-        if !automation::matches_grants(primary.as_mut(), descriptors)
-            || !automation::matches_grants(scratch.as_mut(), descriptors)
+        if !automation::matches_grants(primary.as_mut(), prepared, descriptors)
+            || !automation::matches_grants(scratch.as_mut(), prepared, descriptors)
         {
             return Err(NativeInstrumentRuntimeError::IncompatibleTwins);
         }
