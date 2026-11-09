@@ -36,6 +36,7 @@ pub enum AbortReason {
     Saturated,
 }
 
+#[allow(clippy::large_enum_variant)] // Fixed inline callback receipts; boxing would allocate.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Receipt {
     Confirmed(ConfirmedQuantum),

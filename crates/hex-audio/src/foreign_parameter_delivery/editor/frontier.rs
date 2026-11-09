@@ -138,10 +138,10 @@ impl Frontier {
         start: u64,
         end: u64,
     ) -> Result<Option<ConfirmedQuantum>, AbortReason> {
-        if !self
+        if self
             .pending
             .front()
-            .is_some_and(|pending| pending.due < end)
+            .is_none_or(|pending| pending.due >= end)
         {
             return Ok(None);
         }
