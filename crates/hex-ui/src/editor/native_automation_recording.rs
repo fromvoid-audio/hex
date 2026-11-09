@@ -453,7 +453,9 @@ impl EditorView {
         device: DeviceId,
         kind: DeviceAutomationTarget,
     ) {
-        if self.native_automation_recorder.busy()
+        if self.automation_close_preflight.frozen()
+            || self.automation_take_recovery.unresolved()
+            || self.native_automation_recorder.busy()
             || self.gain_recorder.blocks_edits()
             || self.midi_recorder.blocks_edits()
             || self.device_gesture_pending()
@@ -633,6 +635,26 @@ impl EditorView {
         gesture: GestureTarget,
         value: ParameterValue,
     ) -> Result<Option<GestureKey>, &'static str> {
+        self.begin_native_automation(gesture, value, None)
+    }
+
+    /// A discrete widget owns one value and no ongoing pointer gesture. Mark
+    /// release at admission; the recorder still waits for its actual Set receipt.
+    pub(super) fn begin_native_automation_step(
+        &mut self,
+        gesture: GestureTarget,
+        value: ParameterValue,
+    ) -> Result<bool, &'static str> {
+        self.begin_native_automation(gesture, value, Some(End::Release))
+            .map(|key| key.is_some())
+    }
+
+    fn begin_native_automation(
+        &mut self,
+        gesture: GestureTarget,
+        value: ParameterValue,
+        end: Option<End>,
+    ) -> Result<Option<GestureKey>, &'static str> {
         if self.automation_close_preflight.frozen() {
             return Err("close is pending · automation recording is unavailable");
         }
@@ -643,9 +665,12 @@ impl EditorView {
             return Ok(None);
         };
         let kind = automation_target(parameter);
-        if !self.native_automation_arm_selected(device, kind) {
+        let Some(arm) = self.native_automation_recorder.arm.filter(|arm| {
+            arm.target == (ArmTarget::Native { device, kind })
+                && arm.generation == self.project_generation
+        }) else {
             return Ok(None);
-        }
+        };
         let audio = self
             .audio
             .as_ref()
@@ -653,8 +678,15 @@ impl EditorView {
         let status = audio
             .status()
             .ok_or("automation recording output is unavailable")?;
-        if !status.playing.load(Acquire) {
+        let playing = status.playing.load(Acquire);
+        if self.play_intent.desired_playing(playing) != playing {
+            return Err("wait for playback to settle before recording automation");
+        }
+        if !playing {
             return Ok(None);
+        }
+        if self.automation_take_recovery.unresolved() {
+            return Err("finish or recover the current automation take first");
         }
         if self.device_gesture_pending()
             || self.gain_recorder.blocks_edits()
@@ -666,6 +698,9 @@ impl EditorView {
             .state
             .as_ref()
             .ok_or("automation source is unavailable")?;
+        if state.revision != arm.revision {
+            return Err("automation arm changed · arm this parameter again");
+        }
         let input = hex_engine::native_parameter_input_target(&state.project, device, kind)
             .map_err(|error| error.0)?;
         let source = status
@@ -727,7 +762,7 @@ impl EditorView {
             phase: Phase::Starting,
             latest: value,
             pending: Some(pending),
-            end: None,
+            end,
             end_sent: None,
             issued_sequence: 0,
             delivered_sequence: 0,

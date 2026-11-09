@@ -7,34 +7,6 @@ use std::io::Read;
 pub(crate) const EDITOR_PCM_BIT: u16 = 0x4000;
 const EDITOR_POINT_BYTES: usize = 32;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct EditorPerform {
-    pub sequence: u64,
-    pub gesture: u64,
-    pub id: u32,
-    pub normalized: f64,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct EditorPerforms {
-    points: [EditorPerform; MAX_PARAMETER_EDITS],
-    len: usize,
-}
-
-impl EditorPerforms {
-    pub fn as_slice(&self) -> &[EditorPerform] {
-        &self.points[..self.len]
-    }
-}
-
-/// One successful SDK reply, including the exact original binding and quantum.
-/// Multiple staged editor callbacks to the same parameter at offset zero
-/// report only the final one that actually entered the processor.
-pub struct EditorPcm {
-    pub block: Block,
-    pub performs: EditorPerforms,
-}
-
 struct Layout {
     pcm_end: usize,
     len: usize,
@@ -122,13 +94,12 @@ pub(crate) fn editor_pcm(
         {
             return Err(Error::Protocol("invalid effective editor PCM input"));
         }
-        performs.points[performs.len] = EditorPerform {
+        performs.push(EditorPerform {
             sequence,
             gesture,
             id,
             normalized,
-        };
-        performs.len += 1;
+        })?;
         previous = sequence;
     }
     reader.end()?;
