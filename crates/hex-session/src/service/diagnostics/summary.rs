@@ -556,6 +556,9 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("splice_device_automation_touch"; ["device" => device.value(), "target" => target, "span_count" => spans.len()]; omitted="")
         }
+        Command::ReplaceDeviceModulation { device, modulation } => {
+            describe!("replace_device_modulation"; ["device" => device.value(), "source_count" => modulation.sources().len(), "route_count" => modulation.routes().len()]; omitted="")
+        }
         Command::ReplaceDeviceAutomationTarget {
             device,
             target,
@@ -1301,6 +1304,14 @@ pub(super) fn command(value: &Command) -> Description {
 
 pub(super) fn request(value: &Request) -> Description {
     match value {
+        Request::ReplaceDeviceModulation {
+            project_generation,
+            revision,
+            device,
+            modulation,
+        } => {
+            describe!("replace_device_modulation"; ["project_generation" => project_generation, "revision" => revision, "device" => device.value(), "sources" => modulation.sources().len(), "routes" => modulation.routes().len()]; omitted="modulator payloads")
+        }
         Request::PaintMidiClip(intent) => {
             describe!("paint_midi_clip"; ["project_generation" => intent.project_generation, "revision" => intent.revision, "track" => intent.track.value(), "start" => intent.start.raw(), "length" => intent.length.raw()]; omitted="")
         }

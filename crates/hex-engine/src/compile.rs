@@ -1,6 +1,8 @@
 //! Control-side compilation of a canonical edit snapshot into offline playback.
 //! This allocates and retains PCM references; it must never run in a callback.
-use crate::{Audio, Invalid, Project, StreamedSourceMetadata, Track};
+use crate::{
+    Audio, Invalid, Project, StreamedSourceMetadata, Track, serial_effect_power::EffectPower,
+};
 use hex_project::{Asset, AssetId, DeviceId};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -66,15 +68,6 @@ pub(crate) fn prepare_source_instruments(
     samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
 ) -> Result<BTreeMap<DeviceId, PreparedSourceInstrument>, Invalid> {
     let mut instruments = BTreeMap::new();
-    for source in project
-        .native_sources()
-        .iter()
-        .filter(|source| project.source_contributors(source.id()).next().is_some())
-    {
-        if source.devices().count() != 1 {
-            return Err(Invalid("native source device chains are not prepared"));
-        }
-    }
     for track in project.tracks() {
         let Some(device) = track.instrument() else {
             continue;
@@ -203,6 +196,7 @@ fn prepare_foreign_instrument(
         hex_lattice::PreparedParameterAutomation::for_foreign,
     );
     Ok(Some(hex_lattice::PreparedRuntimeInstance {
+        modulation: None,
         automation,
         meter: Default::default(),
         owner,
@@ -947,7 +941,7 @@ fn compile_project_inner<'a>(
         .map_err(|_| Invalid("could not reserve compiled return tracks"))?;
     for return_track in snapshot.return_tracks() {
         let effect_plan = compile_effect_devices(
-            return_track.devices(),
+            EffectPower::new(return_track.devices())?,
             hex_lattice::ProcessorChainOwner::Return(return_track.id().value()),
             snapshot,
             &device_context,
@@ -986,7 +980,7 @@ fn compile_project_inner<'a>(
         });
     }
     let main_plan = compile_effect_devices(
-        snapshot.main_devices(),
+        EffectPower::new(snapshot.main_devices())?,
         hex_lattice::ProcessorChainOwner::Main,
         snapshot,
         &device_context,
@@ -1053,6 +1047,14 @@ fn compile_project_inner<'a>(
         .map(|route| (route.source(), route.destination()))
         .collect();
     project.midi_routing.sort_unstable();
+    project.source_effects = {
+        let context = hex_lattice::DevicePreparationContext {
+            sample_rate: project.sample_rate(),
+            tuning: project.shared_contexts().tuning(),
+            resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        };
+        prepare_source_effect_recipes(&project, snapshot, registry, &context)?
+    };
     project.signal_graph = crate::signal_graph::SignalGraph::prepare(&project, &feeds, snapshot)?;
     project.main_output_latency_frames = crate::main_chain::output_latency(
         project
@@ -1173,7 +1175,7 @@ fn compile_device_effects(
     external_inputs: &[crate::device_automation::NativeParameterInputTarget],
 ) -> Result<CompiledEffectPlan, Invalid> {
     compile_effect_devices(
-        track.devices(),
+        EffectPower::new(track.devices())?,
         hex_lattice::ProcessorChainOwner::Track(track.id().value()),
         arrangement,
         context,
@@ -1183,8 +1185,118 @@ fn compile_device_effects(
     )
 }
 
+/// Build at most one source-owned recipe per compiled receiver. Definitions
+/// without a current receiver do not acquire DSP or resource custody.
+pub(crate) fn prepare_source_effect_recipes(
+    compiled: &Project,
+    arrangement: &hex_project::Project,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+    context: &hex_lattice::DevicePreparationContext<'_>,
+) -> Result<Vec<crate::source_effect_stage::PreparedSourceEffects>, Invalid> {
+    let count = compiled
+        .tracks
+        .iter()
+        .filter(|track| {
+            track
+                .source_id()
+                .filter(|_| track.receives_source_audio())
+                .and_then(|source| arrangement.native_source(source))
+                .is_some_and(|definition| !definition.post_instrument_effects().is_empty())
+        })
+        .count();
+    let mut recipes = Vec::new();
+    recipes
+        .try_reserve_exact(count)
+        .map_err(|_| Invalid("could not reserve prepared source recipe"))?;
+    for (receiver, track) in compiled.tracks.iter().enumerate() {
+        let Some(source) = track.source_id().filter(|_| track.receives_source_audio()) else {
+            continue;
+        };
+        let definition = arrangement
+            .native_source(source)
+            .ok_or(Invalid("compiled receiver source no longer exists"))?;
+        if definition.instrument_index() == 0 && definition.post_instrument_effects().is_empty() {
+            continue;
+        }
+        use crate::source_effect_stage::metadata;
+        let suffix = definition.post_instrument_effects();
+        for device in suffix {
+            metadata::validate_authored(device.state(), registry)?;
+        }
+        let instances = prepare_source_effect_suffix(arrangement, source, registry, context)?;
+        let factory_bytes = instances.iter().try_fold(0usize, |bytes, instance| {
+            bytes
+                .checked_add(metadata::factory_bytes(instance, registry)?)
+                .ok_or(Invalid("source effect factory byte count overflow"))
+        })?;
+        recipes.push(crate::source_effect_stage::PreparedSourceEffects {
+            source,
+            receiver,
+            instances: Arc::from(instances),
+            factory_bytes,
+        });
+    }
+    crate::source_effect_stage::SourceEffectStages::validate_preparation(compiled, &recipes)?;
+    Ok(recipes)
+}
+
+/// Prepare an ordered native source suffix for control-side use. Retained
+/// definitions remain inert unless explicitly prepared. This does not bind a
+/// source or admit its runtime into the live graph.
+pub fn prepare_source_effect_suffix(
+    arrangement: &hex_project::Project,
+    source_id: hex_project::SourceId,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+    context: &hex_lattice::DevicePreparationContext<'_>,
+) -> Result<Vec<hex_lattice::PreparedRuntimeInstance>, Invalid> {
+    let source = arrangement
+        .native_source(source_id)
+        .ok_or(Invalid("native source no longer exists"))?;
+    if source.instrument_index() != 0 {
+        return Err(Invalid(
+            "source effects before the instrument are not supported",
+        ));
+    }
+    if context.sample_rate != arrangement.sample_rate() {
+        return Err(Invalid(
+            "source effect preparation rate differs from the project",
+        ));
+    }
+    let suffix = source.post_instrument_effects();
+    if suffix.iter().any(is_vst3_instrument) {
+        return Err(Invalid("foreign source effects are not supported"));
+    }
+    if suffix
+        .iter()
+        .any(|device| !device.automation().is_empty() || !device.modulation().is_empty())
+    {
+        return Err(Invalid(
+            "source effect automation and modulation are not supported",
+        ));
+    }
+    let plan = compile_effect_devices(
+        EffectPower::after_instrument(suffix, source.instrument())?,
+        hex_lattice::ProcessorChainOwner::Source(source_id.value()),
+        arrangement,
+        context,
+        registry,
+        None,
+        &[],
+    )?;
+    if !plan
+        .device_chain
+        .iter()
+        .all(crate::source_effect_stage::native_zero_latency)
+    {
+        return Err(Invalid(
+            "source effects require native zero-latency processors",
+        ));
+    }
+    Ok(plan.device_chain)
+}
+
 fn compile_effect_devices(
-    source_devices: &[hex_project::Device],
+    source_devices: EffectPower<'_>,
     owner: hex_lattice::ProcessorChainOwner,
     arrangement: &hex_project::Project,
     context: &hex_lattice::DevicePreparationContext<'_>,
@@ -1195,11 +1307,11 @@ fn compile_effect_devices(
     let sample_rate = context.sample_rate;
     let mut devices = Vec::new();
     devices
-        .try_reserve_exact(source_devices.len())
+        .try_reserve_exact(source_devices.remaining())
         .map_err(|_| Invalid("could not reserve prepared device chain"))?;
 
     let mut admission_matrix = hex_lattice::StereoMatrix::identity();
-    for entry in crate::serial_effect_power::EffectPower::new(source_devices)? {
+    for entry in source_devices {
         let (device, bypassed) = entry?;
         let identity = hex_lattice::ProcessorInstanceIdentity::new(owner, device.id().value())
             .map_err(|_| Invalid("invalid prepared device identity"))?;
@@ -1230,15 +1342,28 @@ fn compile_effect_devices(
                 external_inputs,
             )?
         };
+        let modulation = crate::device_modulation::EffectModulation::plan(
+            device,
+            Some(arrangement),
+            sample_rate,
+            automation.parameter_ids(),
+        )?;
+        let parameters = modulation
+            .as_ref()
+            .map_or_else(|| automation.parameter_ids(), |plan| plan.parameter_ids());
         let prepared_device = registry
-            .prepare_runtime_instance_with_automation(
-                identity,
-                &migrated,
-                context,
-                automation.parameter_ids(),
-            )
+            .prepare_runtime_instance_with_automation(identity, &migrated, context, parameters)
             .map_err(|_| Invalid("native device state or automation could not be prepared"))?;
         let processor = prepared_device.processor;
+        let modulation = modulation
+            .map(|plan| {
+                let definition = registry
+                    .definition(migrated.type_id())
+                    .ok_or(Invalid("modulation requires a native effect provider"))?;
+                plan.prepare(&migrated, definition, processor.as_ref())
+                    .map_err(|error| Invalid(error.0))
+            })
+            .transpose()?;
         // An explicitly admitted unavailable effect has no factory. Keep its
         // canonical lanes through document staging; the restored foreign
         // worker must still prove its exact metadata before any playback.
@@ -1284,6 +1409,7 @@ fn compile_effect_devices(
                 .map_err(|error| Invalid(error.0))?;
         }
         devices.push(hex_lattice::PreparedRuntimeInstance {
+            modulation,
             automation,
             meter: Default::default(),
             owner,

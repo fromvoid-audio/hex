@@ -108,6 +108,7 @@ pub fn default_instrument_state() -> Result<NativeDeviceState, Invalid> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Device {
+    pub(crate) modulation: crate::DeviceModulation,
     pub(crate) parent: Option<DeviceId>,
     pub(crate) automation: Vec<crate::DeviceAutomation>,
     pub(crate) id: DeviceId,
@@ -116,6 +117,9 @@ pub struct Device {
     pub(crate) comparison: Option<crate::DeviceComparison>,
 }
 impl Device {
+    pub fn modulation(&self) -> &crate::DeviceModulation {
+        &self.modulation
+    }
     /// Serial-unit parent in this canonical chain; `None` identifies a root.
     pub fn parent(&self) -> Option<DeviceId> {
         self.parent
@@ -145,6 +149,7 @@ impl Project {
         }
         let mut candidate = self.clone();
         candidate.apply(command.clone())?;
+        candidate.validate_device_modulation()?;
         Ok(candidate)
     }
 }
@@ -356,6 +361,7 @@ fn insert_instrument(
     let binding = project.register_instrument(
         name,
         Device {
+            modulation: Default::default(),
             parent: None,
             automation: Vec::new(),
             comparison: None,
@@ -410,6 +416,7 @@ fn insert(
     target.devices.insert(
         index,
         Device {
+            modulation: Default::default(),
             parent: None,
             automation: Vec::new(),
             comparison: None,

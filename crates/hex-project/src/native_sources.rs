@@ -53,6 +53,9 @@ impl SourceBinding {
     pub(crate) fn receiver(&self) -> Option<TrackId> {
         self.0.receiver()
     }
+    pub(crate) fn devices(&self) -> impl Iterator<Item = &Device> {
+        self.0.devices()
+    }
 }
 impl NativeSource {
     pub fn id(&self) -> SourceId {
@@ -70,6 +73,10 @@ impl NativeSource {
     pub fn receiver(&self) -> Option<TrackId> {
         self.definition.receiver
     }
+    /// Effects in authored order after the designated instrument.
+    pub fn post_instrument_effects(&self) -> &[Device] {
+        &self.definition.effects[self.instrument_index()..]
+    }
     pub fn devices(&self) -> impl Iterator<Item = &Device> {
         let index = self.instrument_index();
         self.definition
@@ -77,7 +84,7 @@ impl NativeSource {
             .iter()
             .take(index)
             .chain(std::iter::once(self.instrument()))
-            .chain(self.definition.effects.iter().skip(index))
+            .chain(self.post_instrument_effects())
     }
     pub(crate) fn from_parts(
         id: SourceId,
@@ -136,6 +143,7 @@ impl From<&NativeSource> for NativeSourceSnapshot {
             devices: source
                 .devices()
                 .map(|d| DeviceSnapshot {
+                    modulation: d.modulation.clone(),
                     parent: d.parent.map(|id| id.value()),
                     automation: d.automation().to_vec(),
                     id: d.id().value(),
@@ -420,6 +428,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 .map(|(index, state)| {
                     // allocate_id_range proved this complete inclusive range fits.
                     Device {
+                        modulation: Default::default(),
                         parent: None,
                         automation: Vec::new(),
                         id: DeviceId(first + 1 + index as u64),
@@ -478,5 +487,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
 
 #[cfg(test)]
 mod binding_tests;
+#[cfg(test)]
+mod clipboard_tests;
 #[cfg(test)]
 mod tests;

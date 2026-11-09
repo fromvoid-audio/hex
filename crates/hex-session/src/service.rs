@@ -37,9 +37,10 @@ mod native_automation_recording;
 pub use native_automation_recording::{
     DeviceAutomationSource, DeviceAutomationTakeAction, DeviceAutomationTakeCompletion,
     DeviceAutomationTakeProgress, DeviceAutomationTakeScope, DeviceCaptureTarget,
-    FailedPluginContinuation, copy_failed_plugin_on_control,
-    copy_failed_plugin_with_receipt_on_control, prepare_failed_plugin_continuation,
-    prepare_verified_vst3_recovery_on_control,
+    FailedPluginContinuation, MAX_NATIVE_RECOVERY_CONTINUATION_EVENTS, NativeRecoveryContinuation,
+    NativeRecoveryTerminal, copy_failed_plugin_on_control,
+    copy_failed_plugin_with_receipt_on_control, copy_native_recovery_on_control,
+    prepare_failed_plugin_continuation, prepare_verified_vst3_recovery_on_control,
 };
 #[cfg(test)]
 mod busy_reason_tests;
@@ -490,6 +491,14 @@ pub enum DeviceClipboardAction {
 pub enum Request {
     /// Source-bound Arrangement paint; resolves through the canonical overwrite command.
     PaintMidiClip(PaintMidiClip),
+    /// Replace one device's bank against the displayed canonical revision.
+    /// Resolve before touching a gesture or preparing a new playback graph.
+    ReplaceDeviceModulation {
+        project_generation: u64,
+        revision: u64,
+        device: hex_project::DeviceId,
+        modulation: hex_project::DeviceModulation,
+    },
     DeviceClipboard {
         project_generation: u64,
         revision: u64,
@@ -687,13 +696,15 @@ pub enum Request {
     },
     /// Recover one completed device take without reconstructing its old worker.
     /// Current context fences publication; expected target/provenance bind only
-    /// the immutable file. Every path echoes request_id through take completion.
+    /// the immutable file. A selected verified copy is revalidated under
+    /// the same reader used for adoption. Every path echoes request_id.
     RecoverDeviceAutomationTake {
         request_id: u64,
         context: hex_engine::AudioSourceContext,
         target: hex_storage::automation_draft::DraftTarget,
         expected: automation_draft::DraftProvenance,
         path: PathBuf,
+        receipt: Option<automation_draft::RecoveryCopyReceipt>,
     },
     ArmNativeParameterRecording {
         project_generation: u64,
@@ -2908,6 +2919,7 @@ fn run_worker(
                 target,
                 expected,
                 path,
+                receipt,
             } => {
                 let current = hex_engine::AudioSourceContext {
                     project_generation,
@@ -2932,6 +2944,7 @@ fn run_worker(
                         *target,
                         *expected,
                         path,
+                        *receipt,
                     )
                 };
                 device_automation_take_complete = Some(DeviceAutomationTakeCompletion {
@@ -3009,13 +3022,18 @@ fn run_worker(
                         *scope,
                         gesture_active,
                     )
-                } else if let DeviceAutomationTakeAction::KeepFailedPluginCopy { max_events } =
-                    action
+                } else if let DeviceAutomationTakeAction::KeepFailedPluginCopy {
+                    path,
+                    receipt,
+                    max_events,
+                } = action
                 {
                     plugin_recording::keep_failed_copy(
                         &mut plugin_recording,
                         &mut native_automation_take,
                         *scope,
+                        path,
+                        *receipt,
                         *max_events,
                         gesture_active,
                     )
@@ -3049,6 +3067,15 @@ fn run_worker(
                         failed_plugin_adoption = Some(adoption);
                         Ok(Step::Commit(command, path))
                     })()
+                } else if gesture_active
+                    && matches!(
+                        action,
+                        DeviceAutomationTakeAction::PrepareNativeRecovery
+                            | DeviceAutomationTakeAction::CopyNativeRecovery { .. }
+                            | DeviceAutomationTakeAction::KeepNativeRecoveryCopy { .. }
+                    )
+                {
+                    Err("native recovery requires a quiescent gesture".into())
                 } else if gesture_active && matches!(action, DeviceAutomationTakeAction::Poll) {
                     // A take must never finalize somebody else's active edit.
                     Ok(Step::Progress(DeviceAutomationTakeProgress::Pending))
@@ -3345,6 +3372,26 @@ fn run_worker(
                         *before,
                     )
                     .and_then(|command| device_defaults::initialize(command, *class, defaults_root))
+                },
+            ),
+            Request::ReplaceDeviceModulation {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                device,
+                modulation,
+            } => Some(
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    Err("modulation edit cancelled · project changed".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Err("finish or cancel the active gesture before editing modulation".into())
+                } else {
+                    Ok(Command::ReplaceDeviceModulation {
+                        device: *device,
+                        modulation: modulation.clone(),
+                    })
                 },
             ),
             Request::PaintMidiClip(intent) => Some(intent.resolve(
@@ -4634,6 +4681,9 @@ fn run_worker(
                 }
                 Request::PaintMidiClip(_) => {
                     error = Some("clip paint target was not resolved".into());
+                }
+                Request::ReplaceDeviceModulation { .. } => {
+                    error = Some("modulation target was not resolved".into());
                 }
                 Request::MoveExistingClips { .. } => {
                     error = Some("clip move target was not resolved".into());

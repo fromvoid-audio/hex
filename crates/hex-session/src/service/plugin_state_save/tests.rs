@@ -193,6 +193,13 @@ fn save_projection_refuses_partial_stale_duplicate_malformed_and_wrong_binary() 
             "fault {fault}"
         );
     }
+    let mut source_owned = captures(&project);
+    let source = project.tracks()[1].source_id().unwrap();
+    source_owned[1].owner = ProcessorChainOwner::Source(source.value());
+    assert_eq!(
+        project_with_captures(project.clone(), source_owned).unwrap_err(),
+        "captured source effects are not supported"
+    );
     assert_eq!(
         project_with_captures(project.clone(), Vec::new()).unwrap(),
         project

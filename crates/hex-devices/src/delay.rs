@@ -15,6 +15,10 @@ use state::{Settings, decode};
 pub struct DelayDefinition;
 pub static DEFINITION: DelayDefinition = DelayDefinition;
 impl NativeDeviceDefinition for DelayDefinition {
+    fn source_effect_factory_bytes(&self) -> Option<usize> {
+        // The prepared factory contains only inline settings and coefficients.
+        Some(crate::source_effect_arc_bytes::<runtime::Factory>())
+    }
     fn supports_parameter_automation(
         &self,
         state: &NativeDeviceState,

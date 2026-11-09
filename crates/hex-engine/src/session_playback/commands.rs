@@ -169,6 +169,9 @@ impl SessionPlayback {
         self.suppressions.clear();
         self.release_order = 0;
         self.main_chain.reset();
+        for chain in self.source_effects.chains_mut() {
+            chain.reset();
+        }
         for chain in &mut self.device_chains {
             chain.reset();
         }
@@ -345,6 +348,9 @@ impl SessionPlayback {
         self.suppressions.clear();
         self.release_order = 0;
         self.main_chain.reset();
+        for chain in self.source_effects.chains_mut() {
+            chain.reset();
+        }
         for chain in &mut self.device_chains {
             chain.reset();
         }

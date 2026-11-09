@@ -7,6 +7,8 @@
 //! not transfer source custody. Every destructive frontier records Pending before taking an owner.
 //! Only a normal return from the actual destructor closes that frontier; failure retains the first
 //! payload and remaining owners without retry or invented completion.
+#[cfg(test)]
+mod auto_pan_modulation_tests;
 mod claimed;
 mod draft;
 #[cfg(test)]

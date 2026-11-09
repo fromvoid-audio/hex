@@ -946,12 +946,10 @@ fn shared_lfo_matches_independent_saturator_control_frames() {
     }
     let state = SATURATOR_DEFINITION.default_state().unwrap();
     let ids = [parameter::DRIVE, parameter::DRY_WET];
+    let factory = SaturatorDefinition::prepare_owned(&state, 48_000, &ids).unwrap();
     let targets = ids.map(|id| ModulationTarget {
         descriptor: *DESCRIPTORS.iter().find(|d| d.id == id).unwrap(),
-        semantics: SATURATOR_DEFINITION
-            .parameter_semantics_for_state(&state, id)
-            .unwrap()
-            .unwrap(),
+        semantics: factory.parameter_modulation_semantics(id).unwrap(),
         base: SATURATOR_DEFINITION.read_parameter(&state, id).unwrap(),
     });
     let program = PreparedModulation::new(
@@ -961,11 +959,13 @@ fn shared_lfo_matches_independent_saturator_control_frames() {
                 source: 0,
                 target: ids[0],
                 amount: 0.1,
+                range: [-1.0, 1.0],
             },
             ModulationRoute {
                 source: 0,
                 target: ids[1],
                 amount: 0.25,
+                range: [-1.0, 1.0],
             },
         ],
         1,
@@ -978,7 +978,7 @@ fn shared_lfo_matches_independent_saturator_control_frames() {
     lfo.render(&mut samples);
     let sources = [&samples[..]];
     let block = program.block(None, &sources, samples.len()).unwrap();
-    let factory = SaturatorDefinition::prepare_owned(&state, 48_000, &ids).unwrap();
+
     let mut actual_runtime = factory.create_runtime();
     let mut expected_runtime = factory.create_runtime();
     let mut actual = [[0.2, -0.1]; 64];
