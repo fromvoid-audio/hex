@@ -51,6 +51,7 @@ public:
             (!held || (held->gesture==edit.gesture && !held->end_sequence));
     }
     bool can_stage(const EditEvent& edit) const {
+        if(is_group_marker(edit.kind)) return true;
         if(restoring && current && edit.id==current->parameter) return false;
         if(!held || edit.id!=held->plan.parameter) return true;
         // Do not let a queued new gesture collide with the actual release.
