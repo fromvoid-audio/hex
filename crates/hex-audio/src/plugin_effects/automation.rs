@@ -384,6 +384,17 @@ mod retained_tests {
         start: u64,
         program: &PreparedForeignAutomation,
     ) {
+        stage_origins(callback, frames, program, |offset| {
+            Some(start + offset as u64)
+        });
+    }
+
+    fn stage_origins(
+        callback: &mut Callback,
+        frames: usize,
+        program: &PreparedForeignAutomation,
+        origin: impl Fn(usize) -> Option<u64>,
+    ) {
         let transport = TransportProgram(program.borrow());
         let input = [[0.0; 2]; 256];
         let mut output = [[0.0; 2]; 256];
@@ -401,7 +412,7 @@ mod retained_tests {
                     },
                     AuthoredSegment {
                         program: &transport,
-                        origin: &|offset| Some(start + offset as u64),
+                        origin: &origin,
                     },
                 )
                 .unwrap();
@@ -536,6 +547,102 @@ mod retained_tests {
             MAX_PARAMETER_POINTS - points.len()
         );
         worker.complete(request.block).unwrap();
+    }
+
+    #[test]
+    fn recorded_lanes_stage_discontinuous_origins_without_callback_allocation_or_drop() {
+        use hex_engine::foreign_automation::{ParameterCapability, Program, QuantumProfile};
+        use hex_lattice_contract::DeviceAutomationTarget;
+        use hex_project::{
+            AutomationReadSelection, AutomationValue, DeviceAutomation, DeviceAutomationTouchSpan,
+            DeviceAutomationTouchStep, LoopRegion, Project,
+        };
+
+        let project = Project::new(8000).unwrap();
+        let tempo = project.tempo_map();
+        let beat = |frame| tempo.frame_to_beat(frame).unwrap();
+        let class = [1; 16];
+        let lanes = [(0, 0.75), (11, 0.5)].map(|(parameter, value)| DeviceAutomation {
+            target: DeviceAutomationTarget::Vst3 { parameter },
+            vst3_class: Some(class),
+            read_selection: AutomationReadSelection::Authored,
+            points: Vec::new(),
+            touch: vec![DeviceAutomationTouchSpan {
+                start: beat(4100),
+                end: beat(4600),
+                steps: vec![DeviceAutomationTouchStep {
+                    beat: beat(4100),
+                    value: AutomationValue::new(value).unwrap(),
+                }],
+            }],
+        });
+        let capabilities = [0, 11, 23].map(|id| ParameterCapability {
+            id,
+            steps: 0,
+            normalized_base_bits: 0.25f64.to_bits(),
+        });
+        let region = LoopRegion::new(4000, 4200, true).unwrap();
+        let program = Program::prepare(
+            &lanes,
+            class,
+            &capabilities,
+            tempo,
+            QuantumProfile::for_arrangement_instrument(256, Some(region)),
+        )
+        .unwrap()
+        .unwrap();
+        let binding = ForeignProcessorBinding {
+            root: 1,
+            instance: 2,
+            graph: 3,
+            epoch: 4,
+        };
+        let bytes = program.backing_bytes().unwrap();
+        let program =
+            PreparedForeignAutomation::new(binding, NonZeroU64::MIN, program, bytes).unwrap();
+        let (_control, mut callback, mut worker) = channel(binding, 256).unwrap();
+        stage_origins(&mut callback, 256, &program, |offset| {
+            Some(4096 + (offset % 38) as u64)
+        });
+
+        let request = worker.receive_request().unwrap().unwrap();
+        let points = request.block.parameters.as_slice();
+        assert_eq!(points.len(), 57);
+        assert_eq!(
+            request.parameter_capacity,
+            MAX_PARAMETER_POINTS - points.len()
+        );
+        assert_eq!(points.iter().filter(|point| point.id == 23).count(), 1);
+        for point in points {
+            let expected = match (point.id, point.frame % 38 >= 4) {
+                (0, true) => 0.75,
+                (11, true) => 0.5,
+                _ => 0.25,
+            };
+            assert_eq!(point.normalized, expected);
+        }
+        worker.complete(request.block).unwrap();
+
+        // Eight repeated ranges actually need 65 points. The original
+        // transport refuses the whole quantum instead of sending a prefix.
+        let transport = TransportProgram(program.borrow());
+        callback.begin_physical_callback(256).unwrap();
+        let result = callback.stage_segment_with_authored_parameters(
+            0,
+            &[[0.0; 2]; 256],
+            &[],
+            &mut [[0.0; 2]; 256],
+            SegmentTiming {
+                playing: None,
+                at: |_| None,
+            },
+            AuthoredSegment {
+                program: &transport,
+                origin: &|offset| Some(4096 + (offset % 32) as u64),
+            },
+        );
+        assert!(matches!(result, Err(Fault::InvalidParameters)));
+        assert!(matches!(worker.receive_request(), Err(Fault::Revoked)));
     }
 
     #[test]
