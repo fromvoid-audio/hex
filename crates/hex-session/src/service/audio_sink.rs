@@ -79,6 +79,18 @@ impl<'a> PluginParameterGestureInput<'a> {
         self.canonical_state
     }
 }
+/// Canonical target selected for one original editor take. Desktop must bind
+/// these copied facts to the exact playing worker and its frozen base.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PluginEditorRecordingInput {
+    pub key: crate::device_gesture::GestureKey,
+    pub context: hex_engine::AudioSourceContext,
+    pub device: hex_project::DeviceId,
+    pub class: [u8; 16],
+    pub parameter: u32,
+    pub reading: bool,
+}
+
 /// Control-side observation copied only after matching the complete private
 /// final-output receipt. Persist `application.origin`, not the later delivery
 /// processing frame. A caller requesting these records owns their retention.
@@ -473,6 +485,26 @@ pub trait WorkerAudioSink: Send {
     ) -> Result<bool, String> {
         Ok(false)
     }
+    /// Bind a selected target without affecting SDK PCM. The caller opens the
+    /// shared durable draft using Ready before it may start this exact scope.
+    fn prepare_plugin_editor_recording(
+        &mut self,
+        _input: PluginEditorRecordingInput,
+    ) -> Result<PluginParameterObservation, String> {
+        Err("plugin editor recording is unavailable for this output".into())
+    }
+    /// Publish an exact previously prepared editor scope to the original SDK.
+    fn start_plugin_editor_recording(
+        &mut self,
+        _key: crate::device_gesture::GestureKey,
+    ) -> Result<(), String> {
+        Err("plugin editor recording is unavailable for this output".into())
+    }
+    /// Stop admission, retaining the accepted prefix until its terminal.
+    fn cancel_plugin_editor_recording(&mut self, _key: crate::device_gesture::GestureKey) -> bool {
+        false
+    }
+
     /// Drain bounded final-output observations after each confirmed preparation,
     /// including refusal and output loss. The requesting control owner retains
     /// every returned record until durable recording admission; never UI time.

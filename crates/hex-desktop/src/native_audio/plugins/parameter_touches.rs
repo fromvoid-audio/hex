@@ -57,17 +57,29 @@ impl Plugins {
         let recovery = recovery_allowed && control.status.applied_audio_source().is_none();
         self.latency_poll_at = now.checked_add(std::time::Duration::from_millis(10));
         let len = self.sources.len();
+        let recording = self.recording_binding().and_then(|binding| {
+            self.sources
+                .iter()
+                .position(|source| source.binding == binding && source.accepted && !source.retiring)
+        });
         for _ in 0..len {
-            let index = self.latency_poll % len;
-            self.latency_poll = (index + 1) % len;
+            let index = recording.unwrap_or(self.latency_poll % len);
+            if recording.is_none() {
+                self.latency_poll = (index + 1) % len;
+            }
             let source = &mut self.sources[index];
             if !source.accepted
                 || source.retiring
                 || source.project_generation != context.project_generation
             {
+                if recording.is_some() {
+                    return None;
+                }
                 continue;
             }
-            let requested_recovery = source.edit_recovery.unwrap_or(recovery);
+            let requested_recovery = source
+                .edit_recovery
+                .unwrap_or(recovery && recording.is_none());
             source.observes_latency |= requested_recovery;
             let result = if requested_recovery {
                 control.poll_native_source_recovery_edits_on_control(source.binding)
@@ -106,6 +118,8 @@ impl Plugins {
                 {
                     source.observed_latency_receipt = true;
                 }
+                let binding = source.binding;
+                self.observe_recording_order(binding, batch.edits.as_slice());
                 if recovery
                     && batch.pending_latency_restart.is_some()
                     && self.latency_notice.is_none_or(|(last, at)| {

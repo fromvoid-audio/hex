@@ -73,13 +73,14 @@ mod sampler_parameter;
 use audio_sink::WorkerEvents;
 pub use audio_sink::{
     ArrangementEditPosition, NativeSamplerInput, NativeSamplerReservationHold,
-    NativeSamplerRetryFacts, OfflineBounceSource, PluginParameterCapture, PluginParameterDelivery,
-    PluginParameterGestureError, PluginParameterGestureInput, PluginParameterGestureResult,
-    PluginParameterObservation, PluginParameterOverride, ResidentEffectPreparation,
-    ResidentFileInput, ResidentFileMetadata, ResidentFilePublication, ResidentFileSeekPreparer,
-    ResidentFileSeekRequest, ResidentFileSet, ResidentFreshRuntimeFence,
-    ResidentPublicationAcceptance, ResidentPublicationMetadata, ResidentPublicationPolicy,
-    ResidentPublicationReadiness, ResidentPublicationRefusal, ResidentRuntimeLoop, WorkerAudioSink,
+    NativeSamplerRetryFacts, OfflineBounceSource, PluginEditorRecordingInput,
+    PluginParameterCapture, PluginParameterDelivery, PluginParameterGestureError,
+    PluginParameterGestureInput, PluginParameterGestureResult, PluginParameterObservation,
+    PluginParameterOverride, ResidentEffectPreparation, ResidentFileInput, ResidentFileMetadata,
+    ResidentFilePublication, ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
+    ResidentFreshRuntimeFence, ResidentPublicationAcceptance, ResidentPublicationMetadata,
+    ResidentPublicationPolicy, ResidentPublicationReadiness, ResidentPublicationRefusal,
+    ResidentRuntimeLoop, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
