@@ -1762,7 +1762,9 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/editor/user_errors.rs"], inventory, [owner]),
                          {owner: names})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_editor_logic.rs"], inventory, [owner]),
-                         {owner: ["editor::session_navigation::", "editor::session_navigation_ui_test::",
+                         {owner: ["editor::controller::audio_event_correlation::",
+                                  "editor::controller::sampler_native_ui_protocol_tests::",
+                                  "editor::session_navigation::", "editor::session_navigation_ui_test::",
                                   "editor::session_route_view::", *names]})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_session.rs"], inventory, [owner]), {})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
@@ -1917,6 +1919,24 @@ class ModuleScopeTests(unittest.TestCase):
                          {owner: ["editor::"]})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
                     "single_run": {owner: "ui-test-support"}, "module_filters": {owner: [unit, window]}}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": []})
+        self.assertTrue(any(unit in step.argv for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(window in step.argv for step in steps if step.step_id == "ui-feature-tests"))
+
+    def test_controller_correlation_keeps_unit_and_window_coverage(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::controller::audio_event_correlation::"
+        window = "editor::controller::sampler_native_ui_protocol_tests::"
+        names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/controller/audio_event_correlation.rs"],
+                                         inventory, [owner])
+        self.assertEqual(names, {owner: [unit, window]})
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
+                    "single_run": {owner: "ui-test-support"}, "module_filters": names}
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
                                   "cargo_inventory": inventory, "paths": []})
         self.assertTrue(any(unit in step.argv for step in steps if "unit_editor_logic" in step.argv))

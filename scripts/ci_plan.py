@@ -17,7 +17,7 @@ if _PYTHON_SPEC is None or _PYTHON_SPEC.loader is None:
 python_tests = importlib.util.module_from_spec(_PYTHON_SPEC)
 _PYTHON_SPEC.loader.exec_module(python_tests)
 
-POLICY_VERSION = 40
+POLICY_VERSION = 41
 UI_PACKAGES = {"hex-ui", "hex-widgets"}
 # Opaque state reaches storage through runtime type IDs, not a Cargo dependency.
 # Changes here must be reviewed with the real registration/codec consumers.
@@ -246,6 +246,7 @@ TEST_ATTRIBUTE = re.compile(r"#\[(?:gpui::)?test\b")
 # names under the original module path so scoped coverage remains observable.
 UI_UNIT_TARGETS = {"editor::audio_admission::": "unit_editor_state",
                    "editor::clip_content_cache::profile::navigation::selection::": "unit_editor_state",
+                   "editor::controller::audio_event_correlation::": "unit_editor_logic",
                    "editor::cpu_meter::": "unit_editor_state",
                    "editor::device_automation::plot_geometry::": "unit_automation",
                    "editor::device_panel::eq_panel::group_move::": "unit_device",
@@ -291,6 +292,7 @@ UI_UNIT_COHORTS = [{"editor::midi_drag::", "editor::midi_group_drag::", "editor:
 # Recovery's real prepared-audio test is a sibling so importing its state into
 # the unit binary cannot also compile and run the integration fixture there.
 UI_INTEGRATION_PAIRS = {"editor::recovery_state::": "editor::recovery_state_integration_tests::",
+                        "editor::controller::audio_event_correlation::": "editor::controller::sampler_native_ui_protocol_tests::",
                         "editor::session_navigation::": "editor::session_navigation_ui_test::"}
 MOD_LINE = re.compile(r"(pub(\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")
 PATH_ATTRIBUTE = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
