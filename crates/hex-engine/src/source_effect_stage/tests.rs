@@ -59,6 +59,7 @@ impl PreparedNativeProcessor for SquareRecipe {
 
 fn recipe(source: hex_project::SourceId, latency: Option<u32>) -> PreparedRuntimeInstance {
     PreparedRuntimeInstance {
+        modulation: None,
         automation: Default::default(),
         meter: Default::default(),
         owner: ProcessorChainOwner::Source(source.value()),

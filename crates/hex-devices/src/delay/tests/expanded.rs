@@ -602,6 +602,7 @@ fn timing_only_fork_preserves_rollback_and_exact_host_identity() {
         .unwrap();
     let chain = |device_id, bypassed| {
         hex_lattice::NativeRuntimeChain::new_prepared(vec![hex_lattice::PreparedRuntimeInstance {
+            modulation: None,
             automation: Default::default(),
             meter: Default::default(),
             owner: hex_lattice::ProcessorChainOwner::Main,
@@ -674,6 +675,7 @@ fn split_test_chain_with_automation(
         )
         .unwrap();
     hex_lattice::NativeRuntimeChain::new_prepared(vec![hex_lattice::PreparedRuntimeInstance {
+        modulation: None,
         automation,
         meter,
         owner: hex_lattice::ProcessorChainOwner::Main,

@@ -367,6 +367,20 @@ impl PreparedNativeProcessor for PreparedSaturator {
         self.supports(parameter)
     }
 
+    fn parameter_modulation_semantics(
+        &self,
+        parameter: ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        if !self.supports_parameter_automation(parameter) {
+            return None;
+        }
+        let binding = crate::parameter_binding::binding(&BINDINGS, parameter).ok()?;
+        Some(hex_lattice_contract::ParameterSemantics {
+            modulation: hex_lattice_contract::ParameterModulation::SampleRate,
+            ..binding.semantics
+        })
+    }
+
     fn runtime_version(&self) -> u32 {
         1
     }
