@@ -945,14 +945,15 @@ pub(super) fn panel(
             && let Ok(settings) = adsr::Settings::decode(&source.state)
         {
             for (segment, name) in ["attack", "decay", "release"].into_iter().enumerate() {
-                row = row.child(envelope_time(
+                let controls = envelope_time(
                     cx,
                     name,
                     settings.durations_micros[segment],
                     [false, true].map(|longer| {
                         Edit::Adsr(source_id, AdsrEdit::Duration { segment, longer })
                     }),
-                ));
+                );
+                row = row.child(controls);
             }
             row = row
                 .child(
