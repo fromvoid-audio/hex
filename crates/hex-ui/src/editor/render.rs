@@ -2,11 +2,11 @@ use super::{
     AddMidiClip, AddMidiTrack, AddTrack, AdditiveSolo, CancelDragOrStop, CopyTimeSelection,
     CutTimeSelection, DeleteClip, DeleteSectionMarker, DuplicateClip, EditorView, ExportProject,
     FitTimeline, GroupSelection, ImportAudio, InsertTimeSelection, LoopSelection, MidiOctaveDown,
-    MidiOctaveUp, MoveLeft, MoveRight, NewProject, NewStreamingProject, NextTrack, OpenProject,
-    OpenRecentProject, OpenRelinkedProject, OpenStreamingProject, PanTimelineLeft,
-    PanTimelineRight, PasteTimeSelection, PreviousTrack, Quit, RecoverKeptSession,
-    RecoverPreviousSave, RecoverSavedProject, RecoverUntitledProject, Redo, RemoveTrack,
-    SaveAsProject, SaveProject, SelectAllMidiNotes, SplitClip, Stop, ToggleLoop,
+    MidiOctaveUp, MoveLeft, MoveRight, NewProject, NewStreamingProject, NextTrack,
+    OpenAutomationRecovery, OpenProject, OpenRecentProject, OpenRelinkedProject,
+    OpenStreamingProject, PanTimelineLeft, PanTimelineRight, PasteTimeSelection, PreviousTrack,
+    Quit, RecoverKeptSession, RecoverPreviousSave, RecoverSavedProject, RecoverUntitledProject,
+    Redo, RemoveTrack, SaveAsProject, SaveProject, SelectAllMidiNotes, SplitClip, Stop, ToggleLoop,
     ToggleMidiDrawMode, TogglePlay, ToggleSolo, TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
 };
 use crate::diagnostics::ActionTraceContext as _;
@@ -320,6 +320,26 @@ impl EditorView {
                         })),
                 );
             }
+        }
+        if let Some((label, actionable)) = self.automation_recovery_status() {
+            bar = bar.child(
+                div()
+                    .id("automation-take-recovery")
+                    .debug_selector(|| "automation-take-recovery".into())
+                    .px_1()
+                    .flex_shrink_0()
+                    .text_color(rgb(theme::color(if actionable {
+                        theme::PaletteRole::Primary
+                    } else {
+                        theme::PaletteRole::Muted
+                    })))
+                    .when(actionable, |item| {
+                        item.cursor_pointer().on_click(
+                            cx.listener(|view, _, _, cx| view.start_automation_recovery(cx)),
+                        )
+                    })
+                    .child(theme::text(label)),
+            );
         }
         bar = bar.child(self.controller_input_row(cx));
         if self.audio_batch.is_some() {
@@ -1202,6 +1222,9 @@ impl Render for EditorView {
                     window,
                     cx,
                 )
+            }))
+            .on_action(cx.trace(|view, _: &OpenAutomationRecovery, _, cx| {
+                view.open_automation_recovery_file(cx)
             }))
             .on_action(cx.trace(|view, _: &RecoverKeptSession, window, cx| {
                 view.project_recovery_dialog(super::project_recovery::OpenKind::Kept, window, cx)

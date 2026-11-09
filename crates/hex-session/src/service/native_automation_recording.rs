@@ -22,8 +22,11 @@ use hex_engine::{AudioSourceContext, NativeParameterApplication, NativeParameter
 use hex_storage::automation_draft::{
     CaptureClock, DraftAbortReason, DraftReadLimits, DraftTerminal,
 };
-pub use recovery::prepare_verified_vst3_recovery_on_control;
-pub(super) use recovery::recover_sealed;
+pub use recovery::{
+    AutomationRecoveryFileIdentity, SealedAutomationRecoveryFile,
+    prepare_verified_vst3_recovery_on_control,
+};
+pub(super) use recovery::{inspect_sealed_file, recover_sealed};
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -40,6 +43,23 @@ pub enum DeviceCaptureTarget {
     Vst3(Vst3CaptureTarget),
 }
 impl DeviceCaptureTarget {
+    /// Durable target identity; this does not grant live worker admission.
+    pub fn draft_target(self) -> super::automation_draft::DraftTarget {
+        use super::automation_draft::DraftTarget;
+        match self {
+            Self::Native(target) => DraftTarget::Device {
+                device: target.device(),
+                target: target.target(),
+            },
+            Self::Vst3(target) => DraftTarget::Device {
+                device: target.device,
+                target: hex_project::DeviceAutomationTarget::Vst3 {
+                    parameter: target.parameter,
+                },
+            },
+        }
+    }
+
     pub fn native(self) -> Option<NativeParameterInputTarget> {
         match self {
             Self::Native(target) => Some(target),
@@ -163,6 +183,8 @@ pub enum DeviceAutomationTakeAction {
     /// Explicitly keep the verified copy instead of adopting its trajectory.
     /// Release original memory custody only after revalidation; keep both files.
     KeepFailedPluginCopy {
+        path: PathBuf,
+        receipt: RecoveryCopyReceipt,
         max_events: u64,
     },
     /// Quiesce an exact native writer after its caller has retired the input.
@@ -202,11 +224,19 @@ pub enum DeviceAutomationTakeProgress {
         scope: Box<DeviceAutomationTakeScope>,
         path: PathBuf,
     },
+    /// Fully validated identity of a selected finished durable file.
+    SealedFile(Box<SealedAutomationRecoveryFile>),
     /// An ordered observation found no device automation custody.
     CloseSafe,
     /// Device automation custody is active, retained or being copied.
     CloseBlocked,
     Retained(PathBuf),
+    /// Poll found a failed native writer that still owns original observations.
+    /// Retain the caller's exact take scope for explicit recovery.
+    NativeWriterRetained {
+        path: PathBuf,
+        reason: String,
+    },
     VerifiedCopy {
         path: PathBuf,
         receipt: RecoveryCopyReceipt,
@@ -737,13 +767,19 @@ impl Lane {
         outcome: DraftWorkerOutcome,
     ) -> Result<Step, String> {
         if let Some(reason) = outcome.failure.as_deref() {
-            let error = retained_error(&outcome.path, reason);
+            let path = outcome.path.clone();
+            let reason = reason.to_owned();
             self.failed = Some(Failed {
                 scope,
                 source,
                 outcome: Arc::new(outcome),
             });
-            return Err(error);
+            if scope.target.native().is_some() {
+                return Ok(Step::Progress(
+                    DeviceAutomationTakeProgress::NativeWriterRetained { path, reason },
+                ));
+            }
+            return Err(retained_error(&path, &reason));
         }
         if !matches!(outcome.requested_terminal, DraftTerminal::Finished(_))
             || outcome.admitted_events == 0

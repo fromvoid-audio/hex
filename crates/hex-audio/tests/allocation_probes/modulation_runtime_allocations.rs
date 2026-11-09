@@ -1,7 +1,7 @@
 //! Isolated modulation transaction probe, not native callback integration.
 use hex_lattice::{
-    ModulationLfoBank, ModulationRoute, ModulationRuntime, ModulationSourceId, ModulationTarget,
-    PreparedLfoSource, PreparedModulation,
+    ModulationRoute, ModulationRuntime, ModulationSourceBank, ModulationSourceId, ModulationTarget,
+    PreparedModulation, PreparedModulationSource,
 };
 use hex_lattice_contract::{
     DeviceContractError, ParameterAccess, ParameterAutomation, ParameterChangeImpact,
@@ -48,8 +48,9 @@ fn prepared() -> ModulationRuntime {
     )
     .unwrap();
     let source =
-        PreparedLfoSource::free(ModulationSourceId::new(1).unwrap(), 48_000.0, 7.0, 0.0).unwrap();
-    ModulationRuntime::new(ModulationLfoBank::new(&[source], 128).unwrap(), program).unwrap()
+        PreparedModulationSource::free(ModulationSourceId::new(1).unwrap(), 48_000.0, 7.0, 0.0)
+            .unwrap();
+    ModulationRuntime::new(ModulationSourceBank::new(&[source], 128).unwrap(), program).unwrap()
 }
 
 #[test]
@@ -57,7 +58,7 @@ fn chunk_transactions_do_not_allocate_or_free() {
     let mut runtime = prepared();
     let mut next = prepared();
     let id = ModulationSourceId::new(1).unwrap();
-    let rate = PreparedLfoSource::free(id, 48_000.0, 14.0, 0.0).unwrap();
+    let rate = PreparedModulationSource::free(id, 48_000.0, 14.0, 0.0).unwrap();
     let counts = allocation_counter::measure(|| {
         for _ in 0..32 {
             runtime.reset(id, 0.0).unwrap();
@@ -100,7 +101,7 @@ fn utility_graph_modulation_transactions_do_not_allocate_or_free() {
     use hex_lattice::PreparedNativeProcessor;
     use hex_lattice::{
         NativeRuntimeChain, PreparedModulationState, PreparedProcessorFactory,
-        PreparedRuntimeInstance, ProcessorChainOwner, StereoMatrix,
+        PreparedRuntimeInstance, ProcessorChainOwner, SourceModulationRoute, StereoMatrix,
     };
     use hex_lattice_contract::NativeDeviceMetadata;
     use std::sync::Arc;
@@ -119,16 +120,16 @@ fn utility_graph_modulation_transactions_do_not_allocate_or_free() {
         };
         let program = PreparedModulation::new(
             &[target],
-            &[ModulationRoute {
-                source: 0,
+            &[0, 1, 2].map(|source| ModulationRoute {
+                source,
                 target: id,
                 amount: 0.01,
                 range: [-1.0, 1.0],
-            }],
-            1,
+            }),
+            3,
         )
         .unwrap();
-        let source = PreparedLfoSource::tempo(
+        let source = PreparedModulationSource::tempo(
             ModulationSourceId::new(1).unwrap(),
             48_000.0,
             120.0,
@@ -137,8 +138,34 @@ fn utility_graph_modulation_transactions_do_not_allocate_or_free() {
         )
         .unwrap();
 
+        let follower = PreparedModulationSource::envelope_follower(
+            ModulationSourceId::new(2).unwrap(),
+            48_000,
+            0.005,
+            0.05,
+        )
+        .unwrap();
+        let manual = PreparedModulationSource::macro_value(
+            ModulationSourceId::new(3).unwrap(),
+            48_000,
+            0.25,
+        )
+        .unwrap();
         let prepared = PreparedRuntimeInstance {
-            modulation: Some(PreparedModulationState::new(vec![source], program, 17).unwrap()),
+            modulation: Some(
+                PreparedModulationState::with_source_routes(
+                    vec![source, follower, manual],
+                    program,
+                    17,
+                    &[SourceModulationRoute {
+                        source: 0,
+                        target: 2,
+                        amount: 0.2,
+                        range: [0.0, 1.0],
+                    }],
+                )
+                .unwrap(),
+            ),
             automation: Default::default(),
             meter: Default::default(),
             owner: ProcessorChainOwner::Track(1),

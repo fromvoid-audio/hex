@@ -1223,6 +1223,7 @@ impl EditorView {
         visible_change |= self.poll_browser_sample_playback();
         visible_change |= self.tick_gain_recording();
         visible_change |= self.tick_native_automation_recording();
+        visible_change |= self.tick_automation_take_recovery();
         visible_change |= self.tick_midi_recording();
         visible_change |= self.tick_sampler_parameter();
         visible_change |= self.tick_computer_keyboard();
@@ -2377,6 +2378,8 @@ impl EditorView {
         let sampler_edit_complete = event.sampler_edit_complete;
         self.plugin_effect_complete(&event);
         self.native_automation_take_completion(&event);
+        self.observe_automation_take_recovery(&event);
+        self.observe_vst3_automation_arm(&event);
         if let Some(result) = event.plugin_parameters.take() {
             super::device_panel::vst3_parameters::install_result(
                 self,
@@ -3120,6 +3123,18 @@ impl EditorView {
         }
         if let Some(result) = event.tuning_library.as_ref() {
             self.tuning_library_complete(result);
+        }
+        if event.active_device_gesture.is_none()
+            && let Some(ack) = event.gesture_ack.as_ref()
+            && self.device_gesture.snapshot().is_some_and(|snapshot| {
+                snapshot.key == ack.key
+                    && matches!(
+                        snapshot.target,
+                        hex_session::device_gesture::GestureTarget::PluginParameter { .. }
+                    )
+            })
+        {
+            self.probe_failed_plugin_automation();
         }
         let mut matched_scroll_ack = None;
         if event.gesture_protocol_ack

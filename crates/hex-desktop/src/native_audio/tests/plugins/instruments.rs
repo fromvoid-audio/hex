@@ -814,6 +814,7 @@ fn recorded_session_gesture_commits_one_take_and_reopens() {
                     | "session_recover"
                     | "session_writer_failure"
                     | "session_writer_adopt"
+                    | "session_writer_keep_apply"
                     | "session_writer_refusal"
                     | "session_writer_source_lost"
                     | "session_cancel"
@@ -2238,6 +2239,7 @@ fn verify_instrument_takeover(
             case.as_str(),
             "session_writer_failure"
                 | "session_writer_adopt"
+                | "session_writer_keep_apply"
                 | "session_writer_refusal"
                 | "session_writer_source_lost"
         ) {
@@ -2283,7 +2285,7 @@ fn verify_instrument_takeover(
             let failed = send(h, &mut client, false);
             assert_eq!(failed.state.project.as_ref(), &before);
             let directory = recovery_directory.unwrap().join("automation-drafts");
-            let paths = std::fs::read_dir(directory)
+            let paths = std::fs::read_dir(&directory)
                 .unwrap()
                 .map(|entry| entry.unwrap().path())
                 .collect::<Vec<_>>();
@@ -2382,10 +2384,46 @@ fn verify_instrument_takeover(
                     receipt.terminal()
                 );
                 let copy_bytes = std::fs::read(&copy).unwrap();
-                let adopt = |request_id| Request::DeviceAutomationTake {
-                    request_id,
-                    scope,
-                    action: Action::AdoptFailedPluginCopy { max_events: 16 },
+                let keep_then_apply = case == "session_writer_keep_apply";
+                if keep_then_apply {
+                    let kept = super::automation::edit_with_running_callback(
+                        h,
+                        Request::DeviceAutomationTake {
+                            request_id: 494,
+                            scope,
+                            action: Action::KeepFailedPluginCopy {
+                                path: copy.clone(),
+                                receipt,
+                                max_events: 16,
+                            },
+                        },
+                    );
+                    assert!(kept.error.is_none(), "{:?}", kept.error);
+                    assert_eq!(
+                        kept.device_automation_take_complete.unwrap().progress,
+                        Progress::CopyKept(copy.clone())
+                    );
+                    assert_eq!(kept.state.project.as_ref(), &before);
+                }
+                let adopt = |request_id| {
+                    if keep_then_apply {
+                        Request::RecoverDeviceAutomationTake {
+                            request_id,
+                            context: origin.context,
+                            target: scope.target.draft_target(),
+                            expected: scope.stamp,
+                            path: copy.clone(),
+                            identity: hex_session::service::AutomationRecoveryFileIdentity::Copy(
+                                receipt,
+                            ),
+                        }
+                    } else {
+                        Request::DeviceAutomationTake {
+                            request_id,
+                            scope,
+                            action: Action::AdoptFailedPluginCopy { max_events: 16 },
+                        }
+                    }
                 };
                 if case == "session_writer_source_lost" {
                     h.audio.as_ref().unwrap().control.stop();
@@ -2454,6 +2492,15 @@ fn verify_instrument_takeover(
                 let redone = super::automation::edit_with_running_callback(h, Request::Redo);
                 assert!(redone.error.is_none(), "{:?}", redone.error);
                 assert_eq!(redone.state.project, after);
+                if keep_then_apply {
+                    let path = directory.join("applied.hex");
+                    let saved = super::automation::edit_with_running_callback(
+                        h,
+                        Request::SaveNew(path.clone()),
+                    );
+                    assert!(saved.error.is_none(), "{:?}", saved.error);
+                    assert_eq!(hex_storage::load(path).unwrap(), *after);
+                }
             }
             return;
         }
@@ -2729,23 +2776,30 @@ fn verify_instrument_takeover(
             assert_eq!(paths.len(), 1);
             let path = paths[0].clone();
             let original = std::fs::read(&path).unwrap();
-            // Durable header data are sufficient; the caller does not retain or
-            // reconstruct the old SDK worker binding to request recovery.
-            let (target, expected) = {
-                let reader = hex_storage::automation_draft::DraftReader::open(
-                    &path,
-                    hex_storage::automation_draft::DraftReadLimits {
-                        max_source_bytes: hex_storage::MAX_PROJECT_DOCUMENT_BYTES as u64,
-                    },
-                )
-                .unwrap();
-                (reader.target(), reader.provenance())
+            let inspected = super::automation::edit_with_running_callback(
+                h,
+                Request::InspectSealedAutomationRecovery {
+                    request_id: 400,
+                    path: path.clone(),
+                },
+            );
+            assert!(inspected.error.is_none(), "{:?}", inspected.error);
+            assert_eq!(inspected.state.project.as_ref(), &before);
+            assert_eq!(inspected.state.revision, origin.context.editor_revision);
+            let DeviceAutomationTakeProgress::SealedFile(selected) =
+                inspected.device_automation_take_complete.unwrap().progress
+            else {
+                panic!("publication refusal did not leave a selectable finished take");
             };
+            assert_eq!(selected.path, path);
             let request = |request_id| Request::RecoverDeviceAutomationTake {
                 request_id,
-                target,
-                expected,
-                path: path.clone(),
+                target: selected.target,
+                expected: selected.provenance,
+                path: selected.path.clone(),
+                identity: hex_session::service::AutomationRecoveryFileIdentity::Sealed(
+                    selected.identity,
+                ),
                 context: origin.context,
             };
             h.service.submit(request(401)).unwrap();

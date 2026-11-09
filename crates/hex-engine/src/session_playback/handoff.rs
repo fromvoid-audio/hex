@@ -5,6 +5,45 @@ use shared_sources::SharedSourceHandoff;
 
 /// Retained-path creation/removal needs the stopped bounce fence and a fresh
 /// graph. Do not let an ordinary handoff preserve voices or tails across it.
+/// Compare the actual prepared receiver. Pure analytic providers need not
+/// retain the mutable revision descriptor; a contributor may not own one.
+fn prepared_source_generator_matches(
+    previous: &PreparedRevision,
+    candidate: &PreparedRevision,
+    source: hex_project::SourceId,
+) -> bool {
+    fn receiver(
+        revision: &PreparedRevision,
+        source: hex_project::SourceId,
+    ) -> Option<&crate::Track> {
+        revision
+            .arrangement()
+            .tracks()
+            .iter()
+            .find(|track| track.source_id() == Some(source) && track.receives_source_audio())
+    }
+    previous.arrangement().shared_contexts().tuning_identity()
+        == candidate.arrangement().shared_contexts().tuning_identity()
+        && receiver(previous, source)
+            .zip(receiver(candidate, source))
+            .is_some_and(|(old, new)| {
+                old.instrument_id.is_some()
+                    && old.instrument_id == new.instrument_id
+                    && old.instrument_bypassed == new.instrument_bypassed
+                    && old.foreign_instrument.is_none()
+                    && new.foreign_instrument.is_none()
+                    && old
+                        .instrument_state
+                        .as_ref()
+                        .zip(new.instrument_state.as_ref())
+                        .is_some_and(|(old, new)| {
+                            old.asset_references().is_empty()
+                                && new.asset_references().is_empty()
+                                && old.processing_eq_on_callback(new)
+                        })
+            })
+}
+
 fn retained_path_roles_match(old: &PreparedRevision, new: &PreparedRevision) -> bool {
     let retained = |revision: &PreparedRevision, index: usize| {
         revision.source_routing().source(index).is_some()
@@ -384,7 +423,8 @@ impl SessionPlayback {
     /// cursor through the reset handoff. Voices and tails reset and gate-active
     /// notes are chased on the next played block; the transport is never
     /// stopped and no note-off is lost. A changed tempo map or loop relocates
-    /// to the musically equivalent frame while playing.
+    /// to the musically equivalent frame while playing. Source-owned effects
+    /// need an exact continuation and cannot fall back to a restart.
     pub(super) fn inherit_state_planned(
         &mut self,
         previous: &mut Self,
@@ -393,11 +433,42 @@ impl SessionPlayback {
         live: bool,
         fenced_restart: bool,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
-        if !self.source_effects.is_empty() || !previous.source_effects.is_empty() {
-            return Err(SessionPlaybackError::Arrangement(
-                "source effect handoff is not supported yet",
-            ));
-        }
+        let source_effect_handoff =
+            !self.source_effects.is_empty() || !previous.source_effects.is_empty();
+        let source_transfer = if source_effect_handoff {
+            let incompatible = SessionPlaybackError::Arrangement(
+                "source effect handoff requires the same prepared source configuration",
+            );
+            if groups.is_some()
+                || fenced_restart
+                || (live && self.live_restart)
+                || self.loop_region() != previous.loop_region()
+                || self.revision.arrangement().tempo_map
+                    != previous.revision.arrangement().tempo_map
+            {
+                return Err(incompatible);
+            }
+            // A new stage starts empty. A stopped transport can retire a
+            // superseded stage only after its committed history is quiet.
+            Some(
+                self.source_effects
+                    .plan_continuation(
+                        &previous.source_effects,
+                        live,
+                        live && !previous.playing && !previous.monitor_source_releases,
+                        |source| {
+                            prepared_source_generator_matches(
+                                &previous.revision,
+                                &self.revision,
+                                source,
+                            )
+                        },
+                    )
+                    .ok_or(incompatible)?,
+            )
+        } else {
+            None
+        };
         if !(retained_path_roles_match(&previous.revision, &self.revision)
             || fenced_restart && live && self.live_restart && self.candidate_admission_open)
         {
@@ -409,9 +480,15 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::DetachedReceiverHistoryUnavailable);
         }
         if live && self.live_restart && self.candidate_admission_open {
-            return self.inherit_state_planned_once(previous, None, demand, true);
+            return self.inherit_state_planned_once(previous, None, demand, true, None);
         }
-        match self.inherit_state_planned_once(previous, groups, demand.as_deref_mut(), false) {
+        let result = match self.inherit_state_planned_once(
+            previous,
+            groups,
+            demand.as_deref_mut(),
+            false,
+            source_transfer.as_ref(),
+        ) {
             // An open admission proves the refusal came from the pure
             // preflight: neither runtime changed, so the reset handoff may
             // run instead (Pulse #3770, #3774).
@@ -426,11 +503,23 @@ impl SessionPlayback {
             {
                 Err(SessionPlaybackError::DeviceTransitionBusy)
             }
-            Err(error) if live && self.candidate_admission_open && restartable(error) => {
-                self.inherit_state_planned_once(previous, None, demand, true)
+            Err(error)
+                if live
+                    && !source_effect_handoff
+                    && self.candidate_admission_open
+                    && restartable(error) =>
+            {
+                self.inherit_state_planned_once(previous, None, demand, true, None)
             }
             result => result,
+        };
+        if let Some(source_transfer) = source_transfer
+            && result.is_ok()
+        {
+            self.source_effects
+                .continue_from(&mut previous.source_effects, source_transfer);
         }
+        result
     }
     /// Whether any same-identity device chain must defer this handoff until
     /// the predecessor's committed live transitions drain (Pulse #4178).
@@ -511,6 +600,7 @@ impl SessionPlayback {
         mut groups: Option<crate::audio_candidate::groups::Transfer<'_>>,
         demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
         force_restart: bool,
+        source_transfer: Option<&crate::source_effect_stage::SourceEffectTransfer>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
         if self.revision.arrangement().sample_rate()
             != previous.revision.arrangement().sample_rate()
@@ -3424,11 +3514,18 @@ impl SessionPlayback {
             if release.location.tail_group().is_some() {
                 continue;
             }
+            let source_effects_continue = source_transfer.is_some_and(|transfer| {
+                release.source_origin.is_some_and(|origin| {
+                    self.source_effects
+                        .has_continued_source(transfer, origin.source)
+                })
+            });
             let audio_plan = shared_sources::plan_release_audio_owner(
                 release,
                 previous,
                 self.revision.as_ref(),
                 &analytic_owner_matches,
+                source_effects_continue,
             )?;
             if let Some(current) = audio_plan.current_receiver {
                 release.location = ReleaseLocation::new(current, None)?;

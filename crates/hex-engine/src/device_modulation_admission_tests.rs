@@ -24,6 +24,7 @@ fn arrangement_and_session_refuse_unknown_modulator_without_committing() {
             device: id,
             modulation: DeviceModulation::new(
                 vec![Modulator {
+                    color: Default::default(),
                     id: ModulationSourceId::new(before.next_id).unwrap(),
                     enabled: true,
                     state: NativeDeviceState::new(
@@ -46,6 +47,7 @@ fn arrangement_and_session_refuse_unknown_modulator_without_committing() {
             device: id,
             modulation: DeviceModulation::new(
                 vec![Modulator {
+                    color: Default::default(),
                     id: ModulationSourceId::new(editor.project().snapshot().next_id).unwrap(),
                     enabled: true,
                     state: NativeDeviceState::new(
@@ -155,6 +157,7 @@ fn saved_lfos_modulate_automation_per_sample_in_arrangement_session_and_sealed_p
     };
     let next = editor.project().snapshot().next_id;
     let source = |offset, rate, phase| Modulator {
+        color: Default::default(),
         id: ModulationSourceId::new(next + offset).unwrap(),
         enabled: true,
         state: Settings { rate, phase }.encode().unwrap(),
@@ -334,4 +337,89 @@ fn saved_lfos_modulate_automation_per_sample_in_arrangement_session_and_sealed_p
     owner.test_render(&mut pcm[5..]).unwrap();
     assert_pcm(pcm);
     cell.cleanup_on_control().unwrap();
+}
+
+#[test]
+fn envelope_follower_samples_the_owning_effect_input_before_processing() {
+    use hex_devices::{
+        modulation::envelope_follower::Settings,
+        utility::{MAX_UTILITY_GAIN, UTILITY_DEFINITION, UTILITY_TYPE_ID, parameter},
+    };
+    use hex_project::{
+        DeviceModulationRoute, ModulationAmount, ModulationDestination, ModulationOutputId,
+        ModulationRange, ModulationRouteId,
+    };
+    use std::collections::BTreeMap;
+
+    let mut editor = Editor::new(crate::audio_preparation::candidate_test_project(), 4).unwrap();
+    let track = editor.project().tracks()[0].id();
+    let asset = editor.project().assets().next().unwrap().id();
+    let Created::Device(device) = editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: UTILITY_DEFINITION.default_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("utility fixture");
+    };
+    let next = editor.project().next_identity();
+    let source = ModulationSourceId::new(next).unwrap();
+    let modulation = DeviceModulation::new(
+        vec![Modulator {
+            color: Default::default(),
+            id: source,
+            enabled: true,
+            state: Settings {
+                attack_seconds: 0.0,
+                release_seconds: 0.0,
+            }
+            .encode()
+            .unwrap(),
+        }],
+        vec![DeviceModulationRoute {
+            id: ModulationRouteId::new(next + 1).unwrap(),
+            source,
+            output: ModulationOutputId::MAIN,
+            destination: ModulationDestination::Device {
+                device_type: UTILITY_TYPE_ID,
+                target: hex_project::DeviceAutomationTarget::Parameter(parameter::GAIN),
+                vst3_class: None,
+            },
+            amount: ModulationAmount::new(1.0 / MAX_UTILITY_GAIN).unwrap(),
+            range: ModulationRange::default(),
+            enabled: true,
+        }],
+    )
+    .unwrap();
+    let inputs = [
+        [0.0, 0.0],
+        [0.125, -0.25],
+        [-0.5, 0.1],
+        [0.2, 0.0],
+        [0.0, 0.0],
+        [0.8, 0.3],
+        [-0.25, 0.0],
+        [0.1, -0.125],
+    ];
+    let media = BTreeMap::from([(asset, crate::Audio::new(48_000, inputs.to_vec()).unwrap())]);
+    editor
+        .execute_prepared(
+            Command::ReplaceDeviceModulation { device, modulation },
+            |project| crate::compile::project(project, &media),
+        )
+        .unwrap();
+    let graph = crate::compile::project(editor.project(), &media).unwrap();
+    let mut renderer = crate::Renderer::new(&graph);
+    renderer.play();
+    let mut output = [[0.0; 2]; 8];
+    renderer.render(&mut output[..3]).unwrap();
+    renderer.render(&mut output[3..]).unwrap();
+    let levels = [0.0, 0.25, 0.5, 0.2, 0.0, 0.8, 0.25, 0.125];
+    for ((actual, input), peak) in output.into_iter().zip(inputs).zip(levels) {
+        for (output, dry) in actual.into_iter().zip(input) {
+            assert!((output - dry * (1.0 + peak)).abs() < 1e-6, "{output}");
+        }
+    }
 }

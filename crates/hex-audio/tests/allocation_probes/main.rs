@@ -26,6 +26,7 @@ mod modulation_runtime_allocations;
 mod modulation_source_bank_allocations;
 mod operator_filter_proof_allocations;
 mod operator_fixed_allocations;
+mod overdrive_sealed_allocations;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod parallel_render_profile;
 mod pitch_multiplier_allocations;

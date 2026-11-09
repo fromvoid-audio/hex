@@ -2,7 +2,10 @@
 //! revision-bound edits. A selected mapping source is view state only.
 use super::*;
 use gpui::{AnyElement, SharedString};
-use hex_engine::lfo_modulator as lfo;
+use hex_engine::{
+    follower_modulator as follower, lfo_modulator as lfo, macro_modulator as manual,
+    random_modulator as random,
+};
 use hex_lattice_contract::{ParameterId, ParameterModulation};
 use hex_project::{
     Device, DeviceAutomationTarget, DeviceModulation, DeviceModulationRoute, Invalid,
@@ -11,13 +14,72 @@ use hex_project::{
 };
 
 #[derive(Clone, Copy)]
+enum SourceKind {
+    Lfo,
+    Follower,
+    Macro,
+    Random,
+}
+
+impl SourceKind {
+    const ALL: [Self; 4] = [Self::Lfo, Self::Follower, Self::Macro, Self::Random];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Lfo => "lfo",
+            Self::Follower => "follower",
+            Self::Macro => "macro",
+            Self::Random => "random",
+        }
+    }
+
+    fn default_state(
+        self,
+        identity: u64,
+    ) -> Result<NativeDeviceState, hex_lattice_contract::DeviceContractError> {
+        match self {
+            Self::Lfo => lfo::Settings::default().encode(),
+            Self::Follower => follower::Settings::default().encode(),
+            Self::Macro => manual::Settings::default().encode(),
+            Self::Random => random::Settings {
+                seed: identity,
+                rate_hz: 1.0,
+            }
+            .encode(),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum MappingTarget {
+    Device(ParameterId),
+    Macro(ModulationSourceId),
+}
+
+fn macro_destination(source: ModulationSourceId) -> ModulationDestination {
+    ModulationDestination::Modulator {
+        source,
+        module_type: manual::TYPE_ID,
+        parameter: manual::VALUE_PARAMETER,
+    }
+}
+
+#[derive(Clone, Copy)]
 enum Edit {
-    Add,
+    Add(SourceKind),
     ToggleSource(ModulationSourceId),
     RemoveSource(ModulationSourceId),
     Rate(ModulationSourceId, f64),
     Sync(ModulationSourceId),
-    Map(ModulationSourceId, ParameterId),
+    MacroValue(ModulationSourceId, f32),
+    FollowerTime {
+        source: ModulationSourceId,
+        attack: bool,
+        factor: f64,
+    },
+    RandomRate(ModulationSourceId, f64),
+    Reseed(ModulationSourceId),
+    Map(ModulationSourceId, MappingTarget),
     Adjust(ModulationRouteId, f32),
     Range(ModulationRouteId),
     RemoveRoute(ModulationRouteId),
@@ -50,40 +112,57 @@ pub(super) fn panel(
             cx.notify();
         }))
     };
-    let mut body = div().flex().flex_col().gap(px(3.0)).child(
-        div()
-            .flex()
-            .items_center()
-            .gap(px(4.0))
-            .child(theme::text("modulators"))
-            .when(
-                bank.sources().len() < hex_project::MAX_MODULATORS_PER_DEVICE,
-                |row| {
-                    row.child(button(
-                        cx,
-                        format!("add-lfo-{}", id.value()),
-                        theme::text("+ lfo"),
-                        Edit::Add,
-                    ))
-                },
-            ),
-    );
+    let mut header = div().flex().flex_wrap().items_center().gap(px(4.0));
+    if bank.sources().len() < hex_project::MAX_MODULATORS_PER_DEVICE {
+        for kind in SourceKind::ALL {
+            let name = kind.label();
+            header = header.child(button(
+                cx,
+                format!("add-{name}-{}", id.value()),
+                theme::text(format!("+ {name}")),
+                Edit::Add(kind),
+            ));
+        }
+    }
+    let mut body = div()
+        .flex()
+        .flex_col()
+        .flex_shrink_0()
+        .gap(px(3.0))
+        .child(header);
     let selected = view
         .device_panel
         .mapping_source
         .filter(|(device, _)| *device == id)
         .map(|(_, source)| source);
-    for source in bank.sources() {
+    let blocked_targets: Vec<_> = selected
+        .into_iter()
+        .flat_map(|source| bank.source_route_ancestors(source))
+        .collect();
+    let multiple_macros = bank
+        .sources()
+        .iter()
+        .filter(|source| source.state.type_id() == manual::TYPE_ID)
+        .take(2)
+        .count()
+        > 1;
+    for (slot, source) in bank.sources().iter().enumerate() {
         let source_id = source.id;
-        let Ok(settings) = lfo::Settings::decode(&source.state) else {
-            continue;
+        let kind = match source.state.type_id() {
+            lfo::TYPE_ID => SourceKind::Lfo,
+            follower::TYPE_ID => SourceKind::Follower,
+            manual::TYPE_ID => SourceKind::Macro,
+            random::TYPE_ID => SourceKind::Random,
+            _ => continue,
+        };
+        let label = kind.label();
+        let title = if multiple_macros && matches!(kind, SourceKind::Macro) {
+            format!("macro {}", slot + 1)
+        } else {
+            label.to_owned()
         };
         let mapping = selected == Some(source_id);
-        let (rate, units) = match settings.rate {
-            lfo::Rate::Hertz(rate) => (rate, "hz"),
-            lfo::Rate::BeatsPerCycle(rate) => (rate, "beats"),
-        };
-        let source_key = |suffix| format!("lfo-{}-{suffix}", source_id.value());
+        let source_key = |suffix: &str| format!("{label}-{}-{suffix}", source_id.value());
         let control = action(
             source_key("map"),
             theme::text(if mapping { "done" } else { "map" }),
@@ -96,20 +175,33 @@ pub(super) fn panel(
             view.device_panel.mapping_source = (!mapping).then_some((id, source_id));
             cx.notify();
         }));
-        body = body.child(
-            div()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap(px(3.0))
-                .child(theme::text("lfo"))
-                .child(button(
-                    cx,
-                    source_key("power"),
-                    theme::text(if source.enabled { "on" } else { "off" }),
-                    Edit::ToggleSource(source_id),
-                ))
-                .child(control)
+        let mut row = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(3.0))
+            .child(theme::text(title))
+            .child(button(
+                cx,
+                source_key("power"),
+                theme::text(if source.enabled { "on" } else { "off" }),
+                Edit::ToggleSource(source_id),
+            ))
+            .child(control)
+            .child(button(
+                cx,
+                source_key("remove"),
+                theme::text("×"),
+                Edit::RemoveSource(source_id),
+            ));
+        if let SourceKind::Lfo = kind
+            && let Ok(settings) = lfo::Settings::decode(&source.state)
+        {
+            let (rate, units) = match settings.rate {
+                lfo::Rate::Hertz(rate) => (rate, "hz"),
+                lfo::Rate::BeatsPerCycle(rate) => (rate, "beats"),
+            };
+            row = row
                 .child(button(
                     cx,
                     source_key("slower"),
@@ -127,31 +219,146 @@ pub(super) fn panel(
                     source_key("faster"),
                     theme::text("+"),
                     Edit::Rate(source_id, 2.0),
-                ))
-                .child(button(
-                    cx,
-                    source_key("remove"),
-                    theme::text("×"),
-                    Edit::RemoveSource(source_id),
-                )),
-        );
+                ));
+        }
+        if let SourceKind::Follower = kind
+            && let Ok(settings) = follower::Settings::decode(&source.state)
+        {
+            for (attack, name, seconds) in [
+                (true, "attack", settings.attack_seconds),
+                (false, "release", settings.release_seconds),
+            ] {
+                row = row.child(
+                    div()
+                        .flex()
+                        .gap(px(2.0))
+                        .items_center()
+                        .child(button(
+                            cx,
+                            source_key(&format!("{name}-less")),
+                            theme::text("−"),
+                            Edit::FollowerTime {
+                                source: source_id,
+                                attack,
+                                factor: 0.5,
+                            },
+                        ))
+                        .child(theme::text(format!("{name} {:.1} ms", seconds * 1000.0)))
+                        .child(button(
+                            cx,
+                            source_key(&format!("{name}-more")),
+                            theme::text("+"),
+                            Edit::FollowerTime {
+                                source: source_id,
+                                attack,
+                                factor: 2.0,
+                            },
+                        )),
+                );
+            }
+        }
+        if let SourceKind::Macro = kind
+            && let Ok(settings) = manual::Settings::decode(&source.state)
+        {
+            let value = format!("{:.0}%", settings.value * 100.0);
+            if let Some(mapping_source) = selected.filter(|mapping_source| {
+                !blocked_targets.is_empty()
+                    && !blocked_targets.contains(&source_id)
+                    && bank.routes().len() < hex_project::MAX_MODULATION_ROUTES_PER_DEVICE
+                    && !bank.routes().iter().any(|route| {
+                        route.source == *mapping_source
+                            && route.destination == macro_destination(source_id)
+                    })
+            }) {
+                row = row.child(
+                    button(
+                        cx,
+                        format!("map-macro-{}-{}", id.value(), source_id.value()),
+                        theme::text(value),
+                        Edit::Map(mapping_source, MappingTarget::Macro(source_id)),
+                    )
+                    .border_color(rgb(theme::color(theme::PaletteRole::Primary))),
+                );
+            } else {
+                row = row
+                    .child(button(
+                        cx,
+                        source_key("less"),
+                        theme::text("−"),
+                        Edit::MacroValue(source_id, -0.05),
+                    ))
+                    .child(theme::text(value))
+                    .child(button(
+                        cx,
+                        source_key("more"),
+                        theme::text("+"),
+                        Edit::MacroValue(source_id, 0.05),
+                    ));
+            }
+        }
+        if let SourceKind::Random = kind
+            && let Ok(settings) = random::Settings::decode(&source.state)
+        {
+            row = row.child(
+                div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .gap(px(3.0))
+                    .child(button(
+                        cx,
+                        source_key("slower"),
+                        theme::text("−"),
+                        Edit::RandomRate(source_id, 0.5),
+                    ))
+                    .child(theme::text(format!("{:.2} hz", settings.rate_hz)))
+                    .child(button(
+                        cx,
+                        source_key("faster"),
+                        theme::text("+"),
+                        Edit::RandomRate(source_id, 2.0),
+                    ))
+                    .child(button(
+                        cx,
+                        source_key("reseed"),
+                        theme::text("new seed"),
+                        Edit::Reseed(source_id),
+                    )),
+            );
+        }
+        body = body.child(row);
         for route in bank
             .routes()
             .iter()
             .filter(|route| route.source == source_id)
         {
-            let ModulationDestination::Device {
-                target: DeviceAutomationTarget::Parameter(parameter),
-                ..
-            } = route.destination
-            else {
-                continue;
+            let label = match route.destination {
+                ModulationDestination::Device {
+                    target: DeviceAutomationTarget::Parameter(parameter),
+                    ..
+                } => view_data
+                    .parameters
+                    .iter()
+                    .find(|row| row.descriptor.id == parameter)
+                    .map_or("unavailable", |row| row.descriptor.label)
+                    .to_owned(),
+                ModulationDestination::Modulator {
+                    source,
+                    module_type: manual::TYPE_ID,
+                    parameter: manual::VALUE_PARAMETER,
+                } => {
+                    let Some(slot) = bank.sources().iter().position(|slot| slot.id == source)
+                    else {
+                        continue;
+                    };
+                    if multiple_macros {
+                        format!("macro {} value", slot + 1)
+                    } else {
+                        "macro value".to_owned()
+                    }
+                }
+                _ => continue,
             };
-            let label = view_data
-                .parameters
-                .iter()
-                .find(|row| row.descriptor.id == parameter)
-                .map_or("unavailable", |row| row.descriptor.label);
             let key = |suffix| format!("modulation-route-{}-{suffix}", route.id.value());
             let range = if route.range == ModulationRange::default() {
                 "bipolar"
@@ -196,7 +403,11 @@ pub(super) fn panel(
     Some(
         div()
             .id("device-modulator-scroll")
+            .debug_selector(|| "device-modulator-scroll".into())
+            .flex()
+            .flex_col()
             .max_h(px(58.0))
+            .occlude()
             .overflow_y_scroll()
             .child(body)
             .into_any_element(),
@@ -254,7 +465,7 @@ pub(super) fn target_overlay(
                         generation,
                         revision,
                         device,
-                        Edit::Map(source, parameter),
+                        Edit::Map(source, MappingTarget::Device(parameter)),
                     );
                     cx.notify();
                 }
@@ -305,11 +516,15 @@ fn apply(
     let mut sources = bank.sources().to_vec();
     let mut routes = bank.routes().to_vec();
     let unsupported = |_| Invalid("modulator settings are unsupported");
+    let maximum_hz = f64::from(project.sample_rate()) * 0.5;
     match edit {
-        Edit::Add => sources.push(Modulator {
+        Edit::Add(kind) => sources.push(Modulator {
+            color: Default::default(),
             id: ModulationSourceId::new(project.next_identity()).map_err(unsupported)?,
             enabled: true,
-            state: lfo::Settings::default().encode().map_err(unsupported)?,
+            state: kind
+                .default_state(project.next_identity())
+                .map_err(unsupported)?,
         }),
         Edit::ToggleSource(id) => {
             let source = find_source(&mut sources, id)?;
@@ -326,7 +541,7 @@ fn apply(
             let source = find_source(&mut sources, id)?;
             let mut settings = lfo::Settings::decode(&source.state).map_err(unsupported)?;
             settings.rate = match settings.rate {
-                lfo::Rate::Hertz(rate) => lfo::Rate::Hertz((rate * factor).clamp(0.01, 100.0)),
+                lfo::Rate::Hertz(rate) => lfo::Rate::Hertz((rate * factor).clamp(0.01, maximum_hz)),
                 lfo::Rate::BeatsPerCycle(rate) => {
                     lfo::Rate::BeatsPerCycle((rate / factor).clamp(0.0625, 64.0))
                 }
@@ -347,21 +562,61 @@ fn apply(
                     lfo::Rate::BeatsPerCycle((beats_per_second / rate).clamp(0.0625, 64.0))
                 }
                 lfo::Rate::BeatsPerCycle(beats) => {
-                    lfo::Rate::Hertz((beats_per_second / beats).clamp(0.01, 100.0))
+                    lfo::Rate::Hertz((beats_per_second / beats).clamp(0.01, maximum_hz))
                 }
             };
             source.state = settings.encode().map_err(unsupported)?;
         }
-        Edit::Map(source, parameter) => {
-            if !hex_engine::project_device_modulation_target_supported(project, id, parameter) {
-                return Err(Invalid(
-                    "this parameter does not support sample-rate modulation",
-                ));
-            }
-            let destination = ModulationDestination::Device {
-                device_type: device.state().type_id(),
-                target: DeviceAutomationTarget::Parameter(parameter),
-                vst3_class: None,
+        Edit::MacroValue(id, change) => {
+            let source = find_source(&mut sources, id)?;
+            let mut settings = manual::Settings::decode(&source.state).map_err(unsupported)?;
+            settings.value = (settings.value + change).clamp(0.0, 1.0);
+            source.state = settings.encode().map_err(unsupported)?;
+        }
+        Edit::FollowerTime {
+            source,
+            attack,
+            factor,
+        } => {
+            let source = find_source(&mut sources, source)?;
+            let mut settings = follower::Settings::decode(&source.state).map_err(unsupported)?;
+            let time = if attack {
+                &mut settings.attack_seconds
+            } else {
+                &mut settings.release_seconds
+            };
+            *time = (*time * factor).clamp(0.0001, 10.0);
+            source.state = settings.encode().map_err(unsupported)?;
+        }
+        Edit::RandomRate(id, factor) => {
+            let source = find_source(&mut sources, id)?;
+            let mut settings = random::Settings::decode(&source.state).map_err(unsupported)?;
+            settings.rate_hz = (settings.rate_hz * factor).clamp(0.01, maximum_hz);
+            source.state = settings.encode().map_err(unsupported)?;
+        }
+        Edit::Reseed(id) => {
+            let source = find_source(&mut sources, id)?;
+            let mut settings = random::Settings::decode(&source.state).map_err(unsupported)?;
+            settings.seed = settings.seed.wrapping_add(0xd1b5_4a32_d192_ed03);
+            source.state = settings.encode().map_err(unsupported)?;
+        }
+        Edit::Map(source, target) => {
+            let destination = match target {
+                MappingTarget::Device(parameter) => {
+                    if !hex_engine::project_device_modulation_target_supported(
+                        project, id, parameter,
+                    ) {
+                        return Err(Invalid(
+                            "this parameter does not support sample-rate modulation",
+                        ));
+                    }
+                    ModulationDestination::Device {
+                        device_type: device.state().type_id(),
+                        target: DeviceAutomationTarget::Parameter(parameter),
+                        vst3_class: None,
+                    }
+                }
+                MappingTarget::Macro(target) => macro_destination(target),
             };
             if routes
                 .iter()

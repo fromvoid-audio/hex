@@ -1,9 +1,10 @@
 //! Translate a saved effect bank into a bounded device-local render declaration.
 //! Control preparation resolves stable IDs and validates real factory bindings.
 //! Prepared declarations borrow no project data and never enter project history.
+use hex_devices::modulation::{envelope_follower, lfo, macro_value, random_hold};
 use hex_lattice::{
-    ModulationRoute, ModulationTarget, PreparedLfoSource, PreparedModulation,
-    PreparedModulationState, PreparedProcessorFactory,
+    ModulationRoute, ModulationTarget, PreparedModulation, PreparedModulationSource,
+    PreparedModulationState, PreparedProcessorFactory, SourceModulationRoute,
 };
 use hex_lattice_contract::{
     NativeDeviceMetadata, NativeDeviceState, ParameterId, ParameterModulation,
@@ -54,8 +55,9 @@ pub(super) fn validate_source_owners(project: &Project) -> Result<(), Invalid> {
 }
 
 pub(super) struct EffectModulation {
-    sources: Vec<PreparedLfoSource>,
+    sources: Vec<PreparedModulationSource>,
     routes: Vec<ModulationRoute>,
+    source_routes: Vec<SourceModulationRoute>,
     parameters: Vec<ParameterId>,
 }
 
@@ -96,11 +98,19 @@ impl EffectModulation {
         let mut sources = reserved(ordered.len())?;
         let mut ids = reserved(ordered.len())?;
         for source in ordered {
-            let prepared = hex_devices::modulation::lfo::Settings::decode(&source.state)
-                .and_then(|settings| {
+            let prepared = match source.state.type_id() {
+                lfo::TYPE_ID => lfo::Settings::decode(&source.state).and_then(|settings| {
                     settings.prepare(source.id, sample_rate, fallback_bpm, maximum_bpm)
-                })
-                .map_err(invalid_source)?;
+                }),
+                envelope_follower::TYPE_ID => envelope_follower::Settings::decode(&source.state)
+                    .and_then(|settings| settings.prepare(source.id, sample_rate)),
+                macro_value::TYPE_ID => macro_value::Settings::decode(&source.state)
+                    .and_then(|settings| settings.prepare(source.id, sample_rate)),
+                random_hold::TYPE_ID => random_hold::Settings::decode(&source.state)
+                    .and_then(|settings| settings.prepare(source.id, sample_rate)),
+                _ => return Err(Invalid("modulator state or rate is unsupported")),
+            }
+            .map_err(invalid_source)?;
             if source.enabled {
                 ids.push(source.id);
                 sources.push(prepared);
@@ -111,42 +121,63 @@ impl EffectModulation {
         }
 
         let mut routes = reserved(bank.routes().len())?;
+        let source_route_count = bank
+            .routes()
+            .iter()
+            .filter(|route| matches!(route.destination, ModulationDestination::Modulator { .. }))
+            .count();
+        let mut source_routes = reserved(source_route_count)?;
         let mut parameters = reserved(automation.len() + bank.routes().len())?;
         parameters.extend_from_slice(automation);
         for route in bank.routes().iter().filter(|route| route.enabled) {
             let Ok(source) = ids.binary_search(&route.source) else {
                 continue;
             };
-            let ModulationDestination::Device {
-                device_type,
-                target,
-                vst3_class: None,
-            } = route.destination
-            else {
-                return Err(Invalid("modulation destination is unsupported"));
-            };
-            let parameter = target
-                .provider_parameter()
-                .filter(|_| {
-                    device_type == device.state().type_id()
-                        && route.output == ModulationOutputId::MAIN
-                })
-                .ok_or(Invalid(
-                    "modulation destination or source output is unsupported",
-                ))?;
-            parameters.push(parameter);
-            routes.push(ModulationRoute {
-                source,
-                target: parameter,
-                amount: route.amount.get(),
-                range: [route.range.start.get(), route.range.end.get()],
-            });
+            if route.output != ModulationOutputId::MAIN {
+                return Err(Invalid("modulator source output is unsupported"));
+            }
+            let amount = route.amount.get();
+            let range = [route.range.start.get(), route.range.end.get()];
+            match route.destination {
+                ModulationDestination::Device {
+                    device_type,
+                    target,
+                    vst3_class: None,
+                } if device_type == device.state().type_id() => {
+                    let parameter = target
+                        .provider_parameter()
+                        .ok_or(Invalid("modulation destination is unsupported"))?;
+                    parameters.push(parameter);
+                    routes.push(ModulationRoute {
+                        source,
+                        target: parameter,
+                        amount,
+                        range,
+                    });
+                }
+                ModulationDestination::Modulator {
+                    source: target,
+                    module_type: macro_value::TYPE_ID,
+                    parameter: macro_value::VALUE_PARAMETER,
+                } => {
+                    if let Ok(target) = ids.binary_search(&target) {
+                        source_routes.push(SourceModulationRoute {
+                            source,
+                            target,
+                            amount,
+                            range,
+                        });
+                    }
+                }
+                _ => return Err(Invalid("modulation destination is unsupported")),
+            }
         }
         parameters.sort_unstable();
         parameters.dedup();
         Ok(Some(Self {
             sources,
             routes,
+            source_routes,
             parameters,
         }))
     }
@@ -156,7 +187,12 @@ impl EffectModulation {
     /// so arming a parameter never needs a larger modulation reservation.
     pub(super) fn quote(device: &Device) -> Option<(usize, usize)> {
         let bank = device.modulation();
-        Self::quote_counts(bank.sources().len(), bank.routes().len(), 1)
+        let source_routes = bank
+            .routes()
+            .iter()
+            .filter(|route| matches!(route.destination, ModulationDestination::Modulator { .. }))
+            .count();
+        Self::quote_routes(bank.sources().len(), bank.routes().len(), 1, source_routes)
     }
 
     /// The same estimate applies to summed source and route counts when
@@ -166,6 +202,15 @@ impl EffectModulation {
         routes: usize,
         banks: usize,
     ) -> Option<(usize, usize)> {
+        Self::quote_routes(sources, routes, banks, routes)
+    }
+
+    fn quote_routes(
+        sources: usize,
+        routes: usize,
+        banks: usize,
+        source_routes: usize,
+    ) -> Option<(usize, usize)> {
         use hex_lattice_contract::{MAX_PARAMETERS_PER_DEVICE, ModulationSourceId};
         use hex_project::Modulator;
         use std::mem::size_of;
@@ -173,7 +218,10 @@ impl EffectModulation {
             return Some((0, 0));
         }
         let targets = banks.checked_mul(MAX_PARAMETERS_PER_DEVICE)?;
-        let retained = PreparedModulationState::quoted_heap_bytes(sources, targets, routes)?;
+        let retained = PreparedModulationState::quoted_heap_bytes(sources, targets, routes)?
+            .checked_add(PreparedModulationState::quoted_source_route_bytes(
+                source_routes,
+            )?)?;
         let overlap = sources
             .checked_mul(size_of::<&Modulator>() + size_of::<ModulationSourceId>())?
             .checked_add(
@@ -181,7 +229,10 @@ impl EffectModulation {
             )?
             .checked_add(
                 targets.checked_mul(size_of::<ParameterId>() + size_of::<ModulationTarget>())?,
-            )?;
+            )?
+            .checked_add(PreparedModulationState::quoted_source_route_overlap(
+                source_routes,
+            )?)?;
         Some((retained, overlap))
     }
 
@@ -227,8 +278,13 @@ impl EffectModulation {
         }
         let program = PreparedModulation::new(&targets, &self.routes, self.sources.len())
             .map_err(|_| Invalid("modulation program is invalid or exceeds its capacity"))?;
-        PreparedModulationState::new(self.sources, program, CHUNK_FRAMES)
-            .map_err(|_| Invalid("modulation declaration exceeds its capacity"))
+        PreparedModulationState::with_source_routes(
+            self.sources,
+            program,
+            CHUNK_FRAMES,
+            &self.source_routes,
+        )
+        .map_err(|_| Invalid("modulation declaration exceeds its capacity"))
     }
 }
 
@@ -239,3 +295,9 @@ fn reserved<T>(count: usize) -> Result<Vec<T>, Invalid> {
         .map_err(|_| Invalid("could not reserve modulation preparation storage"))?;
     Ok(values)
 }
+
+#[cfg(test)]
+mod macro_tests;
+
+#[cfg(test)]
+mod random_tests;

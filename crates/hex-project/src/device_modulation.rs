@@ -6,8 +6,9 @@
 //! aggregate bounds and an acyclic enabled source-dependency graph. Effective
 //! values and oscillator phase never enter a project snapshot or history edge.
 //! New source and route IDs reserve one contiguous range from the project cursor;
-//! history never rewinds it. Copies retain local IDs under a fresh DeviceId.
-use crate::{Created, DeviceId, Invalid, Project};
+//! history never rewinds it. An existing slot keeps its source type. Copies
+//! retain local IDs under a fresh DeviceId.
+use crate::{Created, DeviceId, ElementColor, Invalid, Project};
 use hex_lattice_contract::{DeviceAutomationTarget, DeviceTypeId, NativeDeviceState, ParameterId};
 pub use hex_lattice_contract::{ModulationOutputId, ModulationSourceId};
 
@@ -63,9 +64,11 @@ impl Default for ModulationRange {
     }
 }
 
+/// A slot in its owning device’s authored bank. Routes follow the stable ID.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Modulator {
     pub id: ModulationSourceId,
+    pub color: ElementColor,
     pub enabled: bool,
     pub state: NativeDeviceState,
 }
@@ -216,6 +219,32 @@ impl DeviceModulation {
     pub fn routes(&self) -> &[DeviceModulationRoute] {
         &self.routes
     }
+    /// Sources that can already feed this slot through enabled routes. The slot
+    /// itself is included so a mapping picker can exclude self and cycle edges.
+    pub fn source_route_ancestors(
+        &self,
+        source: ModulationSourceId,
+    ) -> impl Iterator<Item = ModulationSourceId> {
+        let mut reached = [None; MAX_MODULATORS_PER_DEVICE];
+        if self.sources.iter().any(|slot| slot.id == source) {
+            reached[0] = Some(source);
+        }
+        let mut count = usize::from(reached[0].is_some());
+        for index in 0..self.sources.len() {
+            let Some(target) = reached[index] else { break };
+            for route in self.routes.iter().filter(|route| route.enabled) {
+                if matches!(route.destination, ModulationDestination::Modulator { source, .. } if source == target)
+                    && !reached[..count].contains(&Some(route.source))
+                    && let Some(slot) = reached.get_mut(count)
+                {
+                    *slot = Some(route.source);
+                    count += 1;
+                }
+            }
+        }
+        reached.into_iter().flatten()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.sources.is_empty() && self.routes.is_empty()
     }
@@ -230,7 +259,17 @@ impl Project {
         let previous = self
             .device(device)
             .ok_or(Invalid("device no longer exists"))?;
-        let next = modulation.next_identity(previous.modulation(), self.next_id)?;
+        let previous = previous.modulation();
+        for slot in modulation.sources() {
+            if previous
+                .sources()
+                .iter()
+                .any(|old| old.id == slot.id && old.state.type_id() != slot.state.type_id())
+            {
+                return Err(Invalid("modulator type changed for an existing slot"));
+            }
+        }
+        let next = modulation.next_identity(previous, self.next_id)?;
         self.validate_modulation_inventory(Some((device, &modulation)), next)?;
         self.edit_device(device, move |entry| {
             entry.modulation = modulation;
