@@ -174,6 +174,18 @@ impl Custody {
             "native parameter point was not admitted",
         )
     }
+    pub(in crate::candidate_custody) fn arm_editor_pcm(
+        &self,
+        binding: Binding,
+        scope: std::num::NonZeroU64,
+    ) -> Result<(hex_plugin_host::transport::EditorScope, u16), &'static str> {
+        self.with_live_capture(binding, |owner| match owner {
+            Owner::Effect(owner) => owner.arm_editor_pcm(scope),
+            Owner::Loaned(owner) => owner.arm_editor_pcm(scope),
+            _ => Err("native editor source differs"),
+        })
+    }
+
     pub(in crate::candidate_custody) fn native_parameter_edits(
         &self,
         binding: Binding,
@@ -509,6 +521,17 @@ impl CandidateRoot {
         self.require_native_source_control_open()?;
         Ok(result)
     }
+    pub(crate) fn arm_native_editor_pcm(
+        &self,
+        binding: Binding,
+        scope: std::num::NonZeroU64,
+    ) -> Result<(hex_plugin_host::transport::EditorScope, u16), &'static str> {
+        self.require_native_source_control_open()?;
+        let armed = self.0.eligible.arm_editor_pcm(binding, scope)?;
+        self.require_native_source_control_open()?;
+        Ok(armed)
+    }
+
     pub(crate) fn native_source_recovery_edits(
         &self,
         binding: Binding,

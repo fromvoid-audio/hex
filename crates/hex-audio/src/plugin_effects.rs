@@ -554,6 +554,12 @@ impl NativeEffectCallback {
     }
     /// Consume the exact operation and input clock from this accepted endpoint
     /// callback. This is still before the mix's recording/delivery decision.
+    pub(crate) fn take_accepted_editor_quantum(
+        &mut self,
+    ) -> Option<hex_plugin_host::transport::AcceptedEditorQuantum> {
+        self.transport.take_accepted_editor_quantum()
+    }
+
     pub fn take_accepted_manual_parameter(&mut self) -> Option<AcceptedManualParameter> {
         self.transport.take_accepted_manual_parameter()
     }
