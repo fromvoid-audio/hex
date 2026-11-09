@@ -165,6 +165,46 @@ impl std::fmt::Debug for PreparedRevision {
 
 impl PreparedRevision {
     #[cfg(test)]
+    pub(crate) fn test_install_source_effect_recipes(
+        &mut self,
+        recipes: Vec<crate::source_effect_stage::PreparedSourceEffects>,
+    ) {
+        let mut arrangement = self.arrangement().as_ref().clone();
+        arrangement.source_effects = recipes;
+        self.arrangement = crate::owned_shared::OwnedShared::new_owned(arrangement);
+    }
+
+    /// Headless callback fixture while the authored binding gate is closed.
+    /// The canonical route is already compiled from a bound singleton; its
+    /// retained children are authored in a separate detached copy of the source.
+    #[doc(hidden)]
+    #[cfg(feature = "instrument-test-support")]
+    pub fn test_install_compiled_source_effects(
+        &mut self,
+        retained: &Project,
+    ) -> Result<(), Invalid> {
+        let mut arrangement = self.arrangement().as_ref().clone();
+        let registry = hex_devices::native_registry()
+            .map_err(|_| Invalid("invalid native effect fixture registry"))?;
+        let context = hex_lattice::DevicePreparationContext {
+            sample_rate: arrangement.sample_rate(),
+            tuning: arrangement.shared_contexts().tuning(),
+            resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        };
+        arrangement.source_effects = crate::compile::prepare_source_effect_recipes(
+            &arrangement,
+            retained,
+            &registry,
+            &context,
+        )?;
+        if arrangement.source_effects.is_empty() {
+            return Err(Invalid("fixture has no prepared source effect recipe"));
+        }
+        self.arrangement = crate::owned_shared::OwnedShared::new_owned(arrangement);
+        Ok(())
+    }
+
+    #[cfg(test)]
     pub(crate) fn test_install_retained_receiver(
         &mut self,
         canonical: &Project,
@@ -1542,7 +1582,10 @@ impl PreparedRevision {
             }
             bytes
                 .checked_add(authored_midi::construction_bytes(project).ok()?)?
-                .checked_add(crate::PreparedSourceRouting::construction_bytes(project))
+                .checked_add(crate::PreparedSourceRouting::construction_bytes(project))?
+                .checked_add(crate::source_effect_stage::metadata::construction_bytes(
+                    project,
+                )?)
         })();
         let programs = crate::foreign_automation::candidate::quote_instruments(project)
             .map_err(|_| Invalid("vst3 instrument automation reservation overflow"))?;
@@ -1604,7 +1647,10 @@ impl PreparedRevision {
             }
             bytes
                 .checked_add(authored_midi::retained_bytes(&self.authored_midi_sources)?)?
-                .checked_add(self.source_routing.retained_bytes())
+                .checked_add(self.source_routing.retained_bytes())?
+                .checked_add(crate::source_effect_stage::metadata::retained_bytes(
+                    &self.arrangement().source_effects,
+                )?)
         })();
         bytes.ok_or(crate::AudioStorageError::Overflow)
     }

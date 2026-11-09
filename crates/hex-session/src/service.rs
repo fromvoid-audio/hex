@@ -696,13 +696,15 @@ pub enum Request {
     },
     /// Recover one completed device take without reconstructing its old worker.
     /// Current context fences publication; expected target/provenance bind only
-    /// the immutable file. Every path echoes request_id through take completion.
+    /// the immutable file. A selected verified copy is revalidated under
+    /// the same reader used for adoption. Every path echoes request_id.
     RecoverDeviceAutomationTake {
         request_id: u64,
         context: hex_engine::AudioSourceContext,
         target: hex_storage::automation_draft::DraftTarget,
         expected: automation_draft::DraftProvenance,
         path: PathBuf,
+        receipt: Option<automation_draft::RecoveryCopyReceipt>,
     },
     ArmNativeParameterRecording {
         project_generation: u64,
@@ -2917,6 +2919,7 @@ fn run_worker(
                 target,
                 expected,
                 path,
+                receipt,
             } => {
                 let current = hex_engine::AudioSourceContext {
                     project_generation,
@@ -2941,6 +2944,7 @@ fn run_worker(
                         *target,
                         *expected,
                         path,
+                        *receipt,
                     )
                 };
                 device_automation_take_complete = Some(DeviceAutomationTakeCompletion {
@@ -3018,13 +3022,18 @@ fn run_worker(
                         *scope,
                         gesture_active,
                     )
-                } else if let DeviceAutomationTakeAction::KeepFailedPluginCopy { max_events } =
-                    action
+                } else if let DeviceAutomationTakeAction::KeepFailedPluginCopy {
+                    path,
+                    receipt,
+                    max_events,
+                } = action
                 {
                     plugin_recording::keep_failed_copy(
                         &mut plugin_recording,
                         &mut native_automation_take,
                         *scope,
+                        path,
+                        *receipt,
                         *max_events,
                         gesture_active,
                     )

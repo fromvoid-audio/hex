@@ -68,15 +68,6 @@ pub(crate) fn prepare_source_instruments(
     samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
 ) -> Result<BTreeMap<DeviceId, PreparedSourceInstrument>, Invalid> {
     let mut instruments = BTreeMap::new();
-    for source in project
-        .native_sources()
-        .iter()
-        .filter(|source| project.source_contributors(source.id()).next().is_some())
-    {
-        if source.devices().count() != 1 {
-            return Err(Invalid("native source device chains are not prepared"));
-        }
-    }
     for track in project.tracks() {
         let Some(device) = track.instrument() else {
             continue;
@@ -1056,6 +1047,14 @@ fn compile_project_inner<'a>(
         .map(|route| (route.source(), route.destination()))
         .collect();
     project.midi_routing.sort_unstable();
+    project.source_effects = {
+        let context = hex_lattice::DevicePreparationContext {
+            sample_rate: project.sample_rate(),
+            tuning: project.shared_contexts().tuning(),
+            resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        };
+        prepare_source_effect_recipes(&project, snapshot, registry, &context)?
+    };
     project.signal_graph = crate::signal_graph::SignalGraph::prepare(&project, &feeds, snapshot)?;
     project.main_output_latency_frames = crate::main_chain::output_latency(
         project
@@ -1184,6 +1183,61 @@ fn compile_device_effects(
         native_input,
         external_inputs,
     )
+}
+
+/// Build at most one source-owned recipe per compiled receiver. Definitions
+/// without a current receiver do not acquire DSP or resource custody.
+pub(crate) fn prepare_source_effect_recipes(
+    compiled: &Project,
+    arrangement: &hex_project::Project,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+    context: &hex_lattice::DevicePreparationContext<'_>,
+) -> Result<Vec<crate::source_effect_stage::PreparedSourceEffects>, Invalid> {
+    let count = compiled
+        .tracks
+        .iter()
+        .filter(|track| {
+            track
+                .source_id()
+                .filter(|_| track.receives_source_audio())
+                .and_then(|source| arrangement.native_source(source))
+                .is_some_and(|definition| !definition.post_instrument_effects().is_empty())
+        })
+        .count();
+    let mut recipes = Vec::new();
+    recipes
+        .try_reserve_exact(count)
+        .map_err(|_| Invalid("could not reserve prepared source recipe"))?;
+    for (receiver, track) in compiled.tracks.iter().enumerate() {
+        let Some(source) = track.source_id().filter(|_| track.receives_source_audio()) else {
+            continue;
+        };
+        let definition = arrangement
+            .native_source(source)
+            .ok_or(Invalid("compiled receiver source no longer exists"))?;
+        if definition.instrument_index() == 0 && definition.post_instrument_effects().is_empty() {
+            continue;
+        }
+        use crate::source_effect_stage::metadata;
+        let suffix = definition.post_instrument_effects();
+        for device in suffix {
+            metadata::validate_authored(device.state(), registry)?;
+        }
+        let instances = prepare_source_effect_suffix(arrangement, source, registry, context)?;
+        let factory_bytes = instances.iter().try_fold(0usize, |bytes, instance| {
+            bytes
+                .checked_add(metadata::factory_bytes(instance, registry)?)
+                .ok_or(Invalid("source effect factory byte count overflow"))
+        })?;
+        recipes.push(crate::source_effect_stage::PreparedSourceEffects {
+            source,
+            receiver,
+            instances: Arc::from(instances),
+            factory_bytes,
+        });
+    }
+    crate::source_effect_stage::SourceEffectStages::validate_preparation(compiled, &recipes)?;
+    Ok(recipes)
 }
 
 /// Prepare an ordered native source suffix for control-side use. Retained

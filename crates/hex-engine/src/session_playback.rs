@@ -1565,21 +1565,21 @@ impl SessionPlayback {
             policy,
             resources,
             transient_loop,
-            &[],
+            None,
         )
     }
 
     #[cfg(test)]
     pub(crate) fn test_with_source_effects(
         revision: Arc<PreparedRevision>,
-        recipes: &[crate::source_effect_stage::PreparedSourceEffects<'_>],
+        recipes: &[crate::source_effect_stage::PreparedSourceEffects],
     ) -> Result<Self, SessionPlaybackError> {
         Self::new_with_render_policy_and_source_effects(
             revision,
             RenderConstruction::Interactive,
             None,
             None,
-            recipes,
+            Some(recipes),
         )
     }
 
@@ -1588,18 +1588,11 @@ impl SessionPlayback {
         policy: RenderConstruction,
         resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
         transient_loop: Option<hex_project::LoopRegion>,
-        recipes: &[crate::source_effect_stage::PreparedSourceEffects<'_>],
+        recipe_override: Option<&[crate::source_effect_stage::PreparedSourceEffects]>,
     ) -> Result<Self, SessionPlaybackError> {
         let arrangement = revision.arrangement();
+        let recipes = recipe_override.unwrap_or(&arrangement.source_effects);
         let linear_arrangement_export = policy != RenderConstruction::Interactive;
-        // Source effects are staged only for interactive playing verification.
-        // Export quotes and live publication have separate ownership contracts.
-        if linear_arrangement_export && !recipes.is_empty() {
-            return Err(SessionPlaybackError::DeviceRuntime);
-        }
-        let source_effects =
-            crate::source_effect_stage::SourceEffectStages::prepare(arrangement, recipes)
-                .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
         let chain_has_foreign_automation = arrangement
             .tracks
             .iter()
@@ -1645,9 +1638,10 @@ impl SessionPlayback {
                 "device resource set differs from prepared revision",
             ));
         }
-        // Scoped linear export and every finite bounce reserve before allocation,
-        // then check the actual runtime below. Interactive budgets stay unchanged.
-        let linear_resource_allowance = if (linear_arrangement_export && resources.is_some())
+        // Linear export with scoped resources or source effects, and every finite bounce,
+        // reserve before allocation and check actual runtime storage below.
+        let linear_resource_allowance = if (linear_arrangement_export
+            && (resources.is_some() || !recipes.is_empty()))
             || matches!(
                 policy,
                 RenderConstruction::FiniteBounce | RenderConstruction::FiniteForeignBounce
@@ -1656,6 +1650,9 @@ impl SessionPlayback {
         } else {
             None
         };
+        let source_effects =
+            crate::source_effect_stage::SourceEffectStages::prepare(arrangement, recipes)
+                .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
         let arrangement_tracks = revision.arrangement().tracks();
         let session_tracks = revision.session().tracks();
         if arrangement_tracks.len() != session_tracks.len()
@@ -2073,6 +2070,7 @@ impl SessionPlayback {
                 revision: &revision,
                 midi_admission: midi_admission.as_ref(),
                 analytic_import: &analytic_import,
+                source_effects: &source_effects,
                 device_chains: &device_chains,
                 return_chains: &return_chains,
                 return_effect_tails: &return_effect_tails,

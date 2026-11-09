@@ -6253,6 +6253,17 @@ fn modulation_panel_adds_and_maps_an_envelope_follower(cx: &mut TestAppContext) 
     );
 }
 
+#[gpui::test]
+fn modulation_panel_adds_and_maps_a_manual_macro(cx: &mut TestAppContext) {
+    use hex_devices::utility::parameter;
+    assert_modulation_mapping(
+        cx,
+        "macro",
+        hex_engine::macro_modulator::TYPE_ID,
+        &[parameter::GAIN, parameter::WIDTH],
+    );
+}
+
 fn assert_modulation_mapping(
     cx: &mut TestAppContext,
     source_kind: &str,
@@ -6294,6 +6305,29 @@ fn assert_modulation_mapping(
     pump_until(&editor, cx, |view| source(view).is_some());
     let source_id = editor.read_with(cx, |view, _| source(view).unwrap());
     visual.run_until_parked();
+    if type_id == hex_engine::macro_modulator::TYPE_ID {
+        click(&mut visual, format!("macro-{}-more", source_id.value()));
+        let value = |view: &EditorView| {
+            let bank = view.state.as_ref()?.project.device(device)?.modulation();
+            let source = bank.sources().first()?;
+            Some(
+                hex_engine::macro_modulator::Settings::decode(&source.state)
+                    .ok()?
+                    .value,
+            )
+        };
+        assert!(
+            editor.read_with(cx, |view, _| {
+                view.worker_requests_pending > 0
+                    || !view.pending_requests.is_empty()
+                    || value(view) == Some(0.05)
+            }),
+            "macro value edit did not dispatch"
+        );
+        pump_until(&editor, cx, |view| value(view) == Some(0.05));
+        visual.run_until_parked();
+    }
+
     click(
         &mut visual,
         format!("{source_kind}-{}-map", source_id.value()),
@@ -6341,7 +6375,17 @@ fn assert_modulation_mapping(
         visual.run_until_parked();
     }
     editor.read_with(cx, |view, _| {
-        let device = view.state.as_ref().unwrap().project.device(device).unwrap();
+        let project = &view.state.as_ref().unwrap().project;
+        let current = project.device(device).unwrap();
+        if type_id == hex_engine::macro_modulator::TYPE_ID {
+            let bytes = hex_storage::encode(project).unwrap();
+            let reopened = hex_storage::decode(&bytes).unwrap();
+            assert_eq!(
+                reopened.device(device).unwrap().modulation(),
+                current.modulation()
+            );
+        }
+        let device = current;
         assert_eq!(device.state(), &original);
         assert_eq!(device.modulation().sources()[0].state.type_id(), type_id);
         assert!(

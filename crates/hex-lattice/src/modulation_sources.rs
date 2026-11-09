@@ -58,6 +58,7 @@ enum SourceState {
         timing: Timing,
     },
     Follower(EnvelopeFollower),
+    Macro(f32),
 }
 
 impl SourceState {
@@ -80,6 +81,9 @@ impl SourceState {
                 },
             ) => oscillator.inherit_phase(&old),
             (Self::Follower(follower), Self::Follower(old)) => follower.inherit_envelope(&old),
+            // The candidate's authored value is complete. There is no
+            // temporal history to carry from the prior graph.
+            (Self::Macro(_), Self::Macro(_)) => {}
             _ => return false,
         }
         true
@@ -155,6 +159,21 @@ impl PreparedModulationSource {
         Ok(Self {
             id,
             initial: SourceState::Follower(follower),
+            sample_rate: f64::from(sample_rate),
+        })
+    }
+    /// A manual source holds its finite normalized value at each sample.
+    pub fn macro_value(
+        id: ModulationSourceId,
+        sample_rate: u32,
+        value: f32,
+    ) -> Result<Self, Error> {
+        if sample_rate == 0 || !(0.0..=1.0).contains(&value) {
+            return Err(Error::InvalidParameterValue);
+        }
+        Ok(Self {
+            id,
+            initial: SourceState::Macro(value),
             sample_rate: f64::from(sample_rate),
         })
     }
@@ -417,6 +436,7 @@ impl ModulationSourceBank {
                 SourceState::Follower(follower) => follower
                     .render(input.ok_or(Error::InvalidParameterValue)?, output)
                     .map_err(|_| Error::InvalidParameterValue)?,
+                SourceState::Macro(value) => output.fill(*value),
             }
         }
         self.last_frames = frames;

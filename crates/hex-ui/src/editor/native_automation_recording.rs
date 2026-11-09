@@ -17,7 +17,8 @@ use hex_session::{
     device_gesture::{GestureKey, GestureTarget},
     service::{
         DeviceAutomationTakeAction as Action, DeviceAutomationTakeProgress as Progress,
-        DeviceAutomationTakeScope, Event, MAX_NATIVE_RECOVERY_CONTINUATION_EVENTS, Request,
+        DeviceAutomationTakeScope, Event, MAX_NATIVE_RECOVERY_CONTINUATION_EVENTS,
+        NativeRecoveryContinuation, NativeRecoveryTerminal, Request,
         automation_draft::{DraftProvenance, EVENTS_PER_BATCH},
     },
 };
@@ -343,6 +344,44 @@ impl Recorder {
 }
 
 impl EditorView {
+    pub(super) fn retained_native_recovery_scope(&self) -> Option<DeviceAutomationTakeScope> {
+        self.native_automation_recorder
+            .touch
+            .as_ref()
+            .filter(|touch| touch.phase == Phase::Retained)
+            .map(|touch| touch.scope)
+    }
+
+    pub(super) fn native_recovery_continuation(
+        &self,
+        scope: DeviceAutomationTakeScope,
+    ) -> Option<NativeRecoveryContinuation> {
+        let touch = self
+            .native_automation_recorder
+            .touch
+            .as_ref()
+            .filter(|touch| touch.phase == Phase::Retained && touch.scope == scope)?;
+        let terminal = match touch.terminal.as_ref() {
+            Some(Action::Finish(application)) => NativeRecoveryTerminal::Restored(*application),
+            Some(Action::Abort(reason)) => NativeRecoveryTerminal::Aborted(*reason),
+            // No caller terminal means it was already admitted, or the
+            // endpoint reported no terminal. Session preserves an admitted
+            // original terminal when it combines the writer and caller tail.
+            Some(Action::Interrupt) | None => NativeRecoveryTerminal::Interrupted,
+            _ => return None,
+        };
+        Some(NativeRecoveryContinuation {
+            applications: Arc::from(touch.batch.as_slice()),
+            terminal,
+        })
+    }
+
+    pub(super) fn release_native_recovery(&mut self, scope: DeviceAutomationTakeScope) {
+        if self.retained_native_recovery_scope() == Some(scope) {
+            self.native_automation_recorder.touch = None;
+        }
+    }
+
     pub(super) fn native_automation_arm_selected(
         &self,
         device: DeviceId,
