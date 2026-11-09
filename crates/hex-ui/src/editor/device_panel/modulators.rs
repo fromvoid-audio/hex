@@ -157,9 +157,9 @@ pub(super) fn panel(
         };
         let label = kind.label();
         let title = if multiple_macros && matches!(kind, SourceKind::Macro) {
-            theme::text(format!("macro {}", slot + 1))
+            format!("macro {}", slot + 1)
         } else {
-            theme::text(label)
+            label.to_owned()
         };
         let mapping = selected == Some(source_id);
         let source_key = |suffix: &str| format!("{label}-{}-{suffix}", source_id.value());
@@ -180,7 +180,7 @@ pub(super) fn panel(
             .flex_wrap()
             .items_center()
             .gap(px(3.0))
-            .child(title)
+            .child(theme::text(title))
             .child(button(
                 cx,
                 source_key("power"),
@@ -260,7 +260,7 @@ pub(super) fn panel(
         if let SourceKind::Macro = kind
             && let Ok(settings) = manual::Settings::decode(&source.state)
         {
-            let value = theme::text(format!("{:.0}%", settings.value * 100.0));
+            let value = format!("{:.0}%", settings.value * 100.0);
             if let Some(mapping_source) = selected.filter(|mapping_source| {
                 !blocked_targets.is_empty()
                     && !blocked_targets.contains(&source_id)
@@ -274,7 +274,7 @@ pub(super) fn panel(
                     button(
                         cx,
                         format!("map-macro-{}-{}", id.value(), source_id.value()),
-                        value,
+                        theme::text(value),
                         Edit::Map(mapping_source, MappingTarget::Macro(source_id)),
                     )
                     .border_color(rgb(theme::color(theme::PaletteRole::Primary))),
@@ -287,7 +287,7 @@ pub(super) fn panel(
                         theme::text("−"),
                         Edit::MacroValue(source_id, -0.05),
                     ))
-                    .child(value)
+                    .child(theme::text(value))
                     .child(button(
                         cx,
                         source_key("more"),
@@ -336,13 +336,12 @@ pub(super) fn panel(
                 ModulationDestination::Device {
                     target: DeviceAutomationTarget::Parameter(parameter),
                     ..
-                } => theme::text(
-                    view_data
-                        .parameters
-                        .iter()
-                        .find(|row| row.descriptor.id == parameter)
-                        .map_or("unavailable", |row| row.descriptor.label),
-                ),
+                } => view_data
+                    .parameters
+                    .iter()
+                    .find(|row| row.descriptor.id == parameter)
+                    .map_or("unavailable", |row| row.descriptor.label)
+                    .to_owned(),
                 ModulationDestination::Modulator {
                     source,
                     module_type: manual::TYPE_ID,
@@ -353,9 +352,9 @@ pub(super) fn panel(
                         continue;
                     };
                     if multiple_macros {
-                        theme::text(format!("macro {} value", slot + 1))
+                        format!("macro {} value", slot + 1)
                     } else {
-                        theme::text("macro value")
+                        "macro value".to_owned()
                     }
                 }
                 _ => continue,
@@ -372,7 +371,7 @@ pub(super) fn panel(
                     .flex_wrap()
                     .items_center()
                     .gap(px(3.0))
-                    .child(label)
+                    .child(theme::text(label))
                     .child(button(
                         cx,
                         key("less"),
