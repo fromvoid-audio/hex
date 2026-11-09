@@ -149,66 +149,11 @@ impl EditorView {
             let selected = self.focused_return == Some(id);
             let muted = track.muted();
             let (active_background, active_text) = super::track_gain::activator_colors(!muted);
-            let gain = track.gain();
-            let gain_control = if self.document_audio_mode
-                == hex_session::DocumentAudioMode::Resident
-            {
-                div()
-                    .w(px(82.0))
-                    .flex()
-                    .flex_shrink_0()
-                    .child(self.return_volume(track, cx))
-            } else {
-                // Preserve the real explicit command path when held previews are unavailable.
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(3.0))
-                    .child(
-                        return_button(
-                            format!("return-gain-down-{}", id.value()),
-                            "−",
-                            "decrease return gain",
-                        )
-                        .on_click(cx.listener(move |view, _, _, cx| {
-                            super::device_panel::enqueue_return_edit(
-                                view,
-                                Command::ReturnGain {
-                                    return_track: id,
-                                    gain: (gain - 0.1).clamp(0.0, 2.0),
-                                },
-                                cx,
-                            );
-                            cx.notify();
-                        })),
-                    )
-                    .child(
-                        div()
-                            .w(px(32.0))
-                            .text_xs()
-                            .text_right()
-                            .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
-                            .child(theme::text(format!("{:.0}%", gain * 100.0))),
-                    )
-                    .child(
-                        return_button(
-                            format!("return-gain-up-{}", id.value()),
-                            "+",
-                            "increase return gain",
-                        )
-                        .on_click(cx.listener(move |view, _, _, cx| {
-                            super::device_panel::enqueue_return_edit(
-                                view,
-                                Command::ReturnGain {
-                                    return_track: id,
-                                    gain: (gain + 0.1).clamp(0.0, 2.0),
-                                },
-                                cx,
-                            );
-                            cx.notify();
-                        })),
-                    )
-            };
+            let gain_control = div()
+                .w(px(82.0))
+                .flex()
+                .flex_shrink_0()
+                .child(self.return_volume(track, cx));
             let track_name_view = super::track_header::name()
                 .id(ElementId::Name(
                     format!("return-track-focus-{}", id.value()).into(),
@@ -225,20 +170,27 @@ impl EditorView {
                 .items_center()
                 .gap(px(3.0))
                 .child(gain_control)
+                .child(self.sample_arm_button(
+                    super::sample_recorder::Arm::Output(hex_engine::OutputCaptureId::Return(id)),
+                    cx,
+                ))
                 .child(
-                    return_button(
-                        format!("return-mute-{}", id.value()),
+                    super::waveform::toggle_button_with_style(
                         if muted { "○" } else { "●" },
                         if muted {
                             "activate return"
                         } else {
                             "deactivate return"
                         },
+                        ("return-mute", id.value()),
+                        theme::action_style().with_state_colors(active_background, active_text),
                     )
-                    .w(px(28.0))
-                    .h(px(18.0))
-                    .bg(rgb(active_background))
-                    .text_color(rgb(active_text))
+                    .debug_selector(move || format!("return-mute-{}", id.value()))
+                    .w(px(20.0))
+                    .h(px(14.0))
+                    .text_size(px(10.0))
+                    .border_1()
+                    .border_color(rgb(theme::control_style().border))
                     .on_click(cx.listener(move |view, _, _, cx| {
                         super::device_panel::enqueue_return_edit(
                             view,
@@ -271,6 +223,7 @@ impl EditorView {
                 self.track_header_width(),
                 RETURN_ROW_HEIGHT,
                 selected,
+                None,
             )
             .debug_selector(move || format!("return-track-header-{}", id.value()))
             .child(
@@ -289,6 +242,10 @@ impl EditorView {
                             .child(track_name_view)
                             .child(controls),
                     )
+                    .children(
+                        self.track_performance_indicator(hex_engine::OutputCaptureId::Return(id)),
+                    )
+                    .children(self.track_latency_indicator(super::track_latency::Owner::Return(id)))
                     .children([super::track_meters::render_return(
                         id,
                         self.track_meters.return_level(id),
@@ -433,4 +390,63 @@ fn return_button(id: String, icon: &'static str, tooltip: &'static str) -> gpui:
             })
             .into()
         })
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod tests {
+    use super::*;
+    use crate::editor::clip_drag_ui_test::{audio_project, editor_window};
+    use gpui::{TestAppContext, VisualTestContext};
+
+    #[gpui::test]
+    fn pinned_return_gain_uses_one_compact_slider_in_both_audio_modes(cx: &mut TestAppContext) {
+        let (project, _, _, _) = audio_project();
+        let mut model = hex_project::Editor::new(project, 8).unwrap();
+        model
+            .execute(Command::AddReturnTrack { name: "bus".into() })
+            .unwrap();
+        let id = model.project().return_tracks()[0].id();
+        let (handle, editor) = editor_window(cx, model.project().clone(), Default::default());
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        let selector = |prefix: &str, suffix: &str| {
+            Box::leak(format!("{prefix}-{}{suffix}", id.value()).into_boxed_str()) as &'static str
+        };
+        for mode in [
+            hex_session::DocumentAudioMode::Resident,
+            hex_session::DocumentAudioMode::VerifiedStreaming,
+        ] {
+            editor.update(&mut visual, |view, cx| {
+                view.document_audio_mode = mode;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            let header = visual
+                .debug_bounds(selector("return-track-header", ""))
+                .unwrap();
+            let slider = visual
+                .debug_bounds(selector("return-volume", "-slider"))
+                .unwrap();
+            assert_eq!(slider.size.height, px(14.0));
+            assert_eq!(
+                visual
+                    .debug_bounds(selector("return-volume", ""))
+                    .unwrap()
+                    .size
+                    .height,
+                px(18.0)
+            );
+            assert!(slider.left() >= header.left() && slider.right() <= header.right());
+            assert!(slider.top() >= header.top() && slider.bottom() <= header.bottom());
+            assert!(
+                visual
+                    .debug_bounds(selector("return-gain-up", ""))
+                    .is_none()
+            );
+            assert!(
+                visual
+                    .debug_bounds(selector("return-gain-down", ""))
+                    .is_none()
+            );
+        }
+    }
 }

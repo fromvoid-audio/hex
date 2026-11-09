@@ -13,9 +13,25 @@
 //! and frame validation remain strict; no missing audio bytes are synthesized.
 //! Standard RIFF sizes exclude the first eight bytes; see
 //! <https://learn.microsoft.com/en-us/windows/win32/xaudio2/resource-interchange-file-format--riff->.
-use crate::ImportError;
+//!
+//! Some writers omit the pad byte after an odd-sized final chunk. That is
+//! accepted only for the final chunk, only when it ends exactly at physical EOF,
+//! and only when the declared RIFF end is that EOF or EOF plus the missing pad.
+//!
+//! Truncated recordings (a `data` chunk crossing physical EOF while the RIFF
+//! size also claims more bytes than exist) and complete `data` chunks ending in a
+//! partial frame are never accepted silently: strict scans refuse them with
+//! [`ImportError::Truncated`], which reports the readable whole frames. Only an
+//! explicit recovery decode keeps those frames, for fixed-frame encodings only.
+use crate::{ImportError, WavTruncation};
 use hex_engine::Audio;
-use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::{
+    io::{Cursor, Read, Seek, SeekFrom},
+    sync::atomic::AtomicBool,
+};
+
+/// Decoded audio with its source sample rate and frame count.
+pub(super) type Decoded = (Audio, u32, usize);
 
 const MIN_SAMPLE_RATE: u32 = 8_000;
 const MAX_SAMPLE_RATE: u32 = 192_000;
@@ -174,19 +190,33 @@ impl Format {
 }
 
 /// Scans all chunk headers while seeking over payloads. `header_limit` bounds
-/// work even for a file containing many tiny chunks.
+/// work even for a file containing many tiny chunks. Truncated or partial-frame
+/// data is refused with [`ImportError::Truncated`].
 pub(super) fn scan<R: Read + Seek>(
     reader: &mut R,
     file_len: u64,
     header_limit: usize,
 ) -> Result<Layout, ImportError> {
+    match scan_recoverable(reader, file_len, header_limit)? {
+        (layout, None) => Ok(layout),
+        (_, Some(truncation)) => Err(ImportError::Truncated(truncation)),
+    }
+}
+
+/// Like [`scan`], but returns a layout restricted to the readable whole frames
+/// of truncated or partial-frame data together with the truncation report.
+fn scan_recoverable<R: Read + Seek>(
+    reader: &mut R,
+    file_len: u64,
+    header_limit: usize,
+) -> Result<(Layout, Option<WavTruncation>), ImportError> {
     reader.seek(SeekFrom::Start(0))?;
     let mut container = [0_u8; 12];
     read_exact_invalid(reader, &mut container, "truncated RIFF/WAVE header")?;
     if &container[..4] != b"RIFF" || &container[8..12] != b"WAVE" {
         return Err(ImportError::Invalid("missing RIFF/WAVE header"));
     }
-    let riff_end = u64::from(u32::from_le_bytes([
+    let declared_riff_end = u64::from(u32::from_le_bytes([
         container[4],
         container[5],
         container[6],
@@ -194,22 +224,20 @@ pub(super) fn scan<R: Read + Seek>(
     ]))
     .checked_add(8)
     .ok_or(ImportError::Invalid("RIFF size overflow"))?;
-    let riff_end = if riff_end.checked_sub(file_len) == Some(4) {
-        // The full scan below must prove every payload and pad fits through EOF.
-        // Do not generalize this producer compatibility rule to other overruns.
-        file_len
-    } else {
-        riff_end
-    };
-    if riff_end < 12 || riff_end > file_len {
+    if declared_riff_end < 12 {
         return Err(ImportError::Invalid("RIFF boundary exceeds input"));
     }
+    // Scan no further than physical EOF; any overrun is justified after the scan.
+    let riff_end = declared_riff_end.min(file_len);
+    let overrun = declared_riff_end - riff_end;
 
     let mut cursor = 12_u64;
     let mut header_count = 0_usize;
     let mut format_bytes = None;
     let mut data = None;
     let mut fact_frames = None;
+    let mut missing_final_pad = false;
+    let mut truncated_data = false;
     while cursor < riff_end {
         header_count = header_count
             .checked_add(1)
@@ -234,6 +262,15 @@ pub(super) fn scan<R: Read + Seek>(
             .checked_add(chunk_size)
             .ok_or(ImportError::Invalid("chunk size overflow"))?;
         if payload_end > riff_end {
+            // A recording cut short: both the container and its data chunk claim
+            // bytes beyond physical EOF. Only data, which is then last, qualifies.
+            if overrun > 0 && &header[..4] == b"data" {
+                if data.replace((payload_start, chunk_size)).is_some() {
+                    return Err(ImportError::Invalid("duplicate data chunk"));
+                }
+                truncated_data = true;
+                break;
+            }
             return Err(ImportError::Invalid("chunk exceeds RIFF boundary"));
         }
         if &header[..4] == b"fmt " {
@@ -271,19 +308,57 @@ pub(super) fn scan<R: Read + Seek>(
             .checked_add(padding)
             .ok_or(ImportError::Invalid("chunk padding overflow"))?;
         if cursor > riff_end {
+            // The pad may be absent only after the final chunk at physical EOF,
+            // with a RIFF size that either excludes or counts that missing pad.
+            if payload_end == file_len && overrun <= 1 {
+                missing_final_pad = true;
+                break;
+            }
             return Err(ImportError::Invalid("missing odd-chunk padding byte"));
         }
     }
+    // Legacy producers overstate RIFF by exactly four bytes, and a missing final
+    // pad may be counted in the RIFF size. Every other overrun is refused.
+    if overrun > 0 && !truncated_data && overrun != 4 && !(overrun == 1 && missing_final_pad) {
+        return Err(ImportError::Invalid("RIFF boundary exceeds input"));
+    }
 
-    let format_bytes = format_bytes.ok_or(ImportError::Invalid("missing format chunk"))?;
-    let format = format_bytes;
-    let (data_offset, data_bytes) = data.ok_or(ImportError::Invalid("missing data chunk"))?;
-    if data_bytes == 0 || data_bytes % format.block_align as u64 != 0 {
+    let format = format_bytes.ok_or(ImportError::Invalid("missing format chunk"))?;
+    let (data_offset, declared_data_bytes) =
+        data.ok_or(ImportError::Invalid("missing data chunk"))?;
+    let present_data_bytes = if truncated_data {
+        file_len.saturating_sub(data_offset)
+    } else {
+        declared_data_bytes
+    };
+    let block_align = format.block_align as u64;
+    let partial_frame_bytes = present_data_bytes % block_align;
+    let mut truncation = None;
+    if truncated_data || partial_frame_bytes != 0 {
+        if format.samples_per_block != 0 {
+            return Err(ImportError::Invalid(
+                "data chunk is empty or not frame-aligned",
+            ));
+        }
+        let readable_frames = present_data_bytes / block_align;
+        if readable_frames == 0 {
+            return Err(ImportError::Invalid(
+                "truncated data chunk has no complete frames",
+            ));
+        }
+        truncation = Some(WavTruncation {
+            readable_frames,
+            missing_bytes: declared_data_bytes - present_data_bytes,
+            partial_frame_bytes,
+        });
+    }
+    let data_bytes = present_data_bytes - partial_frame_bytes;
+    if data_bytes == 0 {
         return Err(ImportError::Invalid(
             "data chunk is empty or not frame-aligned",
         ));
     }
-    let mut frames = data_bytes / format.block_align as u64;
+    let mut frames = data_bytes / block_align;
     if format.samples_per_block != 0 {
         frames = frames
             .checked_mul(format.samples_per_block as u64)
@@ -296,17 +371,38 @@ pub(super) fn scan<R: Read + Seek>(
             frames = count;
         }
     }
-    Ok(Layout {
-        format,
-        data_offset,
-        data_bytes,
-        frames,
-    })
+    Ok((
+        Layout {
+            format,
+            data_offset,
+            data_bytes,
+            frames,
+        },
+        truncation,
+    ))
 }
 
-pub(super) fn decode(bytes: &[u8], max_frames: usize) -> Result<(Audio, u32, usize), ImportError> {
+/// Decodes a complete resident WAV. Truncated or partial-frame data is refused.
+pub(super) fn decode(
+    bytes: &[u8],
+    max_frames: usize,
+    cancel: &AtomicBool,
+) -> Result<(Audio, u32, usize), ImportError> {
+    match decode_recoverable(bytes, max_frames, cancel)? {
+        (decoded, None) => Ok(decoded),
+        (_, Some(truncation)) => Err(ImportError::Truncated(truncation)),
+    }
+}
+
+/// Decodes the readable whole frames of a resident WAV and reports truncation.
+/// Callers must surface the report; recovery is an explicit user choice.
+pub(super) fn decode_recoverable(
+    bytes: &[u8],
+    max_frames: usize,
+    cancel: &AtomicBool,
+) -> Result<(Decoded, Option<WavTruncation>), ImportError> {
     let mut cursor = Cursor::new(bytes);
-    let layout = scan(&mut cursor, bytes.len() as u64, usize::MAX)?;
+    let (layout, truncation) = scan_recoverable(&mut cursor, bytes.len() as u64, usize::MAX)?;
     let frame_count =
         usize::try_from(layout.frames).map_err(|_| ImportError::LimitExceeded("decoded frames"))?;
     if frame_count > max_frames {
@@ -323,23 +419,33 @@ pub(super) fn decode(bytes: &[u8], max_frames: usize) -> Result<(Audio, u32, usi
     let data = bytes
         .get(start..end)
         .ok_or(ImportError::Invalid("data chunk exceeds input"))?;
-    if layout.format.samples_per_block != 0 {
-        return crate::adpcm::decode(data, layout.format, frame_count);
-    }
-    decode_samples(data, layout.format, frame_count)
+    crate::cancelled(cancel)?;
+    let decoded = if layout.format.samples_per_block != 0 {
+        crate::adpcm::decode(data, layout.format, frame_count, cancel)?
+    } else {
+        decode_samples(data, layout.format, frame_count, cancel)?
+    };
+    Ok((decoded, truncation))
 }
 
 pub(super) fn decode_samples(
     data: &[u8],
     format: Format,
     frame_count: usize,
+    cancel: &AtomicBool,
 ) -> Result<(Audio, u32, usize), ImportError> {
     let mut frames = Vec::new();
     frames
         .try_reserve_exact(frame_count)
         .map_err(|_| ImportError::AllocationFailed)?;
-    for frame in data.chunks_exact(format.block_align) {
-        frames.push(decode_frame(frame, format)?);
+    let chunk_bytes = format
+        .block_align
+        .saturating_mul(crate::CANCEL_CHECK_FRAMES);
+    for chunk in data.chunks(chunk_bytes.max(1)) {
+        crate::cancelled(cancel)?;
+        for frame in chunk.chunks_exact(format.block_align) {
+            frames.push(decode_frame(frame, format)?);
+        }
     }
     let audio = Audio::new(format.sample_rate, frames)
         .map_err(|_| ImportError::Invalid("decoded samples are not valid finite audio"))?;

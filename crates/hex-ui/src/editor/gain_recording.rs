@@ -85,6 +85,14 @@ impl EditorView {
             cx.notify();
             return;
         }
+        if self.gain_lane.draft.is_some()
+            || self.gain_lane.numeric_draft_active()
+            || self.sampler_parameter.numeric_draft_active()
+            || self.automation_view.devices.point_draft_active()
+        {
+            self.error = Some("finish local drafts before arming gain recording".into());
+            return;
+        }
         if self.edit_pending()
             || self.device_gesture.snapshot().is_some()
             || self.pending_playback.is_some()
@@ -120,14 +128,13 @@ impl EditorView {
         self.gain_recorder.pending_gain = None;
         self.gain_recorder.binding = None;
         self.status = "preparing gain recording · playback starts before touch".into();
-        if let Some(audio) = self.audio.as_mut() {
-            if audio
+        if let Some(audio) = self.audio.as_mut()
+            && audio
                 .control
                 .command(hex_engine::PlaybackCommand::Play)
                 .is_err()
-            {
-                self.error = Some("play is queued; retry after pending transport controls".into());
-            }
+        {
+            self.error = Some("play is queued; retry after pending transport controls".into());
         }
         cx.notify();
     }
@@ -224,10 +231,11 @@ impl EditorView {
                 }
             }
         }
-        if self.gain_recorder.mode == Mode::Finishing && !self.gain_recorder.cancelled {
-            if let Err(reason) = audio.control.gain_release() {
-                self.error = Some(reason.into());
-            }
+        if self.gain_recorder.mode == Mode::Finishing
+            && !self.gain_recorder.cancelled
+            && let Err(reason) = audio.control.gain_release()
+        {
+            self.error = Some(reason.into());
         }
     }
     fn end_gain_touch(&mut self) {
@@ -247,10 +255,10 @@ impl EditorView {
         self.gain_recorder.pending_gain = None;
         self.gain_recorder.cancelled = true;
         if self.gain_recorder.target.is_some() {
-            if let Some(audio) = self.audio.as_mut() {
-                if let Err(reason) = audio.control.gain_cancel() {
-                    self.error = Some(reason.into());
-                }
+            if let Some(audio) = self.audio.as_mut()
+                && let Err(reason) = audio.control.gain_cancel()
+            {
+                self.error = Some(reason.into());
             }
             self.gain_recorder.mode = Mode::Finishing;
         } else {
@@ -301,41 +309,51 @@ impl EditorView {
                 status.applied_revision.load(Acquire),
                 status.gain_recording_ready.load(Acquire),
                 status.device_fault.load(Acquire),
+                status.render_fault.load(Acquire),
                 status.gain_recording_fault.load(Acquire),
             )
         });
         if self.gain_recorder.mode == Mode::Arming
-            && status_values.is_some_and(|(revision, ready, _, _)| {
-                self.gain_recorder.audio_revision == Some(revision) && ready
-            })
+            && status_values.is_some_and(
+                |(revision, ready, device_fault, render_fault, recording_fault)| {
+                    self.gain_recorder.audio_revision == Some(revision)
+                        && ready
+                        && !device_fault
+                        && !render_fault
+                        && !recording_fault
+                },
+            )
         {
             self.gain_recorder.mode = Mode::Ready;
             self.status = "gain recording ready · drag touch gain; release returns to read".into();
             changed = true;
         }
-        let audio_failed = status_values
-            .is_none_or(|(_, _, device_fault, recording_fault)| device_fault || recording_fault);
+        let output_failed = status_values
+            .is_none_or(|(_, _, device_fault, render_fault, _)| device_fault || render_fault);
+        let audio_failed = output_failed
+            || status_values.is_some_and(|(_, _, _, _, recording_fault)| recording_fault);
         if audio_failed {
             let _ = audio.control.gain_cancel();
-            audio.control.stop();
+            // The output's fault fence already stops playback. A priority Stop
+            // here would falsely turn automatic recovery into the user's rewind.
+            if !output_failed {
+                audio.control.stop();
+            }
             // Process already-delivered Finished below before retiring capture.
             // Device loss cannot erase a completed take awaiting control polling.
         }
-        if self.gain_recorder.mode == Mode::Arming {
-            if let Some((revision, reason)) = audio
+        if self.gain_recorder.mode == Mode::Arming
+            && let Some((revision, reason)) = audio
                 .control
                 .status()
                 .and_then(|status| status.rejected_revision())
-            {
-                if self.gain_recorder.audio_revision == Some(revision) {
-                    self.gain_recorder.mode = Mode::Idle;
-                    self.gain_recorder.pending_gain = None;
-                    self.gain_recorder.binding = None;
-                    self.error =
-                        Some(format!("gain recording arm refused · {}", reason.message()).into());
-                    return true;
-                }
-            }
+            && self.gain_recorder.audio_revision == Some(revision)
+        {
+            self.gain_recorder.mode = Mode::Idle;
+            self.gain_recorder.pending_gain = None;
+            self.gain_recorder.binding = None;
+            self.error = Some(format!("gain recording arm refused · {}", reason.message()).into());
+            return true;
         }
         for receipt in receipts {
             self.gain_receipt(receipt);
@@ -346,10 +364,16 @@ impl EditorView {
             // A late sink Finished may still be delivered after this status read.
             self.gain_recorder.pending_gain = None;
             self.gain_recorder.binding = None;
-            self.error = Some(
-                "audio failed · gain take retained · recover audio to finish receipt handoff"
-                    .into(),
-            );
+            if self.gain_recorder.target.is_none() && !self.gain_recorder.has_retained_take() {
+                self.gain_recorder.audio_lost();
+                self.error =
+                    Some("audio failed · gain recording stopped · restart audio to retry".into());
+            } else {
+                self.error = Some(
+                    "audio failed · gain take retained · recover audio to finish receipt handoff"
+                        .into(),
+                );
+            }
             return true;
         }
         changed
@@ -378,6 +402,8 @@ impl EditorView {
                         gain,
                     });
                 } else {
+                    self.error =
+                        Some("gain take exceeded its event limit · original lane retained".into());
                     self.cancel_gain_recording();
                 }
             }
@@ -402,16 +428,22 @@ impl EditorView {
                 }
             }
             Receipt::Aborted { reason, .. } => {
+                let expected_cancel = self.gain_recorder.cancelled
+                    && reason == hex_audio::gain_recording::AbortReason::Cancelled;
                 if self.gain_recorder.cancelled {
                     self.gain_recorder.discard();
                 } else {
                     self.gain_recorder.audio_lost();
                 }
-                self.error = Some(
-                    format!("gain take aborted · {reason:?} · original lane retained")
-                        .to_lowercase()
+                if !expected_cancel {
+                    self.error = Some(
+                        format!(
+                            "gain take aborted · {} · original lane retained",
+                            super::user_errors::gain_abort(reason)
+                        )
                         .into(),
-                );
+                    );
+                }
             }
         }
     }

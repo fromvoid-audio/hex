@@ -22,6 +22,29 @@ use super::{
 use hex_project::{CapturedAutomationProjection, LoopRegion, Project, TempoMap};
 use std::{ops::Range, path::Path, sync::Arc};
 
+/// An open refusal retains the original draft; busy means its lock is held.
+#[derive(Debug)]
+pub enum TakeOpenError {
+    Busy(DraftError),
+    Other(String),
+}
+impl std::fmt::Display for TakeOpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Busy(error) => error.fmt(f),
+            Self::Other(error) => f.write_str(error),
+        }
+    }
+}
+impl std::error::Error for TakeOpenError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Busy(error) => Some(error),
+            Self::Other(_) => None,
+        }
+    }
+}
+
 pub const MAX_PREVIEW_QUERIES: usize = 64;
 
 /// A semantically checked immutable source, independent of an open document.
@@ -99,14 +122,24 @@ struct TakeCore<R> {
     cursor_owner: Arc<()>,
 }
 impl CompletedAutomationTake {
-    pub fn open_on_control(path: &Path, limits: DraftReadLimits) -> Result<Self, String> {
-        Self::from_completed_on_control(
-            CompletedDraft::open(path, limits).map_err(|error| error.to_string())?,
-        )
+    pub fn open_on_control(path: &Path, limits: DraftReadLimits) -> Result<Self, TakeOpenError> {
+        let source = CompletedDraft::open(path, limits).map_err(|error| {
+            if matches!(&*error.source, crate::StorageError::AutomationDraftBusy(_)) {
+                TakeOpenError::Busy(error)
+            } else {
+                TakeOpenError::Other(error.to_string())
+            }
+        })?;
+        Self::from_completed_on_control(source).map_err(TakeOpenError::Other)
     }
 
     pub fn from_completed_on_control(mut source: CompletedDraft) -> Result<Self, String> {
-        let invalid = |reason| format!("automation take at {}: {reason}", source.path().display());
+        let invalid = |reason| {
+            format!(
+                "automation take at {}: {reason}",
+                crate::text::verbatim(source.path().display())
+            )
+        };
         if source.provenance().sample_rate != source.source().sample_rate() {
             return Err(invalid("capture and source sample rates differ"));
         }
@@ -129,7 +162,7 @@ impl CompletedAutomationTake {
                 if clock.sample_rate != source.source().sample_rate() {
                     return Err(format!(
                         "automation take at {}: captured clock rate differs from source",
-                        source.path().display()
+                        crate::text::verbatim(source.path().display())
                     ));
                 }
                 clock.loop_region
@@ -138,12 +171,15 @@ impl CompletedAutomationTake {
             None => {
                 return Err(format!(
                     "automation take at {}: wrapped draft has no captured loop context; retain it for recovery",
-                    source.path().display()
+                    crate::text::verbatim(source.path().display())
                 ));
             }
         };
         let mapping = ClockMapping::new(first, end, region).map_err(|reason| {
-            format!("automation take at {}: {reason}", source.path().display())
+            format!(
+                "automation take at {}: {reason}",
+                crate::text::verbatim(source.path().display())
+            )
         })?;
         let mut ordinal = 0;
         let mut count = count;
@@ -152,12 +188,15 @@ impl CompletedAutomationTake {
                 let clock = mapping
                     .clock_at(event.performance_frame)
                     .map_err(|reason| {
-                        format!("automation take at {}: {reason}", source.path().display())
+                        format!(
+                            "automation take at {}: {reason}",
+                            crate::text::verbatim(source.path().display())
+                        )
                     })?;
                 if clock != event_clock(*event) {
                     return Err(format!(
                         "automation take at {}: application clock is discontinuous",
-                        source.path().display()
+                        crate::text::verbatim(source.path().display())
                     ));
                 }
             }
@@ -376,13 +415,12 @@ impl ClockMapping {
         }
         let region =
             region.filter(|region| first.loop_pass > 0 || first.content_frame < region.end());
-        if let Some(region) = region {
-            if !region.enabled()
+        if let Some(region) = region
+            && (!region.enabled()
                 || first.content_frame >= region.end()
-                || (first.loop_pass > 0 && first.content_frame < region.start())
-            {
-                return Err("captured loop origin is invalid".into());
-            }
+                || (first.loop_pass > 0 && first.content_frame < region.start()))
+        {
+            return Err("captured loop origin is invalid".into());
         }
         let mapping = Self { first, end, region };
         if mapping.clock_at(end.performance_frame)? != end {

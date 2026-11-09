@@ -62,7 +62,7 @@ fn reverb_compact_controls_fit_track_and_return_and_share_edit_lifecycle(cx: &mu
             .expect("reverb body");
         assert_eq!(
             frame.size.width,
-            px(reverb_panel::FRAME_WIDTH + gain_meters::WIDTH)
+            px(reverb_panel::FRAME_WIDTH + device_meter::WIDTH)
         );
         assert_eq!(frame.size.height, px(DEVICE_FRAME_HEIGHT));
         assert!(

@@ -26,6 +26,8 @@ pub(super) struct SessionWriter {
     limit: u64,
     context: event::Context,
     started_unix: u128,
+    #[cfg(test)]
+    fail_staged_publish: bool,
 }
 impl SessionWriter {
     pub fn create(directory: &Path, context: event::Context, shared: &Shared) -> io::Result<Self> {
@@ -50,6 +52,8 @@ impl SessionWriter {
             limit,
             context,
             started_unix: shared.started_unix,
+            #[cfg(test)]
+            fail_staged_publish: false,
         };
         let header = value.header();
         if header.len() > MAX_HEADER_BYTES {
@@ -68,7 +72,7 @@ impl SessionWriter {
     }
     fn header(&self) -> String {
         let mut line = format!(
-            "session_started log_schema=2 unix_nanos={} session={} pid={} hex_version={} segment={} max_segment_bytes={} retained_segments={} context_original_bytes={} context_truncated={} context=",
+            "session_started log_schema=3 unix_nanos={} session={} pid={} hex_version={} segment={} max_segment_bytes={} retained_segments={} context_original_bytes={} context_truncated={} context=",
             self.started_unix,
             self.path.file_stem().unwrap_or_default().to_string_lossy(),
             std::process::id(),
@@ -117,7 +121,22 @@ impl SessionWriter {
                 }
             }
             fs::rename(&self.path, self.archive(1))?;
-            fs::rename(&staging, &self.path)?;
+            #[cfg(test)]
+            let publication = if self.fail_staged_publish {
+                Err(io::Error::other("injected staged publication failure"))
+            } else {
+                fs::rename(&staging, &self.path)
+            };
+            #[cfg(not(test))]
+            let publication = fs::rename(&staging, &self.path);
+            publication.map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!(
+                        "active session log moved to its .1.log sibling; replacement publication failed: {error}"
+                    ),
+                )
+            })?;
             Ok(())
         })();
         if let Err(error) = result {
@@ -285,6 +304,60 @@ mod tests {
     use super::*;
     use crate::tests::fixture;
     #[test]
+    fn failed_staged_publication_reports_missing_active_and_preserves_history() {
+        let directory = fixture();
+        let shared = Shared::new();
+        let mut writer = SessionWriter::with_limit(
+            &directory,
+            event::Context::new("test context"),
+            &shared,
+            MIN_SEGMENT_BYTES,
+        )
+        .unwrap();
+        let active = writer.path.clone();
+        let newest = writer.archive(1);
+        let older = writer.archive(2);
+        fs::write(&newest, "prior archive").unwrap();
+        while writer.bytes + 4096 <= writer.limit {
+            writer.line(&"x".repeat(4096)).unwrap();
+        }
+        let prior = fs::read(&active).unwrap();
+        writer.fail_staged_publish = true;
+        let (sender, receiver) = std::sync::mpsc::sync_channel(2);
+        for sequence in 1..=2 {
+            sender
+                .send(event::Record {
+                    level: crate::Level::Info,
+                    category: crate::Category::Uncategorised,
+                    sequence,
+                    unix_nanos: 0,
+                    elapsed_nanos: 0,
+                    original_bytes: 4096,
+                    message: "x".repeat(4096),
+                })
+                .unwrap();
+        }
+        shared
+            .closing
+            .store(true, std::sync::atomic::Ordering::Release);
+        crate::run_records(&mut writer, &receiver, &shared);
+
+        assert!(!active.exists());
+        assert_eq!(fs::read(&newest).unwrap(), prior);
+        assert_eq!(fs::read_to_string(&older).unwrap(), "prior archive");
+        assert!(!active.with_extension("next").exists());
+        assert_eq!(shared.statistics().write_failed, 1);
+        assert_eq!(shared.statistics().abandoned, 1);
+        let failure = shared.last_error.lock().unwrap().clone().unwrap();
+        assert!(failure.contains("injected staged publication failure"));
+        assert!(
+            failure.contains("active session log moved to its .1.log sibling"),
+            "{failure}"
+        );
+        drop(writer);
+        fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
     fn rolls_bounded_recent_segments_with_context_and_keeps_active_path() {
         let directory = fixture();
         let shared = Shared::new();
@@ -313,7 +386,7 @@ mod tests {
         for file in &files {
             assert!(fs::metadata(file).unwrap().len() <= MIN_SEGMENT_BYTES);
             let contents = fs::read_to_string(file).unwrap();
-            assert!(contents.starts_with("session_started log_schema=2"));
+            assert!(contents.starts_with("session_started log_schema=3"));
             assert!(contents.contains("build=original flags=actions"));
             assert!(contents.contains("context_truncated=true"));
             assert!(contents.contains(&format!("context_original_bytes={}", context.len())));

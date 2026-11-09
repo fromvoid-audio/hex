@@ -160,3 +160,68 @@ fn marquee_selects_on_contact_and_escape_restores_its_owned_baseline(cx: &mut Te
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
 }
+
+#[gpui::test]
+fn empty_grid_drag_selects_notes_without_a_modifier(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, clip) = fixture(cx);
+    for (beat, pitch) in [(1, 60), (3, 64)] {
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::AddMidiNote {
+                clip,
+                start: BeatTime::from_quarters(beat).unwrap(),
+                duration: BeatTime::from_raw(BeatTime::ONE.raw() / 4),
+                pitch,
+                channel: 0,
+                velocity: 100,
+            })));
+        });
+        pump(&editor, &mut visual);
+    }
+    let (first, baseline, low, rows) = editor.read_with(&visual, |view, _| {
+        let notes = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .midi_source(clip)
+            .unwrap()
+            .notes();
+        (
+            notes[0].id(),
+            notes[1].id(),
+            view.piano_pitch_low,
+            view.piano_pitch_rows,
+        )
+    });
+    editor.update(&mut visual, |view, cx| {
+        view.midi_selection.set_single(baseline);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let roll = visual.debug_bounds("midi-note-roll").unwrap();
+    let top = roll.origin.y + roll.size.height * (f32::from(low + rows - 1 - 60) / f32::from(rows));
+    let start = point(roll.origin.x + roll.size.width * 0.15, top - px(1.0));
+    let end = point(
+        roll.origin.x + roll.size.width * 0.4,
+        top + roll.size.height / f32::from(rows) + px(1.0),
+    );
+    for cancel in [true, false] {
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert!(view.midi_marquee.is_some());
+            assert!(view.midi_time_selection.gesture.is_none());
+            assert_eq!(view.midi_selection.ids(), &[first]);
+        });
+        if cancel {
+            visual.simulate_keystrokes("escape");
+        }
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            let expected = if cancel { baseline } else { first };
+            assert_eq!(view.midi_selection.ids(), &[expected]);
+        });
+    }
+}

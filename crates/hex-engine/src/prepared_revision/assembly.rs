@@ -229,6 +229,7 @@ impl RevisionAssembly {
             gain_recording_track,
             native_parameter_input,
             scalar_automation,
+            foreign_automation: _,
         }) = revision
         {
             if *resource_scope != self.current_sampler_scope
@@ -401,6 +402,7 @@ impl RevisionAssembly {
                     gain_recording_track: None,
                     native_parameter_input: self.native_parameter_input,
                     scalar_automation: None,
+                    foreign_automation: Default::default(),
                 });
             }
             (arrangement, session, preview) => {
@@ -463,6 +465,7 @@ impl RevisionAssembly {
             gain_recording_track: _,
             native_parameter_input: _,
             scalar_automation: _,
+            foreign_automation: _,
         }) = self.revision_value.take()
         {
             self.arrangement = Some(arrangement);
@@ -589,8 +592,10 @@ impl RevisionAssembly {
                 gain_recording_track: _,
                 native_parameter_input: _,
                 scalar_automation: _,
+                foreign_automation,
             } = revision;
             source_routing.visit_storage(l)?;
+            foreign_automation.visit_storage(l)?;
             l.vec(mutable_track_revisions)?;
             // This constructor class never admits ordinary authored-evidence children.
             if authored_midi_sources.capacity() != 0 {

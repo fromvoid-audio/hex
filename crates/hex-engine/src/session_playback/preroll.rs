@@ -1,8 +1,18 @@
 //! Control-prepared, bounded Arrangement preroll.
+//!
+//! Linear export and explicitly history-preserving interactive candidates replay
+//! the song prefix to reconstruct exact history. Ordinary interactive seeks and
+//! section launches construct a fresh runtime
+//! and apply the interactive Play-from discontinuity at the destination: device
+//! chains, return tails and mutable voices start empty, gate-active notes are
+//! chased on the first played block, and no prefix is rendered.
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Maximum forward work permitted by one Arrangement preroll request.
+/// Maximum forward replay work permitted by one Arrangement preroll request.
+/// Only prefix-replaying owners (linear export, explicit history-preserving
+/// interactive candidates, private control samplers) spend it; ordinary
+/// interactive and section destinations render no prefix.
 pub const MAX_ARRANGEMENT_PREROLL_FRAMES: u64 = 8_388_608;
 /// Maximum accounted owned runtime storage for the returned candidate.
 /// Shared immutable prepared graph data and allocator bookkeeping are excluded.
@@ -14,6 +24,7 @@ pub(super) const PREROLL_SCRATCH_BYTES: usize =
 #[derive(Clone, Copy)]
 enum PrerollRuntimePolicy {
     LinearExport,
+    HistoryPreservingInteractive,
     Interactive,
     SectionLoop(hex_project::LoopRegion),
 }
@@ -77,10 +88,11 @@ impl SessionPlayback {
             .ok_or(SessionPlaybackError::Allocation)?;
         Ok(bytes)
     }
-    /// Prepare a graph-local section audition using the same bounded preroll
-    /// and exact device-resource scope as an ordinary interactive seek. Install
-    /// the loop before construction/replay so admission, gate clipping, DSP
-    /// history and periodic timing all use the same law. Saved state is untouched.
+    /// Prepare a graph-local section audition using the same interactive seek
+    /// law and exact device-resource scope as an ordinary interactive seek.
+    /// Install the loop before construction so admission, gate clipping and
+    /// periodic timing use the loop; device history starts empty at the loop
+    /// start. Saved state is untouched.
     pub fn prepare_section_arrangement_preroll(
         revision: Arc<PreparedRevision>,
         resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
@@ -151,14 +163,15 @@ impl SessionPlayback {
     }
 
     /// Prepare a fresh interactive Session runtime whose tracks initially
-    /// remain routed to Arrangement, then reconstruct Arrangement history to
-    /// `destination_frame`. Unlike the linear export candidate, this runtime
+    /// remain routed to Arrangement, positioned at `destination_frame` by the
+    /// interactive Play-from law (empty device history, chased held notes, no
+    /// prefix replay). Unlike the linear export candidate, this runtime
     /// accepts subsequent Session commands and state inheritance. Enabled
-    /// transport loops retain the absolute destination. A destination before
-    /// the loop end reconstructs its first pass with ordinary gate clipping;
-    /// a destination at/after the end reconstructs linear history and continues
-    /// beyond the loop. Both clocks retain the requested frame, with no invented
-    /// loop history. The saved loop and original work/storage budgets are unchanged.
+    /// transport loops retain the absolute destination: a destination before
+    /// the loop end wraps at the end, one at/after the end continues beyond
+    /// the loop. A stopped candidate keeps its destination chase for Play.
+    /// The saved loop and storage budget are unchanged; `work_budget_frames`
+    /// applies only when private control-sampler sources force prefix replay.
     /// Run preparation on an adequately sized
     /// control thread; the production seek worker reserves an explicit 8 MiB
     /// stack because stateful multi-chain construction can exceed the Rust
@@ -178,6 +191,39 @@ impl SessionPlayback {
             MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
             PrerollRuntimePolicy::Interactive,
             None,
+            || cancelled.load(Ordering::Acquire),
+            |candidate, output| candidate.render(output).map_err(Into::into),
+        )
+    }
+
+    /// Prepare an explicitly requested history-preserving interactive candidate.
+    /// Unlike ordinary Play-from, this replays the linear Arrangement prefix on
+    /// control, retaining held/released voices and Track/Return effect history.
+    /// The result remains an interactive owner accepting Session commands and
+    /// compatible successor handoff. It preserves the exact revision Arc.
+    ///
+    /// Replay, storage and cancellation obey the same limits as linear preroll.
+    /// Enabled transport loops refuse: no loop-history reconstruction is claimed.
+    /// Resources must belong to the exact compiler scope; missing resources or
+    /// unavailable media refuse rather than substituting a source. This method
+    /// provides no page preparation, live route fencing or audio publication.
+    /// Run on the existing adequately sized control-worker stack, never callback.
+    pub fn prepare_history_preserving_arrangement_preroll(
+        revision: Arc<PreparedRevision>,
+        resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
+        destination_frame: u64,
+        work_budget_frames: u64,
+        start_playing: bool,
+        cancelled: &AtomicBool,
+    ) -> Result<Self, ArrangementPrerollError> {
+        Self::prepare_arrangement_preroll_from_revision_with_policy(
+            revision,
+            destination_frame,
+            work_budget_frames,
+            start_playing,
+            MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+            PrerollRuntimePolicy::HistoryPreservingInteractive,
+            resources,
             || cancelled.load(Ordering::Acquire),
             |candidate, output| candidate.render(output).map_err(Into::into),
         )
@@ -223,8 +269,9 @@ impl SessionPlayback {
         )
     }
 
-    /// Reconstruct ordinary source-bearing Arrangement history with its exact compiler resource
-    /// set. Existing replay, source-loop, storage and cancellation limits apply unchanged. This
+    /// Prepare an ordinary source-bearing interactive seek with its exact compiler resource
+    /// set. Storage and cancellation limits apply; the replay work budget only binds
+    /// control-sampler owners that replay the prefix. This
     /// returns an interactive candidate for the ordinary fresh-runtime publication policy; a
     /// missing/foreign set refuses instead of substituting the private play-from-zero path.
     /// Invoke on the existing control seek worker's explicit 8 MiB stack; stateful construction
@@ -250,9 +297,10 @@ impl SessionPlayback {
         )
     }
 
-    /// Reconstruct a source-bearing ordinary seek or section on control using
-    /// the exact ordinary compiler scope and independently prepared page view.
-    /// Existing replay/storage/cancellation limits and route fences still apply.
+    /// Prepare a source-bearing ordinary seek or section on control using the
+    /// exact ordinary compiler scope and page view. The interactive law renders
+    /// no prefix, so no pages are demanded unless a private control-sampler
+    /// owner forces replay. Storage/cancellation limits and route fences apply.
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_ordinary_arrangement_preroll_with_pages<P: PreparedPrerollPages>(
         revision: Arc<PreparedRevision>,
@@ -281,24 +329,35 @@ impl SessionPlayback {
             ),
             Some(resources),
             || cancelled.load(Ordering::Acquire),
-            |candidate, output| {
-                let mut offset = 0;
-                while offset < output.len() {
-                    if cancelled.load(Ordering::Acquire) {
-                        return Err(ArrangementPrerollError::Cancelled);
-                    }
-                    let count = pages.prepare_chunk(candidate, output.len() - offset, cancelled)?;
-                    if count == 0 || count > output.len() - offset {
-                        return Err(ArrangementPrerollError::MediaPreparation(
-                            "invalid preroll page demand width",
-                        ));
-                    }
-                    candidate.render_with_pages(&mut output[offset..offset + count], pages)?;
-                    pages.complete_chunk()?;
-                    offset += count;
-                }
-                Ok(())
-            },
+            |candidate, output| render_preroll_pages(candidate, output, cancelled, pages),
+        )
+    }
+
+    /// Explicit history-preserving interactive preparation with caller-owned
+    /// bounded pages. Each protected chunk is rendered and completed before the
+    /// next demand; zero/oversized widths, page failures and cancellation refuse.
+    /// The caller retains/join-reclaims its reader/page owner on control and must
+    /// finish source verification before publication. Exact resource scope,
+    /// replay/storage ceilings and enabled-loop refusal match the no-pages API.
+    pub fn prepare_history_preserving_arrangement_preroll_with_pages<P: PreparedPrerollPages>(
+        revision: Arc<PreparedRevision>,
+        resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
+        destination_frame: u64,
+        work_budget_frames: u64,
+        start_playing: bool,
+        cancelled: &AtomicBool,
+        pages: &mut P,
+    ) -> Result<Self, ArrangementPrerollError> {
+        Self::prepare_arrangement_preroll_from_revision_with_policy(
+            revision,
+            destination_frame,
+            work_budget_frames,
+            start_playing,
+            MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+            PrerollRuntimePolicy::HistoryPreservingInteractive,
+            resources,
+            || cancelled.load(Ordering::Acquire),
+            |candidate, output| render_preroll_pages(candidate, output, cancelled, pages),
         )
     }
 
@@ -317,23 +376,38 @@ impl SessionPlayback {
         if is_cancelled() {
             return Err(ArrangementPrerollError::Cancelled);
         }
-        if destination_frame > work_budget_frames
-            || work_budget_frames > MAX_ARRANGEMENT_PREROLL_FRAMES
-        {
-            return Err(ArrangementPrerollError::WorkBudgetExceeded);
+        // Interactive seeks and section launches start device history empty:
+        // the interactive Play-from discontinuity resets chains, return tails
+        // and voices at the destination and chases gate-active notes on the
+        // first rendered block. Linear export, explicitly history-preserving
+        // interactive candidates and private control-sampler owners instead
+        // replay the song prefix and spend its work budget. Other destinations are
+        // bounded by Play-from's own arithmetic and tempo conversion.
+        let replay_history = matches!(
+            policy,
+            PrerollRuntimePolicy::LinearExport | PrerollRuntimePolicy::HistoryPreservingInteractive
+        ) || revision.requires_control_sampler_sources();
+        if replay_history {
+            if destination_frame > work_budget_frames
+                || work_budget_frames > MAX_ARRANGEMENT_PREROLL_FRAMES
+            {
+                return Err(ArrangementPrerollError::WorkBudgetExceeded);
+            }
+            let blocks = destination_frame
+                .checked_add(PREROLL_BLOCK_FRAMES as u64 - 1)
+                .ok_or(ArrangementPrerollError::ArithmeticOverflow)?
+                / PREROLL_BLOCK_FRAMES as u64;
+            if blocks > MAX_ARRANGEMENT_PREROLL_FRAMES / PREROLL_BLOCK_FRAMES as u64 {
+                return Err(ArrangementPrerollError::WorkBudgetExceeded);
+            }
         }
-        let blocks = destination_frame
-            .checked_add(PREROLL_BLOCK_FRAMES as u64 - 1)
-            .ok_or(ArrangementPrerollError::ArithmeticOverflow)?
-            / PREROLL_BLOCK_FRAMES as u64;
-        if blocks > MAX_ARRANGEMENT_PREROLL_FRAMES / PREROLL_BLOCK_FRAMES as u64 {
-            return Err(ArrangementPrerollError::WorkBudgetExceeded);
-        }
-        if matches!(policy, PrerollRuntimePolicy::LinearExport)
-            && revision
-                .arrangement()
-                .loop_region()
-                .is_some_and(|region| region.enabled())
+        if matches!(
+            policy,
+            PrerollRuntimePolicy::LinearExport | PrerollRuntimePolicy::HistoryPreservingInteractive
+        ) && revision
+            .arrangement()
+            .loop_region()
+            .is_some_and(|region| region.enabled())
         {
             return Err(ArrangementPrerollError::UnsupportedTransportLoop);
         }
@@ -375,6 +449,24 @@ impl SessionPlayback {
             .ok_or(ArrangementPrerollError::StorageBudgetExceeded)?;
         if actual_preparation_storage > storage_budget_bytes {
             return Err(ArrangementPrerollError::StorageBudgetExceeded);
+        }
+        if !replay_history {
+            if start_playing || destination_frame != 0 {
+                candidate.play_from(destination_frame)?;
+                // Stopped candidates keep the pending destination chase for
+                // the first Play; no render or Pause discontinuity occurs.
+                candidate.playing = start_playing;
+            }
+            if is_cancelled() {
+                return Err(ArrangementPrerollError::Cancelled);
+            }
+            if candidate.performance_frame != destination_frame
+                || candidate.arrangement_frame != destination_frame
+                || !Arc::ptr_eq(&candidate.revision, &revision)
+            {
+                return Err(ArrangementPrerollError::CandidatePositionMismatch);
+            }
+            return Ok(candidate);
         }
         // A control-only override prevents replay from wrapping before it can
         // reach an absolute post-loop cursor. Restore it before publication;
@@ -444,16 +536,19 @@ impl SessionPlayback {
             revision: &self.revision,
             midi_admission: self.midi_admission.as_ref(),
             analytic_import: &self.analytic_import,
+            source_effects: &self.source_effects,
             device_chains: &self.device_chains,
             return_chains: &self.return_chains,
             return_effect_tails: &self.return_effect_tails,
             mutable_instruments: &self.mutable_instruments,
+            foreign_arrangement: &self.foreign_arrangement,
             tail_groups: &self.tail_groups,
             tail_mutable_instruments: &self.tail_mutable_instruments,
             routes: self.routes.capacity(),
             route_scratch: self.route_scratch.capacity(),
             current_route_cut_scratch: self.current_route_cut_scratch.capacity(),
             return_scratch: self.return_scratch.capacity(),
+            resident_source_scratch: self.resident_source_scratch.capacity(),
             meter_cells: self.meter_cells.capacity(),
             mutable_events: self.mutable_events.capacity(),
             tail_mixes: self.tail_mixes.capacity(),
@@ -472,6 +567,30 @@ impl SessionPlayback {
     }
 }
 
+fn render_preroll_pages(
+    candidate: &mut SessionPlayback,
+    output: &mut [Frame],
+    cancelled: &AtomicBool,
+    pages: &mut impl PreparedPrerollPages,
+) -> Result<(), ArrangementPrerollError> {
+    let mut offset = 0;
+    while offset < output.len() {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(ArrangementPrerollError::Cancelled);
+        }
+        let count = pages.prepare_chunk(candidate, output.len() - offset, cancelled)?;
+        if count == 0 || count > output.len() - offset {
+            return Err(ArrangementPrerollError::MediaPreparation(
+                "invalid preroll page demand width",
+            ));
+        }
+        candidate.render_with_pages(&mut output[offset..offset + count], pages)?;
+        pages.complete_chunk()?;
+        offset += count;
+    }
+    Ok(())
+}
+
 /// One borrowed formula for the assembled runtime and its preassembly locals. Capacities and
 /// child backings are identical in both uses; no second owning runtime or closure return slot.
 /// The existing conservative chain-header double charge and inline Main subtraction remain.
@@ -487,16 +606,19 @@ pub(super) struct RuntimeStorage<'a> {
     pub(super) revision: &'a PreparedRevision,
     pub(super) midi_admission: Option<&'a crate::session_inventory::PreparedSessionMidiAdmission>,
     pub(super) analytic_import: &'a analytic_import::ImportPlan,
+    pub(super) source_effects: &'a crate::source_effect_stage::SourceEffectStages,
     pub(super) device_chains: &'a Vec<hex_lattice::NativeRuntimeChain>,
     pub(super) return_chains: &'a Vec<hex_lattice::NativeRuntimeChain>,
     pub(super) return_effect_tails: &'a ReturnEffectTailBank,
     pub(super) mutable_instruments: &'a Vec<Option<MutableInstrumentTrackRuntime>>,
+    pub(super) foreign_arrangement: &'a foreign_arrangement::ForeignArrangement,
     pub(super) tail_groups: &'a Vec<Option<hex_lattice::NativeRuntimeChain>>,
     pub(super) tail_mutable_instruments: &'a Vec<Option<MutableInstrumentTail>>,
     pub(super) routes: usize,
     pub(super) route_scratch: usize,
     pub(super) current_route_cut_scratch: usize,
     pub(super) return_scratch: usize,
+    pub(super) resident_source_scratch: usize,
     pub(super) meter_cells: usize,
     pub(super) mutable_events: usize,
     pub(super) tail_mixes: usize,
@@ -518,7 +640,9 @@ impl RuntimeStorage<'_> {
         if self.scalar_automation {
             checked_add(
                 &mut total,
-                crate::scalar_automation::State::requested_data_bytes(),
+                crate::scalar_automation::StateSet::requested_data_bytes(
+                    self.revision.scalar_automation.as_deref()?,
+                )?,
             )?;
         }
         if self.native_parameter_state {
@@ -562,6 +686,7 @@ impl RuntimeStorage<'_> {
         add_capacity::<TrackRoute>(&mut total, self.routes)?;
         add_capacity::<TrackRoute>(&mut total, self.route_scratch)?;
         add_capacity::<Option<CurrentPendingCut>>(&mut total, self.current_route_cut_scratch)?;
+        checked_add(&mut total, self.source_effects.accounted_runtime_bytes()?)?;
         add_capacity::<hex_lattice::NativeRuntimeChain>(&mut total, self.device_chains.capacity())?;
         for chain in self.device_chains {
             checked_add(&mut total, chain.accounted_storage_bytes()?)?;
@@ -575,7 +700,9 @@ impl RuntimeStorage<'_> {
             self.return_effect_tails.accounted_storage_bytes()?,
         )?;
         add_capacity::<[Frame; PREROLL_BLOCK_FRAMES]>(&mut total, self.return_scratch)?;
+        add_capacity::<[Frame; PREROLL_BLOCK_FRAMES]>(&mut total, self.resident_source_scratch)?;
         add_capacity::<super::meter_capture::Cell>(&mut total, self.meter_cells)?;
+        checked_add(&mut total, self.foreign_arrangement.storage_bytes()?)?;
         add_capacity::<Option<MutableInstrumentTrackRuntime>>(
             &mut total,
             self.mutable_instruments.capacity(),
@@ -654,19 +781,30 @@ fn runtime_storage_preflight_bytes(
         .checked_sub(std::mem::size_of::<hex_lattice::NativeRuntimeChain>())?;
     let mut total = std::mem::size_of::<SessionPlayback>();
     checked_add(&mut total, std::mem::size_of::<MidiSpanBuffer>())?;
-    if revision.scalar_automation.is_some() {
+    if let Some(bindings) = revision.scalar_automation.as_deref() {
         checked_add(
             &mut total,
-            crate::scalar_automation::State::requested_data_bytes(),
+            crate::scalar_automation::StateSet::requested_data_bytes(bindings)?,
         )?;
     }
-    if revision.native_parameter_input_target().is_some() {
+    if revision.native_parameter_input_target().is_some() || revision.scalar_automation.is_some() {
         checked_add(
             &mut total,
             SessionPlayback::native_parameter_input_state_bytes(),
         )?;
     }
     checked_add(&mut total, main_bytes)?;
+    checked_add(
+        &mut total,
+        crate::source_effect_stage::SourceEffectStages::requested_runtime_bytes(
+            track_count,
+            &arrangement.source_effects,
+        )?,
+    )?;
+    checked_add(
+        &mut total,
+        foreign_arrangement::ForeignArrangement::preflight_bytes(revision)?,
+    )?;
     if let Some(graph) = &arrangement.signal_graph {
         checked_add(
             &mut total,
@@ -712,6 +850,17 @@ fn runtime_storage_preflight_bytes(
         return_buses.len(),
         std::mem::size_of::<[Frame; PREROLL_BLOCK_FRAMES]>(),
     )?;
+    if arrangement
+        .signal_graph
+        .as_ref()
+        .is_some_and(|graph| graph.needs_runtime() && graph.needs_upstream_frame_routing())
+    {
+        add_vec(
+            &mut total,
+            track_count,
+            std::mem::size_of::<[Frame; PREROLL_BLOCK_FRAMES]>(),
+        )?;
+    }
     add_vec(
         &mut total,
         track_count.checked_add(return_buses.len())?,
@@ -822,3 +971,6 @@ fn checked_add(total: &mut usize, bytes: usize) -> Option<()> {
     *total = total.checked_add(bytes)?;
     Some(())
 }
+
+#[cfg(test)]
+mod tests;

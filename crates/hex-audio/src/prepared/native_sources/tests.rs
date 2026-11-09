@@ -7,6 +7,35 @@ use crate::native_callback_owner::{
 use crate::prepared::candidate_tests::{finish, serial};
 use std::time::{Duration, Instant};
 
+#[test]
+fn committed_quantum_is_unavailable_without_native_custody_or_after_closing() {
+    let (mut control, _callback) = channel(48_000).unwrap();
+    let binding = Binding {
+        root: 1,
+        instance: 1,
+        graph: 1,
+        epoch: 1,
+    };
+    assert!(
+        control
+            .publication
+            .try_native_source_committed_quantum_on_control(binding)
+            .is_err()
+    );
+    control.publication.enable_native_custody().unwrap();
+    control
+        .publication
+        .status
+        .closing
+        .store(true, std::sync::atomic::Ordering::Release);
+    assert_eq!(
+        control
+            .publication
+            .try_native_source_committed_quantum_on_control(binding),
+        Err("native automation output is closing")
+    );
+}
+
 fn setup() -> (
     Control,
     Guard<NativeCallbackOwner>,
@@ -52,7 +81,7 @@ fn setup_for_identity_with_profile(
 ) {
     let (mut control, mut callback) = channel(48_000).unwrap();
     control
-        .configure_physical_callback_request(&mut callback, quantum)
+        .configure_plugin_callback_quantum(&mut callback, quantum)
         .unwrap();
     let (data, errors, terminals) =
         crate::native_callback_owner::reserve_native(callback, Arc::clone(&control.status));
@@ -130,6 +159,17 @@ fn source_for_profile(
     quantum: u16,
     restore: Option<hex_lattice_contract::NativeDeviceState>,
 ) -> Binding {
+    source_for_profile_with_authored(control, identity, fixture, quantum, restore, &[])
+}
+
+fn source_for_profile_with_authored(
+    control: &mut Control,
+    identity: hex_lattice::ProcessorInstanceIdentity,
+    fixture: &str,
+    quantum: u16,
+    restore: Option<hex_lattice_contract::NativeDeviceState>,
+    ids: &[u32],
+) -> Binding {
     let (build, source, mut preparation) =
         crate::candidate_custody::native_source_test_fixture::input_for(
             fixture,
@@ -138,10 +178,7 @@ fn source_for_profile(
             ],
         );
     preparation.quantum = quantum;
-    assert_eq!(
-        control.requested_physical_callback_frames_on_control(),
-        Some(quantum)
-    );
+    assert_eq!(control.plugin_callback_quantum_on_control(), Some(quantum));
     let identity_bytes = source.identity();
     let executable_digest = hex_digest(identity_bytes.binary.executable_sha256);
     let info_digest = hex_digest(identity_bytes.binary.info_sha256);
@@ -161,6 +198,7 @@ fn source_for_profile(
             identity.device_id(),
             12,
             48_000,
+            crate::plugin_effects::PluginProfile::Effect,
             restore,
         )
         .unwrap();
@@ -175,7 +213,14 @@ fn source_for_profile(
             }),
         )
         .unwrap();
-    control.start_native_effect(binding).unwrap();
+    let authored = crate::plugin_effects::AuthoredSelection::from_targets(
+        ids.iter()
+            .map(|id| (*id, Some(identity_bytes.class.bytes()))),
+    )
+    .unwrap();
+    control
+        .start_native_effect_with_authored_selection(binding, authored.as_ref())
+        .unwrap();
     binding
 }
 fn hex_digest(bytes: [u8; 32]) -> String {
@@ -262,6 +307,7 @@ fn actual_selected_effect_revalidation_refuses_changed_metadata_before_root_rese
                     3,
                     12,
                     48_000,
+                    crate::plugin_effects::PluginProfile::Effect,
                     None,
                 )
                 .is_err()
@@ -304,6 +350,8 @@ fn actual_selected_effect_revalidation_refuses_changed_metadata_before_root_rese
 fn actual_native_endpoint_moves_through_callback_and_returns_before_worker_disposal() {
     let _serial = serial();
     let (mut control, mut data, errors, mut retirement, binding) = setup();
+    assert!(control.has_vacant_native_source_slots_on_control(1));
+    assert!(!control.has_vacant_native_source_slots_on_control(2));
     let state = control.native_source_prepared_state(binding).unwrap();
     assert_ne!(
         control.native_source_endpoint_installed(binding),

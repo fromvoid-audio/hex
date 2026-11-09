@@ -1,0 +1,1086 @@
+use super::*;
+use crate::device_gesture::GestureKey;
+use crate::service::automation_draft::Vst3ApplicationValue;
+use crate::service::native_automation_recording::tests::{application, fixture, poll};
+use hex_storage::automation_draft::{DraftOutcome, DraftReader};
+
+fn ready(scope: DeviceAutomationTakeScope, source: DeviceAutomationSource) -> Observation {
+    let DeviceCaptureTarget::Vst3(target) = scope.target else {
+        panic!("foreign")
+    };
+    Observation::Ready {
+        key: GestureKey {
+            generation: scope.stamp.project_generation,
+            token: scope.stamp.gesture_serial,
+        },
+        context: scope.context(),
+        target,
+        source,
+    }
+}
+fn point(
+    scope: DeviceAutomationTakeScope,
+    source: DeviceAutomationSource,
+    frame: u64,
+    value: Vst3ApplicationValue,
+) -> PluginParameterDelivery {
+    let Observation::Ready {
+        key,
+        context,
+        target,
+        ..
+    } = ready(scope, source)
+    else {
+        panic!("ready")
+    };
+    PluginParameterDelivery {
+        key,
+        context,
+        target,
+        source,
+        sequence: frame,
+        application: application(scope, frame, value),
+        delivery_performance_frame: frame + 100,
+    }
+}
+fn send(
+    lane: &mut Lane,
+    session: &Session,
+    scope: DeviceAutomationTakeScope,
+    observation: Observation,
+) -> Result<Step, String> {
+    lane.receive(
+        session,
+        None,
+        scope.context(),
+        scope,
+        &DeviceAutomationTakeAction::PluginObservation(Box::new(observation)),
+    )
+}
+
+fn failed_copy_fixture() -> (
+    crate::service::native_automation_recording::tests::Files,
+    DeviceAutomationTakeScope,
+    DeviceAutomationSource,
+    DraftWorkerOutcome,
+) {
+    use crate::service::automation_draft::tests::failed_outcome;
+    use hex_storage::automation_draft::{DraftTarget, DraftWriter};
+
+    let (files, session, scope, source) = fixture();
+    let DeviceCaptureTarget::Vst3(target) = scope.target else {
+        panic!("foreign")
+    };
+    let path = files.0.join("failed-copy-source");
+    let mut writer = DraftWriter::create_with_clock(
+        &path,
+        session.project(),
+        DraftTarget::Device {
+            device: target.device,
+            target: hex_project::DeviceAutomationTarget::Vst3 {
+                parameter: target.parameter,
+            },
+        },
+        scope.stamp,
+        CaptureClock {
+            sample_rate: source.sample_rate,
+            loop_region: source.section_loop,
+        },
+    )
+    .unwrap();
+    let base = AppliedEvent {
+        sequence: 1,
+        performance_frame: 8,
+        content_frame: 0,
+        loop_pass: 0,
+        value: hex_project::AutomationValue::new(0.25).unwrap(),
+    };
+    writer.append(&[base]).unwrap();
+    let identity = writer.durable_prefix_identity();
+    drop(writer);
+    let retained = AppliedEvent {
+        sequence: 2,
+        performance_frame: 10,
+        content_frame: 2,
+        loop_pass: 0,
+        value: hex_project::AutomationValue::new(0.5).unwrap(),
+    };
+    let outcome = failed_outcome(path, 1, identity, &[retained]);
+    (files, scope, source, outcome)
+}
+
+#[test]
+fn failed_plugin_copy_preserves_terminal_already_admitted_by_writer() {
+    use crate::service::automation_draft::tests::injected_failed_writer_with_terminal;
+    use hex_storage::automation_draft::{DraftTarget, DraftWriter};
+
+    let (files, session, scope, source) = fixture();
+    let DeviceCaptureTarget::Vst3(target) = scope.target else {
+        panic!("foreign")
+    };
+    let path = files.0.join("admitted-terminal-source");
+    let writer = DraftWriter::create_with_clock(
+        &path,
+        session.project(),
+        DraftTarget::Device {
+            device: target.device,
+            target: hex_project::DeviceAutomationTarget::Vst3 {
+                parameter: target.parameter,
+            },
+        },
+        scope.stamp,
+        source.capture_clock(session.project()),
+    )
+    .unwrap();
+    let event = AppliedEvent {
+        sequence: 1,
+        performance_frame: 8,
+        content_frame: 0,
+        loop_pass: 0,
+        value: hex_project::AutomationValue::new(0.5).unwrap(),
+    };
+    let restored = point(scope, source, 24, Vst3ApplicationValue::Restored);
+    let terminal = DraftTerminal::Finished(restored.application.origin);
+    let outcome = injected_failed_writer_with_terminal(writer, event, terminal);
+    assert_eq!(outcome.requested_terminal, terminal);
+    let original = std::fs::read(&path).unwrap();
+    let output = files.0.join("admitted-terminal-copy");
+    let limits = DraftReadLimits {
+        max_source_bytes: 65536,
+    };
+    assert_eq!(
+        copy_failed_plugin_on_control(&outcome, &output, limits, 1, scope, source, &[]).unwrap(),
+        terminal
+    );
+    let reader = DraftReader::open(output, limits).unwrap();
+    assert_eq!(
+        reader.outcome(),
+        DraftOutcome::Finished(restored.application.origin)
+    );
+    assert_eq!(reader.progress().durable_events, 1);
+    assert!(
+        copy_failed_plugin_on_control(
+            &outcome,
+            &files.0.join("after-terminal"),
+            limits,
+            2,
+            scope,
+            source,
+            &[Observation::Delivered(point(
+                scope,
+                source,
+                32,
+                Vst3ApplicationValue::Value(0.75),
+            ))],
+        )
+        .is_err()
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert_eq!(outcome.retained[0].events(), &[event]);
+
+    let aborted_path = files.0.join("admitted-abort-source");
+    let writer = DraftWriter::create_with_clock(
+        &aborted_path,
+        session.project(),
+        DraftTarget::Device {
+            device: target.device,
+            target: hex_project::DeviceAutomationTarget::Vst3 {
+                parameter: target.parameter,
+            },
+        },
+        scope.stamp,
+        source.capture_clock(session.project()),
+    )
+    .unwrap();
+    let aborted = DraftTerminal::Aborted(DraftAbortReason::Cancelled);
+    let outcome = injected_failed_writer_with_terminal(writer, event, aborted);
+    let original = std::fs::read(&aborted_path).unwrap();
+    let output = files.0.join("admitted-abort-copy");
+    assert_eq!(
+        copy_failed_plugin_on_control(&outcome, &output, limits, 1, scope, source, &[]).unwrap(),
+        aborted
+    );
+    assert_eq!(
+        DraftReader::open(output, limits).unwrap().outcome(),
+        DraftOutcome::Aborted(DraftAbortReason::Cancelled)
+    );
+    assert_eq!(std::fs::read(aborted_path).unwrap(), original);
+}
+
+#[test]
+fn failed_plugin_copy_uses_enabled_project_loop_without_section_override() {
+    use crate::service::automation_draft::tests::failed_outcome;
+    use hex_storage::automation_draft::{DraftTarget, DraftWriter};
+
+    let (files, mut session, scope, source) = fixture();
+    session
+        .editor
+        .execute(hex_project::Command::SetLoopRegion {
+            start: 0,
+            end: 48000,
+            enabled: true,
+        })
+        .unwrap();
+    let DeviceCaptureTarget::Vst3(target) = scope.target else {
+        panic!("foreign")
+    };
+    let path = files.0.join("loop-source");
+    let mut writer = DraftWriter::create_with_clock(
+        &path,
+        session.project(),
+        DraftTarget::Device {
+            device: target.device,
+            target: hex_project::DeviceAutomationTarget::Vst3 {
+                parameter: target.parameter,
+            },
+        },
+        scope.stamp,
+        CaptureClock {
+            sample_rate: source.sample_rate,
+            loop_region: session.project().loop_region(),
+        },
+    )
+    .unwrap();
+    let base = AppliedEvent {
+        sequence: 1,
+        performance_frame: 8,
+        content_frame: 0,
+        loop_pass: 0,
+        value: hex_project::AutomationValue::new(0.25).unwrap(),
+    };
+    writer.append(&[base]).unwrap();
+    let identity = writer.durable_prefix_identity();
+    drop(writer);
+    let outcome = failed_outcome(path.clone(), 1, identity, &[]);
+    let original = std::fs::read(&path).unwrap();
+    let delivered = point(scope, source, 16, Vst3ApplicationValue::Value(0.75));
+    let mut restored = point(scope, source, 24, Vst3ApplicationValue::Restored);
+    restored.sequence = delivered.sequence;
+    let output = files.0.join("loop-copy");
+    let limits = DraftReadLimits {
+        max_source_bytes: 65536,
+    };
+    assert_eq!(
+        copy_failed_plugin_on_control(
+            &outcome,
+            &output,
+            limits,
+            2,
+            scope,
+            source,
+            &[
+                Observation::Delivered(delivered),
+                Observation::Restored(restored)
+            ]
+        )
+        .unwrap(),
+        DraftTerminal::Finished(restored.application.origin)
+    );
+    let reader = DraftReader::open(output, limits).unwrap();
+    assert_eq!(
+        reader.capture_clock().unwrap().loop_region,
+        session.project().loop_region()
+    );
+    let mut different = source;
+    different.section_loop = Some(hex_project::LoopRegion::new(10, 100, true).unwrap());
+    assert!(
+        copy_failed_plugin_on_control(
+            &outcome,
+            &files.0.join("wrong-loop"),
+            limits,
+            2,
+            scope,
+            different,
+            &[Observation::Delivered(delivered)],
+        )
+        .is_err()
+    );
+    assert_eq!(std::fs::read(path).unwrap(), original);
+}
+
+#[test]
+fn capture_clock_prefers_section_loop_and_ignores_disabled_project_loop() {
+    let (_files, mut session, _scope, mut source) = fixture();
+    assert_eq!(source.capture_clock(session.project()).loop_region, None);
+    session
+        .editor
+        .execute(hex_project::Command::SetLoopRegion {
+            start: 0,
+            end: 48000,
+            enabled: false,
+        })
+        .unwrap();
+    assert_eq!(source.capture_clock(session.project()).loop_region, None);
+    session
+        .editor
+        .execute(hex_project::Command::ToggleLoopRegion)
+        .unwrap();
+    assert_eq!(
+        source.capture_clock(session.project()).loop_region,
+        session.project().loop_region()
+    );
+    let section = hex_project::LoopRegion::new(10, 100, true).unwrap();
+    source.section_loop = Some(section);
+    assert_eq!(
+        source.capture_clock(session.project()).loop_region,
+        Some(section)
+    );
+}
+
+#[test]
+fn failed_plugin_copy_preserves_originals_and_real_restoration() {
+    let (files, scope, source, outcome) = failed_copy_fixture();
+    let original = std::fs::read(&outcome.path).unwrap();
+    let retained = outcome.retained[0].events().to_vec();
+    let delivered = point(scope, source, 16, Vst3ApplicationValue::Value(0.75));
+    let mut restored = point(scope, source, 24, Vst3ApplicationValue::Restored);
+    restored.sequence = delivered.sequence;
+    let observations = [
+        Observation::Delivered(delivered),
+        Observation::Restored(restored),
+    ];
+    let limits = DraftReadLimits {
+        max_source_bytes: 65536,
+    };
+    let path = files.0.join("completed-copy");
+    assert_eq!(
+        copy_failed_plugin_on_control(&outcome, &path, limits, 3, scope, source, &observations)
+            .unwrap(),
+        DraftTerminal::Finished(restored.application.origin)
+    );
+    let mut reader = DraftReader::open(&path, limits).unwrap();
+    assert_eq!(
+        reader.outcome(),
+        DraftOutcome::Finished(restored.application.origin)
+    );
+    let mut events = [None; 4];
+    assert_eq!(reader.read_events(0, &mut events).unwrap(), 3);
+    assert_eq!(events[0].unwrap().sequence, 1);
+    assert_eq!(events[1], Some(retained[0]));
+    assert_eq!(events[2].unwrap().sequence, delivered.sequence);
+    assert_eq!(events[2].unwrap().value.get(), 0.75);
+    assert_eq!(std::fs::read(&outcome.path).unwrap(), original);
+    assert_eq!(outcome.retained[0].events(), retained);
+    assert!(
+        matches!(observations[1], Observation::Restored(original) if original.sequence == delivered.sequence)
+    );
+}
+
+#[test]
+fn recovery_copy_receipt_refuses_replaced_damaged_or_incomplete_files() {
+    let (files, scope, source, mut outcome) = failed_copy_fixture();
+    let original = std::fs::read(&outcome.path).unwrap();
+    let retained = outcome.retained[0].events().to_vec();
+    let delivered = point(scope, source, 16, Vst3ApplicationValue::Value(0.75));
+    let mut restored = point(scope, source, 24, Vst3ApplicationValue::Restored);
+    restored.sequence = delivered.sequence;
+    let limits = DraftReadLimits {
+        max_source_bytes: 65536,
+    };
+    let finished = files.0.join("receipt-finished");
+    let receipt = copy_failed_plugin_with_receipt_on_control(
+        &outcome,
+        &finished,
+        limits,
+        3,
+        scope,
+        source,
+        &[
+            Observation::Delivered(delivered),
+            Observation::Restored(restored),
+        ],
+    )
+    .unwrap();
+    assert_eq!(receipt.events(), 3);
+    assert_eq!(
+        receipt.terminal(),
+        DraftTerminal::Finished(restored.application.origin)
+    );
+    receipt.verify_on_control(&finished, limits, 3).unwrap();
+    assert!(receipt.verify_on_control(&finished, limits, 2).is_err());
+    assert!(
+        receipt
+            .open_completed_on_control(&finished, limits, 2)
+            .is_err()
+    );
+
+    let interrupted = files.0.join("receipt-interrupted");
+    let interrupted_receipt = copy_failed_plugin_with_receipt_on_control(
+        &outcome,
+        &interrupted,
+        limits,
+        3,
+        scope,
+        source,
+        &[Observation::Delivered(delivered)],
+    )
+    .unwrap();
+    assert_eq!(interrupted_receipt.terminal(), DraftTerminal::Interrupted);
+    interrupted_receipt
+        .verify_on_control(&interrupted, limits, 3)
+        .unwrap();
+    assert!(receipt.verify_on_control(&interrupted, limits, 3).is_err());
+    assert!(
+        interrupted_receipt
+            .open_completed_on_control(&interrupted, limits, 3)
+            .is_err()
+    );
+
+    let mut changed = delivered;
+    changed.application.value = Vst3ApplicationValue::Value(0.625);
+    let replacement = files.0.join("receipt-replacement");
+    copy_failed_plugin_with_receipt_on_control(
+        &outcome,
+        &replacement,
+        limits,
+        3,
+        scope,
+        source,
+        &[
+            Observation::Delivered(changed),
+            Observation::Restored(restored),
+        ],
+    )
+    .unwrap();
+    assert!(receipt.verify_on_control(&replacement, limits, 3).is_err());
+    assert!(
+        receipt
+            .open_completed_on_control(&replacement, limits, 3)
+            .is_err()
+    );
+
+    let mut reader = DraftReader::open(&finished, limits).unwrap();
+    let different_header = files.0.join("receipt-valid-other-header");
+    let mut stamp = reader.provenance();
+    stamp.gesture_serial += 1;
+    let mut writer = hex_storage::automation_draft::DraftWriter::create_with_clock(
+        &different_header,
+        reader.source(),
+        reader.target(),
+        stamp,
+        reader.capture_clock().unwrap(),
+    )
+    .unwrap();
+    let mut page = [None; 3];
+    assert_eq!(reader.read_events(0, &mut page).unwrap(), 3);
+    writer.append(&page.map(Option::unwrap)).unwrap();
+    writer.finish(receipt.terminal()).unwrap();
+    drop(writer);
+    drop(reader);
+    assert!(
+        receipt
+            .verify_on_control(&different_header, limits, 3)
+            .is_err()
+    );
+
+    let bytes = std::fs::read(&finished).unwrap();
+    let appended = files.0.join("receipt-appended");
+    let mut bad = bytes.clone();
+    bad.push(0);
+    std::fs::write(&appended, &bad).unwrap();
+    assert!(receipt.verify_on_control(&appended, limits, 3).is_err());
+    assert!(
+        receipt
+            .open_completed_on_control(&appended, limits, 3)
+            .is_err()
+    );
+    let truncated = files.0.join("receipt-truncated");
+    std::fs::write(&truncated, &bytes[..bytes.len() - 1]).unwrap();
+    assert!(receipt.verify_on_control(&truncated, limits, 3).is_err());
+    assert!(
+        receipt
+            .open_completed_on_control(&truncated, limits, 3)
+            .is_err()
+    );
+    let wrong_header = files.0.join("receipt-header");
+    let mut bad = bytes;
+    bad[0] ^= 1;
+    std::fs::write(&wrong_header, &bad).unwrap();
+    assert!(receipt.verify_on_control(&wrong_header, limits, 3).is_err());
+    let mut take = receipt
+        .open_completed_on_control(&finished, limits, 3)
+        .unwrap();
+    assert_eq!(take.event_count(), 3);
+    std::fs::rename(&replacement, &finished).unwrap();
+    assert_eq!(
+        take.value_at_on_control(16).unwrap().unwrap().value.get(),
+        0.75
+    );
+    assert!(
+        receipt
+            .open_completed_on_control(&finished, limits, 3)
+            .is_err()
+    );
+    drop(take);
+    outcome.requested_terminal = DraftTerminal::Aborted(DraftAbortReason::Cancelled);
+    let aborted = files.0.join("receipt-aborted");
+    let aborted_receipt = copy_failed_plugin_with_receipt_on_control(
+        &outcome,
+        &aborted,
+        limits,
+        3,
+        scope,
+        source,
+        &[],
+    )
+    .unwrap();
+    assert!(
+        aborted_receipt
+            .open_completed_on_control(&aborted, limits, 3)
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&outcome.path).unwrap(), original);
+    assert_eq!(outcome.retained[0].events(), retained);
+}
+
+#[test]
+fn failed_plugin_copy_refuses_bad_custody_and_never_invents_an_end() {
+    let (files, scope, source, outcome) = failed_copy_fixture();
+    let original = std::fs::read(&outcome.path).unwrap();
+    let limits = DraftReadLimits {
+        max_source_bytes: 65536,
+    };
+    let delivered = point(scope, source, 16, Vst3ApplicationValue::Value(0.75));
+    let observations = [Observation::Delivered(delivered)];
+    let interrupted = files.0.join("interrupted-copy");
+    assert_eq!(
+        copy_failed_plugin_on_control(
+            &outcome,
+            &interrupted,
+            limits,
+            3,
+            scope,
+            source,
+            &observations
+        )
+        .unwrap(),
+        DraftTerminal::Interrupted
+    );
+    let reader = DraftReader::open(&interrupted, limits).unwrap();
+    assert_eq!(reader.outcome(), DraftOutcome::Interrupted);
+    assert_eq!(reader.progress().durable_events, 3);
+    let second = point(scope, source, 20, Vst3ApplicationValue::Value(0.625));
+    let third = point(scope, source, 24, Vst3ApplicationValue::Value(0.5));
+    let full = files.0.join("full-incomplete-copy");
+    assert_eq!(
+        copy_failed_plugin_on_control(
+            &outcome,
+            &full,
+            limits,
+            5,
+            scope,
+            source,
+            &[
+                Observation::Delivered(delivered),
+                Observation::Delivered(second),
+                Observation::Delivered(third),
+            ],
+        )
+        .unwrap(),
+        DraftTerminal::Interrupted
+    );
+    let reader = DraftReader::open(&full, limits).unwrap();
+    assert_eq!(reader.progress().durable_events, 5);
+    assert_eq!(reader.outcome(), DraftOutcome::Interrupted);
+    let terminal = Observation::Interrupted {
+        key: delivered.key,
+        context: delivered.context,
+        target: delivered.target,
+        source: delivered.source,
+        sequence: delivered.sequence,
+    };
+    assert_eq!(
+        copy_failed_plugin_on_control(
+            &outcome,
+            &files.0.join("sdk-interrupted-copy"),
+            limits,
+            3,
+            scope,
+            source,
+            &[Observation::Delivered(delivered), terminal],
+        )
+        .unwrap(),
+        DraftTerminal::Interrupted
+    );
+    let collision = files.0.join("collision");
+    std::fs::write(&collision, b"keep").unwrap();
+    assert!(
+        copy_failed_plugin_on_control(
+            &outcome,
+            &collision,
+            limits,
+            3,
+            scope,
+            source,
+            &observations
+        )
+        .is_err()
+    );
+    assert_eq!(std::fs::read(&collision).unwrap(), b"keep");
+    assert!(
+        copy_failed_plugin_on_control(
+            &outcome,
+            &files.0.join("budget"),
+            limits,
+            2,
+            scope,
+            source,
+            &observations
+        )
+        .is_err()
+    );
+    let mut bad = delivered;
+    bad.sequence = 2;
+    assert!(
+        copy_failed_plugin_on_control(
+            &outcome,
+            &files.0.join("sequence"),
+            limits,
+            3,
+            scope,
+            source,
+            &[Observation::Delivered(bad)]
+        )
+        .is_err()
+    );
+    let mut wrong_scope = scope;
+    wrong_scope.stamp.gesture_serial += 1;
+    assert!(
+        copy_failed_plugin_on_control(
+            &outcome,
+            &files.0.join("scope"),
+            limits,
+            3,
+            wrong_scope,
+            source,
+            &observations
+        )
+        .is_err()
+    );
+    let mut wrong_class = scope;
+    if let DeviceCaptureTarget::Vst3(ref mut target) = wrong_class.target {
+        target.class[0] ^= 1;
+    }
+    assert!(
+        copy_failed_plugin_on_control(
+            &outcome,
+            &files.0.join("class"),
+            limits,
+            3,
+            wrong_class,
+            source,
+            &observations,
+        )
+        .is_err()
+    );
+    let mut invalid = delivered;
+    invalid.application.value = Vst3ApplicationValue::Value(f64::NAN);
+    assert!(
+        copy_failed_plugin_on_control(
+            &outcome,
+            &files.0.join("invalid-value"),
+            limits,
+            3,
+            scope,
+            source,
+            &[Observation::Delivered(invalid)],
+        )
+        .is_err()
+    );
+    assert_eq!(std::fs::read(&outcome.path).unwrap(), original);
+    assert_eq!(outcome.retained[0].events().len(), 1);
+    let mut damaged = original;
+    let last = damaged.len() - 1;
+    damaged[last] ^= 1;
+    std::fs::write(&outcome.path, &damaged).unwrap();
+    assert!(
+        copy_failed_plugin_on_control(
+            &outcome,
+            &files.0.join("damaged-copy"),
+            limits,
+            3,
+            scope,
+            source,
+            &observations,
+        )
+        .is_err()
+    );
+    assert_eq!(std::fs::read(&outcome.path).unwrap(), damaged);
+    assert_eq!(outcome.retained[0].events().len(), 1);
+}
+
+#[test]
+fn failed_plugin_continuation_preserves_points_and_equal_sequence_restoration() {
+    let (_files, _session, scope, source) = fixture();
+    let first = point(scope, source, 8, Vst3ApplicationValue::Value(0.25));
+    let previous = AppliedEvent {
+        sequence: first.sequence,
+        performance_frame: first.application.origin.performance_frame,
+        content_frame: first.application.origin.content_frame,
+        loop_pass: first.application.origin.loop_pass,
+        value: hex_project::AutomationValue::new(0.25).unwrap(),
+    };
+    let delivered = point(scope, source, 16, Vst3ApplicationValue::Value(0.375));
+    let mut restored = point(scope, source, 24, Vst3ApplicationValue::Restored);
+    restored.sequence = delivered.sequence;
+    let observations = [
+        Observation::Delivered(delivered),
+        Observation::Restored(restored),
+    ];
+    let continuation =
+        prepare_failed_plugin_continuation(scope, source, Some(previous), &observations).unwrap();
+    let events: Vec<_> = continuation.events().collect();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].sequence, delivered.sequence);
+    assert_eq!(
+        events[0].content_frame,
+        delivered.application.origin.content_frame
+    );
+    assert_eq!(events[0].value.get(), 0.375);
+    assert_eq!(
+        continuation.terminal(),
+        Some(DraftTerminal::Finished(restored.application.origin))
+    );
+    assert!(
+        matches!(observations[0], Observation::Delivered(original) if original.sequence == delivered.sequence)
+    );
+    let later = point(scope, source, 20, Vst3ApplicationValue::Value(0.625));
+    let mut later_end = restored;
+    later_end.sequence = later.sequence;
+    let full = prepare_failed_plugin_continuation(
+        scope,
+        source,
+        Some(previous),
+        &[
+            Observation::Delivered(delivered),
+            Observation::Delivered(later),
+            Observation::Restored(later_end),
+        ],
+    )
+    .unwrap();
+    assert_eq!(full.events().count(), 2);
+    assert_eq!(
+        full.terminal(),
+        Some(DraftTerminal::Finished(later_end.application.origin))
+    );
+    let last = point(scope, source, 24, Vst3ApplicationValue::Value(0.75));
+    let incomplete = prepare_failed_plugin_continuation(
+        scope,
+        source,
+        Some(previous),
+        &[
+            Observation::Delivered(delivered),
+            Observation::Delivered(later),
+            Observation::Delivered(last),
+        ],
+    )
+    .unwrap();
+    assert_eq!(incomplete.events().count(), 3);
+    assert_eq!(incomplete.terminal(), None);
+    let interrupted = Observation::Interrupted {
+        key: restored.key,
+        context: restored.context,
+        target: restored.target,
+        source: restored.source,
+        sequence: delivered.sequence,
+    };
+    let continuation =
+        prepare_failed_plugin_continuation(scope, source, Some(events[0]), &[interrupted]).unwrap();
+    assert_eq!(continuation.terminal(), Some(DraftTerminal::Interrupted));
+    assert_eq!(continuation.events().count(), 0);
+    let empty = prepare_failed_plugin_continuation(
+        scope,
+        source,
+        None,
+        &[Observation::Unchanged { key: restored.key }],
+    )
+    .unwrap();
+    assert_eq!(
+        empty.terminal(),
+        Some(DraftTerminal::Aborted(DraftAbortReason::Cancelled))
+    );
+}
+
+#[test]
+fn failed_plugin_continuation_refuses_mismatched_or_unordered_receipts() {
+    let (_files, _session, scope, source) = fixture();
+    let first = point(scope, source, 8, Vst3ApplicationValue::Value(0.25));
+    let previous = AppliedEvent {
+        sequence: first.sequence,
+        performance_frame: first.application.origin.performance_frame,
+        content_frame: first.application.origin.content_frame,
+        loop_pass: first.application.origin.loop_pass,
+        value: hex_project::AutomationValue::new(0.25).unwrap(),
+    };
+    let good = point(scope, source, 16, Vst3ApplicationValue::Value(0.5));
+    let check = |point| {
+        prepare_failed_plugin_continuation(
+            scope,
+            source,
+            Some(previous),
+            &[Observation::Delivered(point)],
+        )
+        .is_err()
+    };
+    let mut bad = good;
+    bad.key.token += 1;
+    assert!(check(bad));
+    bad = good;
+    bad.context.editor_revision += 1;
+    assert!(check(bad));
+    bad = good;
+    bad.source.transport_epoch += 1;
+    assert!(check(bad));
+    bad = good;
+    bad.target.class[0] ^= 1;
+    assert!(check(bad));
+    bad = good;
+    bad.application.binding.instance += 1;
+    assert!(check(bad));
+    bad = good;
+    bad.application.parameter += 1;
+    assert!(check(bad));
+    bad = good;
+    bad.application.value = Vst3ApplicationValue::Value(f64::NAN);
+    assert!(check(bad));
+    bad = good;
+    bad.application.value = Vst3ApplicationValue::Value(f64::INFINITY);
+    assert!(check(bad));
+    bad = good;
+    bad.application.value = Vst3ApplicationValue::Value(1.01);
+    assert!(check(bad));
+    bad = good;
+    bad.sequence = previous.sequence;
+    assert!(check(bad));
+    bad = good;
+    bad.application.origin.content_frame = 0;
+    assert!(check(bad));
+    bad = good;
+    bad.application.origin.loop_pass = previous.loop_pass.saturating_sub(1);
+    bad.application.origin.performance_frame = 0;
+    assert!(check(bad));
+    let mut loop_previous = previous;
+    loop_previous.loop_pass = 1;
+    assert!(
+        prepare_failed_plugin_continuation(
+            scope,
+            source,
+            Some(loop_previous),
+            &[Observation::Delivered(good)]
+        )
+        .is_err()
+    );
+    bad = good;
+    bad.delivery_performance_frame = 0;
+    assert!(check(bad));
+    let mut end = point(scope, source, 24, Vst3ApplicationValue::Restored);
+    end.sequence = good.sequence;
+    assert!(
+        prepare_failed_plugin_continuation(
+            scope,
+            source,
+            Some(previous),
+            &[Observation::Restored(end), Observation::Delivered(good)]
+        )
+        .is_err()
+    );
+    assert!(
+        prepare_failed_plugin_continuation(
+            scope,
+            source,
+            Some(previous),
+            &[Observation::Delivered(good); 4]
+        )
+        .is_err()
+    );
+    assert!(
+        prepare_failed_plugin_continuation(scope, source, Some(previous), &[ready(scope, source)])
+            .is_err()
+    );
+    assert!(
+        prepare_failed_plugin_continuation(
+            scope,
+            source,
+            Some(previous),
+            &[Observation::Unchanged { key: good.key }]
+        )
+        .is_err()
+    );
+}
+#[test]
+fn observed_points_and_exclusive_restoration_adopt_once_with_original_clocks() {
+    let (files, mut session, scope, source) = fixture();
+    let admitted = ready(scope, source);
+    assert_eq!(
+        DeviceAutomationTakeScope::from_plugin_ready(scope.context(), &admitted).unwrap(),
+        scope
+    );
+    let mut lane = Lane::default();
+    lane.begin(&session, None, scope, source, &files.0).unwrap();
+    let original = point(scope, source, 8, Vst3ApplicationValue::Value(0.375));
+    // Rejection retains the same receipt and leaves its sequence available.
+    let mut stale = original;
+    stale.key.token += 1;
+    assert!(send(&mut lane, &session, scope, Observation::Delivered(stale)).is_err());
+    stale = original;
+    stale.source.transport_epoch += 1;
+    assert!(send(&mut lane, &session, scope, Observation::Delivered(stale)).is_err());
+    stale = original;
+    stale.target.binding.instance += 1;
+    assert!(send(&mut lane, &session, scope, Observation::Delivered(stale)).is_err());
+    stale = original;
+    stale.delivery_performance_frame = 0;
+    assert!(send(&mut lane, &session, scope, Observation::Delivered(stale)).is_err());
+    assert!(matches!(
+        send(&mut lane, &session, scope, Observation::Delivered(original)).unwrap(),
+        Step::Progress(DeviceAutomationTakeProgress::Appended)
+    ));
+    let key = original.key;
+    assert!(send(&mut lane, &session, scope, Observation::Unchanged { key }).is_err());
+    assert!(send(&mut lane, &session, scope, Observation::Restored(original)).is_err());
+    let end = point(scope, source, 24, Vst3ApplicationValue::Restored);
+    assert!(matches!(
+        send(&mut lane, &session, scope, Observation::Restored(end)).unwrap(),
+        Step::Progress(DeviceAutomationTakeProgress::Sealing)
+    ));
+    let Step::Commit(command, path) = poll(&mut lane, &session, scope, scope.context()) else {
+        panic!("commit")
+    };
+    let mut reader = DraftReader::open(
+        &path,
+        DraftReadLimits {
+            max_source_bytes: 64 * 1024,
+        },
+    )
+    .unwrap();
+    assert_eq!(reader.provenance(), scope.stamp);
+    assert_eq!(
+        reader.outcome(),
+        DraftOutcome::Finished(end.application.origin)
+    );
+    let mut events = [None; 2];
+    assert_eq!(reader.read_events(0, &mut events).unwrap(), 1);
+    let event = events[0].unwrap();
+    assert_eq!(
+        event.performance_frame,
+        original.application.origin.performance_frame
+    );
+    assert_eq!(
+        event.content_frame,
+        original.application.origin.content_frame
+    );
+    assert_eq!(event.value.get(), 0.375);
+    let before = session.project().clone();
+    session.editor.execute(*command).unwrap();
+    let after = session.project().clone();
+    assert_ne!(before, after);
+    assert_eq!(
+        hex_storage::decode(&hex_storage::encode(&after).unwrap()).unwrap(),
+        after
+    );
+    assert!(session.editor.undo());
+    assert_eq!(session.project(), &before);
+    assert!(session.editor.redo());
+    assert_eq!(session.project(), &after);
+}
+#[test]
+fn empty_and_interrupted_observations_retain_without_a_fabricated_end() {
+    for interrupted in [false, true] {
+        let (files, session, scope, source) = fixture();
+        let before = session.project().clone();
+        let mut lane = Lane::default();
+        lane.begin(&session, None, scope, source, &files.0).unwrap();
+        let Observation::Ready {
+            key,
+            context,
+            target,
+            ..
+        } = ready(scope, source)
+        else {
+            panic!("ready")
+        };
+        let observation = if interrupted {
+            let observed = point(scope, source, 8, Vst3ApplicationValue::Value(0.5));
+            send(&mut lane, &session, scope, Observation::Delivered(observed)).unwrap();
+            Observation::Interrupted {
+                key,
+                context,
+                target,
+                source,
+                sequence: 9,
+            }
+        } else {
+            Observation::Unchanged { key }
+        };
+        send(&mut lane, &session, scope, observation).unwrap();
+        let Step::Progress(DeviceAutomationTakeProgress::Retained(path)) =
+            poll(&mut lane, &session, scope, scope.context())
+        else {
+            panic!("retained")
+        };
+        let reader = DraftReader::open(
+            &path,
+            DraftReadLimits {
+                max_source_bytes: 64 * 1024,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            reader.outcome(),
+            DraftOutcome::Aborted(if interrupted {
+                DraftAbortReason::OutputFailed
+            } else {
+                DraftAbortReason::Cancelled
+            })
+        );
+        assert_eq!(session.project(), &before);
+        assert!(!lane.busy());
+    }
+}
+#[test]
+fn ready_requires_current_exact_source_and_failed_draft_admission_owns_no_take() {
+    let (files, session, scope, source) = fixture();
+    let observation = ready(scope, source);
+    let stale = AudioSourceContext {
+        editor_revision: scope.context().editor_revision + 1,
+        ..scope.context()
+    };
+    assert!(DeviceAutomationTakeScope::from_plugin_ready(stale, &observation).is_err());
+    let Observation::Ready {
+        key,
+        context,
+        target,
+        ..
+    } = observation
+    else {
+        panic!("ready")
+    };
+    for observation in [
+        Observation::Unchanged { key },
+        Observation::Ready {
+            key: GestureKey { token: 0, ..key },
+            context,
+            target,
+            source,
+        },
+        Observation::Ready {
+            key,
+            context,
+            target,
+            source: DeviceAutomationSource {
+                output_identity: 99,
+                ..source
+            },
+        },
+    ] {
+        assert!(
+            DeviceAutomationTakeScope::from_plugin_ready(scope.context(), &observation).is_err()
+        );
+    }
+    let file = files.0.join("occupied");
+    std::fs::write(&file, b"preserve").unwrap();
+    let mut lane = Lane::default();
+    assert!(lane.begin(&session, None, scope, source, &file).is_err());
+    assert!(!lane.busy());
+    assert_eq!(std::fs::read(file).unwrap(), b"preserve");
+}

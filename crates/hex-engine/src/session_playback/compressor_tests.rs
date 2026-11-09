@@ -27,6 +27,8 @@ fn project_with_compressors(
             .expect("threshold patch")
     };
     snapshot.tracks[0].devices.push(DeviceSnapshot {
+        modulation: Default::default(),
+        parent: None,
         automation: Vec::new(),
         comparison: None,
         id: track_device,
@@ -43,6 +45,8 @@ fn project_with_compressors(
         gain: 0.75,
         muted: false,
         devices: vec![DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: return_device,

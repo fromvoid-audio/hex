@@ -13,7 +13,10 @@ pub(super) struct AutomationView {
 }
 impl EditorView {
     pub(super) fn toggle_automation_view(&mut self, cx: &mut Context<Self>) -> bool {
-        if !self.arrangement_view_change_available(cx) {
+        if !self.arrangement_view_change_available(cx)
+            || (self.selected_automation_trim().is_some()
+                && !super::device_panel::finalize_controls(self, cx))
+        {
             return false;
         }
         if self.automation_view.enabled {

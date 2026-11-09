@@ -29,6 +29,7 @@ impl Callback {
         }
     }
     pub(crate) fn begin_native_effect_callback(&mut self, frames: usize) -> Result<(), Invalid> {
+        self.foreign_parameter_delivery.prepare();
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             if self.native_effects_revoked() && !self.status.playing.load(Relaxed) {
@@ -44,6 +45,62 @@ impl Callback {
             Ok(())
         }
     }
+    pub(crate) fn finish_foreign_parameter_delivery(&mut self, valid: bool) {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        self.finish_foreign_editor_delivery(valid);
+        let Some(target) = self.foreign_parameter_delivery.prepare_target() else {
+            return;
+        };
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let marker = self
+            .native_sources
+            .take_accepted_manual_parameter(target.binding);
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let marker = None;
+        // The typed admission excludes constructor and delayed-output paths.
+        let active = self.active.as_ref().and_then(ActivePublication::legacy);
+        let (end, latency) = active.map_or((0, 0), |active| {
+            (
+                active.playback.performance_frame(),
+                active.playback.main_output_latency_frames(),
+            )
+        });
+        self.foreign_parameter_delivery.finish(
+            marker,
+            self.status.live_native_parameter_source(),
+            end,
+            latency,
+            valid,
+            self.output_transport.is_none(),
+        );
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn finish_foreign_editor_delivery(&mut self, valid: bool) {
+        let Some(target) = self.foreign_editor_delivery.prepare_target() else {
+            return;
+        };
+        let observed = self
+            .native_sources
+            .take_accepted_editor_quantum(target.binding);
+        // This admission accepts only the direct, ordinary playing graph.
+        let active = self.active.as_ref().and_then(ActivePublication::legacy);
+        let (end, latency) = active.map_or((0, 0), |active| {
+            (
+                active.playback.performance_frame(),
+                active.playback.main_output_latency_frames(),
+            )
+        });
+        self.foreign_editor_delivery.finish(
+            observed.ok().flatten(),
+            self.status.live_native_parameter_source(),
+            end,
+            latency,
+            valid && observed.is_ok(),
+            self.output_transport.is_none(),
+        );
+    }
+
     pub(crate) fn finish_native_effect_callback(
         &mut self,
         accepted: bool,
@@ -100,12 +157,24 @@ impl hex_lattice::ForeignProcessors for NativeEffectWindow<'_> {
         frames: &mut [[f32; 2]],
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), hex_lattice_contract::DeviceContractError> {
+        self.process_segment_with_notes(node, offset, frames, &[], &[], clock)
+    }
+    fn process_segment_with_notes(
+        &mut self,
+        node: hex_lattice::ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [[f32; 2]],
+        parameters: &[hex_lattice_contract::ForeignParameterPoint],
+        notes: &[hex_lattice::ForeignNote],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), hex_lattice_contract::DeviceContractError> {
         let Some(offset) = self.start.checked_add(offset) else {
             self.inner.reject_callback();
             frames.fill([0.0; 2]);
             return Err(hex_lattice_contract::DeviceContractError::ForeignProcessingFailed);
         };
-        self.inner.process_segment(node, offset, frames, clock)
+        self.inner
+            .process_segment_with_notes(node, offset, frames, parameters, notes, clock)
     }
     fn committed_tail_is_drained(&self, node: hex_lattice::ForeignProcessorNode<'_>) -> bool {
         self.inner.committed_tail_is_drained(node)

@@ -6,16 +6,25 @@ use std::{
     time::{Duration, Instant},
 };
 
+// An arbitrary caller-intent check has no wakeup descriptor. Cap each idle
+// control-side poll timeout at 10 ms so intent is revisited without extending
+// the original deadline. This adds up to 100 timer wakeups per second; OS
+// scheduling may delay them and readiness or signals may wake the poll sooner.
+const CHECK_INTERVAL: Duration = Duration::from_millis(10);
+
 pub(crate) struct Packet {
-    pub bytes: [u8; protocol::PACKET_LIMIT],
+    bytes: Vec<u8>,
     pub len: usize,
 }
 impl Packet {
-    pub fn new() -> Self {
-        Self {
-            bytes: [0; protocol::PACKET_LIMIT],
-            len: 0,
-        }
+    pub fn new() -> Result<Self> {
+        let mut bytes = protocol::buffer(protocol::PACKET_LIMIT)?;
+        bytes.resize(protocol::PACKET_LIMIT, 0);
+        Ok(Self { bytes, len: 0 })
+    }
+
+    pub fn storage_bytes(&self) -> usize {
+        self.bytes.capacity()
     }
     pub fn data(&self) -> &[u8] {
         &self.bytes[..self.len]
@@ -98,14 +107,18 @@ impl Channel {
                 if wanted == 12 {
                     let magic = &out.bytes[..8];
                     if ![
-                        b"HXVIFA03",
-                        b"HXVIRD04",
-                        b"HXVIQF02",
-                        b"HXVIRR02",
-                        b"HXVICS01",
+                        b"HXVIFA04",
+                        b"HXVIRD05",
+                        b"HXVIQF03",
+                        b"HXVIAR02",
+                        b"HXVIRR03",
+                        b"HXVICS02",
+                        &protocol::CAPTURE_REFUSAL_MAGIC,
                         b"HXVIFL01",
                         b"HXVIGE01",
-                        b"HXVLCA01",
+                        b"HXVIGE02",
+                        b"HXVIMD02",
+                        b"HXVLCA02",
                         b"HXVIER01",
                         b"HXVITR01",
                     ]
@@ -119,7 +132,7 @@ impl Channel {
                             .try_into()
                             .map_err(|_| Error::Protocol("control length"))?,
                     ) as usize;
-                    if n > protocol::CONTROL_LIMIT {
+                    if n > protocol::control_limit(magic) {
                         return Err(Error::Protocol("instance control extent exceeds bound"));
                     }
                     wanted = 12 + n;
@@ -129,21 +142,7 @@ impl Channel {
                     continue;
                 }
                 if wanted == 64 && (&out.bytes[..4] == b"HXVB" || &out.bytes[..4] == b"HXVE") {
-                    let frames = usize::from(u16::from_le_bytes([out.bytes[6], out.bytes[7]]));
-                    let version = u16::from_le_bytes([out.bytes[4], out.bytes[5]]);
-                    let parameters =
-                        usize::from(u16::from_le_bytes([out.bytes[10], out.bytes[11]]));
-                    if frames > crate::transport::MAX_FRAMES
-                        || out.bytes[8..10] != [0, 0]
-                        || !matches!(version, 1 | 2)
-                        || (version == 1 && parameters != 0)
-                        || parameters > crate::transport::MAX_PARAMETER_POINTS
-                        || out.bytes[12..16] != [0; 4]
-                        || (parameters != 0 && (frames == 0 || &out.bytes[..4] != b"HXVB"))
-                    {
-                        return Err(Error::Protocol("unsupported instance PCM extent or events"));
-                    }
-                    wanted = 64 + frames * 8 + parameters * 16;
+                    wanted = protocol::pcm_packet_extent(&out.bytes[..64])?;
                     if wanted == 64 {
                         return Ok(());
                     }
@@ -170,7 +169,7 @@ impl Channel {
         }
     }
     fn wait(&self, flags: rustix::event::PollFlags, until: Instant) -> Result<()> {
-        let duration = remaining(until)?;
+        let duration = remaining(until)?.min(CHECK_INTERVAL);
         let timeout = rustix::event::Timespec {
             tv_sec: duration
                 .as_secs()
@@ -216,6 +215,97 @@ fn remaining(until: Instant) -> Result<Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+
+    fn cancellation_while_blocked(write: bool) {
+        let (mut stream, peer) = UnixStream::pair().unwrap();
+        if write {
+            stream.set_nonblocking(true).unwrap();
+            let bytes = [0_u8; 8192];
+            let mut full = false;
+            for _ in 0..512 {
+                match stream.write(&bytes) {
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        full = true;
+                        break;
+                    }
+                    Err(error) => panic!("fill socket: {error}"),
+                }
+            }
+            assert!(full, "bounded fixture must fill the socket");
+        }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = Arc::clone(&cancelled);
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut channel = Channel::new(stream).unwrap();
+            let mut first = true;
+            let mut check = || {
+                if worker_cancelled.load(Ordering::Acquire) {
+                    return Err(Error::Cancelled);
+                }
+                if first {
+                    first = false;
+                    ready_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                }
+                Ok(())
+            };
+            let until = end_after(Duration::from_secs(2)).unwrap();
+            let result = if write {
+                channel.send(&[1], until, &mut check)
+            } else {
+                channel.read(&mut Packet::new().unwrap(), until, &mut check)
+            };
+            result_tx
+                .send(matches!(result, Err(Error::Cancelled)))
+                .unwrap();
+        });
+        ready_rx.recv_timeout(Duration::from_millis(250)).unwrap();
+        cancelled.store(true, Ordering::Release);
+        release_tx.send(()).unwrap();
+        let prompt = result_rx.recv_timeout(Duration::from_millis(200));
+        // Wake the old full-deadline implementation before joining on failure.
+        drop(peer);
+        worker.join().unwrap();
+        assert_eq!(
+            prompt.ok(),
+            Some(true),
+            "cancellation must interrupt an idle socket wait"
+        );
+    }
+
+    #[test]
+    fn caller_cancellation_interrupts_idle_read() {
+        cancellation_while_blocked(false);
+    }
+
+    #[test]
+    fn caller_cancellation_interrupts_backpressured_write() {
+        cancellation_while_blocked(true);
+    }
+
+    #[test]
+    fn idle_read_keeps_its_original_deadline() {
+        let (stream, _peer) = UnixStream::pair().unwrap();
+        let mut channel = Channel::new(stream).unwrap();
+        let start = Instant::now();
+        let deadline = start + Duration::from_millis(40);
+        let result = channel.read(&mut Packet::new().unwrap(), deadline, &mut || Ok(()));
+        assert!(matches!(result, Err(Error::Timeout)));
+        assert!(
+            Instant::now() >= deadline,
+            "poll slices must not shorten the deadline"
+        );
+    }
+
     #[test]
     fn parameter_packet_framing_consumes_exact_payload_without_eating_the_successor() {
         use crate::transport::{Block, Events, ParameterPoint, Parameters};
@@ -234,6 +324,8 @@ mod tests {
             pcm: [[0.5; 2]; crate::transport::MAX_FRAMES],
             events: Events::default(),
             parameters: Parameters::default(),
+            timing: None,
+            timing_changes: Default::default(),
         };
         block
             .parameters
@@ -250,7 +342,7 @@ mod tests {
         crate::transport::wire::write(&mut peer, &block).unwrap();
         drop(peer);
         let mut channel = Channel::new(stream).unwrap();
-        let mut packet = Packet::new();
+        let mut packet = Packet::new().unwrap();
         let until = end_after(Duration::from_secs(2)).unwrap();
         channel.read(&mut packet, until, &mut || Ok(())).unwrap();
         let first = crate::transport::wire::read(&mut packet.data())
@@ -275,7 +367,7 @@ mod tests {
     }
     #[test]
     fn hostile_frames_refuse_before_unbounded_reads_or_allocation() {
-        let mut oversized = b"HXVIRD04".to_vec();
+        let mut oversized = b"HXVIRD05".to_vec();
         oversized.extend(u32::MAX.to_le_bytes());
         let mut events = vec![0; 64];
         events[..4].copy_from_slice(b"HXVB");
@@ -296,7 +388,7 @@ mod tests {
             let mut channel = Channel::new(stream).unwrap();
             let error = channel
                 .read(
-                    &mut Packet::new(),
+                    &mut Packet::new().unwrap(),
                     end_after(Duration::from_secs(1)).unwrap(),
                     &mut || Ok(()),
                 )
@@ -325,7 +417,7 @@ mod tests {
         peer.write_all(&expected).unwrap();
         drop(peer);
         let mut channel = Channel::new(stream).unwrap();
-        let mut packet = Packet::new();
+        let mut packet = Packet::new().unwrap();
         channel
             .read(
                 &mut packet,
@@ -347,7 +439,7 @@ mod send_tests {
     fn control_send_close_and_expired_deadline_keep_bounded_socket_semantics() {
         let (stream, mut peer) = UnixStream::pair().unwrap();
         let mut channel = Channel::new(stream).unwrap();
-        let bytes = protocol::control(*b"HXVIST01", &[]).unwrap();
+        let bytes = protocol::control(*b"HXVIST02", &[]).unwrap();
         channel
             .send(
                 &bytes,

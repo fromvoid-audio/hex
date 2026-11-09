@@ -21,6 +21,26 @@
    confirm the actual merge and update Pulse. Recheck affected inputs after conflict
    resolution or material repairs. Keep native acceptance separate.
 
+## Checking toolchain and hashing inputs
+
+Use `rustc --version` from the checkout to confirm the
+[toolchain pin](../rust-toolchain.toml). Inspect resolved workspace members with
+`cargo metadata --locked --no-deps --format-version=1` to check that their
+`rust_version` values match the workspace declaration.
+
+When reviewing SHA-256 dependency changes, inspect production and build edges
+separately from compatibility-test dependencies:
+
+```sh
+cargo tree --workspace --locked --edges normal,build --invert sha2@0.10.9
+cargo tree --workspace --locked --edges normal,build --invert sha2@0.11.0
+```
+
+Hex-owned production and build dependencies use `sha2` 0.11.0. The GPUI HTTP
+client retains an independent 0.10.9 edge. The media tests also retain 0.10.9 to
+verify digest compatibility, so a tree with development edges includes that
+additional path.
+
 ## Choosing checks
 
 A merge, core path, policy edit or next module does not alone require a full suite.

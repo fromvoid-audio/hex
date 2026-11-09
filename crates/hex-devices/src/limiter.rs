@@ -7,16 +7,51 @@
 use hex_lattice::{NativeDeviceDefinition, PreparedProcessorFactory, StereoMatrix};
 use hex_lattice_contract::{DeviceContractError, NativeDeviceState};
 use std::sync::Arc;
+mod automation;
 mod state;
 use state::decode;
 pub use state::{STATE_VERSION, TYPE_ID, parameter};
 mod runtime;
+pub use runtime::structural::PreparedStructuralLimiter;
 #[cfg(test)]
 mod tests;
 
 pub struct LimiterDefinition;
 pub static DEFINITION: LimiterDefinition = LimiterDefinition;
+impl LimiterDefinition {
+    /// Prepare an exact owned lookahead/routing/mode union at fixed maximum latency.
+    /// Requires at least one structural target plus optional value controls.
+    /// Native metadata grants all three selectors; preparation transfers no
+    /// source lease or resource custody.
+    pub fn prepare_owned_structural_for_parameters(
+        state: &NativeDeviceState,
+        rate: u32,
+        parameters: &[hex_lattice_contract::ParameterId],
+    ) -> Result<PreparedStructuralLimiter, DeviceContractError> {
+        PreparedStructuralLimiter::new(state, rate, parameters)
+    }
+}
 impl NativeDeviceDefinition for LimiterDefinition {
+    fn supports_parameter_automation(
+        &self,
+        state: &NativeDeviceState,
+        id: hex_lattice_contract::ParameterId,
+    ) -> Result<bool, DeviceContractError> {
+        decode(state)?;
+        Ok(matches!(
+            id,
+            parameter::LOOKAHEAD | parameter::ROUTING | parameter::MODE
+        ) || automation::slot(id).is_some())
+    }
+    fn prepare_automated_runtime_instance(
+        &self,
+        _identity: hex_lattice::ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+        ids: &[hex_lattice_contract::ParameterId],
+    ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
+        automation::prepare(state, context, ids)
+    }
     fn prepare_matrix(
         &self,
         state: &NativeDeviceState,
