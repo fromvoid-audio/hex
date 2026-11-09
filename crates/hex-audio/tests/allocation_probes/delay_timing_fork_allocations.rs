@@ -316,6 +316,6 @@ fn closed_delay_graph_budget_refuses_before_allocating_any_ring() {
         result.unwrap(),
         Err(hex_engine::AudioStorageError::UnsupportedGraph)
     );
-    assert!(counts.bytes_total < RATE as usize * 16 * std::mem::size_of::<[f32; 2]>());
+    assert!(counts.bytes_total < u64::from(RATE) * 16 * std::mem::size_of::<[f32; 2]>() as u64);
     preparation.cleanup_on_control().unwrap();
 }
