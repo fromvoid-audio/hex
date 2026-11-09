@@ -23,6 +23,8 @@ mod modulation;
 #[cfg(test)]
 mod modulation_graph_tests;
 mod modulation_note_counter;
+mod modulation_note_events;
+mod modulation_ramp;
 mod modulation_runtime;
 mod modulation_source_routes;
 mod modulation_sources;
@@ -62,6 +64,7 @@ pub use modulation::{
     MAX_MODULATION_SOURCES, ModulationBlock, ModulationRoute, ModulationTarget, PreparedModulation,
     PreparedPressureRoute,
 };
+pub use modulation_ramp::ModulationRampCurve;
 pub use modulation_runtime::ModulationRuntime;
 pub use modulation_source_routes::{SourceModulationParameter, SourceModulationRoute};
 pub use modulation_sources::{
