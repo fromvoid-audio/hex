@@ -7,7 +7,9 @@
 //! storage or tail duration grows with project duration. Repitch is a 10 ms
 //! one-pole (20 ms with high quality); Fade crossfades taps over 50 ms, Jump
 //! is immediate. Feedback, mix, filter enable/frequency/width ramp over 10 ms
-//! on compatible edits. Modulation scales time by 1 + depth * oscillator and
+//! on compatible authored edits. Mapped feedback and mix adopt their canonical
+//! values on the same sample without restarting another control's ramp. The
+//! internal oscillator scales time by 1 + depth * oscillator and
 //! filter center by 2^(4 * depth * oscillator); both are range-clamped. Filter
 //! coefficients update every 16 frames independent of block partitions.
 //! Ping-pong averages stereo input into the left line and crossfeeds outputs.
@@ -33,6 +35,18 @@ impl PreparedOwnedProcessorRuntime for Factory {
         self.supports_parameter_automation(id)
             .then(|| automation::descriptor(id))
             .flatten()
+    }
+
+    fn parameter_modulation_semantics(
+        &self,
+        id: hex_lattice_contract::ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        self.supports_parameter_automation(id)
+            .then(|| automation::semantics(id))
+            .flatten()
+            .filter(|semantics| {
+                semantics.modulation == hex_lattice_contract::ParameterModulation::SampleRate
+            })
     }
 
     fn supports_smoothed_bypass(&self) -> bool {
@@ -277,6 +291,7 @@ impl Runtime {
         let flags = self.speculative.controls.effective_ref().flags;
         let hq = flags.high_quality;
         BlockSettings {
+            immediate: [false; 2],
             freeze: flags.freeze && !self.releasing,
             hq,
             alpha: time_alpha(self.rate, hq),
@@ -288,7 +303,7 @@ impl Runtime {
         let old_timing = self.speculative.timing;
         self.speculative.controls.reset();
         self.speculative.timing = automation::timing(&self.speculative.controls);
-        if old.other_targets_changed(self.speculative.controls.effective_ref())
+        if old.other_targets_changed(self.speculative.controls.effective_ref(), [false; 2])
             || old_timing != self.speculative.timing
         {
             self.speculative.ramp_left = self.rate.div_ceil(100);
@@ -331,6 +346,10 @@ impl Runtime {
             .controls
             .resolve(&automation::BINDINGS, values)?;
         let mut block = self.block_settings();
+        block.immediate = [
+            values.has_sample_rate_modulation(FEEDBACK),
+            values.has_sample_rate_modulation(DRY_WET),
+        ];
         let flags_admitted = [11, 12, 13, 14, 25, 26]
             .iter()
             .any(|&i| self.speculative.controls.admitted(i));
@@ -349,9 +368,10 @@ impl Runtime {
                 values,
                 offset,
             )? {
-                let changed = next
-                    .effective_ref()
-                    .other_targets_changed(self.speculative.controls.effective_ref());
+                let changed = next.effective_ref().other_targets_changed(
+                    self.speculative.controls.effective_ref(),
+                    block.immediate,
+                );
                 self.speculative.controls.install(next);
                 let mut retime = changed;
                 if refresh_timing {
@@ -398,6 +418,7 @@ impl Runtime {
             hq,
             alpha,
             fade_frames,
+            immediate: [feedback_routed, mix_routed],
         } = block;
         let s = &mut self.speculative;
         let targets = s.controls.effective_ref();
@@ -447,9 +468,14 @@ impl Runtime {
                 s.fade_left = 0;
             }
         }
+        let mut update_mix = s.ramp_left > 0;
         if s.ramp_left > 0 {
-            s.feedback += (f64::from(targets.feedback) - s.feedback) / f64::from(s.ramp_left);
-            s.mix += (f64::from(targets.mix) - s.mix) / f64::from(s.ramp_left);
+            if !feedback_routed {
+                s.feedback += (f64::from(targets.feedback) - s.feedback) / f64::from(s.ramp_left);
+            }
+            if !mix_routed {
+                s.mix += (f64::from(targets.mix) - s.mix) / f64::from(s.ramp_left);
+            }
             s.filter_mix +=
                 (f64::from(targets.flags.filter) - s.filter_mix) / f64::from(s.ramp_left);
             s.frequency += (f64::from(targets.frequency) - s.frequency) / f64::from(s.ramp_left);
@@ -462,6 +488,15 @@ impl Runtime {
                 s.frequency = f64::from(targets.frequency);
                 s.width = f64::from(targets.width);
             }
+        }
+        if feedback_routed {
+            s.feedback = f64::from(targets.feedback);
+        }
+        if mix_routed && s.mix != f64::from(targets.mix) {
+            s.mix = f64::from(targets.mix);
+            update_mix = true;
+        }
+        if update_mix {
             (s.dry_gain, s.wet_gain) = mix_gains(s.mix, targets.flags.equal_loudness);
         }
         let scalar = &*s;
@@ -535,6 +570,7 @@ impl Runtime {
 }
 #[derive(Clone, Copy)]
 struct BlockSettings {
+    immediate: [bool; 2],
     freeze: bool,
     hq: bool,
     alpha: f64,
