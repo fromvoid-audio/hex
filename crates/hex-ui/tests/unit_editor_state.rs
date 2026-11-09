@@ -1,9 +1,53 @@
-//! Pure viewport state tests; no GPUI window or service is created.
+//! Pure editor state tests; no GPUI window or service is created.
 
+#[path = "../src/editor/disk_overload.rs"]
+mod disk_overload_state;
+#[path = "../src/editor/pending_edit.rs"]
+mod receipt;
 #[path = "../src/editor/viewport.rs"]
 mod viewport_state;
 
 mod editor {
+    mod pending_edit {
+        use crate::receipt::*;
+
+        mod tests {
+            use super::*;
+
+            #[test]
+            fn queued_and_earlier_events_cannot_retire_released_display() {
+                let mut receipt = Receipt::new(7);
+                assert_eq!(receipt.observe(7, false, true), Disposition::Waiting);
+                assert!(!receipt.submitted(0));
+                assert!(receipt.submitted(2));
+                assert!(!receipt.submitted(1));
+                assert_eq!(receipt.observe(7, false, false), Disposition::Waiting);
+                assert_eq!(receipt.observe(7, false, true), Disposition::Waiting);
+                // Success/refusal and revision equality are deliberately not inputs:
+                // the same exact terminal releases paint for either canonical outcome.
+                assert_eq!(receipt.observe(7, false, true), Disposition::Terminal);
+                assert_eq!(receipt.observe(7, false, true), Disposition::Waiting);
+                assert!(!receipt.submitted(1));
+            }
+
+            #[test]
+            fn project_replacement_invalidates_both_queued_and_submitted_receipts() {
+                for submitted in [false, true] {
+                    for replaced in [false, true] {
+                        let mut receipt = Receipt::new(7);
+                        if submitted {
+                            assert!(receipt.submitted(3));
+                        }
+                        assert_eq!(
+                            receipt.observe(if replaced { 7 } else { 8 }, replaced, false),
+                            Disposition::Invalidated
+                        );
+                        assert!(!receipt.submitted(1));
+                    }
+                }
+            }
+        }
+    }
     mod viewport {
         use crate::viewport_state::*;
 
@@ -180,6 +224,69 @@ mod editor {
                     .fraction(u64::MAX),
                     None
                 );
+            }
+        }
+    }
+    mod disk_overload {
+        use crate::disk_overload_state::*;
+        mod tests {
+            use super::{DiskOverload, HOLD, description};
+            use std::time::{Duration, Instant};
+
+            #[test]
+            fn rise_lights_and_decays_after_hold() {
+                let start = Instant::now();
+                let mut state = DiskOverload::default();
+                assert!(!state.observe(Some((1, 0)), start));
+                assert!(!state.lit(start));
+                assert!(state.observe(Some((1, 2)), start));
+                assert!(state.lit(start));
+                assert_eq!(state.count(), 2);
+                // A later rise extends the hold from that rise.
+                let later = start + Duration::from_secs(2);
+                assert!(state.observe(Some((1, 5)), later));
+                assert!(!state.observe(Some((1, 5)), start + HOLD));
+                assert!(state.lit(start + HOLD));
+                assert!(state.observe(Some((1, 5)), later + HOLD));
+                assert!(!state.lit(later + HOLD));
+                assert!(!state.observe(Some((1, 5)), later + HOLD * 2));
+            }
+
+            #[test]
+            fn first_sight_and_output_replacement_only_rebaseline() {
+                let start = Instant::now();
+                let mut state = DiskOverload::default();
+                assert!(!state.observe(Some((1, 9)), start));
+                assert!(!state.lit(start));
+                assert!(state.observe(Some((1, 10)), start));
+                // Output closed: indicator clears immediately.
+                assert!(state.observe(None, start));
+                assert!(!state.lit(start));
+                assert!(!state.observe(Some((2, 4)), start));
+                assert!(state.observe(Some((2, 5)), start));
+                assert!(state.observe(Some((2, 0)), start));
+                assert!(!state.lit(start));
+                assert!(state.observe(Some((2, 1)), start));
+                assert!(state.lit(start));
+            }
+
+            #[test]
+            fn description_is_lowercase() {
+                let text = description(3);
+                assert_eq!(text, text.to_lowercase());
+                assert!(text.contains("3 callbacks"));
+            }
+
+            #[test]
+            fn shown_tracks_the_displayed_indicator() {
+                let now = std::time::Instant::now();
+                let mut state = DiskOverload::default();
+                assert!(!state.shown());
+                state.observe(Some((1, 0)), now);
+                state.observe(Some((1, 1)), now);
+                assert!(state.shown());
+                state.observe(None, now);
+                assert!(!state.shown());
             }
         }
     }

@@ -17,7 +17,7 @@ if _PYTHON_SPEC is None or _PYTHON_SPEC.loader is None:
 python_tests = importlib.util.module_from_spec(_PYTHON_SPEC)
 _PYTHON_SPEC.loader.exec_module(python_tests)
 
-POLICY_VERSION = 10
+POLICY_VERSION = 11
 UI_PACKAGES = {"hex-ui", "hex-widgets"}
 # Opaque state reaches storage through runtime type IDs, not a Cargo dependency.
 # Changes here must be reviewed with the real registration/codec consumers.
@@ -235,8 +235,9 @@ def module_declarations(source_root: Path) -> dict[Path, list[tuple[Path, list[s
 TEST_ATTRIBUTE = re.compile(r"#\[(?:gpui::)?test\b")
 # Unit test targets which compile the owning source directly. Keep their libtest
 # names under the original module path so scoped coverage remains observable.
-UI_UNIT_TARGETS = {"editor::pending_edit::": "unit_pending_edit",
-                   "editor::viewport::": "unit_viewport"}
+UI_UNIT_TARGETS = {"editor::disk_overload::": "unit_editor_state",
+                   "editor::pending_edit::": "unit_editor_state",
+                   "editor::viewport::": "unit_editor_state"}
 MOD_LINE = re.compile(r"(pub(\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")
 PATH_ATTRIBUTE = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
 
@@ -319,10 +320,10 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
         directory = (root / Path(package["manifest"]).parent).resolve()
         file = (root / path).resolve()
         if owner == "hex-ui":
-            unit_module = next((module for module, target in UI_UNIT_TARGETS.items()
-                                if file == directory / "tests" / f"{target}.rs"), None)
-            if unit_module is not None and file.is_file():
-                filters.setdefault(owner, set()).add(unit_module)
+            unit_modules = {module for module, target in UI_UNIT_TARGETS.items()
+                            if file == directory / "tests" / f"{target}.rs"}
+            if unit_modules and file.is_file():
+                filters.setdefault(owner, set()).update(unit_modules)
                 continue
         if not path.endswith(".rs") or not file.is_file() or file.relative_to(directory).parts[0] != "src":
             whole.add(owner)
