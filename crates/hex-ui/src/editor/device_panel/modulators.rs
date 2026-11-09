@@ -2,7 +2,7 @@
 //! revision-bound edits. A selected mapping source is view state only.
 use super::*;
 use gpui::{AnyElement, SharedString};
-use hex_engine::{follower_modulator as follower, lfo_modulator as lfo};
+use hex_engine::{follower_modulator as follower, lfo_modulator as lfo, macro_modulator as manual};
 use hex_lattice_contract::{ParameterId, ParameterModulation};
 use hex_project::{
     Device, DeviceAutomationTarget, DeviceModulation, DeviceModulationRoute, Invalid,
@@ -11,13 +11,40 @@ use hex_project::{
 };
 
 #[derive(Clone, Copy)]
+enum SourceKind {
+    Lfo,
+    Follower,
+    Macro,
+}
+
+impl SourceKind {
+    const ALL: [Self; 3] = [Self::Lfo, Self::Follower, Self::Macro];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Lfo => "lfo",
+            Self::Follower => "follower",
+            Self::Macro => "macro",
+        }
+    }
+
+    fn default_state(self) -> Result<NativeDeviceState, hex_lattice_contract::DeviceContractError> {
+        match self {
+            Self::Lfo => lfo::Settings::default().encode(),
+            Self::Follower => follower::Settings::default().encode(),
+            Self::Macro => manual::Settings::default().encode(),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 enum Edit {
-    AddLfo,
-    AddFollower,
+    Add(SourceKind),
     ToggleSource(ModulationSourceId),
     RemoveSource(ModulationSourceId),
     Rate(ModulationSourceId, f64),
     Sync(ModulationSourceId),
+    MacroValue(ModulationSourceId, f32),
     FollowerTime {
         source: ModulationSourceId,
         attack: bool,
@@ -56,31 +83,24 @@ pub(super) fn panel(
             cx.notify();
         }))
     };
-    let mut body = div().flex().flex_col().gap(px(3.0)).child(
-        div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap(px(4.0))
-            .child(theme::text("modulators"))
-            .when(
-                bank.sources().len() < hex_project::MAX_MODULATORS_PER_DEVICE,
-                |row| {
-                    row.child(button(
-                        cx,
-                        format!("add-lfo-{}", id.value()),
-                        theme::text("+ lfo"),
-                        Edit::AddLfo,
-                    ))
-                    .child(button(
-                        cx,
-                        format!("add-follower-{}", id.value()),
-                        theme::text("+ follower"),
-                        Edit::AddFollower,
-                    ))
-                },
-            ),
-    );
+    let mut header = div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(px(4.0))
+        .child(theme::text("modulators"));
+    if bank.sources().len() < hex_project::MAX_MODULATORS_PER_DEVICE {
+        for kind in SourceKind::ALL {
+            let name = kind.label();
+            header = header.child(button(
+                cx,
+                format!("add-{name}-{}", id.value()),
+                theme::text(format!("+ {name}")),
+                Edit::Add(kind),
+            ));
+        }
+    }
+    let mut body = div().flex().flex_col().gap(px(3.0)).child(header);
     let selected = view
         .device_panel
         .mapping_source
@@ -88,15 +108,15 @@ pub(super) fn panel(
         .map(|(_, source)| source);
     for source in bank.sources() {
         let source_id = source.id;
-        let lfo = lfo::Settings::decode(&source.state).ok();
-        let follower = follower::Settings::decode(&source.state).ok();
-        let (label, prefix) = match (lfo, follower) {
-            (Some(_), _) => ("lfo", "lfo"),
-            (_, Some(_)) => ("follower", "follower"),
+        let kind = match source.state.type_id() {
+            lfo::TYPE_ID => SourceKind::Lfo,
+            follower::TYPE_ID => SourceKind::Follower,
+            manual::TYPE_ID => SourceKind::Macro,
             _ => continue,
         };
+        let label = kind.label();
         let mapping = selected == Some(source_id);
-        let source_key = |suffix: &str| format!("{prefix}-{}-{suffix}", source_id.value());
+        let source_key = |suffix: &str| format!("{label}-{}-{suffix}", source_id.value());
         let control = action(
             source_key("map"),
             theme::text(if mapping { "done" } else { "map" }),
@@ -128,7 +148,9 @@ pub(super) fn panel(
                 theme::text("×"),
                 Edit::RemoveSource(source_id),
             ));
-        if let Some(settings) = lfo {
+        if let SourceKind::Lfo = kind
+            && let Ok(settings) = lfo::Settings::decode(&source.state)
+        {
             let (rate, units) = match settings.rate {
                 lfo::Rate::Hertz(rate) => (rate, "hz"),
                 lfo::Rate::BeatsPerCycle(rate) => (rate, "beats"),
@@ -153,7 +175,9 @@ pub(super) fn panel(
                     Edit::Rate(source_id, 2.0),
                 ));
         }
-        if let Some(settings) = follower {
+        if let SourceKind::Follower = kind
+            && let Ok(settings) = follower::Settings::decode(&source.state)
+        {
             for (attack, name, seconds) in [
                 (true, "attack", settings.attack_seconds),
                 (false, "release", settings.release_seconds),
@@ -186,6 +210,24 @@ pub(super) fn panel(
                         )),
                 );
             }
+        }
+        if let SourceKind::Macro = kind
+            && let Ok(settings) = manual::Settings::decode(&source.state)
+        {
+            row = row
+                .child(button(
+                    cx,
+                    source_key("less"),
+                    theme::text("−"),
+                    Edit::MacroValue(source_id, -0.05),
+                ))
+                .child(theme::text(format!("{:.0}%", settings.value * 100.0)))
+                .child(button(
+                    cx,
+                    source_key("more"),
+                    theme::text("+"),
+                    Edit::MacroValue(source_id, 0.05),
+                ));
         }
         body = body.child(row);
         for route in bank
@@ -360,19 +402,12 @@ fn apply(
     let unsupported = |_| Invalid("modulator settings are unsupported");
     let maximum_hz = f64::from(project.sample_rate()) * 0.5;
     match edit {
-        Edit::AddLfo | Edit::AddFollower => {
-            let state = match edit {
-                Edit::AddLfo => lfo::Settings::default().encode(),
-                _ => follower::Settings::default().encode(),
-            }
-            .map_err(unsupported)?;
-            sources.push(Modulator {
+        Edit::Add(kind) => sources.push(Modulator {
                 color: Default::default(),
-                id: ModulationSourceId::new(project.next_identity()).map_err(unsupported)?,
-                enabled: true,
-                state,
-            });
-        }
+            id: ModulationSourceId::new(project.next_identity()).map_err(unsupported)?,
+            enabled: true,
+            state: kind.default_state().map_err(unsupported)?,
+        }),
         Edit::ToggleSource(id) => {
             let source = find_source(&mut sources, id)?;
             source.enabled = !source.enabled;
@@ -412,6 +447,12 @@ fn apply(
                     lfo::Rate::Hertz((beats_per_second / beats).clamp(0.01, maximum_hz))
                 }
             };
+            source.state = settings.encode().map_err(unsupported)?;
+        }
+        Edit::MacroValue(id, change) => {
+            let source = find_source(&mut sources, id)?;
+            let mut settings = manual::Settings::decode(&source.state).map_err(unsupported)?;
+            settings.value = (settings.value + change).clamp(0.0, 1.0);
             source.state = settings.encode().map_err(unsupported)?;
         }
         Edit::FollowerTime {
