@@ -536,8 +536,10 @@ mod tests {
                         assert!(
                             quads.iter().any(|(bounds, background)| {
                                 *background == color
-                                    && (f64::from(bounds.left()) - f64::from(x * scale)).abs() < 0.1
-                                    && (f64::from(bounds.top()) - f64::from(y * scale)).abs() < 0.1
+                                    // Section-local projections can differ by a fraction
+                                    // of one physical pixel after layout rounding.
+                                    && (f64::from(bounds.left()) - f64::from(x * scale)).abs() <= 0.5
+                                    && (f64::from(bounds.top()) - f64::from(y * scale)).abs() <= 0.5
                                     && bounds.size.height > gpui::ScaledPixels::default()
                             }),
                             "missing row {row} at {x}, {y}: {quads:?}"
