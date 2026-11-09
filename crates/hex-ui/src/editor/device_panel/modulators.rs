@@ -362,6 +362,7 @@ pub(super) fn panel(
             .flex()
             .flex_col()
             .max_h(px(58.0))
+            .occlude()
             .overflow_y_scroll()
             .child(body)
             .into_any_element(),
