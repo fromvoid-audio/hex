@@ -55,6 +55,7 @@ enum MappingTarget {
     Device(ParameterId),
     HostGain(HostGainTarget),
     Macro(ModulationSourceId),
+    LfoRate(ModulationSourceId),
 }
 
 #[derive(Clone, Copy)]
@@ -85,6 +86,14 @@ fn macro_destination(source: ModulationSourceId) -> ModulationDestination {
         source,
         module_type: manual::TYPE_ID,
         parameter: manual::VALUE_PARAMETER,
+    }
+}
+
+fn lfo_rate_destination(source: ModulationSourceId) -> ModulationDestination {
+    ModulationDestination::Modulator {
+        source,
+        module_type: lfo::TYPE_ID,
+        parameter: lfo::RATE_PARAMETER,
     }
 }
 
@@ -285,10 +294,28 @@ pub(super) fn panel(
         .into_iter()
         .flat_map(|source| bank.source_route_ancestors(source))
         .collect();
+    let mapping_source_for = |target, destination| {
+        selected.filter(|source| {
+            !blocked_targets.is_empty()
+                && !blocked_targets.contains(&target)
+                && bank.routes().len() < hex_project::MAX_MODULATION_ROUTES_PER_DEVICE
+                && !bank
+                    .routes()
+                    .iter()
+                    .any(|route| route.source == *source && route.destination == destination)
+        })
+    };
     let multiple_macros = bank
         .sources()
         .iter()
         .filter(|source| source.state.type_id() == manual::TYPE_ID)
+        .take(2)
+        .count()
+        > 1;
+    let multiple_lfos = bank
+        .sources()
+        .iter()
+        .filter(|source| source.state.type_id() == lfo::TYPE_ID)
         .take(2)
         .count()
         > 1;
@@ -302,8 +329,10 @@ pub(super) fn panel(
             _ => continue,
         };
         let label = kind.label();
-        let title = if multiple_macros && matches!(kind, SourceKind::Macro) {
-            format!("macro {}", slot + 1)
+        let title = if (multiple_macros && matches!(kind, SourceKind::Macro))
+            || (multiple_lfos && matches!(kind, SourceKind::Lfo))
+        {
+            format!("{label} {}", slot + 1)
         } else {
             label.to_owned()
         };
@@ -353,6 +382,33 @@ pub(super) fn panel(
                 lfo::Waveform::RisingRamp => ("ramp", lfo::Waveform::Square),
                 lfo::Waveform::Square => ("square", lfo::Waveform::Sine),
             };
+            let destination = lfo_rate_destination(source_id);
+            let rate_label = theme::text(format!("{rate:.2} {units}"));
+            let rate_control = if matches!(settings.rate, lfo::Rate::Hertz(_))
+                && let Some(mapping_source) = mapping_source_for(source_id, destination)
+            {
+                button(
+                    cx,
+                    format!("map-lfo-rate-{}-{}", id.value(), source_id.value()),
+                    rate_label,
+                    Edit::Map(mapping_source, MappingTarget::LfoRate(source_id)),
+                )
+                .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                .into_any_element()
+            } else if selected.is_some()
+                || bank
+                    .routes()
+                    .iter()
+                    .any(|route| route.destination == destination)
+            {
+                div()
+                    .px(px(4.0))
+                    .h(px(15.0))
+                    .child(rate_label)
+                    .into_any_element()
+            } else {
+                button(cx, source_key("sync"), rate_label, Edit::Sync(source_id)).into_any_element()
+            };
             row = row
                 .child(button(
                     cx,
@@ -360,12 +416,7 @@ pub(super) fn panel(
                     theme::text("−"),
                     Edit::Rate(source_id, 0.5),
                 ))
-                .child(button(
-                    cx,
-                    source_key("sync"),
-                    theme::text(format!("{rate:.2} {units}")),
-                    Edit::Sync(source_id),
-                ))
+                .child(div().children([rate_control]))
                 .child(button(
                     cx,
                     source_key("faster"),
@@ -422,15 +473,9 @@ pub(super) fn panel(
             && let Ok(settings) = manual::Settings::decode(&source.state)
         {
             let value = format!("{:.0}%", settings.value * 100.0);
-            if let Some(mapping_source) = selected.filter(|mapping_source| {
-                !blocked_targets.is_empty()
-                    && !blocked_targets.contains(&source_id)
-                    && bank.routes().len() < hex_project::MAX_MODULATION_ROUTES_PER_DEVICE
-                    && !bank.routes().iter().any(|route| {
-                        route.source == *mapping_source
-                            && route.destination == macro_destination(source_id)
-                    })
-            }) {
+            if let Some(mapping_source) =
+                mapping_source_for(source_id, macro_destination(source_id))
+            {
                 row = row.child(
                     button(
                         cx,
@@ -511,6 +556,21 @@ pub(super) fn panel(
                     target: DeviceAutomationTarget::HostOutputGain,
                     ..
                 } => hex_engine::DEVICE_OUTPUT_GAIN.label.to_owned(),
+                ModulationDestination::Modulator {
+                    source,
+                    module_type: lfo::TYPE_ID,
+                    parameter: lfo::RATE_PARAMETER,
+                } => {
+                    let Some(slot) = bank.sources().iter().position(|slot| slot.id == source)
+                    else {
+                        continue;
+                    };
+                    if multiple_lfos {
+                        format!("lfo {} rate", slot + 1)
+                    } else {
+                        "lfo rate".to_owned()
+                    }
+                }
                 ModulationDestination::Modulator {
                     source,
                     module_type: manual::TYPE_ID,
@@ -724,6 +784,14 @@ fn apply(
             source.state = settings.encode().map_err(unsupported)?;
         }
         Edit::Sync(id) => {
+            if routes
+                .iter()
+                .any(|route| route.destination == lfo_rate_destination(id))
+            {
+                return Err(Invalid(
+                    "remove rate assignments before changing lfo timing",
+                ));
+            }
             let source = find_source(&mut sources, id)?;
             let mut settings = lfo::Settings::decode(&source.state).map_err(unsupported)?;
             let beats_per_second = f64::from(
@@ -808,6 +876,14 @@ fn apply(
                     }
                 }
                 MappingTarget::Macro(target) => macro_destination(target),
+                MappingTarget::LfoRate(target) => {
+                    let source = find_source(&mut sources, target)?;
+                    let settings = lfo::Settings::decode(&source.state).map_err(unsupported)?;
+                    if !matches!(settings.rate, lfo::Rate::Hertz(_)) {
+                        return Err(Invalid("lfo rate modulation requires a free-running lfo"));
+                    }
+                    lfo_rate_destination(target)
+                }
             };
             if routes
                 .iter()
