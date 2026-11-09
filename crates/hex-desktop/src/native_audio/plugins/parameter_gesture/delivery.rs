@@ -436,6 +436,8 @@ impl Plugins {
     }
     pub(in crate::native_audio) fn take_parameter_observation(&mut self) -> Option<Observation> {
         self.collect_parameter_observations();
-        self.confirmed_parameters.pop_front()
+        self.confirmed_parameters
+            .pop_front()
+            .or_else(|| self.take_editor_recording_observation())
     }
 }

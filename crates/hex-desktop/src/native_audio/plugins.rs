@@ -14,6 +14,7 @@ use hex_session::service::{
 };
 mod degraded;
 mod editor;
+pub(super) mod editor_recording;
 mod parameter_gesture;
 mod parameters;
 mod restore;
@@ -145,6 +146,7 @@ pub(super) struct Plugins {
     parameters: Option<parameters::Inventory>,
     observed_parameters: Vec<parameters::ObservedInventory>,
     parameter_gesture: Option<parameter_gesture::Gesture>,
+    editor_recording: Option<editor_recording::Recording>,
     // At most two control records: a late prior point and the current point.
     confirmed_parameters:
         std::collections::VecDeque<hex_session::service::PluginParameterObservation>,
@@ -236,6 +238,7 @@ impl Plugins {
         self.degraded_changed.take()
     }
     pub fn output_closed(&mut self) {
+        self.close_editor_recording();
         if let Some(parameters) = &mut self.parameters {
             parameters.output_closed();
         }
@@ -330,6 +333,7 @@ impl Plugins {
     pub fn idle(&self) -> bool {
         self.pending.is_none()
             && self.editor.is_none()
+            && self.editor_recording.is_none()
             && self.parameters.is_none()
             && self.restore.is_none()
             && !self.parameter_override_cleanup_pending()

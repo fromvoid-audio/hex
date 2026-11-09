@@ -166,6 +166,7 @@ impl Control {
         status: &Status,
         source: AppliedAudioSource,
         binding: Binding,
+        expected_epoch: Option<u64>,
         exclusive: Option<Arc<Status>>,
         arm: impl FnOnce(NonZeroU64) -> Result<(EditorScope, u16), &'static str>,
     ) -> Result<Target, &'static str> {
@@ -174,7 +175,9 @@ impl Control {
         }
         let (_, transport_epoch) = status
             .live_native_parameter_source()
-            .filter(|(current, _)| *current == source)
+            .filter(|(current, epoch)| {
+                *current == source && expected_epoch.is_none_or(|expected| expected == *epoch)
+            })
             .ok_or("vst3 editor delivery source is not playing")?;
         if !binding.is_valid() || binding.root != source.output_identity {
             return Err("vst3 editor delivery source differs");
