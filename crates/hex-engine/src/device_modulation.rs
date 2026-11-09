@@ -5,7 +5,7 @@ use hex_devices::modulation::{envelope_follower, lfo, macro_value, random_hold};
 use hex_lattice::{
     HostGainModulationRoute, ModulationRoute, ModulationTarget, PreparedModulation,
     PreparedModulationSource, PreparedModulationState, PreparedProcessorFactory,
-    SourceModulationRoute,
+    SourceModulationParameter, SourceModulationRoute,
 };
 use hex_lattice_contract::{
     DeviceAutomationTarget, HostGain, NativeDeviceMetadata, NativeDeviceState, ParameterId,
@@ -267,14 +267,26 @@ impl EffectModulation {
                 }
                 ModulationDestination::Modulator {
                     source: target,
-                    module_type: macro_value::TYPE_ID,
-                    parameter: macro_value::VALUE_PARAMETER,
+                    module_type,
+                    parameter,
                 } => {
+                    let parameter = match (module_type, parameter) {
+                        (macro_value::TYPE_ID, macro_value::VALUE_PARAMETER) => {
+                            SourceModulationParameter::MacroValue
+                        }
+                        (lfo::TYPE_ID, lfo::RATE_PARAMETER) => {
+                            SourceModulationParameter::FreeLfoRate
+                        }
+                        _ => return Err(Invalid("modulation destination is unsupported")),
+                    };
                     if let Ok(target) = ids.binary_search(&target) {
+                        if !sources[target].supports_modulation_parameter(parameter) {
+                            return Err(Invalid("lfo rate modulation requires a free-running lfo"));
+                        }
                         source_routes.push(SourceModulationRoute {
                             source,
                             target,
-                            parameter: hex_lattice::SourceModulationParameter::MacroValue,
+                            parameter,
                             amount,
                             range,
                         });

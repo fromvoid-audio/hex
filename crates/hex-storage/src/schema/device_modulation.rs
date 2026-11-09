@@ -363,9 +363,29 @@ pub(crate) fn contains_colors(project: &Project) -> bool {
             .any(|source| source.color != ElementColor::default())
     })
 }
+const LFO: DeviceTypeId = DeviceTypeId::from_static("hex.modulator.lfo");
+
+/// The existing route DTO already carries the provider and parameter IDs.
+/// Older playback compilers do not resolve this destination, so it needs a
+/// distinct reader floor even though the encoded fields stay the same.
+pub(crate) fn contains_lfo_rate_route(project: &Project) -> bool {
+    const FREE_RATE: ParameterId = ParameterId::from_static(1);
+    project.devices().any(|device| {
+        device.modulation().routes().iter().any(|route| {
+            matches!(
+                route.destination,
+                ModulationDestination::Modulator {
+                    module_type: LFO,
+                    parameter: FREE_RATE,
+                    ..
+                }
+            )
+        })
+    })
+}
+
 /// Older readers can decode only the sine provider's version 1.
 pub(crate) fn contains_newer_lfo(project: &Project) -> bool {
-    const LFO: DeviceTypeId = DeviceTypeId::from_static("hex.modulator.lfo");
     project.devices().any(|device| {
         device
             .modulation()
@@ -384,7 +404,9 @@ pub(crate) fn refuse_legacy(project: &Project) -> Result<(), StorageError> {
     Ok(())
 }
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
-    let version = if contains_newer_lfo(project) {
+    let version = if contains_lfo_rate_route(project) {
+        crate::LFO_RATE_ROUTE_SCHEMA_VERSION
+    } else if contains_newer_lfo(project) {
         crate::LFO_SHAPE_SCHEMA_VERSION
     } else if contains_colors(project) {
         crate::MODULATION_SLOT_COLOR_SCHEMA_VERSION
@@ -454,7 +476,14 @@ pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError
             "modulation inventory must be nonempty",
         ));
     }
-    if contains_newer_lfo(&project) != (version == crate::LFO_SHAPE_SCHEMA_VERSION) {
+    if contains_lfo_rate_route(&project) != (version == crate::LFO_RATE_ROUTE_SCHEMA_VERSION) {
+        return Err(StorageError::Invalid(
+            "lfo rate assignments require their matching project schema",
+        ));
+    }
+    if version != crate::LFO_RATE_ROUTE_SCHEMA_VERSION
+        && contains_newer_lfo(&project) != (version == crate::LFO_SHAPE_SCHEMA_VERSION)
+    {
         return Err(StorageError::Invalid(
             "lfos with newer payloads require their matching project schema",
         ));

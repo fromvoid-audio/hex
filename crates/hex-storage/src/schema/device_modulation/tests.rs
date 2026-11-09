@@ -413,3 +413,95 @@ fn shaped_lfo_uses_its_own_schema_and_retains_bound_units_and_slot_metadata() {
 
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn lfo_rate_route_upgrades_the_exact_previous_format_and_preserves_the_complete_bank() {
+    let mut editor = Editor::new(authored(), 8).unwrap();
+    let parent = editor.project().tracks()[0].instrument().unwrap().id();
+    editor
+        .execute(Command::InsertNestedDevice {
+            parent,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap();
+    let device = &editor.project().main_devices()[0];
+    let id = device.id();
+    let mut slots = device.modulation().sources().to_vec();
+    let mut routes = device.modulation().routes().to_vec();
+    let lfo = ModulationSourceId::new(editor.project().next_identity()).unwrap();
+    let mut payload = vec![0];
+    payload.extend(1.0_f64.to_le_bytes());
+    payload.extend(0.0_f64.to_le_bytes());
+    payload.push(2);
+    slots.push(Modulator {
+        id: lfo,
+        color: ElementColor::Cyan,
+        enabled: true,
+        state: NativeDeviceState::new(LFO, 2, payload).unwrap(),
+    });
+    let set = |editor: &mut Editor, routes: Vec<DeviceModulationRoute>| {
+        editor
+            .execute(Command::ReplaceDeviceModulation {
+                device: id,
+                modulation: DeviceModulation::new(slots.clone(), routes).unwrap(),
+            })
+            .unwrap();
+    };
+    set(&mut editor, routes.clone());
+    assert_eq!(
+        crate::schema_version_for(editor.project()),
+        crate::LFO_SHAPE_SCHEMA_VERSION
+    );
+    let dir = temp_dir();
+    let old = dir.join("shaped.hex");
+    crate::save_new(&old, editor.project()).unwrap();
+    let original = std::fs::read(&old).unwrap();
+    let (reopened, token) = crate::load_with_token(&old).unwrap();
+    assert_eq!(reopened, *editor.project());
+    assert!(!token.requires_save_confirmation(&reopened).unwrap());
+
+    routes.push(DeviceModulationRoute {
+        id: ModulationRouteId::new(editor.project().next_identity()).unwrap(),
+        source: slots[0].id,
+        output: ModulationOutputId::MAIN,
+        destination: ModulationDestination::Modulator {
+            source: lfo,
+            module_type: LFO,
+            parameter: ParameterId::from_static(1),
+        },
+        amount: ModulationAmount::new(-0.45).unwrap(),
+        range: ModulationRange::default(),
+        enabled: true,
+    });
+    set(&mut editor, routes);
+    let project = editor.project();
+    assert_eq!(
+        crate::schema_version_for(project),
+        crate::LFO_RATE_ROUTE_SCHEMA_VERSION
+    );
+    assert!(token.requires_save_confirmation(project).unwrap());
+    let new = dir.join("rate-route.hex");
+    crate::save_new(&new, project).unwrap();
+    assert_eq!(crate::load(&new).unwrap(), *project);
+    assert_eq!(std::fs::read(&old).unwrap(), original);
+
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&new).unwrap()).unwrap();
+    document["version"] = crate::LFO_SHAPE_SCHEMA_VERSION.into();
+    assert!(crate::decode(&serde_json::to_vec(&document).unwrap()).is_err());
+
+    document["version"] = crate::LFO_RATE_ROUTE_SCHEMA_VERSION.into();
+    let rate = document["device_modulation"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|row| row["device"] == id.value())
+        .unwrap()["routes"]
+        .as_array_mut()
+        .unwrap()
+        .last_mut()
+        .unwrap();
+    rate["destination"]["parameter"] = 2.into();
+    assert!(crate::decode(&serde_json::to_vec(&document).unwrap()).is_err());
+    std::fs::remove_dir_all(dir).unwrap();
+}
