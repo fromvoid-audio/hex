@@ -24,6 +24,8 @@ mod overdrive_modulation_tests;
 #[cfg(test)]
 mod overdrive_storage_tests;
 mod preparation;
+#[cfg(test)]
+mod rattle_modulation_tests;
 mod reservation;
 #[cfg(test)]
 mod reverb_tests;

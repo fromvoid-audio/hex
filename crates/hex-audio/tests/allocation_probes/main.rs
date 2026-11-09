@@ -33,6 +33,7 @@ mod overdrive_sealed_allocations;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod parallel_render_profile;
 mod pitch_multiplier_allocations;
+mod rattle_modulation_allocations;
 mod return_feed_allocations;
 mod routed_midi_allocations;
 mod serial_effect_units;
