@@ -22,8 +22,11 @@ use hex_engine::{AudioSourceContext, NativeParameterApplication, NativeParameter
 use hex_storage::automation_draft::{
     CaptureClock, DraftAbortReason, DraftReadLimits, DraftTerminal,
 };
-pub use recovery::prepare_verified_vst3_recovery_on_control;
-pub(super) use recovery::recover_sealed;
+pub use recovery::{
+    AutomationRecoveryFileIdentity, SealedAutomationRecoveryFile,
+    prepare_verified_vst3_recovery_on_control,
+};
+pub(super) use recovery::{inspect_sealed_file, recover_sealed};
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -221,6 +224,8 @@ pub enum DeviceAutomationTakeProgress {
         scope: Box<DeviceAutomationTakeScope>,
         path: PathBuf,
     },
+    /// Fully validated identity of a selected finished durable file.
+    SealedFile(Box<SealedAutomationRecoveryFile>),
     /// An ordered observation found no device automation custody.
     CloseSafe,
     /// Device automation custody is active, retained or being copied.
