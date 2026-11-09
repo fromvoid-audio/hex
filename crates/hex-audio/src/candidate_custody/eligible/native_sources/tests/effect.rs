@@ -292,6 +292,10 @@ fn actual_root_reserves_and_reports_the_exact_dense_raw_parameter() {
             let metadata = root.native_source_metadata(binding).unwrap();
             assert_eq!(metadata.dense_parameter(), Some(0));
             assert_eq!(metadata.authored_base_values().next().unwrap().0, 0);
+            assert!(matches!(
+                root.begin_native_parameter_change(binding, 0, 0.75, false),
+                Err("vst3 parameter is owned by its dense modulation lane")
+            ));
             {
                 let work = root.work.try_lock().unwrap();
                 let Some(Owner::Effect(effect)) = work.sources.cells[0].owner.as_ref() else {
