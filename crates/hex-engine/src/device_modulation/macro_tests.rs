@@ -508,3 +508,155 @@ fn saved_lfo_rate_route_doubles_the_free_and_synced_phase_steps_in_both_graphs()
         assert_eq!(authored.modulation().sources()[1], oscillator(rate));
     }
 }
+
+#[test]
+fn macro_four_routes_each_output_and_applies_an_incoming_signal_per_sample() {
+    use hex_devices::modulation::{lfo, macro_four};
+
+    let mut editor = Editor::new(crate::audio_preparation::candidate_test_project(), 4).unwrap();
+    let track = editor.project().tracks()[0].id();
+    let asset = editor.project().assets().next().unwrap().id();
+    let Created::Device(device) = editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: UTILITY_DEFINITION.default_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("utility fixture");
+    };
+    let next = editor.project().next_identity();
+    let source = ModulationSourceId::new(next).unwrap();
+    let upstream = ModulationSourceId::new(next + 1).unwrap();
+    let mut routes: Vec<_> = [
+        (parameter::GAIN, 1.0 / MAX_UTILITY_GAIN),
+        (parameter::INVERT_LEFT, 1.0),
+        (parameter::INVERT_RIGHT, 1.0),
+        (parameter::GAIN, 0.5 / MAX_UTILITY_GAIN),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, (target, amount))| DeviceModulationRoute {
+        id: ModulationRouteId::new(next + index as u64 + 2).unwrap(),
+        source,
+        output: ModulationOutputId::new(index as u32 + 1).unwrap(),
+        destination: ModulationDestination::Device {
+            device_type: UTILITY_TYPE_ID,
+            target: DeviceAutomationTarget::Parameter(target),
+            vst3_class: None,
+        },
+        amount: ModulationAmount::new(amount).unwrap(),
+        range: ModulationRange::default(),
+        enabled: true,
+    })
+    .collect();
+    routes.push(DeviceModulationRoute {
+        id: ModulationRouteId::new(next + 6).unwrap(),
+        source: upstream,
+        output: ModulationOutputId::MAIN,
+        destination: ModulationDestination::Modulator {
+            source,
+            module_type: macro_four::TYPE_ID,
+            parameter: macro_four::VALUE_PARAMETERS[3],
+        },
+        amount: ModulationAmount::new(0.25).unwrap(),
+        range: ModulationRange::default(),
+        enabled: true,
+    });
+    let macro_slot = |id, values| Modulator {
+        color: Default::default(),
+        id: ModulationSourceId::new(id).unwrap(),
+        enabled: true,
+        state: macro_four::Settings { values }.encode().unwrap(),
+    };
+    let replace = |values, routes| Command::ReplaceDeviceModulation {
+        device,
+        modulation: DeviceModulation::new(
+            vec![
+                macro_slot(next, values),
+                Modulator {
+                    color: Default::default(),
+                    id: upstream,
+                    enabled: true,
+                    state: lfo::Settings {
+                        rate: lfo::Rate::Hertz(12_000.0),
+                        phase: 0.0,
+                        waveform: lfo::Waveform::Square,
+                    }
+                    .encode()
+                    .unwrap(),
+                },
+            ],
+            routes,
+        )
+        .unwrap(),
+    };
+    let dry = [0.125, -0.25];
+    let audio = Audio::new(48_000, vec![dry; 8]).unwrap();
+    let media = BTreeMap::from([(asset, audio.clone())]);
+    let prepare = |project: &hex_project::Project| {
+        PreparedRevision::prepare(project, &media, Arc::new(SineTable::new()), None)
+    };
+    let initial_values = [0.25, 1.0, 0.0, 0.5];
+    let (_, initial) = editor
+        .execute_prepared(replace(initial_values, routes.clone()), prepare)
+        .unwrap();
+    let mut playback = Playback::try_from_prepared_with_session(Arc::new(initial)).unwrap();
+    playback
+        .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
+        .unwrap();
+    let compare = |frames: &[[f32; 2]], gains: &[f32], polarity: [f32; 2]| {
+        assert_eq!(frames.len(), gains.len());
+        for (&frame, &gain) in frames.iter().zip(gains) {
+            assert!(
+                (frame[0] - dry[0] * gain * polarity[0]).abs() < 1e-6,
+                "{frame:?}"
+            );
+            assert!(
+                (frame[1] - dry[1] * gain * polarity[1]).abs() < 1e-6,
+                "{frame:?}"
+            );
+        }
+    };
+    let mut output = [[0.0; 2]; 8];
+    playback.render(&mut output[..3]).unwrap();
+    compare(&output[..3], &[1.625, 1.625, 1.375], [-1.0, 1.0]);
+
+    let prior = editor.project().clone();
+    let mut invalid = routes.clone();
+    invalid[0].output = ModulationOutputId::new(5).unwrap();
+    assert!(
+        editor
+            .execute_prepared(replace(initial_values, invalid), prepare)
+            .is_err()
+    );
+    let over_budget = Command::ReplaceDeviceModulation {
+        device,
+        modulation: DeviceModulation::new(
+            (prior.next_identity()..prior.next_identity() + 9)
+                .map(|id| macro_slot(id, initial_values))
+                .collect(),
+            Vec::new(),
+        )
+        .unwrap(),
+    };
+    assert!(editor.execute_prepared(over_budget, prepare).is_err());
+    assert_eq!(*editor.project(), prior);
+
+    let updated_values = [0.125, 0.0, 1.0, 0.5];
+    let (_, updated) = editor
+        .execute_prepared(replace(updated_values, routes), prepare)
+        .unwrap();
+    let mut successor = Playback::try_from_prepared_with_session(Arc::new(updated)).unwrap();
+    successor.try_inherit_runtime_from(&mut playback).unwrap();
+    successor.render(&mut output[3..]).unwrap();
+    compare(&output[3..], &[1.25, 1.5, 1.5, 1.25, 1.25], [1.0, -1.0]);
+    if render_sealed(editor.project(), asset, &audio, &mut output) {
+        compare(
+            &output,
+            &[1.5, 1.5, 1.25, 1.25, 1.5, 1.5, 1.25, 1.25],
+            [1.0, -1.0],
+        );
+    }
+}
