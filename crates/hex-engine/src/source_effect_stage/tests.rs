@@ -1274,15 +1274,12 @@ fn attaching_a_second_source_effect_keeps_the_first_sources_wet_history() {
 }
 
 fn authored_modulated_suffix(
+    state: hex_lattice_contract::NativeDeviceState,
     target: hex_project::DeviceAutomationTarget,
     amount: f32,
     enabled: bool,
 ) -> (Editor, hex_project::AssetId, hex_project::DeviceId) {
-    use hex_devices::{
-        modulation::lfo::{Rate, Settings, Waveform},
-        utility::{UTILITY_DEFINITION, UTILITY_TYPE_ID},
-    };
-    use hex_lattice_contract::NativeDeviceMetadata;
+    use hex_devices::modulation::lfo::{Rate, Settings, Waveform};
     use hex_project::{
         DeviceModulation, DeviceModulationRoute, ElementColor, ModulationAmount,
         ModulationDestination, ModulationOutputId, ModulationRange, ModulationRouteId,
@@ -1307,10 +1304,11 @@ fn authored_modulated_suffix(
             })
             .unwrap();
     }
+    let device_type = state.type_id();
     let Created::Device(device) = editor
         .execute(Command::InsertNestedDevice {
             parent: instrument,
-            state: UTILITY_DEFINITION.default_state().unwrap(),
+            state,
         })
         .unwrap()
     else {
@@ -1336,7 +1334,7 @@ fn authored_modulated_suffix(
             source: modulator,
             output: ModulationOutputId::MAIN,
             destination: ModulationDestination::Device {
-                device_type: UTILITY_TYPE_ID,
+                device_type,
                 target,
                 vst3_class: None,
             },
@@ -1367,9 +1365,11 @@ fn authored_modulated_suffix(
 #[test]
 fn a_bound_native_suffix_modulates_only_generator_audio_and_preserves_phase_on_handoff() {
     use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
-    use hex_devices::utility::{MAX_UTILITY_GAIN, parameter};
+    use hex_devices::utility::{MAX_UTILITY_GAIN, UTILITY_DEFINITION, parameter};
+    use hex_lattice_contract::NativeDeviceMetadata;
     use hex_project::DeviceAutomationTarget;
     let (editor, asset, _) = authored_modulated_suffix(
+        UTILITY_DEFINITION.default_state().unwrap(),
         DeviceAutomationTarget::Parameter(parameter::GAIN),
         0.5 / MAX_UTILITY_GAIN,
         true,
@@ -1456,7 +1456,12 @@ fn check_live_source_route_edits(matrix_route: bool) {
     } else {
         [0.035, -0.025]
     };
-    let (mut editor, asset, device) = authored_modulated_suffix(target, first_depth, false);
+    let (mut editor, asset, device) = authored_modulated_suffix(
+        UTILITY_DEFINITION.default_state().unwrap(),
+        target,
+        first_depth,
+        false,
+    );
     let state = UTILITY_DEFINITION
         .patch_parameter(
             editor.project().device(device).unwrap().state(),
@@ -1563,4 +1568,100 @@ fn check_live_source_route_edits(matrix_route: bool) {
             );
         }
     }
+}
+
+#[test]
+fn source_compressor_modulates_only_generator_audio_and_preserves_history_on_route_edit() {
+    use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
+    use hex_devices::compressor::{COMPRESSOR_DEFINITION, CompressorDefinition, parameter};
+    use hex_lattice::{EMPTY_DEVICE_RESOURCES, NativeParameterAutomation, PreparedNativeProcessor};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterId, ParameterValue};
+    use hex_project::{DeviceAutomationTarget, DeviceModulation, ModulationAmount};
+
+    const HANDOFF: usize = 97;
+    struct WetFrames;
+    impl NativeParameterAutomation for WetFrames {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            &[parameter::DRY_WET]
+        }
+
+        fn value_at(&self, id: ParameterId, frame: usize) -> Option<ParameterValue> {
+            let depth = if frame < HANDOFF { 0.5 } else { 0.25 };
+            let wet = if frame % 4 < 2 {
+                0.5 + depth
+            } else {
+                0.5 - depth
+            };
+            (id == parameter::DRY_WET).then_some(ParameterValue::Float(wet))
+        }
+    }
+
+    let mut state = COMPRESSOR_DEFINITION.default_state().unwrap();
+    for (id, value) in [
+        (parameter::THRESHOLD, -50.0),
+        (parameter::RATIO, 20.0),
+        (parameter::DRY_WET, 0.5),
+    ] {
+        state = COMPRESSOR_DEFINITION
+            .patch_parameter(&state, id, ParameterValue::Float(value))
+            .unwrap();
+    }
+    let (mut editor, asset, device) = authored_modulated_suffix(
+        state.clone(),
+        DeviceAutomationTarget::Parameter(parameter::DRY_WET),
+        0.5,
+        true,
+    );
+    for descriptor in COMPRESSOR_DEFINITION.descriptors() {
+        assert!(crate::project_device_modulation_target_supported(
+            editor.project(),
+            device,
+            descriptor.id,
+        ));
+    }
+
+    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
+    let table = Arc::new(crate::SineTable::new());
+    let prepare = |editor: &Editor| {
+        Arc::new(
+            PreparedRevision::prepare(editor.project(), &media, Arc::clone(&table), None).unwrap(),
+        )
+    };
+    let first = prepare(&editor);
+    let bank = editor.project().device(device).unwrap().modulation();
+    let mut route = bank.routes()[0];
+    route.amount = ModulationAmount::new(0.25).unwrap();
+    let modulation = DeviceModulation::new(bank.sources().to_vec(), vec![route]).unwrap();
+    editor
+        .execute(Command::ReplaceDeviceModulation { device, modulation })
+        .unwrap();
+    let next = prepare(&editor);
+
+    let mut expected = [[0.0; 2]; WIDTH];
+    crate::render_source_generators(first.arrangement(), 0, 0, WIDTH as u64, &mut expected, None)
+        .unwrap();
+    let dry = expected;
+    let factory =
+        CompressorDefinition::prepare_owned(&state, 48_000, &[parameter::DRY_WET]).unwrap();
+    factory
+        .create_runtime()
+        .process_block_with_automation(&mut expected, None, &WetFrames, &EMPTY_DEVICE_RESOURCES)
+        .unwrap();
+    assert_ne!(expected, dry);
+    for frame in &mut expected {
+        frame[0] += CLIP[0];
+        frame[1] += CLIP[1];
+    }
+
+    let mut donor = SessionPlayback::new(first).unwrap();
+    let mut successor = SessionPlayback::new(next).unwrap();
+    donor.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual = [[0.0; 2]; WIDTH];
+    let (before, after) = actual.split_at_mut(HANDOFF);
+    donor.render(before).unwrap();
+    successor.try_inherit_state_live_from(&mut donor).unwrap();
+    for block in after.chunks_mut(37) {
+        successor.render(block).unwrap();
+    }
+    assert_eq!(actual, expected);
 }

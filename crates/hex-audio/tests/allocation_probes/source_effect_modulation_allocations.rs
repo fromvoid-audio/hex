@@ -1,7 +1,8 @@
 //! Ordinary source receiver render and continuation keep modulation off the allocator.
 use hex_devices::{
+    compressor::{COMPRESSOR_DEFINITION, parameter::DRY_WET},
     modulation::lfo::{Rate, Settings, Waveform},
-    utility::{UTILITY_DEFINITION, UTILITY_TYPE_ID},
+    utility::{UTILITY_DEFINITION, parameter::GAIN},
 };
 use hex_engine::{PreparedRevision, SessionPlayback, SessionPlaybackCommand, SineTable};
 use hex_lattice_contract::NativeDeviceMetadata;
@@ -27,16 +28,37 @@ fn source_utility_matrix_changes_class_without_callback_allocation() {
     probe_source_gain_handoff(Handoff::Matrix);
 }
 
+#[test]
+fn source_compressor_retains_history_without_callback_allocation() {
+    probe_source_gain_handoff(Handoff::Compressor);
+}
+
 #[derive(Clone, Copy)]
 enum Handoff {
     Unchanged,
     HostDepth,
     Matrix,
+    Compressor,
 }
 
 fn probe_source_gain_handoff(handoff: Handoff) {
     let matrix = matches!(handoff, Handoff::Matrix);
-    let retarget = !matches!(handoff, Handoff::Unchanged);
+    let retarget = matches!(handoff, Handoff::HostDepth | Handoff::Matrix);
+    let (state, target) = match handoff {
+        Handoff::Compressor => (
+            COMPRESSOR_DEFINITION.default_state().unwrap(),
+            DeviceAutomationTarget::Parameter(DRY_WET),
+        ),
+        Handoff::Matrix => (
+            UTILITY_DEFINITION.default_state().unwrap(),
+            DeviceAutomationTarget::Parameter(GAIN),
+        ),
+        Handoff::Unchanged | Handoff::HostDepth => (
+            UTILITY_DEFINITION.default_state().unwrap(),
+            DeviceAutomationTarget::HostOutputGain,
+        ),
+    };
+    let device_type = state.type_id();
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     let Created::Track(track) = editor
         .execute(Command::InsertTrackWithDevice {
@@ -65,7 +87,7 @@ fn probe_source_gain_handoff(handoff: Handoff) {
     let Created::Device(device) = editor
         .execute(Command::InsertNestedDevice {
             parent: instrument,
-            state: UTILITY_DEFINITION.default_state().unwrap(),
+            state,
         })
         .unwrap()
     else {
@@ -91,12 +113,8 @@ fn probe_source_gain_handoff(handoff: Handoff) {
             source: modulator,
             output: ModulationOutputId::MAIN,
             destination: ModulationDestination::Device {
-                device_type: UTILITY_TYPE_ID,
-                target: if matrix {
-                    DeviceAutomationTarget::Parameter(hex_devices::utility::parameter::GAIN)
-                } else {
-                    DeviceAutomationTarget::HostOutputGain
-                },
+                device_type,
+                target,
                 vst3_class: None,
             },
             amount: ModulationAmount::new(0.03).unwrap(),
