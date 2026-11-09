@@ -60,10 +60,20 @@ impl Vst3GroupTarget {
 }
 
 /// Exact SDK normalized value or an actual, exclusive restore on Main.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub enum GroupApplication {
     Value(f64),
     Restored,
+}
+
+impl PartialEq for GroupApplication {
+    fn eq(&self, other: &Self) -> bool {
+        match (*self, *other) {
+            (Self::Value(left), Self::Value(right)) => left.to_bits() == right.to_bits(),
+            (Self::Restored, Self::Restored) => true,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
