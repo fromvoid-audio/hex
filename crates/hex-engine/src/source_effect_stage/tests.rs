@@ -237,6 +237,7 @@ fn with_recipe<'a>(
     instances: &[PreparedRuntimeInstance],
 ) -> Renderer<'a> {
     let recipes = [PreparedSourceEffects {
+        factory_bytes: 0,
         source: project.tracks[0].source_id().unwrap(),
         receiver,
         instances: Arc::from(instances),
@@ -323,6 +324,7 @@ fn invalid_prepared_source_recipes_refuse_before_rendering() {
     let source = project.tracks[0].source_id().unwrap();
     let instances = [recipe(project.tracks[0].source_id().unwrap(), Some(0))];
     let duplicates = [0, 0].map(|receiver| PreparedSourceEffects {
+        factory_bytes: 0,
         source,
         receiver,
         instances: Arc::from(instances.as_slice()),
@@ -398,9 +400,55 @@ fn registry_suffix_respects_order_and_power_without_processing_receiver_clips() 
     let source = model.tracks()[0].source_id().unwrap();
     let instrument = model.native_source(source).unwrap().instrument().id();
     let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
-    let mut revision =
-        crate::PreparedRevision::prepare(model, &media, Arc::new(crate::SineTable::new()), None)
-            .unwrap();
+    use crate::native_device_resources::{
+        DeviceResourceAdmission, DeviceResourcePhase, PreparedDeviceResources,
+        ResidentDeviceAssets, inspect_device_resource_union,
+    };
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let resources = PreparedDeviceResources::prepare_on_control(
+        &ResidentDeviceAssets::default(),
+        model,
+        1 << 20,
+        &cancel,
+    )
+    .unwrap();
+    let mut revision = crate::PreparedRevision::prepare_with_device_resources(
+        model,
+        &media,
+        Arc::new(crate::SineTable::new()),
+        None,
+        &crate::audio_transform::AudioTransformPreparation::default(),
+        &resources,
+        0,
+        &cancel,
+    )
+    .unwrap();
+    let measure = |revision: &crate::PreparedRevision| {
+        let registered = [DeviceResourceAdmission::prepared_on_control(
+            &resources, revision,
+        )];
+        let phase = DeviceResourcePhase {
+            stores: &[],
+            registered: &registered,
+            selections: &[],
+            outbound: &[],
+            legacy: &[],
+            checked_runtime_bytes: 0,
+            construction_bytes: 0,
+        };
+        let budget = crate::AudioStorageLedgerReservation {
+            data_rows: 64,
+            handle_rows: 64,
+            root_rows: 16,
+            max_retained_bytes: 1 << 20,
+            max_construction_peak_bytes: 1 << 20,
+        };
+        inspect_device_resource_union(&phase, &phase, budget)
+            .unwrap()
+            .retained
+            .retained_bytes
+    };
+    let plain_retained = measure(&revision);
     let mut compiled = revision.arrangement().as_ref().clone();
     assert!(compiled.source_effects.is_empty());
     assert!(prepare_suffix(model, source).unwrap().is_empty());
@@ -447,17 +495,27 @@ fn registry_suffix_respects_order_and_power_without_processing_receiver_clips() 
         })
         .unwrap();
 
-    compiled.source_effects = crate::compile::prepare_source_effect_recipes(
-        &compiled,
-        editor.project(),
-        &hex_devices::native_registry().unwrap(),
-        &hex_lattice::DevicePreparationContext {
-            sample_rate: 48_000,
-            tuning: &hex_lattice::TuningTable::default(),
-            resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
-        },
-    )
-    .unwrap();
+    let native = hex_devices::native_registry().unwrap();
+    let context = hex_lattice::DevicePreparationContext {
+        sample_rate: 48_000,
+        tuning: &hex_lattice::TuningTable::default(),
+        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    };
+    let prepare = |compiled: &Project| {
+        crate::compile::prepare_source_effect_recipes(compiled, editor.project(), &native, &context)
+            .unwrap()
+    };
+    compiled.source_effects = prepare(&compiled);
+    let mut receiver_only = compiled.clone();
+    receiver_only.tracks.pop().unwrap();
+    let retained = metadata::retained_bytes(&compiled.source_effects).unwrap();
+    assert!(retained > 0);
+    assert_eq!(
+        retained,
+        metadata::retained_bytes(&prepare(&receiver_only)).unwrap()
+    );
+    assert!(metadata::construction_for([2].into_iter()).unwrap() >= retained);
+    assert_eq!(metadata::construction_bytes(editor.project()), Some(0));
     assert_eq!(compiled.source_effects.len(), 1);
     let plan = &compiled.source_effects[0];
     assert_eq!(plan.source, source);
@@ -472,8 +530,10 @@ fn registry_suffix_respects_order_and_power_without_processing_receiver_clips() 
     renderer.play();
     let mut rendered = [[0.0; 2]; WIDTH];
     renderer.render(&mut rendered).unwrap();
-    revision.test_install_source_effect_recipes(compiled.source_effects.clone());
-    let mut session = crate::SessionPlayback::new(Arc::new(revision)).unwrap();
+    revision.test_install_source_effect_recipes(prepare(&compiled));
+    assert_eq!(measure(&revision) - plain_retained, retained);
+    let mut session =
+        crate::SessionPlayback::new_with_device_resources(Arc::new(revision), &resources).unwrap();
     session.apply(crate::SessionPlaybackCommand::Play).unwrap();
     let mut session_pcm = [[0.0; 2]; WIDTH];
     session.render(&mut session_pcm).unwrap();
@@ -628,6 +688,7 @@ fn session_playing_paths_run_source_effects_once_before_mixing_receiver_clips() 
             })));
             let instances = [clocked];
             let recipes = [PreparedSourceEffects {
+                factory_bytes: 0,
                 source,
                 receiver: 0,
                 instances: Arc::from(instances.as_slice()),
@@ -758,6 +819,7 @@ fn aggregate_track_return_main_and_source_budgets_refuse_before_runtime_creation
         1,
     )];
     let recipes = [PreparedSourceEffects {
+        factory_bytes: 0,
         source,
         receiver: 0,
         instances: Arc::from(source_instances.as_slice()),
@@ -821,6 +883,7 @@ fn receiver_move_continues_the_source_effect_and_incompatible_recipe_leaves_dono
         SessionPlayback::test_with_source_effects(
             revision,
             &[PreparedSourceEffects {
+                factory_bytes: 0,
                 source,
                 receiver,
                 instances: Arc::from(instances),
@@ -885,6 +948,7 @@ fn ordinary_runtime_quote_covers_the_constructed_source_effect_stage() {
 
     let mut revision = Arc::try_unwrap(revision).unwrap();
     revision.test_install_source_effect_recipes(vec![PreparedSourceEffects {
+        factory_bytes: 0,
         source,
         receiver: 0,
         instances: Arc::from([recipe(source, Some(0))]),
@@ -945,6 +1009,7 @@ fn linear_export_uses_source_effect_pcm_and_declared_tail_only_on_its_path() {
 
     let instance = recipe(source, Some(0));
     revision.test_install_source_effect_recipes(vec![PreparedSourceEffects {
+        factory_bytes: 0,
         source,
         receiver: 0,
         instances: Arc::from([instance.clone()]),
@@ -1002,5 +1067,76 @@ fn linear_export_uses_source_effect_pcm_and_declared_tail_only_on_its_path() {
     assert_eq!(
         with_tail.untrimmed_capture_end_frame(&unrelated).unwrap(),
         Some(unrelated_end)
+    );
+}
+
+#[test]
+fn registered_source_effect_factory_bounds_cover_each_supported_factory() {
+    use hex_lattice_contract::NativeDeviceMetadata;
+    let (mut editor, _) = authored_fixture(0, false);
+    let source = editor.project().tracks()[0].source_id().unwrap();
+    let instrument = editor
+        .project()
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    let tracks: Vec<_> = editor
+        .project()
+        .tracks()
+        .iter()
+        .map(|track| track.id())
+        .collect();
+    for track in tracks {
+        editor
+            .execute(Command::BindTrackSource {
+                track,
+                source: None,
+            })
+            .unwrap();
+    }
+    let registry = hex_devices::native_registry().unwrap();
+    let definitions: [&dyn NativeDeviceMetadata; 7] = [
+        &hex_devices::auto_pan::AUTO_PAN_DEFINITION,
+        &hex_devices::compressor::COMPRESSOR_DEFINITION,
+        &hex_devices::delay::DEFINITION,
+        &hex_devices::eq::EQ_DEFINITION,
+        &hex_devices::eq8::EQ8_DEFINITION,
+        &hex_devices::gate::GATE_DEFINITION,
+        &hex_devices::reverb::REVERB_DEFINITION,
+    ];
+    for definition in definitions {
+        let state = definition.default_state().unwrap();
+        metadata::validate_authored(&state, &registry).unwrap();
+        editor
+            .execute(Command::InsertNestedDevice {
+                parent: instrument,
+                state,
+            })
+            .unwrap();
+    }
+    let unquoted = hex_devices::saturator::SATURATOR_DEFINITION
+        .default_state()
+        .unwrap();
+    assert!(metadata::validate_authored(&unquoted, &registry).is_err());
+    let instances = prepare_suffix(editor.project(), source).unwrap();
+    assert_eq!(instances.len(), definitions.len());
+    let factory_bytes = instances
+        .iter()
+        .map(|instance| {
+            assert!(instance.definition.is_some());
+            metadata::factory_bytes(instance, &registry).unwrap()
+        })
+        .sum::<usize>();
+    assert!(factory_bytes > 0);
+    let recipes = vec![PreparedSourceEffects {
+        source,
+        receiver: 0,
+        factory_bytes,
+        instances: Arc::from(instances),
+    }];
+    assert!(
+        metadata::construction_for([definitions.len()].into_iter()).unwrap()
+            >= metadata::retained_bytes(&recipes).unwrap()
     );
 }
