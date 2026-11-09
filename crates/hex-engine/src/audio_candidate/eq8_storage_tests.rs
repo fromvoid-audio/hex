@@ -331,3 +331,136 @@ fn eq8_band_modulation_matches_independent_per_frame_filter_targets() {
         }
     });
 }
+
+#[test]
+fn eq8_discrete_modulation_matches_enable_kind_and_mode_frames_in_both_graphs() {
+    use hex_devices::eq8::{EQ8_TYPE_ID, Eq8Definition};
+    use hex_devices::modulation::lfo::{Rate, Settings, Waveform};
+    use hex_lattice::{EMPTY_DEVICE_RESOURCES, NativeParameterAutomation, PreparedNativeProcessor};
+    use hex_lattice_contract::ParameterId;
+    use hex_project::{
+        DeviceModulation, DeviceModulationRoute, ModulationAmount, ModulationDestination,
+        ModulationOutputId, ModulationRange, ModulationRouteId, ModulationSourceId, Modulator,
+    };
+    const RATE: u32 = 48_000;
+    const FRAMES: usize = 607;
+    const IDS: [ParameterId; 3] = [
+        parameter::enabled(0, 0),
+        parameter::kind(0, 0),
+        parameter::MODE,
+    ];
+    struct DiscreteFrames;
+    impl NativeParameterAutomation for DiscreteFrames {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            &IDS
+        }
+        fn value_at(&self, id: ParameterId, frame: usize) -> Option<ParameterValue> {
+            let positive = (frame * 3 % 512) < 256;
+            match IDS.iter().position(|&parameter| parameter == id)? {
+                0 => Some(ParameterValue::Bool(positive)),
+                _ => Some(ParameterValue::Choice(u32::from(positive))),
+            }
+        }
+    }
+
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 8).unwrap();
+    let Created::Imported { track, asset, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "eq eight".into(),
+            path: "eq-eight-discrete.wav".into(),
+            sample_rate: RATE,
+            frames: FRAMES as u64,
+        })
+        .unwrap()
+    else {
+        panic!("audio fixture")
+    };
+    let mut state = EQ8_DEFINITION.default_state().unwrap();
+    for (id, value) in [
+        (parameter::frequency(0, 0), ParameterValue::Float(1_000.0)),
+        (parameter::gain(0, 0), ParameterValue::Float(12.0)),
+        (parameter::enabled(1, 1), ParameterValue::Bool(true)),
+        (parameter::gain(1, 1), ParameterValue::Float(-8.0)),
+        (parameter::enabled(2, 1), ParameterValue::Bool(true)),
+        (parameter::gain(2, 1), ParameterValue::Float(10.0)),
+    ] {
+        state = EQ8_DEFINITION.patch_parameter(&state, id, value).unwrap();
+    }
+    let Created::Device(device) = editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: state.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("eq8 fixture")
+    };
+    for id in IDS {
+        assert!(crate::project_device_modulation_target_supported(
+            editor.project(),
+            device,
+            id
+        ));
+    }
+    let identity = editor.project().next_identity();
+    let source = ModulationSourceId::new(identity).unwrap();
+    let modulation = DeviceModulation::new(
+        vec![Modulator {
+            id: source,
+            enabled: true,
+            color: Default::default(),
+            state: Settings {
+                rate: Rate::Hertz(281.25),
+                waveform: Waveform::Square,
+                phase: 0.0,
+            }
+            .encode()
+            .unwrap(),
+        }],
+        IDS.into_iter()
+            .zip([1.0, 0.2, 0.6])
+            .enumerate()
+            .map(|(index, (parameter, amount))| DeviceModulationRoute {
+                id: ModulationRouteId::new(identity + 1 + index as u64).unwrap(),
+                source,
+                output: ModulationOutputId::MAIN,
+                destination: ModulationDestination::Device {
+                    device_type: EQ8_TYPE_ID,
+                    target: DeviceAutomationTarget::Parameter(parameter),
+                    vst3_class: None,
+                },
+                amount: ModulationAmount::new(amount).unwrap(),
+                range: ModulationRange::default(),
+                enabled: true,
+            })
+            .collect(),
+    )
+    .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceModulation { device, modulation })
+        .unwrap();
+
+    let dry: [[f32; 2]; FRAMES] = std::array::from_fn(|frame| {
+        let signal = (frame as f32 * 0.35).sin() * 0.2;
+        [signal, -signal * 0.8]
+    });
+    let audio = Audio::new(RATE, dry.to_vec()).unwrap();
+    let mut expected = dry;
+    Eq8Definition::prepare_owned(&state, RATE, &IDS)
+        .unwrap()
+        .create_runtime()
+        .process_block_with_automation(
+            &mut expected,
+            None,
+            &DiscreteFrames,
+            &EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
+    let project = editor.project();
+    assert_eq!(project.device(device).unwrap().state(), &state);
+    assert_ne!(expected, dry);
+    compare_native_and_sealed_pcm::<FRAMES>(project, asset, &audio, |pcm| {
+        assert_eq!(*pcm, expected);
+    });
+}
