@@ -540,7 +540,7 @@ impl EditorView {
                 if let Some(selected) = self.automation_take_recovery.saved.as_ref() {
                     self.status = format!(
                         "automation recovery file selected · {}",
-                        hex_storage::text::verbatim(selected.path.display())
+                        hex_session::service::text::verbatim(selected.path.display())
                     );
                 }
             }
