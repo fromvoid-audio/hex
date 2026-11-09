@@ -1243,6 +1243,7 @@ pub struct Control {
 /// The unique worker-side publication/return endpoint; never a UI command client.
 pub struct PublicationControl {
     foreign_parameter_delivery: Option<crate::foreign_parameter_delivery::Control>,
+    foreign_editor_delivery: crate::foreign_parameter_delivery::editor::Control,
     plugin_callback_quantum: Option<u16>,
     output_transport_reaper: Option<crate::plugin_worker::Reaper>,
     publications: Producer<QueuedPublication>,
@@ -1388,6 +1389,7 @@ pub struct Callback {
     gain_recording: crate::gain_recording::Callback,
     native_parameter_input: Box<crate::native_parameter_input::Callback>,
     foreign_parameter_delivery: crate::foreign_parameter_delivery::Callback,
+    foreign_editor_delivery: crate::foreign_parameter_delivery::editor::Callback,
     midi_recording: crate::midi_recording::Callback,
     spectrum_capture: Option<SpectrumCapture>,
     spectrum_stages: SpectrumStages,
@@ -1477,6 +1479,8 @@ pub(crate) fn channel_with_interface(
         crate::native_parameter_input::channel();
     let (foreign_parameter_delivery, callback_foreign_parameter_delivery) =
         crate::foreign_parameter_delivery::channel();
+    let (foreign_editor_delivery, callback_foreign_editor_delivery) =
+        crate::foreign_parameter_delivery::editor::channel();
     let (mut midi_recording, callback_midi_recording) = crate::midi_recording::channel();
     sample_preview.bind_status(status.clone());
     gain_recording.bind_status(status.clone());
@@ -1505,6 +1509,7 @@ pub(crate) fn channel_with_interface(
             command_ticket: 0,
             publication: PublicationControl {
                 foreign_parameter_delivery: Some(foreign_parameter_delivery),
+                foreign_editor_delivery,
                 plugin_callback_quantum: None,
                 output_transport_reaper: None,
                 candidate_root: candidate_root.clone(),
@@ -1553,6 +1558,7 @@ pub(crate) fn channel_with_interface(
             gain_recording: callback_gain_recording,
             native_parameter_input: callback_native_parameter_input,
             foreign_parameter_delivery: callback_foreign_parameter_delivery,
+            foreign_editor_delivery: callback_foreign_editor_delivery,
             midi_recording: callback_midi_recording,
             spectrum_capture: capture,
             spectrum_stages: SpectrumStages::new()?,
@@ -2626,6 +2632,7 @@ impl Callback {
                 self.foreign_parameter_delivery
                     .constructor_channel_storage()?,
             )?
+            .plus(self.foreign_editor_delivery.constructor_channel_storage()?)?
             .plus(self.midi_recording.constructor_channel_storage()?)?
             .plus(self.spectrum_target.constructor_channel_storage()?)?
             .plus(self.processor_audition.constructor_channel_storage()?)?
@@ -5293,6 +5300,7 @@ pub(crate) fn worker_boundary_storage_quote() -> Option<usize> {
         .checked_add(crate::gain_recording::constructor_storage_quote()?)?
         .checked_add(crate::native_parameter_input::constructor_storage_quote()?)?
         .checked_add(crate::foreign_parameter_delivery::constructor_storage_quote()?)?
+        .checked_add(crate::foreign_parameter_delivery::editor::constructor_storage_quote()?)?
         .checked_add(crate::midi_recording::constructor_storage_quote()?)?
         .checked_add(spectrum_target::constructor_storage_quote()?)?
         .checked_add(processor_audition::constructor_storage_quote()?)?

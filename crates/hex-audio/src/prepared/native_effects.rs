@@ -46,15 +46,11 @@ impl Callback {
         }
     }
     pub(crate) fn finish_foreign_parameter_delivery(&mut self, valid: bool) {
-        let Some(target) = self.foreign_parameter_delivery.prepare_target() else {
+        let manual = self.foreign_parameter_delivery.prepare_target();
+        let editor = self.foreign_editor_delivery.prepare_target();
+        if manual.is_none() && editor.is_none() {
             return;
-        };
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        let marker = self
-            .native_sources
-            .take_accepted_manual_parameter(target.binding);
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-        let marker = None;
+        }
         // The typed admission excludes constructor and delayed-output paths.
         let active = self.active.as_ref().and_then(ActivePublication::legacy);
         let (end, latency) = active.map_or((0, 0), |active| {
@@ -63,14 +59,40 @@ impl Callback {
                 active.playback.main_output_latency_frames(),
             )
         });
-        self.foreign_parameter_delivery.finish(
-            marker,
-            self.status.live_native_parameter_source(),
-            end,
-            latency,
-            valid,
-            self.output_transport.is_none(),
-        );
+        let source = self.status.live_native_parameter_source();
+        let direct = self.output_transport.is_none();
+        if let Some(target) = manual {
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            let marker = self
+                .native_sources
+                .take_accepted_manual_parameter(target.binding);
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            let marker = {
+                let _ = target;
+                None
+            };
+            self.foreign_parameter_delivery
+                .finish(marker, source, end, latency, valid, direct);
+        }
+        if let Some(target) = editor {
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            let observed = self
+                .native_sources
+                .take_accepted_editor_quantum(target.binding);
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            let observed = {
+                let _ = target;
+                Err(hex_plugin_host::transport::Fault::Revoked)
+            };
+            self.foreign_editor_delivery.finish(
+                observed.ok().flatten(),
+                source,
+                end,
+                latency,
+                valid && observed.is_ok(),
+                direct,
+            );
+        }
     }
 
     pub(crate) fn finish_native_effect_callback(
