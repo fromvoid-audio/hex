@@ -2793,6 +2793,9 @@ struct ShiftedForeign<'a> {
 }
 
 impl hex_lattice::ForeignProcessors for ShiftedForeign<'_> {
+    fn returns_post_trim(&self, node: hex_lattice::ForeignProcessorNode<'_>) -> bool {
+        self.inner.returns_post_trim(node)
+    }
     fn process_segment(
         &mut self,
         node: hex_lattice::ForeignProcessorNode<'_>,
@@ -2834,6 +2837,22 @@ impl hex_lattice::ForeignProcessors for ShiftedForeign<'_> {
             notes,
             clock,
         )
+    }
+    fn process_segment_with_modulation(
+        &mut self,
+        node: hex_lattice::ForeignProcessorNode<'_>,
+        frame_offset: usize,
+        frames: &mut [Frame],
+        lane: hex_lattice::ForeignModulationSamples<'_>,
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), hex_lattice_contract::DeviceContractError> {
+        let Some(offset) = self.offset.checked_add(frame_offset) else {
+            self.inner.reject_callback();
+            frames.fill([0.0; 2]);
+            return Err(hex_lattice_contract::DeviceContractError::ForeignProcessingFailed);
+        };
+        self.inner
+            .process_segment_with_modulation(node, offset, frames, lane, clock)
     }
     fn committed_tail_is_drained(&self, node: hex_lattice::ForeignProcessorNode<'_>) -> bool {
         self.inner.committed_tail_is_drained(node)
