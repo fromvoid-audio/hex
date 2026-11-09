@@ -134,7 +134,8 @@ fn prepared_sampler_gain_tracks_samples_and_committed_tail_at_zero_authored_gain
     });
     settings.gain = 0.0;
     settings.pan = 0.25;
-    let prepared = prepare_retarget_settings(views[0], settings, 4, 259, &ratio_tuning(1.0));
+    let prepared = prepare_retarget_settings(views[0], settings, 4, 259, &ratio_tuning(1.0))
+        .with_sample_rate_gain();
     let mut runtime = pair(&prepared);
     let mut next = pair(&prepared);
     let read_target = |runtime: &NativeInstrumentRuntimePair| {

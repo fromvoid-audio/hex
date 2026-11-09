@@ -58,6 +58,7 @@ pub struct PreparedSamplerRuntime {
     velocity_amount: f64,
     base_gain: f64,
     pan: f64,
+    gain_modulation: bool,
     max_events: usize,
 }
 
@@ -73,6 +74,7 @@ impl PartialEq for PreparedSamplerRuntime {
             velocity_amount,
             base_gain,
             pan,
+            gain_modulation,
             max_events,
         } = self;
         *notes == other.notes
@@ -83,6 +85,7 @@ impl PartialEq for PreparedSamplerRuntime {
             && *velocity_amount == other.velocity_amount
             && *base_gain == other.base_gain
             && *pan == other.pan
+            && *gain_modulation == other.gain_modulation
             && *max_events == other.max_events
     }
 }
@@ -102,6 +105,13 @@ impl PreparedInstrumentHistoryRetarget for SamplerHistoryRetarget {
 }
 
 impl PreparedSamplerRuntime {
+    /// Admit the borrowed gain parameter on both twins. Closed factory owners
+    /// must first reserve and admit the parameter storage for their graph.
+    pub fn with_sample_rate_gain(mut self) -> Self {
+        self.gain_modulation = true;
+        self
+    }
+
     /// Control preparation's exact scalar proof payload allowance. The proof
     /// has no child allocation or source owner; its Box is owned by the graph.
     pub const fn history_retarget_inline_bound() -> usize {
@@ -133,6 +143,7 @@ impl PreparedSamplerRuntime {
             velocity_amount,
             base_gain: _,
             pan: _,
+            gain_modulation: _,
             max_events,
         } = self;
         *source == previous.source
@@ -223,6 +234,7 @@ impl BoundSamplerPlan<'_> {
             velocity_amount: self.plan.settings.velocity_amount,
             base_gain: self.plan.settings.gain,
             pan: self.plan.settings.pan,
+            gain_modulation: false,
             max_events,
         })
     }
@@ -293,10 +305,16 @@ pub struct SamplerRuntime {
 }
 impl PreparedMutableInstrumentRuntime for PreparedSamplerRuntime {
     fn parameter_automation_descriptors(&self) -> &[ParameterDescriptor] {
-        &GAIN_DESCRIPTORS
+        if self.gain_modulation {
+            &GAIN_DESCRIPTORS
+        } else {
+            &[]
+        }
     }
     fn parameter_modulation_semantics(&self, parameter: ParameterId) -> Option<ParameterSemantics> {
-        gain_semantics(parameter)
+        self.gain_modulation
+            .then(|| gain_semantics(parameter))
+            .flatten()
     }
     fn supports_active_occurrence_ids(&self) -> bool {
         true
@@ -566,10 +584,10 @@ impl SamplerRuntime {
 }
 impl MutableInstrumentRuntime for SamplerRuntime {
     fn parameter_automation(&mut self) -> Option<&mut dyn InstrumentParameterRuntime> {
-        Some(self)
+        self.prepared.gain_modulation.then_some(self)
     }
     fn parameter_automation_readonly(&self) -> Option<&dyn InstrumentParameterRuntime> {
-        Some(self)
+        self.prepared.gain_modulation.then_some(self)
     }
     fn supports_active_occurrence_ids(&self) -> bool {
         true

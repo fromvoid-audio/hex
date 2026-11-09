@@ -301,7 +301,8 @@ fn resident_sampler_occurrence_gains_allocate_and_free_nothing_in_the_actual_pai
     .bind_source_on_control(views[0])
     .unwrap()
     .prepare_runtime_on_control(4, 16, &TuningTable::default())
-    .unwrap();
+    .unwrap()
+    .with_sample_rate_gain();
     let limits = NativeInstrumentRuntimeLimits {
         max_pair_bytes: 2 * 1024 * 1024,
         max_events_per_block: 16,
