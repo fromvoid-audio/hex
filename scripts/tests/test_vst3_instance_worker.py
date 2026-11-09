@@ -246,6 +246,57 @@ class NativeInstanceTests(unittest.TestCase):
                          (63, 0, 0, values[-1]))
         self.terminal(session, 0, message=session.stop())
 
+    def dense_request(self, session, values, *, dense_id, frames, sparse=(), cut=None):
+        version = 0x8806 if cut is not None else 0x8802
+        header = struct.pack("<4sHHHHB3x6Q", b"HXVB", version, frames, 0, len(sparse),
+                             int(cut is not None), *BINDING, session.sequence, session.frames)
+        pcm = struct.pack("<" + "f" * (2 * frames), *([.25] * (2 * frames)))
+        points = b"".join(struct.pack("<HHIdI", *point) for point in sparse)
+        timing = b""
+        if cut is not None:
+            timing = struct.pack("<qQIBBBxQQ", 0, 0, 0, 1, 0, 0, 0, 0)
+            timing += struct.pack("<H6x", cut) + bytes(40)
+        dense = struct.pack("<II" + "d" * len(values), dense_id, 0, *values)
+        session.socket.sendall(header + pcm + points + timing + dense)
+
+    def test_full_dense_quantum_keeps_256_offsets_through_an_sdk_timing_cut(self):
+        session = self.session(variant=143)
+        self.ready(session, controller=True)
+        values = tuple(.125 if frame % 2 else .75 for frame in range(256))
+        cut = 96
+        # Parameter 11 is the distinct manual input. Its exact value holds
+        # across both SDK slices without occupying a dense-lane sample.
+        self.dense_request(session, values, dense_id=7, frames=256,
+                           sparse=[(0, 1, 11, .125, 0)], cut=cut)
+        magic, reply = session.message()
+        self.assertEqual(magic, b"HXVB", reply)
+        self.assertEqual(struct.unpack_from("<HHHH", reply, 4), (2, 256, 0, 2))
+        pcm = struct.unpack_from("<512f", reply, 64)
+        expected = tuple(value * (.25 if index // 2 < cut else .3125)
+                         for index, value in enumerate(v for v in values for _ in range(2)))
+        self.assertEqual(pcm, expected)
+        self.assertEqual(struct.unpack_from("<HHIdHHId", reply, 64 + 256 * 8),
+                         (cut - 1, 0, 7, values[cut - 1], 255, 0, 7, values[-1]))
+        session.sequence += 1
+        session.frames += 256
+        self.terminal(session, 0, message=session.stop())
+
+    def test_malformed_dense_quantum_never_enters_the_sdk(self):
+        for values, sparse, short in (
+            ((.5,) * 8, [(0, 0, 0, .25, 0)], False),
+            ((.5,) * 7 + (float("nan"),), [], False),
+            ((.5,) * 7, [], True),
+        ):
+            with self.subTest(sparse=sparse, short=short):
+                session = self.session(variant=80)
+                self.ready(session, controller=True)
+                self.dense_request(session, values, dense_id=0, frames=8, sparse=sparse)
+                if short:
+                    session.socket.shutdown(socket.SHUT_WR)
+                self.error(session, 8)
+                self.terminal(session, 8)
+                self.assertEqual(self.observation()[10], 0)
+
     def test_invalid_output_parameter_values_leave_valid_feedback_and_pcm_intact(self):
         session = self.session(variant=124)
         self.ready(session, controller=True)

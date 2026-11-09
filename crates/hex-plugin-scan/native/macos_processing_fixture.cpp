@@ -938,7 +938,7 @@ public:
         // Independent SDK automation oracle. The previous block's final value
         // is the implicit point at -1; jumps require adjacent old/new points.
         struct Curve {
-            std::array<std::pair<int32,ParamValue>,64> points{};
+            std::array<std::pair<int32,ParamValue>,256> points{};
             int32 count=0,next=0,left_offset=-1;
             double left_value=0.0;
             bool read(IParamValueQueue& queue,int32 frames) {

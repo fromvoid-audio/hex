@@ -193,15 +193,19 @@ inline void sample(uint8_t* p,float value) {
 struct Packet {
     static constexpr size_t timing_change_limit=7, timing_change_bytes=8+extended_timing_size;
     static constexpr size_t editor_touch_bytes=24, editor_restore_bytes=24;
+    static constexpr size_t dense_header_bytes=8;
+    static constexpr uint64_t dense_parameter_bit=0x0800;
     static constexpr size_t editor_target_bytes=16, editor_group_header_bytes=16;
     static constexpr size_t editor_group_bytes=editor_group_header_bytes+
         hex_instance::HOST_EDIT_COUNT*editor_target_bytes;
     static constexpr uint64_t editor_touch_bit=0x2000, editor_group_touch_bit=0x1000;
     struct TimingChange { uint16_t offset=0; Steinberg::Vst::ProcessContext context{}; };
-    std::array<uint8_t,header_size+max_frames*8+hex_instance::INPUT_NOTE_COUNT*12+hex_instance::PARAMETER_POINT_COUNT*20+extended_timing_size+timing_change_limit*timing_change_bytes+editor_group_bytes> bytes{};
+    std::array<uint8_t,header_size+max_frames*8+hex_instance::INPUT_NOTE_COUNT*12+hex_instance::PARAMETER_POINT_COUNT*20+extended_timing_size+timing_change_limit*timing_change_bytes+dense_header_bytes+max_frames*8+editor_group_bytes> bytes{};
     std::array<hex_instance::ParameterPoint,hex_instance::PARAMETER_POINT_COUNT> parameters{};
     std::array<uint32_t,hex_instance::PARAMETER_POINT_COUNT> authored_steps{};
-    bool authored_parameters=false,manual_parameter=false;
+    bool authored_parameters=false,manual_parameter=false,dense_parameter=false;
+    uint32_t dense_id=0,dense_steps=0;
+    std::array<Steinberg::Vst::ParamValue,max_frames> dense_values{};
     std::array<hex_instance::InputNote,hex_instance::INPUT_NOTE_COUNT> notes{};
     size_t note_count=0;
     size_t parameter_count=0;
@@ -235,6 +239,8 @@ struct Packet {
         const auto wire_version=number(p+4,2);
         constexpr uint64_t authored_bit=0x8000;
         authored_parameters=pcm && (wire_version&authored_bit);
+        dense_parameter=pcm && (wire_version&dense_parameter_bit);
+        if(dense_parameter && !authored_parameters) return -1;
         observe_editor_pcm=pcm && (wire_version&editor_pcm_bit);reply_editor_count=0;
         const bool touch=pcm && (wire_version&editor_touch_bit);
         group_touch=pcm && (wire_version&editor_group_touch_bit);
@@ -242,7 +248,7 @@ struct Packet {
         editor_touch.reset();editor_restore={};
         const auto version=wire_version&~((authored_parameters?authored_bit:0)|
             (observe_editor_pcm?editor_pcm_bit:0)|(touch?editor_touch_bit:0)|
-            (group_touch?editor_group_touch_bit:0));
+            (group_touch?editor_group_touch_bit:0)|(dense_parameter?dense_parameter_bit:0));
         release_gates=quiesce && version==2 && !config.inputs;
         observe_latency=edit_query && (version==2 || version==3);
         flush_idle_edits=edit_query && version==3;
@@ -264,7 +270,8 @@ struct Packet {
             (note_count && (!pcm || config.inputs)) || (version==3 && pcm && !note_count)) return -1;
         const bool has_parameter_field=((pcm || flush) && version==2) || identified_notes;
         parameter_count=has_parameter_field?static_cast<size_t>(number(p+10,2)):0;
-        if(parameter_count>parameters.size() || (authored_parameters && !parameter_count)) return -1;
+        if(parameter_count>parameters.size() || (dense_parameter && !has_parameter_field) ||
+            (authored_parameters && !parameter_count && !dense_parameter)) return -1;
         timing_change_count=sliced_timing?p[12]:0;
         if(sliced_timing && (!timing_change_count || timing_change_count>timing_changes.size() || p[13]>1)) return -1;
         for(size_t n=sliced_timing?14:(resume?11:(has_parameter_field?12:10));n<16;++n) if(p[n]) return -1;
@@ -309,8 +316,9 @@ struct Packet {
         const size_t note_bytes=identified_notes?12:8;
         const size_t point_bytes=authored_parameters?20:16;
         const size_t clock_bytes=no_initial_context?0:(extended_timing?extended_timing_size:(timed?timing_size:0));
+        const size_t dense_bytes=dense_parameter?dense_header_bytes+static_cast<size_t>(frames)*8:0;
         const auto payload_bytes=frames*8+note_count*note_bytes+parameter_count*point_bytes+clock_bytes+
-            timing_change_count*timing_change_bytes;
+            timing_change_count*timing_change_bytes+dense_bytes;
         const auto touch_bytes=group_touch?editor_group_bytes:(touch?editor_touch_bytes:0);
         if(read_exact(fd,p+header_size,payload_bytes+touch_bytes)!=1) return -1;
         if(touch_bytes) {
@@ -351,6 +359,20 @@ struct Packet {
         }
         const auto* points=payload+note_count*note_bytes;
         if(!parse_parameters(points,frames)) return -1;
+        if(dense_parameter) {
+            const auto* raw=p+header_size+payload_bytes-dense_bytes;
+            dense_id=static_cast<uint32_t>(number(raw,4));
+            dense_steps=static_cast<uint32_t>(number(raw+4,4));
+            if(dense_id>0x7FFFFFFFu || dense_steps>0x7FFFFFFFu) return -1;
+            for(size_t n=0;n<parameter_count;++n) if(parameters[n].id==dense_id) return -1;
+            if(editor_touch) for(size_t n=0;n<editor_touch->count;++n)
+                if(editor_touch->targets[n].parameter==dense_id) return -1;
+            for(size_t n=0;n<frames;++n) {
+                const auto bits=number(raw+dense_header_bytes+n*8,8);
+                auto& value=dense_values[n];std::memcpy(&value,&bits,8);
+                if(!std::isfinite(value) || value<0 || value>1) return -1;
+            }
+        }
         context.reset();
         if(!timed) return 1;
         const auto* clock=points+parameter_count*point_bytes;
