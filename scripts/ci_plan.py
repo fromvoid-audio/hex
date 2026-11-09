@@ -17,7 +17,7 @@ if _PYTHON_SPEC is None or _PYTHON_SPEC.loader is None:
 python_tests = importlib.util.module_from_spec(_PYTHON_SPEC)
 _PYTHON_SPEC.loader.exec_module(python_tests)
 
-POLICY_VERSION = 18
+POLICY_VERSION = 19
 UI_PACKAGES = {"hex-ui", "hex-widgets"}
 # Opaque state reaches storage through runtime type IDs, not a Cargo dependency.
 # Changes here must be reviewed with the real registration/codec consumers.
@@ -141,7 +141,7 @@ def classify(paths: list[str], inventory: list[dict]) -> tuple[str, list[str], l
     if scopes == {"ui"} and affected - UI_PACKAGES - {"hex-desktop"}:
         scopes.add("rust")
         reasons.append("UI has additional consumers: include their package configurations")
-    if scopes == {"ui"} and any(set(p["features"]) - ({"ui-test-support"} if p["name"] == "hex-ui" else set())
+    if scopes == {"ui"} and any(set(p["features"]) - ({"ui-test-support", "ui-unit-tier"} if p["name"] == "hex-ui" else set())
                                 for p in inventory if p["name"] in UI_PACKAGES):
         scopes.add("rust")
         reasons.append("additional UI features require affected-package configurations")
@@ -159,6 +159,7 @@ def classify(paths: list[str], inventory: list[dict]) -> tuple[str, list[str], l
 # compilation stays proven by affected clippy. Reviewed 31 October 2026:
 # - hex-ui ui-test-support: enables gpui/test-support (test executor/platform and
 #   debug selectors only) and hex-session's overview hooks; no cfg(not) gates.
+#   Its separately selected ui-unit-tier companion gates source-local tests only.
 # - hex-session source-overview-test-support: an optional observer hook, None by default.
 # - hex-engine/hex-export instrument-test-support: probe/fixture modules only.
 # allocation-probe installs a counting global allocator and has cfg(not) gates;
@@ -172,7 +173,7 @@ ADDITIVE_TEST_FEATURES = {
 
 
 def single_run_packages(root: Path, affected: list[str], inventory: list[dict]) -> dict[str, str]:
-    """Affected packages whose only extra feature is reviewed additive.
+    """Affected packages whose non-companion feature is reviewed additive.
 
     Any line combining `not(` with that feature in the package's Rust sources is a
     tripwire: the package keeps both default and feature test runs.
@@ -182,13 +183,21 @@ def single_run_packages(root: Path, affected: list[str], inventory: list[dict]) 
         feature = ADDITIVE_TEST_FEATURES.get(package["name"])
         if package["name"] not in affected or not feature:
             continue
-        if set(package["features"]) - {"default"} != {feature}:
+        companions = {"ui-unit-tier"} if package["name"] == "hex-ui" else set()
+        if set(package["features"]) - {"default"} - companions != {feature}:
             continue
         directory = root / Path(package["manifest"]).parent
         needle = f'feature = "{feature}"'
         gated = any("not(" in line and needle in line
                     for source in directory.rglob("*.rs") if source.is_file()
                     for line in source.read_text(errors="replace").splitlines())
+        if package["name"] == "hex-ui" and "ui-unit-tier" in package["features"]:
+            # Fail closed if the reviewed test-only companion ever gates
+            # production code or gains an unreviewed expression.
+            companion = 'feature = "ui-unit-tier"'
+            gated |= any(companion in line and line.strip() != '#[cfg(all(test, feature = "ui-unit-tier"))]'
+                         for source in directory.joinpath("src").rglob("*.rs") if source.is_file()
+                         for line in source.read_text(errors="replace").splitlines())
         if not gated:
             selected[package["name"]] = feature
     return selected
@@ -239,12 +248,19 @@ UI_UNIT_TARGETS = {"editor::audio_admission::": "unit_editor_state",
                    "editor::clip_content_cache::profile::navigation::selection::": "unit_editor_state",
                    "editor::cpu_meter::": "unit_editor_state",
                    "editor::disk_overload::": "unit_editor_state",
+                   "editor::midi_drag::": "unit_piano_roll",
+                   "editor::midi_scene::": "unit_piano_roll",
                    "editor::midi_thumbnail::": "unit_editor_state",
+                   "editor::midi_viewport_grid::": "unit_piano_roll",
                    "editor::pending_edit::": "unit_editor_state",
                    "editor::play_intent::": "unit_editor_state",
                    "editor::recovery_state::": "unit_editor_state",
                    "editor::track_meters::scale::": "unit_editor_state",
                    "editor::viewport::": "unit_editor_state"}
+UI_UNIT_FEATURES = {"unit_piano_roll": "ui-unit-tier"}
+# These geometry modules call one another; a change to one must exercise the
+# complete pure boundary rather than only its own test-name prefix.
+UI_UNIT_COHORTS = [{"editor::midi_drag::", "editor::midi_scene::", "editor::midi_viewport_grid::"}]
 # Recovery's real prepared-audio test is a sibling so importing its state into
 # the unit binary cannot also compile and run the integration fixture there.
 UI_INTEGRATION_PAIRS = {"editor::recovery_state::": "editor::recovery_state_integration_tests::"}
@@ -366,6 +382,9 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
             for module, integration in UI_INTEGRATION_PAIRS.items():
                 if module in names or integration in names:
                     names.update((module, integration))
+            for cohort in UI_UNIT_COHORTS:
+                if names & cohort:
+                    names.update(cohort)
         # A filter already covered by a broader selected module is redundant.
         selected[owner] = sorted(n for n in names if not any(n != o and n.startswith(o) for o in names))
     return selected
@@ -432,7 +451,7 @@ def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affe
                          # Stream test hooks gate no compressor code or tests; compressor
                          # plans still lint those configurations (local-ci boundary_steps).
                          "hex-audio": {"allocation-probe", "stream-test-support"}, "hex-desktop": {"allocation-probe"},
-                         "hex-ui": {"ui-test-support"}, "hex-session": {"source-overview-test-support"},
+                         "hex-ui": {"ui-test-support", "ui-unit-tier"}, "hex-session": {"source-overview-test-support"},
                          "hex-stream": {"allocation-probe", "test-support"},
                          # One-shot verified-WAV read fault injection; it does not
                          # change compressor processing or its host contract.
