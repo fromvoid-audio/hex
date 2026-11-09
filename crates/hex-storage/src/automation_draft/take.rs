@@ -493,6 +493,9 @@ impl ClockMapping {
     }
 }
 
+mod grouped;
+pub use grouped::ProjectedGroupLane;
+
 mod prepared;
 pub use prepared::{
     AutomationSharedData, PreparedAutomationTake, PreparedAutomationTakeDataLayout,

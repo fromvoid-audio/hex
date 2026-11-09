@@ -93,6 +93,10 @@ impl CompletedGroupedDraft {
     pub fn event_count(&self) -> u64 {
         self.reader.progress().durable_events
     }
+    pub fn path(&self) -> &Path {
+        self.reader.path()
+    }
+
     pub fn read_events(
         &mut self,
         first_ordinal: u64,
