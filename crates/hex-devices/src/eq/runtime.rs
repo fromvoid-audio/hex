@@ -85,6 +85,15 @@ pub(super) struct PreparedEq {
     stages: Vec<BandStages>,
 }
 impl PreparedEq {
+    pub(super) fn source_factory_bytes_bound() -> usize {
+        // Source effects grant no host parameter slots. The retained historical
+        // lanes and their point and node arrays have canonical state bounds.
+        crate::source_effect_arc_bytes::<Self>()
+            + crate::source_effect_arc_bytes::<Configuration>()
+            + MAX_NODES * (std::mem::size_of::<Node>() + std::mem::size_of::<BandStages>())
+            + MAX_LANES * std::mem::size_of::<CompiledLane>()
+            + MAX_POINTS * std::mem::size_of::<AutomationPoint>()
+    }
     pub(super) fn new(settings: EqState, sample_rate: u32) -> Result<Self, DeviceContractError> {
         Self::prepare(settings, sample_rate, &[])
     }

@@ -3,6 +3,8 @@ use crate::{Frame, Invalid, Project, effect_clock::ArrangementEffectClock};
 use hex_lattice::{NativeInstrumentClock, NativeRuntimeChain};
 use std::{ops::Range, sync::Arc};
 
+pub(crate) mod metadata;
+
 /// Control-prepared recipe retained once per source by the compiled project.
 /// Renderers borrow this immutable configuration to build their runtime.
 #[derive(Debug, Clone)]
@@ -10,6 +12,7 @@ pub(crate) struct PreparedSourceEffects {
     pub(crate) source: hex_project::SourceId,
     pub(crate) receiver: usize,
     pub(crate) instances: Arc<[hex_lattice::PreparedRuntimeInstance]>,
+    pub(crate) factory_bytes: usize,
 }
 
 pub(crate) fn native_zero_latency(instance: &hex_lattice::PreparedRuntimeInstance) -> bool {
