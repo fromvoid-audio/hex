@@ -33,7 +33,7 @@ pub(super) fn visit<'a>(
 mod tests {
     use super::*;
     use hex_lattice::{
-        ModulationSourceId, PreparedModulationSource, PreparedModulation, PreparedModulationState,
+        ModulationSourceId, PreparedModulation, PreparedModulationSource, PreparedModulationState,
         ProcessorChainOwner, StereoMatrix,
     };
     use hex_lattice_contract::NativeDeviceMetadata;

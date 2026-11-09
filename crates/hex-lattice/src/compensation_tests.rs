@@ -425,8 +425,13 @@ fn unassigned_modulation_keeps_matrix_input_for_bypassed_private_history() {
     prepared.modulation = Some(
         PreparedModulationState::new(
             vec![
-                PreparedModulationSource::free(ModulationSourceId::new(1).unwrap(), 48_000.0, 1.0, 0.0)
-                    .unwrap(),
+                PreparedModulationSource::free(
+                    ModulationSourceId::new(1).unwrap(),
+                    48_000.0,
+                    1.0,
+                    0.0,
+                )
+                .unwrap(),
             ],
             PreparedModulation::new(&[], &[], 1).unwrap(),
             2,

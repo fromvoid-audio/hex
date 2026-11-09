@@ -7,7 +7,8 @@ use hex_lattice_contract::{
 };
 
 fn source() -> PreparedModulationSource {
-    PreparedModulationSource::free(ModulationSourceId::new(1).unwrap(), 48_000.0, 12_000.0, 0.0).unwrap()
+    PreparedModulationSource::free(ModulationSourceId::new(1).unwrap(), 48_000.0, 12_000.0, 0.0)
+        .unwrap()
 }
 fn chain(bypassed: bool) -> NativeRuntimeChain {
     NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
@@ -69,7 +70,8 @@ fn next_value(chain: &NativeRuntimeChain) -> f32 {
     )
     .unwrap();
     let mut probe =
-        ModulationRuntime::new(ModulationSourceBank::new(&[source()], 2).unwrap(), program).unwrap();
+        ModulationRuntime::new(ModulationSourceBank::new(&[source()], 2).unwrap(), program)
+            .unwrap();
     probe
         .inherit_committed(chain.entries[0].modulation.as_ref().unwrap())
         .unwrap();
