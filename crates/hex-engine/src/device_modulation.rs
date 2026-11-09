@@ -179,14 +179,24 @@ pub fn project_device_modulation_target_supported(
             .unwrap_or(false)
 }
 
-fn instrument_unity_output_modulation_supported(state: &NativeDeviceState) -> bool {
-    state.output_gain_millidb() == 0
-        && (state.type_id() == hex_devices::fm4::device::FM4_TYPE_ID
-            || loaded_sampler_modulation_supported(state))
+fn operator_modulation_supported(state: &NativeDeviceState) -> bool {
+    state.type_id() == hex_devices::operator_state::OPERATOR_TYPE_ID
+        && hex_devices::operator_state::OperatorSettings::from_state(state)
+            .is_ok_and(|settings| settings.has_global_voice_runtime())
 }
 
-/// A receiving FM4 or loaded resident Sampler can modulate its unity trim
-/// after its voices mix.
+fn instrument_modulation_supported(state: &NativeDeviceState) -> bool {
+    state.type_id() == hex_devices::fm4::device::FM4_TYPE_ID
+        || loaded_sampler_modulation_supported(state)
+        || operator_modulation_supported(state)
+}
+
+fn instrument_unity_output_modulation_supported(state: &NativeDeviceState) -> bool {
+    state.output_gain_millidb() == 0 && instrument_modulation_supported(state)
+}
+
+/// A receiving FM4, loaded resident Sampler or Operator using global voice
+/// settings can modulate its unity trim after its voices mix.
 pub fn project_device_instrument_output_modulation_supported(
     project: &Project,
     device: DeviceId,
@@ -273,9 +283,7 @@ pub(super) fn validate_source_owners(project: &Project) -> Result<(), Invalid> {
         // its bank for a later binding and compile it only for a real receiver.
         if !instrument.modulation().is_empty() {
             let state = instrument.state();
-            if !loaded_sampler_modulation_supported(state)
-                && state.type_id() != hex_devices::fm4::device::FM4_TYPE_ID
-            {
+            if !instrument_modulation_supported(state) {
                 return Err(Invalid(
                     "instrument modulation requires a supported provider",
                 ));
@@ -519,8 +527,13 @@ impl EffectModulation {
                 _ => return Err(Invalid("modulator state or rate is unsupported")),
             }
             .map_err(invalid_source)?;
-            if prepared.reads_note_events() && !instrument_events {
-                return Err(Invalid("this modulator requires instrument note events"));
+            if prepared.reads_note_events()
+                && (!instrument_events
+                    || device.state().type_id() == hex_devices::operator_state::OPERATOR_TYPE_ID)
+            {
+                return Err(Invalid(
+                    "this modulator requires a supported note-event provider",
+                ));
             }
             retain(ModulationOutputId::MAIN, prepared);
         }

@@ -387,6 +387,16 @@ pub(crate) fn contains_sampler_modulation(project: &Project) -> bool {
     })
 }
 
+/// Current writers require a reader that can play an Operator bank. Earlier
+/// schemas may still retain an opaque bank under their historical contract.
+pub(crate) fn contains_operator_modulation(project: &Project) -> bool {
+    const OPERATOR: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.operator");
+    project.native_sources().iter().any(|source| {
+        let device = source.instrument();
+        device.state().type_id() == OPERATOR && !device.modulation().is_empty()
+    })
+}
+
 const STEPS: DeviceTypeId = DeviceTypeId::from_static("hex.modulator.steps");
 
 pub(crate) fn contains_steps(project: &Project) -> bool {
@@ -534,7 +544,9 @@ pub(crate) fn refuse_legacy(project: &Project) -> Result<(), StorageError> {
     Ok(())
 }
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
-    let version = if contains_arrangement_steps(project) {
+    let version = if contains_operator_modulation(project) {
+        crate::OPERATOR_MODULATION_SCHEMA_VERSION
+    } else if contains_arrangement_steps(project) {
         crate::ARRANGEMENT_STEPS_SCHEMA_VERSION
     } else if contains_steps(project) {
         crate::STEPS_MODULATOR_SCHEMA_VERSION
@@ -652,6 +664,15 @@ pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError
         return Err(StorageError::Invalid(
             "modulation inventory must be nonempty",
         ));
+    }
+    if version == crate::OPERATOR_MODULATION_SCHEMA_VERSION {
+        return if contains_operator_modulation(&project) {
+            Ok(project)
+        } else {
+            Err(StorageError::Invalid(
+                "operator modulation inventory is missing",
+            ))
+        };
     }
     let arrangement_steps_schema = version == crate::ARRANGEMENT_STEPS_SCHEMA_VERSION;
     if contains_arrangement_steps(&project) != arrangement_steps_schema {

@@ -526,6 +526,12 @@ impl OperatorSettings {
         }
     }
 
+    /// Global voice settings select the mutable harmonic renderer. This
+    /// control-side query does not prepare a voice, context or runtime pair.
+    pub fn has_global_voice_runtime(&self) -> bool {
+        self.global.active
+    }
+
     pub fn from_state(state: &NativeDeviceState) -> Result<Self, DeviceContractError> {
         if state.type_id() != OPERATOR_TYPE_ID {
             return Err(DeviceContractError::WrongDeviceType);
