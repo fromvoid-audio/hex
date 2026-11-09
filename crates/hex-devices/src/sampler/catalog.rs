@@ -155,7 +155,8 @@ fn prepare(
         Ok(Box::new(EmptySampler))
     } else {
         Ok(Box::new(PreparedSamplerInstrument(
-            super::state::prepare_runtime_on_control(state, context, max_events)?,
+            super::state::prepare_runtime_on_control(state, context, max_events)?
+                .with_sample_rate_gain(),
         )))
     }
 }
