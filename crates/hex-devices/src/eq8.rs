@@ -797,7 +797,7 @@ impl Eq8Runtime {
             .routing
             .effective_target(self.automated_target.as_ref(), self.controls.base().mode);
         for (channel, (filtered_channel, target)) in filtered.iter_mut().zip(targets).enumerate() {
-            for band in 0..BAND_COUNT {
+            for (band, target) in target.iter().enumerate() {
                 if !self.active_bands[channel][band] {
                     continue;
                 }
@@ -808,7 +808,7 @@ impl Eq8Runtime {
                 );
                 self.active_bands[channel][band] = (0..4).any(|stage| {
                     self.coefficients[channel][band][stage] != Coefficients::IDENTITY
-                        || target[band][stage] != Coefficients::IDENTITY
+                        || target[stage] != Coefficients::IDENTITY
                         || self.history[channel][band][stage]
                             .iter()
                             .any(|value| *value != 0.0)
@@ -1005,10 +1005,10 @@ impl Eq8Runtime {
             .routing
             .effective_target(self.automated_target.as_ref(), self.controls.base().mode);
         for (channel, target) in targets.into_iter().enumerate() {
-            for band in 0..BAND_COUNT {
+            for (band, target) in target.iter().enumerate() {
                 self.active_bands[channel][band] = (0..4).any(|stage| {
                     self.coefficients[channel][band][stage] != Coefficients::IDENTITY
-                        || target[band][stage] != Coefficients::IDENTITY
+                        || target[stage] != Coefficients::IDENTITY
                         || self.history[channel][band][stage]
                             .iter()
                             .any(|value| *value != 0.0)
