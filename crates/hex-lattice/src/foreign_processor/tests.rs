@@ -22,6 +22,7 @@ fn state() -> Arc<NativeDeviceState> {
 }
 fn declaration(owner: ProcessorChainOwner, bypassed: bool) -> PreparedRuntimeInstance {
     PreparedRuntimeInstance {
+        modulation: None,
         automation: Default::default(),
         meter: Default::default(),
         owner,

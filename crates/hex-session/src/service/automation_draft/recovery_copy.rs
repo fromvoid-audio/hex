@@ -31,12 +31,28 @@ impl RecoveryCopyReceipt {
         limits: DraftReadLimits,
         max_events: u64,
     ) -> Result<(), String> {
+        self.with_verified_on_control(path, limits, max_events, || Ok(()))
+    }
+
+    /// Run an explicit custody resolution only while the verified copy's shared
+    /// reader lock remains held. Validation failure never calls the resolution.
+    /// This performs bounded file I/O on control, never in the audio callback.
+    pub(in crate::service) fn with_verified_on_control<T>(
+        self,
+        path: &Path,
+        limits: DraftReadLimits,
+        max_events: u64,
+        resolve: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
         if self.events() > max_events {
             return Err("automation recovery receipt exceeds budget".into());
         }
         let mut reader = DraftReader::open_bounded(path, limits, max_events)
             .map_err(|error| error.to_string())?;
-        self.verify_reader(&mut reader)
+        self.verify_reader(&mut reader)?;
+        let result = resolve();
+        drop(reader);
+        result
     }
 
     /// Verify and prepare a finished take from the same locked reader. This is
@@ -108,8 +124,29 @@ pub(in crate::service) fn copy_failed_with_tail_on_control(
         Option<AppliedEvent>,
     ) -> Result<(Vec<AppliedEvent>, DraftTerminal), String>,
 ) -> Result<RecoveryCopyReceipt, String> {
-    if outcome.failure.is_none() || outcome.retained.len() > super::BATCH_SLOTS {
+    if outcome.failure.is_none() {
         return Err("automation writer outcome is not a bounded failure".into());
+    }
+    copy_outcome_with_tail_on_control(outcome, destination, limits, max_events, 3, prepare)
+}
+
+/// Copy a writer outcome whose failure or explicit interruption has already
+/// been authorized by the owning recovery adapter. The adapter bounds and
+/// validates its original continuation; this owner proves the writer prefix
+/// and copies all data in fixed-size pages.
+pub(in crate::service) fn copy_outcome_with_tail_on_control(
+    outcome: &DraftWorkerOutcome,
+    destination: &Path,
+    limits: DraftReadLimits,
+    max_events: u64,
+    max_tail: usize,
+    prepare: impl FnOnce(
+        &DraftReader,
+        Option<AppliedEvent>,
+    ) -> Result<(Vec<AppliedEvent>, DraftTerminal), String>,
+) -> Result<RecoveryCopyReceipt, String> {
+    if outcome.retained.len() > super::BATCH_SLOTS {
+        return Err("automation writer outcome exceeds the retained batch bound".into());
     }
     let retained_count = outcome
         .retained
@@ -188,7 +225,7 @@ pub(in crate::service) fn copy_failed_with_tail_on_control(
         writer.append(&events).map_err(|error| error.to_string())?;
     }
     let (tail, terminal) = prepare(&reader, previous)?;
-    if tail.len() > 3
+    if tail.len() > max_tail
         || outcome
             .admitted_events
             .checked_add(tail.len() as u64)
@@ -196,8 +233,8 @@ pub(in crate::service) fn copy_failed_with_tail_on_control(
     {
         return Err("automation recovery continuation exceeds budget".into());
     }
-    if !tail.is_empty() {
-        writer.append(&tail).map_err(|error| error.to_string())?;
+    for events in tail.chunks(EVENTS_PER_BATCH) {
+        writer.append(events).map_err(|error| error.to_string())?;
     }
     writer.finish(terminal).map_err(|error| error.to_string())?;
     let copied = writer.durable_prefix_identity();

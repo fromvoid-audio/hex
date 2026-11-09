@@ -82,7 +82,7 @@ impl<'a> PluginParameterGestureInput<'a> {
 /// Control-side observation copied only after matching the complete private
 /// final-output receipt. Persist `application.origin`, not the later delivery
 /// processing frame. A caller requesting these records owns their retention.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PluginParameterDelivery {
     pub key: crate::device_gesture::GestureKey,
     pub context: hex_engine::AudioSourceContext,
@@ -93,7 +93,7 @@ pub struct PluginParameterDelivery {
     pub delivery_performance_frame: u64,
 }
 /// A confirmed point or a conservative interruption with no invented clock.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PluginParameterObservation {
     Ready {
         key: crate::device_gesture::GestureKey,
@@ -503,6 +503,21 @@ pub trait WorkerAudioSink: Send {
             "vst3 publication confirmation is unavailable".into(),
         ))
     }
+    /// Wait for the exact audio terminal of an edit that changes a revision
+    /// with active source effects. A submission alone cannot commit history.
+    fn confirm_source_effect_publication(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        acceptance: ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        match acceptance {
+            ResidentPublicationAcceptance::OfflineRetained => Ok(()),
+            ResidentPublicationAcceptance::Submitted { .. } => {
+                Err("source effect publication confirmation is unavailable".into())
+            }
+        }
+    }
+
     /// Called for every Commit attempt, including capture/compilation/publication
     /// refusal. Retire only the exact key/sequence/input context's pending
     /// compiler permission. This is the canonical worker's actual terminal,

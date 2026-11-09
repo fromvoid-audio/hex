@@ -293,6 +293,7 @@ fn both_actual_runtime_twins_must_confirm_factory_parameter_support() {
         }
     }
     let prepared = PreparedRuntimeInstance {
+        modulation: None,
         automation: program(descriptor(), semantics()),
         meter: Default::default(),
         owner: ProcessorChainOwner::Track(1),
@@ -462,6 +463,7 @@ fn host_lanes_are_not_provider_ids_and_use_content_clock_and_exact_physical_stor
 fn host_chain(bypassed: bool) -> crate::NativeRuntimeChain {
     use crate::*;
     NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+        modulation: None,
         automation: host_program(),
         meter: Default::default(),
         owner: ProcessorChainOwner::Track(1),
@@ -1108,6 +1110,7 @@ fn armed_provider_clear_is_processed_and_late_refusal_discards_observation() {
     let mut armed = PreparedParameterAutomation::default();
     armed.arm_provider_input(descriptor(), semantics()).unwrap();
     let make = |device_id, automation, fail_loud| PreparedRuntimeInstance {
+        modulation: None,
         automation,
         meter: Default::default(),
         owner: ProcessorChainOwner::Main,
@@ -1381,6 +1384,7 @@ fn external_groups_apply_multiple_targets_and_processors_once() {
             automation.prepare_external_host(target).unwrap();
         }
         PreparedRuntimeInstance {
+            modulation: None,
             automation,
             meter: std::sync::Arc::new(crate::DeviceMeter::default()),
             owner,

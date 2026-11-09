@@ -15,6 +15,8 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             project.main_devices.insert(
                 index,
                 Device {
+                    modulation: Default::default(),
+                    parent: None,
                     automation: Vec::new(),
                     id,
                     state,
@@ -31,12 +33,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 .position(|item| item.id == device)
                 .ok_or(Invalid("main device no longer exists"))?;
             let destination = anchor(project, before)?;
-            if before != Some(device) {
-                let item = project.main_devices.remove(source);
-                project
-                    .main_devices
-                    .insert(destination - usize::from(source < destination), item);
-            }
+            crate::device::move_serial_unit(&mut project.main_devices, source, destination)?;
             Ok(Created::None)
         }
         _ => Err(Invalid("not a main device command")),

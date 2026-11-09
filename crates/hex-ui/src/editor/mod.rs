@@ -22,6 +22,7 @@ mod arrangement_seek;
 mod audio_admission;
 mod audio_event_editor;
 mod audio_unavailable;
+mod automation_take_recovery;
 mod automation_view;
 mod bounce;
 mod browser;
@@ -432,6 +433,7 @@ actions!(
         RecoverSavedProject,
         RecoverPreviousSave,
         RecoverKeptSession,
+        OpenAutomationRecovery,
         OpenSettings,
         OpenTuning,
         CloseTuning,
@@ -839,6 +841,7 @@ pub(super) struct EditorView {
     track_gain_controls: track_gain::Controls,
     gain_recorder: gain_recording::Recorder,
     native_automation_recorder: native_automation_recording::Recorder,
+    automation_take_recovery: automation_take_recovery::Recovery,
     midi_recorder: midi_recording::Recorder,
     routing_open: bool,
     routing_page: usize,
@@ -950,6 +953,7 @@ pub(super) struct EditorView {
     group_selection_history: group_selection::SelectionHistory,
     pending_clip_move: Option<pending_clip_move::Pending>,
     close_prompt_open: bool,
+    automation_close_preflight: close::AutomationClosePreflight,
     export_pending: bool,
     bounce_control: Option<hex_session::service::ExportControl>,
     /// `b` is held during the active Arrangement clip drag; release bounces.
@@ -1622,6 +1626,7 @@ impl EditorView {
             track_gain_controls: track_gain::Controls::default(),
             gain_recorder: gain_recording::Recorder::default(),
             native_automation_recorder: native_automation_recording::Recorder::default(),
+            automation_take_recovery: automation_take_recovery::Recovery::default(),
             midi_recorder: midi_recording::Recorder::default(),
             routing_open: false,
             routing_page: 0,
@@ -1728,6 +1733,7 @@ impl EditorView {
             group_selection_history: group_selection::SelectionHistory::default(),
             pending_clip_move: None,
             close_prompt_open: false,
+            automation_close_preflight: Default::default(),
             export_pending: false,
             bounce_control: None,
             drag_bounce_held: false,

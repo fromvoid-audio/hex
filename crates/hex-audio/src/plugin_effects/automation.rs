@@ -385,13 +385,14 @@ mod retained_tests {
         program: &PreparedForeignAutomation,
     ) {
         let transport = TransportProgram(program.borrow());
-        let mut output = [[0.0; 2]; 8];
+        let input = [[0.0; 2]; 256];
+        let mut output = [[0.0; 2]; 256];
         let measured = allocation_counter::measure(|| {
             callback.begin_physical_callback(frames).unwrap();
             callback
                 .stage_segment_with_authored_parameters(
                     0,
-                    &[[0.0; 2]; 8][..frames],
+                    &input[..frames],
                     &[],
                     &mut output[..frames],
                     SegmentTiming {
@@ -416,6 +417,127 @@ mod retained_tests {
             (0, 0, 0, 0)
         );
     }
+    #[test]
+    fn full_constant_base_program_stages_without_callback_allocation_or_drop() {
+        let project = hex_project::Project::new(8000).unwrap();
+        let capabilities = (0..MAX_PARAMETER_POINTS as u32)
+            .map(|id| hex_engine::foreign_automation::ParameterCapability {
+                id,
+                steps: 0,
+                normalized_base_bits: (f64::from(id) / MAX_PARAMETER_POINTS as f64).to_bits(),
+            })
+            .collect::<Vec<_>>();
+        let program = hex_engine::foreign_automation::Program::prepare(
+            &[],
+            [1; 16],
+            &capabilities,
+            project.tempo_map(),
+            hex_engine::foreign_automation::QuantumProfile::for_arrangement_instrument(8, None),
+        )
+        .unwrap()
+        .unwrap();
+        let binding = ForeignProcessorBinding {
+            root: 1,
+            instance: 2,
+            graph: 3,
+            epoch: 4,
+        };
+        let bytes = program.backing_bytes().unwrap();
+        let program =
+            PreparedForeignAutomation::new(binding, NonZeroU64::new(1).unwrap(), program, bytes)
+                .unwrap();
+        let (_control, mut callback, mut worker) = channel(binding, 8).unwrap();
+        stage(&mut callback, 8, 0, &program);
+        let request = worker.receive_request().unwrap().unwrap();
+        assert_eq!(request.parameter_capacity, 0);
+        assert_eq!(
+            request.block.parameters.as_slice().len(),
+            MAX_PARAMETER_POINTS
+        );
+        for (point, expected) in request
+            .block
+            .parameters
+            .as_slice()
+            .iter()
+            .zip(&capabilities)
+        {
+            assert_eq!((point.frame, point.id), (0, expected.id));
+            assert_eq!(point.normalized.to_bits(), expected.normalized_base_bits);
+        }
+        worker.complete(request.block).unwrap();
+    }
+
+    #[test]
+    fn two_sparse_curves_stage_without_callback_allocation_or_drop() {
+        use hex_engine::foreign_automation::{ParameterCapability, Program, QuantumProfile};
+        use hex_lattice_contract::DeviceAutomationTarget;
+        use hex_project::{
+            AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
+            BeatTime, DeviceAutomation, Project,
+        };
+
+        let project = Project::new(8000).unwrap();
+        let class = [1; 16];
+        let make_point = |beat, value, outgoing| AutomationPoint {
+            beat,
+            value: AutomationValue::new(value).unwrap(),
+            outgoing,
+        };
+        let make_lane = |id, before, after| DeviceAutomation {
+            target: DeviceAutomationTarget::Vst3 { parameter: id },
+            vst3_class: Some(class),
+            read_selection: AutomationReadSelection::Authored,
+            points: vec![
+                make_point(BeatTime::ZERO, before, AutomationInterpolation::Linear),
+                make_point(BeatTime::ONE, after, AutomationInterpolation::Step),
+            ],
+            touch: Vec::new(),
+        };
+        let capabilities = [94, 148].map(|id| ParameterCapability {
+            id,
+            steps: 0,
+            normalized_base_bits: 0,
+        });
+        let tempo = project.tempo_map();
+        let program = Program::prepare(
+            &[make_lane(94, 0.0, 1.0), make_lane(148, 1.0, 0.0)],
+            class,
+            &capabilities,
+            tempo,
+            QuantumProfile::for_arrangement_instrument(256, None),
+        )
+        .unwrap()
+        .unwrap();
+        let binding = ForeignProcessorBinding {
+            root: 1,
+            instance: 2,
+            graph: 3,
+            epoch: 4,
+        };
+        let bytes = program.backing_bytes().unwrap();
+        let program =
+            PreparedForeignAutomation::new(binding, NonZeroU64::MIN, program, bytes).unwrap();
+        let (_control, mut callback, mut worker) = channel(binding, 256).unwrap();
+        let corner = tempo.beat_to_frame(BeatTime::ONE).unwrap();
+        stage(&mut callback, 256, corner - 64, &program);
+        let request = worker.receive_request().unwrap().unwrap();
+        let points = request.block.parameters.as_slice();
+        assert_eq!(points.len(), 6);
+        assert_eq!(
+            (points[2].frame, points[2].id, points[2].normalized),
+            (64, 94, 1.0)
+        );
+        assert_eq!(
+            (points[3].frame, points[3].id, points[3].normalized),
+            (64, 148, 0.0)
+        );
+        assert_eq!(
+            request.parameter_capacity,
+            MAX_PARAMETER_POINTS - points.len()
+        );
+        worker.complete(request.block).unwrap();
+    }
+
     #[test]
     fn borrowed_versions_finish_the_old_quantum_after_original_graph_owners_drop() {
         let binding = ForeignProcessorBinding {

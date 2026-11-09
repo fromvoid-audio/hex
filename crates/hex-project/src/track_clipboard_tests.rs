@@ -208,6 +208,116 @@ fn normalize_copy(copy: &Track, original: &Track) -> Track {
     }
     t
 }
+
+#[test]
+fn serial_units_copy_with_fresh_internal_parents_and_one_history_step() {
+    let (project, [_, track, _]) = fixture();
+    let mut setup = Editor::new(project, 16).unwrap();
+    let instrument = setup
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let mut ids = Vec::new();
+    for index in 0..4 {
+        let Created::Device(id) = setup
+            .execute(Command::InsertDevice {
+                track,
+                before: (index < 3).then_some(instrument),
+                state: crate::default_instrument_state().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("effect")
+        };
+        ids.push(id);
+    }
+    setup
+        .execute(Command::ReplaceDeviceAutomation {
+            device: ids[1],
+            parameter: hex_lattice_contract::ParameterId::from_static(1),
+            points: vec![crate::AutomationPoint {
+                beat: BeatTime::ZERO,
+                value: crate::AutomationValue::new(0.25).unwrap(),
+                outgoing: crate::AutomationInterpolation::Linear,
+            }],
+        })
+        .unwrap();
+    let mut snapshot = setup.project().snapshot();
+    let original = snapshot
+        .tracks
+        .iter_mut()
+        .find(|item| item.id == track.value())
+        .unwrap();
+    original.devices[1].parent = Some(ids[0].value());
+    original.devices[2].parent = Some(ids[1].value());
+    original.devices[2].bypassed = true;
+    original.devices[2].comparison = original.instrument.as_ref().unwrap().comparison.clone();
+    let project = Project::from_snapshot(snapshot).unwrap();
+    let selection = TrackSelectionIds::new(&[track]).unwrap();
+    for without_clips in [false, true] {
+        for duplicate in [false, true] {
+            let command = if duplicate {
+                Command::DuplicateTracks {
+                    tracks: selection.clone(),
+                    without_clips,
+                }
+            } else {
+                Command::PasteTracks {
+                    clipboard: Arc::new(project.capture_tracks(&selection, without_clips).unwrap()),
+                    destination: crate::TrackDestination {
+                        parent_group: None,
+                        before: None,
+                    },
+                }
+            };
+            let mut editor = Editor::new(project.clone(), 8).unwrap();
+            let refused: Result<_, Invalid> = editor.execute_prepared(command.clone(), |_| {
+                Err::<(), _>(Invalid("prepare refused"))
+            });
+            assert_eq!(refused.unwrap_err(), Invalid("prepare refused"));
+            assert_eq!(editor.project(), &project);
+            assert!(!editor.can_undo());
+            let Created::Tracks { first, .. } = editor.execute(command).unwrap() else {
+                panic!("tracks")
+            };
+            let copy = editor.project().track(first).unwrap();
+            let original = project.track(track).unwrap();
+            assert_eq!(copy.instrument_position(), Some(3));
+            assert_eq!(copy.devices().len(), original.devices().len());
+            for (index, (copied, old)) in copy.devices().iter().zip(original.devices()).enumerate()
+            {
+                assert!(!ids.contains(&copied.id()));
+                let expected_parent = match index {
+                    1 => Some(copy.devices()[0].id()),
+                    2 => Some(copy.devices()[1].id()),
+                    _ => None,
+                };
+                assert_eq!(copied.parent(), expected_parent);
+                let mut normalized = copied.clone();
+                normalized.id = old.id();
+                normalized.parent = old.parent();
+                assert_eq!(&normalized, old);
+            }
+            assert_eq!(editor.project().track(track), Some(original));
+            assert_eq!(copy.midi_clips().is_empty(), without_clips);
+            let after = editor.project().snapshot();
+            assert_eq!(
+                Project::from_snapshot(after.clone()).unwrap(),
+                *editor.project()
+            );
+            assert!(editor.undo());
+            let mut before = project.snapshot();
+            before.next_id = editor.project().snapshot().next_id;
+            assert_eq!(editor.project().snapshot(), before);
+            assert!(!editor.can_undo());
+            assert!(editor.redo());
+            assert_eq!(editor.project().snapshot(), after);
+        }
+    }
+}
 #[test]
 fn full_tracks_remap_complete_state_routes_session_and_history_in_canonical_order() {
     let (p, [a, b, c]) = fixture();

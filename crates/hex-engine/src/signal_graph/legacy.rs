@@ -16,6 +16,7 @@ impl RendererRuntime {
         for chain in self
             .device_chains
             .iter_mut()
+            .chain(self.source_effects.chains_mut())
             .chain(self.return_chains.iter_mut())
             .chain(std::iter::once(&mut self.main_chain))
         {
@@ -78,6 +79,12 @@ impl RendererRuntime {
                                 end,
                                 &mut generator,
                                 volume_timing,
+                            )?;
+                            self.source_effects.process_isolated(
+                                project,
+                                index,
+                                frame,
+                                &mut generator,
                             )?;
                             let processed = compensation.process_track(
                                 index,
@@ -180,6 +187,7 @@ impl RendererRuntime {
         for chain in self
             .device_chains
             .iter_mut()
+            .chain(self.source_effects.chains_mut())
             .chain(self.return_chains.iter_mut())
             .chain(std::iter::once(&mut self.main_chain))
         {

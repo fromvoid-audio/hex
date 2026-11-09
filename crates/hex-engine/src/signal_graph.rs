@@ -1401,25 +1401,26 @@ impl SignalGraph {
             .try_reserve_exact(self.plan.nodes().len())
             .map_err(|_| Invalid("could not reserve output tail plan"))?;
         tails.resize(self.plan.nodes().len(), Some(0_u64));
+        let declared_tail = |device: &PreparedRuntimeInstance| {
+            if device.bypassed {
+                return Some(0);
+            }
+            match device.definition.as_ref().map_or(
+                OutputTail::Finite { max_tail_frames: 0 },
+                PreparedProcessorFactory::output_tail,
+            ) {
+                OutputTail::Finite { max_tail_frames } => Some(max_tail_frames),
+                OutputTail::Unbounded => None,
+            }
+        };
         let mut assign = |indices: &[usize], chain: &[PreparedRuntimeInstance]| {
             if indices.len() != chain.len() {
                 return Err(Invalid("output tail graph does not match device chain"));
             }
             for (&index, device) in indices.iter().zip(chain) {
-                let value = if device.bypassed {
-                    Some(0)
-                } else {
-                    match device.definition.as_ref().map_or(
-                        OutputTail::Finite { max_tail_frames: 0 },
-                        PreparedProcessorFactory::output_tail,
-                    ) {
-                        OutputTail::Finite { max_tail_frames } => Some(max_tail_frames),
-                        OutputTail::Unbounded => None,
-                    }
-                };
                 *tails
                     .get_mut(index)
-                    .ok_or(Invalid("output tail node is missing"))? = value;
+                    .ok_or(Invalid("output tail node is missing"))? = declared_tail(device);
             }
             Ok(())
         };
@@ -1435,6 +1436,20 @@ impl SignalGraph {
             assign(&plan.devices, &bus.device_chain)?;
         }
         assign(&self.main_devices, &project.main_device_chain)?;
+        for recipe in &project.source_effects {
+            let generator = self
+                .tracks
+                .get(recipe.receiver)
+                .and_then(|track| track.generator)
+                .ok_or(Invalid("source effect tail has no prepared generator"))?;
+            let tail = recipe
+                .instances
+                .iter()
+                .try_fold(0_u64, |sum, device| sum.checked_add(declared_tail(device)?));
+            *tails
+                .get_mut(generator)
+                .ok_or(Invalid("source effect tail node is missing"))? = tail;
+        }
 
         // None means an unbounded or overflowing path. Keeping it in the DAG
         // allows an unrelated selected capture to remain independently valid.
