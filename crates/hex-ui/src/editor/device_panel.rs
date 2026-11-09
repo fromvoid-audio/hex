@@ -2688,6 +2688,28 @@ fn render_instrument(
         };
         let gain =
             view.sampler_parameter_control(track, device, hex_engine::SamplerParameter::Gain, cx);
+        let modulation_view = device_view.as_ref().ok().filter(|_| {
+            view.document_audio_mode == hex_session::DocumentAudioMode::Resident
+                && device.state().asset_references().len() == 1
+                && view
+                    .state
+                    .as_ref()
+                    .and_then(|state| state.project.track(track))
+                    .is_some_and(hex_project::Track::receives_source_audio)
+        });
+        let gain_overlay = modulation_view
+            .and_then(|metadata| {
+                metadata
+                    .parameters
+                    .iter()
+                    .find(|row| row.descriptor.id == hex_engine::SAMPLER_GAIN_PARAMETER)
+            })
+            .and_then(|target| modulators::target_overlay(view, cx, device_id, target));
+        let gain = div()
+            .relative()
+            .children([gain])
+            .children(gain_overlay)
+            .into_any_element();
         let pitch = view.sampler_parameter_control(
             track,
             device,
@@ -2763,7 +2785,9 @@ fn render_instrument(
             .child(overview)
             .child(controls)
             .child(details);
-        device_frame(
+        let modulation = modulation_view
+            .and_then(|metadata| modulators::panel(view, cx, device, metadata, false));
+        hex_widgets::device_frame_with_modulators(
             device_drag_title(
                 view,
                 cx,
@@ -2775,6 +2799,7 @@ fn render_instrument(
             leading,
             header_actions,
             body,
+            modulation,
         )
     } else {
         match &device_view {
