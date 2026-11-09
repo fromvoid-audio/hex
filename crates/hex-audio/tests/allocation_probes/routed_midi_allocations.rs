@@ -466,6 +466,19 @@ fn source_delay_history_survives_live_receiver_move_without_callback_allocations
         })
         .unwrap();
     let moved = prepare(editor.project(), definitions.project());
+    let dry = Arc::new(
+        PreparedRevision::prepare_with_device_resources(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::clone(&table),
+            None,
+            &hex_engine::audio_transform::AudioTransformPreparation::default(),
+            &resources,
+            0,
+            &cancel,
+        )
+        .unwrap(),
+    );
     definitions
         .execute(Command::SetDeviceBypass {
             device: child,
@@ -503,7 +516,7 @@ fn source_delay_history_survives_live_receiver_move_without_callback_allocations
     let old = publish(&mut control, first);
     control.command(PlaybackCommand::Play).unwrap();
 
-    let mut compare = || {
+    let mut compare = |callback: &mut prepared::Callback| {
         let mut actual = [[0.0; 2]; 256];
         let mut expected = [[0.0; 2]; 256];
         reference.render(&mut expected).unwrap();
@@ -519,20 +532,72 @@ fn source_delay_history_survives_live_receiver_move_without_callback_allocations
         assert!(expected.iter().flatten().any(|sample| sample.abs() > 1e-5));
         actual
     };
-    let wet = compare();
+    let wet = compare(&mut callback);
     assert!(wet[..100].iter().flatten().all(|sample| *sample == 0.0));
     let rejected = publish(&mut control, changed);
-    compare();
+    compare(&mut callback);
     assert_ne!(old, rejected);
     assert_eq!(control.status.applied_revision.load(Ordering::Acquire), old);
     control.reclaim();
     assert_eq!(control.unreturned_resident_graphs_on_control(), Some(1));
 
-    let next = publish(&mut control, moved);
-    compare();
+    let next = publish(&mut control, Arc::clone(&moved));
+    compare(&mut callback);
     assert_eq!(
         control.status.applied_revision.load(Ordering::Acquire),
         next
+    );
+    control.reclaim();
+    assert_eq!(control.unreturned_resident_graphs_on_control(), Some(1));
+
+    let rejected_removal = publish(&mut control, Arc::clone(&dry));
+    compare(&mut callback);
+    assert_ne!(rejected_removal, next);
+    assert_eq!(
+        control.status.applied_revision.load(Ordering::Acquire),
+        next
+    );
+    control.reclaim();
+
+    let render = |callback: &mut prepared::Callback| {
+        let mut pcm = [[0.0; 2]; 256];
+        measured(|| {
+            callback.begin_block();
+            callback.render(&mut pcm).unwrap();
+            callback.finish_gain_recording_quantum(true);
+        });
+        pcm
+    };
+    control.stop();
+    assert_eq!(render(&mut callback), [[0.0; 2]; 256]);
+    let removed = publish(&mut control, dry);
+    assert_eq!(render(&mut callback), [[0.0; 2]; 256]);
+    assert_eq!(
+        control.status.applied_revision.load(Ordering::Acquire),
+        removed
+    );
+    control.reclaim();
+
+    control.command(PlaybackCommand::Play).unwrap();
+    let dry_pcm = render(&mut callback);
+    assert!(
+        dry_pcm[..100]
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 1e-5)
+    );
+    let attached = publish(&mut control, moved);
+    let wet_pcm = render(&mut callback);
+    assert!(wet_pcm[..100].iter().flatten().all(|sample| *sample == 0.0));
+    assert!(
+        wet_pcm[160..]
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 1e-5)
+    );
+    assert_eq!(
+        control.status.applied_revision.load(Ordering::Acquire),
+        attached
     );
     control.reclaim();
     assert_eq!(control.unreturned_resident_graphs_on_control(), Some(1));

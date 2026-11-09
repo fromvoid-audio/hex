@@ -55,15 +55,21 @@ pub(in crate::service) fn recover_sealed(
     expected_target: DraftTarget,
     expected: DraftProvenance,
     path: &Path,
+    receipt: Option<RecoveryCopyReceipt>,
 ) -> Result<(Box<hex_project::Command>, TakePublication), String> {
     let result = (|| {
-        let mut take = CompletedAutomationTake::open_on_control(
-            path,
-            DraftReadLimits {
-                max_source_bytes: hex_storage::MAX_PROJECT_DOCUMENT_BYTES as u64,
-            },
-        )
-        .map_err(|error| error.to_string())?;
+        let limits = DraftReadLimits {
+            max_source_bytes: hex_storage::MAX_PROJECT_DOCUMENT_BYTES as u64,
+        };
+        let mut take = match receipt {
+            Some(receipt) => receipt.open_completed_on_control(
+                path,
+                limits,
+                hex_project::MAX_DEVICE_AUTOMATION_POINTS as u64,
+            )?,
+            None => CompletedAutomationTake::open_on_control(path, limits)
+                .map_err(|error| error.to_string())?,
+        };
         if take.target() != expected_target {
             return Err("sealed recovery belongs to another device or parameter".into());
         }
