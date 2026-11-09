@@ -487,6 +487,7 @@ impl PreparedEq8 {
             band_targets_pending: self.admitted[..automation::GAIN_SLOT].iter().any(|&v| v),
             sample_rate: self.sample_rate,
             mode: self.mode,
+            canonical_mode: self.mode,
             current_gain: self.output_gain,
             target_gain: self.output_gain,
             coefficients,
@@ -567,6 +568,7 @@ pub struct Eq8Runtime {
     band_targets_pending: bool,
     sample_rate: u32,
     mode: ChannelMode,
+    canonical_mode: ChannelMode,
     current_gain: f64,
     target_gain: f64,
     coefficients: [[[Coefficients; 4]; BAND_COUNT]; 2],
@@ -795,7 +797,7 @@ impl Eq8Runtime {
         let mut filtered = source;
         let targets = self
             .routing
-            .effective_target(self.automated_target.as_ref(), self.controls.base().mode);
+            .effective_target(self.automated_target.as_ref(), self.canonical_mode);
         for (channel, (filtered_channel, target)) in filtered.iter_mut().zip(targets).enumerate() {
             for (band, target) in target.iter().enumerate() {
                 if !self.active_bands[channel][band] {
@@ -976,19 +978,15 @@ impl Eq8Runtime {
         let divisor = f64::from(self.smooth_remaining);
         let targets = self
             .routing
-            .effective_target(self.automated_target.as_ref(), self.controls.base().mode);
-        for (current, target) in self
-            .coefficients
-            .iter_mut()
-            .flatten()
-            .flatten()
-            .zip(targets.into_iter().flatten().flatten())
-        {
-            current.b0 += (target.b0 - current.b0) / divisor;
-            current.b1 += (target.b1 - current.b1) / divisor;
-            current.b2 += (target.b2 - current.b2) / divisor;
-            current.a1 += (target.a1 - current.a1) / divisor;
-            current.a2 += (target.a2 - current.a2) / divisor;
+            .effective_target(self.automated_target.as_ref(), self.canonical_mode);
+        for (current, target) in self.coefficients.iter_mut().zip(targets) {
+            for (current, target) in current.iter_mut().flatten().zip(target.iter().flatten()) {
+                current.b0 += (target.b0 - current.b0) / divisor;
+                current.b1 += (target.b1 - current.b1) / divisor;
+                current.b2 += (target.b2 - current.b2) / divisor;
+                current.a1 += (target.a1 - current.a1) / divisor;
+                current.a2 += (target.a2 - current.a2) / divisor;
+            }
         }
         self.smooth_remaining -= 1;
         if self.smooth_remaining == 0 {
@@ -1003,7 +1001,7 @@ impl Eq8Runtime {
     fn refresh_active_bands(&mut self) {
         let targets = self
             .routing
-            .effective_target(self.automated_target.as_ref(), self.controls.base().mode);
+            .effective_target(self.automated_target.as_ref(), self.canonical_mode);
         for (channel, target) in targets.into_iter().enumerate() {
             for (band, target) in target.iter().enumerate() {
                 self.active_bands[channel][band] = (0..4).any(|stage| {

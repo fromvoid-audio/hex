@@ -175,7 +175,7 @@ fn design(
 impl Eq8Runtime {
     pub(super) fn current_target(&self) -> [&CoefficientBank; 2] {
         self.routing
-            .effective_target(self.automated_target.as_ref(), self.controls.base().mode)
+            .effective_target(self.automated_target.as_ref(), self.canonical_mode)
     }
     fn enable_admitted(&self, bank: usize, band: usize) -> bool {
         slot(parameter::enabled(bank, band)).is_some_and(|i| self.controls.admitted(i))
@@ -216,7 +216,7 @@ impl Eq8Runtime {
     pub(super) fn set_automation_target(&mut self, target: Option<[[BandStages; BAND_COUNT]; 2]>) {
         let changed = self
             .routing
-            .effective_target(target.as_ref(), self.controls.base().mode)
+            .effective_target(target.as_ref(), self.canonical_mode)
             != self.current_target();
         let replaced = target.is_some() || self.automated_target.is_some();
         self.automated_target = target;
