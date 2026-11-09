@@ -97,7 +97,7 @@ impl Plugins {
         {
             return Err("vst3 editor recording scope differs".into());
         }
-        let binding = self
+        let source = self
             .sources
             .iter()
             .rev()
@@ -108,8 +108,16 @@ impl Plugins {
                     && source.project_generation == input.context.project_generation
                     && source.binding.root == applied.output_identity
             })
-            .map(|source| source.binding)
             .ok_or("the selected vst3 editor source is unavailable on this output")?;
+        if source
+            .authored
+            .as_ref()
+            .and_then(AuthoredSelection::dense_parameter)
+            .is_some()
+        {
+            return Err("vst3 editor touch needs a source without dense modulation".into());
+        }
+        let binding = source.binding;
         let (target, plan) = match input.target {
             PluginEditorRecordingTarget::Single {
                 parameter, reading, ..

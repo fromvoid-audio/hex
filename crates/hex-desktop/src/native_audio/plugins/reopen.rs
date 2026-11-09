@@ -250,7 +250,7 @@ impl Plugins {
             )
         })();
         let binding = selected.and_then(|selected| {
-            let authored = AuthoredSelection::from_targets(input.authored_plugin_targets(device))?;
+            let authored = edits::requested_selection(&input, device)?;
 
             self.host
                 .as_ref()
