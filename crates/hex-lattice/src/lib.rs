@@ -63,7 +63,9 @@ pub use modulation::{
 };
 pub use modulation_runtime::ModulationRuntime;
 pub use modulation_source_routes::{SourceModulationParameter, SourceModulationRoute};
-pub use modulation_sources::{ModulationSourceBank, PreparedModulationSource};
+pub use modulation_sources::{
+    ModulationMathOperation, ModulationSourceBank, PreparedModulationSource,
+};
 pub use owned_processor::{
     MAX_RESERVED_BYPASS_FRAMES, OwnedProcessorRuntime, PreparedOwnedProcessorRuntime,
     PreparedProcessorFactory, PreparedRuntimeDevice, PreparedRuntimeInstance,

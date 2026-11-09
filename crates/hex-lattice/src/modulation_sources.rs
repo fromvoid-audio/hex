@@ -74,6 +74,37 @@ fn render_rate_route(
     Ok(())
 }
 
+/// Arithmetic performed after applying modulation to each signed input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModulationMathOperation {
+    Multiply,
+    Add,
+    Subtract,
+    Minimum,
+    Maximum,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct MathControls {
+    inputs: [f32; 2],
+    operation: ModulationMathOperation,
+}
+impl MathControls {
+    fn sample(self, offsets: [f64; 2]) -> f32 {
+        let [a, b] = std::array::from_fn(|index| {
+            (f64::from(self.inputs[index]) + 2.0 * offsets[index]).clamp(-1.0, 1.0)
+        });
+        match self.operation {
+            ModulationMathOperation::Multiply => a * b,
+            ModulationMathOperation::Add => a + b,
+            ModulationMathOperation::Subtract => a - b,
+            ModulationMathOperation::Minimum => a.min(b),
+            ModulationMathOperation::Maximum => a.max(b),
+        }
+        .clamp(-1.0, 1.0) as f32
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum SourceState {
     Lfo {
@@ -83,6 +114,7 @@ enum SourceState {
     Follower(EnvelopeFollower),
     AudioRate,
     Macro(f32),
+    Math(MathControls),
     Random(RandomHold),
 }
 
@@ -108,7 +140,7 @@ impl SourceState {
             (Self::Follower(follower), Self::Follower(old)) => follower.inherit_envelope(&old),
             // The candidate's authored value is complete. There is no
             // temporal history to carry from the prior graph.
-            (Self::Macro(_), Self::Macro(_)) => {}
+            (Self::Macro(_), Self::Macro(_)) | (Self::Math(_), Self::Math(_)) => {}
             (Self::AudioRate, Self::AudioRate) => {}
             (Self::Random(random), Self::Random(old)) => random.inherit_history(&old),
             _ => return false,
@@ -142,6 +174,10 @@ impl PreparedModulationSource {
         matches!(
             (parameter, self.initial),
             (SourceModulationParameter::MacroValue, SourceState::Macro(_))
+                | (
+                    SourceModulationParameter::MathA | SourceModulationParameter::MathB,
+                    SourceState::Math(_)
+                )
                 | (
                     SourceModulationParameter::FreeLfoRate,
                     SourceState::Lfo {
@@ -294,6 +330,27 @@ impl PreparedModulationSource {
             id,
             output: ModulationOutputId::MAIN,
             initial: SourceState::Macro(value),
+            sample_rate: f64::from(sample_rate),
+        })
+    }
+
+    /// Prepare signed A and B controls with one bipolar output. Incoming
+    /// offsets are normalized to each input's full range before arithmetic.
+    pub fn math(
+        id: ModulationSourceId,
+        sample_rate: u32,
+        inputs: [f32; 2],
+        operation: ModulationMathOperation,
+    ) -> Result<Self, Error> {
+        if !(8_000..=192_000).contains(&sample_rate)
+            || inputs.iter().any(|value| !(-1.0..=1.0).contains(value))
+        {
+            return Err(Error::InvalidParameterValue);
+        }
+        Ok(Self {
+            id,
+            output: ModulationOutputId::MAIN,
+            initial: SourceState::Math(MathControls { inputs, operation }),
             sample_rate: f64::from(sample_rate),
         })
     }
@@ -625,6 +682,7 @@ impl ModulationSourceBank {
                     }
                 }
                 SourceState::Macro(value) => output.fill(*value),
+                SourceState::Math(controls) => output.fill(controls.sample([0.0; 2])),
                 SourceState::Random(random) => random.render(output),
             }
         }
@@ -636,8 +694,8 @@ impl ModulationSourceBank {
         Ok(())
     }
 
-    /// Upstream buffers are complete before this target renders. A prepared
-    /// group contains only one typed target parameter and excludes self edges.
+    /// Upstream buffers are complete before this target renders. Each group
+    /// names one target output and excludes self edges.
     fn render_routed_sources(
         &mut self,
         frames: usize,
@@ -655,17 +713,19 @@ impl ModulationSourceBank {
             let (target, after) = target_and_after
                 .split_first_mut()
                 .ok_or(Error::InvalidDescriptor)?;
+            let contribution = |route: &PreparedSourceRoute, frame| {
+                let source = if route.source < index {
+                    &before[route.source]
+                } else {
+                    &after[route.source - index - 1]
+                };
+                route.contribution.sample(source.samples[frame])
+            };
             let sum_at = |frame| -> f64 {
-                let mut sum = 0.0;
-                for route in incoming {
-                    let source = if route.source < index {
-                        &before[route.source]
-                    } else {
-                        &after[route.source - index - 1]
-                    };
-                    sum += route.contribution.sample(source.samples[frame]);
-                }
-                sum
+                incoming
+                    .iter()
+                    .map(|route| contribution(route, frame))
+                    .sum()
             };
             let output = target
                 .samples
@@ -680,6 +740,20 @@ impl ModulationSourceBank {
                         } else {
                             (f64::from(*base) + sum).clamp(0.0, 1.0) as f32
                         };
+                    }
+                }
+                (
+                    SourceModulationParameter::MathA | SourceModulationParameter::MathB,
+                    SourceState::Math(controls),
+                ) => {
+                    for (frame, sample) in output.iter_mut().enumerate() {
+                        let mut offsets = [0.0; 2];
+                        for route in incoming {
+                            let input =
+                                usize::from(route.parameter == SourceModulationParameter::MathB);
+                            offsets[input] += contribution(route, frame);
+                        }
+                        *sample = controls.sample(offsets);
                     }
                 }
                 (
@@ -839,6 +913,28 @@ impl ModulationSourceBank {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn math_checks_bounds_and_emits_signed_arithmetic_at_stock_values() {
+        use ModulationMathOperation as Op;
+        let id = ModulationSourceId::new(1).unwrap();
+        for (operation, inputs, expected) in [
+            (Op::Multiply, [-0.5, 0.25], -0.125),
+            (Op::Add, [0.75, 0.75], 1.0),
+            (Op::Subtract, [-0.75, 0.75], -1.0),
+            (Op::Minimum, [-0.5, 0.25], -0.5),
+            (Op::Maximum, [-0.5, 0.25], 0.25),
+        ] {
+            let source = PreparedModulationSource::math(id, 48_000, inputs, operation).unwrap();
+            let mut bank = ModulationSourceBank::new(&[source], 8).unwrap();
+            bank.begin();
+            bank.render_chunk(3).unwrap();
+            assert_eq!(bank.samples(id), Some([expected; 3].as_slice()));
+        }
+        for inputs in [[f32::NAN, 0.0], [0.0, 1.25]] {
+            assert!(PreparedModulationSource::math(id, 48_000, inputs, Op::Add).is_err());
+        }
+    }
 
     #[test]
     fn random_modulation_rolls_back_and_restarts_from_the_authored_seed() {
