@@ -321,8 +321,10 @@ fn closed_delay_graph_budget_refuses_before_allocating_any_ring() {
 }
 
 #[test]
-fn delay_sample_rate_feedback_and_mix_retry_without_allocating_or_freeing_rings() {
-    use hex_devices::delay::{DEFINITION, DRY_WET, DelayDefinition, FEEDBACK, TYPE_ID};
+fn delay_sample_rate_controls_retry_without_allocating_or_freeing_rings() {
+    use hex_devices::delay::{
+        DEFINITION, DRY_WET, DelayDefinition, FEEDBACK, LFO_DELAY, LFO_RATE, TYPE_ID,
+    };
     use hex_lattice::{
         ModulationRoute, ModulationSourceId, ModulationTarget, PreparedModulation,
         PreparedModulationSource, PreparedModulationState, PreparedOwnedProcessorRuntime,
@@ -331,7 +333,7 @@ fn delay_sample_rate_feedback_and_mix_retry_without_allocating_or_freeing_rings(
 
     const RATE: u32 = 8_000;
     let state = DEFINITION.default_state().unwrap();
-    let ids = [FEEDBACK, DRY_WET];
+    let ids = [FEEDBACK, DRY_WET, LFO_DELAY, LFO_RATE];
     let factory = DelayDefinition::prepare_owned(&state, RATE, &ids).unwrap();
     let targets = ids.map(|id| ModulationTarget {
         descriptor: factory.parameter_automation_descriptor(id).unwrap(),
