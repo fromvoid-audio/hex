@@ -6529,12 +6529,24 @@ fn modulation_panel_maps_all_fm4_carriers_through_the_scrolled_instrument_body(
 
     let targets = [1, 2, 3, 4].map(parameter::carrier);
     let body = Box::leak(format!("device-body-{}", device.value()).into_boxed_str());
+    let shell = Box::leak(format!("device-shell-{}", device.value()).into_boxed_str());
+    let viewport = |visual: &mut VisualTestContext| {
+        visual
+            .debug_bounds(body)
+            .unwrap()
+            .intersect(&visual.debug_bounds(shell).unwrap())
+    };
     for (index, target) in targets.into_iter().enumerate() {
         let key = map_key(target);
         let selector = Box::leak(key.clone().into_boxed_str());
-        let bounds = visual.debug_bounds(body).unwrap();
-        let position = visual.debug_bounds(selector).unwrap().center();
-        if !bounds.contains(&position) {
+        // The inner row window overscans its scroll area. The outer housing
+        // can also clip it when the modulator strip is open.
+        for _ in 0..3 {
+            let bounds = viewport(&mut visual);
+            let position = visual.debug_bounds(selector).unwrap().center();
+            if bounds.contains(&position) {
+                break;
+            }
             visual.simulate_event(gpui::ScrollWheelEvent {
                 position: bounds.center(),
                 delta: gpui::ScrollDelta::Pixels(point(px(0.0), bounds.center().y - position.y)),
@@ -6542,7 +6554,12 @@ fn modulation_panel_maps_all_fm4_carriers_through_the_scrolled_instrument_body(
             });
             visual.run_until_parked();
         }
-        assert!(bounds.contains(&visual.debug_bounds(selector).unwrap().center()));
+        let bounds = viewport(&mut visual);
+        let position = visual.debug_bounds(selector).unwrap().center();
+        assert!(
+            bounds.contains(&position),
+            "{key} at {position:?} outside {bounds:?}"
+        );
         click(&mut visual, key, false);
         assert!(
             editor.read_with(cx, |view, _| {
