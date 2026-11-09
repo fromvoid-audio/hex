@@ -6595,15 +6595,42 @@ fn modulation_panel_maps_all_fm4_carriers_through_the_scrolled_instrument_body(
         current.modulation().clone()
     });
     let route = mapped.routes()[0].id;
+    for _ in 0..3 {
+        let strip = visual.debug_bounds("device-modulator-scroll").unwrap();
+        let housing = visual.debug_bounds(shell).unwrap();
+        if housing.contains(&strip.origin) {
+            break;
+        }
+        visual.simulate_event(gpui::ScrollWheelEvent {
+            position: viewport(&mut visual).center(),
+            delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(1000.0))),
+            ..Default::default()
+        });
+        visual.run_until_parked();
+    }
+    let housing = visual.debug_bounds(shell).unwrap();
+    let strip = visual.debug_bounds("device-modulator-scroll").unwrap();
+    assert!(
+        housing.contains(&strip.origin),
+        "the modulator strip is clipped"
+    );
     for expected in [0.05, 0.0, -0.05] {
         click(
             &mut visual,
             format!("modulation-route-{}-less", route.value()),
             true,
         );
-        pump_until(&editor, cx, |view| {
-            (bank(view).routes()[0].amount.get() - expected).abs() < 1e-6
-        });
+        let adjusted =
+            |view: &EditorView| (bank(view).routes()[0].amount.get() - expected).abs() < 1e-6;
+        assert!(
+            editor.read_with(cx, |view, _| {
+                view.worker_requests_pending > 0
+                    || !view.pending_requests.is_empty()
+                    || adjusted(view)
+            }),
+            "the depth adjustment did not dispatch"
+        );
+        pump_until(&editor, cx, adjusted);
         visual.run_until_parked();
     }
     editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
