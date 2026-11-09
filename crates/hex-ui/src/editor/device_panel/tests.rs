@@ -6238,10 +6238,23 @@ fn open_operator_options(visual: &mut VisualTestContext, device: DeviceId) {
 }
 
 #[gpui::test]
+fn modulation_panel_maps_sparse_eq_output_gain(cx: &mut TestAppContext) {
+    use hex_engine::eq::{EQ_TYPE_ID, OUTPUT_GAIN};
+    assert_modulation_mapping(
+        cx,
+        EQ_TYPE_ID,
+        "lfo",
+        hex_engine::lfo_modulator::TYPE_ID,
+        &[OUTPUT_GAIN],
+    );
+}
+
+#[gpui::test]
 fn modulation_panel_adds_and_maps_an_lfo_without_editing_base_values(cx: &mut TestAppContext) {
     use hex_devices::utility::parameter;
     assert_modulation_mapping(
         cx,
+        hex_devices::utility::UTILITY_TYPE_ID,
         "lfo",
         hex_engine::lfo_modulator::TYPE_ID,
         &[parameter::GAIN, parameter::WIDTH],
@@ -6444,6 +6457,7 @@ fn modulation_panel_maps_continuous_and_discrete_eq8_controls_without_editing_au
 fn modulation_panel_adds_and_maps_an_envelope_follower(cx: &mut TestAppContext) {
     assert_modulation_mapping(
         cx,
+        hex_devices::utility::UTILITY_TYPE_ID,
         "follower",
         hex_engine::follower_modulator::TYPE_ID,
         &[hex_devices::utility::parameter::GAIN],
@@ -6455,6 +6469,7 @@ fn modulation_panel_adds_and_maps_a_manual_macro(cx: &mut TestAppContext) {
     use hex_devices::utility::parameter;
     assert_modulation_mapping(
         cx,
+        hex_devices::utility::UTILITY_TYPE_ID,
         "macro",
         hex_engine::macro_modulator::TYPE_ID,
         &[parameter::GAIN, parameter::WIDTH],
@@ -6729,6 +6744,7 @@ fn modulation_panel_maps_both_lfo_rate_modes_and_preserves_assignments_on_sync(
 fn modulation_panel_adds_and_maps_seeded_random(cx: &mut TestAppContext) {
     assert_modulation_mapping(
         cx,
+        hex_devices::utility::UTILITY_TYPE_ID,
         "random",
         hex_engine::random_modulator::TYPE_ID,
         &[hex_devices::utility::parameter::GAIN],
@@ -6739,6 +6755,7 @@ fn modulation_panel_adds_and_maps_seeded_random(cx: &mut TestAppContext) {
 fn modulation_panel_adds_and_maps_an_audio_rate_modulator(cx: &mut TestAppContext) {
     assert_modulation_mapping(
         cx,
+        hex_devices::utility::UTILITY_TYPE_ID,
         "audio rate",
         hex_engine::audio_rate_modulator::TYPE_ID,
         &[hex_devices::utility::parameter::GAIN],
@@ -6747,11 +6764,12 @@ fn modulation_panel_adds_and_maps_an_audio_rate_modulator(cx: &mut TestAppContex
 
 fn assert_modulation_mapping(
     cx: &mut TestAppContext,
+    device_type: hex_lattice_contract::DeviceTypeId,
     source_kind: &str,
     type_id: hex_lattice_contract::DeviceTypeId,
     targets: &[hex_lattice_contract::ParameterId],
 ) {
-    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let (service, state, track, device) = actor_native_effect_fixture(device_type);
     let original = state.project.device(device).unwrap().state().clone();
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -6931,12 +6949,14 @@ fn assert_modulation_mapping(
     editor.read_with(cx, |view, _| {
         let project = &view.state.as_ref().unwrap().project;
         let current = project.device(device).unwrap();
-        if matches!(
-            type_id,
-            hex_engine::macro_modulator::TYPE_ID
-                | hex_engine::random_modulator::TYPE_ID
-                | hex_engine::audio_rate_modulator::TYPE_ID
-        ) {
+        if device_type == hex_engine::eq::EQ_TYPE_ID
+            || matches!(
+                type_id,
+                hex_engine::macro_modulator::TYPE_ID
+                    | hex_engine::random_modulator::TYPE_ID
+                    | hex_engine::audio_rate_modulator::TYPE_ID
+            )
+        {
             let bytes = hex_storage::encode(project).unwrap();
             let reopened = hex_storage::decode(&bytes).unwrap();
             assert_eq!(
