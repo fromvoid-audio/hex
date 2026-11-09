@@ -270,3 +270,71 @@ fn mode_fade_is_never_quiescent_and_reset_clears_it() {
             .transition_busy_from(live.as_ref())
     );
 }
+
+#[test]
+fn mapped_output_gain_scales_both_sides_of_the_mode_fade_on_the_same_sample() {
+    use hex_lattice::NativeParameterAutomation;
+
+    struct Readings {
+        gain_route: bool,
+    }
+
+    impl NativeParameterAutomation for Readings {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            &[MODE, OUTPUT_GAIN]
+        }
+
+        fn value_at(&self, id: ParameterId, frame: usize) -> Option<ParameterValue> {
+            match id {
+                MODE => Some(ParameterValue::Choice(if frame < 53 { 0 } else { 2 })),
+                OUTPUT_GAIN => Some(ParameterValue::Float(if self.gain_route {
+                    sample_gain(frame)
+                } else {
+                    1.0
+                })),
+                _ => None,
+            }
+        }
+
+        fn has_sample_rate_modulation(&self, id: ParameterId) -> bool {
+            self.gain_route && id == OUTPUT_GAIN
+        }
+    }
+
+    fn sample_gain(frame: usize) -> f32 {
+        if frame % 4 < 2 { 0.25 } else { 1.5 }
+    }
+
+    const RATE: u32 = 48_000;
+    let factory = runtime::PreparedEq::automated(state(0, 2), RATE, &[MODE, OUTPUT_GAIN]).unwrap();
+    let mut pcm: Vec<_> = (0..389).map(|index| sine(RATE, index)).collect();
+    let mut unity = pcm.clone();
+    let mut reference = factory.create_runtime();
+    reference
+        .process_block_with_automation(
+            &mut unity,
+            None,
+            &Readings { gain_route: false },
+            &EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
+    let mut mapped = factory.create_runtime();
+    mapped
+        .process_block_with_automation(
+            &mut pcm,
+            None,
+            &Readings { gain_route: true },
+            &EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
+    for (index, (frame, reference)) in pcm.into_iter().zip(unity).enumerate() {
+        let expected = reference.map(|sample| sample * sample_gain(index));
+        assert!(
+            frame
+                .into_iter()
+                .zip(expected)
+                .all(|(a, b)| (a - b).abs() < 1e-6),
+            "frame {index} {frame:?} != {expected:?}"
+        );
+    }
+}

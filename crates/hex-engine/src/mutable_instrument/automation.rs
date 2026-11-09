@@ -28,6 +28,13 @@ impl NativeParameterAutomation for OffsetValues<'_> {
     fn parameter_ids(&self) -> &[ParameterId] {
         self.values.parameter_ids()
     }
+    fn normalized_before_clamp(&self, id: ParameterId, offset: usize) -> Option<f64> {
+        self.values
+            .normalized_before_clamp(id, self.offset.checked_add(offset)?)
+    }
+    fn has_sample_rate_modulation(&self, id: ParameterId) -> bool {
+        self.values.has_sample_rate_modulation(id)
+    }
     fn value_at(&self, id: ParameterId, offset: usize) -> Option<ParameterValue> {
         self.values.value_at(id, self.offset.checked_add(offset)?)
     }
