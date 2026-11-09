@@ -1622,7 +1622,7 @@ class MergeTestBudgetTests(unittest.TestCase):
 class ModuleScopeTests(unittest.TestCase):
     """Module-scoped owner tests (user policy, 1 November 2026)."""
 
-    def test_receipt_unit_target_follows_its_module_and_editor_ancestor(self):
+    def test_editor_unit_targets_follow_each_module_and_editor_ancestor(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
         inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
@@ -1631,22 +1631,31 @@ class ModuleScopeTests(unittest.TestCase):
         path = "crates/hex-ui/src/editor/pending_edit.rs"
         filters = plan.module_test_filters(root, [path], inventory, [owner])
         self.assertEqual(filters, {owner: ["editor::pending_edit::"]})
+        viewport = "editor::viewport::"
+        self.assertEqual(plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/viewport.rs"], inventory, [owner]),
+            {owner: [viewport]})
+        both = ["editor::pending_edit::", viewport]
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/tests/unit_pending_edit.rs"], inventory, [owner]), filters)
-        for names, expected in ((filters[owner], True), (["editor::"], True),
-                                (["editor::save::"], False)):
+        self.assertEqual(plan.module_test_filters(
+            root, ["crates/hex-ui/tests/unit_viewport.rs"], inventory, [owner]),
+            {owner: [viewport]})
+        for names, expected in ((filters[owner], {"unit_pending_edit"}),
+                                ([viewport], {"unit_viewport"}),
+                                (both, {"unit_pending_edit", "unit_viewport"}),
+                                (["editor::"], {"unit_pending_edit", "unit_viewport"}),
+                                (["editor::save::"], set())):
             boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
                         "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
                         "module_filters": {owner: names}}
             steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
                                       "boundary": boundary, "cargo_inventory": inventory,
                                       "paths": [path]})
-            unit = [step for step in steps if "unit_pending_edit" in step.argv]
-            self.assertEqual(bool(unit), expected)
-            if unit:
-                self.assertIn("--test", unit[0].argv)
-                self.assertIn(names[0], unit[0].argv)
-                self.assertTrue(ci.module_scoped(unit[0].argv))
+            unit = [step for step in steps if "--test" in step.argv]
+            self.assertEqual({step.argv[step.argv.index("--test") + 1] for step in unit}, expected)
+            for step in unit:
+                self.assertTrue(ci.module_scoped(step.argv))
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
                     "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
                     "module_filters": {}}
