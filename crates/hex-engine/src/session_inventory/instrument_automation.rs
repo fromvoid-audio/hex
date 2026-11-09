@@ -1,8 +1,8 @@
 //! Canonical source-program compilation and bounded control-side storage.
 //!
 //! Programs belong to the receiving source inventory, never a contributor note
-//! template or DSP twin. Public source admission stays closed until rendering
-//! supplies the source-global Arrangement clock. Quotes include retained vectors,
+//! template or DSP twin. Source-global rendering borrows these programs; actual
+//! factory grants and project ownership control admission. Quotes include retained vectors,
 //! normalized staging, descriptor validation and unread-lane insertion overlap.
 use crate::{AudioStorageError, Invalid};
 use hex_lattice::{
