@@ -124,6 +124,12 @@ Session route view-state tests use:
 ```sh
 cargo test -p hex-ui --features ui-unit-tier --test unit_session --locked
 ```
+
+Automation plot tests use:
+
+```sh
+cargo test -p hex-ui --features ui-unit-tier --test unit_automation --locked
+```
 Other `hex-ui` tests have not yet been classified into separate tiers; in
 particular, the real-window receipt and delayed-acknowledgement tests remain in
 the `ui-test-support` library suite.
