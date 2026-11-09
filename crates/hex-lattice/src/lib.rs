@@ -1235,21 +1235,19 @@ impl NativeRuntimeChain {
                     return Err(DeviceContractError::UnsupportedProcessingClass);
                 }
                 for &parameter in modulation.program().parameter_ids() {
-                    if modulation
-                        .program()
-                        .semantics(parameter)
-                        .is_none_or(|semantics| {
-                            semantics.modulation
-                                != hex_lattice_contract::ParameterModulation::SampleRate
-                        })
-                        || instance.definition.as_ref().is_none_or(|factory| {
-                            !factory.supports_parameter_automation(parameter)
-                                || factory.parameter_automation_descriptor(parameter)
-                                    != modulation.program().descriptor(parameter)
-                                || factory.parameter_modulation_semantics(parameter)
-                                    != modulation.program().semantics(parameter)
-                        })
-                        || !runtime.supports_parameter_automation(parameter)
+                    let program = modulation.program();
+                    if instance.definition.as_ref().is_none_or(|factory| {
+                        !factory.supports_parameter_automation(parameter)
+                            || factory.parameter_automation_descriptor(parameter)
+                                != program.descriptor(parameter)
+                            || (program.has_routes(parameter)
+                                && factory.parameter_modulation_semantics(parameter).filter(
+                                    |semantics| {
+                                        semantics.modulation
+                                            == hex_lattice_contract::ParameterModulation::SampleRate
+                                    },
+                                ) != program.semantics(parameter))
+                    }) || !runtime.supports_parameter_automation(parameter)
                     {
                         return Err(DeviceContractError::UnsupportedProcessingClass);
                     }

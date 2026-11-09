@@ -1231,15 +1231,28 @@ fn compile_effect_devices(
                 external_inputs,
             )?
         };
+        let modulation = crate::device_modulation::EffectModulation::plan(
+            device,
+            Some(arrangement),
+            sample_rate,
+            automation.parameter_ids(),
+        )?;
+        let parameters = modulation
+            .as_ref()
+            .map_or_else(|| automation.parameter_ids(), |plan| plan.parameter_ids());
         let prepared_device = registry
-            .prepare_runtime_instance_with_automation(
-                identity,
-                &migrated,
-                context,
-                automation.parameter_ids(),
-            )
+            .prepare_runtime_instance_with_automation(identity, &migrated, context, parameters)
             .map_err(|_| Invalid("native device state or automation could not be prepared"))?;
         let processor = prepared_device.processor;
+        let modulation = modulation
+            .map(|plan| {
+                let definition = registry
+                    .definition(migrated.type_id())
+                    .ok_or(Invalid("modulation requires a native effect provider"))?;
+                plan.prepare(&migrated, definition, processor.as_ref())
+                    .map_err(|error| Invalid(error.0))
+            })
+            .transpose()?;
         // An explicitly admitted unavailable effect has no factory. Keep its
         // canonical lanes through document staging; the restored foreign
         // worker must still prove its exact metadata before any playback.
@@ -1285,7 +1298,7 @@ fn compile_effect_devices(
                 .map_err(|error| Invalid(error.0))?;
         }
         devices.push(hex_lattice::PreparedRuntimeInstance {
-            modulation: None,
+            modulation,
             automation,
             meter: Default::default(),
             owner,

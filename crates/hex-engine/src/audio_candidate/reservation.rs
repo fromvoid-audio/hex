@@ -156,6 +156,31 @@ impl AudioCandidateReservationQuote {
                 .checked_add(largest)
                 .ok_or(AudioStorageError::Overflow)?;
         }
+        let mut modulation_workspace = 0;
+        for device in project
+            .tracks()
+            .iter()
+            .flat_map(|track| track.devices())
+            .chain(
+                project
+                    .return_tracks()
+                    .iter()
+                    .flat_map(|track| track.devices()),
+            )
+            .chain(project.main_devices())
+        {
+            let (retained, overlap) = crate::device_modulation::EffectModulation::quote(device)
+                .ok_or(AudioStorageError::Overflow)?;
+            quote.metadata_data_bytes = quote
+                .metadata_data_bytes
+                .checked_add(retained)
+                .ok_or(AudioStorageError::Overflow)?;
+            modulation_workspace = modulation_workspace.max(overlap);
+        }
+        quote.compiler_workspace_bytes = quote
+            .compiler_workspace_bytes
+            .checked_add(modulation_workspace)
+            .ok_or(AudioStorageError::Overflow)?;
         if effect_payloads {
             let (bytes, rows) = crate::foreign_automation::candidate::quote(project)?;
             quote.metadata_data_bytes = quote
@@ -244,6 +269,26 @@ impl AudioCandidateReservationQuote {
             .metadata_data_bytes
             .checked_add(crate::compensation::MAX_COMPENSATION_BYTES)
             .ok_or(AudioStorageError::Overflow)?;
+        let (retained, _) = crate::device_modulation::EffectModulation::quote_counts(
+            hex_project::MAX_PROJECT_MODULATORS,
+            hex_project::MAX_PROJECT_MODULATION_ROUTES,
+            hex_project::MAX_PROJECT_MODULATORS,
+        )
+        .ok_or(AudioStorageError::Overflow)?;
+        let (_, overlap) = crate::device_modulation::EffectModulation::quote_counts(
+            hex_project::MAX_MODULATORS_PER_DEVICE,
+            hex_project::MAX_MODULATION_ROUTES_PER_DEVICE,
+            1,
+        )
+        .ok_or(AudioStorageError::Overflow)?;
+        quote.metadata_data_bytes = quote
+            .metadata_data_bytes
+            .checked_add(retained)
+            .ok_or(AudioStorageError::Overflow)?;
+        quote.compiler_workspace_bytes = quote
+            .compiler_workspace_bytes
+            .checked_add(overlap)
+            .ok_or(AudioStorageError::Overflow)?;
         Ok(quote)
     }
     /// Resident constructor cardinalities use the canonical asset ceiling,
@@ -318,7 +363,7 @@ impl AudioCandidateReservationQuote {
 // not user DSP or arbitrary providers. Zero-capacity visitors consume rows too.
 // Fixed: custody/root/tempo/shared/runtime buffers. Track: staging/compiled/mix/
 // gain/meter/chain. Device: original payload, fresh config, definition, meter and
-// concrete runtime twins. Clip/Cell: pair + metadata + source handles. Changes
+// concrete runtime twins, including prepared and runtime modulation. Clip/Cell: pair + metadata + source handles. Changes
 // still face the actual ledger; exceeding a quote is an explicit refusal.
 #[derive(Clone, Copy)]
 enum Kind {
@@ -371,7 +416,7 @@ impl Counts {
             Kind::Return => (32, 16),
             Kind::Point => (4, 2),
             Kind::Track => (64, 32),
-            Kind::Device => (32, 32),
+            Kind::Device => (34, 32),
             Kind::ReverbRings => (2 * hex_devices::reverb::RUNTIME_HEAP_ALLOCATIONS, 0),
             Kind::Sampler => (32, 8),
             Kind::MidiNote => (0, 0),

@@ -114,6 +114,7 @@ pub use native_device_view::{
 pub use sparse_audio::SparseFrameMap;
 
 mod device_automation;
+mod device_modulation;
 mod native_parameter_input;
 pub use device_automation::{
     DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED, NativeParameterInputTarget,
