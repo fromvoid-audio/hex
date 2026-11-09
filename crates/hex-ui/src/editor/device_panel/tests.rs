@@ -6360,7 +6360,7 @@ fn modulation_panel_maps_loaded_sampler_gain_through_its_authored_control(cx: &m
     );
     assert!(editor.read_with(cx, |view, _| {
         let items = &view.context_menu.as_ref().unwrap().items;
-        ["note counter", "ramp"]
+        ["note counter", "ramp", "ahd on release"]
             .into_iter()
             .all(|label| items.iter().any(|item| item.label == label))
     }));
@@ -6492,7 +6492,7 @@ fn modulation_panel_omits_note_sources_from_an_effect_without_events(cx: &mut Te
             .unwrap()
             .items
             .iter()
-            .all(|item| !matches!(item.label, "note counter" | "ramp"))
+            .all(|item| !matches!(item.label, "note counter" | "ramp" | "ahd on release"))
     }));
 }
 
@@ -6761,11 +6761,17 @@ fn modulation_panel_maps_all_four_fm4_oscillator_phases(cx: &mut TestAppContext)
     exercise_fm4_modulation_mapper(cx, Fm4MappingFixture::OscillatorPhases);
 }
 
+#[gpui::test]
+fn modulation_panel_maps_fm4_ahd_release_and_edits_all_controls(cx: &mut TestAppContext) {
+    exercise_fm4_modulation_mapper(cx, Fm4MappingFixture::AhdRelease);
+}
+
 enum Fm4MappingFixture {
     Carriers,
     Pressure,
     Counter,
     Ramp,
+    AhdRelease,
     OscillatorLevels,
     OscillatorPhases,
 }
@@ -6778,6 +6784,7 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
     let pressure = matches!(fixture, Fm4MappingFixture::Pressure);
     let counter = matches!(fixture, Fm4MappingFixture::Counter);
     let ramp = matches!(fixture, Fm4MappingFixture::Ramp);
+    let ahd_release = matches!(fixture, Fm4MappingFixture::AhdRelease);
     let levels = matches!(fixture, Fm4MappingFixture::OscillatorLevels);
     let phases = matches!(fixture, Fm4MappingFixture::OscillatorPhases);
     let service = Service::new(48_000, 8, 8_000_000).unwrap();
@@ -6836,6 +6843,7 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
             "mix",
             "note counter",
             "ramp",
+            "ahd on release",
         ],
     );
     visual.simulate_keystrokes("escape");
@@ -6851,7 +6859,7 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
             .modulation()
             .clone()
     };
-    let kind = if pressure || counter || ramp {
+    let kind = if pressure || counter || ramp || ahd_release {
         click(
             &mut visual,
             format!("add-modulator-{}", device.value()),
@@ -6861,8 +6869,10 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
             "note pressure"
         } else if counter {
             "note counter"
-        } else {
+        } else if ramp {
             "ramp"
+        } else {
+            "ahd on release"
         };
         let index = editor.read_with(cx, |view, _| {
             view.context_menu
@@ -6974,6 +6984,32 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
             visual.run_until_parked();
         }
     }
+    if ahd_release {
+        use hex_engine::ahd_release_modulator::{Curve, Settings};
+        let settings =
+            |view: &EditorView| Settings::decode(&bank(view).sources()[0].state).unwrap();
+        let mut expected = Settings::default();
+        type SettingsEdit = fn(&mut Settings);
+        let edits: [(&str, SettingsEdit); 7] = [
+            ("attack-shorter", |state| state.durations_micros[0] = 2_500),
+            ("hold-longer", |state| state.durations_micros[1] = 40_000),
+            ("decay-shorter", |state| state.durations_micros[2] = 100_000),
+            ("attack-curve", |state| state.curves[0] = Curve::EaseIn),
+            ("decay-curve", |state| state.curves[1] = Curve::EaseIn),
+            ("decay-curve", |state| state.curves[1] = Curve::EaseOut),
+            ("single-trigger", |state| state.single_trigger = true),
+        ];
+        for (suffix, update) in edits {
+            click(
+                &mut visual,
+                format!("ahd on release-{}-{suffix}", source.value()),
+                true,
+            );
+            update(&mut expected);
+            pump_until(&editor, cx, |view| settings(view) == expected);
+            visual.run_until_parked();
+        }
+    }
     if pressure {
         assert!(
             visual
@@ -7036,7 +7072,7 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
     } else {
         [1, 2, 3, 4].map(parameter::carrier)
     };
-    let targets = if pressure || counter || ramp {
+    let targets = if pressure || counter || ramp || ahd_release {
         &controls[..1]
     } else {
         &controls[..]
