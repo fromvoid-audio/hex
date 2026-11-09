@@ -16,6 +16,11 @@ impl DraftReader {
     /// Refuse interrupted, aborted or damaged input without changing its retained bytes.
     /// The ordinary reader remains the recovery path for those drafts.
     pub fn into_completed(self) -> Result<CompletedDraft, DraftError> {
+        if matches!(self.target, DraftTarget::Vst3Group(_)) {
+            return Err(self.error(StorageError::Invalid(
+                "grouped take needs atomic group adoption",
+            )));
+        }
         let DraftOutcome::Finished(end) = self.outcome else {
             return Err(self.error(StorageError::Invalid(
                 "automation draft has no undamaged finished terminal; retain it for recovery",
@@ -31,6 +36,69 @@ impl DraftReader {
             end,
             identity,
         })
+    }
+}
+
+/// One undamaged complete group. Access remains under the existing shared
+/// reader lock; every member is validated before any canonical consumer.
+pub struct CompletedGroupedDraft {
+    reader: DraftReader,
+    target: Vst3GroupTarget,
+    end: DraftClock,
+    identity: AutomationContentIdentity,
+}
+impl DraftReader {
+    pub fn into_completed_group(self) -> Result<CompletedGroupedDraft, DraftError> {
+        let (DraftTarget::Vst3Group(target), DraftOutcome::Finished(end), Some(identity)) =
+            (self.target, self.outcome, self.complete_identity)
+        else {
+            return Err(self.error(StorageError::Invalid(
+                "grouped automation draft is incomplete",
+            )));
+        };
+        Ok(CompletedGroupedDraft {
+            reader: self,
+            target,
+            end,
+            identity,
+        })
+    }
+}
+impl CompletedGroupedDraft {
+    pub fn open(
+        path: impl AsRef<Path>,
+        limits: DraftReadLimits,
+        max_events: u64,
+    ) -> Result<Self, DraftError> {
+        DraftReader::open_bounded(path, limits, max_events)?.into_completed_group()
+    }
+    pub fn target(&self) -> Vst3GroupTarget {
+        self.target
+    }
+    pub fn source(&self) -> &Project {
+        self.reader.source()
+    }
+    pub fn provenance(&self) -> DraftProvenance {
+        self.reader.provenance()
+    }
+    pub fn capture_clock(&self) -> Option<CaptureClock> {
+        self.reader.capture_clock()
+    }
+    pub fn end_clock(&self) -> DraftClock {
+        self.end
+    }
+    pub fn content_identity(&self) -> AutomationContentIdentity {
+        self.identity
+    }
+    pub fn event_count(&self) -> u64 {
+        self.reader.progress().durable_events
+    }
+    pub fn read_events(
+        &mut self,
+        first_ordinal: u64,
+        output: &mut [Option<GroupDraftEvent>],
+    ) -> Result<usize, DraftError> {
+        self.reader.read_group_events(first_ordinal, output)
     }
 }
 
