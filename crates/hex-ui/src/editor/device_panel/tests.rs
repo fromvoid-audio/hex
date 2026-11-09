@@ -6776,7 +6776,8 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
             "macro-4",
             "random",
             "note pressure",
-            "button"
+            "button",
+            "math"
         ],
     );
     visual.simulate_keystrokes("escape");
@@ -7208,6 +7209,120 @@ fn modulation_panel_maps_independent_macro_four_outputs_and_an_incoming_control(
 }
 
 #[gpui::test]
+fn modulation_panel_maps_two_math_inputs_and_the_result(cx: &mut TestAppContext) {
+    use hex_devices::utility::parameter;
+    use hex_engine::math_modulator as math;
+    use hex_project::{DeviceModulation, ModulationDestination};
+
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let base = state.project.device(device).unwrap().state().clone();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1500.0), px(650.0)));
+    visual.run_until_parked();
+    let bank = |view: &EditorView| -> DeviceModulation {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .modulation()
+            .clone()
+    };
+    let click = click_modulator_control;
+    click(&mut visual, "device-modulator-toggle".into(), false);
+    for (index, kind) in ["lfo", "macro", "math"].into_iter().enumerate() {
+        add_modulator_from_menu(&mut visual, device, kind);
+        pump_until(&editor, cx, |view| bank(view).sources().len() == index + 1);
+        visual.run_until_parked();
+    }
+    let slots = editor.read_with(cx, |view, _| bank(view));
+    let lfo = slots.sources()[0].id;
+    let manual = slots.sources()[1].id;
+    let math_source = slots.sources()[2].id;
+    let settings =
+        |view: &EditorView| math::Settings::decode(&bank(view).sources()[2].state).unwrap();
+    let key = |suffix| format!("math-{}-{suffix}", math_source.value());
+    click(&mut visual, key("operation"), true);
+    pump_until(&editor, cx, |view| {
+        settings(view).operation == math::Operation::Add
+    });
+    visual.run_until_parked();
+    click(&mut visual, key("a-more"), true);
+    pump_until(&editor, cx, |view| settings(view).inputs[0] == 0.05);
+    visual.run_until_parked();
+    click(&mut visual, key("b-less"), true);
+    pump_until(&editor, cx, |view| settings(view).inputs[1] == 0.95);
+    visual.run_until_parked();
+    for (index, (name, upstream, input)) in [("lfo", lfo, "a"), ("macro", manual, "b")]
+        .into_iter()
+        .enumerate()
+    {
+        click(
+            &mut visual,
+            format!("{name}-{}-map", upstream.value()),
+            true,
+        );
+        click(
+            &mut visual,
+            format!(
+                "map-math-{input}-{}-{}",
+                device.value(),
+                math_source.value()
+            ),
+            true,
+        );
+        pump_until(&editor, cx, |view| bank(view).routes().len() == index + 1);
+        visual.run_until_parked();
+    }
+    click(&mut visual, key("map"), true);
+    click(
+        &mut visual,
+        format!("map-target-{}-{}", device.value(), parameter::GAIN.value()),
+        false,
+    );
+    pump_until(&editor, cx, |view| bank(view).routes().len() == 3);
+    visual.run_until_parked();
+    let mapped = editor.read_with(cx, |view, _| {
+        let mapped = bank(view);
+        let routes = mapped.routes();
+        for (route, (source, parameter)) in routes
+            .iter()
+            .zip([(lfo, math::INPUT_A), (manual, math::INPUT_B)])
+        {
+            assert_eq!(route.source, source);
+            assert_eq!(
+                route.destination,
+                ModulationDestination::Modulator {
+                    source: math_source,
+                    module_type: math::TYPE_ID,
+                    parameter,
+                }
+            );
+        }
+        assert_eq!(routes[2].source, math_source);
+        assert_eq!(
+            routes[2].destination,
+            ModulationDestination::Device {
+                device_type: base.type_id(),
+                target: hex_project::DeviceAutomationTarget::Parameter(parameter::GAIN),
+                vst3_class: None,
+            }
+        );
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(project.device(device).unwrap().state(), &base);
+        let reopened = hex_storage::decode(&hex_storage::encode(project).unwrap()).unwrap();
+        assert_eq!(&reopened, project.as_ref());
+        mapped
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        bank(view).routes() == &mapped.routes()[..2]
+    });
+}
+
+#[gpui::test]
 fn modulation_panel_closes_the_add_menu_when_its_device_is_removed(cx: &mut TestAppContext) {
     let (service, state, track, device) =
         actor_native_effect_fixture(hex_devices::utility::UTILITY_TYPE_ID);
@@ -7279,6 +7394,7 @@ fn add_modulator_from_menu(visual: &mut VisualTestContext, device: DeviceId, kin
             "random",
             "audio rate",
             "button",
+            "math",
         ]
         .iter()
         .position(|label| *label == kind)

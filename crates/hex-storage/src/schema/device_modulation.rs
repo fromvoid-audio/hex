@@ -387,6 +387,10 @@ pub(crate) fn contains_sampler_modulation(project: &Project) -> bool {
     })
 }
 
+pub(crate) fn contains_math(project: &Project) -> bool {
+    contains_source(project, DeviceTypeId::from_static("hex.modulator.math"))
+}
+
 pub(crate) fn contains_macro_four(project: &Project) -> bool {
     contains_source(
         project,
@@ -483,7 +487,9 @@ pub(crate) fn refuse_legacy(project: &Project) -> Result<(), StorageError> {
     Ok(())
 }
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
-    let version = if contains_sampler_modulation(project) {
+    let version = if contains_math(project) {
+        crate::MATH_MODULATOR_SCHEMA_VERSION
+    } else if contains_sampler_modulation(project) {
         crate::SAMPLER_MODULATION_SCHEMA_VERSION
     } else if contains_macro_four(project) {
         crate::MACRO_FOUR_MODULATOR_SCHEMA_VERSION
@@ -583,6 +589,15 @@ pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError
         return Err(StorageError::Invalid(
             "modulation inventory must be nonempty",
         ));
+    }
+    let math_schema = version == crate::MATH_MODULATOR_SCHEMA_VERSION;
+    if contains_math(&project) != math_schema {
+        return Err(StorageError::Invalid(
+            "math modulators require their matching project schema",
+        ));
+    }
+    if math_schema {
+        return Ok(project);
     }
     if version == crate::SAMPLER_MODULATION_SCHEMA_VERSION {
         if !contains_sampler_modulation(&project) {

@@ -344,6 +344,13 @@ public:
             if(read && (result!=kResultOk || read!=8 || !std::isfinite(restored_manual) || restored_manual<0 || restored_manual>4)) return kResultFalse;
             drag_axis=restored_manual/4.0;
         }
+        if(fault==grouped_instrument_variant) {
+            double restored_independent=1.0;
+            const auto result=stream->read(&restored_independent,8,&read);
+            if(read && (result!=kResultOk || read!=8 || !std::isfinite(restored_independent) ||
+                restored_independent<0 || restored_independent>4)) return kResultFalse;
+            independent=restored_independent/4.0;
+        }
         if((fault==110 || fault==111) && handler->restartComponent(kLatencyChanged)!=kResultOk) return kResultFalse;
         if(fault==123) handler->restartComponent(kParamValuesChanged|kParamIDMappingChanged);
         if(fault==53)stream->write(data.data(),1,nullptr); // ignored illegal write must still invalidate stream
@@ -603,6 +610,13 @@ public:
             if(read && (result!=kResultOk || read!=8 || !std::isfinite(restored_manual) || restored_manual<0 || restored_manual>4)) return kResultFalse;
             manual_gain.store(restored_manual);
         }
+        if(fault==grouped_instrument_variant) {
+            double restored_independent=1.0;
+            const auto result=stream->read(&restored_independent,8,&read);
+            if(read && (result!=kResultOk || read!=8 || !std::isfinite(restored_independent) ||
+                restored_independent<0 || restored_independent>4)) return kResultFalse;
+            independent_gain.store(restored_independent);
+        }
         gain.store(restored_gain);
         if(fault==118 && (!latency_handler ||
             latency_handler->beginEdit(51)!=kResultOk ||
@@ -657,7 +671,8 @@ public:
         ISizeableStream* sized=nullptr;
         if (stream->queryInterface(INLINE_UID_OF(ISizeableStream),reinterpret_cast<void**>(&sized))!=kResultOk || !sized)
             return kResultFalse;
-        const bool sized_ok=sized->setStreamSize(held_parameter_input(fault)?40:32)==kResultOk;sized->release();
+        const int32 state_size=fault==grouped_instrument_variant?48:(held_parameter_input(fault)?40:32);
+        const bool sized_ok=sized->setStreamSize(state_size)==kResultOk;sized->release();
         int32 written=0;
         const bool ok=sized_ok && stream->seek(4,IBStream::kIBSeekSet,nullptr)==kResultOk &&
             stream->write(bytes.data()+4,28,&written)==kResultOk && written==28 &&
@@ -665,6 +680,9 @@ public:
         auto captured_manual_gain=manual_gain.load();
         if(ok && held_parameter_input(fault) && (stream->seek(32,IBStream::kIBSeekSet,nullptr)!=kResultOk ||
             stream->write(&captured_manual_gain,8,&written)!=kResultOk || written!=8)) return kResultFalse;
+        auto captured_independent_gain=independent_gain.load();
+        if(ok && fault==grouped_instrument_variant && (stream->seek(40,IBStream::kIBSeekSet,nullptr)!=kResultOk ||
+            stream->write(&captured_independent_gain,8,&written)!=kResultOk || written!=8)) return kResultFalse;
         if(ok && fault==121) {
             unsigned char marker=0x37;
             if(stream->seek(150544,IBStream::kIBSeekSet,nullptr)!=kResultOk ||
@@ -827,7 +845,7 @@ public:
         if (!data.numSamples && !data.numInputs && !data.numOutputs && !data.inputs && !data.outputs) {
             if((saturated_editor_drag(fault) || held_parameter_input(fault)) && data.inputParameterChanges) {
                 const auto count=data.inputParameterChanges->getParameterCount();
-                if(count<1 || count>2) return kInvalidArgument;
+                if(count<1 || count>(fault==grouped_instrument_variant?3:2)) return kInvalidArgument;
                 for(int32 n=0;n<count;++n) {
                     auto* queue=data.inputParameterChanges->getParameterData(n);
                     int32 offset=-1;ParamValue value=-1;
@@ -836,7 +854,9 @@ public:
                     if(queue->getParameterId()==parameter_id(fault)) gain=static_cast<float>(value*4.0);
                     else if(queue->getParameterId()==drag_axis_id) {
                         if(held_parameter_input(fault)) manual_gain.store(value*4.0);
-                    } else return kInvalidArgument;
+                    } else if(fault==grouped_instrument_variant && queue->getParameterId()==independent_id)
+                        independent_gain.store(value*4.0);
+                    else return kInvalidArgument;
                 }
                 ++observed.flushes;
                 return kResultOk;

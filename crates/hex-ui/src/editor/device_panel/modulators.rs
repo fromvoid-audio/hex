@@ -7,7 +7,8 @@ use gpui::{AnyElement, Point, SharedString};
 use hex_engine::{
     audio_rate_modulator as audio_rate, button_modulator as manual_button,
     follower_modulator as follower, lfo_modulator as lfo, macro_four_modulator as macro_four,
-    macro_modulator as manual, note_pressure_modulator as pressure, random_modulator as random,
+    macro_modulator as manual, math_modulator as math, note_pressure_modulator as pressure,
+    random_modulator as random,
 };
 use hex_lattice_contract::{ParameterId, ParameterModulation};
 use hex_project::{
@@ -26,10 +27,11 @@ enum SourceKind {
     AudioRate,
     NotePressure,
     Button,
+    Math,
 }
 
 impl SourceKind {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::Lfo,
         Self::Follower,
         Self::Macro,
@@ -38,6 +40,7 @@ impl SourceKind {
         Self::AudioRate,
         Self::NotePressure,
         Self::Button,
+        Self::Math,
     ];
 
     fn label(self) -> &'static str {
@@ -50,6 +53,7 @@ impl SourceKind {
             Self::AudioRate => "audio rate",
             Self::NotePressure => "note pressure",
             Self::Button => "button",
+            Self::Math => "math",
         }
     }
 
@@ -71,6 +75,7 @@ impl SourceKind {
             Self::AudioRate => audio_rate::default_state(),
             Self::NotePressure => pressure::default_state(),
             Self::Button => manual_button::encode(false),
+            Self::Math => math::Settings::default().encode(),
             Self::Macro => manual::Settings::default().encode(),
             Self::MacroFour => macro_four::Settings::default().encode(),
             Self::Random => random::Settings {
@@ -119,6 +124,7 @@ enum MappingTarget {
     Macro(ModulationSourceId),
     MacroFour(ModulationSourceId, ParameterId),
     LfoRate(ModulationSourceId),
+    MathInput(ModulationSourceId, ParameterId),
 }
 
 #[derive(Clone, Copy)]
@@ -163,6 +169,14 @@ fn macro_four_destination(
     }
 }
 
+fn math_destination(source: ModulationSourceId, parameter: ParameterId) -> ModulationDestination {
+    ModulationDestination::Modulator {
+        source,
+        module_type: math::TYPE_ID,
+        parameter,
+    }
+}
+
 fn lfo_rate_destination(source: ModulationSourceId) -> ModulationDestination {
     ModulationDestination::Modulator {
         source,
@@ -183,6 +197,8 @@ enum Edit {
     LfoShape(ModulationSourceId, lfo::Waveform),
     MacroValue(ModulationSourceId, f32),
     MacroFourValue(ModulationSourceId, ParameterId, f32),
+    MathValue(ModulationSourceId, ParameterId, f32),
+    MathOperation(ModulationSourceId, math::Operation),
     FollowerTime {
         source: ModulationSourceId,
         attack: bool,
@@ -507,6 +523,13 @@ pub(super) fn panel(
         .take(2)
         .count()
         > 1;
+    let multiple_math = bank
+        .sources()
+        .iter()
+        .filter(|source| source.state.type_id() == math::TYPE_ID)
+        .take(2)
+        .count()
+        > 1;
     for (slot, source) in bank.sources().iter().enumerate() {
         let source_id = source.id;
         let kind = match source.state.type_id() {
@@ -518,11 +541,13 @@ pub(super) fn panel(
             audio_rate::TYPE_ID => SourceKind::AudioRate,
             pressure::TYPE_ID => SourceKind::NotePressure,
             manual_button::TYPE_ID => SourceKind::Button,
+            math::TYPE_ID => SourceKind::Math,
             _ => continue,
         };
         let label = kind.label();
         let title = if (multiple_macros && matches!(kind, SourceKind::Macro))
             || (multiple_lfos && matches!(kind, SourceKind::Lfo))
+            || (multiple_math && matches!(kind, SourceKind::Math))
         {
             format!("{label} {}", slot + 1)
         } else {
@@ -780,6 +805,63 @@ pub(super) fn panel(
             }
             row = row.child(controls);
         }
+        if let SourceKind::Math = kind
+            && let Ok(settings) = math::Settings::decode(&source.state)
+        {
+            use math::Operation;
+            let (label, next) = match settings.operation {
+                Operation::Multiply => ("multiply", Operation::Add),
+                Operation::Add => ("add", Operation::Subtract),
+                Operation::Subtract => ("subtract", Operation::Minimum),
+                Operation::Minimum => ("min", Operation::Maximum),
+                Operation::Maximum => ("max", Operation::Multiply),
+            };
+            row = row.child(button(
+                cx,
+                source_key("operation"),
+                theme::text(label),
+                Edit::MathOperation(source_id, next),
+            ));
+            for ((name, parameter), value) in [("a", math::INPUT_A), ("b", math::INPUT_B)]
+                .into_iter()
+                .zip(settings.inputs)
+            {
+                let value = format!("{name} {:+.0}%", value * 100.0);
+                let destination = math_destination(source_id, parameter);
+                let value_control =
+                    if let Some(mapping) = mapping_source_for(source_id, destination) {
+                        button(
+                            cx,
+                            format!("map-math-{name}-{}-{}", id.value(), source_id.value()),
+                            theme::text(value),
+                            Edit::Map(mapping, MappingTarget::MathInput(source_id, parameter)),
+                        )
+                        .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                        .into_any_element()
+                    } else {
+                        theme::text(value).into_any_element()
+                    };
+                row = row.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(2.0))
+                        .children([value_control])
+                        .child(button(
+                            cx,
+                            source_key(&format!("{name}-less")),
+                            theme::text("−"),
+                            Edit::MathValue(source_id, parameter, -0.05),
+                        ))
+                        .child(button(
+                            cx,
+                            source_key(&format!("{name}-more")),
+                            theme::text("+"),
+                            Edit::MathValue(source_id, parameter, 0.05),
+                        )),
+                );
+            }
+        }
         if let SourceKind::Random = kind
             && let Ok(settings) = random::Settings::decode(&source.state)
         {
@@ -874,6 +956,26 @@ pub(super) fn panel(
                         continue;
                     };
                     format!("macro-4 {} control {}", slot + 1, parameter.value())
+                }
+                ModulationDestination::Modulator {
+                    source,
+                    module_type: math::TYPE_ID,
+                    parameter,
+                } => {
+                    let Some(slot) = bank.sources().iter().position(|slot| slot.id == source)
+                    else {
+                        continue;
+                    };
+                    let input = match parameter {
+                        math::INPUT_A => "a",
+                        math::INPUT_B => "b",
+                        _ => continue,
+                    };
+                    if multiple_math {
+                        format!("math {} input {input}", slot + 1)
+                    } else {
+                        format!("math input {input}")
+                    }
                 }
                 _ => continue,
             };
@@ -1169,6 +1271,23 @@ fn apply(
             *value = (*value + change).clamp(0.0, 1.0);
             source.state = settings.encode().map_err(unsupported)?;
         }
+        Edit::MathValue(id, parameter, change) => {
+            let source = find_source(&mut sources, id)?;
+            let mut settings = math::Settings::decode(&source.state).map_err(unsupported)?;
+            let value = match parameter {
+                math::INPUT_A => &mut settings.inputs[0],
+                math::INPUT_B => &mut settings.inputs[1],
+                _ => return Err(Invalid("math input is unsupported")),
+            };
+            *value = (*value + change).clamp(-1.0, 1.0);
+            source.state = settings.encode().map_err(unsupported)?;
+        }
+        Edit::MathOperation(id, operation) => {
+            let source = find_source(&mut sources, id)?;
+            let mut settings = math::Settings::decode(&source.state).map_err(unsupported)?;
+            settings.operation = operation;
+            source.state = settings.encode().map_err(unsupported)?;
+        }
         Edit::FollowerTime {
             source,
             attack,
@@ -1239,6 +1358,14 @@ fn apply(
                     macro_four::output_for_parameter(parameter)
                         .ok_or(Invalid("macro-4 control is unsupported"))?;
                     macro_four_destination(target.id, parameter)
+                }
+                MappingTarget::MathInput(target, parameter) => {
+                    let target = find_source(&mut sources, target)?;
+                    math::Settings::decode(&target.state).map_err(unsupported)?;
+                    if !matches!(parameter, math::INPUT_A | math::INPUT_B) {
+                        return Err(Invalid("math input is unsupported"));
+                    }
+                    math_destination(target.id, parameter)
                 }
                 MappingTarget::LfoRate(target) => {
                     let source = find_source(&mut sources, target)?;
