@@ -662,7 +662,7 @@ fn session_playing_paths_run_source_effects_once_before_mixing_receiver_clips() 
             assert!(matches!(
                 candidate.try_inherit_state_from(&mut wet),
                 Err(SessionPlaybackError::Arrangement(
-                    "source effect handoff is not supported yet"
+                    "source effect handoff requires the same prepared source configuration"
                 ))
             ));
         }
@@ -754,4 +754,72 @@ fn aggregate_track_return_main_and_source_budgets_refuse_before_runtime_creation
         renderer.render(&mut [[0.0; 2]]).unwrap_err(),
         Invalid("source effects exceed the aggregate graph runtime budget")
     );
+}
+
+#[test]
+fn receiver_move_continues_the_source_effect_and_incompatible_recipe_leaves_donor_intact() {
+    use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand, SessionPlaybackError};
+    use hex_lattice_contract::NativeDeviceState;
+
+    let table = Arc::new(crate::SineTable::new());
+    let build = |moved, previous| {
+        let (editor, asset) = authored_fixture(0, moved);
+        let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
+        Arc::new(
+            PreparedRevision::prepare(editor.project(), &media, Arc::clone(&table), previous)
+                .unwrap(),
+        )
+    };
+    let before = build(false, None);
+    let after = build(true, Some(before.session()));
+    let source = before.arrangement().tracks[0].source_id().unwrap();
+    assert_eq!(after.arrangement().tracks[1].source_id(), Some(source));
+    assert!(after.arrangement().tracks[1].receives_source_audio());
+
+    let mut instance = recipe(source, Some(0));
+    instance.configuration = Some(Arc::new(
+        NativeDeviceState::new(instance.device_type, 1, vec![1]).unwrap(),
+    ));
+    let make = |revision, receiver, instances: &[PreparedRuntimeInstance]| {
+        SessionPlayback::test_with_source_effects(
+            revision,
+            &[PreparedSourceEffects {
+                source,
+                receiver,
+                instances,
+            }],
+        )
+        .unwrap()
+    };
+    let mut donor = make(Arc::clone(&before), 0, std::slice::from_ref(&instance));
+    let mut reference = make(Arc::clone(&before), 0, std::slice::from_ref(&instance));
+    for playback in [&mut donor, &mut reference] {
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        playback.render(&mut [[0.0; 2]; 97]).unwrap();
+    }
+    let mut changed = instance.clone();
+    changed.device_id += 1;
+    let mut wrong = make(Arc::clone(&after), 1, &[changed]);
+    assert!(matches!(
+        wrong.try_inherit_state_from(&mut donor),
+        Err(SessionPlaybackError::Arrangement(
+            "source effect handoff requires the same prepared source configuration"
+        ))
+    ));
+    assert_eq!(donor.performance_frame(), 97);
+    assert_eq!(wrong.performance_frame(), 0);
+
+    let mut moved = make(after, 1, &[instance]);
+    moved.try_inherit_state_from(&mut donor).unwrap();
+    assert_eq!(moved.performance_frame(), 97);
+    let mut actual = [[0.0; 2]; 173];
+    let mut expected = [[0.0; 2]; 173];
+    moved.render(&mut actual).unwrap();
+    reference.render(&mut expected).unwrap();
+    for (i, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+        assert!(
+            (actual[0] - expected[0]).abs() < 1e-6 && (actual[1] - expected[1]).abs() < 1e-6,
+            "at {i}: moved {actual:?} vs uninterrupted {expected:?}"
+        );
+    }
 }

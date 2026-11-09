@@ -1681,6 +1681,33 @@ impl NativeRuntimeChain {
             })
     }
 
+    /// Preflight a retiring-donor transfer for unchanged native controls and
+    /// topology. Unlike general reconfiguration, this admits no new device,
+    /// changed trim or bypass, provider program, or graph modulation.
+    pub fn can_transfer_unchanged_native_history_from(&self, previous: &Self) -> bool {
+        self.len() == previous.len()
+            && self.configuration_matches_range(previous, 0..self.len())
+            && self
+                .entries
+                .iter()
+                .zip(&previous.entries)
+                .all(|(left, right)| {
+                    !matches!(left.runtime, RuntimeOwnership::Foreign(_))
+                        && !matches!(right.runtime, RuntimeOwnership::Foreign(_))
+                        && left.bypassed == right.bypassed
+                        && left.input_gain == right.input_gain
+                        && left.output_gain == right.output_gain
+                        && left.algorithmic_latency_frames == right.algorithmic_latency_frames
+                        && left.output_tail == right.output_tail
+                        && left.automation.is_empty()
+                        && right.automation.is_empty()
+                        && left.modulation.is_none()
+                        && right.modulation.is_none()
+                })
+            && !self.transition_busy_from(previous)
+            && self.can_inherit_from(previous)
+    }
+
     /// Whether a same-position processor range can keep history across an
     /// authored parameter change. Entry identity and processing topology must
     /// remain exact; a changed configuration is accepted only when both
