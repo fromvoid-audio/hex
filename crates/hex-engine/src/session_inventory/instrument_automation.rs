@@ -87,7 +87,6 @@ pub(super) fn construction_bytes(
 }
 
 #[cfg(test)]
-#[cfg(test)]
 pub(super) fn quote(device: &hex_project::Device) -> Result<(usize, usize), Invalid> {
     quote_lanes(device.automation(), None)
 }
