@@ -735,5 +735,40 @@ fn lfo_rate_route_upgrades_the_exact_previous_format_and_preserves_the_complete_
         crate::EXTENDED_AUTOMATION_TOUCH_SCHEMA_VERSION
     );
     assert_eq!(crate::load(&extended_path).unwrap(), *extended);
+    let original_version = std::fs::read(&extended_path).unwrap();
+    let old_token = crate::load_with_token(&extended_path).unwrap().1;
+    let previous_bank = extended.device(instrument_id).unwrap().modulation();
+    let mut slots = previous_bank.sources().to_vec();
+    slots.push(Modulator {
+        id: ModulationSourceId::new(extended.next_identity()).unwrap(),
+        enabled: true,
+        color: ElementColor::Cyan,
+        state: NativeDeviceState::new(
+            DeviceTypeId::from_static("hex.modulator.note-pressure"),
+            1,
+            Vec::new(),
+        )
+        .unwrap(),
+    });
+    let pressure = DeviceModulation::new(slots, previous_bank.routes().to_vec()).unwrap();
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device: instrument_id,
+            modulation: pressure,
+        })
+        .unwrap();
+    let expression = editor.project();
+    assert_eq!(
+        crate::schema_version_for(expression),
+        crate::NOTE_PRESSURE_MODULATOR_SCHEMA_VERSION
+    );
+    assert!(old_token.requires_save_confirmation(expression).unwrap());
+    let pressure_path = dir.join("note-pressure-and-long-touch.hex");
+    crate::save_new(&pressure_path, expression).unwrap();
+    assert_eq!(crate::load(&pressure_path).unwrap(), *expression);
+    assert_eq!(std::fs::read(&extended_path).unwrap(), original_version);
+    let mut malformed = document;
+    malformed["version"] = crate::NOTE_PRESSURE_MODULATOR_SCHEMA_VERSION.into();
+    assert!(crate::decode(&serde_json::to_vec(&malformed).unwrap()).is_err());
     std::fs::remove_dir_all(dir).unwrap();
 }

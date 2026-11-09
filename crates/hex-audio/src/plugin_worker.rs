@@ -87,46 +87,110 @@ impl Signal {
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use storage::{NativeWorkerResourceBound, NativeWorkerStorage};
 
-// Only joining control and the original worker use this snapshot. The
-// callback continues to copy just its original scope serial.
+// The callback carries just the original scope serial. Joining control
+// publishes the fixed prepared targets before releasing that serial.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[derive(Clone, Copy)]
+enum EditorPlan {
+    Single(hex_plugin_host::protocol::EditorTouchPlan),
+    Group(hex_plugin_host::protocol::EditorTouchPlanSet),
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+impl EditorPlan {
+    fn scope(self) -> std::num::NonZeroU64 {
+        match self {
+            Self::Single(plan) => plan.scope,
+            Self::Group(plan) => plan.scope(),
+        }
+    }
+
+    fn has_prepared_restore(self, authored: bool, block: &Block) -> bool {
+        match self {
+            Self::Single(_) => true,
+            Self::Group(plan) => {
+                authored
+                    && plan.targets().iter().all(|target| {
+                        block
+                            .parameters
+                            .as_slice()
+                            .iter()
+                            .any(|point| point.frame == 0 && point.id == target.parameter)
+                    })
+            }
+        }
+    }
+}
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[derive(Default)]
 struct EditorPlanSignal {
     scope: AtomicU64,
-    target: AtomicU64,
-    base: AtomicU64,
+    count: AtomicU64,
+    targets: [AtomicU64; hex_plugin_host::protocol::MAX_PARAMETER_EDITS],
+    bases: [AtomicU64; hex_plugin_host::protocol::MAX_PARAMETER_EDITS],
 }
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 impl EditorPlanSignal {
-    fn publish(&self, plan: hex_plugin_host::protocol::EditorTouchPlan) {
+    fn publish(&self, plan: EditorPlan) {
+        use hex_plugin_host::protocol::EditorTouchTarget;
         use std::sync::atomic::Ordering::SeqCst;
+        let single;
+        let targets = match &plan {
+            EditorPlan::Single(plan) => {
+                single = [EditorTouchTarget {
+                    parameter: plan.parameter,
+                    base: plan.base,
+                    reading: plan.reading,
+                }];
+                &single[..]
+            }
+            EditorPlan::Group(group) => group.targets(),
+        };
         self.scope.store(0, SeqCst);
-        self.target.store(
-            u64::from(plan.parameter) | (u64::from(plan.reading) << 32),
-            SeqCst,
-        );
-        self.base.store(plan.base.to_bits(), SeqCst);
-        self.scope.store(plan.scope.get(), SeqCst);
+        self.count.store(targets.len() as u64, SeqCst);
+        for (index, target) in targets.iter().enumerate() {
+            self.targets[index].store(
+                u64::from(target.parameter) | (u64::from(target.reading) << 32),
+                SeqCst,
+            );
+            self.bases[index].store(target.base.to_bits(), SeqCst);
+        }
+        self.scope.store(plan.scope().get(), SeqCst);
     }
 
-    fn lookup(
-        &self,
-        scope: std::num::NonZeroU64,
-    ) -> Option<hex_plugin_host::protocol::EditorTouchPlan> {
+    fn lookup(&self, scope: std::num::NonZeroU64) -> Option<EditorPlan> {
+        use hex_plugin_host::protocol::{EditorTouchPlan, EditorTouchPlanSet, EditorTouchTarget};
         use std::sync::atomic::Ordering::SeqCst;
         if self.scope.load(SeqCst) != scope.get() {
             return None;
         }
-        let target = self.target.load(SeqCst);
-        let base = f64::from_bits(self.base.load(SeqCst));
-        (self.scope.load(SeqCst) == scope.get()).then_some(
-            hex_plugin_host::protocol::EditorTouchPlan {
-                scope,
+        let count = usize::try_from(self.count.load(SeqCst)).ok()?;
+        let mut targets =
+            [EditorTouchTarget::default(); hex_plugin_host::protocol::MAX_PARAMETER_EDITS];
+        let targets = targets.get_mut(..count)?;
+        for (index, entry) in targets.iter_mut().enumerate() {
+            let target = self.targets[index].load(SeqCst);
+            *entry = EditorTouchTarget {
                 parameter: target as u32,
                 reading: target >> 32 != 0,
-                base,
-            },
-        )
+                base: f64::from_bits(self.bases[index].load(SeqCst)),
+            };
+        }
+        if self.scope.load(SeqCst) != scope.get() {
+            return None;
+        }
+        if let [target] = targets {
+            return Some(EditorPlan::Single(EditorTouchPlan {
+                scope,
+                parameter: target.parameter,
+                reading: target.reading,
+                base: target.base,
+            }));
+        }
+        EditorTouchPlanSet::new(scope, targets)
+            .ok()
+            .map(EditorPlan::Group)
     }
 }
 
@@ -230,10 +294,10 @@ impl State {
         authored: bool,
         manual_parameter: Option<ParameterPoint>,
         observe_editor: bool,
-        editor_touch: Option<hex_plugin_host::protocol::EditorTouchPlan>,
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))] editor_touch: Option<EditorPlan>,
     ) -> Result<hex_plugin_host::protocol::EditorPcm, Fault> {
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-        let _ = (manual_parameter, editor_touch);
+        let _ = manual_parameter;
         match self.processor.as_mut() {
             Some(Processor::Function(process)) if !authored && !observe_editor => process(block)
                 .map(|block| hex_plugin_host::protocol::EditorPcm {
@@ -245,13 +309,22 @@ impl State {
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             Some(Processor::Native(instance)) => {
                 let result = match (authored, observe_editor, editor_touch) {
-                    (true, _, Some(plan)) => instance
+                    (true, _, Some(EditorPlan::Single(plan))) => instance
                         .exchange_armed_authored_with_editor_touch_on_worker(
                             block,
                             plan,
                             manual_parameter,
                         ),
-                    (false, _, Some(plan)) => instance.exchange_editor_touch_on_worker(block, plan),
+                    (false, _, Some(EditorPlan::Single(plan))) => {
+                        instance.exchange_editor_touch_on_worker(block, plan)
+                    }
+                    (true, _, Some(EditorPlan::Group(plan))) => instance
+                        .exchange_armed_authored_with_editor_group_touch_on_worker(
+                            block,
+                            &plan,
+                            manual_parameter,
+                        ),
+                    (false, _, Some(EditorPlan::Group(_))) => return Err(Fault::InvalidParameters),
                     (true, true, None) => instance
                         .exchange_armed_authored_with_editor_on_worker(block, manual_parameter),
                     (false, true, None) => instance.exchange_editor_on_worker(block),
@@ -503,30 +576,33 @@ fn transport_runner_with_setup(
                         let plan =
                             editor_scope.and_then(|scope| published.editor_plan.lookup(scope));
                         if let Some(plan) = plan
-                            && !manual_origin_available
-                            && state.editor_started == Some(plan.scope)
+                            && ((!manual_origin_available
+                                && state.editor_started == Some(plan.scope()))
+                                || (manual_origin_available
+                                    && !plan.has_prepared_restore(authored, &block)))
                         {
-                            state.editor_lost = Some(plan.scope);
+                            state.editor_lost = Some(plan.scope());
                         }
                         let active = plan.filter(|plan| {
-                            manual_origin_available && state.editor_lost != Some(plan.scope)
+                            manual_origin_available && state.editor_lost != Some(plan.scope())
                         });
                         if let Some(active) = active {
-                            state.editor_started = Some(active.scope);
+                            state.editor_started = Some(active.scope());
                         }
                         (
                             active,
-                            plan.is_some_and(|plan| state.editor_lost == Some(plan.scope)),
+                            plan.is_some_and(|plan| state.editor_lost == Some(plan.scope())),
                         )
                     };
                     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-                    let (editor_touch, lost_origin) = (None, false);
+                    let lost_origin = false;
                     let result = state
                         .process(
                             block,
                             authored,
                             manual_parameter,
                             editor_scope.is_some(),
+                            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                             editor_touch,
                         )
                         .and_then(
@@ -535,12 +611,6 @@ fn transport_runner_with_setup(
                                  performs,
                                  restorations,
                              }| {
-                                // This consumer still arms only the legacy single-target mode.
-                                let restoration = match restorations.as_slice() {
-                                    [] => None,
-                                    [row] => Some(*row),
-                                    _ => return Err(Fault::Protocol),
-                                };
                                 // Native exchange already validated the complete SDK
                                 // reply. Retain its private input receipt even if Stop
                                 // revokes the transport before callback publication.
@@ -555,7 +625,7 @@ fn transport_runner_with_setup(
                                     editor_scope.map(|_| {
                                         hex_plugin_host::transport::EditorPcmFacts {
                                             performs,
-                                            restoration,
+                                            restorations,
                                             lost_origin,
                                         }
                                     }),
@@ -629,6 +699,7 @@ pub struct NativeWorker {
     binding: Binding,
     quantum: u16,
     retirement_requested: bool,
+    grouped_editor_callbacks: bool,
     source_storage: Option<hex_plugin_host::native::PreparedStorage>,
 }
 /// Actual native process retirement after joining its transport worker. A
@@ -679,7 +750,22 @@ impl NativeWorker {
         let signal = &self.reaper.completed.editor_plan;
         self.reaper
             .control
-            .arm_editor_pcm_after(plan.scope, || signal.publish(plan))
+            .arm_editor_pcm_after(plan.scope, || signal.publish(EditorPlan::Single(plan)))
+    }
+    pub(crate) fn arm_editor_group_touch_on_control(
+        &mut self,
+        plan: hex_plugin_host::protocol::EditorTouchPlanSet,
+    ) -> Result<EditorScope, Fault> {
+        if self.retirement_requested {
+            return Err(Fault::Revoked);
+        }
+        if !self.grouped_editor_callbacks {
+            return Err(Fault::InvalidParameters);
+        }
+        let signal = &self.reaper.completed.editor_plan;
+        self.reaper
+            .control
+            .arm_editor_pcm_after(plan.scope(), || signal.publish(EditorPlan::Group(plan)))
     }
     /// The unique loan control retains this worker while its paired callback
     /// is elsewhere. Source handoff clears the original constructor receipt.

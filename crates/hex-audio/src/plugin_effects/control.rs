@@ -6,6 +6,47 @@ use crate::plugin_worker::{
     NativeWorkerControllerProgress, NativeWorkerControllerQuery, NativeWorkerParameterChange,
 };
 
+fn arm_editor(
+    worker: &mut NativeWorker,
+    capabilities: &automation::SourceCapabilities,
+    scope: std::num::NonZeroU64,
+    touch: Option<crate::foreign_parameter_delivery::editor::TouchAdmission<'_>>,
+) -> Result<(hex_plugin_host::transport::EditorScope, u16), &'static str> {
+    use crate::foreign_parameter_delivery::editor::TouchAdmission;
+    use hex_plugin_host::protocol::{EditorTouchPlan, EditorTouchPlanSet};
+
+    let armed = match touch {
+        None => worker.arm_editor_pcm_on_control(scope),
+        Some(TouchAdmission::Single(touch)) => {
+            worker.arm_editor_touch_on_control(EditorTouchPlan {
+                scope,
+                parameter: touch.parameter,
+                reading: touch.reading,
+                base: touch.base,
+            })
+        }
+        Some(TouchAdmission::Group(targets)) => {
+            // A reading target uses either its authored curve or the exact
+            // prepared constant Base point. Neither adds a restore event.
+            if targets.iter().any(|target| {
+                !target.reading
+                    || !capabilities.parameters().iter().any(|capability| {
+                        capability.id == target.parameter
+                            && capability.normalized_base_bits == target.base.to_bits()
+                    })
+            }) {
+                return Err("vst3 editor group has no prepared restoration for every target");
+            }
+            let plan = EditorTouchPlanSet::new(scope, targets)
+                .map_err(|_| "vst3 editor group targets differ or exceed their bound")?;
+            worker.arm_editor_group_touch_on_control(plan)
+        }
+    };
+    armed
+        .map(|armed| (armed, worker.quantum_frames()))
+        .map_err(|error| error.message())
+}
+
 pub(crate) struct NativeEffectControl {
     worker: NativeWorker,
     pub(super) configuration: Configuration,
@@ -87,22 +128,14 @@ impl NativeEffect {
     pub(crate) fn arm_editor_pcm(
         &mut self,
         scope: std::num::NonZeroU64,
-        touch: Option<crate::foreign_parameter_delivery::editor::TouchPlan>,
+        touch: Option<crate::foreign_parameter_delivery::editor::TouchAdmission<'_>>,
     ) -> Result<(hex_plugin_host::transport::EditorScope, u16), &'static str> {
-        let armed = if let Some(touch) = touch {
-            self.worker
-                .arm_editor_touch_on_control(hex_plugin_host::protocol::EditorTouchPlan {
-                    scope,
-                    parameter: touch.parameter,
-                    reading: touch.reading,
-                    base: touch.base,
-                })
-        } else {
-            self.worker.arm_editor_pcm_on_control(scope)
-        };
-        armed
-            .map(|armed| (armed, self.worker.quantum_frames()))
-            .map_err(|error| error.message())
+        arm_editor(
+            &mut self.worker,
+            &self.callback.configuration.authored,
+            scope,
+            touch,
+        )
     }
 
     pub(crate) fn poll_parameter_edits(
@@ -225,22 +258,9 @@ impl NativeEffectControl {
     pub(crate) fn arm_editor_pcm(
         &mut self,
         scope: std::num::NonZeroU64,
-        touch: Option<crate::foreign_parameter_delivery::editor::TouchPlan>,
+        touch: Option<crate::foreign_parameter_delivery::editor::TouchAdmission<'_>>,
     ) -> Result<(hex_plugin_host::transport::EditorScope, u16), &'static str> {
-        let armed = if let Some(touch) = touch {
-            self.worker
-                .arm_editor_touch_on_control(hex_plugin_host::protocol::EditorTouchPlan {
-                    scope,
-                    parameter: touch.parameter,
-                    reading: touch.reading,
-                    base: touch.base,
-                })
-        } else {
-            self.worker.arm_editor_pcm_on_control(scope)
-        };
-        armed
-            .map(|armed| (armed, self.worker.quantum_frames()))
-            .map_err(|error| error.message())
+        arm_editor(&mut self.worker, &self.configuration.authored, scope, touch)
     }
 
     pub(crate) fn poll_parameter_edits(

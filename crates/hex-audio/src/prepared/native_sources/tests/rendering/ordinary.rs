@@ -54,6 +54,16 @@ fn fixture_with_authored(
     quantum: u16,
     ids: &[u32],
 ) -> OrdinaryFixture {
+    fixture_with_authored_mode(profile, location, quantum, ids, false)
+}
+
+fn fixture_with_authored_mode(
+    profile: &str,
+    location: usize,
+    quantum: u16,
+    ids: &[u32],
+    instrument: bool,
+) -> OrdinaryFixture {
     let (mut control, mut callback) = channel(48_000).unwrap();
     control
         .configure_plugin_callback_quantum(&mut callback, quantum)
@@ -80,8 +90,14 @@ fn fixture_with_authored(
         .unwrap();
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     let Created::Track(track) = editor
-        .execute(Command::AddTrack {
-            name: "audio".into(),
+        .execute(if instrument {
+            Command::AddMidiTrack {
+                name: "synth".into(),
+            }
+        } else {
+            Command::AddTrack {
+                name: "audio".into(),
+            }
         })
         .unwrap()
     else {
@@ -107,34 +123,51 @@ fn fixture_with_authored(
     } else {
         None
     };
-    let owner = match location {
+    let owner = match if instrument { 0 } else { location } {
         0 => ProcessorChainOwner::Track(track.value()),
         1 => ProcessorChainOwner::Return(bus.unwrap().value()),
         _ => ProcessorChainOwner::Main,
     };
     let identity = ProcessorInstanceIdentity::new(owner, editor.project().next_identity()).unwrap();
-    let binding =
-        source_for_profile_with_authored(&mut control, identity, profile, quantum, None, ids);
+    use crate::plugin_effects::PluginProfile;
+    let binding = source_for_profile_with_authored_mode(
+        &mut control,
+        identity,
+        profile,
+        quantum,
+        None,
+        ids,
+        if instrument {
+            PluginProfile::Instrument
+        } else {
+            PluginProfile::Effect
+        },
+    );
+    let state = control.native_source_prepared_state(binding).unwrap();
     let Created::Device(device) = editor
-        .execute(match location {
-            0 => Command::InsertDevice {
-                track,
-                before: None,
-                state: control.native_source_prepared_state(binding).unwrap(),
-            },
-            1 => Command::InsertReturnDevice {
-                return_track: bus.unwrap(),
-                before: None,
-                state: control.native_source_prepared_state(binding).unwrap(),
-            },
-            _ => Command::InsertMainDevice {
-                before: None,
-                state: control.native_source_prepared_state(binding).unwrap(),
-            },
+        .execute(if instrument {
+            Command::InsertInstrument { track, state }
+        } else {
+            match location {
+                0 => Command::InsertDevice {
+                    track,
+                    before: None,
+                    state,
+                },
+                1 => Command::InsertReturnDevice {
+                    return_track: bus.unwrap(),
+                    before: None,
+                    state,
+                },
+                _ => Command::InsertMainDevice {
+                    before: None,
+                    state,
+                },
+            }
         })
         .unwrap()
     else {
-        panic!("original effect")
+        panic!("original source")
     };
     for &id in ids {
         editor
@@ -150,32 +183,57 @@ fn fixture_with_authored(
             })
             .unwrap();
     }
-    let frames = if ids.is_empty() { 32 } else { 96 };
-    let Created::Asset(asset) = editor
-        .execute(Command::AddAsset {
-            path: "ordinary-original.wav".into(),
-            sample_rate: 48_000,
-            frames,
-        })
-        .unwrap()
-    else {
-        panic!("asset")
-    };
-    editor
-        .execute(Command::PlaceClip {
-            track,
+    let media = if instrument {
+        let duration = hex_project::BeatTime::from_ratio(44, 24_000).unwrap();
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: hex_project::BeatTime::ZERO,
+                length: hex_project::BeatTime::ONE,
+            })
+            .unwrap()
+        else {
+            panic!("midi clip");
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: hex_project::BeatTime::ZERO,
+                duration,
+                pitch: 60,
+                channel: 2,
+                velocity: 127,
+            })
+            .unwrap();
+        BTreeMap::new()
+    } else {
+        let frames = if ids.is_empty() { 32 } else { 96 };
+        let Created::Asset(asset) = editor
+            .execute(Command::AddAsset {
+                path: "ordinary-original.wav".into(),
+                sample_rate: 48_000,
+                frames,
+            })
+            .unwrap()
+        else {
+            panic!("asset")
+        };
+        editor
+            .execute(Command::PlaceClip {
+                track,
+                asset,
+                start: 0,
+                duration: frames,
+                source_offset: 0,
+                source_length: frames,
+                looping: false,
+            })
+            .unwrap();
+        BTreeMap::from([(
             asset,
-            start: 0,
-            duration: frames,
-            source_offset: 0,
-            source_length: frames,
-            looping: false,
-        })
-        .unwrap();
-    let media = BTreeMap::from([(
-        asset,
-        hex_engine::Audio::new(48_000, vec![[0.25, -0.5]; frames as usize]).unwrap(),
-    )]);
+            hex_engine::Audio::new(48_000, vec![[0.25, -0.5]; frames as usize]).unwrap(),
+        )])
+    };
     let resources = PreparedDeviceResources::prepare_on_control(
         &ResidentDeviceAssets::default(),
         editor.project(),

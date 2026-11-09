@@ -6276,7 +6276,7 @@ fn modulation_panel_maps_delay_feedback_and_mix_without_changing_authored_values
     visual.run_until_parked();
     let click = click_modulator_control;
     click(&mut visual, "device-modulator-toggle".into(), false);
-    click(&mut visual, format!("add-lfo-{}", device.value()), true);
+    add_modulator_from_menu(&mut visual, device, "lfo");
     let slot = |view: &EditorView| {
         view.state
             .as_ref()?
@@ -6365,7 +6365,7 @@ fn modulation_panel_maps_continuous_and_discrete_eq8_controls_without_editing_au
     visual.run_until_parked();
     let click = click_modulator_control;
     click(&mut visual, "device-modulator-toggle".into(), false);
-    click(&mut visual, format!("add-lfo-{}", device.value()), true);
+    add_modulator_from_menu(&mut visual, device, "lfo");
     let slot = |view: &EditorView| {
         view.state
             .as_ref()?
@@ -6490,15 +6490,26 @@ fn modulation_panel_maps_all_fm4_carriers_through_the_scrolled_instrument_body(
     visual.run_until_parked();
     let click = click_modulator_control;
     click(&mut visual, "device-modulator-toggle".into(), false);
-    for kind in ["follower", "audio rate"] {
-        assert!(
-            visual
-                .debug_bounds(Box::leak(
-                    format!("add-{kind}-{}", device.value()).into_boxed_str()
-                ))
-                .is_none()
-        );
-    }
+    click(
+        &mut visual,
+        format!("add-modulator-{}", device.value()),
+        true,
+    );
+    assert_eq!(
+        editor.read_with(cx, |view, _| {
+            view.context_menu
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .map(|item| item.label)
+                .collect::<Vec<_>>()
+        }),
+        ["lfo", "macro", "random"],
+    );
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("context-menu-panel").is_none());
     let bank = |view: &EditorView| {
         view.state
             .as_ref()
@@ -6509,7 +6520,7 @@ fn modulation_panel_maps_all_fm4_carriers_through_the_scrolled_instrument_body(
             .modulation()
             .clone()
     };
-    click(&mut visual, format!("add-lfo-{}", device.value()), true);
+    add_modulator_from_menu(&mut visual, device, "lfo");
     pump_until(&editor, cx, |view| bank(view).sources().len() == 1);
     visual.run_until_parked();
     let source = editor.read_with(cx, |view, _| bank(view).sources()[0].id);
@@ -6671,7 +6682,7 @@ fn modulation_panel_duplicates_a_mapped_source_and_undoes_it_in_one_edit(cx: &mu
             .clone()
     };
     click(&mut visual, "device-modulator-toggle".into(), false);
-    click(&mut visual, format!("add-lfo-{}", device.value()), true);
+    add_modulator_from_menu(&mut visual, device, "lfo");
     pump_until(&editor, cx, |view| bank(view).sources().len() == 1);
     visual.run_until_parked();
     let source = editor.read_with(cx, |view, _| bank(view).sources()[0].id);
@@ -6746,6 +6757,75 @@ fn modulation_panel_adds_and_maps_a_manual_macro(cx: &mut TestAppContext) {
     );
 }
 
+#[gpui::test]
+fn modulation_panel_closes_the_add_menu_when_its_device_is_removed(cx: &mut TestAppContext) {
+    let (service, state, track, device) =
+        actor_native_effect_fixture(hex_devices::utility::UTILITY_TYPE_ID);
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    click_modulator_control(&mut visual, "device-modulator-toggle".into(), false);
+    click_modulator_control(
+        &mut visual,
+        format!("add-modulator-{}", device.value()),
+        true,
+    );
+    assert!(visual.debug_bounds("context-menu-panel").is_some());
+
+    editor.update(cx, |view, cx| {
+        assert!(view.enqueue(Request::Edit(Command::RemoveDevice(device))));
+        cx.notify();
+    });
+    pump_until(&editor, cx, |view| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .is_none()
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("context-menu-panel").is_none());
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(view.context_menu.is_none());
+        assert!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .is_none()
+        );
+        assert!(view.error.is_none());
+    });
+}
+
+fn add_modulator_from_menu(visual: &mut VisualTestContext, device: DeviceId, kind: &str) {
+    click_modulator_control(visual, format!("add-modulator-{}", device.value()), true);
+    let panel = visual
+        .debug_bounds("context-menu-panel")
+        .expect("modulator menu");
+    if kind == "lfo" {
+        // Exercise the pointer action on the first row. Keyboard navigation
+        // selects the other audio-effect types in the shared mapping tests.
+        let position = point(panel.center().x, panel.origin.y + px(10.0));
+        visual.simulate_click(position, Modifiers::default());
+    } else {
+        let steps = ["lfo", "follower", "macro", "random", "audio rate"]
+            .iter()
+            .position(|label| *label == kind)
+            .expect("modulator type in audio effect menu");
+        for _ in 0..steps {
+            visual.simulate_keystrokes("down");
+        }
+        visual.simulate_keystrokes("enter");
+    }
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("context-menu-panel").is_none());
+}
+
 fn click_modulator_control(visual: &mut VisualTestContext, key: String, in_strip: bool) {
     let key = Box::leak(key.into_boxed_str());
     if in_strip {
@@ -6799,7 +6879,7 @@ fn modulation_panel_maps_an_lfo_into_a_macro_and_then_a_device_parameter(cx: &mu
     };
     click_modulator_control(&mut visual, "device-modulator-toggle".into(), false);
     for (index, kind) in ["lfo", "macro"].into_iter().enumerate() {
-        click_modulator_control(&mut visual, format!("add-{kind}-{}", device.value()), true);
+        add_modulator_from_menu(&mut visual, device, kind);
         pump_until(&editor, cx, |view| bank(view).sources().len() == index + 1);
         visual.run_until_parked();
     }
@@ -6885,7 +6965,7 @@ fn modulation_panel_maps_both_lfo_rate_modes_and_preserves_assignments_on_sync(
     let click = click_modulator_control;
     click(&mut visual, "device-modulator-toggle".into(), false);
     for (index, kind) in ["lfo", "lfo", "macro"].into_iter().enumerate() {
-        click(&mut visual, format!("add-{kind}-{}", device.value()), true);
+        add_modulator_from_menu(&mut visual, device, kind);
         pump_until(&editor, cx, |view| bank(view).sources().len() == index + 1);
         visual.run_until_parked();
     }
@@ -7076,11 +7156,7 @@ fn assert_modulation_mapping(
         );
     };
     click(&mut visual, "device-modulator-toggle".into());
-    click_modulator_control(
-        &mut visual,
-        format!("add-{source_kind}-{}", device.value()),
-        true,
-    );
+    add_modulator_from_menu(&mut visual, device, source_kind);
     let source = |view: &EditorView| {
         view.state
             .as_ref()?
@@ -7524,7 +7600,9 @@ fn modulation_panel_maps_a_bound_source_effect_on_its_receiver(cx: &mut TestAppC
         visual.run_until_parked();
     };
     click(&mut visual, "device-modulator-toggle".into());
-    click(&mut visual, format!("add-lfo-{}", device.value()));
+    click(&mut visual, format!("add-modulator-{}", device.value()));
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
     let source_slot = |view: &EditorView| {
         view.state
             .as_ref()?
