@@ -455,7 +455,10 @@ impl ModulationSourceBank {
     ) -> Result<(), Error> {
         for incoming in routes.chunk_by(|a, b| a.target == b.target) {
             let index = incoming[0].target;
-            let (before, target_and_after) = self.sources.split_at_mut(index);
+            let (before, target_and_after) = self
+                .sources
+                .split_at_mut_checked(index)
+                .ok_or(Error::InvalidDescriptor)?;
             let (target, after) = target_and_after
                 .split_first_mut()
                 .ok_or(Error::InvalidDescriptor)?;

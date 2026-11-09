@@ -208,6 +208,10 @@ impl PreparedModulation {
             .checked_add(routes.checked_mul(std::mem::size_of::<Route>())?)
     }
 
+    pub(crate) fn route_count(&self) -> usize {
+        self.routes.len()
+    }
+
     /// Stable provider IDs, sorted and unique for runtime admission.
     pub fn parameter_ids(&self) -> &[ParameterId] {
         &self.ids

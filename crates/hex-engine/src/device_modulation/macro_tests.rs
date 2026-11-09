@@ -175,6 +175,7 @@ fn saved_source_routes_deliver_sample_rate_pcm_and_preserve_authored_macro_value
     let next = editor.project().next_identity();
     let source_id = |offset| ModulationSourceId::new(next + offset).unwrap();
     let macro_slot = |offset, value| Modulator {
+        color: Default::default(),
         id: source_id(offset),
         enabled: true,
         state: Settings { value }.encode().unwrap(),
@@ -184,6 +185,7 @@ fn saved_source_routes_deliver_sample_rate_pcm_and_preserve_authored_macro_value
         macro_slot(3, 0.5),
         macro_slot(1, 0.25),
         Modulator {
+            color: Default::default(),
             id: source_id(2),
             enabled: true,
             state: lfo::Settings {

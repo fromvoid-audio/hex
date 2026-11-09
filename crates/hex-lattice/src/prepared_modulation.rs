@@ -3,8 +3,8 @@
 //! phase through its existing replacement transaction. Cloning this declaration
 //! never copies a speculative audio transaction or grants publication custody.
 use crate::{
-    ModulationRuntime, ModulationSourceBank, PreparedModulation, PreparedModulationSource,
-    SourceModulationRoute,
+    MAX_MODULATION_ROUTES, ModulationRuntime, ModulationSourceBank, PreparedModulation,
+    PreparedModulationSource, SourceModulationRoute,
     modulation_source_routes::{self, PreparedSourceRoute},
 };
 use hex_lattice_contract::DeviceContractError as Error;
@@ -42,6 +42,9 @@ impl PreparedModulationState {
         ModulationSourceBank::validate_sources(&sources, chunk_frames)?;
         if sources.len() != program.source_count() {
             return Err(Error::InvalidDescriptor);
+        }
+        if program.route_count().saturating_add(routes.len()) > MAX_MODULATION_ROUTES {
+            return Err(Error::RuntimeBudgetExceeded);
         }
         let source_routes = modulation_source_routes::prepare(&sources, routes)?;
         let prepared = Self {
