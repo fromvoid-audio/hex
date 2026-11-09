@@ -398,10 +398,14 @@ int main(int argc,char** argv) {
                     const auto complete_edit=[&](const hex_instance::EditEvent& event) {
                         completed_edits[completed_edit_count++]={event,frames};instance.complete_parameter_edit();
                     };
+                    hex_instance::EditorTouch editor_touch;
                     const auto drain_edit_boundaries=[&] {
-                        // Begin/end alone do not need an invented audio call.
+                        // A late End may arrive after the last Perform reached DSP.
+                        // Keep its hold terminal even if the ordered reader gets it
+                        // before the next real PCM call. Only PCM can restore sound.
                         hex_instance::EditEvent event{};
                         while(completed_edit_count<completed_edits.size() && instance.peek_parameter_edit(event) && event.kind!=hex_instance::Perform) {
+                            editor_touch.applied(event);
                             instance.consume_parameter_edit();complete_edit(event);
                         }
                     };
@@ -433,7 +437,6 @@ int main(int argc,char** argv) {
                         const auto index=last_editor_edit(id);
                         return index<applying_edit_count?applying_edits[index].sequence:0;
                     };
-                    hex_instance::EditorTouch editor_touch;
                     const auto stage_edits=[&](size_t later_points=0,
                             const hex_instance::ParameterPoint* later=nullptr,hex_instance::EditorTouch* touch=nullptr) {
                         applying_edit_count=0;hex_instance::EditEvent event{};

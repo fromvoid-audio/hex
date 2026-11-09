@@ -85,11 +85,22 @@ impl NativeEffect {
         self.worker.parameter_values_on_control()
     }
     pub(crate) fn arm_editor_pcm(
-        &self,
+        &mut self,
         scope: std::num::NonZeroU64,
+        touch: Option<crate::foreign_parameter_delivery::editor::TouchPlan>,
     ) -> Result<(hex_plugin_host::transport::EditorScope, u16), &'static str> {
-        self.worker
-            .arm_editor_pcm_on_control(scope)
+        let armed = if let Some(touch) = touch {
+            self.worker
+                .arm_editor_touch_on_control(hex_plugin_host::protocol::EditorTouchPlan {
+                    scope,
+                    parameter: touch.parameter,
+                    reading: touch.reading,
+                    base: touch.base,
+                })
+        } else {
+            self.worker.arm_editor_pcm_on_control(scope)
+        };
+        armed
             .map(|armed| (armed, self.worker.quantum_frames()))
             .map_err(|error| error.message())
     }
@@ -212,11 +223,22 @@ impl NativeEffectControl {
         self.worker.parameter_values_on_control()
     }
     pub(crate) fn arm_editor_pcm(
-        &self,
+        &mut self,
         scope: std::num::NonZeroU64,
+        touch: Option<crate::foreign_parameter_delivery::editor::TouchPlan>,
     ) -> Result<(hex_plugin_host::transport::EditorScope, u16), &'static str> {
-        self.worker
-            .arm_editor_pcm_on_control(scope)
+        let armed = if let Some(touch) = touch {
+            self.worker
+                .arm_editor_touch_on_control(hex_plugin_host::protocol::EditorTouchPlan {
+                    scope,
+                    parameter: touch.parameter,
+                    reading: touch.reading,
+                    base: touch.base,
+                })
+        } else {
+            self.worker.arm_editor_pcm_on_control(scope)
+        };
+        armed
             .map(|armed| (armed, self.worker.quantum_frames()))
             .map_err(|error| error.message())
     }

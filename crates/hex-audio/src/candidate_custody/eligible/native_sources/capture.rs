@@ -178,10 +178,11 @@ impl Custody {
         &self,
         binding: Binding,
         scope: std::num::NonZeroU64,
+        touch: Option<crate::foreign_parameter_delivery::editor::TouchPlan>,
     ) -> Result<(hex_plugin_host::transport::EditorScope, u16), &'static str> {
         self.with_live_capture(binding, |owner| match owner {
-            Owner::Effect(owner) => owner.arm_editor_pcm(scope),
-            Owner::Loaned(owner) => owner.arm_editor_pcm(scope),
+            Owner::Effect(owner) => owner.arm_editor_pcm(scope, touch),
+            Owner::Loaned(owner) => owner.arm_editor_pcm(scope, touch),
             _ => Err("native editor source differs"),
         })
     }
@@ -525,9 +526,10 @@ impl CandidateRoot {
         &self,
         binding: Binding,
         scope: std::num::NonZeroU64,
+        touch: Option<crate::foreign_parameter_delivery::editor::TouchPlan>,
     ) -> Result<(hex_plugin_host::transport::EditorScope, u16), &'static str> {
         self.require_native_source_control_open()?;
-        let armed = self.0.eligible.arm_editor_pcm(binding, scope)?;
+        let armed = self.0.eligible.arm_editor_pcm(binding, scope, touch)?;
         self.require_native_source_control_open()?;
         Ok(armed)
     }
