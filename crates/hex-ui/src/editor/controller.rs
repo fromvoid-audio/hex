@@ -3545,6 +3545,9 @@ impl EditorView {
             return false;
         }
         if self.native_automation_recorder.busy()
+            && !self
+                .native_automation_recorder
+                .permits_original_editor_window(&request)
             && !matches!(
                 &request,
                 Request::DeviceAutomationTake { .. }

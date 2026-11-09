@@ -11,6 +11,22 @@ pub(super) struct EditorCapture {
     cancelling: bool,
 }
 
+impl Recorder {
+    pub(in crate::editor) fn permits_original_editor_window(&self, request: &Request) -> bool {
+        let Request::TogglePluginEditor {
+            project_generation,
+            device,
+        } = request
+        else {
+            return false;
+        };
+        self.editor_take.is_some_and(|capture| {
+            capture.arm.generation == *project_generation
+                && matches!(capture.arm.target, ArmTarget::Vst3 { device: selected, .. } if selected == *device)
+        })
+    }
+}
+
 impl EditorView {
     pub(in crate::editor) fn vst3_editor_arm_selected(
         &self,
@@ -242,5 +258,71 @@ impl EditorView {
             }
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_armed_editor_can_open_its_exact_window_without_unblocking_other_edits() {
+        let effect = hex_engine::NativeDeviceClass::Effect;
+        let utility = hex_engine::native_device_catalog_for_class(effect)
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.type_id.as_str() == Ok("hex.utility"))
+            .unwrap()
+            .type_id;
+        let state = hex_engine::default_native_device_state_for_class(effect, utility).unwrap();
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 4).unwrap();
+        let mut add = || {
+            let hex_project::Created::Device(device) = editor
+                .execute(hex_project::Command::InsertMainDevice {
+                    before: None,
+                    state: state.clone(),
+                })
+                .unwrap()
+            else {
+                panic!("fixture device")
+            };
+            device
+        };
+        let selected = add();
+        let other = add();
+        let recorder = Recorder {
+            editor_take: Some(EditorCapture {
+                request_id: 1,
+                key: GestureKey {
+                    generation: 0,
+                    token: 1,
+                },
+                arm: Arm {
+                    generation: 0,
+                    revision: 7,
+                    target: ArmTarget::Vst3 {
+                        device: selected,
+                        class: [1; 16],
+                        parameter: 0,
+                    },
+                },
+                cancelling: false,
+            }),
+            ..Recorder::default()
+        };
+        assert!(recorder.busy());
+        for (project_generation, device, allowed) in
+            [(0, selected, true), (0, other, false), (1, selected, false)]
+        {
+            assert_eq!(
+                recorder.permits_original_editor_window(&Request::TogglePluginEditor {
+                    project_generation,
+                    device,
+                }),
+                allowed
+            );
+        }
+        assert!(!recorder.permits_original_editor_window(&Request::Undo));
     }
 }

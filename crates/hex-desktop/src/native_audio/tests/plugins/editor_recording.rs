@@ -289,7 +289,9 @@ fn verify_session_recording(
     std::fs::write(&end_gate, b"end").unwrap();
     let committed = loop {
         h.pump();
-        instruments::render_completed_block(h);
+        // The Session writer can synchronously await the next publication
+        // callback. Pace native PCM without waiting for a Session poll here.
+        h.render_worker_step();
         if let Ok(event) = h.service.try_event()
             && let Some(completion) = event.device_automation_take_complete.as_ref()
             && completion.request_id == ID
