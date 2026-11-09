@@ -2966,6 +2966,7 @@ impl RendererRuntime {
         selection: Option<hex_lattice::ProcessorAuditionSelection>,
     ) -> bool {
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Source(_) => false,
             hex_lattice::ProcessorChainOwner::Main => self.main_chain.select_processor_audition(
                 identity.owner,
                 identity.device_id,
@@ -3008,6 +3009,7 @@ impl RendererRuntime {
         selection: hex_lattice::ProcessorAuditionSelection,
     ) -> bool {
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Source(_) => false,
             hex_lattice::ProcessorChainOwner::Main => self.main_chain.processor_audition_is_active(
                 identity.owner,
                 identity.device_id,
@@ -3049,6 +3051,7 @@ impl RendererRuntime {
         identity: crate::PostNodeIdentity,
     ) -> bool {
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Source(_) => false,
             hex_lattice::ProcessorChainOwner::Main => {
                 self.main_chain.cancel_processor_audition_for_identity(
                     identity.owner,

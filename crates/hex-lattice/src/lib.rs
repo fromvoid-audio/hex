@@ -534,19 +534,21 @@ pub enum NodeSignalPhase {
 }
 
 /// Typed owner identity for a prepared effect chain. Numeric IDs share the
-/// canonical project allocator, while this tag keeps track and return owners
-/// distinct during runtime history handoff.
+/// canonical project allocator, while this tag keeps track, return and source
+/// owners distinct during runtime history handoff. A source retains its identity
+/// when the receiving track changes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessorChainOwner {
     Main,
     Track(u64),
     Return(u64),
+    Source(u64),
 }
 
 impl ProcessorChainOwner {
     fn is_valid(self) -> bool {
         match self {
-            Self::Track(id) | Self::Return(id) => id != 0,
+            Self::Track(id) | Self::Return(id) | Self::Source(id) => id != 0,
             Self::Main => true,
         }
     }
@@ -3804,6 +3806,20 @@ mod tests {
     use super::*;
     use hex_lattice_contract::{ParameterDescriptor, ParameterId, ParameterValue};
 
+    #[test]
+    fn source_processor_identity_is_nonzero_and_independent_of_track_and_return() {
+        let source = ProcessorInstanceIdentity::new(ProcessorChainOwner::Source(4), 7).unwrap();
+        assert_eq!(source.owner(), ProcessorChainOwner::Source(4));
+        assert_ne!(
+            source,
+            ProcessorInstanceIdentity::new(ProcessorChainOwner::Track(4), 7).unwrap()
+        );
+        assert_ne!(
+            source,
+            ProcessorInstanceIdentity::new(ProcessorChainOwner::Return(4), 7).unwrap()
+        );
+        assert!(ProcessorInstanceIdentity::new(ProcessorChainOwner::Source(0), 7).is_err());
+    }
     const DYNAMICS_METER_TYPE: DeviceTypeId = DeviceTypeId::from_static("test.dynamics-meter");
 
     struct DynamicsMeterPrepared;
