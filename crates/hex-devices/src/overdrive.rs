@@ -477,7 +477,8 @@ impl Channel {
     }
 }
 
-struct OverdriveRuntime {
+/// Fixed-inline Overdrive history audited by the sealed storage owner.
+pub struct OverdriveRuntime {
     base_targets: [f64; 6],
     controls: crate::parameter_binding::Controls<Settings, 6>,
     targets: [f64; 6],
