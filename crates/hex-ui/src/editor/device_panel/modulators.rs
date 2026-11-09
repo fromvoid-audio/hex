@@ -5,12 +5,12 @@ use crate::context_menu::{MenuItem, PopupMenu};
 use crate::editor::context_menu::EditorContextAction;
 use gpui::{AnyElement, Point, SharedString};
 use hex_engine::{
-    ahd_release_modulator as ahd_release, audio_rate_modulator as audio_rate,
-    button_modulator as manual_button, buttons_modulator as buttons,
-    follower_modulator as follower, lfo_modulator as lfo, macro_four_modulator as macro_four,
-    macro_modulator as manual, math_modulator as math, mix_modulator as mix,
-    note_counter_modulator as note_counter, note_pressure_modulator as pressure,
-    ramp_modulator as ramp, random_modulator as random,
+    adsr_modulator as adsr, ahd_release_modulator as ahd_release,
+    audio_rate_modulator as audio_rate, button_modulator as manual_button,
+    buttons_modulator as buttons, follower_modulator as follower, lfo_modulator as lfo,
+    macro_four_modulator as macro_four, macro_modulator as manual, math_modulator as math,
+    mix_modulator as mix, note_counter_modulator as note_counter,
+    note_pressure_modulator as pressure, ramp_modulator as ramp, random_modulator as random,
 };
 use hex_lattice_contract::{ParameterId, ParameterModulation};
 use hex_project::{
@@ -35,10 +35,11 @@ enum SourceKind {
     NoteCounter,
     Ramp,
     AhdRelease,
+    Adsr,
 }
 
 impl SourceKind {
-    const ALL: [Self; 14] = [
+    const ALL: [Self; 15] = [
         Self::Lfo,
         Self::Follower,
         Self::Macro,
@@ -53,6 +54,7 @@ impl SourceKind {
         Self::NoteCounter,
         Self::Ramp,
         Self::AhdRelease,
+        Self::Adsr,
     ];
 
     fn label(self) -> &'static str {
@@ -71,6 +73,7 @@ impl SourceKind {
             Self::NoteCounter => "note counter",
             Self::Ramp => "ramp",
             Self::AhdRelease => "ahd on release",
+            Self::Adsr => "adsr",
         }
     }
 
@@ -99,6 +102,7 @@ impl SourceKind {
             Self::NoteCounter => note_counter::Settings::default().encode(),
             Self::Ramp => ramp::Settings::default().encode(),
             Self::AhdRelease => ahd_release::Settings::default().encode(),
+            Self::Adsr => adsr::Settings::default().encode(),
             Self::Macro => manual::Settings::default().encode(),
             Self::MacroFour => macro_four::Settings::default().encode(),
             Self::Random => random::Settings {
@@ -252,6 +256,13 @@ enum AhdEdit {
     ToggleSingleTrigger,
 }
 
+#[derive(Clone, Copy)]
+enum AdsrEdit {
+    Duration { segment: usize, longer: bool },
+    Sustain(f32),
+    ToggleSingleTrigger,
+}
+
 fn duration_text(micros: u32) -> String {
     if micros < 1000 {
         format!("{micros} µs")
@@ -289,6 +300,7 @@ enum Edit {
     NoteCounter(ModulationSourceId, CounterEdit),
     Ramp(ModulationSourceId, RampEdit),
     AhdRelease(ModulationSourceId, AhdEdit),
+    Adsr(ModulationSourceId, AdsrEdit),
     DuplicateSource(ModulationSourceId),
     RemoveSource(ModulationSourceId),
     Rate(ModulationSourceId, f64),
@@ -389,9 +401,10 @@ fn open_add_menu(
         .filter(|kind| match kind {
             SourceKind::Follower | SourceKind::AudioRate => allow_audio_input,
             SourceKind::NotePressure => allow_note_pressure,
-            SourceKind::NoteCounter | SourceKind::Ramp | SourceKind::AhdRelease => {
-                allow_note_events
-            }
+            SourceKind::NoteCounter
+            | SourceKind::Ramp
+            | SourceKind::AhdRelease
+            | SourceKind::Adsr => allow_note_events,
             _ => true,
         })
         .map(|kind| MenuItem {
@@ -659,6 +672,7 @@ pub(super) fn panel(
             note_counter::TYPE_ID => SourceKind::NoteCounter,
             ramp::TYPE_ID => SourceKind::Ramp,
             ahd_release::TYPE_ID => SourceKind::AhdRelease,
+            adsr::TYPE_ID => SourceKind::Adsr,
             _ => continue,
         };
         let label = kind.label();
@@ -851,6 +865,25 @@ pub(super) fn panel(
                     Edit::Ramp(source_id, RampEdit::ToggleLoop),
                 ));
         }
+        let envelope_time = |cx: &mut Context<EditorView>, name: &str, micros, edits: [Edit; 2]| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(2.0))
+                .child(theme::text(format!("{name} {}", duration_text(micros))))
+                .child(button(
+                    cx,
+                    source_key(&format!("{name}-shorter")),
+                    theme::text("−"),
+                    edits[0],
+                ))
+                .child(button(
+                    cx,
+                    source_key(&format!("{name}-longer")),
+                    theme::text("+"),
+                    edits[1],
+                ))
+        };
         if let SourceKind::AhdRelease = kind
             && let Ok(settings) = ahd_release::Settings::decode(&source.state)
         {
@@ -859,36 +892,20 @@ pub(super) fn panel(
                     .into_iter()
                     .enumerate()
             {
-                let duration = duration_text(settings.durations_micros[index]);
-                let mut controls = div()
-                    .flex()
-                    .items_center()
-                    .gap(px(2.0))
-                    .child(theme::text(format!("{name} {duration}")))
-                    .child(button(
-                        cx,
-                        source_key(&format!("{name}-shorter")),
-                        theme::text("−"),
+                let mut controls = envelope_time(
+                    cx,
+                    name,
+                    settings.durations_micros[index],
+                    [false, true].map(|longer| {
                         Edit::AhdRelease(
                             source_id,
                             AhdEdit::Duration {
                                 segment: index,
-                                longer: false,
+                                longer,
                             },
-                        ),
-                    ))
-                    .child(button(
-                        cx,
-                        source_key(&format!("{name}-longer")),
-                        theme::text("+"),
-                        Edit::AhdRelease(
-                            source_id,
-                            AhdEdit::Duration {
-                                segment: index,
-                                longer: true,
-                            },
-                        ),
-                    ));
+                        )
+                    }),
+                );
                 if let Some(curve_index) = curve_index {
                     let (curve, next) = curve_control(settings.curves[curve_index]);
                     controls = controls.child(button(
@@ -916,6 +933,53 @@ pub(super) fn panel(
                 }),
                 Edit::AhdRelease(source_id, AhdEdit::ToggleSingleTrigger),
             ));
+        }
+        if let SourceKind::Adsr = kind
+            && let Ok(settings) = adsr::Settings::decode(&source.state)
+        {
+            for (segment, name) in ["attack", "decay", "release"].into_iter().enumerate() {
+                row = row.child(envelope_time(
+                    cx,
+                    name,
+                    settings.durations_micros[segment],
+                    [false, true].map(|longer| {
+                        Edit::Adsr(source_id, AdsrEdit::Duration { segment, longer })
+                    }),
+                ));
+            }
+            row = row
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(2.0))
+                        .child(theme::text(format!(
+                            "sustain {:.0}%",
+                            settings.sustain * 100.0
+                        )))
+                        .child(button(
+                            cx,
+                            source_key("sustain-less"),
+                            theme::text("−"),
+                            Edit::Adsr(source_id, AdsrEdit::Sustain(-0.05)),
+                        ))
+                        .child(button(
+                            cx,
+                            source_key("sustain-more"),
+                            theme::text("+"),
+                            Edit::Adsr(source_id, AdsrEdit::Sustain(0.05)),
+                        )),
+                )
+                .child(button(
+                    cx,
+                    source_key("single-trigger"),
+                    theme::text(if settings.single_trigger {
+                        "single trigger"
+                    } else {
+                        "retrigger"
+                    }),
+                    Edit::Adsr(source_id, AdsrEdit::ToggleSingleTrigger),
+                ));
         }
         if matches!(kind, SourceKind::NotePressure) {
             row = row.child(theme::text("one carrier"));
@@ -1518,7 +1582,10 @@ fn apply(
             }
             if matches!(
                 kind,
-                SourceKind::NoteCounter | SourceKind::Ramp | SourceKind::AhdRelease
+                SourceKind::NoteCounter
+                    | SourceKind::Ramp
+                    | SourceKind::AhdRelease
+                    | SourceKind::Adsr
             ) && !hex_engine::project_device_has_modulation_note_events(project, id)
             {
                 return Err(Invalid("this modulator requires instrument note events"));
@@ -1603,6 +1670,24 @@ fn apply(
                     *control = curve;
                 }
                 AhdEdit::ToggleSingleTrigger => settings.single_trigger = !settings.single_trigger,
+            }
+            source.state = settings.encode().map_err(unsupported)?;
+        }
+        Edit::Adsr(id, edit) => {
+            let source = find_source(&mut sources, id)?;
+            let mut settings = adsr::Settings::decode(&source.state).map_err(unsupported)?;
+            match edit {
+                AdsrEdit::Duration { segment, longer } => {
+                    let duration = settings
+                        .durations_micros
+                        .get_mut(segment)
+                        .ok_or(Invalid("envelope segment is unsupported"))?;
+                    *duration = duration_step(*duration, longer);
+                }
+                AdsrEdit::Sustain(delta) => {
+                    settings.sustain = (settings.sustain + delta).clamp(0.0, 1.0);
+                }
+                AdsrEdit::ToggleSingleTrigger => settings.single_trigger = !settings.single_trigger,
             }
             source.state = settings.encode().map_err(unsupported)?;
         }
