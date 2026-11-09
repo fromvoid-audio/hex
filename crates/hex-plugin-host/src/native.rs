@@ -42,6 +42,7 @@ pub struct Source {
     bundle: Bundle,
     executable: Executable,
     identity: Identity,
+    grouped_editor_callbacks: bool,
 }
 impl Source {
     pub fn inspect_on_control(path: &Path, executable: &str, class: ClassId) -> Result<Self> {
@@ -58,7 +59,14 @@ impl Source {
             bundle,
             executable,
             identity,
+            grouped_editor_callbacks: false,
         })
+    }
+    /// Explicit opt-in on the exact inspected source before the SDK creates
+    /// its component handler. This enables callbacks, not recording custody.
+    pub fn with_grouped_editor_callbacks(mut self) -> Self {
+        self.grouped_editor_callbacks = true;
+        self
     }
     pub fn identity(&self) -> Identity {
         self.identity
@@ -204,6 +212,7 @@ pub struct Prepared {
     parameter_page: Option<parameter_page::PendingPage>,
     parameter_page_sequence: u64,
     authored_parameter_metadata: Option<AuthoredParameterMetadata>,
+    grouped_editor_callbacks: bool,
 }
 /// Source-bound configured component awaiting actual graph presentation facts.
 /// No processing/state capture or canonical/audio acceptance has occurred. Keep
@@ -411,6 +420,9 @@ impl Pending {
             .stdin(Stdio::from(OwnedFd::from(child_data)))
             .stdout(Stdio::from(OwnedFd::from(child_cancel)))
             .stderr(Stdio::null());
+        if source.grouped_editor_callbacks {
+            command.arg("--test-grouped-editor");
+        }
         setup(&mut command);
         let child = command
             .spawn()
@@ -605,6 +617,7 @@ impl Pending {
             parameter_page: None,
             parameter_page_sequence: 0,
             authored_parameter_metadata: None,
+            grouped_editor_callbacks: self.source.grouped_editor_callbacks,
         })
     }
 }
@@ -640,6 +653,9 @@ impl Prepared {
     /// Cumulative actual successful PCM exchanges, not callback/graph acceptance.
     pub fn completed_blocks_on_control(&self) -> u64 {
         self.sequence
+    }
+    pub fn grouped_editor_callbacks_enabled(&self) -> bool {
+        self.grouped_editor_callbacks
     }
     pub fn ready(&self) -> &Ready {
         &self.ready

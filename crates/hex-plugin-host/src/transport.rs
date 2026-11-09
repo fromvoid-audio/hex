@@ -15,7 +15,7 @@
 //! DSP rollback occurs.
 
 type Frame = [f32; 2];
-use crate::protocol::{EditorPerforms, EditorRestoration};
+use crate::protocol::{EditorPerforms, EditorRestorations};
 use hex_lattice_contract::ForeignProcessorBinding as Binding;
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::num::NonZeroU64;
@@ -717,7 +717,7 @@ pub struct AcceptedEditorQuantum {
     pub callback_offset: u16,
     pub scope: NonZeroU64,
     pub performs: EditorPerforms,
-    pub restoration: Option<EditorRestoration>,
+    pub restorations: EditorRestorations,
     pub lost_origin: bool,
     pub origin: Option<ManualParameterOrigin>,
 }
@@ -725,7 +725,7 @@ pub struct AcceptedEditorQuantum {
 #[derive(Clone, Copy, Default)]
 pub struct EditorPcmFacts {
     pub performs: EditorPerforms,
-    pub restoration: Option<EditorRestoration>,
+    pub restorations: EditorRestorations,
     pub lost_origin: bool,
 }
 
@@ -1295,7 +1295,7 @@ impl Callback {
                             callback_offset: (frame_offset + index) as u16,
                             scope: editor.scope,
                             performs: editor.facts.performs,
-                            restoration: editor.facts.restoration,
+                            restorations: editor.facts.restorations,
                             lost_origin: editor.facts.lost_origin,
                             origin: editor.origin,
                         });
@@ -1631,7 +1631,7 @@ impl Worker {
             manual,
             performs.map(|performs| EditorPcmFacts {
                 performs,
-                restoration: None,
+                restorations: Default::default(),
                 lost_origin: false,
             }),
         )
