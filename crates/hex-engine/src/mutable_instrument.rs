@@ -11,6 +11,7 @@ pub(crate) mod authored_gate;
 mod automation;
 pub(crate) mod frozen_parameters;
 mod live;
+mod output_trim;
 #[cfg(test)]
 mod steal_tests;
 mod volume;
@@ -241,6 +242,7 @@ pub(crate) struct MutableInstrumentTrackRuntime {
     pair: NativeInstrumentRuntimePair,
     frozen_parameters: frozen_parameters::FrozenParameters,
     modulation: Option<Box<hex_lattice::ModulationRuntime>>,
+    output_trim: Option<output_trim::OutputTrim>,
     pub(crate) resources: Option<crate::native_device_resources::PreparedDeviceResourceLease>,
     pub(crate) expression_identity: Option<hex_project::DeviceId>,
     pub(crate) expression: Option<crate::live_expression::Snapshot>,
@@ -294,6 +296,7 @@ impl MutableInstrumentTrackRuntime {
             && self.expression.is_none()
             && self.frozen_parameters.empty()
             && self.modulation.is_none()
+            && self.output_trim.is_none()
             && self
                 .pair
                 .inline_storage_for_type::<hex_devices::sampler::SamplerRuntime>()
@@ -307,6 +310,7 @@ impl MutableInstrumentTrackRuntime {
             pair,
             frozen_parameters,
             modulation,
+            output_trim,
             resources,
             expression_identity: _,
             expression,
@@ -319,7 +323,11 @@ impl MutableInstrumentTrackRuntime {
         if live.is_some() {
             return Err(crate::AudioStorageError::UnsupportedGraph);
         }
-        if expression.is_some() || resources.is_some() || modulation.is_some() {
+        if expression.is_some()
+            || resources.is_some()
+            || modulation.is_some()
+            || output_trim.is_some()
+        {
             return Err(crate::AudioStorageError::UnsupportedGraph);
         }
         let (first, second) = pair
@@ -414,6 +422,7 @@ impl MutableInstrumentTrackRuntime {
             pair,
             frozen_parameters,
             modulation: None,
+            output_trim: None,
             resources: None,
             expression_identity: None,
             expression: None,
@@ -457,12 +466,19 @@ impl MutableInstrumentTrackRuntime {
         {
             return Err(MutableInstrumentRuntimeError::Budget);
         }
+        self.output_trim = declaration
+            .program()
+            .host_output_gain_base()
+            .map(output_trim::OutputTrim::new);
         self.modulation = Some(Box::new(runtime));
         Ok(())
     }
 
     pub(crate) fn begin_block(&mut self) {
         self.pair.begin_block();
+        if let Some(trim) = &mut self.output_trim {
+            trim.scratch = trim.committed;
+        }
         if let Some(modulation) = &mut self.modulation {
             modulation.begin();
         }
@@ -664,6 +680,10 @@ impl MutableInstrumentTrackRuntime {
             && let (Some(current), Some(old)) = (&mut self.modulation, &previous.modulation)
         {
             current.inherit_graph_committed(old);
+            if let (Some(trim), Some(old)) = (&mut self.output_trim, previous.output_trim) {
+                trim.committed = old.committed;
+                trim.scratch = old.committed;
+            }
         }
     }
 
@@ -1015,14 +1035,40 @@ impl MutableInstrumentTrackRuntime {
             let mut processed = Ok(());
             modulation
                 .render_instrument_chunk(frames.len(), automation, clock, events, |values| {
-                    processed = self.pair.process_block_with_clock_and_automation(
-                        events,
-                        frames,
-                        clock,
-                        gains.as_ref().map_or(&[], |gains| gains.as_slice()),
-                        values,
-                        resources,
-                    );
+                    let mut render = |frames: &mut [hex_lattice::StereoFrame]| {
+                        self.pair.process_block_with_clock_and_automation(
+                            events,
+                            frames,
+                            clock,
+                            gains.as_ref().map_or(&[], |gains| gains.as_slice()),
+                            values,
+                            resources,
+                        )
+                    };
+                    if let Some(trim) = &mut self.output_trim {
+                        use crate::device_modulation::INSTRUMENT_MODULATION_CHUNK_FRAMES;
+                        use hex_lattice_contract::{DeviceContractError, HostGain};
+                        let mut output_gains = [HostGain::ZERO; INSTRUMENT_MODULATION_CHUNK_FRAMES];
+                        let output_gains = output_gains
+                            .get_mut(..frames.len())
+                            .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
+                        for (offset, gain) in output_gains.iter_mut().enumerate() {
+                            *gain = values.instrument_output_gain_at(offset)?;
+                        }
+                        processed = output_trim::render_contribution(
+                            frames,
+                            |offset| output_gains[offset].linear(),
+                            NativeInstrumentRuntimeError::InvalidParameterAutomation,
+                            render,
+                        );
+                        if processed.is_ok()
+                            && let Some(&last) = output_gains.last()
+                        {
+                            trim.scratch = last;
+                        }
+                    } else {
+                        processed = render(frames);
+                    }
                     Ok(())
                 })
                 .map_err(|_| {
@@ -1067,6 +1113,9 @@ impl MutableInstrumentTrackRuntime {
 
     pub(crate) fn commit_block(&mut self) {
         self.pair.commit_block();
+        if let Some(trim) = &mut self.output_trim {
+            trim.committed = trim.scratch;
+        }
         if let Some(modulation) = &mut self.modulation {
             let _ = modulation.commit();
         }
@@ -1094,6 +1143,9 @@ impl MutableInstrumentTrackRuntime {
 
     pub(crate) fn reset(&mut self) {
         self.pair.reset();
+        if let Some(trim) = &mut self.output_trim {
+            *trim = output_trim::OutputTrim::new(trim.base);
+        }
         if let Some(modulation) = &mut self.modulation {
             modulation.reset_all();
         }

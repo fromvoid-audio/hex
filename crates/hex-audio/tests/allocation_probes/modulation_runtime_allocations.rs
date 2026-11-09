@@ -1,7 +1,8 @@
 //! Isolated modulation transaction probe, not native callback integration.
 use hex_lattice::{
     ModulationRoute, ModulationRuntime, ModulationSourceBank, ModulationSourceId, ModulationTarget,
-    PreparedModulation, PreparedModulationSource, SourceModulationParameter,
+    NativeParameterAutomation, PreparedModulation, PreparedModulationSource,
+    SourceModulationParameter,
 };
 use hex_lattice_contract::{
     DeviceContractError, ParameterAccess, ParameterAutomation, ParameterChangeImpact,

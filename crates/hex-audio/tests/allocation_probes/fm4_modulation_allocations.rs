@@ -236,6 +236,17 @@ fn exercise_fm4_sample_routes(targets: Fm4Targets) {
 
 #[test]
 fn fm4_saved_bank_renders_and_hands_off_through_the_callback_without_allocation() {
+    probe_fm4_saved_bank(hex_project::DeviceAutomationTarget::Parameter(
+        parameter::carrier(1),
+    ));
+}
+
+#[test]
+fn fm4_output_trim_renders_handoffs_and_detaches_without_callback_allocations() {
+    probe_fm4_saved_bank(hex_project::DeviceAutomationTarget::HostOutputGain);
+}
+
+fn probe_fm4_saved_bank(target: hex_project::DeviceAutomationTarget) {
     use hex_audio::prepared;
     use hex_devices::{
         fm4::device::FM4_TYPE_ID,
@@ -246,9 +257,9 @@ fn fm4_saved_bank_renders_and_hands_off_through_the_callback_without_allocation(
         playback::{Playback, PlaybackCommand},
     };
     use hex_project::{
-        BeatTime, Command, Created, DeviceAutomationTarget, DeviceModulation,
-        DeviceModulationRoute, Editor, ModulationAmount, ModulationDestination, ModulationOutputId,
-        ModulationRange, ModulationRouteId, ModulationSourceId, Modulator, Project,
+        BeatTime, Command, Created, DeviceModulation, DeviceModulationRoute, Editor,
+        ModulationAmount, ModulationDestination, ModulationOutputId, ModulationRange,
+        ModulationRouteId, ModulationSourceId, Modulator, Project,
     };
     use std::{collections::BTreeMap, sync::Arc};
 
@@ -312,7 +323,7 @@ fn fm4_saved_bank_renders_and_hands_off_through_the_callback_without_allocation(
         output: ModulationOutputId::MAIN,
         destination: ModulationDestination::Device {
             device_type: FM4_TYPE_ID,
-            target: DeviceAutomationTarget::Parameter(parameter::carrier(1)),
+            target,
             vst3_class: None,
         },
         amount: ModulationAmount::new(0.25).unwrap(),
