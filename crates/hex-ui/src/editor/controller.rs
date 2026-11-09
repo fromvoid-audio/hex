@@ -1304,6 +1304,8 @@ impl EditorView {
                     visible_change |= self.retire_pending_audio_events();
                     visible_change |= self.retire_pending_clip_loop();
                     visible_change |= self.clear_pending_bypass();
+                    visible_change |= self.cancel_modulation_target_drag();
+                    visible_change |= self.retire_pending_modulation_depth();
                     visible_change |= self.cancel_audio_loop_gesture();
                     visible_change |= self.retire_pending_clip_move();
                     visible_change |= self.retire_pending_clip_paint();
@@ -1363,6 +1365,7 @@ impl EditorView {
         visible_change |= self.pump_device_gesture();
         visible_change |= self.tick_stopped_vst3_restore();
         visible_change |= self.retire_abandoned_bypass();
+        visible_change |= self.retire_abandoned_modulation_depth();
         visible_change |= self.retire_abandoned_duplicate();
         visible_change |= self.retire_abandoned_track_clipboard();
         visible_change |= self.retire_abandoned_group_copy();
@@ -2398,6 +2401,7 @@ impl EditorView {
         let audio_placement_selection = self.audio_events_request_complete(&event);
         self.clip_loop_request_complete(&event);
         self.bypass_request_complete(&event);
+        self.modulation_depth_complete(&event);
         self.clip_move_request_complete(&event);
         self.clip_paint_request_complete(&event);
         self.truncated_import
