@@ -6286,7 +6286,10 @@ fn modulation_panel_maps_loaded_sampler_gain_through_its_authored_control(cx: &m
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(1500.0), px(650.0)));
     visual.run_until_parked();
-    assert!(visual.debug_bounds("device-modulator-toggle").is_none());
+    let toggle = || "device-modulator-toggle".to_owned();
+    click_modulator_control(&mut visual, toggle(), false);
+    assert!(visual.debug_bounds("device-modulator-scroll").is_none());
+    click_modulator_control(&mut visual, toggle(), false);
     let empty_slot = empty
         .state
         .project
