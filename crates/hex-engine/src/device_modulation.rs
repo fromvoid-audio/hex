@@ -1,7 +1,7 @@
 //! Translate a saved effect bank into a bounded device-local render declaration.
 //! Control preparation resolves stable IDs and validates real factory bindings.
 //! Prepared declarations borrow no project data and never enter project history.
-use hex_devices::modulation::{envelope_follower, lfo, macro_value};
+use hex_devices::modulation::{envelope_follower, lfo, macro_value, random_hold};
 use hex_lattice::{
     ModulationRoute, ModulationTarget, PreparedModulation, PreparedModulationSource,
     PreparedModulationState, PreparedProcessorFactory, SourceModulationRoute,
@@ -105,6 +105,8 @@ impl EffectModulation {
                 envelope_follower::TYPE_ID => envelope_follower::Settings::decode(&source.state)
                     .and_then(|settings| settings.prepare(source.id, sample_rate)),
                 macro_value::TYPE_ID => macro_value::Settings::decode(&source.state)
+                    .and_then(|settings| settings.prepare(source.id, sample_rate)),
+                random_hold::TYPE_ID => random_hold::Settings::decode(&source.state)
                     .and_then(|settings| settings.prepare(source.id, sample_rate)),
                 _ => return Err(Invalid("modulator state or rate is unsupported")),
             }
@@ -296,3 +298,6 @@ fn reserved<T>(count: usize) -> Result<Vec<T>, Invalid> {
 
 #[cfg(test)]
 mod macro_tests;
+
+#[cfg(test)]
+mod random_tests;
