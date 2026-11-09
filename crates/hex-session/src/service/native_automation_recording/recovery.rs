@@ -37,28 +37,38 @@ pub(in crate::service) fn inspect_sealed_file(
     path: &Path,
 ) -> Result<SealedAutomationRecoveryFile, String> {
     let path = super::super::recovery::absolute_document_path(path)?;
-    let take = open_bounded_sealed(
-        &path,
-        DraftReadLimits {
-            max_source_bytes: hex_storage::MAX_PROJECT_DOCUMENT_BYTES as u64,
-        },
-    )
-    .map_err(|reason| retained_error(&path, &reason))?;
-    if take.event_count() == 0 {
-        return Err(retained_error(
-            &path,
-            "automation recovery file has no recorded applications",
-        ));
-    }
-    let target = take.target();
-    if !matches!(target, DraftTarget::Device { .. }) {
-        return Err("automation recovery file does not target a device".into());
-    }
+    let limits = DraftReadLimits {
+        max_source_bytes: hex_storage::MAX_PROJECT_DOCUMENT_BYTES as u64,
+    };
+    let selected = (|| {
+        let reader = DraftReader::open_bounded(&path, limits, MAX_RECOVERY_EVENTS)
+            .map_err(|error| error.to_string())?;
+        let target = reader.target();
+        let (provenance, identity) = match target {
+            DraftTarget::Vst3Group(_) => {
+                let take = reader
+                    .into_completed_group()
+                    .map_err(|error| error.to_string())?;
+                (take.provenance(), take.content_identity())
+            }
+            DraftTarget::Device { .. } => {
+                let completed = reader.into_completed().map_err(|error| error.to_string())?;
+                let take = CompletedAutomationTake::from_completed_on_control(completed)?;
+                if take.event_count() == 0 {
+                    return Err("automation recovery file has no recorded applications".into());
+                }
+                (take.provenance(), take.content_identity())
+            }
+            _ => return Err("automation recovery file does not target a device".into()),
+        };
+        Ok((target, provenance, identity))
+    })()
+    .map_err(|reason: String| retained_error(&path, &reason))?;
     Ok(SealedAutomationRecoveryFile {
         path,
-        target,
-        provenance: take.provenance(),
-        identity: take.content_identity(),
+        target: selected.0,
+        provenance: selected.1,
+        identity: selected.2,
     })
 }
 
@@ -73,19 +83,28 @@ pub fn prepare_verified_vst3_recovery_on_control(
     max_events: u64,
 ) -> Result<hex_project::Command, String> {
     let result = (|| {
+        if max_events > MAX_RECOVERY_EVENTS {
+            return Err("device automation recovery exceeds the event budget".into());
+        }
+        let limits = DraftReadLimits {
+            max_source_bytes: hex_storage::MAX_PROJECT_DOCUMENT_BYTES as u64,
+        };
+        if let DeviceCaptureTarget::Vst3Group(target) = scope.target {
+            let mut take = receipt.open_completed_group_on_control(path, limits, max_events)?;
+            if take.target() != target.draft {
+                return Err("verified recovery belongs to another vst3 group".into());
+            }
+            return prepare_group_take_adoption_on_control(
+                session,
+                document_base,
+                &mut take,
+                scope.stamp,
+            );
+        }
         let DeviceCaptureTarget::Vst3(target) = scope.target else {
             return Err("verified plugin recovery requires a vst3 target".into());
         };
-        if max_events > hex_project::MAX_DEVICE_AUTOMATION_POINTS as u64 {
-            return Err("device automation recovery exceeds the event budget".into());
-        }
-        let mut take = receipt.open_completed_on_control(
-            path,
-            DraftReadLimits {
-                max_source_bytes: hex_storage::MAX_PROJECT_DOCUMENT_BYTES as u64,
-            },
-            max_events,
-        )?;
+        let mut take = receipt.open_completed_on_control(path, limits, max_events)?;
         let expected = DraftTarget::Device {
             device: target.device,
             target: hex_project::DeviceAutomationTarget::Vst3 {
@@ -118,6 +137,31 @@ pub(in crate::service) fn recover_sealed(
         let limits = DraftReadLimits {
             max_source_bytes: hex_storage::MAX_PROJECT_DOCUMENT_BYTES as u64,
         };
+        if let DraftTarget::Vst3Group(target) = expected_target {
+            let mut take = match identity {
+                AutomationRecoveryFileIdentity::Copy(receipt) => {
+                    receipt.open_completed_group_on_control(path, limits, MAX_RECOVERY_EVENTS)?
+                }
+                AutomationRecoveryFileIdentity::Sealed(selected) => {
+                    let take = CompletedGroupedDraft::open(path, limits, MAX_RECOVERY_EVENTS)
+                        .map_err(|error| error.to_string())?;
+                    if take.content_identity() != selected {
+                        return Err("automation recovery file changed after selection".into());
+                    }
+                    take
+                }
+            };
+            if take.target() != target {
+                return Err("sealed recovery belongs to another vst3 group".into());
+            }
+            let command = prepare_group_take_adoption_on_control(
+                session,
+                document_base,
+                &mut take,
+                expected,
+            )?;
+            return Ok((Box::new(command), TakePublication::Vst3));
+        }
         let mut take = match identity {
             AutomationRecoveryFileIdentity::Copy(receipt) => {
                 receipt.open_completed_on_control(path, limits, MAX_RECOVERY_EVENTS)?
