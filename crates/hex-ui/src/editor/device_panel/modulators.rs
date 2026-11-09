@@ -70,12 +70,12 @@ impl HostGainTarget {
             Self::Input => (
                 DeviceAutomationTarget::HostInputGain,
                 "input-gain",
-                hex_engine::DEVICE_INPUT_GAIN.label,
+                "input trim",
             ),
             Self::Output => (
                 DeviceAutomationTarget::HostOutputGain,
                 "output-gain",
-                hex_engine::DEVICE_OUTPUT_GAIN.label,
+                "output trim",
             ),
         }
     }
@@ -551,11 +551,11 @@ pub(super) fn panel(
                 ModulationDestination::Device {
                     target: DeviceAutomationTarget::HostInputGain,
                     ..
-                } => hex_engine::DEVICE_INPUT_GAIN.label.to_owned(),
+                } => HostGainTarget::Input.mapping().2.to_owned(),
                 ModulationDestination::Device {
                     target: DeviceAutomationTarget::HostOutputGain,
                     ..
-                } => hex_engine::DEVICE_OUTPUT_GAIN.label.to_owned(),
+                } => HostGainTarget::Output.mapping().2.to_owned(),
                 ModulationDestination::Modulator {
                     source,
                     module_type: lfo::TYPE_ID,

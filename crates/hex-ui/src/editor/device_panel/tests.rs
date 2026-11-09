@@ -68,17 +68,9 @@ fn receive_service_event(service: &Service) -> Event {
     }
 }
 
-fn actor_utility_fixture() -> (
-    Service,
-    Arc<ViewState>,
-    TrackId,
-    DeviceId,
-    hex_lattice_contract::ParameterId,
-    bool,
-) {
-    let entry = hex_engine::native_device_catalog()
-        .expect("catalog")
-        .remove(0);
+fn actor_native_effect_fixture(
+    type_id: hex_lattice_contract::DeviceTypeId,
+) -> (Service, Arc<ViewState>, TrackId, DeviceId) {
     let service = Service::new(48_000, 8, 8_000_000).expect("service");
     let _initial = receive_service_event(&service);
     service
@@ -97,13 +89,26 @@ fn actor_utility_fixture() -> (
         .submit(Request::AddNativeDevice {
             track,
             class: hex_engine::NativeDeviceClass::Effect,
-            type_id: Box::new(entry.type_id),
+            type_id: Box::new(type_id),
             before: None,
         })
         .expect("add native device request");
     let device_event = receive_service_event(&service);
     let state = device_event.state;
     let device = state.project.track(track).expect("track").devices()[0].id();
+    (service, state, track, device)
+}
+
+fn actor_utility_fixture() -> (
+    Service,
+    Arc<ViewState>,
+    TrackId,
+    DeviceId,
+    hex_lattice_contract::ParameterId,
+    bool,
+) {
+    let (service, state, track, device) =
+        actor_native_effect_fixture(hex_devices::utility::UTILITY_TYPE_ID);
     let device_view = hex_engine::native_device_view(
         state.project.track(track).expect("track").devices()[0].state(),
     )
@@ -6244,6 +6249,107 @@ fn modulation_panel_adds_and_maps_an_lfo_without_editing_base_values(cx: &mut Te
 }
 
 #[gpui::test]
+fn modulation_panel_maps_eq8_output_gain_and_preserves_its_authored_value(cx: &mut TestAppContext) {
+    use hex_devices::eq8::{EQ8_TYPE_ID, parameter};
+    use hex_lattice_contract::ParameterId;
+    use hex_project::{DeviceAutomationTarget, ModulationDestination};
+    let (service, state, track, device) = actor_native_effect_fixture(EQ8_TYPE_ID);
+    let original = state.project.device(device).unwrap().state().clone();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1500.0), px(650.0)));
+    visual.run_until_parked();
+    let click = click_modulator_control;
+    click(&mut visual, "device-modulator-toggle".into(), false);
+    click(&mut visual, format!("add-lfo-{}", device.value()), true);
+    let slot = |view: &EditorView| {
+        view.state
+            .as_ref()?
+            .project
+            .device(device)?
+            .modulation()
+            .sources()
+            .first()
+            .map(|source| source.id)
+    };
+    pump_until(&editor, cx, |view| slot(view).is_some());
+    visual.run_until_parked();
+    let source = editor.read_with(cx, |view, _| slot(view).unwrap());
+    click(&mut visual, format!("lfo-{}-map", source.value()), true);
+    let target_key =
+        |parameter: ParameterId| format!("map-target-{}-{}", device.value(), parameter.value());
+    assert!(
+        visual
+            .debug_bounds(Box::leak(target_key(parameter::MODE).into_boxed_str()))
+            .is_none()
+    );
+    let toolbar = visual
+        .debug_bounds(Box::leak(
+            format!("eq8-toolbar-{}", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    // The modulator strip occupies part of the scrollable housing. Bring the
+    // bottom dial row into view before clicking its mapping overlay.
+    visual.simulate_event(gpui::ScrollWheelEvent {
+        position: toolbar.center(),
+        delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-80.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    click(&mut visual, target_key(parameter::OUTPUT_GAIN), false);
+    assert!(
+        editor.read_with(cx, |view, _| {
+            view.worker_requests_pending > 0
+                || !view.pending_requests.is_empty()
+                || view
+                    .state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .device(device)
+                    .unwrap()
+                    .modulation()
+                    .routes()
+                    .len()
+                    == 1
+        }),
+        "visible EQ8 dial did not dispatch"
+    );
+    pump_until(&editor, cx, |view| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .modulation()
+            .routes()
+            .len()
+            == 1
+    });
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        let current = project.device(device).unwrap();
+        let route = current.modulation().routes()[0];
+        assert_eq!(route.source, source);
+        assert_eq!(
+            route.destination,
+            ModulationDestination::Device {
+                device_type: EQ8_TYPE_ID,
+                target: DeviceAutomationTarget::Parameter(parameter::OUTPUT_GAIN),
+                vst3_class: None,
+            }
+        );
+        assert_eq!(current.state(), &original);
+        let reopened = hex_storage::decode(&hex_storage::encode(project).unwrap()).unwrap();
+        assert_eq!(
+            reopened.device(device).unwrap().modulation(),
+            current.modulation()
+        );
+    });
+}
+
+#[gpui::test]
 fn modulation_panel_adds_and_maps_an_envelope_follower(cx: &mut TestAppContext) {
     assert_modulation_mapping(
         cx,
@@ -7002,12 +7108,21 @@ fn modulation_panel_maps_a_bound_source_effect_on_its_receiver(cx: &mut TestAppC
             .routes()
             .len()
     };
+    let dispatched = |cx: &mut TestAppContext, expected| {
+        editor.read_with(cx, |view, _| {
+            view.worker_requests_pending > 0
+                || !view.pending_requests.is_empty()
+                || route_count(view) == expected
+        })
+    };
+    assert!(dispatched(cx, 1), "source output trim did not dispatch");
     pump_until(&editor, cx, |view| route_count(view) == 1);
     visual.run_until_parked();
     click(
         &mut visual,
         format!("map-target-{}-{}", device.value(), gain.value()),
     );
+    assert!(dispatched(cx, 2), "source provider gain did not dispatch");
     pump_until(&editor, cx, |view| route_count(view) == 2);
     editor.read_with(cx, |view, _| {
         let project = &view.state.as_ref().unwrap().project;
