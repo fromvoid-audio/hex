@@ -230,7 +230,7 @@ fn with_recipe<'a>(
     let recipes = [PreparedSourceEffects {
         source: project.tracks[0].source_id().unwrap(),
         receiver,
-        instances,
+        instances: Arc::from(instances),
     }];
     Renderer {
         project,
@@ -316,7 +316,7 @@ fn invalid_prepared_source_recipes_refuse_before_rendering() {
     let duplicates = [0, 0].map(|receiver| PreparedSourceEffects {
         source,
         receiver,
-        instances: &instances,
+        instances: Arc::from(instances.as_slice()),
     });
     assert!(matches!(
         SourceEffectStages::prepare(&project, &duplicates),
@@ -389,7 +389,11 @@ fn registry_suffix_respects_order_and_power_without_processing_receiver_clips() 
     let source = model.tracks()[0].source_id().unwrap();
     let instrument = model.native_source(source).unwrap().instrument().id();
     let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
-    let compiled = crate::compile::project(model, &media).unwrap();
+    let mut revision =
+        crate::PreparedRevision::prepare(model, &media, Arc::new(crate::SineTable::new()), None)
+            .unwrap();
+    let mut compiled = revision.arrangement().as_ref().clone();
+    assert!(compiled.source_effects.is_empty());
     assert!(prepare_suffix(model, source).unwrap().is_empty());
 
     // Render the bound singleton separately. Author the same source's suffix
@@ -434,17 +438,40 @@ fn registry_suffix_respects_order_and_power_without_processing_receiver_clips() 
         })
         .unwrap();
 
-    let suffix = prepare_suffix(editor.project(), source).unwrap();
-    assert_eq!(suffix.len(), 2);
-    for (entry, id) in suffix.iter().zip([invert_id, swap_id]) {
+    compiled.source_effects = crate::compile::prepare_source_effect_recipes(
+        &compiled,
+        editor.project(),
+        &hex_devices::native_registry().unwrap(),
+        &hex_lattice::DevicePreparationContext {
+            sample_rate: 48_000,
+            tuning: &hex_lattice::TuningTable::default(),
+            resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        },
+    )
+    .unwrap();
+    assert_eq!(compiled.source_effects.len(), 1);
+    let plan = &compiled.source_effects[0];
+    assert_eq!(plan.source, source);
+    assert_eq!(plan.receiver, 0);
+    assert_eq!(plan.instances.len(), 2);
+    for (entry, id) in plan.instances.iter().zip([invert_id, swap_id]) {
         assert_eq!(entry.owner, ProcessorChainOwner::Source(source.value()));
         assert_eq!(entry.device_id, id.value());
         assert!(!entry.bypassed);
     }
-    let mut renderer = with_recipe(&compiled, 0, &suffix);
+    let mut renderer = Renderer::new(&compiled);
     renderer.play();
     let mut rendered = [[0.0; 2]; WIDTH];
     renderer.render(&mut rendered).unwrap();
+    revision.test_install_source_effect_recipes(compiled.source_effects.clone());
+    let mut session = crate::SessionPlayback::new(Arc::new(revision)).unwrap();
+    session.apply(crate::SessionPlaybackCommand::Play).unwrap();
+    let mut session_pcm = [[0.0; 2]; WIDTH];
+    session.render(&mut session_pcm).unwrap();
+    for (session, offline) in session_pcm.iter().zip(rendered) {
+        assert!((session[0] - offline[0]).abs() < 1e-6);
+        assert!((session[1] - offline[1]).abs() < 1e-6);
+    }
     let mut source_audio = [[0.0; 2]; WIDTH];
     crate::render_source_generators(&compiled, 0, 0, WIDTH as u64, &mut source_audio, None)
         .unwrap();
@@ -593,7 +620,7 @@ fn session_playing_paths_run_source_effects_once_before_mixing_receiver_clips() 
             let recipes = [PreparedSourceEffects {
                 source,
                 receiver: 0,
-                instances: &instances,
+                instances: Arc::from(instances.as_slice()),
             }];
             let start = |playback: &mut SessionPlayback| {
                 playback.apply(SessionPlaybackCommand::Play).unwrap();
@@ -723,7 +750,7 @@ fn aggregate_track_return_main_and_source_budgets_refuse_before_runtime_creation
     let recipes = [PreparedSourceEffects {
         source,
         receiver: 0,
-        instances: &source_instances,
+        instances: Arc::from(source_instances.as_slice()),
     }];
     let slots = hex_project::MAX_DEVICES_PER_TRACK;
     assert_eq!(slots * 4, hex_lattice::MAX_STATEFUL_PROCESSORS);
@@ -786,7 +813,7 @@ fn receiver_move_continues_the_source_effect_and_incompatible_recipe_leaves_dono
             &[PreparedSourceEffects {
                 source,
                 receiver,
-                instances,
+                instances: Arc::from(instances),
             }],
         )
         .unwrap()

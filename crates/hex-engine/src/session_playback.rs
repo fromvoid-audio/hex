@@ -1565,21 +1565,21 @@ impl SessionPlayback {
             policy,
             resources,
             transient_loop,
-            &[],
+            None,
         )
     }
 
     #[cfg(test)]
     pub(crate) fn test_with_source_effects(
         revision: Arc<PreparedRevision>,
-        recipes: &[crate::source_effect_stage::PreparedSourceEffects<'_>],
+        recipes: &[crate::source_effect_stage::PreparedSourceEffects],
     ) -> Result<Self, SessionPlaybackError> {
         Self::new_with_render_policy_and_source_effects(
             revision,
             RenderConstruction::Interactive,
             None,
             None,
-            recipes,
+            Some(recipes),
         )
     }
 
@@ -1588,12 +1588,13 @@ impl SessionPlayback {
         policy: RenderConstruction,
         resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
         transient_loop: Option<hex_project::LoopRegion>,
-        recipes: &[crate::source_effect_stage::PreparedSourceEffects<'_>],
+        recipe_override: Option<&[crate::source_effect_stage::PreparedSourceEffects]>,
     ) -> Result<Self, SessionPlaybackError> {
         let arrangement = revision.arrangement();
+        let recipes = recipe_override.unwrap_or(&arrangement.source_effects);
         let linear_arrangement_export = policy != RenderConstruction::Interactive;
-        // Source effects are staged only for interactive playing verification.
-        // Export quotes and live publication have separate ownership contracts.
+        // Export and live publication require separate source runtime quotes.
+        // The ordinary Session kernel already consumes the compiled recipe.
         if linear_arrangement_export && !recipes.is_empty() {
             return Err(SessionPlaybackError::DeviceRuntime);
         }
