@@ -119,7 +119,7 @@ fn eq8_gain_modulation_matches_the_sample_targets_and_provider_smoother() {
         device,
         parameter::OUTPUT_GAIN
     ));
-    assert!(!crate::project_device_modulation_target_supported(
+    assert!(crate::project_device_modulation_target_supported(
         editor.project(),
         device,
         parameter::MODE
