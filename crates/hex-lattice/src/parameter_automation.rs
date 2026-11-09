@@ -12,6 +12,7 @@ use hex_lattice_contract::{
 pub const MAX_AUTOMATION_LANES: usize = 256;
 pub const MAX_AUTOMATION_POINTS: usize = 65_536;
 pub const MAX_AUTOMATION_POINTS_PER_LANE: usize = 1_024;
+const MAX_AUTOMATION_TOUCH_STEPS_PER_LANE: usize = 16_384;
 
 /// Validated normalized scalar, independent of project storage and device units.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -532,7 +533,7 @@ impl PreparedParameterAutomation {
         mut end: usize,
     ) -> Result<(), Error> {
         let mut previous: Option<&ParameterAutomationTouchSpan> = None;
-        let mut lane_count = 0;
+        let mut lane_count = 0usize;
         for (index, span) in self.touch.iter().enumerate() {
             if span.start_beat >= span.end_beat || span.points.start != end {
                 return Err(Error::InvalidDescriptor);
@@ -547,7 +548,7 @@ impl PreparedParameterAutomation {
                 .lanes
                 .get_mut(lane_index.ok_or(Error::InvalidDescriptor)?)
                 .ok_or(Error::InvalidDescriptor)?;
-            let PreparedLaneSource::Curve { points: base, .. } = &lane.source else {
+            let PreparedLaneSource::Curve { .. } = &lane.source else {
                 return Err(Error::InvalidDescriptor);
             };
             if previous.is_some_and(|prior| {
@@ -558,12 +559,12 @@ impl PreparedParameterAutomation {
             }
             if previous.is_none_or(|prior| prior.target != span.target) {
                 lane.touch = index..index;
-                lane_count = base.len();
+                lane_count = 0;
             }
             lane_count = lane_count
                 .checked_add(span.points.len())
                 .ok_or(Error::RuntimeBudgetExceeded)?;
-            if lane_count > MAX_AUTOMATION_POINTS_PER_LANE || lane.touch.len() == 128 {
+            if lane_count > MAX_AUTOMATION_TOUCH_STEPS_PER_LANE || lane.touch.len() == 128 {
                 return Err(Error::RuntimeBudgetExceeded);
             }
             let values = points
