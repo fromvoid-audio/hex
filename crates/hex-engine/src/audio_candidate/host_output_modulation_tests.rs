@@ -364,7 +364,7 @@ fn host_input_modulation_follows_the_unmodulated_matrix_and_shares_output_source
 }
 
 #[test]
-fn output_gain_mapping_requires_a_closed_zero_latency_effect() {
+fn host_gain_mapping_requires_a_closed_zero_latency_effect() {
     use hex_devices::saturator::SATURATOR_DEFINITION;
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     for (state, expected) in [
@@ -381,7 +381,7 @@ fn output_gain_mapping_requires_a_closed_zero_latency_effect() {
             panic!("native effect fixture");
         };
         assert_eq!(
-            crate::project_device_output_gain_modulation_supported(editor.project(), device),
+            crate::project_device_host_gain_modulation_supported(editor.project(), device),
             expected,
         );
     }

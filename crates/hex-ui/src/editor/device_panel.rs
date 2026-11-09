@@ -127,7 +127,7 @@ pub(super) struct DevicePanelState {
     chain_window: chain_window::ChainWindow,
     parameter_rows: HashMap<DeviceId, parameter_rows::RowWindow>,
     pub(super) mapping_source: Option<(DeviceId, hex_project::ModulationSourceId)>,
-    output_mapping_availability: Option<modulators::OutputMappingAvailability>,
+    host_gain_mapping_availability: Option<modulators::HostGainMappingAvailability>,
     vst3_parameters: vst3_parameters::State,
     pub(super) navigation: navigation::Navigation,
     generation: u64,
