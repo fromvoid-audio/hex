@@ -2,7 +2,9 @@
 //! A graph prepares a fresh runtime before admission, then inherits committed
 //! phase through its existing replacement transaction. Cloning this declaration
 //! never copies a speculative audio transaction or grants publication custody.
-use crate::{ModulationLfoBank, ModulationRuntime, PreparedLfoSource, PreparedModulation};
+use crate::{
+    ModulationRuntime, ModulationSourceBank, PreparedModulation, PreparedModulationSource,
+};
 use hex_lattice_contract::DeviceContractError as Error;
 
 /// Per-device immutable declaration limit; runtime storage is charged separately.
@@ -10,7 +12,7 @@ pub const MAX_PREPARED_MODULATION_BYTES: usize = 1_048_576;
 
 #[derive(Clone, Debug)]
 pub struct PreparedModulationState {
-    sources: Vec<PreparedLfoSource>,
+    sources: Vec<PreparedModulationSource>,
     program: PreparedModulation,
     chunk_frames: usize,
 }
@@ -19,7 +21,7 @@ impl PreparedModulationState {
     /// Route source indices refer to the sorted source identity inventory.
     /// The host still validates device ownership and real target capabilities.
     pub fn new(
-        sources: Vec<PreparedLfoSource>,
+        sources: Vec<PreparedModulationSource>,
         program: PreparedModulation,
         chunk_frames: usize,
     ) -> Result<Self, Error> {
@@ -34,7 +36,7 @@ impl PreparedModulationState {
         {
             return Err(Error::RuntimeBudgetExceeded);
         }
-        ModulationLfoBank::validate_sources(&prepared.sources, chunk_frames)?;
+        ModulationSourceBank::validate_sources(&prepared.sources, chunk_frames)?;
         if prepared.sources.len() != prepared.program.source_count() {
             return Err(Error::InvalidDescriptor);
         }
@@ -56,7 +58,7 @@ impl PreparedModulationState {
     /// Construct separately owned runtime storage on control, before publication.
     pub fn prepare(&self) -> Result<ModulationRuntime, Error> {
         ModulationRuntime::new(
-            ModulationLfoBank::new(&self.sources, self.chunk_frames)?,
+            ModulationSourceBank::new(&self.sources, self.chunk_frames)?,
             self.program.try_clone()?,
         )
     }
@@ -68,7 +70,7 @@ impl PreparedModulationState {
     /// Requested runtime capacity before allocation; graph admission must also
     /// verify the actual capacities after construction.
     pub fn quoted_runtime_heap_bytes(&self) -> Option<usize> {
-        ModulationLfoBank::quoted_heap_bytes(self.sources.len(), self.chunk_frames)?
+        ModulationSourceBank::quoted_heap_bytes(self.sources.len(), self.chunk_frames)?
             .checked_add(self.program.storage_bytes()?)
     }
 
@@ -79,7 +81,7 @@ impl PreparedModulationState {
     /// Requested declaration backing before allocating vectors on control.
     pub fn quoted_heap_bytes(sources: usize, targets: usize, routes: usize) -> Option<usize> {
         sources
-            .checked_mul(std::mem::size_of::<PreparedLfoSource>())?
+            .checked_mul(std::mem::size_of::<PreparedModulationSource>())?
             .checked_add(PreparedModulation::quoted_storage_bytes(
                 targets, targets, routes,
             )?)
@@ -89,7 +91,7 @@ impl PreparedModulationState {
     pub fn heap_storage_bytes(&self) -> Option<usize> {
         self.sources
             .capacity()
-            .checked_mul(std::mem::size_of::<PreparedLfoSource>())?
+            .checked_mul(std::mem::size_of::<PreparedModulationSource>())?
             .checked_add(self.program.storage_bytes()?)
     }
 

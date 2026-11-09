@@ -58,7 +58,7 @@ pub use modulation::{
     ModulationRoute, ModulationTarget, PreparedModulation,
 };
 pub use modulation_runtime::ModulationRuntime;
-pub use modulation_sources::{ModulationLfoBank, PreparedLfoSource};
+pub use modulation_sources::{ModulationSourceBank, PreparedModulationSource};
 pub use owned_processor::{
     MAX_RESERVED_BYPASS_FRAMES, OwnedProcessorRuntime, PreparedOwnedProcessorRuntime,
     PreparedProcessorFactory, PreparedRuntimeDevice, PreparedRuntimeInstance,
@@ -3315,11 +3315,11 @@ impl NativeRuntimeChain {
                             .ok_or(DeviceContractError::InvalidDescriptor)
                     })
                     .transpose()?;
-                modulation.render_chunk_with_clock(
-                    chunk.len(),
+                modulation.render_audio_chunk(
+                    chunk,
                     chunk_values,
                     chunk_clock,
-                    |values| {
+                    |chunk, values| {
                         if let Some(key) = chunk_key {
                             runtime.process_auxiliary(
                                 StereoAuxiliaryBlock::paired(chunk, key),

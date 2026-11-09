@@ -608,8 +608,8 @@ fn bypass_advances_the_same_filter_and_automated_control_history() {
 #[test]
 fn shared_lfo_drives_two_utility_controls_on_each_sample() {
     use hex_lattice::{
-        ModulationRoute, ModulationSourceId, ModulationTarget, PreparedLfoSource,
-        PreparedModulation,
+        ModulationRoute, ModulationSourceId, ModulationTarget, PreparedModulation,
+        PreparedModulationSource,
     };
     let base = UTILITY_DEFINITION.default_state().unwrap();
     let factory = UtilityDefinition::prepare_owned_automated_filter(&base, 48_000).unwrap();
@@ -639,7 +639,8 @@ fn shared_lfo_drives_two_utility_controls_on_each_sample() {
     )
     .unwrap();
     let source_id = ModulationSourceId::new(1).unwrap();
-    let source = PreparedLfoSource::tempo(source_id, 48_000.0, 120.0, 1.0 / 6_000.0, 0.0).unwrap();
+    let source =
+        PreparedModulationSource::tempo(source_id, 48_000.0, 120.0, 1.0 / 6_000.0, 0.0).unwrap();
 
     let declaration = hex_lattice::PreparedModulationState::new(vec![source], program, 2).unwrap();
     let instance = hex_lattice::PreparedRuntimeInstance {
