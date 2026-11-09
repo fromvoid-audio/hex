@@ -1,5 +1,6 @@
 //! Native modulator configuration codecs. Runtime phase and route ownership
 //! belong to the prepared graph.
+pub mod ahd_release;
 pub mod audio_rate;
 pub mod button;
 pub mod buttons;
