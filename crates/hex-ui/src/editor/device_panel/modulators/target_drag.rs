@@ -43,6 +43,14 @@ impl Origin {
             && self.owner == view.device_panel.owner
             && self.mode == view.mode
             && view.device_panel.mapping_source == Some((self.target.device, self.target.source))
+            && match self.target.mapping {
+                MappingTarget::Vst3(target) => super::vst3_parameters::mapping_target_is_current(
+                    view,
+                    self.target.device,
+                    target,
+                ),
+                _ => true,
+            }
             && view
                 .state
                 .as_ref()
@@ -92,6 +100,13 @@ pub(in crate::editor::device_panel) struct State {
 }
 
 impl State {
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(in crate::editor::device_panel) fn pending_bank_for_test(
+        &self,
+    ) -> Option<&DeviceModulation> {
+        self.pending.as_ref().map(|pending| &pending.bank)
+    }
+
     fn displayed_depth(&self, view: &EditorView, target: Target) -> Option<f32> {
         self.gesture
             .as_ref()

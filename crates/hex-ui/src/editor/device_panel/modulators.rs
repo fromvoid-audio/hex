@@ -158,6 +158,7 @@ impl MappingOutput {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MappingTarget {
     Device(ParameterId),
+    Vst3(vst3_parameters::MappingTarget),
     HostGain(HostGainTarget),
     Macro(ModulationSourceId),
     MacroFour(ModulationSourceId, ParameterId),
@@ -547,17 +548,40 @@ pub(super) fn panel(
     view_data: &NativeDeviceView,
     is_effect: bool,
 ) -> Option<AnyElement> {
+    panel_with_targets(view, cx, device, Some(view_data), is_effect)
+}
+
+pub(super) fn vst3_panel(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: &Device,
+) -> Option<AnyElement> {
+    panel_with_targets(view, cx, device, None, true)
+}
+
+fn panel_with_targets(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: &Device,
+    view_data: Option<&NativeDeviceView>,
+    is_effect: bool,
+) -> Option<AnyElement> {
     let state = view.state.as_ref()?;
     let id = device.id();
     let revision = state.revision;
     let generation = view.project_generation;
     let bank = device.modulation();
-    let has_target = view_data.parameters.iter().any(|row| {
-        row.enabled
-            && row
-                .semantics
-                .is_some_and(|semantics| semantics.modulation == ParameterModulation::SampleRate)
-    });
+    let has_target = view_data.map_or_else(
+        || vst3_parameters::has_mapping_target(view, id),
+        |view_data| {
+            view_data.parameters.iter().any(|row| {
+                row.enabled
+                    && row.semantics.is_some_and(|semantics| {
+                        semantics.modulation == ParameterModulation::SampleRate
+                    })
+            })
+        },
+    );
     let selected = view
         .device_panel
         .mapping_source
@@ -1458,11 +1482,21 @@ pub(super) fn panel(
                     target: DeviceAutomationTarget::Parameter(parameter),
                     ..
                 } => view_data
-                    .parameters
-                    .iter()
-                    .find(|row| row.descriptor.id == parameter)
+                    .and_then(|view_data| {
+                        view_data
+                            .parameters
+                            .iter()
+                            .find(|row| row.descriptor.id == parameter)
+                    })
                     .map_or("unavailable", |row| row.descriptor.label)
                     .to_owned(),
+                ModulationDestination::Device {
+                    target: DeviceAutomationTarget::Vst3 { parameter },
+                    ..
+                } => vst3_parameters::mapping_label(view, id, parameter).map_or_else(
+                    || format!("parameter {parameter}"),
+                    hex_session::service::text::verbatim,
+                ),
                 ModulationDestination::Device {
                     target: DeviceAutomationTarget::HostInputGain,
                     ..
@@ -1645,7 +1679,72 @@ pub(super) fn target_overlay(
         source,
         mapping: MappingTarget::Device(parameter),
     };
-    let selector = format!("map-target-{}-{}", device.value(), parameter.value());
+    Some(mapped_target_overlay(
+        view,
+        cx,
+        target,
+        assigned,
+        state.revision,
+        format!("map-target-{}-{}", device.value(), parameter.value()),
+        format!("map-depth-{}-{}", device.value(), parameter.value()),
+    ))
+}
+
+pub(super) fn vst3_target_overlay(
+    view: &EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    row: &hex_session::service::PluginParameterRow,
+    control: &'static str,
+) -> Option<AnyElement> {
+    let (_, source) = view
+        .device_panel
+        .mapping_source
+        .filter(|(owner, _)| *owner == device)?;
+    let mapping = vst3_parameters::mapping_target(view, device, row)?;
+    let state = view.state.as_ref()?;
+    let bank = state.project.device(device)?.modulation();
+    if !bank.sources().iter().any(|slot| source.valid_for(slot))
+        || is_pressure_source(bank.sources(), source.source)
+    {
+        return None;
+    }
+    let assigned = bank.routes().iter().find(|route| {
+        source.owns(route)
+            && matches!(
+                route.destination,
+                ModulationDestination::Device {
+                    target: DeviceAutomationTarget::Vst3 { parameter }, vst3_class: Some(class), ..
+                } if parameter == mapping.parameter && class == mapping.class
+            )
+    });
+    if assigned.is_none() && bank.routes().len() >= hex_project::MAX_MODULATION_ROUTES_PER_DEVICE {
+        return None;
+    }
+    Some(mapped_target_overlay(
+        view,
+        cx,
+        target_drag::Target {
+            device,
+            source,
+            mapping: MappingTarget::Vst3(mapping),
+        },
+        assigned,
+        state.revision,
+        format!("map-vst3-{control}-{}-{}", device.value(), row.id),
+        format!("map-vst3-{control}-depth-{}-{}", device.value(), row.id),
+    ))
+}
+
+fn mapped_target_overlay(
+    view: &EditorView,
+    cx: &mut Context<EditorView>,
+    target: target_drag::Target,
+    assigned: Option<&DeviceModulationRoute>,
+    revision: u64,
+    selector: String,
+    depth_selector: String,
+) -> AnyElement {
     let display = target_drag::displayed_depth(view, target, assigned);
     let control = div()
         .id(ElementId::Name(selector.clone().into()))
@@ -1656,7 +1755,7 @@ pub(super) fn target_overlay(
         .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
         .children(display.map(|depth| {
             let label = depth_text(depth);
-            let selector = format!("map-depth-{}-{}-{label}", device.value(), parameter.value());
+            let selector = format!("{depth_selector}-{label}");
             div()
                 .absolute()
                 .top_0()
@@ -1668,9 +1767,7 @@ pub(super) fn target_overlay(
                 .debug_selector(move || selector.clone())
                 .child(theme::text(label))
         }));
-    Some(
-        target_drag::attach(view, cx, control, target, assigned, state.revision).into_any_element(),
-    )
+    target_drag::attach(view, cx, control, target, assigned, revision).into_any_element()
 }
 
 fn mapping_button(
@@ -1701,6 +1798,35 @@ fn mapping_button(
 
 fn depth_text(depth: f32) -> String {
     format!("{:+.0}%", depth * 100.0)
+}
+
+pub(super) fn vst3_destination(
+    project: &hex_project::Project,
+    id: DeviceId,
+    parameter: u32,
+    class: [u8; 16],
+) -> Result<ModulationDestination, Invalid> {
+    let unsupported = || Invalid("this vst3 parameter does not support sample-rate modulation");
+    let location = project.device_location(id).ok_or_else(unsupported)?;
+    let device = location.device;
+    let target = DeviceAutomationTarget::Vst3 { parameter };
+    if location.class != hex_project::DeviceUnitClass::Effect
+        || matches!(location.owner, hex_project::DeviceOwner::Source(_))
+        || device.state().type_id() != hex_lattice_contract::VST3_DEVICE_TYPE_ID
+        || device.automation_target_class(target)? != Some(class)
+        || device
+            .reading_automation()
+            .any(|lane| lane.target == target)
+        || hex_engine::project_vst3_modulation_target(device)?
+            .is_some_and(|selected| selected != (parameter, class))
+    {
+        return Err(unsupported());
+    }
+    Ok(ModulationDestination::Device {
+        device_type: device.state().type_id(),
+        target,
+        vst3_class: Some(class),
+    })
 }
 
 fn is_pressure_source(sources: &[Modulator], id: ModulationSourceId) -> bool {
@@ -2096,6 +2222,9 @@ fn apply(
                         target: DeviceAutomationTarget::Parameter(parameter),
                         vst3_class: None,
                     }
+                }
+                MappingTarget::Vst3(target) => {
+                    vst3_destination(project, id, target.parameter, target.class)?
                 }
                 MappingTarget::HostGain(stage) => {
                     let available = hex_engine::project_device_host_gain_modulation_supported(

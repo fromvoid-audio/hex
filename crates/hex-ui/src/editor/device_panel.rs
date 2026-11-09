@@ -2008,7 +2008,7 @@ fn render_effect(
     let rendered = match &device_view {
         _ if device.state().type_id().as_str() == Ok("hex.vst3") => {
             let body = vst3_status_body(view, device, cx);
-            device_frame(
+            hex_widgets::device_frame_with_modulators(
                 device_drag_title(
                     view,
                     cx,
@@ -2020,6 +2020,7 @@ fn render_effect(
                 leading,
                 header_actions,
                 body,
+                modulators::vst3_panel(view, cx, device),
             )
         }
         Ok(device_view) => {

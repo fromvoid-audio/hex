@@ -1396,3 +1396,52 @@ fn note_event_reader_floors_preserve_settings_and_instrument_routes() {
     }
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn vst3_raw_zero_modulation_route_survives_save_and_reopen() {
+    let class = [4; 16];
+    let state = hex_plugin_state::encode(hex_plugin_state::State {
+        identity: hex_plugin_state::Identity {
+            class: hex_plugin_state::ClassId::new(class).unwrap(),
+            binary: hex_plugin_state::BinaryIdentity {
+                executable_sha256: [5; 32],
+                info_sha256: [6; 32],
+            },
+        },
+        component: Some(&[7, 8]),
+        controller: None,
+    })
+    .unwrap();
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Device(device) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state,
+        })
+        .unwrap()
+    else {
+        panic!("vst3 effect");
+    };
+    let initial = bank(hex_plugin_state::TYPE_ID, editor.project().next_identity());
+    let mut routes = initial.routes().to_vec();
+    routes[1].destination = ModulationDestination::Device {
+        device_type: hex_plugin_state::TYPE_ID,
+        target: DeviceAutomationTarget::Vst3 { parameter: 0 },
+        vst3_class: Some(class),
+    };
+    let expected = DeviceModulation::new(initial.sources().to_vec(), routes).unwrap();
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device,
+            modulation: expected.clone(),
+        })
+        .unwrap();
+    assert_eq!(crate::schema_version_for(editor.project()), 81);
+    let dir = temp_dir();
+    let path = dir.join("raw-zero.hex");
+    crate::save_new(&path, editor.project()).unwrap();
+    let reopened = crate::load(&path).unwrap();
+    assert_eq!(reopened.snapshot(), editor.project().snapshot());
+    assert_eq!(reopened.device(device).unwrap().modulation(), &expected);
+    std::fs::remove_dir_all(dir).unwrap();
+}
