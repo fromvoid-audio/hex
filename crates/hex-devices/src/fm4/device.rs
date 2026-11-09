@@ -325,6 +325,12 @@ pub struct Fm4Definition;
 
 pub static FM4_DEFINITION: Fm4Definition = Fm4Definition;
 
+fn modulation_edge(id: ParameterId) -> Option<(usize, usize)> {
+    let index = usize::try_from(id.value().checked_sub(13)?).ok()?;
+    let (source, target) = (index / OPERATORS, index % OPERATORS);
+    (source < OPERATORS && source != target).then_some((source, target))
+}
+
 fn modulation_semantics(id: ParameterId) -> Option<hex_lattice_contract::ParameterSemantics> {
     use hex_lattice_contract::{
         ParameterAccess, ParameterAutomation, ParameterChangeImpact, ParameterModulation,
@@ -332,9 +338,12 @@ fn modulation_semantics(id: ParameterId) -> Option<hex_lattice_contract::Paramet
     };
     let smoothing = if (parameter::carrier(1)..=parameter::carrier(4)).contains(&id) {
         ParameterSmoothing::DeviceManaged
-    } else if (1..=4).any(|operator| {
-        id == parameter::oscillator_level(operator) || id == parameter::oscillator_phase(operator)
-    }) {
+    } else if modulation_edge(id).is_some()
+        || (1..=4).any(|operator| {
+            id == parameter::oscillator_level(operator)
+                || id == parameter::oscillator_phase(operator)
+        })
+    {
         ParameterSmoothing::None
     } else {
         return None;
@@ -372,7 +381,13 @@ impl NativeDeviceMetadata for Fm4Definition {
         state: &NativeDeviceState,
         id: ParameterId,
     ) -> Result<Option<hex_lattice_contract::ParameterSemantics>, DeviceContractError> {
-        Fm4Settings::from_state(state)?.read_parameter(id)?;
+        let settings = Fm4Settings::from_state(state)?;
+        settings.read_parameter(id)?;
+        if modulation_edge(id)
+            .is_some_and(|(source, target)| settings.modulation[source][target] == 0.0)
+        {
+            return Ok(None);
+        }
         Ok(modulation_semantics(id))
     }
 
