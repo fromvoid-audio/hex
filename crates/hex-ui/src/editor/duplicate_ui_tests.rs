@@ -331,17 +331,33 @@ fn close_prompt_preserves_previously_accepted_duplicate_continuations(cx: &mut T
     visual.update(|window, cx| {
         editor.update(cx, |v, cx| {
             assert!(!v.request_window_close(window, cx));
-            assert!(v.close_prompt_open);
+            assert!(v.automation_close_preflight.frozen());
             assert_eq!(v.duplicate_intent.queued.len(), 1);
             v.duplicate_selected();
             assert_eq!(
                 v.duplicate_intent.queued.len(),
                 1,
-                "modal sheet rejects new presses"
+                "close preflight rejects new presses"
             );
         })
     });
-    pump(&editor, &mut visual);
+    let deadline = crate::test_wait::hang_deadline();
+    loop {
+        editor.update(&mut visual, |v, cx| {
+            if v.tick(cx) {
+                cx.notify();
+            }
+        });
+        visual.run_until_parked();
+        if editor.read_with(&visual, |v, _| v.close_prompt_open) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "close preflight must reach the prompt"
+        );
+        std::thread::yield_now();
+    }
     editor.read_with(&visual, |v, _| {
         assert!(v.close_prompt_open);
         assert!(!v.duplicate_intent.is_pending());
