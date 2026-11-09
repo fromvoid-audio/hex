@@ -776,3 +776,46 @@ fn comparison_preset_roundtrip_restores_both_variants_but_not_global_trims_or_by
         );
     }
 }
+
+#[test]
+fn actual_worker_preset_uses_retained_source_child_as_an_effect() {
+    let dir = Directory::new();
+    let (service, added, instrument) =
+        fixture(NativeDeviceClass::Instrument, "hex.instrument.operator");
+    let utility = added.state.project.tracks()[0].devices()[0].state().clone();
+    service
+        .submit(Request::Edit(Command::InsertNestedDevice {
+            parent: instrument,
+            state: utility.clone(),
+        }))
+        .unwrap();
+    let inserted = event(&service);
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
+    let Some(hex_project::Created::Device(child)) = inserted.created else {
+        panic!("source child")
+    };
+    let path = dir.0.join("Child.hex-device-preset.json");
+    service
+        .submit(Request::SaveDevicePreset {
+            owner: owner(&inserted, child, NativeDeviceClass::Effect),
+            path: path.clone(),
+        })
+        .unwrap();
+    let saved = event(&service);
+    assert!(saved.error.is_none(), "{:?}", saved.error);
+    assert_eq!(saved.state.project, inserted.state.project);
+    assert_eq!(saved.state.revision, inserted.state.revision);
+    assert_eq!(hex_storage::preset::load(&path).unwrap().state, utility);
+
+    let wrong_class = dir.0.join("Wrong.hex-device-preset.json");
+    service
+        .submit(Request::SaveDevicePreset {
+            owner: owner(&saved, child, NativeDeviceClass::Instrument),
+            path: wrong_class.clone(),
+        })
+        .unwrap();
+    let rejected = event(&service);
+    assert!(rejected.error.is_some());
+    assert!(!wrong_class.exists());
+    assert_eq!(rejected.state.project, inserted.state.project);
+}
