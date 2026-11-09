@@ -640,6 +640,7 @@ fn instrument_takeover_preserves_other_base_and_held_midi() {
             "author",
             "author_empty",
             "idle",
+            "idle_empty",
             "refused",
         ] {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
@@ -1980,10 +1981,12 @@ fn verify_instrument_takeover(
     use hex_session::service::{DeviceAutomationControlEdit, PluginParameterQuery};
     let case = std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").unwrap();
     let author = matches!(case.as_str(), "author" | "author_empty");
-    let reading = !matches!(case.as_str(), "unread" | "empty" | "renew");
-    let playing = case != "idle";
+    let idle_unlaned = case == "idle_empty";
+    let reading = !matches!(case.as_str(), "unread" | "empty" | "renew" | "idle_empty");
+    let playing = !matches!(case.as_str(), "idle" | "idle_empty");
     let context = h.submitted.unwrap().1.context;
     let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let mut original_binding = None;
     let class = if case == "author_empty" {
         hex_plugin_state::decode(original.device(device).unwrap().state())
             .unwrap()
@@ -1998,7 +2001,9 @@ fn verify_instrument_takeover(
             request_id: 11,
             page_first: None,
         }));
-        let rows = h.next().plugin_parameters.unwrap().rows.unwrap();
+        let result = h.next().plugin_parameters.unwrap();
+        original_binding = result.source;
+        let rows = result.rows.unwrap();
         assert_eq!(rows.len(), 2);
         rows.iter()
             .find(|r| r.id == 7)
@@ -2009,8 +2014,10 @@ fn verify_instrument_takeover(
     let mut before = original.clone();
     let mut revision = context.editor_revision;
     for (id, value) in [(7, 0.25), (11, 0.5)] {
-        if matches!(case.as_str(), "empty" | "renew" | "author_empty")
-            || id == 7 && (!reading || author)
+        if matches!(
+            case.as_str(),
+            "empty" | "renew" | "author_empty" | "idle_empty"
+        ) || id == 7 && (!reading || author)
         {
             continue;
         }
@@ -3116,6 +3123,36 @@ fn verify_instrument_takeover(
         1.0,
         "the other authored DSP value must not replace its canonical base"
     );
+    if idle_unlaned {
+        assert!(
+            !h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .playing
+                .load(Acquire)
+        );
+        let source = h.submitted.unwrap().1.context;
+        let after = super::installed_edits::query(h, device, Some(0), &mut 17);
+        assert_eq!(after.query.context, source);
+        assert_eq!(
+            after
+                .rows
+                .unwrap()
+                .into_iter()
+                .find(|row| row.id == 7)
+                .unwrap()
+                .normalized,
+            0.5
+        );
+        assert!(original_binding.is_some());
+        assert_eq!(
+            after.source, original_binding,
+            "stopped commit replaced the editor's original worker"
+        );
+        return;
+    }
     if playing {
         assert!(
             (peak(h) - baseline * 2.0).abs() < 0.0001,

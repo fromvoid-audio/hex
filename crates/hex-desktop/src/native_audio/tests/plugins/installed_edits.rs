@@ -44,7 +44,7 @@ fn query_once(
     }
 }
 
-fn query(
+pub(super) fn query(
     h: &mut ResidentHarness,
     device: hex_project::DeviceId,
     page: Option<u16>,
