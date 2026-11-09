@@ -503,5 +503,47 @@ fn lfo_rate_route_upgrades_the_exact_previous_format_and_preserves_the_complete_
         .unwrap();
     rate["destination"]["parameter"] = 2.into();
     assert!(crate::decode(&serde_json::to_vec(&document).unwrap()).is_err());
+    let (free_project, free_token) = crate::load_with_token(&new).unwrap();
+    assert_eq!(free_project, *editor.project());
+    assert!(
+        !free_token
+            .requires_save_confirmation(&free_project)
+            .unwrap()
+    );
+    let free_bytes = std::fs::read(&new).unwrap();
+    let mut wrongly_new: serde_json::Value = serde_json::from_slice(&free_bytes).unwrap();
+    wrongly_new["version"] = crate::TEMPO_LFO_RATE_ROUTE_SCHEMA_VERSION.into();
+    assert!(crate::decode(&serde_json::to_vec(&wrongly_new).unwrap()).is_err());
+
+    let free_bank = free_project.device(id).unwrap().modulation();
+    let mut synced_slots = free_bank.sources().to_vec();
+    let target = synced_slots
+        .iter_mut()
+        .find(|source| source.id == lfo)
+        .unwrap();
+    let mut payload = target.state.payload().to_vec();
+    payload[0] = 1;
+    target.state = NativeDeviceState::new(LFO, 2, payload).unwrap();
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device: id,
+            modulation: DeviceModulation::new(synced_slots, free_bank.routes().to_vec()).unwrap(),
+        })
+        .unwrap();
+    let synced = editor.project();
+    assert_eq!(
+        crate::schema_version_for(synced),
+        crate::TEMPO_LFO_RATE_ROUTE_SCHEMA_VERSION
+    );
+    assert!(free_token.requires_save_confirmation(synced).unwrap());
+    let synced_path = dir.join("synced-rate-route.hex");
+    crate::save_new(&synced_path, synced).unwrap();
+    assert_eq!(crate::load(&synced_path).unwrap(), *synced);
+    assert_eq!(std::fs::read(&new).unwrap(), free_bytes);
+
+    let mut wrong_version: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&synced_path).unwrap()).unwrap();
+    wrong_version["version"] = crate::LFO_RATE_ROUTE_SCHEMA_VERSION.into();
+    assert!(crate::decode(&serde_json::to_vec(&wrong_version).unwrap()).is_err());
     std::fs::remove_dir_all(dir).unwrap();
 }

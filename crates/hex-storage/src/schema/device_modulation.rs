@@ -366,22 +366,33 @@ pub(crate) fn contains_colors(project: &Project) -> bool {
 const LFO: DeviceTypeId = DeviceTypeId::from_static("hex.modulator.lfo");
 
 /// The existing route DTO already carries the provider and parameter IDs.
-/// Older playback compilers do not resolve this destination, so it needs a
-/// distinct reader floor even though the encoded fields stay the same.
-pub(crate) fn contains_lfo_rate_route(project: &Project) -> bool {
-    const FREE_RATE: ParameterId = ParameterId::from_static(1);
-    project.devices().any(|device| {
-        device.modulation().routes().iter().any(|route| {
-            matches!(
-                route.destination,
-                ModulationDestination::Modulator {
-                    module_type: LFO,
-                    parameter: FREE_RATE,
-                    ..
-                }
-            )
-        })
-    })
+/// The destination uses distinct reader floors for each timing mode. Both
+/// LFO payload versions use the leading tag 1 for beats per cycle.
+pub(crate) fn lfo_rate_route_schema(project: &Project) -> Option<u32> {
+    const RATE: ParameterId = ParameterId::from_static(1);
+    let mut version = None;
+    for device in project.devices() {
+        let bank = device.modulation();
+        for route in bank.routes() {
+            let ModulationDestination::Modulator {
+                source,
+                module_type: LFO,
+                parameter: RATE,
+            } = route.destination
+            else {
+                continue;
+            };
+            if bank
+                .sources()
+                .iter()
+                .any(|slot| slot.id == source && slot.state.payload().first() == Some(&1))
+            {
+                return Some(crate::TEMPO_LFO_RATE_ROUTE_SCHEMA_VERSION);
+            }
+            version = Some(crate::LFO_RATE_ROUTE_SCHEMA_VERSION);
+        }
+    }
+    version
 }
 
 /// Older readers can decode only the sine provider's version 1.
@@ -404,8 +415,8 @@ pub(crate) fn refuse_legacy(project: &Project) -> Result<(), StorageError> {
     Ok(())
 }
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
-    let version = if contains_lfo_rate_route(project) {
-        crate::LFO_RATE_ROUTE_SCHEMA_VERSION
+    let version = if let Some(version) = lfo_rate_route_schema(project) {
+        version
     } else if contains_newer_lfo(project) {
         crate::LFO_SHAPE_SCHEMA_VERSION
     } else if contains_colors(project) {
@@ -476,12 +487,18 @@ pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError
             "modulation inventory must be nonempty",
         ));
     }
-    if contains_lfo_rate_route(&project) != (version == crate::LFO_RATE_ROUTE_SCHEMA_VERSION) {
+    let rate_schema = lfo_rate_route_schema(&project);
+    let declared_rate_schema = matches!(
+        version,
+        crate::LFO_RATE_ROUTE_SCHEMA_VERSION | crate::TEMPO_LFO_RATE_ROUTE_SCHEMA_VERSION
+    )
+    .then_some(version);
+    if rate_schema != declared_rate_schema {
         return Err(StorageError::Invalid(
             "lfo rate assignments require their matching project schema",
         ));
     }
-    if version != crate::LFO_RATE_ROUTE_SCHEMA_VERSION
+    if rate_schema.is_none()
         && contains_newer_lfo(&project) != (version == crate::LFO_SHAPE_SCHEMA_VERSION)
     {
         return Err(StorageError::Invalid(
