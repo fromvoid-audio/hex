@@ -138,8 +138,18 @@ class RestoreController final : public IEditController {
     static void edit_tick(CFRunLoopTimerRef,void* context) {
         auto* self=static_cast<RestoreController*>(context);
         const auto* release=std::getenv("HEX_ORIGINAL_INSTANCE_RELEASE");
-        if(!self || self->edits_sent || !release || std::strlen(release)>4096 || ::access(release,F_OK)!=0) return;
-        self->edits_sent=true;CFRunLoopTimerInvalidate(self->edit_timer);
+        if(!self || !release || std::strlen(release)>4096 || ::access(release,F_OK)!=0) return;
+        const auto* end_release=(self->fault==touched_automation_variant || self->fault==held_instrument_variant)
+            ?std::getenv("HEX_ORIGINAL_EDITOR_END_RELEASE"):nullptr;
+        if(self->edits_sent) {
+            if(end_release && std::strlen(end_release)<=4096 && ::access(end_release,F_OK)==0) {
+                self->handler->endEdit(parameter_id(self->fault));
+                CFRunLoopTimerInvalidate(self->edit_timer);
+            }
+            return;
+        }
+        self->edits_sent=true;
+        if(!end_release) CFRunLoopTimerInvalidate(self->edit_timer);
         if(self->fault==134) {
             static constexpr char released='R';
             if(!defer_module_event(released)) ++observed.violations;
@@ -195,7 +205,7 @@ class RestoreController final : public IEditController {
             if(self->fault!=132) self->component_gain=3.0;
             const int repeats=self->fault==116?12:1;
             for(int n=0;n<repeats;++n) self->handler->performEdit(id,0.75);
-            self->handler->endEdit(id);
+            if(!end_release) self->handler->endEdit(id);
         }
         trace(25);
     }

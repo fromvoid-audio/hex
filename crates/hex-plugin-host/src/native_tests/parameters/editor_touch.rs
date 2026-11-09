@@ -12,6 +12,8 @@ fn actual_editor_takeover_restores_reading_and_unlaned_values_without_cutting_no
     for (reading, instrument) in [(true, false), (false, false), (true, true)] {
         let case = Case::new();
         let setup = case.setup_restore(if instrument { 146 } else { 147 });
+        let end_release = case.root.join("end");
+        let end_gate = end_release.clone();
         let mut options = options();
         if instrument {
             options.preparation.input_channels = 0;
@@ -24,6 +26,9 @@ fn actual_editor_takeover_restores_reading_and_unlaned_values_without_cutting_no
             |command| {
                 setup(command);
                 command.env("HEX_ORIGINAL_EDITOR_TOUCH", "1");
+                if instrument {
+                    command.env("HEX_ORIGINAL_EDITOR_END_RELEASE", end_gate);
+                }
             },
         )
         .unwrap();
@@ -86,7 +91,7 @@ fn actual_editor_takeover_restores_reading_and_unlaned_values_without_cutting_no
                     })
                     .unwrap();
                 instance
-                    .exchange_armed_authored_with_editor_touch_on_worker(input, plan)
+                    .exchange_armed_authored_with_editor_touch_on_worker(input, plan, None)
                     .unwrap()
             } else {
                 instance
@@ -102,7 +107,7 @@ fn actual_editor_takeover_restores_reading_and_unlaned_values_without_cutting_no
         loop {
             let batch = instance.poll_parameter_edits_on_worker().unwrap();
             ordered.extend_from_slice(batch.as_slice());
-            if batch.ready >= 2 {
+            if batch.ready >= if instrument { 1 } else { 2 } {
                 break;
             }
             assert!(
@@ -127,6 +132,25 @@ fn actual_editor_takeover_restores_reading_and_unlaned_values_without_cutting_no
             [0.9375, -0.46875]
         };
         assert_eq!(held.block.pcm[..8], [held_sample; 8]);
+        if instrument {
+            fs::write(end_release, b"release after actual held-note PCM").unwrap();
+            while !ordered
+                .iter()
+                .any(|edit| edit.kind == ParameterEditKind::End)
+            {
+                ordered.extend_from_slice(
+                    instance
+                        .poll_parameter_edits_on_worker()
+                        .unwrap()
+                        .as_slice(),
+                );
+                assert!(
+                    Instant::now() < until,
+                    "late End did not reach the ordered reader"
+                );
+                thread::yield_now();
+            }
+        }
         let restored = exchange(&mut instance, 2, None);
         assert!(restored.performs.as_slice().is_empty());
         let end = restored
@@ -147,7 +171,7 @@ fn actual_editor_takeover_restores_reading_and_unlaned_values_without_cutting_no
             (end.sequence, end.gesture),
             (boundary.sequence, boundary.gesture)
         );
-        assert_eq!(boundary.first_frame, 8);
+        assert_eq!(boundary.first_frame, if instrument { 16 } else { 8 });
         if instrument {
             assert_eq!(restored.block.pcm[0], [velocity; 2]);
             assert_eq!(restored.block.pcm[4], [2.0 * velocity; 2]);
