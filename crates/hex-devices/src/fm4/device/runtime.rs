@@ -78,25 +78,38 @@ impl Fm4Definition {
         context: &hex_lattice::DevicePreparationContext<'_>,
         route: PreparedPressureRoute,
     ) -> Result<Box<dyn PreparedMutableInstrumentRuntime>, DeviceContractError> {
-        let index = CARRIERS
-            .iter()
-            .position(|descriptor| *descriptor == route.descriptor())
-            .filter(|_| carrier_semantics(route.descriptor().id) == Some(route.semantics()))
-            .ok_or(DeviceContractError::UnsupportedProcessingClass)?;
-        let mut factory = Factory::prepare(state, context)?;
-        let mut routing = factory.config.full.routing;
-        routing.carriers = [0.0; 4];
-        routing.carriers[index] = 1.0;
-        let required = audible_operator_ancestors(&factory.config.full.levels, &routing);
-        factory.config.pressure = Some(PressureRoute {
-            index,
-            route,
-            required,
-        });
-        Ok(Box::new(factory))
+        Ok(Box::new(
+            Factory::prepare(state, context)?.with_note_pressure(None, Some(route))?,
+        ))
     }
 }
 impl Factory {
+    pub(super) fn with_note_pressure(
+        mut self,
+        source: Option<hex_lattice_contract::ModulationSourceId>,
+        route: Option<PreparedPressureRoute>,
+    ) -> Result<Self, DeviceContractError> {
+        self.config.pressure_source = source;
+        self.config.pressure = route
+            .map(|route| {
+                let index = CARRIERS
+                    .iter()
+                    .position(|descriptor| *descriptor == route.descriptor())
+                    .filter(|_| carrier_semantics(route.descriptor().id) == Some(route.semantics()))
+                    .ok_or(DeviceContractError::UnsupportedProcessingClass)?;
+                let mut routing = self.config.full.routing;
+                routing.carriers = [0.0; 4];
+                routing.carriers[index] = 1.0;
+                let required = audible_operator_ancestors(&self.config.full.levels, &routing);
+                Ok(PressureRoute {
+                    index,
+                    route,
+                    required,
+                })
+            })
+            .transpose()?;
+        Ok(self)
+    }
     pub(super) fn validate_note_on(
         &self,
         pitch: u8,
@@ -160,6 +173,7 @@ impl Factory {
                 },
                 table: crate::shared_sine_table(),
                 pressure: None,
+                pressure_source: None,
                 smoothing: ((u64::from(sample_rate) * 5 + 500) / 1000) as u32,
             },
         })
@@ -184,8 +198,16 @@ struct Config {
     table: &'static crate::SineTable,
     smoothing: u32,
     pressure: Option<PressureRoute>,
+    pressure_source: Option<hex_lattice_contract::ModulationSourceId>,
 }
 impl Config {
+    fn accepts_note_pressure(&self) -> bool {
+        self.pressure_source.is_some() || self.pressure.is_some()
+    }
+    fn same_pressure_source(&self, other: &Self) -> bool {
+        self.pressure_source == other.pressure_source
+            && self.accepts_note_pressure() == other.accepts_note_pressure()
+    }
     fn same_target(&self, other: &Self) -> bool {
         self.identity == other.identity
             && self.tuning == other.tuning
@@ -266,6 +288,7 @@ struct Runtime {
     voices: [Voice; VOICES],
     controls: [Control; 4],
     effective: PreparedFmConfiguration,
+    unclamped_pressure_target: Option<(ParameterId, f64)>,
     cold: bool,
 }
 impl Runtime {
@@ -279,6 +302,7 @@ impl Runtime {
                 remaining: 0,
             }),
             effective: config.base,
+            unclamped_pressure_target: None,
             cold: true,
         }
     }
@@ -332,7 +356,7 @@ impl Runtime {
                 value,
                 ..
             } => {
-                if config.pressure.is_none() {
+                if !config.accepts_note_pressure() {
                     return Err(Error::UnsupportedNotePressure);
                 }
                 let voice = voices
@@ -367,6 +391,22 @@ impl Runtime {
             count += 1;
         }
         count
+    }
+    fn inherit_voices(&mut self, previous: &Self) {
+        self.voices = previous.voices;
+        self.unclamped_pressure_target = None;
+        if self.config.same_pressure_source(&previous.config) {
+            self.unclamped_pressure_target =
+                previous.unclamped_pressure_target.filter(|(id, _)| {
+                    self.config
+                        .pressure
+                        .is_some_and(|route| route.route.descriptor().id == *id)
+                });
+        } else {
+            for voice in &mut self.voices {
+                voice.pressure = 0;
+            }
+        }
     }
     fn has_steady_base_carriers(&self) -> bool {
         self.controls
@@ -443,10 +483,15 @@ impl Runtime {
                 active_count = self.active_slots(&mut slots);
             }
             let unclamped = pressure.and_then(|pressure| {
-                values.and_then(|values| {
-                    values.normalized_before_clamp(pressure.route.descriptor().id, offset)
-                })
+                let id = pressure.route.descriptor().id;
+                values
+                    .and_then(|values| values.normalized_before_clamp(id, offset))
+                    .map(|value| (id, value))
             });
+            if PRESSURE {
+                self.unclamped_pressure_target = unclamped;
+            }
+            let unclamped = unclamped.map(|(_, value)| value);
             let mut sum = 0.0_f64;
             for &slot in &slots[..active_count] {
                 // Collected from this fixed array; no caller-supplied index.
@@ -529,7 +574,7 @@ impl Runtime {
 }
 impl PreparedMutableInstrumentRuntime for Factory {
     fn supports_note_pressure(&self) -> bool {
-        self.config.pressure.is_some()
+        self.config.accepts_note_pressure()
     }
     fn parameter_automation_descriptors(&self) -> &[ParameterDescriptor] {
         &CARRIERS
@@ -587,7 +632,7 @@ impl PreparedMutableInstrumentRuntime for Factory {
 }
 impl MutableInstrumentRuntime for Runtime {
     fn supports_note_pressure(&self) -> bool {
-        self.config.pressure.is_some()
+        self.config.accepts_note_pressure()
     }
     fn parameter_automation(&mut self) -> Option<&mut dyn InstrumentParameterRuntime> {
         Some(self)
@@ -679,7 +724,7 @@ impl MutableInstrumentRuntime for Runtime {
     }
     fn copy_history_from(&mut self, previous: &dyn MutableInstrumentRuntime) {
         if let Some(previous) = previous.as_any().downcast_ref::<Self>() {
-            self.voices = previous.voices;
+            self.inherit_voices(previous);
             self.controls = previous.controls;
             self.effective = previous.effective;
             self.cold = previous.cold;
@@ -717,7 +762,7 @@ impl MutableInstrumentRuntime for Runtime {
         _: &dyn PreparedInstrumentHistoryRetarget,
     ) {
         if let Some(previous) = previous.as_any().downcast_ref::<Self>() {
-            self.voices = previous.voices;
+            self.inherit_voices(previous);
             for voice in self.voices.iter_mut().filter(|voice| voice.id != 0) {
                 voice.release_ceiling = voice.release_ceiling.min(self.config.envelope.release);
                 voice.advance(0);
@@ -751,6 +796,10 @@ impl MutableInstrumentRuntime for Runtime {
     }
 }
 impl InstrumentParameterRuntime for Runtime {
+    fn unclamped_modulation_target(&self) -> Option<(ParameterId, f64)> {
+        self.unclamped_pressure_target
+    }
+
     fn copy_targets(&self, output: &mut [Option<ParameterValue>]) -> Result<(), Error> {
         if output.len() != CARRIERS.len() {
             return Err(Error::InvalidParameterAutomation);

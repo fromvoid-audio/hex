@@ -372,11 +372,26 @@ const AUDIO_RATE: DeviceTypeId = DeviceTypeId::from_static("hex.modulator.audio-
 /// Only the newly playable FM4 bank requires a new reader floor. Prior codecs
 /// could already retain opaque banks on other instruments without playing them.
 pub(crate) fn contains_instrument_modulation(project: &Project) -> bool {
-    const FM4: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.fm4");
-    project.native_sources().iter().any(|source| {
-        let instrument = source.instrument();
-        instrument.state().type_id() == FM4 && !instrument.modulation().is_empty()
+    fm4_banks(project).any(|bank| !bank.is_empty())
+}
+
+pub(crate) fn contains_note_pressure(project: &Project) -> bool {
+    const PRESSURE: DeviceTypeId = DeviceTypeId::from_static("hex.modulator.note-pressure");
+    fm4_banks(project).any(|bank| {
+        bank.sources()
+            .iter()
+            .any(|source| source.state.type_id() == PRESSURE)
     })
+}
+
+fn fm4_banks(project: &Project) -> impl Iterator<Item = &DeviceModulation> {
+    const FM4: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.fm4");
+    project
+        .native_sources()
+        .iter()
+        .map(|source| source.instrument())
+        .filter(|instrument| instrument.state().type_id() == FM4)
+        .map(|instrument| instrument.modulation())
 }
 
 pub(crate) fn contains_audio_rate(project: &Project) -> bool {
@@ -441,7 +456,9 @@ pub(crate) fn refuse_legacy(project: &Project) -> Result<(), StorageError> {
     Ok(())
 }
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
-    let version = if contains_instrument_modulation(project) {
+    let version = if contains_note_pressure(project) {
+        crate::NOTE_PRESSURE_MODULATOR_SCHEMA_VERSION
+    } else if contains_instrument_modulation(project) {
         crate::INSTRUMENT_MODULATION_SCHEMA_VERSION
     } else if contains_audio_rate(project) {
         crate::AUDIO_RATE_MODULATOR_SCHEMA_VERSION
@@ -464,7 +481,7 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
         })
         .collect::<Result<Vec<_>, StorageError>>()?;
     let flat = Project::from_snapshot(snapshot).map_err(invalid)?;
-    let core = if version == crate::INSTRUMENT_MODULATION_SCHEMA_VERSION
+    let core = if version >= crate::INSTRUMENT_MODULATION_SCHEMA_VERSION
         && (super::device_automation_touch::contains_native_instrument(&flat)
             || super::device_automation_touch::contains_extended(&flat))
     {
@@ -492,7 +509,7 @@ pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError
             (u64::from(crate::CURRENT_SCHEMA_VERSION)
                 ..u64::from(crate::DEVICE_MODULATION_SCHEMA_VERSION))
                 .contains(v)
-                || version == crate::INSTRUMENT_MODULATION_SCHEMA_VERSION
+                || version >= crate::INSTRUMENT_MODULATION_SCHEMA_VERSION
                     && (u64::from(crate::NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION)
                         ..u64::from(crate::INSTRUMENT_MODULATION_SCHEMA_VERSION))
                         .contains(v)
@@ -534,7 +551,13 @@ pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError
             "modulation inventory must be nonempty",
         ));
     }
-    let instrument_schema = version == crate::INSTRUMENT_MODULATION_SCHEMA_VERSION;
+    if version == crate::NOTE_PRESSURE_MODULATOR_SCHEMA_VERSION && !contains_note_pressure(&project)
+    {
+        return Err(StorageError::Invalid(
+            "note pressure requires its matching project schema",
+        ));
+    }
+    let instrument_schema = version >= crate::INSTRUMENT_MODULATION_SCHEMA_VERSION;
     if instrument_schema && !contains_instrument_modulation(&project) {
         return Err(StorageError::Invalid(
             "instrument modulation requires its matching project schema",

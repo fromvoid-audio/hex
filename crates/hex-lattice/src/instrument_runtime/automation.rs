@@ -46,6 +46,12 @@ pub trait InstrumentParameterRuntime {
         Err(NativeInstrumentRuntimeError::UnsupportedParameterAutomation)
     }
 
+    /// Last source-global input to the single occurrence-local route, before
+    /// clamping. Detached release reads it together with the canonical targets.
+    fn unclamped_modulation_target(&self) -> Option<(ParameterId, f64)> {
+        None
+    }
+
     /// Read-only coupled-value preflight, after generic typed-value, event,
     /// clock and occurrence-gain checks. Errors leave PCM and runtime unchanged.
     fn preflight(
@@ -226,6 +232,33 @@ impl NativeInstrumentRuntimePair {
         checked_targets(view, targets)?;
         output.copy_from_slice(targets);
         Ok(())
+    }
+
+    /// The latest committed source-global input to the occurrence-local route.
+    /// A finite value must name an actual granted sample-rate destination.
+    pub fn committed_unclamped_modulation_target(
+        &self,
+    ) -> Result<Option<(ParameterId, f64)>, NativeInstrumentRuntimeError> {
+        let view = self
+            .primary
+            .parameter_automation_readonly()
+            .ok_or(NativeInstrumentRuntimeError::UnsupportedParameterAutomation)?;
+        let target = view.unclamped_modulation_target();
+        if let Some((parameter, value)) = target
+            && (!value.is_finite()
+                || view
+                    .descriptors()
+                    .binary_search_by_key(&parameter, |d| d.id)
+                    .is_err()
+                || !view
+                    .parameter_modulation_semantics(parameter)
+                    .is_some_and(|semantics| {
+                        semantics.modulation == ParameterModulation::SampleRate
+                    }))
+        {
+            return Err(NativeInstrumentRuntimeError::InvalidParameterAutomation);
+        }
+        Ok(target)
     }
 
     pub const fn supports_parameter_automation(&self) -> bool {
