@@ -6,18 +6,7 @@ use hex_storage::automation_draft::{
 };
 
 fn target(scope: DeviceAutomationTakeScope) -> DraftTarget {
-    match scope.target {
-        DeviceCaptureTarget::Native(target) => DraftTarget::Device {
-            device: target.device(),
-            target: target.target(),
-        },
-        DeviceCaptureTarget::Vst3(target) => DraftTarget::Device {
-            device: target.device,
-            target: hex_project::DeviceAutomationTarget::Vst3 {
-                parameter: target.parameter,
-            },
-        },
-    }
+    scope.target.draft_target()
 }
 fn recover(
     session: &Session,
@@ -40,19 +29,10 @@ fn write(
     scope: DeviceAutomationTakeScope,
     terminal: DraftTerminal,
 ) {
-    let (device, target) = match scope.target {
-        DeviceCaptureTarget::Native(target) => (target.device(), target.target()),
-        DeviceCaptureTarget::Vst3(target) => (
-            target.device,
-            hex_project::DeviceAutomationTarget::Vst3 {
-                parameter: target.parameter,
-            },
-        ),
-    };
     let mut writer = DraftWriter::create_with_clock(
         path,
         session.project(),
-        DraftTarget::Device { device, target },
+        target(scope),
         scope.stamp,
         CaptureClock {
             sample_rate: 48_000,

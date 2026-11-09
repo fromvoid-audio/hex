@@ -581,3 +581,158 @@ fn interrupted_or_replaced_foreign_source_retains_its_original_draft() {
         assert!(!lane.busy());
     }
 }
+
+#[test]
+fn group_delivery_seals_through_the_same_lane_and_never_offers_half_an_edit() {
+    use crate::service::automation_draft::{GroupApplication, Vst3GroupTarget};
+    use DeviceAutomationTakeAction as Action;
+    use DeviceAutomationTakeProgress as Progress;
+    let (files, mut session, mut scope, mut source) = fixture();
+    let DeviceCaptureTarget::Vst3(original) = scope.target else {
+        panic!("vst3");
+    };
+    let draft = Vst3GroupTarget::new(original.device, original.class, &[0, 11]).unwrap();
+    let group = Vst3GroupCaptureTarget {
+        draft,
+        binding: original.binding,
+    };
+    scope.target = DeviceCaptureTarget::Vst3Group(group);
+    source.target = scope.target;
+    let current = scope.context();
+    let row = |ordinal: u64, parameter, sdk_gesture, application| GroupDraftEvent {
+        ordinal,
+        parameter,
+        sdk_sequence: 30 + ordinal,
+        sdk_gesture,
+        clock: DraftClock {
+            performance_frame: ordinal + 24,
+            content_frame: ordinal,
+            loop_pass: 0,
+        },
+        application,
+    };
+    let rows = [
+        row(1, 0, 10, GroupApplication::Value(0.25)),
+        row(2, 11, 11, GroupApplication::Value(0.75)),
+        row(3, 0, 10, GroupApplication::Restored),
+        row(4, 11, 11, GroupApplication::Restored),
+    ];
+    let original_state = session.project().clone();
+    let mut lane = Lane::default();
+    let mut wrong = scope;
+    let mut wrong_group = group;
+    wrong_group.binding.root += 1;
+    wrong.target = DeviceCaptureTarget::Vst3Group(wrong_group);
+    let wrong_source = DeviceAutomationSource {
+        target: wrong.target,
+        ..source
+    };
+    assert!(
+        lane.begin(&session, None, wrong, wrong_source, &files.0)
+            .is_err()
+    );
+    assert!(lane.close_safe());
+
+    for complete in [false, true] {
+        assert!(matches!(
+            lane.begin(&session, None, scope, source, &files.0).unwrap(),
+            Step::Progress(Progress::Started)
+        ));
+        assert!(!lane.close_safe());
+        let count = if complete { 4 } else { 3 };
+        let receive =
+            |lane: &mut Lane, action: &Action| lane.receive(&session, None, current, scope, action);
+        let path = lane.path().unwrap().to_owned();
+        assert!(matches!(
+            receive(
+                &mut lane,
+                &Action::AppendVst3Group(Arc::from(&rows[..count]))
+            )
+            .unwrap(),
+            Step::Progress(Progress::Appended)
+        ));
+        assert!(receive(&mut lane, &Action::FinishVst3Group(rows[0].clock)).is_err());
+        let terminal = if complete {
+            Action::FinishVst3Group(rows[3].clock)
+        } else {
+            Action::Interrupt
+        };
+        assert!(matches!(
+            receive(&mut lane, &terminal).unwrap(),
+            Step::Progress(Progress::Sealing)
+        ));
+        assert!(!lane.close_safe());
+        let step = poll(&mut lane, &session, scope, current);
+        assert!(lane.close_safe());
+        if complete {
+            let Step::Commit(command, committed_path) = step else {
+                panic!("both restorations must commit");
+            };
+            assert_eq!(path, committed_path);
+            assert!(
+                matches!(command.as_ref(), Command::SpliceVst3AutomationTouchGroup {lanes, ..}
+                if lanes.iter().map(|(id, _)| *id).eq([0, 11]))
+            );
+            session.editor.execute(*command).unwrap();
+            assert_ne!(session.project(), &original_state);
+            assert!(session.editor.undo());
+            assert_eq!(session.project(), &original_state);
+        } else {
+            assert!(
+                matches!(step, Step::Progress(Progress::Retained(retained)) if retained == path)
+            );
+            let mut read = DraftReader::open(
+                path,
+                DraftReadLimits {
+                    max_source_bytes: 65_536,
+                },
+            )
+            .unwrap();
+            let mut recovered = [None; 4];
+            assert_eq!(read.read_group_events(0, &mut recovered).unwrap(), 3);
+            assert_eq!(
+                &recovered[..3],
+                &[Some(rows[0]), Some(rows[1]), Some(rows[2])]
+            );
+            assert_eq!(read.outcome(), DraftOutcome::Interrupted);
+            assert!(read.into_completed_group().is_err());
+            assert_eq!(session.project(), &original_state);
+        }
+    }
+
+    // A caller cannot claim a complete group using just one actual release.
+    // The shared writer still owns every admitted row and blocks close after
+    // the false terminal is refused.
+    lane.begin(&session, None, scope, source, &files.0).unwrap();
+    let path = lane.path().unwrap().to_owned();
+    let receive =
+        |lane: &mut Lane, action: &Action| lane.receive(&session, None, current, scope, action);
+    assert!(matches!(
+        receive(&mut lane, &Action::AppendVst3Group(Arc::from(&rows[..3]))).unwrap(),
+        Step::Progress(Progress::Appended)
+    ));
+    assert!(matches!(
+        receive(&mut lane, &Action::FinishVst3Group(rows[2].clock)).unwrap(),
+        Step::Progress(Progress::Sealing)
+    ));
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        match receive(&mut lane, &Action::Poll) {
+            Ok(Step::Progress(Progress::Pending)) => {
+                assert!(Instant::now() < deadline);
+                crate::test_wait::pause();
+            }
+            Err(reason) => {
+                assert!(reason.contains("incomplete"));
+                break;
+            }
+            _ => panic!("an incomplete group cannot reach publication"),
+        }
+    }
+    assert!(!lane.close_safe());
+    let failed = lane.failed_outcome(scope).unwrap();
+    assert_eq!(failed.progress.durable_events, 3);
+    assert_eq!(failed.progress.durable_terminal, None);
+    assert_eq!(failed.path, path);
+    assert_eq!(session.project(), &original_state);
+}

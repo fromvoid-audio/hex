@@ -26,7 +26,8 @@ pub use hex_storage::automation_draft::{
 };
 pub(in crate::service) use native_device::native_application_clock;
 pub use native_device::{
-    DeviceDraftInput, Vst3ApplicationValue, Vst3CaptureTarget, Vst3ParameterApplication,
+    DeviceDraftInput, Vst3ApplicationValue, Vst3CaptureTarget, Vst3GroupCaptureTarget,
+    Vst3ParameterApplication,
 };
 pub use recovery_copy::{
     RecoveryCopyReceipt, copy_failed_on_control, copy_group_outcome_with_tail_on_control,
