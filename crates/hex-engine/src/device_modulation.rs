@@ -44,9 +44,15 @@ fn effect_location_supported(project: &Project, location: DeviceLocation<'_>) ->
     true
 }
 
-fn instrument_modulation_supported(source: &hex_project::NativeSource) -> bool {
+fn fm4_modulation_supported(source: &hex_project::NativeSource) -> bool {
     source.receiver().is_some()
         && source.instrument().state().type_id() == hex_devices::fm4::device::FM4_TYPE_ID
+}
+
+fn loaded_sampler_modulation_supported(state: &NativeDeviceState) -> bool {
+    state.type_id() == hex_devices::sampler::state::TYPE_ID
+        && state.asset_references().len() == 1
+        && !hex_devices::sampler::state::is_empty_state(state)
 }
 
 /// Remaining device-local prepared signal buffers. Occurrence pressure is
@@ -75,7 +81,7 @@ pub fn project_device_can_add_note_pressure(project: &Project, device: DeviceId)
     };
     project
         .native_source(source)
-        .is_some_and(instrument_modulation_supported)
+        .is_some_and(fm4_modulation_supported)
         && !location
             .device
             .modulation()
@@ -103,9 +109,13 @@ pub fn project_device_modulation_target_supported(
     };
     let device = location.device;
     let eligible = match (location.class, location.owner) {
-        (DeviceUnitClass::Instrument, DeviceOwner::Source(source)) => project
-            .native_source(source)
-            .is_some_and(instrument_modulation_supported),
+        (DeviceUnitClass::Instrument, DeviceOwner::Source(source)) => {
+            project.native_source(source).is_some_and(|source| {
+                fm4_modulation_supported(source)
+                    || source.receiver().is_some()
+                        && loaded_sampler_modulation_supported(device.state())
+            })
+        }
         (DeviceUnitClass::Effect, DeviceOwner::Source(_)) => {
             effect_location_supported(project, location)
                 && source_provider_mapping_supported(device.state(), parameter)
@@ -219,10 +229,9 @@ pub(super) fn validate_source_owners(project: &Project) -> Result<(), Invalid> {
         // its bank for a later binding and compile it only for a real receiver.
         if !instrument.modulation().is_empty() {
             let state = instrument.state();
-            let loaded_sampler = state.type_id() == hex_devices::sampler::state::TYPE_ID
-                && state.asset_references().len() == 1
-                && !hex_devices::sampler::state::is_empty_state(state);
-            if !loaded_sampler && state.type_id() != hex_devices::fm4::device::FM4_TYPE_ID {
+            if !loaded_sampler_modulation_supported(state)
+                && state.type_id() != hex_devices::fm4::device::FM4_TYPE_ID
+            {
                 return Err(Invalid(
                     "instrument modulation requires a supported provider",
                 ));

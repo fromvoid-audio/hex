@@ -453,7 +453,7 @@ fn source_hints_and_paint_require_same_view_source_facts_and_context(cx: &mut Te
                 );
                 assert_eq!(
                     panel.size.height,
-                    gpui::px(213.0),
+                    gpui::px(super::super::device_panel::DEVICE_PANEL_HEIGHT),
                     "device panel remains fixed height"
                 );
                 let region = visual.debug_bounds("sampler-source-active-region").unwrap();
