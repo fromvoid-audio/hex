@@ -6274,10 +6274,10 @@ fn modulation_panel_adds_and_maps_an_lfo_without_editing_base_values(cx: &mut Te
 }
 
 #[gpui::test]
-fn modulation_panel_maps_delay_feedback_and_mix_without_changing_authored_values(
+fn modulation_panel_maps_delay_feedback_mix_and_oscillator_without_changing_authored_values(
     cx: &mut TestAppContext,
 ) {
-    use hex_devices::delay::{DRY_WET, FEEDBACK, TIME, TYPE_ID};
+    use hex_devices::delay::{DRY_WET, FEEDBACK, LFO_DELAY, LFO_RATE, TIME, TYPE_ID};
     use hex_lattice_contract::ParameterId;
     use hex_project::{DeviceAutomationTarget, ModulationDestination};
     let (service, state, track, device) = actor_native_effect_fixture(TYPE_ID);
@@ -6331,10 +6331,39 @@ fn modulation_panel_maps_delay_feedback_and_mix_without_changing_authored_values
         ..Default::default()
     });
     visual.run_until_parked();
-    for (index, parameter) in [FEEDBACK, DRY_WET].into_iter().enumerate() {
-        let bounds = visual
-            .debug_bounds(Box::leak(key(parameter).into_boxed_str()))
-            .unwrap();
+    click(
+        &mut visual,
+        format!("delay-lfo-expand-{}", device.value()),
+        false,
+    );
+    visual.run_until_parked();
+    let targets = [FEEDBACK, DRY_WET, LFO_DELAY, LFO_RATE];
+    let body = Box::leak(format!("device-body-{}", device.value()).into_boxed_str());
+    let shell = Box::leak(format!("device-shell-{}", device.value()).into_boxed_str());
+    let viewport = |visual: &mut VisualTestContext| {
+        visual
+            .debug_bounds(body)
+            .unwrap()
+            .intersect(&visual.debug_bounds(shell).unwrap())
+    };
+    for (index, parameter) in targets.into_iter().enumerate() {
+        let selector = Box::leak(key(parameter).into_boxed_str());
+        let position = visual.debug_bounds(selector).unwrap().center();
+        let visible = viewport(&mut visual);
+        if !visible.contains(&position) {
+            visual.simulate_event(gpui::ScrollWheelEvent {
+                position: visible.center(),
+                delta: gpui::ScrollDelta::Pixels(point(px(0.0), visible.center().y - position.y)),
+                ..Default::default()
+            });
+            visual.run_until_parked();
+        }
+        let bounds = visual.debug_bounds(selector).unwrap();
+        let visible = viewport(&mut visual);
+        assert!(
+            visible.contains(&bounds.center()),
+            "{parameter:?} at {bounds:?} outside {visible:?}"
+        );
         click(&mut visual, key(parameter), false);
         assert!(
             editor.read_with(cx, |view, _| view.worker_requests_pending > 0
@@ -6348,7 +6377,7 @@ fn modulation_panel_maps_delay_feedback_and_mix_without_changing_authored_values
     editor.read_with(cx, |view, _| {
         let current = view.state.as_ref().unwrap().project.device(device).unwrap();
         assert_eq!(current.state(), &original);
-        for (route, id) in routes(view).iter().zip([FEEDBACK, DRY_WET]) {
+        for (route, id) in routes(view).iter().zip(targets) {
             assert_eq!(route.source, source);
             assert_eq!(
                 route.destination,
