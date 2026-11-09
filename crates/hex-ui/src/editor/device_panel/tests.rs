@@ -6322,7 +6322,7 @@ fn modulation_panel_maps_delay_feedback_mix_and_oscillator_without_changing_auth
     };
     assert_eq!(
         editor.read_with(cx, |view, _| view.device_panel.mapping_source),
-        Some((device, source))
+        Some((device, super::modulators::MappingOutput::main(source)))
     );
     let strip = visual.debug_bounds("device-modulator-panel").unwrap();
     visual.simulate_event(gpui::ScrollWheelEvent {
@@ -6568,7 +6568,14 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
                 .map(|item| item.label)
                 .collect::<Vec<_>>()
         }),
-        ["lfo", "macro", "random", "note pressure", "button"],
+        [
+            "lfo",
+            "macro",
+            "macro-4",
+            "random",
+            "note pressure",
+            "button"
+        ],
     );
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
@@ -6589,7 +6596,7 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
             format!("add-modulator-{}", device.value()),
             true,
         );
-        visual.simulate_keystrokes("down down down enter");
+        visual.simulate_keystrokes("down down down down enter");
         visual.run_until_parked();
         "note pressure"
     } else {
@@ -6887,6 +6894,118 @@ fn modulation_panel_adds_and_maps_a_manual_macro(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn modulation_panel_maps_independent_macro_four_outputs_and_an_incoming_control(
+    cx: &mut TestAppContext,
+) {
+    use hex_devices::utility::parameter;
+    use hex_engine::macro_four_modulator as macro_four;
+    use hex_project::{DeviceModulation, ModulationDestination, ModulationOutputId};
+
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let base = state.project.device(device).unwrap().state().clone();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1500.0), px(650.0)));
+    visual.run_until_parked();
+    let bank = |view: &EditorView| -> DeviceModulation {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .modulation()
+            .clone()
+    };
+    let click = click_modulator_control;
+    click(&mut visual, "device-modulator-toggle".into(), false);
+    for (index, kind) in ["macro-4", "lfo"].into_iter().enumerate() {
+        add_modulator_from_menu(&mut visual, device, kind);
+        pump_until(&editor, cx, |view| bank(view).sources().len() == index + 1);
+        visual.run_until_parked();
+    }
+    let slots = editor.read_with(cx, |view, _| bank(view));
+    let source = slots.sources()[0].id;
+    let lfo = slots.sources()[1].id;
+    let controls = |view: &EditorView| {
+        macro_four::Settings::decode(&bank(view).sources()[0].state)
+            .unwrap()
+            .values
+    };
+    let gain_overlay = || format!("map-target-{}-{}", device.value(), parameter::GAIN.value());
+    for (index, output) in [1, 3].into_iter().enumerate() {
+        click(
+            &mut visual,
+            format!("macro-4-{}-{output}-more", source.value()),
+            true,
+        );
+        pump_until(&editor, cx, |view| controls(view)[output - 1] == 0.05);
+        visual.run_until_parked();
+        click(
+            &mut visual,
+            format!("macro-4-{}-{output}-map", source.value()),
+            true,
+        );
+        click(&mut visual, gain_overlay(), false);
+        pump_until(&editor, cx, |view| bank(view).routes().len() == index + 1);
+        visual.run_until_parked();
+    }
+    let second = editor.read_with(cx, |view, _| bank(view).routes()[1]);
+    for expected in [0.05_f32, 0.0, -0.05] {
+        click(
+            &mut visual,
+            format!("modulation-route-{}-less", second.id.value()),
+            true,
+        );
+        pump_until(&editor, cx, |view| {
+            bank(view).routes()[1].amount.get() == expected
+        });
+        visual.run_until_parked();
+    }
+    click(&mut visual, format!("lfo-{}-map", lfo.value()), true);
+    click(
+        &mut visual,
+        format!("map-macro-4-{}-{}-3", device.value(), source.value()),
+        true,
+    );
+    pump_until(&editor, cx, |view| bank(view).routes().len() == 3);
+    visual.run_until_parked();
+    let mapped = editor.read_with(cx, |view, _| {
+        assert_eq!(controls(view), [0.05, 0.0, 0.05, 0.0]);
+        let mapped = bank(view);
+        let routes = mapped.routes();
+        assert_eq!([routes[0].source, routes[1].source], [source; 2]);
+        assert_eq!(routes[0].output, ModulationOutputId::MAIN);
+        assert_eq!(routes[1].output, ModulationOutputId::new(3).unwrap());
+        assert_eq!(routes[0].destination, routes[1].destination);
+        assert_eq!(
+            [routes[0].amount.get(), routes[1].amount.get()],
+            [0.1, -0.05]
+        );
+        assert_eq!(routes[2].source, lfo);
+        assert_eq!(
+            routes[2].destination,
+            ModulationDestination::Modulator {
+                source,
+                module_type: macro_four::TYPE_ID,
+                parameter: macro_four::VALUE_PARAMETERS[2],
+            }
+        );
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(project.device(device).unwrap().state(), &base);
+        let reopened = hex_storage::decode(&hex_storage::encode(project).unwrap()).unwrap();
+        assert_eq!(&reopened, project.as_ref());
+        mapped
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        bank(view).routes() == &mapped.routes()[..2]
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+    pump_until(&editor, cx, |view| bank(view) == mapped);
+}
+
+#[gpui::test]
 fn modulation_panel_closes_the_add_menu_when_its_device_is_removed(cx: &mut TestAppContext) {
     let (service, state, track, device) =
         actor_native_effect_fixture(hex_devices::utility::UTILITY_TYPE_ID);
@@ -6950,10 +7069,18 @@ fn add_modulator_from_menu(visual: &mut VisualTestContext, device: DeviceId, kin
         let position = point(panel.center().x, panel.origin.y + px(10.0));
         visual.simulate_click(position, Modifiers::default());
     } else {
-        let steps = ["lfo", "follower", "macro", "random", "audio rate", "button"]
-            .iter()
-            .position(|label| *label == kind)
-            .expect("modulator type in audio effect menu");
+        let steps = [
+            "lfo",
+            "follower",
+            "macro",
+            "macro-4",
+            "random",
+            "audio rate",
+            "button",
+        ]
+        .iter()
+        .position(|label| *label == kind)
+        .expect("modulator type in audio effect menu");
         for _ in 0..steps {
             visual.simulate_keystrokes("down");
         }
@@ -7405,7 +7532,7 @@ fn assert_modulation_mapping(
     );
     assert_eq!(
         editor.read_with(cx, |view, _| view.device_panel.mapping_source),
-        Some((device, source_id))
+        Some((device, super::modulators::MappingOutput::main(source_id)))
     );
     for (count, parameter) in targets.iter().copied().enumerate() {
         let bounds = click(
