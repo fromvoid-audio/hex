@@ -6444,12 +6444,13 @@ fn modulation_panel_maps_continuous_and_discrete_eq8_controls_without_editing_au
 fn modulation_panel_maps_all_fm4_carriers_through_the_scrolled_instrument_body(
     cx: &mut TestAppContext,
 ) {
-    use hex_devices::fm4::device::{FM4_TYPE_ID, parameter};
+    use hex_devices::fm4::device::{FM4_DEFINITION, FM4_TYPE_ID, parameter};
+    use hex_lattice_contract::NativeDeviceMetadata;
     use hex_project::{DeviceAutomationTarget, ModulationDestination};
 
     let service = Service::new(48_000, 8, 8_000_000).unwrap();
     receive_service_event(&service);
-    let original = hex_engine::default_native_device_state(FM4_TYPE_ID).unwrap();
+    let original = FM4_DEFINITION.default_state().unwrap();
     service
         .submit(Request::Edit(Command::InsertTrackWithDevice {
             name: "fm4 track".into(),
