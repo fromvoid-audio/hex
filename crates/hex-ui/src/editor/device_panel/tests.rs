@@ -6645,5 +6645,48 @@ fn assert_modulation_mapping(
         pump_until(&editor, cx, |view| routes(view) == bypassed);
         click_route("toggle");
         pump_until(&editor, cx, |view| routes(view) == active);
+
+        use hex_engine::lfo_modulator::{Settings, Waveform};
+        let shape = |view: &EditorView| {
+            let project = &view.state.as_ref().unwrap().project;
+            let slot = &project.device(device).unwrap().modulation().sources()[0];
+            assert_eq!(slot.id, source_id);
+            Settings::decode(&slot.state).unwrap()
+        };
+        let original = editor.read_with(cx, |view, _| shape(view));
+        let control = format!("lfo-{}-waveform", source_id.value());
+        for waveform in [Waveform::Triangle, Waveform::RisingRamp, Waveform::Square] {
+            visual.run_until_parked();
+            scroll_to(&mut visual, &control);
+            click(&mut visual, control.clone());
+            let expected = Settings {
+                waveform,
+                ..original
+            };
+            pump_until(&editor, cx, |view| {
+                shape(view) == expected && routes(view) == active
+            });
+        }
+        let square = editor.read_with(cx, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            assert_eq!(
+                hex_storage::schema_version_for(project),
+                hex_storage::LFO_SHAPE_SCHEMA_VERSION
+            );
+            let reopened = hex_storage::decode(&hex_storage::encode(project).unwrap()).unwrap();
+            assert_eq!(
+                reopened.device(device).unwrap().modulation(),
+                project.device(device).unwrap().modulation()
+            );
+            shape(view)
+        });
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |view| {
+            shape(view).waveform == Waveform::RisingRamp
+        });
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+        pump_until(&editor, cx, |view| {
+            shape(view) == square && routes(view) == active
+        });
     }
 }
