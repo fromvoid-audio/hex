@@ -610,18 +610,10 @@ pub(super) fn panel(
                     return None;
                 }
                 let target = target_drag::Target { device: id, source, mapping: MappingTarget::HostGain(stage) };
-                let selector = format!("map-{key}-{}", id.value());
-                let depth = target_drag::displayed_depth(view, target, route);
-                let control = hex_widgets::action(theme::text(label), theme::action_style())
-                    .id(ElementId::Name(selector.clone().into()))
-                    .debug_selector(move || selector.clone())
-                    .relative()
-                    .px(px(3.0))
-                    .h(px(15.0))
-                    .gap(px(3.0))
-                    .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
-                    .child(div().min_w(px(30.0)).children(depth.map(|depth| theme::text(depth_text(depth)))));
-                Some(target_drag::attach(view, cx, control, target, route, revision))
+                Some(mapping_button(
+                    view, cx, format!("map-{key}-{}", id.value()), theme::text(label),
+                    target, route, revision,
+                ))
             });
         body = body.child(div().flex().flex_wrap().gap(px(4.0)).children(targets));
     }
@@ -631,17 +623,32 @@ pub(super) fn panel(
         .collect();
     let pressure_selected =
         selected.is_some_and(|output| is_pressure_source(bank.sources(), output.source));
-    let mapping_source_for = |target, destination| {
-        selected.filter(|source| {
-            !pressure_selected
-                && !blocked_targets.is_empty()
-                && !blocked_targets.contains(&target)
-                && bank.routes().len() < hex_project::MAX_MODULATION_ROUTES_PER_DEVICE
-                && !bank
-                    .routes()
-                    .iter()
-                    .any(|route| source.owns(route) && route.destination == destination)
-        })
+    let input_mapping_control = |cx: &mut Context<EditorView>,
+                                 key: String,
+                                 label: &str,
+                                 target_id,
+                                 mapping,
+                                 destination| {
+        let source = selected.filter(|_| !pressure_selected && !blocked_targets.is_empty())?;
+        let route = bank
+            .routes()
+            .iter()
+            .find(|route| source.owns(route) && route.destination == destination);
+        if target_id == source.source
+            || (route.is_none()
+                && (blocked_targets.contains(&target_id)
+                    || bank.routes().len() >= hex_project::MAX_MODULATION_ROUTES_PER_DEVICE))
+        {
+            return None;
+        }
+        let target = target_drag::Target {
+            device: id,
+            source,
+            mapping,
+        };
+        Some(mapping_button(
+            view, cx, key, label, target, route, revision,
+        ))
     };
     let multiple_macros = bank
         .sources()
@@ -1016,35 +1023,30 @@ pub(super) fn panel(
             };
             let destination = lfo_rate_destination(source_id);
             let rate_text = format!("{rate:.2} {units}");
-            let rate_control =
-                if let Some(mapping_source) = mapping_source_for(source_id, destination) {
-                    button(
-                        cx,
-                        format!("map-lfo-rate-{}-{}", id.value(), source_id.value()),
-                        theme::text(rate_text),
-                        Edit::Map(
-                            mapping_source,
-                            MappingTarget::LfoRate(source_id),
-                            DEFAULT_MAPPING_DEPTH,
-                        ),
-                    )
-                    .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
+            let rate_control = if let Some(control) = input_mapping_control(
+                cx,
+                format!("map-lfo-rate-{}-{}", id.value(), source_id.value()),
+                &rate_text,
+                source_id,
+                MappingTarget::LfoRate(source_id),
+                destination,
+            ) {
+                control.into_any_element()
+            } else if selected.is_some() {
+                div()
+                    .px(px(4.0))
+                    .h(px(15.0))
+                    .child(theme::text(rate_text))
                     .into_any_element()
-                } else if selected.is_some() {
-                    div()
-                        .px(px(4.0))
-                        .h(px(15.0))
-                        .child(theme::text(rate_text))
-                        .into_any_element()
-                } else {
-                    button(
-                        cx,
-                        source_key("sync"),
-                        theme::text(rate_text),
-                        Edit::Sync(source_id),
-                    )
-                    .into_any_element()
-                };
+            } else {
+                button(
+                    cx,
+                    source_key("sync"),
+                    theme::text(rate_text),
+                    Edit::Sync(source_id),
+                )
+                .into_any_element()
+            };
             row = row
                 .child(button(
                     cx,
@@ -1109,22 +1111,15 @@ pub(super) fn panel(
             && let Ok(settings) = manual::Settings::decode(&source.state)
         {
             let value = format!("{:.0}%", settings.value * 100.0);
-            if let Some(mapping_source) =
-                mapping_source_for(source_id, macro_destination(source_id))
-            {
-                row = row.child(
-                    button(
-                        cx,
-                        format!("map-macro-{}-{}", id.value(), source_id.value()),
-                        theme::text(value),
-                        Edit::Map(
-                            mapping_source,
-                            MappingTarget::Macro(source_id),
-                            DEFAULT_MAPPING_DEPTH,
-                        ),
-                    )
-                    .border_color(rgb(theme::color(theme::PaletteRole::Primary))),
-                );
+            if let Some(control) = input_mapping_control(
+                cx,
+                format!("map-macro-{}-{}", id.value(), source_id.value()),
+                &value,
+                source_id,
+                MappingTarget::Macro(source_id),
+                macro_destination(source_id),
+            ) {
+                row = row.children([control]);
             } else {
                 row = row
                     .child(button(
@@ -1157,23 +1152,18 @@ pub(super) fn panel(
                 let key = |suffix| source_key(&format!("{number}-{suffix}"));
                 let value = format!("{number} · {:.0}%", value * 100.0);
                 let destination = macro_four_destination(source_id, parameter);
-                let value_control =
-                    if let Some(mapping) = mapping_source_for(source_id, destination) {
-                        button(
-                            cx,
-                            format!("map-macro-4-{}-{}-{number}", id.value(), source_id.value()),
-                            theme::text(value),
-                            Edit::Map(
-                                mapping,
-                                MappingTarget::MacroFour(source_id, parameter),
-                                DEFAULT_MAPPING_DEPTH,
-                            ),
-                        )
-                        .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
-                        .into_any_element()
-                    } else {
-                        theme::text(value).into_any_element()
-                    };
+                let value_control = if let Some(control) = input_mapping_control(
+                    cx,
+                    format!("map-macro-4-{}-{}-{number}", id.value(), source_id.value()),
+                    &value,
+                    source_id,
+                    MappingTarget::MacroFour(source_id, parameter),
+                    destination,
+                ) {
+                    control.into_any_element()
+                } else {
+                    theme::text(value).into_any_element()
+                };
                 controls = controls.child(
                     div()
                         .flex()
@@ -1248,19 +1238,15 @@ pub(super) fn panel(
                 format!("{name} {:+.0}%", value * 100.0)
             };
             let destination = composition_destination(source_id, module_type, parameter);
-            let value_control = if let Some(mapping) = mapping_source_for(source_id, destination) {
-                button(
-                    cx,
-                    format!("map-{label}-{name}-{}-{}", id.value(), source_id.value()),
-                    theme::text(value),
-                    Edit::Map(
-                        mapping,
-                        MappingTarget::CompositionInput(source_id, parameter),
-                        DEFAULT_MAPPING_DEPTH,
-                    ),
-                )
-                .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
-                .into_any_element()
+            let value_control = if let Some(control) = input_mapping_control(
+                cx,
+                format!("map-{label}-{name}-{}-{}", id.value(), source_id.value()),
+                &value,
+                source_id,
+                MappingTarget::CompositionInput(source_id, parameter),
+                destination,
+            ) {
+                control.into_any_element()
             } else {
                 theme::text(value).into_any_element()
             };
@@ -1538,6 +1524,32 @@ pub(super) fn target_overlay(
     Some(
         target_drag::attach(view, cx, control, target, assigned, state.revision).into_any_element(),
     )
+}
+
+fn mapping_button(
+    view: &EditorView,
+    cx: &mut Context<EditorView>,
+    selector: String,
+    label: SharedString,
+    target: target_drag::Target,
+    route: Option<&DeviceModulationRoute>,
+    revision: u64,
+) -> Stateful<Div> {
+    let depth = target_drag::displayed_depth(view, target, route);
+    let control = hex_widgets::action(label, theme::action_style())
+        .id(ElementId::Name(selector.clone().into()))
+        .debug_selector(move || selector.clone())
+        .relative()
+        .px(px(3.0))
+        .h(px(15.0))
+        .gap(px(3.0))
+        .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
+        .child(
+            div()
+                .min_w(px(30.0))
+                .children(depth.map(|depth| theme::text(depth_text(depth)))),
+        );
+    target_drag::attach(view, cx, control, target, route, revision)
 }
 
 fn depth_text(depth: f32) -> String {

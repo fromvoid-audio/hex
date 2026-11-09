@@ -7892,6 +7892,17 @@ fn modulation_panel_maps_all_three_mix_inputs_and_the_result(cx: &mut TestAppCon
         pump_until(&editor, cx, |view| settings(view) == expected);
         visual.run_until_parked();
     }
+    let target_key = |input| format!("map-mix-{input}-{}-{}", device.value(), mix_source.value());
+    let drag = |visual: &mut VisualTestContext, input, delta| {
+        let start = modulator_control_position(visual, target_key(input), true);
+        let end = point(start.x, start.y + px(delta));
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+    };
     for (index, input) in ["a", "b", "blend"].into_iter().enumerate() {
         let upstream = slots.sources()[index].id;
         click(
@@ -7899,14 +7910,31 @@ fn modulation_panel_maps_all_three_mix_inputs_and_the_result(cx: &mut TestAppCon
             format!("{}-{}-map", source_kinds[index], upstream.value()),
             true,
         );
-        click(
-            &mut visual,
-            format!("map-mix-{input}-{}-{}", device.value(), mix_source.value()),
-            true,
-        );
+        if input == "blend" {
+            drag(&mut visual, input, 30.0);
+        } else {
+            click(&mut visual, target_key(input), true);
+        }
         pump_until(&editor, cx, |view| bank(view).routes().len() == index + 1);
         visual.run_until_parked();
     }
+    let first = editor.read_with(cx, |view, _| bank(view));
+    assert_eq!(first.routes()[2].amount.get(), -0.3);
+    drag(&mut visual, "blend", -60.0);
+    pump_until(&editor, cx, |view| {
+        bank(view).routes()[2].amount.get() == 0.3
+    });
+    assert_eq!(
+        editor.read_with(cx, |view, _| bank(view).routes()[2].id),
+        first.routes()[2].id
+    );
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| bank(view) == first);
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+    pump_until(&editor, cx, |view| {
+        bank(view).routes()[2].amount.get() == 0.3
+    });
+    visual.run_until_parked();
     click(&mut visual, key("map"), true);
     click(
         &mut visual,
@@ -7916,6 +7944,8 @@ fn modulation_panel_maps_all_three_mix_inputs_and_the_result(cx: &mut TestAppCon
     pump_until(&editor, cx, |view| bank(view).routes().len() == 4);
     let mapped = editor.read_with(cx, |view, _| {
         let mapped = bank(view);
+        assert_eq!(mapped.sources(), first.sources());
+        assert_eq!(mapped.routes()[2].amount.get(), 0.3);
         for (index, parameter) in [mix::INPUT_A, mix::INPUT_B, mix::BLEND]
             .into_iter()
             .enumerate()
@@ -7985,7 +8015,11 @@ fn add_modulator_from_menu(visual: &mut VisualTestContext, device: DeviceId, kin
     assert!(visual.debug_bounds("context-menu-panel").is_none());
 }
 
-fn click_modulator_control(visual: &mut VisualTestContext, key: String, in_strip: bool) {
+fn modulator_control_position(
+    visual: &mut VisualTestContext,
+    key: String,
+    in_strip: bool,
+) -> gpui::Point<gpui::Pixels> {
     let key = Box::leak(key.into_boxed_str());
     if in_strip {
         for _ in 0..3 {
@@ -8013,8 +8047,12 @@ fn click_modulator_control(visual: &mut VisualTestContext, key: String, in_strip
             "{key} at {target:?} outside {strip:?}"
         );
     }
-    let target = visual.debug_bounds(key).unwrap();
-    visual.simulate_click(target.center(), Modifiers::default());
+    visual.debug_bounds(key).unwrap().center()
+}
+
+fn click_modulator_control(visual: &mut VisualTestContext, key: String, in_strip: bool) {
+    let position = modulator_control_position(visual, key, in_strip);
+    visual.simulate_click(position, Modifiers::default());
     visual.run_until_parked();
 }
 
@@ -8150,11 +8188,12 @@ fn modulation_panel_maps_both_lfo_rate_modes_and_preserves_assignments_on_sync(
         pump_until(&editor, cx, |view| bank(view).routes().len() == index + 1);
         visual.run_until_parked();
     }
+    click(&mut visual, rate_key(free), true);
     assert!(
-        visual
-            .debug_bounds(Box::leak(rate_key(free).into_boxed_str()))
-            .is_none(),
-        "duplicate"
+        editor.read_with(cx, |view, _| {
+            !view.edit_pending() && bank(view).routes().len() == 2
+        }),
+        "clicking an assigned input keeps its single route"
     );
     click(&mut visual, format!("macro-{}-map", manual.value()), true);
     let synced_rate = |view: &EditorView| {
