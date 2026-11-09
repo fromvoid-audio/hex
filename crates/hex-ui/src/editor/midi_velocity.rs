@@ -285,7 +285,7 @@ impl Gesture {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::*;
     use hex_project::{Command, Created, Editor, Project};
