@@ -50,7 +50,7 @@ fn position(
         point(
             bounds.origin.x
                 + bounds.size.width
-                    * (((beat * BeatTime::ONE.raw() as f64) - v.piano_beat_start.raw() as f64)
+                    * (((beat * BeatTime::ONE.raw() as f64) - v.piano_beat_start as f64)
                         / v.piano_beat_span.raw() as f64) as f32,
             bounds.origin.y
                 + bounds.size.height
@@ -70,12 +70,19 @@ fn click_chord_and_marquee_prepare_once_with_exact_velocities_but_disabled_paint
 ) {
     let (mut visual, editor, _environment, _) = authored(cx);
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    let button_bounds = visual.debug_bounds(AUDITION).unwrap();
+    assert!(visual.debug_bounds("midi-audition-speaker").is_some());
+    let disabled_fill = visual.rendered_background(AUDITION).unwrap();
     let a = position(&mut visual, &editor, 1.125, 60);
     let b = position(&mut visual, &editor, 3.125, 64);
     visual.simulate_click(a, Modifiers::default());
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| assert!(v.computer_keyboard.input.is_none()));
     toggle(&mut visual);
+    assert_eq!(visual.debug_bounds(AUDITION), Some(button_bounds));
+    assert_ne!(visual.rendered_background(AUDITION), Some(disabled_fill));
+    assert!(visual.debug_bounds("midi-audition-speaker").is_some());
+    editor.read_with(&visual, |v, _| assert!(v.midi_audition.enabled));
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert!(
@@ -148,6 +155,8 @@ fn click_chord_and_marquee_prepare_once_with_exact_velocities_but_disabled_paint
     });
     toggle(&mut visual);
     pump(&editor, &mut visual);
+    assert_eq!(visual.debug_bounds(AUDITION), Some(button_bounds));
+    editor.read_with(&visual, |v, _| assert!(!v.midi_audition.enabled));
     assert!(chord.is_cancelled());
     editor.read_with(&visual, |v, _| {
         assert!(v.computer_keyboard.input.is_none());
@@ -226,7 +235,7 @@ fn physical_keys_defer_the_latest_selection_and_stale_preparation_or_focus_canno
         assert_eq!(v.tick_midi_audition(), Some(true));
         let input = Arc::clone(v.computer_keyboard.input.as_ref().unwrap());
         let request = v.computer_keyboard.request_id;
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let until = crate::test_wait::hang_deadline();
         let event = loop {
             if let Ok(event) = v.service.try_event() {
                 assert_eq!(event.computer_keyboard_complete, Some(request));
@@ -234,7 +243,7 @@ fn physical_keys_defer_the_latest_selection_and_stale_preparation_or_focus_canno
                 assert!(event.playback.is_some(), "real preparation must succeed");
                 break event;
             }
-            assert!(std::time::Instant::now() < until);
+            assert!(std::time::Instant::now() < until, "physical_keys_defer_the_latest_selection_and_stale_preparation_or_focus_cannot_trigger: hang guard expired");
             std::thread::yield_now();
         };
         for key in 0..17 {

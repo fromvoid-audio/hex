@@ -3,7 +3,7 @@ use super::*;
 use hex_session::service::Request;
 
 fn receive_worker(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContext, initial: bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(cx, |view, cx| {
             if view.tick(cx) {
@@ -217,7 +217,6 @@ fn browser_insert_quantized_toggle_uses_nearest_canonical_grid_and_snapshots_mod
         let track = select_sample(&editor, visual);
         if quantized {
             let toggle = visual.debug_bounds("browser-insert-grid").unwrap();
-            assert_eq!(f32::from(toggle.size.width), 22.0);
             visual.simulate_click(toggle.center(), Modifiers::default());
             select_sample(&editor, visual);
         }

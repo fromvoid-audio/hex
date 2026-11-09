@@ -15,6 +15,15 @@ pub(super) enum Files {
     Projects,
 }
 
+/// The visible folder state; loading and failure take priority over expansion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Disclosure {
+    Loading,
+    Error,
+    Expanded,
+    Collapsed,
+}
+
 #[derive(Clone)]
 struct Request {
     epoch: u64,
@@ -445,12 +454,12 @@ impl Tree {
             .unwrap_or(0)
     }
 
-    pub(super) fn icon(&self, path: &Path) -> &'static str {
+    pub(super) fn disclosure(&self, path: &Path) -> Disclosure {
         match self.nodes.get(path) {
-            Some(node) if node.queued => "…",
-            Some(node) if node.error.is_some() => "!",
-            _ if self.expanded.contains(path) => "▾",
-            _ => "▸",
+            Some(node) if node.queued => Disclosure::Loading,
+            Some(node) if node.error.is_some() => Disclosure::Error,
+            _ if self.expanded.contains(path) => Disclosure::Expanded,
+            _ => Disclosure::Collapsed,
         }
     }
 
@@ -832,7 +841,7 @@ mod tests {
                 .all(|row| row.kind == EntryKind::Directory || !row.path.starts_with(&failed))
         );
         assert_eq!(tree.error(&failed), Some("folder access denied"));
-        assert_eq!(tree.icon(&failed), "!");
+        assert_eq!(tree.disclosure(&failed), Disclosure::Error);
     }
 
     #[test]
@@ -912,7 +921,7 @@ mod tests {
         tree.open(root.clone(), false);
         assert!(tree.next().is_none());
         assert_eq!(tree.requests_started, 0);
-        assert_ne!(tree.icon(&root), "…");
+        assert_ne!(tree.disclosure(&root), Disclosure::Loading);
         assert!(tree.status.as_ref().unwrap().contains("counter exhausted"));
     }
 

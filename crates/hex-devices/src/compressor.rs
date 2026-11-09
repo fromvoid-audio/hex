@@ -1,16 +1,28 @@
 //! Original zero-lookahead, stereo-linked feed-forward dynamics processor.
+//!
+//! All eight controls consume the shared borrowed final-value stream.
+//! Gain, detector and dry/wet histories retain their existing smoothing laws;
+//! attack/release have explicit positive-logarithmic mapping. Stepped detector
+//! choice uses the existing reversible 5ms blend with both RMS histories warm.
+mod automation;
 
 use hex_lattice::{
-    NativeDeviceDefinition, NativeProcessorRuntime, OutputTail, PreparedNativeProcessor,
-    StereoFrame, StereoMatrix,
+    NativeDeviceDefinition, NativeInstrumentClock, NativeParameterAutomation,
+    NativeProcessorRuntime, OutputTail, PreparedNativeProcessor, StereoAuxiliaryBlock, StereoFrame,
+    StereoMatrix,
 };
 use hex_lattice_contract::{
-    DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
+    AuxiliaryInput, DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
     ParameterDescriptor, ParameterId, ParameterKind, ParameterPresentation, ParameterValue,
 };
 use std::any::Any;
 
 pub const COMPRESSOR_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.compressor");
+/// Current state version. Supported saved versions (Pulse #3956), each a
+/// little-endian f32 prefix of the next:
+/// - v1 (11 Oct 2026, 24 bytes): no dry/wet; migrates fully wet (1.0), as v1 rendered.
+/// - v2 (18 Oct 2026, 28 bytes): no detector; migrates to Peak, v2's only detector.
+/// - v3 (18 Oct 2026, 32 bytes): adds the detector choice.
 pub const COMPRESSOR_STATE_VERSION: u32 = 3;
 const STATE_BYTES: usize = 32;
 const MIN_SAMPLE_RATE: u32 = 8_000;
@@ -152,6 +164,86 @@ struct CompressorSettings {
     detector: Detector,
 }
 
+const BINDINGS: [crate::parameter_binding::Binding<CompressorSettings>; 8] = [
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[0],
+        hex_lattice_contract::ParameterSemantics {
+            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+            ..crate::parameter_binding::SCALAR_ENVELOPE
+        },
+        |c| c.threshold_db,
+        |c, v| c.threshold_db = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[1],
+        hex_lattice_contract::ParameterSemantics {
+            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+            ..crate::parameter_binding::SCALAR_ENVELOPE
+        },
+        |c| c.ratio,
+        |c, v| c.ratio = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[2],
+        hex_lattice_contract::ParameterSemantics {
+            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+            normalization: hex_lattice_contract::ParameterNormalization::PositiveLogarithmic,
+            ..crate::parameter_binding::SCALAR_ENVELOPE
+        },
+        |c| c.attack_ms,
+        |c, v| c.attack_ms = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[3],
+        hex_lattice_contract::ParameterSemantics {
+            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+            normalization: hex_lattice_contract::ParameterNormalization::PositiveLogarithmic,
+            ..crate::parameter_binding::SCALAR_ENVELOPE
+        },
+        |c| c.release_ms,
+        |c, v| c.release_ms = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[4],
+        hex_lattice_contract::ParameterSemantics {
+            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+            ..crate::parameter_binding::SCALAR_ENVELOPE
+        },
+        |c| c.knee_db,
+        |c, v| c.knee_db = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[5],
+        hex_lattice_contract::ParameterSemantics {
+            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+            ..crate::parameter_binding::SCALAR_ENVELOPE
+        },
+        |c| c.makeup_db,
+        |c, v| c.makeup_db = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[6],
+        hex_lattice_contract::ParameterSemantics {
+            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+            ..crate::parameter_binding::SCALAR_ENVELOPE
+        },
+        |c| c.dry_wet,
+        |c, v| c.dry_wet = v,
+    ),
+    crate::parameter_binding::Binding::choice(
+        DESCRIPTORS[7],
+        hex_lattice_contract::ParameterSemantics {
+            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+            ..crate::parameter_binding::CHOICE_ENVELOPE
+        },
+        |c| c.detector as u32,
+        |c, v| {
+            c.detector = Detector::from_choice(v)?;
+            Ok(())
+        },
+    ),
+];
+
 impl Default for CompressorSettings {
     fn default() -> Self {
         Self {
@@ -171,11 +263,14 @@ fn decode(state: &NativeDeviceState) -> Result<CompressorSettings, DeviceContrac
     if state.type_id() != COMPRESSOR_TYPE_ID {
         return Err(DeviceContractError::WrongDeviceType);
     }
-    if state.state_version() != COMPRESSOR_STATE_VERSION {
-        return Err(DeviceContractError::UnsupportedStateVersion);
-    }
+    let expected = match state.state_version() {
+        1 => 24,
+        2 => 28,
+        COMPRESSOR_STATE_VERSION => STATE_BYTES,
+        _ => return Err(DeviceContractError::UnsupportedStateVersion),
+    };
     let bytes = state.payload();
-    if bytes.len() != STATE_BYTES {
+    if bytes.len() != expected {
         return Err(DeviceContractError::MalformedState);
     }
     let read = |offset| {
@@ -193,12 +288,16 @@ fn decode(state: &NativeDeviceState) -> Result<CompressorSettings, DeviceContrac
         release_ms: read(12),
         knee_db: read(16),
         makeup_db: read(20),
-        dry_wet: read(24),
-        detector: Detector::from_choice(u32::from_le_bytes(
-            bytes[28..32]
-                .try_into()
-                .map_err(|_| DeviceContractError::MalformedState)?,
-        ))?,
+        dry_wet: if expected >= 28 { read(24) } else { 1.0 },
+        detector: if expected == STATE_BYTES {
+            Detector::from_choice(u32::from_le_bytes(
+                bytes[28..32]
+                    .try_into()
+                    .map_err(|_| DeviceContractError::MalformedState)?,
+            ))?
+        } else {
+            Detector::Peak
+        },
     };
     validate(settings)?;
     Ok(settings)
@@ -256,6 +355,9 @@ impl NativeDeviceMetadata for CompressorDefinition {
     fn state_version(&self) -> u32 {
         COMPRESSOR_STATE_VERSION
     }
+    fn auxiliary_input(&self) -> AuxiliaryInput {
+        AuxiliaryInput::Stereo
+    }
     fn descriptors(&self) -> &'static [ParameterDescriptor] {
         DESCRIPTORS
     }
@@ -274,20 +376,7 @@ impl NativeDeviceMetadata for CompressorDefinition {
         id: ParameterId,
     ) -> Result<ParameterValue, DeviceContractError> {
         let settings = decode(state)?;
-        if id == parameter::DETECTOR {
-            return Ok(ParameterValue::Choice(settings.detector as u32));
-        }
-        let value = match id {
-            parameter::THRESHOLD => settings.threshold_db,
-            parameter::RATIO => settings.ratio,
-            parameter::ATTACK => settings.attack_ms,
-            parameter::RELEASE => settings.release_ms,
-            parameter::KNEE => settings.knee_db,
-            parameter::MAKEUP => settings.makeup_db,
-            parameter::DRY_WET => settings.dry_wet,
-            _ => return Err(DeviceContractError::UnknownParameter),
-        };
-        Ok(ParameterValue::Float(value))
+        Ok(crate::parameter_binding::binding(&BINDINGS, id)?.read(&settings))
     }
     fn patch_parameter(
         &self,
@@ -296,36 +385,49 @@ impl NativeDeviceMetadata for CompressorDefinition {
         value: ParameterValue,
     ) -> Result<NativeDeviceState, DeviceContractError> {
         let mut settings = decode(state)?;
-        let descriptor = DESCRIPTORS
-            .iter()
-            .find(|descriptor| descriptor.id == id)
-            .ok_or(DeviceContractError::UnknownParameter)?;
-        descriptor.validate(value)?;
-        if id == parameter::DETECTOR {
-            let ParameterValue::Choice(value) = value else {
-                return Err(DeviceContractError::InvalidParameterValue);
-            };
-            settings.detector = Detector::from_choice(value)?;
-            return encode(settings);
-        }
-        let ParameterValue::Float(value) = value else {
-            return Err(DeviceContractError::InvalidParameterValue);
-        };
-        match id {
-            parameter::THRESHOLD => settings.threshold_db = value,
-            parameter::RATIO => settings.ratio = value,
-            parameter::ATTACK => settings.attack_ms = value,
-            parameter::RELEASE => settings.release_ms = value,
-            parameter::KNEE => settings.knee_db = value,
-            parameter::MAKEUP => settings.makeup_db = value,
-            parameter::DRY_WET => settings.dry_wet = value,
-            _ => return Err(DeviceContractError::UnknownParameter),
-        }
+        crate::parameter_binding::binding(&BINDINGS, id)?.write(&mut settings, value)?;
         encode(settings)
+    }
+    fn parameter_semantics_for_state(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+    ) -> Result<Option<hex_lattice_contract::ParameterSemantics>, DeviceContractError> {
+        decode(state)?;
+        Ok(Some(
+            crate::parameter_binding::binding(&BINDINGS, id)?.semantics,
+        ))
     }
 }
 
 impl NativeDeviceDefinition for CompressorDefinition {
+    fn supports_parameter_automation(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+    ) -> Result<bool, DeviceContractError> {
+        decode(state)?;
+        Ok(crate::parameter_binding::binding(&BINDINGS, id)
+            .is_ok_and(|b| b.declares_arrangement_automation()))
+    }
+    fn prepare_automated_runtime_instance(
+        &self,
+        _identity: hex_lattice::ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+        parameters: &[ParameterId],
+    ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
+        Ok(hex_lattice::PreparedRuntimeDevice {
+            matrix: StereoMatrix::identity(),
+            processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(
+                std::sync::Arc::new(PreparedCompressor::new(
+                    state,
+                    context.sample_rate,
+                    parameters,
+                )?),
+            )),
+        })
+    }
     fn prepare_matrix(
         &self,
         state: &NativeDeviceState,
@@ -345,28 +447,17 @@ impl NativeDeviceDefinition for CompressorDefinition {
         state: &NativeDeviceState,
         context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
-        let sample_rate = context.sample_rate;
-        if !(MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&sample_rate) {
-            return Err(DeviceContractError::InvalidParameterValue);
-        }
-        let settings = decode(state)?;
-        let samples_per_ms = f64::from(sample_rate) / 1_000.0;
-        let attack_alpha = (-1.0 / (f64::from(settings.attack_ms) * samples_per_ms)).exp();
-        let release_alpha = (-1.0 / (f64::from(settings.release_ms) * samples_per_ms)).exp();
-        let gain_alpha = (-1.0 / (GAIN_SMOOTH_MS * samples_per_ms)).exp();
-        let rms_alpha = (-1.0 / (RMS_INTEGRATION_SECONDS * f64::from(sample_rate))).exp();
-        Ok(Some(Box::new(PreparedCompressor {
-            settings,
-            sample_rate,
-            attack_alpha,
-            release_alpha,
-            gain_alpha,
-            rms_alpha,
-        })))
+        Ok(Some(Box::new(PreparedCompressor::new(
+            state,
+            context.sample_rate,
+            &[],
+        )?)))
     }
 }
 
+#[derive(Clone, Copy)]
 struct PreparedCompressor {
+    admitted: [bool; 8],
     settings: CompressorSettings,
     sample_rate: u32,
     attack_alpha: f64,
@@ -376,6 +467,18 @@ struct PreparedCompressor {
 }
 
 impl PreparedNativeProcessor for PreparedCompressor {
+    fn supports_parameter_automation(&self, id: ParameterId) -> bool {
+        self.supports(id)
+    }
+    fn parameter_automation_descriptor(&self, id: ParameterId) -> Option<ParameterDescriptor> {
+        crate::parameter_binding::binding(&BINDINGS, id)
+            .ok()
+            .filter(|_| self.supports(id))
+            .map(|b| b.descriptor)
+    }
+    fn supports_smoothed_bypass(&self) -> bool {
+        true
+    }
     fn runtime_version(&self) -> u32 {
         1
     }
@@ -384,6 +487,8 @@ impl PreparedNativeProcessor for PreparedCompressor {
     }
     fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
         Box::new(CompressorRuntime {
+            base: *self,
+            controls: crate::parameter_binding::Controls::new(self.settings, self.admitted),
             settings: self.settings,
             sample_rate: self.sample_rate,
             attack_alpha: self.attack_alpha,
@@ -408,6 +513,8 @@ impl PreparedNativeProcessor for PreparedCompressor {
 }
 
 struct CompressorRuntime {
+    base: PreparedCompressor,
+    controls: crate::parameter_binding::Controls<CompressorSettings, 8>,
     settings: CompressorSettings,
     sample_rate: u32,
     attack_alpha: f64,
@@ -434,15 +541,16 @@ impl CompressorRuntime {
         self.mix_remaining = 0;
     }
 
-    fn process_frame(&mut self, frame: &mut StereoFrame) {
+    fn process_frame(&mut self, frame: &mut StereoFrame, key: StereoFrame, bypassed: bool) {
         let left = f64::from(frame[0]);
         let right = f64::from(frame[1]);
         if !left.is_finite() || !right.is_finite() {
             return;
         }
-        let peak = left.abs().max(right.abs());
+        let [key_left, key_right] = key.map(f64::from);
+        let peak = key_left.abs().max(key_right.abs());
         // Independent mean-square histories stay warm even while Peak is selected.
-        for (energy, input) in self.energy.iter_mut().zip([left, right]) {
+        for (energy, input) in self.energy.iter_mut().zip([key_left, key_right]) {
             *energy = self.rms_alpha * *energy + (1.0 - self.rms_alpha) * input * input;
             if *energy < RMS_ENERGY_FLOOR {
                 *energy = 0.0;
@@ -486,7 +594,6 @@ impl CompressorRuntime {
         );
         let target_gain_db = reduction_db + f64::from(self.settings.makeup_db);
         self.gain_db = self.gain_alpha * self.gain_db + (1.0 - self.gain_alpha) * target_gain_db;
-        let gain = 10.0_f64.powf(self.gain_db / 20.0);
         // A finite 5 ms ramp reaches exact endpoints, independently of block
         // partitions. Detector/gain history advances even at fully dry output.
         if self.mix_remaining > 0 {
@@ -497,11 +604,15 @@ impl CompressorRuntime {
                 self.mix = f64::from(self.settings.dry_wet);
             }
         }
+        if bypassed || self.mix == 0.0 {
+            return;
+        }
+        let gain = 10.0_f64.powf(self.gain_db / 20.0);
         if self.mix == 1.0 {
             // Preserve the original fully-wet operation order and rounding.
             frame[0] = (left * gain) as f32;
             frame[1] = (right * gain) as f32;
-        } else if self.mix != 0.0 {
+        } else {
             frame[0] = (left * (1.0 - self.mix) + left * gain * self.mix) as f32;
             frame[1] = (right * (1.0 - self.mix) + right * gain * self.mix) as f32;
         }
@@ -509,13 +620,56 @@ impl CompressorRuntime {
 }
 
 impl NativeProcessorRuntime for CompressorRuntime {
+    fn supports_parameter_automation(&self, id: ParameterId) -> bool {
+        self.base.supports(id)
+    }
+    fn process_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _clock: Option<&dyn NativeInstrumentClock>,
+        values: &dyn NativeParameterAutomation,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        self.process_automated(frames, values, false)
+    }
+    fn process_bypassed_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _clock: Option<&dyn NativeInstrumentClock>,
+        values: &dyn NativeParameterAutomation,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        self.process_automated(frames, values, true)
+    }
+    fn process_block_with_auxiliary(
+        &mut self,
+        block: StereoAuxiliaryBlock<'_>,
+        _clock: Option<&dyn NativeInstrumentClock>,
+        automation: Option<&dyn NativeParameterAutomation>,
+        bypassed: bool,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        let mut resolved = automation
+            .map(|values| self.controls.resolve(&BINDINGS, values))
+            .transpose()?;
+        let (main, key) = block.into_parts();
+        for (offset, (frame, key)) in main.iter_mut().zip(key).enumerate() {
+            if let (Some(values), Some(resolved)) = (automation, resolved.as_mut()) {
+                self.apply_values(values, resolved, offset)?;
+            }
+            let key = key.map(|sample| if sample.is_finite() { sample } else { 0.0 });
+            self.process_frame(frame, key, bypassed);
+        }
+        Ok(())
+    }
+
     fn process_block(
         &mut self,
         frames: &mut [StereoFrame],
         _resources: &dyn hex_lattice::DeviceResources,
     ) {
         for frame in frames {
-            self.process_frame(frame);
+            self.process_frame(frame, *frame, false);
         }
     }
     fn process_bypassed_block(
@@ -524,12 +678,14 @@ impl NativeProcessorRuntime for CompressorRuntime {
         _resources: &dyn hex_lattice::DeviceResources,
     ) {
         for frame in frames {
-            let input = *frame;
-            self.process_frame(frame);
-            *frame = input;
+            self.process_frame(frame, *frame, true);
         }
     }
     fn reset(&mut self) {
+        self.controls.reset();
+        self.settings = self.base.settings;
+        self.attack_alpha = self.base.attack_alpha;
+        self.release_alpha = self.base.release_alpha;
         self.reset_history();
     }
     fn is_quiescent(&self) -> bool {
@@ -547,6 +703,12 @@ impl NativeProcessorRuntime for CompressorRuntime {
             .downcast_ref::<Self>()
             .filter(|previous| self.sample_rate == previous.sample_rate)
         {
+            if self.base.admitted.iter().any(|&v| v) && previous.base.admitted.iter().any(|&v| v) {
+                self.controls.inherit(&previous.controls);
+                self.settings = previous.settings;
+                self.attack_alpha = previous.attack_alpha;
+                self.release_alpha = previous.release_alpha;
+            }
             self.energy = previous.energy;
             self.detector_mix = previous.detector_mix;
             self.detector_remaining = if self.settings.detector == previous.settings.detector {

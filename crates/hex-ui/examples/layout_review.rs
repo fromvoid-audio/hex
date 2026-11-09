@@ -14,51 +14,46 @@ mod output_meter;
 #[allow(dead_code)]
 mod theme;
 
+#[path = "../src/editor/musical_time.rs"]
+#[allow(dead_code)] // The editor also consumes ruler, band and input-grid queries.
+mod musical_time;
+#[path = "../src/editor/pending_edit.rs"]
+mod pending_edit;
+#[path = "../src/section_appearance.rs"]
+mod section_appearance;
+#[path = "../src/section_hit.rs"]
+mod section_hit;
+#[path = "../src/section_input.rs"]
+mod section_input;
+#[path = "../src/section_reorder.rs"]
+#[allow(dead_code)] // Main also consumes the tempo preview.
+mod section_reorder;
+#[path = "../src/section_resize.rs"]
+#[allow(dead_code)] // Main also consumes tempo and marker-only variants.
+mod section_resize;
+#[path = "../src/section_selection.rs"]
+mod section_selection;
+#[path = "../src/section_surface.rs"]
+mod section_surface;
+#[path = "../src/editor/seek.rs"]
+#[allow(dead_code)] // The editor also uses transport seek acknowledgement.
+mod seek;
+#[path = "../src/editor/signed_frame_viewport.rs"]
+#[allow(dead_code)] // The shared grid also supports the event editor's signed camera.
+mod signed_frame_viewport;
+#[path = "../src/editor/viewport.rs"]
+#[allow(dead_code)] // The editor also uses zoom and scrolling operations.
+mod viewport;
+
 #[path = "layout_review/sandbox.rs"]
 mod sandbox;
 
-use gpui::{App, AppContext, Application, Bounds, WindowBounds, WindowOptions, px, size};
+#[path = "../src/assets.rs"]
+#[allow(dead_code)]
+mod assets;
+#[path = "layout_review/launch.rs"]
+mod launch;
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
-        hex_widgets::bind_numeric_control_keys(cx);
-        hex_widgets::bind_text_input_keys(cx);
-        hex_widgets::bind_response_graph_keys(cx);
-        if let Err(error) = theme::load_fonts(cx) {
-            eprintln!("{error}");
-            cx.quit();
-            return;
-        }
-        cx.on_window_closed(|cx| {
-            if cx.windows().is_empty() {
-                cx.quit();
-            }
-        })
-        .detach();
-        let result = cx.open_window(
-            WindowOptions {
-                titlebar: Some(gpui::TitlebarOptions {
-                    title: Some(theme::text("hex · native widget sandbox")),
-                    ..Default::default()
-                }),
-                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                    None,
-                    size(px(1040.0), px(720.0)),
-                    cx,
-                ))),
-                window_min_size: Some(size(px(760.0), px(480.0))),
-                ..Default::default()
-            },
-            |window, cx| {
-                let view = cx.new(sandbox::Sandbox::new);
-                view.update(cx, |view, cx| view.focus_first(window, cx));
-                view
-            },
-        );
-        if let Err(error) = result {
-            eprintln!("could not open layout review: {error}");
-            cx.quit();
-        }
-        cx.activate(true);
-    });
+    launch::run();
 }

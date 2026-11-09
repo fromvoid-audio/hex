@@ -91,28 +91,28 @@ impl ComputerKeyboard {
             return false;
         }
         if let Some(index) = NOTE_KEYS.iter().position(|candidate| *candidate == key) {
-            if !is_held && self.physical[index].is_none() {
-                if let Some(pitch) = self
+            if !is_held
+                && self.physical[index].is_none()
+                && let Some(pitch) = self
                     .base_pitch
                     .checked_add(index as u8)
                     .filter(|p| *p <= 127)
-                {
-                    let Some(token) = self
-                        .next_token
-                        .checked_add(1)
-                        .filter(|token| *token <= u64::MAX >> 16)
-                    else {
-                        return true;
-                    };
-                    self.next_token = token;
-                    self.tokens[index] = token;
-                    let held = HeldKey {
-                        pitch,
-                        velocity: self.velocity,
-                    };
-                    self.held[index] = Some(held);
-                    self.physical[index] = Some(held);
-                }
+            {
+                let Some(token) = self
+                    .next_token
+                    .checked_add(1)
+                    .filter(|token| *token <= u64::MAX >> 16)
+                else {
+                    return true;
+                };
+                self.next_token = token;
+                self.tokens[index] = token;
+                let held = HeldKey {
+                    pitch,
+                    velocity: self.velocity,
+                };
+                self.held[index] = Some(held);
+                self.physical[index] = Some(held);
             }
             return true;
         }
@@ -498,21 +498,21 @@ impl super::EditorView {
                 cx.stop_propagation();
                 return;
             }
-            if self.computer_keyboard.suspended && !event.is_held && retain_input {
-                if let Some(input) = self
+            if self.computer_keyboard.suspended
+                && !event.is_held
+                && retain_input
+                && let Some(input) = self
                     .computer_keyboard
                     .input
                     .as_ref()
                     .filter(|input| input.is_output_bound())
-                {
-                    if let Err(error) = input.ensure_output_activation_on_control() {
-                        self.error = Some(error.to_string().into());
-                        self.cancel_computer_keyboard();
-                        self.computer_keyboard.suspended = true;
-                        cx.stop_propagation();
-                        return;
-                    }
-                }
+                && let Err(error) = input.ensure_output_activation_on_control()
+            {
+                self.error = Some(error.to_string().into());
+                self.cancel_computer_keyboard();
+                self.computer_keyboard.suspended = true;
+                cx.stop_propagation();
+                return;
             }
             self.computer_keyboard.suspended = false;
             self.tick_computer_keyboard();
@@ -753,15 +753,12 @@ mod tests {
     ) {
         let _output_fixture_guard = crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
         use hex_project::{Command, Created, Editor, Project};
-        use std::{
-            sync::Arc,
-            time::{Duration, Instant},
-        };
+        use std::{sync::Arc, time::Instant};
         fn open() -> (
             hex_audio::WorkerPreparedOutput,
             hex_audio::worker_fixture::HeadlessBackend,
         ) {
-            let end = Instant::now() + Duration::from_secs(5);
+            let end = crate::test_wait::hang_deadline();
             loop {
                 match hex_audio::worker_fixture::open(48_000) {
                     Ok((mut output, backend)) => {

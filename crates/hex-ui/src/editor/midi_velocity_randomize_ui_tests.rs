@@ -3,10 +3,7 @@ use super::super::midi_canvas::creation_tests::{fixture, pump};
 use super::*;
 use gpui::{Modifiers, MouseButton, TestAppContext, point, px};
 use hex_project::MidiNoteInsert;
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::sync::Arc;
 
 fn saved_energy(
     path: &std::path::Path,
@@ -24,13 +21,16 @@ fn saved_energy(
         }
     }
     fn next(service: &hex_session::service::Service) -> hex_session::service::Event {
-        let until = Instant::now() + Duration::from_secs(5);
+        let until = crate::test_wait::hang_deadline();
         loop {
             if let Ok(event) = service.try_event() {
                 assert!(event.error.is_none(), "{:?}", event.error);
                 return event;
             }
-            assert!(Instant::now() < until);
+            assert!(
+                std::time::Instant::now() < until,
+                "next: hang guard expired"
+            );
             std::thread::yield_now();
         }
     }

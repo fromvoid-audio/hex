@@ -1,6 +1,7 @@
 //! Clip-owned, source-beat volume curves. Note/source identity is independent of
 //! this immutable control metadata; replacing a curve must not restart a voice.
-//! Rendering projects these points through the existing source/tempo contracts.
+//! A separate clip scalar multiplies the curve without changing its points.
+//! Rendering projects these values through the existing source/tempo contracts.
 use crate::{BeatTime, Invalid, MidiSourcePlayback};
 use std::sync::Arc;
 
@@ -49,13 +50,28 @@ impl MidiClipVolumePoint {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MidiClipVolume {
     points: Option<Arc<[MidiClipVolumePoint]>>,
+    clip_gain: crate::ClipGain,
 }
 impl MidiClipVolume {
     pub fn new(points: Vec<MidiClipVolumePoint>, source_length: BeatTime) -> Result<Self, Invalid> {
         Self::validate_points(&points, source_length)?;
         Ok(Self {
             points: (!points.is_empty()).then(|| points.into()),
+            clip_gain: crate::ClipGain::UNITY,
         })
+    }
+    /// Independent clip amplitude; this never changes authored curve points.
+    pub fn clip_gain(&self) -> crate::ClipGain {
+        self.clip_gain
+    }
+    /// Replaces the clip amplitude without mutating the source-beat curve.
+    pub fn with_clip_gain(mut self, gain: crate::ClipGain) -> Self {
+        self.clip_gain = gain;
+        self
+    }
+    /// True only when neither the clip scalar nor its curve changes audio.
+    pub fn is_unity(&self) -> bool {
+        self.clip_gain == crate::ClipGain::UNITY && self.points.is_none()
     }
     fn validate_points(
         points: &[MidiClipVolumePoint],
@@ -85,6 +101,9 @@ impl MidiClipVolume {
     }
     /// Identity for prepared-cache invalidation; note identity remains separate.
     pub fn same_revision(&self, other: &Self) -> bool {
+        if self.clip_gain != other.clip_gain {
+            return false;
+        }
         match (&self.points, &other.points) {
             (None, None) => true,
             (Some(a), Some(b)) => Arc::ptr_eq(a, b),
@@ -152,7 +171,7 @@ impl MidiClipVolume {
             return Err(Invalid("clip volume interval exceeds finite playback"));
         }
         if self.points().is_empty() {
-            return Ok(Self::default());
+            return Ok(Self::default().with_clip_gain(self.clip_gain));
         }
         if let Some(forward) = playback.unreversed() {
             // Enumerate the same bounded forward interval once, then reflect
@@ -187,13 +206,14 @@ impl MidiClipVolume {
         boundaries.push(start.raw());
         boundaries.push(end.raw());
         let mut add = |raw| -> Result<(), Invalid> {
-            if start.raw() < raw && raw < end.raw() {
-                if let Err(index) = boundaries.binary_search(&raw) {
-                    if boundaries.len() == MAX_MIDI_VOLUME_POINTS_PER_CLIP {
-                        return Err(Invalid("materialized clip volume point limit reached"));
-                    }
-                    boundaries.insert(index, raw);
+            if start.raw() < raw
+                && raw < end.raw()
+                && let Err(index) = boundaries.binary_search(&raw)
+            {
+                if boundaries.len() == MAX_MIDI_VOLUME_POINTS_PER_CLIP {
+                    return Err(Invalid("materialized clip volume point limit reached"));
                 }
+                boundaries.insert(index, raw);
             }
             Ok(())
         };
@@ -277,7 +297,7 @@ impl MidiClipVolume {
                 value,
             });
         }
-        Self::new(points, BeatTime::from_raw(length))
+        Self::new(points, BeatTime::from_raw(length)).map(|v| v.with_clip_gain(self.clip_gain))
     }
     fn gain_at_elapsed(
         &self,
@@ -290,7 +310,7 @@ impl MidiClipVolume {
             if let Some((start, end)) = playback.loop_range() {
                 let first = end.raw() - playback.source_start().raw();
                 if absolute.is_some_and(|absolute| {
-                    absolute >= first && (absolute - first) % (end.raw() - start.raw()) == 0
+                    absolute >= first && (absolute - first).is_multiple_of(end.raw() - start.raw())
                 }) {
                     return self.gain_before(end);
                 }
@@ -327,7 +347,7 @@ impl MidiClipVolume {
             return Err(Invalid("clip volume range exceeds source length"));
         }
         if self.points().is_empty() {
-            return Ok(Self::default());
+            return Ok(Self::default().with_clip_gain(self.clip_gain));
         }
         let mut points = Vec::new();
         points
@@ -376,7 +396,7 @@ impl MidiClipVolume {
         {
             push(point)?;
         }
-        Self::new(points, source_length)
+        Self::new(points, source_length).map(|v| v.with_clip_gain(self.clip_gain))
     }
     /// Prepending silence moves authored source coordinates without changing
     /// their values or sharing mutable storage with another clip.
@@ -401,7 +421,7 @@ impl MidiClipVolume {
                 ..*point
             });
         }
-        Self::new(points, length)
+        Self::new(points, length).map(|v| v.with_clip_gain(self.clip_gain))
     }
 }
 
@@ -438,6 +458,32 @@ impl crate::Project {
         Ok(())
     }
     pub(crate) fn replace_midi_clip_volume(
+        &mut self,
+        clip: crate::ClipId,
+        volume: MidiClipVolume,
+    ) -> Result<crate::Created, Invalid> {
+        let gain = self
+            .midi_clip_volume(clip)
+            .ok_or(Invalid("midi clip no longer exists"))?
+            .clip_gain();
+        let volume = volume.with_clip_gain(gain);
+        self.replace_midi_clip_volume_and_gain(clip, volume)
+    }
+
+    pub(crate) fn set_midi_clip_gain(
+        &mut self,
+        clip: crate::ClipId,
+        gain: crate::ClipGain,
+    ) -> Result<crate::Created, Invalid> {
+        let volume = self
+            .midi_clip_volume(clip)
+            .ok_or(Invalid("midi clip no longer exists"))?
+            .clone()
+            .with_clip_gain(gain);
+        self.replace_midi_clip_volume_and_gain(clip, volume)
+    }
+
+    fn replace_midi_clip_volume_and_gain(
         &mut self,
         clip: crate::ClipId,
         volume: MidiClipVolume,
@@ -481,6 +527,40 @@ mod tests {
             incoming: MidiClipGain::new(incoming).unwrap(),
             value: MidiClipGain::new(value).unwrap(),
         }
+    }
+    #[test]
+    fn scalar_survives_curve_projection_and_empty_curve_operations() {
+        let gain = crate::ClipGain::new(-12_000).unwrap();
+        let length = BeatTime::from_raw(8);
+        let curve = MidiClipVolume::new(vec![point(0, 0.0, 0.0), point(8, 1.0, 1.0)], length)
+            .unwrap()
+            .with_clip_gain(gain);
+        let shifted = curve
+            .shifted(BeatTime::from_raw(2), BeatTime::from_raw(10))
+            .unwrap();
+        assert_eq!(shifted.clip_gain(), gain);
+        let copied = curve
+            .duplicated_range(BeatTime::from_raw(2), BeatTime::from_raw(4), length)
+            .unwrap();
+        assert_eq!(copied.clip_gain(), gain);
+        let empty = MidiClipVolume::default().with_clip_gain(gain);
+        let playback = MidiSourcePlayback::one_shot(length).unwrap();
+        assert_eq!(
+            empty
+                .materialized(playback, BeatTime::ZERO, length)
+                .unwrap()
+                .clip_gain(),
+            gain
+        );
+        assert_eq!(
+            empty
+                .duplicated_range(BeatTime::from_raw(2), BeatTime::from_raw(4), length)
+                .unwrap()
+                .clip_gain(),
+            gain
+        );
+        assert!(!empty.is_unity());
+        assert!(!empty.same_revision(&MidiClipVolume::default()));
     }
     #[test]
     fn fractional_ramp_and_jump_keep_both_boundary_limits_and_shared_copy() {

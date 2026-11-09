@@ -29,7 +29,24 @@ impl Custody {
         definitions: Vec<SourceDefinition>,
         readiness: hex_stream::StreamReadinessReservation,
     ) -> Result<AudioCandidateDomainToken, AudioCandidateDomainStartError> {
-        self.begin_between(config, definitions, readiness, || {})
+        self.begin_between(
+            config,
+            definitions,
+            readiness,
+            || {},
+            #[cfg(feature = "stream-test-support")]
+            None,
+        )
+    }
+    #[cfg(feature = "stream-test-support")]
+    pub(in crate::candidate_custody) fn begin_preparation_with_gate(
+        &self,
+        config: StreamConfig,
+        definitions: Vec<SourceDefinition>,
+        readiness: hex_stream::StreamReadinessReservation,
+        gate: hex_stream::test_support::PageGate,
+    ) -> Result<AudioCandidateDomainToken, AudioCandidateDomainStartError> {
+        self.begin_between(config, definitions, readiness, || {}, Some(gate))
     }
     fn begin_between(
         &self,
@@ -37,6 +54,7 @@ impl Custody {
         definitions: Vec<SourceDefinition>,
         readiness: hex_stream::StreamReadinessReservation,
         after_reservation: impl FnOnce(),
+        #[cfg(feature = "stream-test-support")] gate: Option<hex_stream::test_support::PageGate>,
     ) -> Result<AudioCandidateDomainToken, AudioCandidateDomainStartError> {
         let bound = PendingStreamDomain::preparation_bound(
             config,
@@ -145,15 +163,33 @@ impl Custody {
         // The reserved slot cannot be removed/reused while Starting. No Root
         // lock spans allocation/spawn, and no live-pair Err exists after spawn.
         after_reservation();
+        let allowance = StreamPreparationAllowance {
+            max_retained_data_bytes: bound.retained_data_bytes,
+            max_construction_peak_data_bytes: bound.construction_peak_data_bytes,
+            max_shared_handle_bound: bound.shared_handle_bound,
+        };
+        #[cfg(feature = "stream-test-support")]
+        let result = match gate {
+            Some(gate) => PendingStreamDomain::try_start_with_page_gate_on_control(
+                config,
+                definitions,
+                Some(readiness),
+                allowance,
+                gate,
+            ),
+            None => PendingStreamDomain::try_start_on_control(
+                config,
+                definitions,
+                Some(readiness),
+                allowance,
+            ),
+        };
+        #[cfg(not(feature = "stream-test-support"))]
         let result = PendingStreamDomain::try_start_on_control(
             config,
             definitions,
             Some(readiness),
-            StreamPreparationAllowance {
-                max_retained_data_bytes: bound.retained_data_bytes,
-                max_construction_peak_data_bytes: bound.construction_peak_data_bytes,
-                max_shared_handle_bound: bound.shared_handle_bound,
-            },
+            allowance,
         );
         let mut bank = lock(&self.bank);
         let closing = bank.closing;
@@ -404,6 +440,8 @@ mod tests {
                     assert_eq!(bank.domains[0].phase, Phase::Reserved);
                     assert!(bank.domains[0].preparing.is_none());
                 },
+                #[cfg(feature = "stream-test-support")]
+                None,
             )
             .unwrap();
         assert_eq!(

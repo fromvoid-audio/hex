@@ -13,9 +13,13 @@ impl State {
         // running. Preserve that instance by observing the call's real terminal
         // before setProcessing(false). Existing SDK deadlines/cancellation bound
         // this drain; the sleep is only the existing control polling cadence.
-        while self.capture.is_in_flight() {
-            self.advance_capture(signal)?;
+        while self.capture.is_in_flight() || self.controller.is_in_flight() {
             if self.capture.is_in_flight() {
+                self.advance_capture(signal)?;
+            } else {
+                self.advance_controller(signal)?;
+            }
+            if self.capture.is_in_flight() || self.controller.is_in_flight() {
                 thread::sleep(Duration::from_millis(1));
             }
         }
@@ -24,7 +28,7 @@ impl State {
 }
 
 impl NativeWorker {
-    pub(super) fn prepare_stopped_capture(&mut self) -> Result<(), &'static str> {
+    pub(in crate::plugin_worker) fn prepare_stopped_capture(&mut self) -> Result<(), &'static str> {
         {
             let slot = self
                 .reaper
@@ -50,7 +54,9 @@ impl NativeWorker {
         // Drain its original native operation before discarding late data. Do
         // not strand the SDK request or reuse it as the new Save operation.
         if slot.phase == Phase::Complete && slot.mode == Mode::Live {
-            slot.phase = Phase::Idle;
+            let obsolete = slot.take_terminal();
+            drop(slot);
+            drop(obsolete);
         }
         Ok(())
     }

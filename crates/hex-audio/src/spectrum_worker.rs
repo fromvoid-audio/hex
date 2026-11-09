@@ -5,7 +5,7 @@
 //! [`SpectrumCapture::submit`] path copies at most 256 frames into fixed storage
 //! and attempts one nonblocking SPSC push.
 
-use crate::spectrum::{FFT_SIZE, SpectrumFrame, SpectrumKernel};
+use crate::spectrum::{SpectrumBallistics, SpectrumFrame, SpectrumKernel, SpectrumWindow};
 use crate::spectrum_target::{MAX_SPECTRUM_TARGETS, SpectrumTargets};
 mod native;
 pub(crate) use native::constructor_storage_quote;
@@ -37,7 +37,6 @@ pub const MAX_CAPTURE_FRAMES: usize = 256;
 pub const MAX_BATCHES_PER_POLL: usize = CAPTURE_QUEUE_CAPACITY;
 pub const ANALYSIS_INTERVAL: Duration = Duration::from_nanos(33_333_334);
 pub const DISPLAY_STALE_AFTER: Duration = Duration::from_millis(100);
-const DECAY_DB_PER_SECOND: f32 = 48.0;
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const RESULT_QUEUE_CAPACITY: usize = MAX_SPECTRUM_TARGETS;
@@ -269,6 +268,21 @@ impl SpectrumReader {
         now: Instant,
         targets: &SpectrumTargets,
     ) -> Vec<PublishedSpectra> {
+        let mut pairs = Vec::new();
+        self.try_latest_pairs_into(now, targets, &mut pairs);
+        pairs
+    }
+
+    /// Like [`Self::try_latest_pairs_at`], but replaces the contents of a
+    /// caller-retained buffer. Once `out` has capacity for every target
+    /// ([`MAX_SPECTRUM_TARGETS`]), a call allocates nothing.
+    pub fn try_latest_pairs_into(
+        &mut self,
+        now: Instant,
+        targets: &SpectrumTargets,
+        out: &mut Vec<PublishedSpectra>,
+    ) {
+        out.clear();
         for _ in 0..RESULT_QUEUE_CAPACITY {
             let result = match self.results.try_recv() {
                 Ok(result) => result,
@@ -294,7 +308,7 @@ impl SpectrumReader {
                 *result = None;
             }
         }
-        self.latest_targets.iter().flatten().cloned().collect()
+        out.extend(self.latest_targets.iter().flatten().cloned());
     }
 
     /// Return the newest result, clearing cached display data after 100 ms.
@@ -435,9 +449,6 @@ fn spawn_worker(
     fixed_native: bool,
     entry: Option<fn()>,
 ) -> Result<(SpectrumCapture, SpectrumReader, SpectrumReaper), SpectrumWorkerError> {
-    let kernel = SpectrumKernel::new(initial_stamp.sample_rate_hz)
-        .map_err(|_| SpectrumWorkerError::InvalidSampleRate(initial_stamp.sample_rate_hz))?;
-
     let count = if fixed_native {
         MAX_SPECTRUM_TARGETS
     } else {
@@ -447,11 +458,8 @@ fn spawn_worker(
     cores
         .try_reserve_exact(count)
         .map_err(|_| SpectrumWorkerError::Allocation)?;
-    cores.push(SpectrumCore::new(kernel, initial_stamp.sample_rate_hz));
-    for _ in 1..count {
-        let kernel = SpectrumKernel::new(initial_stamp.sample_rate_hz)
-            .map_err(|_| SpectrumWorkerError::InvalidSampleRate(initial_stamp.sample_rate_hz))?;
-        cores.push(SpectrumCore::new(kernel, initial_stamp.sample_rate_hz));
+    for _ in 0..count {
+        cores.push(SpectrumCore::for_rate(initial_stamp.sample_rate_hz)?);
     }
     let cores = cores.into_boxed_slice();
     let (project_capture, project_reader, project_worker) = if fixed_native {
@@ -578,43 +586,49 @@ struct SpectrumCore {
     context: Option<StreamContext>,
     kernel: Option<SpectrumKernel>,
     kernel_rate: Option<u32>,
-    rolling: Box<[[f32; 2]; FFT_SIZE]>,
-    ordered: Box<[[f32; 2]; FFT_SIZE]>,
-    input_rolling: Box<[[f32; 2]; FFT_SIZE]>,
-    input_ordered: Box<[[f32; 2]; FFT_SIZE]>,
-    write_index: usize,
-    filled: usize,
+    output_window: SpectrumWindow,
+    input_window: SpectrumWindow,
     last_sequence: Option<u64>,
     latest_stamp: Option<SpectrumStamp>,
     captured_at: Option<Instant>,
     last_analysis_at: Option<Instant>,
-    output_envelope: Option<SpectrumFrame>,
-    input_envelope: Option<SpectrumFrame>,
+    output_ballistics: SpectrumBallistics,
+    input_ballistics: SpectrumBallistics,
     envelope_at: Option<Instant>,
     dirty_since_analysis: bool,
 }
 
 impl SpectrumCore {
-    fn new(kernel: SpectrumKernel, sample_rate_hz: u32) -> Self {
+    fn new(
+        kernel: SpectrumKernel,
+        output_window: SpectrumWindow,
+        input_window: SpectrumWindow,
+    ) -> Self {
         Self {
             context: None,
+            kernel_rate: Some(kernel.sample_rate_hz()),
             kernel: Some(kernel),
-            kernel_rate: Some(sample_rate_hz),
-            rolling: Box::new([[0.0; 2]; FFT_SIZE]),
-            ordered: Box::new([[0.0; 2]; FFT_SIZE]),
-            input_rolling: Box::new([[0.0; 2]; FFT_SIZE]),
-            input_ordered: Box::new([[0.0; 2]; FFT_SIZE]),
-            write_index: 0,
-            filled: 0,
+            output_window,
+            input_window,
             last_sequence: None,
             latest_stamp: None,
             captured_at: None,
             last_analysis_at: None,
-            output_envelope: None,
-            input_envelope: None,
+            output_ballistics: SpectrumBallistics::default(),
+            input_ballistics: SpectrumBallistics::default(),
             envelope_at: None,
             dirty_since_analysis: false,
         }
+    }
+
+    /// Fallible control-side construction of one core and its fixed windows.
+    fn for_rate(sample_rate_hz: u32) -> Result<Self, SpectrumWorkerError> {
+        let invalid = |_| SpectrumWorkerError::InvalidSampleRate(sample_rate_hz);
+        Ok(Self::new(
+            SpectrumKernel::new(sample_rate_hz).map_err(invalid)?,
+            SpectrumWindow::new(sample_rate_hz).map_err(invalid)?,
+            SpectrumWindow::new(sample_rate_hz).map_err(invalid)?,
+        ))
     }
 
     fn ingest(&mut self, batch: CaptureBatch) -> IngestOutcome {
@@ -654,8 +668,13 @@ impl SpectrumCore {
         }
         if needs_kernel {
             self.clear_window();
-            self.kernel = SpectrumKernel::new(batch.stamp.sample_rate_hz).ok();
-            self.kernel_rate = self.kernel.as_ref().map(|_| batch.stamp.sample_rate_hz);
+            // Rate changes are rare control events; windows keep their storage.
+            let rate = batch.stamp.sample_rate_hz;
+            self.kernel = SpectrumKernel::new(rate).ok().filter(|_| {
+                self.output_window.reconfigure(rate).is_ok()
+                    && self.input_window.reconfigure(rate).is_ok()
+            });
+            self.kernel_rate = self.kernel.as_ref().map(|_| rate);
         }
         if self.kernel.is_none() {
             self.context = None;
@@ -667,13 +686,10 @@ impl SpectrumCore {
         self.last_sequence = Some(batch.sequence);
         self.latest_stamp = Some(batch.stamp);
         self.captured_at = Some(batch.captured_start);
-        for (offset, frame) in batch.samples[..frame_count].iter().enumerate() {
-            self.rolling[self.write_index] = *frame;
-            if batch.paired {
-                self.input_rolling[self.write_index] = batch.input_samples[offset];
-            }
-            self.write_index = (self.write_index + 1) % FFT_SIZE;
-            self.filled = (self.filled + 1).min(FFT_SIZE);
+        // Finiteness was checked above, so neither push can refuse.
+        let _ = self.output_window.push(&batch.samples[..frame_count]);
+        if batch.paired {
+            let _ = self.input_window.push(&batch.input_samples[..frame_count]);
         }
         self.dirty_since_analysis = true;
 
@@ -690,7 +706,7 @@ impl SpectrumCore {
     }
 
     fn analyze_pair_if_due(&mut self, now: Instant) -> Option<PublishedSpectra> {
-        if self.filled < FFT_SIZE
+        if !self.output_window.is_ready()
             || !self.dirty_since_analysis
             || self
                 .last_analysis_at
@@ -698,31 +714,22 @@ impl SpectrumCore {
         {
             return None;
         }
-        let oldest = self.write_index;
-        for (offset, destination) in self.ordered.iter_mut().enumerate() {
-            *destination = self.rolling[(oldest + offset) % FFT_SIZE];
-            self.input_ordered[offset] = self.input_rolling[(oldest + offset) % FFT_SIZE];
-        }
-        let mut frame = self.kernel.as_mut()?.analyze(&self.ordered[..]).ok()?;
+        let kernel = self.kernel.as_mut()?;
+        let mut frame = kernel.analyze(&self.output_window).ok()?;
         let mut input = if self.context?.paired {
-            Some(
-                self.kernel
-                    .as_mut()?
-                    .analyze(&self.input_ordered[..])
-                    .ok()?,
-            )
+            Some(kernel.analyze(&self.input_window).ok()?)
         } else {
             None
         };
-        let decay = self.envelope_at.map_or(0.0, |previous| {
-            now.saturating_duration_since(previous).as_secs_f32() * DECAY_DB_PER_SECOND
+        // Ballistics advance by actual elapsed analysis time, so the display
+        // is independent of worker cadence. Captures still own freshness.
+        let elapsed = self.envelope_at.map_or(Duration::ZERO, |previous| {
+            now.saturating_duration_since(previous)
         });
-        apply_decay(&mut frame, self.output_envelope.as_ref(), decay);
+        self.output_ballistics.apply(&mut frame, elapsed);
         if let Some(input) = input.as_mut() {
-            apply_decay(input, self.input_envelope.as_ref(), decay);
+            self.input_ballistics.apply(input, elapsed);
         }
-        self.output_envelope = Some(frame.clone());
-        self.input_envelope = input.clone();
         self.envelope_at = Some(now);
         let processed_at = Instant::now();
         let result = PublishedSpectrum {
@@ -740,26 +747,14 @@ impl SpectrumCore {
     }
 
     fn clear_window(&mut self) {
-        self.rolling.fill([0.0; 2]);
-        self.input_rolling.fill([0.0; 2]);
-        self.write_index = 0;
-        self.filled = 0;
+        self.output_window.clear();
+        self.input_window.clear();
         self.latest_stamp = None;
         self.captured_at = None;
-        self.output_envelope = None;
-        self.input_envelope = None;
+        self.output_ballistics.reset();
+        self.input_ballistics.reset();
         self.envelope_at = None;
         self.dirty_since_analysis = false;
-    }
-}
-
-// Attack follows actual measured power immediately. Decay affects display-only
-// worker results and never refreshes their capture timestamp or cadence.
-fn apply_decay(frame: &mut SpectrumFrame, previous: Option<&SpectrumFrame>, decay: f32) {
-    if let Some(previous) = previous {
-        for (current, old) in frame.bins_dbfs.iter_mut().zip(previous.bins_dbfs.iter()) {
-            *current = current.max((old - decay).max(crate::spectrum::FLOOR_DBFS));
-        }
     }
 }
 
@@ -830,8 +825,7 @@ mod tests {
             std::thread::yield_now();
         };
         let peak = |frame: &SpectrumFrame| {
-            frame
-                .bins_dbfs
+            crate::spectrum::without_default_slope(frame)
                 .iter()
                 .copied()
                 .fold(f32::NEG_INFINITY, f32::max)
@@ -845,6 +839,32 @@ mod tests {
                     < 0.05
             );
         }
+        // A caller-retained buffer reproduces the same pairs without allocating
+        // once it holds every target; the Vec-returning call allocates each time.
+        let mut retained_buffer = Vec::with_capacity(MAX_SPECTRUM_TARGETS);
+        #[cfg(feature = "allocation-probe")]
+        {
+            let fresh = allocation_counter::measure(|| {
+                assert_eq!(reader.try_latest_pairs_at(now, &targets).len(), 2);
+            });
+            // Each Vec-returning call grows a fresh buffer (two allocations for
+            // these two large pairs with the current std growth policy).
+            assert!(fresh.count_total >= 1 && fresh.count_current == 0);
+            let reused = allocation_counter::measure(|| {
+                reader.try_latest_pairs_into(now, &targets, &mut retained_buffer);
+            });
+            assert_eq!(
+                (
+                    reused.count_total,
+                    reused.bytes_total,
+                    reused.count_current,
+                    reused.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        reader.try_latest_pairs_into(now, &targets, &mut retained_buffer);
+        assert_eq!(retained_buffer, pairs);
         control.set_targets(&requests[1..]).unwrap();
         let retained = reader.try_latest_pairs_at(now, control.desired_targets());
         assert_eq!(retained.len(), 1);
@@ -865,9 +885,9 @@ mod tests {
     }
 
     #[test]
-    fn paired_decay_uses_shared_elapsed_time_and_gap_clears_both_envelopes() {
+    fn paired_release_uses_shared_elapsed_time_and_gap_clears_both_envelopes() {
         let context = stamp(3, 7, 48_000, 11);
-        let mut analysis = SpectrumCore::new(SpectrumKernel::new(48_000).unwrap(), 48_000);
+        let mut analysis = SpectrumCore::for_rate(48_000).unwrap();
         let now = Instant::now();
         for sequence in 0..16 {
             let mut capture = batch(sequence, context, 0.5, 256);
@@ -892,8 +912,14 @@ mod tests {
                 falling.input.as_ref().unwrap(),
             ),
         ] {
-            for (before, after) in old.bins_dbfs.iter().zip(new.bins_dbfs.iter()) {
-                assert!((after - (before - 4.8).max(crate::spectrum::FLOOR_DBFS)).abs() < 0.001);
+            // 100 ms of release toward the silent floor, then a held peak.
+            let release = 1.0 - (-0.1f32 / 0.25).exp();
+            for (index, (before, after)) in
+                old.bins_dbfs.iter().zip(new.bins_dbfs.iter()).enumerate()
+            {
+                let floor = crate::spectrum::FLOOR_DBFS;
+                assert!((after - (before + (floor - before) * release)).abs() < 0.01);
+                assert_eq!(new.peak_dbfs[index], old.peak_dbfs[index]);
             }
         }
         assert!(
@@ -931,7 +957,7 @@ mod tests {
     #[test]
     fn paired_windows_keep_real_levels_stereo_energy_and_reset_together() {
         let context = stamp(3, 7, 48_000, 11);
-        let mut analysis = SpectrumCore::new(SpectrumKernel::new(48_000).unwrap(), 48_000);
+        let mut analysis = SpectrumCore::for_rate(48_000).unwrap();
         let now = Instant::now();
         for sequence in 0..16 {
             let mut capture = batch(sequence, context, 0.0, 256);
@@ -939,8 +965,10 @@ mod tests {
             capture.captured_start = now;
             for i in 0..256 {
                 let position = sequence as usize * 256 + i;
-                let signal =
-                    (std::f32::consts::TAU * 32.0 * position as f32 / FFT_SIZE as f32).sin() * 0.5;
+                let signal = (std::f32::consts::TAU * 32.0 * position as f32
+                    / crate::spectrum::FFT_SIZE as f32)
+                    .sin()
+                    * 0.5;
                 capture.input_samples[i] = [signal, -signal];
                 capture.samples[i] = [signal * 0.25, -signal * 0.25];
             }
@@ -948,8 +976,7 @@ mod tests {
         }
         let pair = analysis.analyze_pair_if_due(now).unwrap();
         let peak = |frame: &SpectrumFrame| {
-            frame
-                .bins_dbfs
+            crate::spectrum::without_default_slope(frame)
                 .iter()
                 .copied()
                 .fold(f32::NEG_INFINITY, f32::max)
@@ -968,7 +995,7 @@ mod tests {
         let mut after_gap = batch(17, context, 0.0, 256);
         after_gap.paired = true;
         assert_eq!(analysis.ingest(after_gap), IngestOutcome::Reset);
-        assert_eq!(analysis.filled, 256);
+        assert_eq!(analysis.output_window.filled(), 256);
         assert!(
             analysis
                 .analyze_pair_if_due(now + ANALYSIS_INTERVAL)
@@ -993,7 +1020,7 @@ mod tests {
             analysis.ingest(batch(33, context, 0.2, 256)),
             IngestOutcome::Reset
         );
-        assert_eq!(analysis.filled, 256);
+        assert_eq!(analysis.output_window.filled(), 256);
         for sequence in 34..49 {
             analysis.ingest(batch(sequence, context, 0.2, 256));
         }
@@ -1081,10 +1108,7 @@ mod tests {
     }
 
     fn core() -> SpectrumCore {
-        SpectrumCore::new(
-            SpectrumKernel::new(8_000).expect("supported sample rate"),
-            8_000,
-        )
+        SpectrumCore::for_rate(8_000).unwrap()
     }
 
     #[test]
@@ -1123,7 +1147,7 @@ mod tests {
         );
         let next = consumer.pop().expect("batch after dropped sequence");
         assert_eq!(analysis.ingest(next), IngestOutcome::Reset);
-        assert_eq!(analysis.filled, MAX_CAPTURE_FRAMES);
+        assert_eq!(analysis.output_window.filled(), MAX_CAPTURE_FRAMES);
     }
 
     #[test]
@@ -1137,22 +1161,22 @@ mod tests {
             analysis.ingest(batch(1, stamp(1, 1, 8_000, 2), 0.2, 256)),
             IngestOutcome::Accepted
         );
-        assert_eq!(analysis.filled, 512);
+        assert_eq!(analysis.output_window.filled(), 512);
         assert_eq!(
             analysis.ingest(batch(2, stamp(1, 2, 8_000, 2), 0.2, 256)),
             IngestOutcome::Reset
         );
-        assert_eq!(analysis.filled, 256);
+        assert_eq!(analysis.output_window.filled(), 256);
         assert_eq!(
             analysis.ingest(batch(3, stamp(2, 2, 8_000, 3), 0.2, 256)),
             IngestOutcome::Reset
         );
-        assert_eq!(analysis.filled, 256);
+        assert_eq!(analysis.output_window.filled(), 256);
         assert_eq!(
             analysis.ingest(batch(4, stamp(2, 2, 48_000, 4), 0.2, 256)),
             IngestOutcome::Reset
         );
-        assert_eq!(analysis.filled, 256);
+        assert_eq!(analysis.output_window.filled(), 256);
         assert_eq!(analysis.kernel_rate, Some(48_000));
     }
 
@@ -1168,7 +1192,7 @@ mod tests {
             analysis.ingest(capture);
         }
         let first = analysis.analyze_if_due(start).expect("full initial window");
-        assert_eq!(first.frame.bins_dbfs.len(), 96);
+        assert_eq!(first.frame.bins_dbfs.len(), crate::spectrum::SPECTRUM_BANDS);
         assert_eq!(first.stamp.applied_revision, 32);
         assert!(first.is_fresh_at(first.captured_at + DISPLAY_STALE_AFTER));
         assert!(
@@ -1222,10 +1246,7 @@ mod tests {
 
     #[test]
     fn context_reset_keeps_global_cadence_and_idle_windows_are_not_republished() {
-        let mut analysis = SpectrumCore::new(
-            SpectrumKernel::new(192_000).expect("supported sample rate"),
-            192_000,
-        );
+        let mut analysis = SpectrumCore::for_rate(192_000).unwrap();
         let start = Instant::now();
         let first_context = stamp(4, 1, 192_000, 1);
         for sequence in 0..16 {
@@ -1297,10 +1318,10 @@ mod tests {
         let mut invalid = batch(1, stamp(1, 1, 8_000, 1), 0.5, 256);
         invalid.frame_count = (MAX_CAPTURE_FRAMES + 1) as u16;
         assert_eq!(analysis.ingest(invalid), IngestOutcome::Rejected);
-        assert_eq!(analysis.filled, 0);
+        assert_eq!(analysis.output_window.filled(), 0);
         let bad_rate = batch(2, stamp(1, 1, 7_999, 1), 0.5, 256);
         assert_eq!(analysis.ingest(bad_rate), IngestOutcome::Rejected);
-        assert_eq!(analysis.filled, 0);
+        assert_eq!(analysis.output_window.filled(), 0);
         assert_eq!(analysis.context, None);
     }
 

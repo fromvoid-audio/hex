@@ -68,7 +68,7 @@ impl Scene {
     pub fn insert_primitive(&mut self, primitive: impl Into<Primitive>) {
         let primitive = primitive.into();
         let clipped_bounds = primitive
-            .bounds()
+            .painted_bounds()
             .intersect(&primitive.content_mask().bounds);
 
         if clipped_bounds.is_empty() {
@@ -170,9 +170,11 @@ impl Scene {
                     {
                         return false;
                     }
-                    let clipped = primitive
-                        .bounds()
-                        .intersect(&primitive.content_mask().bounds);
+                    let painted = primitive.painted_bounds();
+                    if !finite_replay_bounds(&painted) {
+                        return false;
+                    }
+                    let clipped = painted.intersect(&primitive.content_mask().bounds);
                     if clipped.is_empty() {
                         continue;
                     }
@@ -368,6 +370,13 @@ impl Primitive {
             Primitive::PolychromeSprite(sprite) => &sprite.bounds,
             Primitive::Surface(surface) => &surface.bounds,
         }
+    }
+
+    fn painted_bounds(&self) -> Bounds<ScaledPixels> {
+        if let Self::MonochromeSprite(sprite) = self {
+            return sprite.painted_bounds();
+        }
+        *self.bounds()
     }
 
     pub fn content_mask(&self) -> &ContentMask<ScaledPixels> {
@@ -777,6 +786,34 @@ pub(crate) struct MonochromeSprite {
     pub color: Hsla,
     pub tile: AtlasTile,
     pub transformation: TransformationMatrix,
+}
+
+impl MonochromeSprite {
+    pub(crate) fn painted_bounds(&self) -> Bounds<ScaledPixels> {
+        if self.transformation == TransformationMatrix::unit() {
+            return self.bounds;
+        }
+        let transform = |point: Point<ScaledPixels>| {
+            self.transformation
+                .apply(point.map(|p| Pixels(p.0)))
+                .map(|p| ScaledPixels(p.0))
+        };
+        let first = transform(self.bounds.origin);
+        let mut min = first;
+        let mut max = first;
+        for corner in [
+            self.bounds.top_right(),
+            self.bounds.bottom_left(),
+            self.bounds.bottom_right(),
+        ] {
+            let p = transform(corner);
+            min.x = min.x.min(p.x);
+            min.y = min.y.min(p.y);
+            max.x = max.x.max(p.x);
+            max.y = max.y.max(p.y);
+        }
+        Bounds::from_corners(min, max)
+    }
 }
 
 impl From<MonochromeSprite> for Primitive {

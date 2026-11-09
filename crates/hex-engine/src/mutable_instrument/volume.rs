@@ -60,7 +60,8 @@ impl VolumeSlice {
             .ramp
             .gain_at(end)
             .map_err(|_| MutableInstrumentRuntimeError::InvalidSourceSpan)?;
-        if !last.is_finite() || !(0.0..=4.0).contains(&last) {
+        if !last.is_finite() || !(0.0..=hex_lattice::MAX_INSTRUMENT_OCCURRENCE_GAIN).contains(&last)
+        {
             return Err(MutableInstrumentRuntimeError::InvalidSourceSpan);
         }
         Ok((
@@ -223,6 +224,7 @@ impl MutableInstrumentTrackRuntime {
         clock: Option<&dyn NativeInstrumentClock>,
         resources: &dyn hex_lattice::DeviceResources,
         lookup: &mut VolumeLookup<'_>,
+        automation: Option<&dyn hex_lattice::NativeParameterAutomation>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
         self.process_volume_scope(
             Some(track),
@@ -234,7 +236,8 @@ impl MutableInstrumentTrackRuntime {
             events,
             clock,
             resources,
-            lookup,
+            Some(lookup),
+            automation,
         )
     }
 
@@ -249,6 +252,7 @@ impl MutableInstrumentTrackRuntime {
         clock: Option<&dyn NativeInstrumentClock>,
         resources: &dyn hex_lattice::DeviceResources,
         lookup: &mut VolumeLookup<'_>,
+        automation: Option<&dyn hex_lattice::NativeParameterAutomation>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
         self.process_volume_scope(
             None,
@@ -260,12 +264,13 @@ impl MutableInstrumentTrackRuntime {
             events,
             clock,
             resources,
-            lookup,
+            Some(lookup),
+            automation,
         )
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn process_volume_scope(
+    pub(super) fn process_volume_scope(
         &mut self,
         track: Option<TrackId>,
         performance_start: u64,
@@ -276,7 +281,8 @@ impl MutableInstrumentTrackRuntime {
         events: &mut Vec<NativeInstrumentEvent>,
         clock: Option<&dyn NativeInstrumentClock>,
         resources: &dyn hex_lattice::DeviceResources,
-        lookup: &mut VolumeLookup<'_>,
+        mut lookup: Option<&mut VolumeLookup<'_>>,
+        automation: Option<&dyn hex_lattice::NativeParameterAutomation>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
         let mut offset = 0;
         while offset < frames.len() {
@@ -287,6 +293,9 @@ impl MutableInstrumentTrackRuntime {
                 .checked_add(offset as u64)
                 .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
             let mut count = frames.len() - offset;
+            if automation.is_some() {
+                count = count.min(hex_lattice::MAX_INSTRUMENT_AUTOMATION_FRAMES);
+            }
             // Positive progress, at most one iteration per requested frame.
             // Split at an onset so every new voice's original ramp covers the
             // complete borrowed host segment, without extrapolated endpoints.
@@ -299,8 +308,9 @@ impl MutableInstrumentTrackRuntime {
                 let delta = onset.source_start - source;
                 if delta > 0 {
                     count = count.min(usize::try_from(delta).unwrap_or(usize::MAX));
-                } else if let Some(slice) =
-                    lookup(MutableOccurrenceSignature::new(onset), performance, count)?
+                } else if let Some(lookup) = lookup.as_mut()
+                    && let Some(slice) =
+                        lookup(MutableOccurrenceSignature::new(onset), performance, count)?
                 {
                     count = count.min(slice.remaining(count)?);
                 }
@@ -309,7 +319,9 @@ impl MutableInstrumentTrackRuntime {
                 if proof.gain_frozen {
                     continue;
                 }
-                if let Some(slice) = lookup(proof.signature, performance, count)? {
+                if let Some(lookup) = lookup.as_mut()
+                    && let Some(slice) = lookup(proof.signature, performance, count)?
+                {
                     count = count.min(slice.remaining(count)?);
                 }
             }
@@ -317,6 +329,8 @@ impl MutableInstrumentTrackRuntime {
                 return Err(MutableInstrumentRuntimeError::InvalidSourceSpan);
             }
             let shifted = clock.map(|clock| OffsetClock { clock, offset });
+            let shifted_values =
+                automation.map(|values| automation::OffsetValues { values, offset });
             self.process_segment_inner(
                 track,
                 performance,
@@ -327,7 +341,10 @@ impl MutableInstrumentTrackRuntime {
                 events,
                 shifted.as_ref().map(|c| c as &dyn NativeInstrumentClock),
                 resources,
-                Some(lookup),
+                lookup.as_deref_mut(),
+                shifted_values
+                    .as_ref()
+                    .map(|values| values as &dyn hex_lattice::NativeParameterAutomation),
             )?;
             offset += count;
         }

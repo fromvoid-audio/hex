@@ -641,9 +641,11 @@ impl NativeDeviceMetadata for UtilityDefinition {
         id: ParameterId,
     ) -> Result<Option<hex_lattice_contract::ParameterSemantics>, DeviceContractError> {
         UtilityControls::decode(state)?;
-        Ok(Some(
-            crate::parameter_binding::binding(&BINDINGS, id)?.semantics,
-        ))
+        let mut semantics = crate::parameter_binding::binding(&BINDINGS, id)?.semantics;
+        if runtime_parameter_automation_supported(id) {
+            semantics.modulation = hex_lattice_contract::ParameterModulation::SampleRate;
+        }
+        Ok(Some(semantics))
     }
     fn patch_parameter(
         &self,
@@ -819,6 +821,7 @@ impl UtilityDefinition {
             matrix: StereoMatrix::identity(),
             pre_gain: StereoMatrix::identity(),
             post_gain: StereoMatrix::identity(),
+            width_ramp: None,
         };
         let (matrix, filters) = automation.configuration(None, 0, sample_rate, None)?;
         let filters = filters.ok_or(DeviceContractError::InvalidDescriptor)?;
@@ -859,6 +862,13 @@ impl UtilityDefinition {
 }
 
 impl PreparedNativeProcessor for PreparedUtilityFilterRuntime {
+    fn supports_smoothed_bypass(&self) -> bool {
+        // Both static and automated zero-latency filters advance private history
+        // under bypass. The host can blend their complete output reversibly,
+        // without retaining a separately audible old filter suffix.
+        true
+    }
+
     fn parameter_automation_descriptor(
         &self,
         parameter: ParameterId,
@@ -871,6 +881,20 @@ impl PreparedNativeProcessor for PreparedUtilityFilterRuntime {
         self.1
             .is_some_and(|automation| automation.supports(parameter))
     }
+    fn parameter_modulation_semantics(
+        &self,
+        parameter: ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        if !self.supports_parameter_automation(parameter) {
+            return None;
+        }
+        let binding = crate::parameter_binding::binding(&BINDINGS, parameter).ok()?;
+        Some(hex_lattice_contract::ParameterSemantics {
+            modulation: hex_lattice_contract::ParameterModulation::SampleRate,
+            ..binding.semantics
+        })
+    }
+
     fn runtime_version(&self) -> u32 {
         1
     }
@@ -901,6 +925,50 @@ pub(crate) struct UtilityAutomation {
     pub(crate) matrix: StereoMatrix,
     pre_gain: StereoMatrix,
     post_gain: StereoMatrix,
+    width_ramp: Option<UtilityRamp>,
+}
+
+/// Five-millisecond ramp for a direct Utility control retarget.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct UtilityRamp {
+    from: f32,
+    target: f32,
+    elapsed: u32,
+    total: u32,
+}
+impl UtilityRamp {
+    pub(crate) fn new(from: f32, target: f32, sample_rate: u32) -> Option<Self> {
+        (from != target).then_some(Self {
+            from,
+            target,
+            elapsed: 0,
+            total: sample_rate.div_ceil(200).max(1),
+        })
+    }
+    pub(crate) fn check_inline(&self) {
+        let Self {
+            from,
+            target,
+            elapsed,
+            total,
+        } = self;
+        let _: (&f32, &f32, &u32, &u32) = (from, target, elapsed, total);
+    }
+    pub(crate) fn advance(&mut self) -> f32 {
+        self.elapsed += 1;
+        self.value()
+    }
+    pub(crate) fn finished(self) -> bool {
+        self.elapsed >= self.total
+    }
+    pub(crate) fn value(self) -> f32 {
+        if self.finished() {
+            self.target
+        } else {
+            let t = f64::from(self.elapsed) / f64::from(self.total);
+            (f64::from(self.from) + (f64::from(self.target) - f64::from(self.from)) * t) as f32
+        }
+    }
 }
 impl UtilityAutomation {
     pub(crate) fn check_inline(&self) {
@@ -910,17 +978,35 @@ impl UtilityAutomation {
             matrix,
             pre_gain,
             post_gain,
+            width_ramp,
         } = self;
         controls.check_inline(UtilityControls::check_inline);
         effective.check_inline();
         let _: (&StereoMatrix, &StereoMatrix, &StereoMatrix) = (matrix, pre_gain, post_gain);
+        if let Some(ramp) = width_ramp {
+            ramp.check_inline();
+        }
     }
-    pub(crate) fn inherit(&mut self, previous: &Self) {
+    pub(crate) fn inherit(&mut self, previous: &Self, sample_rate: u32) {
+        let target_width = self.controls.base().settings().width;
+        let previous_width = previous.effective.width;
+        self.width_ramp = if self.controls.admitted(2) {
+            None
+        } else if !previous.controls.admitted(2)
+            && target_width == previous.controls.base().settings().width
+        {
+            previous.width_ramp
+        } else {
+            UtilityRamp::new(previous_width, target_width, sample_rate)
+        };
         self.controls.inherit(&previous.controls);
         self.matrix = previous.matrix;
         self.pre_gain = previous.pre_gain;
         self.post_gain = previous.post_gain;
         self.effective = previous.effective;
+    }
+    pub(crate) fn manual_mute_target(&self) -> Option<bool> {
+        (!self.supports(parameter::MUTE)).then(|| self.controls.base().settings().mute)
     }
     pub(crate) fn supports(&self, parameter: ParameterId) -> bool {
         runtime_parameter_automation_supported(parameter)
@@ -960,10 +1046,10 @@ impl UtilityAutomation {
         } else {
             None
         };
-        if !reset && pending.is_none() && previous.is_some() {
+        if !reset && pending.is_none() && previous.is_some() && self.width_ramp.is_none() {
             return Ok((self.matrix, None));
         }
-        let settings = if reset {
+        let mut settings = if reset {
             self.controls.base()
         } else {
             pending
@@ -971,6 +1057,13 @@ impl UtilityAutomation {
                 .map_or_else(|| self.controls.effective(), |next| next.effective())
         }
         .settings();
+        let mut width_ramp = if reset { None } else { self.width_ramp };
+        if let Some(ramp) = &mut width_ramp {
+            settings.width = ramp.advance();
+            if ramp.finished() {
+                width_ramp = None;
+            }
+        }
         let filters = if previous.is_some()
             && settings.dc_remove == self.effective.dc_remove
             && settings.bass_mono == self.effective.bass_mono
@@ -1034,6 +1127,7 @@ impl UtilityAutomation {
         self.matrix = matrix;
         self.pre_gain = pre_gain;
         self.post_gain = post_gain;
+        self.width_ramp = width_ramp;
         Ok((matrix, filters))
     }
 }
@@ -1274,7 +1368,7 @@ mod tests {
     }
 
     #[test]
-    fn registered_utility_mute_suppresses_filter_residual_after_history_copy() {
+    fn registered_utility_mute_ramps_and_suppresses_the_settled_filter_residual() {
         use hex_lattice_contract::ParameterValue;
 
         let default_state = UTILITY_DEFINITION.default_state().unwrap();
@@ -1336,6 +1430,20 @@ mod tests {
             assert!(candidate.can_copy_history_from(source.as_ref()));
             candidate.copy_history_from(source.as_ref());
 
+            const RAMP_FRAMES: usize = 240;
+            let mut muted = [[0.5, -0.125]; RAMP_FRAMES];
+            muted_matrix.apply_block(&mut muted);
+            let mut oracle = muted;
+            oracle[RAMP_FRAMES - 1] = [0.0; 2];
+            source.process_block(&mut oracle, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            candidate.process_block(&mut muted, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            for (frame, (actual, expected)) in muted.into_iter().zip(oracle).enumerate() {
+                let gain = 1.0 - (frame + 1) as f32 / RAMP_FRAMES as f32;
+                for channel in 0..2 {
+                    assert!((actual[channel] - expected[channel] * gain).abs() < 1.0e-7);
+                }
+            }
+
             let mut silence = [[0.5, -0.125]; 16];
             muted_matrix.apply_block(&mut silence);
             candidate.process_block(&mut silence, &hex_lattice::EMPTY_DEVICE_RESOURCES);
@@ -1360,14 +1468,25 @@ mod tests {
                 .create_runtime();
             assert!(unmuted.can_copy_history_from(candidate.as_ref()));
             unmuted.copy_history_from(candidate.as_ref());
-            for frame in 0..32 {
+            for frame in 0..RAMP_FRAMES + 16 {
                 let input = [[0.2 + frame as f32 * 0.001, -0.4 + frame as f32 * 0.002]];
                 let mut actual = input;
                 let mut expected = input;
                 unmuted.process_block(&mut actual, &hex_lattice::EMPTY_DEVICE_RESOURCES);
                 source.process_block(&mut expected, &hex_lattice::EMPTY_DEVICE_RESOURCES);
-                assert_eq!(actual, expected);
+                let gain = ((frame + 1) as f32 / RAMP_FRAMES as f32).min(1.0);
+                for channel in 0..2 {
+                    assert!((actual[0][channel] - expected[0][channel] * gain).abs() < 1.0e-7);
+                }
             }
+            candidate.copy_history_from(unmuted.as_ref());
+            let mut signal = [[0.5, -0.125]];
+            candidate.process_block(&mut signal, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            assert_ne!(signal, [[0.0; 2]], "mute starts from the audible history");
+            candidate.reset();
+            let mut signal = [[0.5, -0.125]];
+            candidate.process_block(&mut signal, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            assert_eq!(signal, [[0.0; 2]], "reset applies the authored mute");
         }
     }
 
@@ -1897,3 +2016,8 @@ mod tests {
 #[cfg(test)]
 #[path = "utility/automation_tests.rs"]
 mod automation_tests;
+#[cfg(test)]
+mod width_ramp_tests;
+
+#[cfg(test)]
+mod bypass_tests;

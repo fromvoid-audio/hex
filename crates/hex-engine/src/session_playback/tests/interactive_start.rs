@@ -11,6 +11,8 @@ fn start_fixture(start: u64, duration: u64, limiter: Option<bool>) -> Arc<Prepar
     let project = with_test_instrument(&project(1.0, start, duration), definition.metadata.id, 0);
     let mut snapshot = project.snapshot();
     let device = DeviceSnapshot {
+        modulation: Default::default(),
+        parent: None,
         automation: Vec::new(),
         comparison: None,
         id: snapshot.next_id,
@@ -167,6 +169,241 @@ fn play_from_chases_a_held_mutable_note_without_replaying_the_prefix() {
 }
 
 #[test]
+fn short_session_note_refusal_reports_recovery_and_preserves_project() {
+    let one_frame = (1_u64 << 32).div_ceil(24_000);
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let project = with_test_instrument(&project(1.0, 0, one_frame), id, 0);
+    let before = project.snapshot();
+    let Err(error) = PreparedRevision::prepare_with_instrument_registry(
+        &project,
+        &BTreeMap::new(),
+        Arc::new(hex_devices::SineTable::new()),
+        None,
+        &registry,
+    ) else {
+        panic!("short Session source must be refused");
+    };
+    assert_eq!(
+        error.0,
+        "session midi note gate is too short to guarantee one frame at the admitted tempo; lengthen the note or reduce tempo"
+    );
+    assert_eq!(project.snapshot(), before);
+
+    let mut short_loop = project.snapshot();
+    let hex_project::SessionCellContentSnapshot::Midi(clip) =
+        &mut short_loop.session.cells[0].content
+    else {
+        panic!("session midi fixture");
+    };
+    clip.source.looping = true;
+    clip.source.loop_end_raw = one_frame;
+    // Use a long gate so loop-period admission is the first refusal.
+    clip.source.notes[0].duration_raw = 1 << 32;
+    let short_loop = Project::from_snapshot(short_loop).unwrap();
+    let before_loop = short_loop.snapshot();
+    let Err(error) = PreparedRevision::prepare_with_instrument_registry(
+        &short_loop,
+        &BTreeMap::new(),
+        Arc::new(hex_devices::SineTable::new()),
+        None,
+        &registry,
+    ) else {
+        panic!("short Session loop must be refused");
+    };
+    assert_eq!(
+        error.0,
+        "session midi loop is too short to guarantee one frame at the admitted tempo; lengthen the loop or reduce tempo"
+    );
+    assert_eq!(short_loop.snapshot(), before_loop);
+}
+
+#[test]
+fn play_from_one_frame_before_note_off_matches_one_frame_authored_note() {
+    // At 120 bpm, a quarter note ends at frame 24,000. Round the independent
+    // one-frame beat duration up so its note-off lands on frame one.
+    let one_frame = (1_u64 << 32).div_ceil(24_000);
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let mut snapshot = project(1.0, 0, one_frame).snapshot();
+    // The oracle exercises Arrangement; omit the unrelated Session source so
+    // its own template admission does not constrain this short-note fixture.
+    snapshot.session.cells.clear();
+    let oracle_project = with_test_instrument(&Project::from_snapshot(snapshot).unwrap(), id, 0);
+    let oracle_revision = revision_with_instrument_registry(
+        &oracle_project,
+        Arc::new(hex_devices::SineTable::new()),
+        &registry,
+    );
+    let mut oracle = SessionPlayback::new(oracle_revision).unwrap();
+    oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let expected = render_checkpoint_partitioned(&mut oracle, &[64], 512);
+    assert!(expected[0].iter().any(|sample| *sample != 0.0));
+    assert!(expected[1..8].iter().flatten().any(|sample| *sample != 0.0));
+    assert!(expected[16..].iter().flatten().all(|sample| *sample == 0.0));
+
+    let prepared = start_fixture(0, 1 << 32, None);
+    for block in [1, 7, 17, 64, 128, 256, 512] {
+        let mut playback = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+        playback.play_from(23_999).unwrap();
+        let actual = render_checkpoint_partitioned(&mut playback, &[block], 512);
+        assert_eq!(actual, expected, "block size {block}");
+        assert_eq!(playback.arrangement_frame(), 24_511);
+        assert_eq!(playback.performance_frame(), 24_511);
+    }
+}
+
+#[test]
+fn play_from_note_onset_and_off_boundaries_match_authored_pcm() {
+    // At 120 bpm and 48 kHz this one-beat note ends at frame 24,000.
+    for limiter in [None, Some(false), Some(true)] {
+        let prepared = start_fixture(0, 1 << 32, limiter);
+        let latency = prepared.arrangement().main_latency_frames() as usize;
+        assert_eq!(latency > 0, limiter.is_some());
+        let frames = 512 + latency;
+        let mut oracle = SessionPlayback::new(start_fixture(0, 1 << 32, limiter)).unwrap();
+        oracle.apply(SessionPlaybackCommand::Play).unwrap();
+        let onset = render_checkpoint_partitioned(&mut oracle, &[256], frames);
+        assert!(onset.iter().flatten().any(|sample| *sample != 0.0));
+
+        for destination in [0, 24_000, 24_001] {
+            let expected = if destination == 0 {
+                onset.clone()
+            } else {
+                vec![[0.0; 2]; frames]
+            };
+            for block in [1, 17, 64, 128, 256, 512] {
+                let mut playback = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+                playback.play_from(destination).unwrap();
+                let actual = render_checkpoint_partitioned(&mut playback, &[block], frames);
+                assert_eq!(
+                    actual, expected,
+                    "limiter={limiter:?}, destination={destination}, block={block}"
+                );
+                assert_eq!(playback.arrangement_frame(), destination + frames as u64);
+                assert_eq!(playback.performance_frame(), destination + frames as u64);
+            }
+        }
+    }
+}
+
+#[test]
+fn chased_note_gate_and_stop_match_authored_pcm_at_fixed_block_sizes() {
+    let prepared = start_fixture(0, 1 << 32, None);
+    let mut oracle = SessionPlayback::new(start_fixture(1 << 31, 1 << 31, None)).unwrap();
+    oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    assert!(
+        render_checkpoint_prefix(&mut oracle, 12_000)
+            .iter()
+            .flatten()
+            .all(|value| *value == 0.0)
+    );
+    let expected = render_checkpoint_partitioned(&mut oracle, &[256], 12_064);
+    assert!(
+        expected[..12_000]
+            .iter()
+            .flatten()
+            .any(|value| *value != 0.0)
+    );
+    assert!(
+        expected[12_040..]
+            .iter()
+            .flatten()
+            .all(|value| *value == 0.0)
+    );
+    for block in [1, 17, 64, 128, 256, 512] {
+        let mut playback = Playback::try_from_prepared_with_session(Arc::clone(&prepared)).unwrap();
+        playback
+            .try_apply_action(PlaybackAction::Transport(PlaybackCommand::PlayFrom(12_000)))
+            .unwrap();
+        let mut actual = vec![[0.0; 2]; expected.len()];
+        for chunk in actual.chunks_mut(block) {
+            playback.render(chunk).unwrap();
+        }
+        assert_eq!(actual, expected, "block size {block}");
+        playback
+            .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Stop))
+            .unwrap();
+        let mut stopped = [[1.0; 2]; 32];
+        playback.render(&mut stopped).unwrap();
+        assert_eq!(stopped, [[0.0; 2]; 32]);
+        assert_eq!(playback.position(), 0);
+    }
+}
+
+#[test]
+fn stateful_seek_candidate_chases_held_note_with_empty_tails_at_fixed_block_sizes() {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            for limiter in [None, Some(false), Some(true)] {
+                let prepared = start_fixture(0, 1 << 32, limiter);
+                assert!(prepared.arrangement_seek_requires_preroll());
+                let latency = prepared.arrangement().main_latency_frames() as usize;
+                // Independently authored music whose note starts at the seek
+                // point and ends at the original gate; any replayed feedback
+                // or limiter history would change the PCM.
+                let mut oracle =
+                    SessionPlayback::new(start_fixture(1 << 31, 1 << 31, limiter)).unwrap();
+                oracle.apply(SessionPlaybackCommand::Play).unwrap();
+                let _ = render_checkpoint_prefix(&mut oracle, 12_000);
+                let expected = render_checkpoint_partitioned(&mut oracle, &[256], 12_064 + latency);
+                for playing in [true, false] {
+                    for block in [1, 64, 256, 512] {
+                        let candidate =
+                            SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
+                                Arc::clone(&prepared),
+                                12_000,
+                                12_000,
+                                playing,
+                                &AtomicBool::new(false),
+                            )
+                            .unwrap();
+                        let mut playback =
+                            Playback::from_interactive_arrangement_preroll(candidate).unwrap();
+                        assert_eq!(playback.position(), 12_000);
+                        assert_eq!(playback.playing(), playing);
+                        if !playing {
+                            let mut frozen = [[1.0; 2]; 19];
+                            playback.render(&mut frozen).unwrap();
+                            assert_eq!(frozen, [[0.0; 2]; 19]);
+                            assert_eq!(playback.position(), 12_000);
+                            playback.apply(PlaybackCommand::Play);
+                        }
+                        let mut actual = vec![[0.0; 2]; expected.len()];
+                        for chunk in actual.chunks_mut(block) {
+                            playback.render(chunk).unwrap();
+                        }
+                        assert_eq!(
+                            actual, expected,
+                            "limiter={limiter:?} playing={playing} block={block}"
+                        );
+                    }
+                }
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
 fn play_from_invalid_destination_is_atomic_and_strict_seek_still_refuses_chase() {
     let (prepared, track) = mutable_checkpoint_fixture(1 << 32);
     let mut runtime = SessionPlayback::new(prepared).unwrap();
@@ -236,7 +473,26 @@ fn play_from_resets_active_mutable_state_and_repeated_starts_are_identical() {
 }
 
 #[test]
-fn shared_play_from_chases_each_contributor_once_and_preserves_handoff_note_offs() {
+fn shared_chase_and_handoff_without_limiter() {
+    shared_chase_and_handoff(None, &[0, 127]);
+}
+
+#[test]
+fn shared_chase_immediate_handoff_with_track_limiter() {
+    shared_chase_and_handoff(Some(false), &[0]);
+}
+
+#[test]
+fn shared_chase_delayed_handoff_with_track_limiter() {
+    shared_chase_and_handoff(Some(false), &[127]);
+}
+
+#[test]
+fn shared_chase_and_handoff_with_main_limiter() {
+    shared_chase_and_handoff(Some(true), &[0, 127]);
+}
+
+fn shared_chase_and_handoff(limiter: Option<bool>, handoff_frames: &[usize]) {
     fn shared(start: u64, duration: u64, limiter: Option<bool>, pitch: u8) -> Project {
         let definition = super::source_loop_tests::mutable_definition();
         let project =
@@ -281,6 +537,8 @@ fn shared_play_from_chases_each_contributor_once_and_preserves_handoff_note_offs
         let mut snapshot = editor.project().snapshot();
         if let Some(main) = limiter {
             let device = DeviceSnapshot {
+                modulation: Default::default(),
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: snapshot.next_id,
@@ -299,10 +557,7 @@ fn shared_play_from_chases_each_contributor_once_and_preserves_handoff_note_offs
     let definition = super::source_loop_tests::mutable_definition();
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    for (limiter, first) in [None, Some(false), Some(true)]
-        .into_iter()
-        .flat_map(|limiter| [0, 127].map(|first| (limiter, first)))
-    {
+    for &first in handoff_frames {
         let project = shared(0, 1 << 32, limiter, 67);
         let mut runtime = ordinary_mutable_playback(&project, &registry);
         let latency = runtime.revision.arrangement().main_latency_frames() as usize;

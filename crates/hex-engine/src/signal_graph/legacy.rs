@@ -16,6 +16,7 @@ impl RendererRuntime {
         for chain in self
             .device_chains
             .iter_mut()
+            .chain(self.source_effects.chains_mut())
             .chain(self.return_chains.iter_mut())
             .chain(std::iter::once(&mut self.main_chain))
         {
@@ -53,6 +54,8 @@ impl RendererRuntime {
                         loop_pass: 0,
                         performance_beat_raw: beat.raw(),
                         arrangement_beat_raw: Some(beat.raw()),
+                        meter: None,
+                        cycle_beats_raw: None,
                     })
                     .map_err(error)?;
                 for scratch in &mut self.return_scratch {
@@ -77,6 +80,12 @@ impl RendererRuntime {
                                 &mut generator,
                                 volume_timing,
                             )?;
+                            self.source_effects.process_isolated(
+                                project,
+                                index,
+                                frame,
+                                &mut generator,
+                            )?;
                             let processed = compensation.process_track(
                                 index,
                                 track,
@@ -88,9 +97,7 @@ impl RendererRuntime {
                                 &mut None,
                             )?;
                             let mixed = compensation.fader(track, index, None, processed)?;
-                            let main =
-                                compensation.edge(compensation.graph.tracks[index].main, mixed)?;
-                            compensation.main[index] = main;
+                            compensation.route_track_output(index, mixed)?;
                             for feed_index in 0..compensation.graph.tracks[index].audio_feeds.len()
                             {
                                 let feed =
@@ -113,10 +120,9 @@ impl RendererRuntime {
                         Owner::Return(index) => {
                             let bus = &project.return_buses[index];
                             let mut returned = self.return_scratch[index][0];
-                            compensation.effects(
-                                &compensation.graph.returns[index].devices,
+                            compensation.process_return(
+                                index,
                                 &mut self.return_chains[index],
-                                0,
                                 &mut returned,
                                 offset,
                                 &mut None,
@@ -181,6 +187,7 @@ impl RendererRuntime {
         for chain in self
             .device_chains
             .iter_mut()
+            .chain(self.source_effects.chains_mut())
             .chain(self.return_chains.iter_mut())
             .chain(std::iter::once(&mut self.main_chain))
         {

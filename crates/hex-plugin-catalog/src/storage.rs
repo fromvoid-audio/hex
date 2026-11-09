@@ -32,8 +32,10 @@ impl Catalog {
             Ok(_) => {}
         }
         let data = read_file(path, MAX_CATALOG_BYTES as u64)?;
-        let catalog: Self = serde_json::from_slice(&data)
+        let mut catalog: Self = serde_json::from_slice(&data)
             .map_err(|_| "invalid plugin catalog; existing file preserved")?;
+        // Migration is in memory; the file changes only through a later update.
+        catalog.migrate()?;
         catalog.validate()?;
         Ok(catalog)
     }

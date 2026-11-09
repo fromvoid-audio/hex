@@ -97,6 +97,24 @@ impl SessionAudioLoop {
     }
 }
 
+/// Source frame audible `elapsed` playback frames after a launch: plays
+/// `source_start..` and then repeats the loop cycle, or ends at `source_end`
+/// without one. Constant work. The Session renderer and the clip-editor
+/// playback line share this law so the cursor cannot drift from the audio.
+pub fn session_audio_source_frame(
+    source_start: u64,
+    source_end: u64,
+    loop_range: Option<SessionAudioLoop>,
+    elapsed: u64,
+) -> Option<u64> {
+    match loop_range {
+        Some(range) => range.frame_at(source_start, elapsed),
+        None => source_start
+            .checked_add(elapsed)
+            .filter(|frame| *frame < source_end),
+    }
+}
+
 /// Frame-anchored audio source assigned to one Session cell. A missing loop
 /// preserves one-shot playback; an explicit loop retains source/intro/tail PCM.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,6 +157,10 @@ impl SessionAudioClip {
     }
     pub fn source_end(&self) -> u64 {
         self.source_end
+    }
+    /// Asset playback frame heard `elapsed` frames after this cell launched.
+    pub fn source_frame_at(&self, elapsed: u64) -> Option<u64> {
+        session_audio_source_frame(self.source_start, self.source_end, self.loop_range, elapsed)
     }
 }
 impl SessionMidiClip {
@@ -335,12 +357,14 @@ pub(crate) fn apply(
             source,
             before_track,
             scene,
-        } => copy_to_new_session_track(project, source, before_track, scene, false),
+            initial_gain,
+        } => copy_to_new_session_track(project, source, before_track, scene, false, initial_gain),
         Command::CopyArrangementMidiToNewSessionTrack {
             source,
             before_track,
             scene,
-        } => copy_to_new_session_track(project, source, before_track, scene, true),
+            initial_gain,
+        } => copy_to_new_session_track(project, source, before_track, scene, true, initial_gain),
         Command::MoveSessionCell {
             from_track,
             from_scene,
@@ -1020,6 +1044,7 @@ fn copy_to_new_session_track(
     before_track: Option<TrackId>,
     scene: SessionSceneTarget,
     midi: bool,
+    initial_gain: Option<f32>,
 ) -> Result<Created, Invalid> {
     // Refuse before allocating a track, scene or fresh source identities.
     if midi {
@@ -1032,7 +1057,8 @@ fn copy_to_new_session_track(
         project.clip(source).map(|clip| clip.name().to_owned())
     }
     .ok_or(Invalid("arrangement source no longer exists"))?;
-    let track = crate::edit::insert_track_before(project, name, before_track)?;
+    let track =
+        crate::edit::insert_track_before_with_gain(project, name, before_track, initial_gain)?;
     let scene = match scene {
         SessionSceneTarget::Existing(scene) => scene,
         SessionSceneTarget::Insert { before } => {

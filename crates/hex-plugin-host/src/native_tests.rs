@@ -59,6 +59,8 @@ fn request(config: &Configuration, n: u64) -> Block {
         pcm: [[0.0; 2]; 256],
         events: Events::default(),
         parameters: crate::transport::Parameters::default(),
+        timing: None,
+        timing_changes: Default::default(),
     };
     for (i, frame) in block.pcm[..usize::from(block.frames)]
         .iter_mut()
@@ -1241,13 +1243,17 @@ fn actual_startup_deadline_retires_a_held_entry_without_release_or_processing() 
     let setup = case.setup(27);
     let build = build();
     let source = source();
+    // The held entry is observed before asserting timeout and is never released;
+    // a shorter fixture deadline exercises the same supervision and reap path.
+    let mut preparation = options().preparation;
+    preparation.limits.startup = Duration::from_millis(500);
     let result = case.after_stage(
         8,
         move || {
             Pending::prepare(
                 &build,
                 source,
-                options().preparation,
+                preparation,
                 PreparationCancellation::new_on_control().unwrap(),
                 setup,
             )
@@ -1333,6 +1339,7 @@ fn actual_public_startup_restore_retains_saved_envelope_and_restores_real_pcm() 
         storage.data_bytes,
         instance.config.bundle.capacity()
             + instance.config.executable.capacity()
+            + crate::protocol::PACKET_LIMIT
             + instance.ready.initial_state.payload().len()
             + saved.payload().len()
             + std::mem::size_of::<UnixStream>()
@@ -1457,13 +1464,19 @@ fn actual_restore_hangs_cancel_or_time_out_with_direct_reap_and_preserve_another
         let saved = startup_state(&selected, true, 3);
         let build = build();
         let setup = case.setup_restore(variant);
+        let mut preparation = options().preparation;
+        if timeout {
+            // The barrier deliberately holds the SDK indefinitely; a shorter
+            // fixture deadline exercises the same timeout and direct reap.
+            preparation.limits.startup = Duration::from_millis(500);
+        }
         let result = case.after_stage(
             stage,
             move || {
                 Pending::prepare_with_restore(
                     &build,
                     selected,
-                    options().preparation,
+                    preparation,
                     Some(saved),
                     context,
                     setup,
@@ -1509,6 +1522,8 @@ fn actual_restore_hangs_cancel_or_time_out_with_direct_reap_and_preserve_another
     assert!(other.stop_and_reap_on_control().unwrap().status.success());
 }
 
+#[path = "native_tests/controller.rs"]
+mod controller;
 #[path = "native_tests/epoch.rs"]
 mod epoch;
 #[path = "native_tests/live_capture.rs"]

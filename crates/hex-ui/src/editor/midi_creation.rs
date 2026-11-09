@@ -1,7 +1,9 @@
 //! Normal-mode held note creation. Preview stays view-owned until one canonical
 //! note edit on release, including source growth if needed. Existing canvas
-//! identity/geometry and grid rules bound the gesture. Released display transfers
-//! to midi_pending_drag's exact ordinary receipt; it never retains held input.
+//! identity/geometry and grid rules bound the gesture; the dragged end is free
+//! unless cmd/control snaps it (`midi_drag::note_end_grid`). Released display
+//! transfers to midi_pending_drag's exact ordinary receipt; it never retains held
+//! input.
 //! The Window left-button lease owns the second double-click press only.
 use super::{
     EditorView, midi_drag,
@@ -238,7 +240,7 @@ impl EditorView {
                 .state
                 .as_ref()
                 .is_some_and(|s| s.revision == g.context.revision)
-            && self.piano_beat_start.raw() == g.context.view_start
+            && self.piano_beat_start == g.context.view_start
             && self.piano_beat_span.raw() == g.context.view_span
             && self.piano_pitch_low == g.context.pitch_low
             && self.piano_pitch_rows == g.context.pitch_rows
@@ -304,13 +306,12 @@ impl EditorView {
         };
         let start = creation.preview.start.raw();
         let remaining = length.saturating_sub(start);
-        let minimum = current
-            .effective_grid
+        let end_grid = midi_drag::note_end_grid(current.grid, current.snap_modifier);
+        let minimum = end_grid
             .minimum_gate()
             .max(creation.minimum_gate)
             .min(remaining);
-        let end = midi_drag::snap_raw(raw, current.effective_grid)
-            .clamp(start.saturating_add(minimum), length);
+        let end = midi_drag::snap_raw(raw, end_grid).clamp(start.saturating_add(minimum), length);
         let duration = BeatTime::from_raw(end - start);
         let changed = creation.preview.duration != duration;
         creation.preview.duration = duration;

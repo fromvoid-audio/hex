@@ -165,7 +165,7 @@ pub(crate) fn open(
 }
 impl Profile {
     fn tracks(&self) -> usize {
-        if self.index % 2 == 0 { 1 } else { 100 }
+        if self.index.is_multiple_of(2) { 1 } else { 100 }
     }
     fn operation(&self) -> Operation {
         match (self.index / 2) % 4 {

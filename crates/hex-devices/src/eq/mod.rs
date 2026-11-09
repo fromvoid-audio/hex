@@ -65,9 +65,19 @@ impl NativeDeviceMetadata for EqDefinition {
         };
         let settings = EqState::decode(state)?;
         let (normalization, stepping, automation, smoothing) = if id == MODE {
-            (N::Discrete, T::Choice, E::Unsupported, S::None)
+            (
+                N::Discrete,
+                T::Choice,
+                E::DeviceArrangementEnvelope,
+                S::DeviceManaged,
+            )
         } else if id == OUTPUT_GAIN {
-            (N::Linear, T::Continuous, E::Unsupported, S::DeviceManaged)
+            (
+                N::Linear,
+                T::Continuous,
+                E::DeviceArrangementEnvelope,
+                S::DeviceManaged,
+            )
         } else {
             let (node, field) = NodeId::from_parameter(id)?;
             let node = settings.node(node)?;
@@ -175,7 +185,64 @@ impl NativeDeviceMetadata for EqDefinition {
         })
     }
 }
+impl EqDefinition {
+    /// Control-only exact-grant component preparation. The returned processor
+    /// uses the existing native checkpoint/runtime custody; no resource ownership
+    /// transfers. Standard registry admission uses the same exact-grant component.
+    /// Known node fields, mode and output gain are accepted. Mode uses one
+    /// preallocated outgoing fade with latest-target coalescence; legacy-shelf
+    /// kind/gain/q remain unsupported. Grants are sorted, unique and bounded by
+    /// the neutral descriptor limit. No authored state or curves are rewritten.
+    pub fn prepare_automation_component(
+        state: &NativeDeviceState,
+        sample_rate: u32,
+        parameters: &[ParameterId],
+    ) -> Result<Arc<dyn PreparedNativeProcessor>, DeviceContractError> {
+        state.require_asset_free_processing()?;
+        Ok(Arc::new(runtime::PreparedEq::automated(
+            EqState::decode(state)?,
+            sample_rate,
+            parameters,
+        )?))
+    }
+}
 impl NativeDeviceDefinition for EqDefinition {
+    fn supports_parameter_automation(
+        &self,
+        state: &NativeDeviceState,
+        parameter: ParameterId,
+    ) -> Result<bool, DeviceContractError> {
+        let settings = EqState::decode(state)?;
+        if parameter == MODE || parameter == OUTPUT_GAIN {
+            return Ok(true);
+        }
+        let Ok((id, field)) = NodeId::from_parameter(parameter) else {
+            return Ok(false);
+        };
+        let Ok(node) = settings.node(id) else {
+            return Ok(false);
+        };
+        Ok(!node.legacy_shelf
+            || !matches!(
+                field,
+                NodeParameter::Kind | NodeParameter::Gain | NodeParameter::Q
+            ))
+    }
+    fn prepare_automated_runtime_instance(
+        &self,
+        _identity: hex_lattice::ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+        parameters: &[ParameterId],
+    ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
+        Ok(hex_lattice::PreparedRuntimeDevice {
+            matrix: StereoMatrix::identity(),
+            processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(
+                Self::prepare_automation_component(state, context.sample_rate, parameters)?,
+            )),
+        })
+    }
+
     fn prepare_matrix(&self, _: &NativeDeviceState) -> Result<StereoMatrix, DeviceContractError> {
         Err(DeviceContractError::UnsupportedProcessingClass)
     }
@@ -268,5 +335,9 @@ pub fn descriptor(
     })
 }
 
+#[cfg(test)]
+mod mode_fade_tests;
+#[cfg(test)]
+mod steady_state_digest_tests;
 #[cfg(test)]
 mod tests;

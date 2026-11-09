@@ -2,8 +2,15 @@
 use super::*;
 use hex_lattice_contract::{
     DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot, MAX_DEVICE_ASSET_REFERENCES,
+    NativeDeviceState,
 };
 use std::collections::BTreeMap;
+
+pub(crate) fn authored_states(project: &Project) -> impl Iterator<Item = &NativeDeviceState> {
+    project
+        .devices()
+        .flat_map(hex_project::Device::authored_states)
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -94,10 +94,14 @@ fn built_in_fm4_offline_export_matches_independent_carrier_pcm() {
         };
         let expected = (((TAU * turns).sin() as f32) as f64 * envelope) as f32;
         let expected_pcm = (expected.clamp(-1.0, 1.0) * 32767.0).round() as i16;
+        // Oracle rounding error plus ±1 LSB TPDF dither per channel.
         assert!(
-            (i32::from(left) - i32::from(expected_pcm)).abs() <= 1,
+            (i32::from(left) - i32::from(expected_pcm)).abs() <= 2,
             "age {age}: exported {left} != independent PCM {expected_pcm}"
         );
-        assert_eq!(left, right, "default FM4 carrier exports centered mono");
+        assert!(
+            (i32::from(left) - i32::from(right)).abs() <= 2,
+            "default FM4 carrier exports centered mono"
+        );
     }
 }
