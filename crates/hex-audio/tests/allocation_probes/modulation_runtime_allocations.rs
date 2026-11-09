@@ -101,7 +101,7 @@ fn utility_graph_modulation_transactions_do_not_allocate_or_free() {
     use hex_lattice::PreparedNativeProcessor;
     use hex_lattice::{
         NativeRuntimeChain, PreparedModulationState, PreparedProcessorFactory,
-        PreparedRuntimeInstance, ProcessorChainOwner, StereoMatrix,
+        PreparedRuntimeInstance, ProcessorChainOwner, SourceModulationRoute, StereoMatrix,
     };
     use hex_lattice_contract::NativeDeviceMetadata;
     use std::sync::Arc;
@@ -153,7 +153,18 @@ fn utility_graph_modulation_transactions_do_not_allocate_or_free() {
         .unwrap();
         let prepared = PreparedRuntimeInstance {
             modulation: Some(
-                PreparedModulationState::new(vec![source, follower, manual], program, 17).unwrap(),
+                PreparedModulationState::with_source_routes(
+                    vec![source, follower, manual],
+                    program,
+                    17,
+                    &[SourceModulationRoute {
+                        source: 0,
+                        target: 2,
+                        amount: 0.2,
+                        range: [0.0, 1.0],
+                    }],
+                )
+                .unwrap(),
             ),
             automation: Default::default(),
             meter: Default::default(),
