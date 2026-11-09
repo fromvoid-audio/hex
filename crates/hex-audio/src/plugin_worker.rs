@@ -178,18 +178,35 @@ impl State {
         block: Block,
         authored: bool,
         manual_parameter: Option<ParameterPoint>,
-    ) -> Result<Block, Fault> {
+        observe_editor: bool,
+    ) -> Result<hex_plugin_host::protocol::EditorPcm, Fault> {
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         let _ = manual_parameter;
         match self.processor.as_mut() {
-            Some(Processor::Function(process)) if !authored => process(block),
+            Some(Processor::Function(process)) if !authored && !observe_editor => process(block)
+                .map(|block| hex_plugin_host::protocol::EditorPcm {
+                    block,
+                    performs: Default::default(),
+                }),
             Some(Processor::Function(_)) => Err(Fault::InvalidParameters),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             Some(Processor::Native(instance)) => {
-                let result = if authored {
-                    instance.exchange_armed_authored_with_manual_on_worker(block, manual_parameter)
-                } else {
-                    instance.exchange_on_worker(block)
+                let result = match (authored, observe_editor) {
+                    (true, true) => instance
+                        .exchange_armed_authored_with_editor_on_worker(block, manual_parameter),
+                    (false, true) => instance.exchange_editor_on_worker(block),
+                    (true, false) => instance
+                        .exchange_armed_authored_with_manual_on_worker(block, manual_parameter)
+                        .map(|block| hex_plugin_host::protocol::EditorPcm {
+                            block,
+                            performs: Default::default(),
+                        }),
+                    (false, false) => instance.exchange_on_worker(block).map(|block| {
+                        hex_plugin_host::protocol::EditorPcm {
+                            block,
+                            performs: Default::default(),
+                        }
+                    }),
                 };
                 match result {
                     Ok(reply) => Ok(reply),
@@ -391,6 +408,7 @@ fn transport_runner_with_setup(
                     parameter_capacity,
                     authored_program,
                     manual_origin_available,
+                    editor_scope,
                 })) => {
                     let authored = authored_program.is_some();
                     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -414,10 +432,13 @@ fn transport_runner_with_setup(
                             break;
                         }
                     };
-                    let result =
-                        state
-                            .process(block, authored, manual_parameter)
-                            .and_then(|reply| {
+                    let result = state
+                        .process(block, authored, manual_parameter, editor_scope.is_some())
+                        .and_then(
+                            |hex_plugin_host::protocol::EditorPcm {
+                                 block: reply,
+                                 performs,
+                             }| {
                                 // Native exchange already validated the complete SDK
                                 // reply. Retain its private input receipt even if Stop
                                 // revokes the transport before callback publication.
@@ -426,11 +447,16 @@ fn transport_runner_with_setup(
                                 let manual = state.complete_parameter_change(&reply)?;
                                 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
                                 let manual = None;
-                                state.worker.complete_with_manual_parameter(reply, manual)?;
+                                state.worker.complete_with_parameter_observations(
+                                    reply,
+                                    manual,
+                                    editor_scope.map(|_| performs),
+                                )?;
                                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                                 state.observe_parameter_reply(&reply)?;
                                 Ok(())
-                            });
+                            },
+                        );
                     if let Err(error) = result {
                         state.worker.revoke();
                         if error != Fault::Revoked {
@@ -518,6 +544,18 @@ impl NativeWorker {
     }
     pub fn binding(&self) -> Binding {
         self.binding
+    }
+
+    /// Enable exact editor observations on this original native worker's next
+    /// physical quantum. The paired endpoint only reports accepted PCM.
+    pub fn arm_editor_pcm_on_control(
+        &self,
+        scope: std::num::NonZeroU64,
+    ) -> Result<hex_plugin_host::transport::EditorScope, Fault> {
+        if self.retirement_requested {
+            return Err(Fault::Revoked);
+        }
+        self.reaper.control.arm_editor_pcm(scope)
     }
     /// The unique loan control retains this worker while its paired callback
     /// is elsewhere. Source handoff clears the original constructor receipt.
