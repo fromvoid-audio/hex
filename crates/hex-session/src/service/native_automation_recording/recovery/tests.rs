@@ -112,7 +112,7 @@ fn recovery_refuses_wrong_stamp_class_target_and_source_without_mutating_file_or
     write(&path, &session, scope, end());
     let original = std::fs::read(&path).unwrap();
     let before = session.project().clone();
-    let DeviceCaptureTarget::Vst3(vst3) = scope.target else {
+    let DeviceCaptureTarget::Vst3(target) = scope.target else {
         panic!("foreign");
     };
     for wrong in [
@@ -126,7 +126,7 @@ fn recovery_refuses_wrong_stamp_class_target_and_source_without_mutating_file_or
         DeviceAutomationTakeScope {
             target: DeviceCaptureTarget::Vst3(Vst3CaptureTarget {
                 parameter: 1,
-                ..vst3
+                ..target
             }),
             ..scope
         },
