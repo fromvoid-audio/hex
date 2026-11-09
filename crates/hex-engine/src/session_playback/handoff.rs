@@ -423,7 +423,8 @@ impl SessionPlayback {
     /// cursor through the reset handoff. Voices and tails reset and gate-active
     /// notes are chased on the next played block; the transport is never
     /// stopped and no note-off is lost. A changed tempo map or loop relocates
-    /// to the musically equivalent frame while playing.
+    /// to the musically equivalent frame while playing. Source-owned effects
+    /// need an exact continuation and cannot fall back to a restart.
     pub(super) fn inherit_state_planned(
         &mut self,
         previous: &mut Self,
@@ -435,8 +436,9 @@ impl SessionPlayback {
         let source_effect_handoff =
             !self.source_effects.is_empty() || !previous.source_effects.is_empty();
         if source_effect_handoff
-            && (live
-                || groups.is_some()
+            && (groups.is_some()
+                || fenced_restart
+                || (live && self.live_restart)
                 || self.loop_region() != previous.loop_region()
                 || self.revision.arrangement().tempo_map
                     != previous.revision.arrangement().tempo_map
@@ -447,8 +449,8 @@ impl SessionPlayback {
                     prepared_source_generator_matches(&previous.revision, &self.revision, source)
                 }))
         {
-            // This staged continuation has no live custody, restart or
-            // recipe replacement contract yet.
+            // Source effect history is carried only across exact, ordinary
+            // continuations. Closed groups, replacement and restart are separate.
             return Err(SessionPlaybackError::Arrangement(
                 "source effect handoff requires the same prepared source configuration",
             ));
@@ -482,7 +484,12 @@ impl SessionPlayback {
                 {
                     Err(SessionPlaybackError::DeviceTransitionBusy)
                 }
-                Err(error) if live && self.candidate_admission_open && restartable(error) => {
+                Err(error)
+                    if live
+                        && !source_effect_handoff
+                        && self.candidate_admission_open
+                        && restartable(error) =>
+                {
                     self.inherit_state_planned_once(previous, None, demand, true)
                 }
                 result => result,

@@ -680,6 +680,10 @@ fn runtime_parameter_automation_supported(parameter: ParameterId) -> bool {
 }
 
 impl NativeDeviceDefinition for UtilityDefinition {
+    fn source_effect_factory_bytes(&self) -> Option<usize> {
+        // The prepared factory contains only inline settings and coefficients.
+        Some(crate::source_effect_arc_bytes::<PreparedUtilityFilterRuntime>())
+    }
     fn supports_parameter_automation(
         &self,
         state: &NativeDeviceState,
