@@ -127,6 +127,8 @@ pub use device_modulation::{
 pub use hex_devices::modulation::audio_rate as audio_rate_modulator;
 /// The authored on/off source codec.
 pub use hex_devices::modulation::button as button_modulator;
+/// The authored pair of latched switches and its output identities.
+pub use hex_devices::modulation::buttons as buttons_modulator;
 pub use hex_devices::modulation::envelope_follower as follower_modulator;
 /// Versioned, control-side settings for the built-in LFO modulator.
 pub use hex_devices::modulation::lfo as lfo_modulator;

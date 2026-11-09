@@ -387,6 +387,10 @@ pub(crate) fn contains_sampler_modulation(project: &Project) -> bool {
     })
 }
 
+pub(crate) fn contains_buttons(project: &Project) -> bool {
+    contains_source(project, DeviceTypeId::from_static("hex.modulator.buttons"))
+}
+
 pub(crate) fn contains_math(project: &Project) -> bool {
     contains_source(project, DeviceTypeId::from_static("hex.modulator.math"))
 }
@@ -487,7 +491,9 @@ pub(crate) fn refuse_legacy(project: &Project) -> Result<(), StorageError> {
     Ok(())
 }
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
-    let version = if contains_math(project) {
+    let version = if contains_buttons(project) {
+        crate::BUTTONS_MODULATOR_SCHEMA_VERSION
+    } else if contains_math(project) {
         crate::MATH_MODULATOR_SCHEMA_VERSION
     } else if contains_sampler_modulation(project) {
         crate::SAMPLER_MODULATION_SCHEMA_VERSION
@@ -589,6 +595,15 @@ pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError
         return Err(StorageError::Invalid(
             "modulation inventory must be nonempty",
         ));
+    }
+    let buttons_schema = version == crate::BUTTONS_MODULATOR_SCHEMA_VERSION;
+    if contains_buttons(&project) != buttons_schema {
+        return Err(StorageError::Invalid(
+            "buttons modulators require their matching project schema",
+        ));
+    }
+    if buttons_schema {
+        return Ok(project);
     }
     let math_schema = version == crate::MATH_MODULATOR_SCHEMA_VERSION;
     if contains_math(&project) != math_schema {

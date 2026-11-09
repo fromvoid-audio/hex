@@ -6,9 +6,9 @@ use crate::editor::context_menu::EditorContextAction;
 use gpui::{AnyElement, Point, SharedString};
 use hex_engine::{
     audio_rate_modulator as audio_rate, button_modulator as manual_button,
-    follower_modulator as follower, lfo_modulator as lfo, macro_four_modulator as macro_four,
-    macro_modulator as manual, math_modulator as math, note_pressure_modulator as pressure,
-    random_modulator as random,
+    buttons_modulator as buttons, follower_modulator as follower, lfo_modulator as lfo,
+    macro_four_modulator as macro_four, macro_modulator as manual, math_modulator as math,
+    note_pressure_modulator as pressure, random_modulator as random,
 };
 use hex_lattice_contract::{ParameterId, ParameterModulation};
 use hex_project::{
@@ -28,10 +28,11 @@ enum SourceKind {
     NotePressure,
     Button,
     Math,
+    Buttons,
 }
 
 impl SourceKind {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 10] = [
         Self::Lfo,
         Self::Follower,
         Self::Macro,
@@ -41,6 +42,7 @@ impl SourceKind {
         Self::NotePressure,
         Self::Button,
         Self::Math,
+        Self::Buttons,
     ];
 
     fn label(self) -> &'static str {
@@ -54,6 +56,7 @@ impl SourceKind {
             Self::NotePressure => "note pressure",
             Self::Button => "button",
             Self::Math => "math",
+            Self::Buttons => "buttons",
         }
     }
 
@@ -61,6 +64,7 @@ impl SourceKind {
         match self {
             Self::NotePressure => 0,
             Self::MacroFour => macro_four::VALUE_PARAMETERS.len(),
+            Self::Buttons => buttons::OUTPUT_COUNT,
             _ => 1,
         }
     }
@@ -76,6 +80,7 @@ impl SourceKind {
             Self::NotePressure => pressure::default_state(),
             Self::Button => manual_button::encode(false),
             Self::Math => math::Settings::default().encode(),
+            Self::Buttons => buttons::Settings::default().encode(),
             Self::Macro => manual::Settings::default().encode(),
             Self::MacroFour => macro_four::Settings::default().encode(),
             Self::Random => random::Settings {
@@ -107,12 +112,12 @@ impl MappingOutput {
 
     fn valid_for(self, slot: &Modulator) -> bool {
         self.source == slot.id
-            && if slot.state.type_id() == macro_four::TYPE_ID {
-                macro_four::VALUE_PARAMETERS.iter().any(|&parameter| {
+            && match slot.state.type_id() {
+                macro_four::TYPE_ID => macro_four::VALUE_PARAMETERS.iter().any(|&parameter| {
                     macro_four::output_for_parameter(parameter) == Some(self.output)
-                })
-            } else {
-                self.output == ModulationOutputId::MAIN
+                }),
+                buttons::TYPE_ID => buttons::index_for_output(self.output).is_some(),
+                _ => self.output == ModulationOutputId::MAIN,
             }
     }
 }
@@ -190,6 +195,7 @@ enum Edit {
     Add(SourceKind),
     ToggleSource(ModulationSourceId),
     ToggleButton(ModulationSourceId),
+    ToggleButtons(MappingOutput),
     DuplicateSource(ModulationSourceId),
     RemoveSource(ModulationSourceId),
     Rate(ModulationSourceId, f64),
@@ -542,6 +548,7 @@ pub(super) fn panel(
             pressure::TYPE_ID => SourceKind::NotePressure,
             manual_button::TYPE_ID => SourceKind::Button,
             math::TYPE_ID => SourceKind::Math,
+            buttons::TYPE_ID => SourceKind::Buttons,
             _ => continue,
         };
         let label = kind.label();
@@ -580,7 +587,7 @@ pub(super) fn panel(
                 Edit::ToggleSource(source_id),
             ))
             .children(
-                (!matches!(kind, SourceKind::MacroFour))
+                (!matches!(kind, SourceKind::MacroFour | SourceKind::Buttons))
                     .then(|| map_control(cx, source_key("map"), MappingOutput::main(source_id))),
             )
             .children(
@@ -610,6 +617,38 @@ pub(super) fn panel(
                 theme::text(if on { "output on" } else { "output off" }),
                 Edit::ToggleButton(source_id),
             ));
+        }
+        if let SourceKind::Buttons = kind
+            && let Ok(settings) = buttons::Settings::decode(&source.state)
+        {
+            for (index, on) in settings.on.into_iter().enumerate() {
+                let number = index as u32 + 1;
+                let Ok(output) = ModulationOutputId::new(number) else {
+                    continue;
+                };
+                let mapped = MappingOutput {
+                    source: source_id,
+                    output,
+                };
+                let label = if on { "on" } else { "off" };
+                row = row.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(2.0))
+                        .child(button(
+                            cx,
+                            source_key(&format!("{number}-toggle")),
+                            theme::text(format!("{number} {label}")),
+                            Edit::ToggleButtons(mapped),
+                        ))
+                        .children([map_control(
+                            cx,
+                            source_key(&format!("{number}-map")),
+                            mapped,
+                        )]),
+                );
+            }
         }
         if matches!(kind, SourceKind::NotePressure) {
             row = row.child(theme::text("one carrier"));
@@ -979,7 +1018,7 @@ pub(super) fn panel(
                 }
                 _ => continue,
             };
-            let label = if matches!(kind, SourceKind::MacroFour) {
+            let label = if matches!(kind, SourceKind::MacroFour | SourceKind::Buttons) {
                 format!("{} → {label}", route.output.value())
             } else {
                 label
@@ -1010,9 +1049,11 @@ pub(super) fn panel(
                         theme::text("+"),
                         Edit::Adjust(route.id, 0.05),
                     ))
-                    .children((!matches!(kind, SourceKind::Button)).then(|| {
-                        button(cx, key("range"), theme::text(range), Edit::Range(route.id))
-                    }))
+                    .children(
+                        (!manual_button::uses_identity_range(source.state.type_id())).then(|| {
+                            button(cx, key("range"), theme::text(range), Edit::Range(route.id))
+                        }),
+                    )
                     .child(button(
                         cx,
                         key("toggle"),
@@ -1117,7 +1158,7 @@ fn is_pressure_source(sources: &[Modulator], id: ModulationSourceId) -> bool {
 fn is_button_source(sources: &[Modulator], id: ModulationSourceId) -> bool {
     sources
         .iter()
-        .any(|source| source.id == id && source.state.type_id() == manual_button::TYPE_ID)
+        .any(|source| source.id == id && manual_button::uses_identity_range(source.state.type_id()))
 }
 
 fn unipolar_range() -> Result<ModulationRange, Invalid> {
@@ -1199,6 +1240,14 @@ fn apply(
             let source = find_source(&mut sources, id)?;
             let on = manual_button::decode(&source.state).map_err(unsupported)?;
             source.state = manual_button::encode(!on).map_err(unsupported)?;
+        }
+        Edit::ToggleButtons(output) => {
+            let source = find_source(&mut sources, output.source)?;
+            let mut settings = buttons::Settings::decode(&source.state).map_err(unsupported)?;
+            let index = buttons::index_for_output(output.output)
+                .ok_or(Invalid("button output is unsupported"))?;
+            settings.on[index] = !settings.on[index];
+            source.state = settings.encode().map_err(unsupported)?;
         }
         Edit::DuplicateSource(id) => {
             if is_pressure_source(&sources, id) {

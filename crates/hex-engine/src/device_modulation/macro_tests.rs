@@ -780,3 +780,111 @@ fn saved_math_inputs_drive_native_gain_in_ordinary_and_closed_graphs() {
         check(&output);
     }
 }
+
+#[test]
+fn saved_buttons_route_two_latches_independently_after_live_handoff() {
+    use hex_devices::modulation::buttons;
+
+    let mut editor = Editor::new(crate::audio_preparation::candidate_test_project(), 4).unwrap();
+    let track = editor.project().tracks()[0].id();
+    let asset = editor.project().assets().next().unwrap().id();
+    let base = UTILITY_DEFINITION.default_state().unwrap();
+    let Created::Device(device) = editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: base.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("utility");
+    };
+    let next = editor.project().next_identity();
+    let source = ModulationSourceId::new(next).unwrap();
+    let routes = [
+        (parameter::GAIN, 0.5 / MAX_UTILITY_GAIN),
+        (parameter::INVERT_RIGHT, 1.0),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, (parameter, amount))| DeviceModulationRoute {
+        id: ModulationRouteId::new(next + index as u64 + 1).unwrap(),
+        source,
+        output: ModulationOutputId::new(index as u32 + 1).unwrap(),
+        destination: ModulationDestination::Device {
+            device_type: UTILITY_TYPE_ID,
+            target: DeviceAutomationTarget::Parameter(parameter),
+            vst3_class: None,
+        },
+        amount: ModulationAmount::new(amount).unwrap(),
+        range: ModulationRange::default(),
+        enabled: true,
+    })
+    .collect::<Vec<_>>();
+    let edit = |on, routes| Command::ReplaceDeviceModulation {
+        device,
+        modulation: DeviceModulation::new(
+            vec![Modulator {
+                id: source,
+                color: Default::default(),
+                enabled: true,
+                state: buttons::Settings { on }.encode().unwrap(),
+            }],
+            routes,
+        )
+        .unwrap(),
+    };
+    let dry = [0.125, -0.25];
+    let audio = Audio::new(48_000, vec![dry; 8]).unwrap();
+    let media = BTreeMap::from([(asset, audio.clone())]);
+    let prepare = |project: &hex_project::Project| {
+        PreparedRevision::prepare(project, &media, Arc::new(SineTable::new()), None)
+    };
+    let (_, initial) = editor
+        .execute_prepared(edit([false; 2], routes.clone()), prepare)
+        .unwrap();
+    let mut playback = Playback::try_from_prepared_with_session(Arc::new(initial)).unwrap();
+    playback
+        .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
+        .unwrap();
+    let mut output = [[0.0; 2]; 8];
+    playback.render(&mut output[..2]).unwrap();
+    assert_eq!(output[..2], [dry; 2]);
+
+    let stable = editor.project().clone();
+    let mut invalid = routes.clone();
+    invalid[1].output = ModulationOutputId::new(3).unwrap();
+    assert!(
+        editor
+            .execute_prepared(edit([true, false], invalid), prepare)
+            .is_err()
+    );
+    let mut invalid = routes.clone();
+    invalid[0].range.start = ModulationAmount::new(0.0).unwrap();
+    assert!(
+        editor
+            .execute_prepared(edit([true, false], invalid), prepare)
+            .is_err()
+    );
+    assert_eq!(*editor.project(), stable);
+
+    for (window, on, frame) in [
+        (2..5, [true, false], [0.1875, -0.375]),
+        (5..8, [false, true], [0.125, 0.25]),
+    ] {
+        let (_, next) = editor
+            .execute_prepared(edit(on, routes.clone()), prepare)
+            .unwrap();
+        let mut successor = Playback::try_from_prepared_with_session(Arc::new(next)).unwrap();
+        successor.try_inherit_runtime_from(&mut playback).unwrap();
+        successor.render(&mut output[window.clone()]).unwrap();
+        assert!(output[window].iter().all(|&actual| actual == frame));
+        playback = successor;
+    }
+    let device = editor.project().device(device).unwrap();
+    assert_eq!(device.state(), &base);
+    assert_eq!(device.modulation().routes(), routes);
+    if render_sealed(editor.project(), asset, &audio, &mut output) {
+        assert_eq!(output, [[0.125, 0.25]; 8]);
+    }
+}
