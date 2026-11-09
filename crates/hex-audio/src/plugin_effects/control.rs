@@ -84,6 +84,16 @@ impl NativeEffect {
     ) -> Result<crate::plugin_worker::NativeParameterValues, &'static str> {
         self.worker.parameter_values_on_control()
     }
+    pub(crate) fn arm_editor_pcm(
+        &self,
+        scope: std::num::NonZeroU64,
+    ) -> Result<(hex_plugin_host::transport::EditorScope, u16), &'static str> {
+        self.worker
+            .arm_editor_pcm_on_control(scope)
+            .map(|armed| (armed, self.worker.quantum_frames()))
+            .map_err(|error| error.message())
+    }
+
     pub(crate) fn poll_parameter_edits(
         &mut self,
     ) -> Result<Option<hex_plugin_host::protocol::ParameterEdits>, &'static str> {
@@ -201,6 +211,16 @@ impl NativeEffectControl {
     ) -> Result<crate::plugin_worker::NativeParameterValues, &'static str> {
         self.worker.parameter_values_on_control()
     }
+    pub(crate) fn arm_editor_pcm(
+        &self,
+        scope: std::num::NonZeroU64,
+    ) -> Result<(hex_plugin_host::transport::EditorScope, u16), &'static str> {
+        self.worker
+            .arm_editor_pcm_on_control(scope)
+            .map(|armed| (armed, self.worker.quantum_frames()))
+            .map_err(|error| error.message())
+    }
+
     pub(crate) fn poll_parameter_edits(
         &mut self,
     ) -> Result<Option<hex_plugin_host::protocol::ParameterEdits>, &'static str> {

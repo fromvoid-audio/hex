@@ -357,6 +357,40 @@ impl PublicationControl {
         Ok(())
     }
 
+    /// Passive observation of a verified playing worker. This does not
+    /// authorize a value change, retain the Root, or consume controller edits.
+    pub fn arm_native_source_editor_delivery_on_control(
+        &mut self,
+        source: AppliedAudioSource,
+        binding: Binding,
+    ) -> Result<crate::foreign_parameter_delivery::editor::Target, &'static str> {
+        self.require_parameter_delivery_source(source, binding)?;
+        self.foreign_editor_delivery
+            .begin(&self.status, source, binding, |scope| {
+                self.candidate_root.arm_native_editor_pcm(binding, scope)
+            })
+    }
+
+    pub fn cancel_native_source_editor_delivery_on_control(
+        &mut self,
+        target: crate::foreign_parameter_delivery::editor::Target,
+    ) -> bool {
+        self.foreign_editor_delivery.cancel(target)
+    }
+
+    pub fn try_native_source_editor_delivery_on_control(
+        &mut self,
+    ) -> Option<crate::foreign_parameter_delivery::editor::Receipt> {
+        self.foreign_editor_delivery.try_receipt()
+    }
+
+    pub fn native_source_editor_confirmed_sequence_on_control(
+        &self,
+        target: crate::foreign_parameter_delivery::editor::Target,
+    ) -> Option<u64> {
+        self.foreign_editor_delivery.confirmed_sequence(target)
+    }
+
     pub fn cancel_native_source_parameter_delivery_on_control(
         &mut self,
         target: crate::foreign_parameter_delivery::Target,

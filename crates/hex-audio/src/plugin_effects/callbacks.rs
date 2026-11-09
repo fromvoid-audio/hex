@@ -87,6 +87,12 @@ impl NativeEffectEntry {
         }
         Ok(())
     }
+    pub(crate) fn take_accepted_editor_quantum(
+        &mut self,
+    ) -> Option<hex_plugin_host::transport::AcceptedEditorQuantum> {
+        self.callback.take_accepted_editor_quantum()
+    }
+
     pub(crate) fn take_accepted_manual_parameter(
         &mut self,
     ) -> Option<hex_plugin_host::transport::AcceptedManualParameter> {
