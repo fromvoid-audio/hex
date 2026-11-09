@@ -7,6 +7,7 @@
 use crate::{
     MAX_MODULATION_BLOCK_FRAMES, MAX_MODULATION_SOURCES, ModulationSourceBank, ModulationSourceId,
     NativeParameterAutomation, PreparedModulation, PreparedModulationSource,
+    modulation_source_routes::PreparedSourceRoute,
 };
 use hex_lattice_contract::DeviceContractError as Error;
 
@@ -15,27 +16,43 @@ use hex_lattice_contract::DeviceContractError as Error;
 pub struct ModulationRuntime {
     bank: ModulationSourceBank,
     program: PreparedModulation,
+    source_routes: Vec<PreparedSourceRoute>,
 }
 
 impl ModulationRuntime {
     /// Refuse incompatible inventories before either prepared object is used.
     pub fn new(bank: ModulationSourceBank, program: PreparedModulation) -> Result<Self, Error> {
+        Self::with_prepared_source_routes(bank, program, Vec::new())
+    }
+
+    pub(crate) fn with_prepared_source_routes(
+        bank: ModulationSourceBank,
+        program: PreparedModulation,
+        source_routes: Vec<PreparedSourceRoute>,
+    ) -> Result<Self, Error> {
         if bank.source_count() != program.source_count()
             || bank.source_count() > MAX_MODULATION_SOURCES
             || bank.chunk_frames() > MAX_MODULATION_BLOCK_FRAMES
         {
             return Err(Error::InvalidDescriptor);
         }
-        Ok(Self { bank, program })
+        Ok(Self {
+            bank,
+            program,
+            source_routes,
+        })
     }
 
     pub(crate) fn matches_prepared(
         &self,
         sources: &[PreparedModulationSource],
         program: &PreparedModulation,
+        source_routes: &[PreparedSourceRoute],
         chunk_frames: usize,
     ) -> bool {
-        self.program == *program && self.bank.matches_prepared(sources, chunk_frames)
+        self.program == *program
+            && self.source_routes == source_routes
+            && self.bank.matches_prepared(sources, chunk_frames)
     }
 
     /// Physical inline and reserved owned storage, excluding allocator metadata.
@@ -47,7 +64,12 @@ impl ModulationRuntime {
         self.bank
             .storage_bytes()
             .ok()?
-            .checked_add(self.program.storage_bytes()?)
+            .checked_add(self.program.storage_bytes()?)?
+            .checked_add(
+                self.source_routes
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<PreparedSourceRoute>())?,
+            )
     }
 
     /// Borrow the prepared program for host admission against the real provider.
@@ -132,7 +154,12 @@ impl ModulationRuntime {
                 return Err(Error::UnknownParameter);
             }
         }
-        self.bank.render_chunk_with_input(frames, clock, input)
+        self.bank.render_chunk_with_input(frames, clock, input)?;
+        let result = self.bank.apply_source_routes(&self.source_routes);
+        if result.is_err() {
+            self.bank.rollback();
+        }
+        result
     }
 
     fn consume_values(
