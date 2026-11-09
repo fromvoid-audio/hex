@@ -629,7 +629,27 @@ fn prepare_knots(
 }
 
 fn point_bound(knots: &[Knot], profile: QuantumProfile) -> usize {
-    point_bound_frames(knots.iter().map(|knot| knot.frame), profile)
+    // Two endpoints per run (also needed across adjacent origin jumps).
+    // An interior corner costs one point, plus one for the old value just
+    // before a step. A sliding window bounds those costs for any run.
+    let cost = |index: usize| 1 + usize::from(step_before(knots, index).is_some());
+    let mut first = 0;
+    let mut window = 0;
+    let mut most_interior = 0;
+    for (index, knot) in knots.iter().enumerate() {
+        window += cost(index);
+        while knot.frame - knots[first].frame >= u64::from(profile.frames) {
+            window -= cost(first);
+            first += 1;
+        }
+        most_interior = most_interior.max(window);
+    }
+    usize::from(profile.frames).min((2 + most_interior) * usize::from(profile.max_runs))
+}
+
+fn step_before(knots: &[Knot], index: usize) -> Option<f64> {
+    let previous = knots.get(index.checked_sub(1)?)?;
+    (!previous.linear && previous.value != knots[index].value).then_some(previous.value)
 }
 
 fn point_bound_frames(
@@ -670,29 +690,25 @@ impl Lane {
         if let Some(overlay) = self.overlay.as_ref() {
             return overlay.render_run(self, start, end, origin, output, count);
         }
-        let mut offset = start;
-        let mut frame = origin;
-        let mut next = if self.knots.len() == 1 {
-            1
-        } else {
-            self.knots.partition_point(|knot| knot.frame <= frame)
-        };
-        while offset < end {
-            let width = self.knots.get(next).map_or(end - offset, |knot| {
-                (end - offset).min(usize::try_from(knot.frame - frame).unwrap_or(usize::MAX))
-            });
-            let last = frame
-                .checked_add((width - 1) as u64)
-                .ok_or(Invalid("foreign automation origin exceeds frame range"))?;
-            self.emit(offset, self.value(frame, next), output, count)?;
-            if width > 1 {
-                self.emit(offset + width - 1, self.value(last, next), output, count)?;
+        let last = origin
+            .checked_add((end - start - 1) as u64)
+            .ok_or(Invalid("foreign automation origin exceeds frame range"))?;
+        let mut next = self.knots.partition_point(|knot| knot.frame <= origin);
+        self.emit(start, self.value(origin, next), output, count)?;
+        let mut emitted = start;
+        while let Some(knot) = self.knots.get(next).filter(|knot| knot.frame <= last) {
+            let offset = start + (knot.frame - origin) as usize;
+            if let Some(previous) = step_before(&self.knots, next)
+                && offset - 1 > emitted
+            {
+                self.emit(offset - 1, previous, output, count)?;
             }
-            offset += width;
-            if offset < end {
-                frame = last + 1;
-                next += 1;
-            }
+            self.emit(offset, knot.value, output, count)?;
+            emitted = offset;
+            next += 1;
+        }
+        if emitted < end - 1 {
+            self.emit(end - 1, self.value(last, next), output, count)?;
         }
         Ok(())
     }

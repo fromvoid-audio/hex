@@ -5,6 +5,7 @@ use hex_engine::native_device_resources::{PreparedDeviceResources, ResidentDevic
 use std::collections::BTreeMap;
 
 mod capture;
+mod fenced_inheritance;
 mod manual_base;
 mod manual_order;
 mod manual_origin;
@@ -249,13 +250,21 @@ fn context() -> hex_engine::AudioSourceContext {
     }
 }
 fn publish(control: &mut Control, playback: Playback, policy: PublicationPolicy) -> u64 {
+    publish_in_context(control, playback, policy, context())
+}
+fn publish_in_context(
+    control: &mut Control,
+    playback: Playback,
+    policy: PublicationPolicy,
+    source_context: hex_engine::AudioSourceContext,
+) -> u64 {
     let mut playback = Some(playback);
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
         match control.publish_with_admission_and_source_on_control(
             playback.take().unwrap(),
             policy,
-            context(),
+            source_context,
             |_| Ok::<_, ()>(()),
         ) {
             Ok(revision) => return revision,

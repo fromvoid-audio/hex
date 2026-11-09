@@ -3009,6 +3009,16 @@ fn run_worker(
                         *scope,
                         gesture_active,
                     )
+                } else if let DeviceAutomationTakeAction::KeepFailedPluginCopy { max_events } =
+                    action
+                {
+                    plugin_recording::keep_failed_copy(
+                        &mut plugin_recording,
+                        &mut native_automation_take,
+                        *scope,
+                        *max_events,
+                        gesture_active,
+                    )
                 } else if let DeviceAutomationTakeAction::AdoptFailedPluginCopy { max_events } =
                     action
                 {

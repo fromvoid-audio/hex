@@ -31,12 +31,28 @@ impl RecoveryCopyReceipt {
         limits: DraftReadLimits,
         max_events: u64,
     ) -> Result<(), String> {
+        self.with_verified_on_control(path, limits, max_events, || Ok(()))
+    }
+
+    /// Run an explicit custody resolution only while the verified copy's shared
+    /// reader lock remains held. Validation failure never calls the resolution.
+    /// This performs bounded file I/O on control, never in the audio callback.
+    pub(in crate::service) fn with_verified_on_control<T>(
+        self,
+        path: &Path,
+        limits: DraftReadLimits,
+        max_events: u64,
+        resolve: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
         if self.events() > max_events {
             return Err("automation recovery receipt exceeds budget".into());
         }
         let mut reader = DraftReader::open_bounded(path, limits, max_events)
             .map_err(|error| error.to_string())?;
-        self.verify_reader(&mut reader)
+        self.verify_reader(&mut reader)?;
+        let result = resolve();
+        drop(reader);
+        result
     }
 
     /// Verify and prepare a finished take from the same locked reader. This is

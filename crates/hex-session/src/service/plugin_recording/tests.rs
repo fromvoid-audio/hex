@@ -483,6 +483,114 @@ fn failed_recovery_dispatch_copies_receipts_without_releasing_custody() {
 }
 
 #[test]
+fn keeping_verified_copy_resolves_only_exact_custody_and_preserves_each_outcome() {
+    use crate::service::native_automation_recording::tests::failed_lane_for_test;
+    use hex_storage::automation_draft::{
+        DraftAbortReason, DraftClock, DraftReadLimits, DraftReader, DraftTerminal,
+    };
+
+    for terminal in [
+        DraftTerminal::Finished(DraftClock {
+            performance_frame: 32,
+            content_frame: 24,
+            loop_pass: 0,
+        }),
+        DraftTerminal::Interrupted,
+        DraftTerminal::Aborted(DraftAbortReason::Cancelled),
+    ] {
+        let (files, session, scope, source) = fixture();
+        let original_path = files.0.join("keep-original");
+        let mut lane = failed_lane_for_test(&session, scope, source, &original_path, terminal);
+        let original = std::fs::read(&original_path).unwrap();
+        let before = session.project().clone();
+        let mut state = active(scope, source);
+        let mut failed = state.active.take().unwrap();
+        failed.ended = true;
+        failed.path = original_path.clone();
+        state.failed = Some(failed);
+        assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, false).is_err());
+        let output = files.0.join("kept-copy");
+        start_failed_copy(&state, &mut lane, scope, &output, 1, false).unwrap();
+        assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, false).is_err());
+        let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
+        let receipt = loop {
+            match lane
+                .receive(
+                    &session,
+                    None,
+                    scope.context(),
+                    scope,
+                    &DeviceAutomationTakeAction::PollFailedCopy,
+                )
+                .unwrap()
+            {
+                Step::Progress(DeviceAutomationTakeProgress::Pending) => {
+                    assert!(Instant::now() < deadline);
+                    std::thread::yield_now();
+                }
+                Step::Progress(DeviceAutomationTakeProgress::VerifiedCopy { receipt, .. }) => {
+                    break receipt;
+                }
+                _ => panic!("unexpected copy outcome"),
+            }
+        };
+        assert_eq!(receipt.terminal(), terminal);
+        let copy = std::fs::read(&output).unwrap();
+        let mut wrong = scope;
+        wrong.stamp.gesture_serial += 1;
+        assert!(keep_failed_copy(&mut state, &mut lane, wrong, 1, false).is_err());
+        assert!(keep_failed_copy(&mut state, &mut lane, scope, 0, false).is_err());
+        assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, true).is_err());
+        state.failed.as_mut().unwrap().path = files.0.join("another-original");
+        assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, false).is_err());
+        state.failed.as_mut().unwrap().path = original_path.clone();
+        state.failed.as_mut().unwrap().ended = false;
+        assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, false).is_err());
+        state.failed.as_mut().unwrap().ended = true;
+        state.failed.as_mut().unwrap().failed_observations[0] =
+            Some(PluginParameterObservation::Unchanged {
+                key: gesture(scope).key,
+            });
+        assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, false).is_err());
+        state.failed.as_mut().unwrap().failed_observations[0] = None;
+        std::fs::remove_file(&output).unwrap();
+        assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, false).is_err());
+        for changed in [&b"malformed"[..], original.as_slice()] {
+            std::fs::write(&output, changed).unwrap();
+            assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, false).is_err());
+            assert!(!lane.close_safe());
+            assert!(!state.close_safe());
+            assert!(lane.begin(&session, None, scope, source, &files.0).is_err());
+            assert_eq!(session.project(), &before);
+            assert_eq!(std::fs::read(&original_path).unwrap(), original);
+        }
+        std::fs::write(&output, &copy).unwrap();
+        assert!(matches!(
+            keep_failed_copy(&mut state, &mut lane, scope, 1, false).unwrap(),
+            Step::Progress(DeviceAutomationTakeProgress::CopyKept(path)) if path == output
+        ));
+        assert!(lane.close_safe());
+        assert!(state.close_safe());
+        assert!(generic_sealed_recovery_idle(&state, &lane));
+        assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, false).is_err());
+        assert_eq!(session.project(), &before);
+        assert_eq!(std::fs::read(&original_path).unwrap(), original);
+        assert_eq!(std::fs::read(&output).unwrap(), copy);
+        let reader = DraftReader::open(
+            &output,
+            DraftReadLimits {
+                max_source_bytes: 65536,
+            },
+        )
+        .unwrap();
+        assert_eq!(reader.progress().durable_terminal, Some(terminal));
+        assert_eq!(reader.progress().durable_events, 1);
+        drop(reader);
+        lane.begin(&session, None, scope, source, &files.0).unwrap();
+    }
+}
+
+#[test]
 fn failed_recovery_dispatch_preserves_already_admitted_terminal_without_late_receipts() {
     use crate::service::native_automation_recording::tests::failed_lane_for_test;
     use hex_storage::automation_draft::{

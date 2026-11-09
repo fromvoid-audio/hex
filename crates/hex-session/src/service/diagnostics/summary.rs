@@ -538,6 +538,13 @@ pub(super) fn command(value: &Command) -> Description {
         Command::InsertNestedDevice { parent, state } => {
             describe!("insert_nested_device"; ["parent" => parent.value(), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="")
         }
+        Command::MoveNativeSourceDevice {
+            source,
+            device,
+            before,
+        } => {
+            describe!("move_native_source_device"; ["source" => source.value(), "device" => device.value(), "before" => before.map(|id| id.value())]; omitted="")
+        }
         Command::ReparentDevice { device, parent } => {
             describe!("reparent_device"; ["device" => device.value(), "parent" => parent.map(|id| id.value())]; omitted="")
         }
@@ -548,6 +555,9 @@ pub(super) fn command(value: &Command) -> Description {
             ..
         } => {
             describe!("splice_device_automation_touch"; ["device" => device.value(), "target" => target, "span_count" => spans.len()]; omitted="")
+        }
+        Command::ReplaceDeviceModulation { device, modulation } => {
+            describe!("replace_device_modulation"; ["device" => device.value(), "source_count" => modulation.sources().len(), "route_count" => modulation.routes().len()]; omitted="")
         }
         Command::ReplaceDeviceAutomationTarget {
             device,
@@ -1947,6 +1957,53 @@ pub(super) fn gesture_target(value: &crate::device_gesture::GestureTarget) -> De
 #[cfg(test)]
 mod default_tests {
     use super::*;
+
+    #[test]
+    fn source_reorder_projection_keeps_source_device_and_anchor_identities() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 1).unwrap();
+        let hex_project::Created::NativeSource(source) = editor
+            .execute(Command::CreateNativeSource {
+                name: "source".into(),
+                devices: vec![hex_project::default_instrument_state().unwrap(); 2],
+                instrument_index: 0,
+            })
+            .unwrap()
+        else {
+            panic!("source")
+        };
+        let devices: Vec<_> = editor
+            .project()
+            .native_source(source)
+            .unwrap()
+            .devices()
+            .map(hex_project::Device::id)
+            .collect();
+        let description = command(&Command::MoveNativeSourceDevice {
+            source,
+            device: devices[0],
+            before: Some(devices[1]),
+        });
+        assert_eq!(description.name, "move_native_source_device");
+        assert!(
+            description
+                .details
+                .text
+                .contains(&format!("source={}", source.value()))
+        );
+        assert!(
+            description
+                .details
+                .text
+                .contains(&format!("device={}", devices[0].value()))
+        );
+        assert!(
+            description
+                .details
+                .text
+                .contains(&format!("before=Some({})", devices[1].value()))
+        );
+    }
 
     #[test]
     fn initialized_device_projection_preserves_kind_without_names_or_bank_payloads() {

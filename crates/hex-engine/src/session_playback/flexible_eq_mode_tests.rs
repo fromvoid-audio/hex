@@ -16,6 +16,7 @@ fn project_with_eq(mode: u8) -> Project {
     let device = snapshot.next_id;
     snapshot.next_id = device + 1;
     snapshot.tracks[0].devices.push(DeviceSnapshot {
+        modulation: Default::default(),
         parent: None,
         automation: Vec::new(),
         comparison: None,

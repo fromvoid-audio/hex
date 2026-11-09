@@ -160,6 +160,19 @@ fn successive_native_takes_keep_the_arm_and_refusals_keep_the_recovery_file() {
     assert_eq!(no_output_progress, Progress::Refused);
     assert!(no_output.error.is_some());
     assert_eq!(no_output.state.revision, revision);
+    let (no_custody, no_custody_progress) = send(
+        initial_scope,
+        Action::KeepFailedPluginCopy { max_events: 2 },
+    );
+    assert_eq!(no_custody_progress, Progress::Refused);
+    assert!(
+        no_custody
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("no failed device automation custody")
+    );
+    assert_eq!(no_custody.state.revision, revision);
     let missing_copy = scratch.0.join("missing-plugin-copy");
     let (missing_event, missing_progress) = send(
         initial_scope,
