@@ -90,8 +90,8 @@ enum Edit {
 
 pub(super) struct OutputMappingAvailability {
     device: DeviceId,
-    rate: u32,
-    state: NativeDeviceState,
+    generation: u64,
+    revision: u64,
     eligible: bool,
 }
 
@@ -159,9 +159,8 @@ pub(super) fn panel(
         })
     {
         let cache = &mut view.device_panel.output_mapping_availability;
-        let rate = state.project.sample_rate();
         let available = if let Some(cached) = cache.as_ref().filter(|entry| {
-            entry.device == id && entry.rate == rate && &entry.state == device.state()
+            entry.device == id && entry.generation == generation && entry.revision == revision
         }) {
             cached.eligible
         } else {
@@ -169,8 +168,8 @@ pub(super) fn panel(
                 hex_engine::project_device_output_gain_modulation_supported(&state.project, id);
             *cache = Some(OutputMappingAvailability {
                 device: id,
-                rate,
-                state: device.state().clone(),
+                generation,
+                revision,
                 eligible,
             });
             eligible
