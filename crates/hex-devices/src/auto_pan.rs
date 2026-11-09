@@ -336,6 +336,10 @@ impl NativeDeviceMetadata for AutoPanDefinition {
 }
 
 impl NativeDeviceDefinition for AutoPanDefinition {
+    fn source_effect_factory_bytes(&self) -> Option<usize> {
+        // The prepared factory contains only inline settings and coefficients.
+        Some(crate::source_effect_arc_bytes::<PreparedAutoPan>())
+    }
     fn supports_parameter_automation(
         &self,
         state: &NativeDeviceState,
