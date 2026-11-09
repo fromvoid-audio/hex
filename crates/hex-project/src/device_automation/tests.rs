@@ -1100,3 +1100,92 @@ fn vst3_touch_splices_require_the_captured_class_and_preserve_history_and_base()
     assert!(editor.redo());
     assert_eq!(editor.project(), &recorded);
 }
+
+#[test]
+fn recorded_native_source_effect_lanes_remain_dormant_without_a_receiver() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "source".into(),
+            before_track: None,
+            slot: crate::TrackDeviceSlot::Instrument,
+            state: crate::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("receiver");
+    };
+    let receiver = editor.project().track(track).unwrap();
+    let source = receiver.source_id().unwrap();
+    let instrument = receiver.instrument().unwrap().id();
+    editor
+        .execute(Command::BindTrackSource {
+            track,
+            source: None,
+        })
+        .unwrap();
+    let Created::Device(effect) = editor
+        .execute(Command::InsertNestedDevice {
+            parent: instrument,
+            state: state(),
+        })
+        .unwrap()
+    else {
+        panic!("source effect");
+    };
+    let target = DeviceAutomationTarget::HostOutputGain;
+    let splice = |device| Command::SpliceDeviceAutomationTouch {
+        device,
+        target,
+        vst3_class: None,
+        spans: vec![DeviceAutomationTouchSpan {
+            start: BeatTime::ZERO,
+            end: BeatTime::ONE,
+            steps: vec![DeviceAutomationTouchStep {
+                beat: BeatTime::ZERO,
+                value: AutomationValue::new(0.5).unwrap(),
+            }],
+        }],
+    };
+    let unbound = editor.project().clone();
+    assert!(editor.execute(splice(effect)).is_err());
+    assert_eq!(editor.project(), &unbound);
+    editor
+        .execute(Command::BindTrackSource {
+            track,
+            source: Some(source),
+        })
+        .unwrap();
+    assert!(
+        editor.execute(splice(instrument)).is_err(),
+        "host trims remain an effect contract"
+    );
+    let before = editor.project().clone();
+    editor.execute(splice(effect)).unwrap();
+    let recorded = editor.project().clone();
+    assert_eq!(
+        recorded
+            .device(effect)
+            .unwrap()
+            .automation_target(target)
+            .unwrap()
+            .touch
+            .len(),
+        1
+    );
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &before);
+    assert!(editor.redo());
+    assert_eq!(editor.project(), &recorded);
+    editor
+        .execute(Command::SetNativeSourceReceiver {
+            source,
+            track: None,
+        })
+        .unwrap();
+    let reopened = Project::from_snapshot(editor.project().snapshot()).unwrap();
+    assert_eq!(
+        reopened.device(effect).unwrap().automation(),
+        recorded.device(effect).unwrap().automation()
+    );
+}

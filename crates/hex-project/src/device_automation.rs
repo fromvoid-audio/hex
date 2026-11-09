@@ -224,16 +224,27 @@ impl Device {
             .map(|index| &self.automation[index])
     }
 }
-// Provider grants are checked by Session and the prepared instrument factory.
+// Project verifies canonical source order and target shape. Session and
+// Engine prove the exact receiver and provider can apply a delivered value.
 fn valid_source_touch(
+    source: &crate::NativeSource,
     device: &Device,
-    instrument: DeviceId,
     target: DeviceAutomationTarget,
 ) -> bool {
-    matches!(target, DeviceAutomationTarget::Vst3 { .. })
-        || (device.id() == instrument
-            && device.state().type_id() != hex_plugin_state::TYPE_ID
-            && matches!(target, DeviceAutomationTarget::Parameter(_)))
+    if matches!(target, DeviceAutomationTarget::Vst3 { .. }) {
+        return true;
+    }
+    if device.state().type_id() == hex_plugin_state::TYPE_ID {
+        return false;
+    }
+    if device.id() == source.instrument().id() {
+        return matches!(target, DeviceAutomationTarget::Parameter(_));
+    }
+    source.instrument_index() == 0
+        && source
+            .post_instrument_effects()
+            .iter()
+            .any(|entry| entry.id() == device.id())
 }
 
 fn splice_touch_lane(
@@ -291,8 +302,7 @@ impl Project {
         if self.native_sources.iter().any(|source| {
             source.devices().any(|device| {
                 device.automation().iter().any(|lane| {
-                    !lane.touch.is_empty()
-                        && !valid_source_touch(device, source.instrument().id(), lane.target)
+                    !lane.touch.is_empty() && !valid_source_touch(source, device, lane.target)
                 })
             })
         }) {
@@ -407,12 +417,25 @@ impl Project {
         target
             .validate()
             .map_err(|_| Invalid("invalid automation target identity"))?;
-        if self.native_sources.iter().any(|source| {
-            source.devices().any(|entry| {
-                entry.id() == device && !valid_source_touch(entry, source.instrument().id(), target)
-            })
+        if let Some((source, entry)) = self.native_sources.iter().find_map(|source| {
+            source
+                .devices()
+                .find(|entry| entry.id() == device)
+                .map(|entry| (source, entry))
         }) {
-            return Err(Invalid("recorded touch requires a native effect target"));
+            if !valid_source_touch(source, entry, target) {
+                return Err(Invalid(
+                    "recorded touch requires a supported source device target",
+                ));
+            }
+            if !matches!(target, DeviceAutomationTarget::Vst3 { .. })
+                && entry.id() != source.instrument().id()
+                && source.receiver().is_none()
+            {
+                return Err(Invalid(
+                    "recorded source effect touch requires a bound receiver",
+                ));
+            }
         }
         self.edit_device(device, |entry| {
             splice_touch_lane(entry, target, vst3_class, spans)
