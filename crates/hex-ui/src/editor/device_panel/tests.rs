@@ -6249,7 +6249,7 @@ fn modulation_panel_adds_and_maps_an_lfo_without_editing_base_values(cx: &mut Te
 }
 
 #[gpui::test]
-fn modulation_panel_maps_eq8_gain_and_band_controls_without_editing_authored_values(
+fn modulation_panel_maps_continuous_and_discrete_eq8_controls_without_editing_authored_values(
     cx: &mut TestAppContext,
 ) {
     use hex_devices::eq8::{EQ8_TYPE_ID, parameter};
@@ -6280,25 +6280,10 @@ fn modulation_panel_maps_eq8_gain_and_band_controls_without_editing_authored_val
     click(&mut visual, format!("lfo-{}-map", source.value()), true);
     let target_key =
         |parameter: ParameterId| format!("map-target-{}-{}", device.value(), parameter.value());
-    assert!(
-        visual
-            .debug_bounds(Box::leak(target_key(parameter::MODE).into_boxed_str()))
-            .is_none()
-    );
-    let toolbar = visual
-        .debug_bounds(Box::leak(
-            format!("eq8-toolbar-{}", device.value()).into_boxed_str(),
-        ))
-        .unwrap();
-    // The modulator strip occupies part of the scrollable housing. Bring the
-    // bottom dial row into view before clicking its mapping overlay.
-    visual.simulate_event(gpui::ScrollWheelEvent {
-        position: toolbar.center(),
-        delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-80.0))),
-        ..Default::default()
-    });
-    visual.run_until_parked();
     let targets = [
+        parameter::MODE,
+        parameter::enabled(0, 0),
+        parameter::kind(0, 0),
         parameter::OUTPUT_GAIN,
         parameter::frequency(0, 0),
         parameter::gain(0, 0),
@@ -6316,6 +6301,20 @@ fn modulation_panel_maps_eq8_gain_and_band_controls_without_editing_authored_val
             .len()
     };
     for (index, parameter) in targets.into_iter().enumerate() {
+        if parameter == parameter::OUTPUT_GAIN {
+            let toolbar = visual
+                .debug_bounds(Box::leak(
+                    format!("eq8-toolbar-{}", device.value()).into_boxed_str(),
+                ))
+                .unwrap();
+            // Bring the bottom dial row into the scrollable housing's viewport.
+            visual.simulate_event(gpui::ScrollWheelEvent {
+                position: toolbar.center(),
+                delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-80.0))),
+                ..Default::default()
+            });
+            visual.run_until_parked();
+        }
         click(&mut visual, target_key(parameter), false);
         assert!(
             editor.read_with(cx, |view, _| {

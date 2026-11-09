@@ -34,11 +34,13 @@ const LOG: hex_lattice_contract::ParameterSemantics = hex_lattice_contract::Para
 };
 const CHOICE: hex_lattice_contract::ParameterSemantics = hex_lattice_contract::ParameterSemantics {
     smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+    modulation: hex_lattice_contract::ParameterModulation::SampleRate,
     ..CHOICE_ENVELOPE
 };
 const BOOLEAN: hex_lattice_contract::ParameterSemantics =
     hex_lattice_contract::ParameterSemantics {
         smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+        modulation: hex_lattice_contract::ParameterModulation::SampleRate,
         ..BOOLEAN_ENVELOPE
     };
 macro_rules! band_bindings {
@@ -317,9 +319,10 @@ impl Eq8Runtime {
                     None
                 };
                 if self.controls.admitted(MODE_SLOT) {
-                    let pending = self
-                        .routing
-                        .stage(next_values, self.mode, self.sample_rate)?;
+                    let previous = (!self.band_targets_pending).then_some(&old);
+                    let pending =
+                        self.routing
+                            .stage(next_values, previous, self.mode, self.sample_rate)?;
                     self.routing.install(pending);
                 }
                 self.controls.install(next);
