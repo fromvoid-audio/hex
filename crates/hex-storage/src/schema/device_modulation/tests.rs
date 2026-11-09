@@ -674,6 +674,7 @@ fn lfo_rate_route_upgrades_the_exact_previous_format_and_preserves_the_complete_
     assert_eq!(migrated, *instrument_project);
     assert!(token.requires_save_confirmation(&migrated).unwrap());
     assert_eq!(std::fs::read(&legacy_instrument).unwrap(), bytes);
+    use hex_project::BeatTime;
     editor
         .execute(Command::SpliceDeviceAutomationTouch {
             device: instrument_id,
