@@ -101,10 +101,17 @@ impl LfoControls {
         }
     }
 }
+#[derive(Clone, Copy, Default)]
+pub(super) struct ImmediateControls {
+    pub(super) feedback: bool,
+    pub(super) mix: bool,
+    pub(super) lfo_delay: bool,
+    pub(super) lfo_rate: bool,
+}
 impl ControlValues {
     // Timing is compared after linkage projection: an inactive raw lane must
     // not restart the shared scalar ramp. Exhaustive fields keep this audited.
-    pub(super) fn other_targets_changed(&self, other: &Self, immediate: [bool; 2]) -> bool {
+    pub(super) fn other_targets_changed(&self, other: &Self, immediate: ImmediateControls) -> bool {
         let Self {
             feedback,
             mix,
@@ -114,11 +121,18 @@ impl ControlValues {
             timing: _,
             flags,
         } = self;
-        (!immediate[0] && *feedback != other.feedback)
-            || (!immediate[1] && *mix != other.mix)
+        let mut lfo = *lfo;
+        if immediate.lfo_delay {
+            lfo.delay = other.lfo.delay;
+        }
+        if immediate.lfo_rate {
+            lfo.rate = other.lfo.rate;
+        }
+        (!immediate.feedback && *feedback != other.feedback)
+            || (!immediate.mix && *mix != other.mix)
             || *frequency != other.frequency
             || *width != other.width
-            || lfo != &other.lfo
+            || lfo != other.lfo
             || flags != &other.flags
     }
     pub(super) fn new(settings: Settings) -> Self {
@@ -140,6 +154,11 @@ const SEMANTICS: ParameterSemantics = ParameterSemantics {
 const SAMPLE_RATE: ParameterSemantics = ParameterSemantics {
     modulation: ParameterModulation::SampleRate,
     ..SEMANTICS
+};
+
+const DIRECT_SAMPLE_RATE: ParameterSemantics = ParameterSemantics {
+    modulation: ParameterModulation::SampleRate,
+    ..SCALAR_ENVELOPE
 };
 
 pub(super) const BINDINGS: [Binding<ControlValues>; COUNT] = [
@@ -283,7 +302,7 @@ pub(super) const BINDINGS: [Binding<ControlValues>; COUNT] = [
     ),
     Binding::float(
         state::DESCRIPTORS[17],
-        SCALAR_ENVELOPE,
+        DIRECT_SAMPLE_RATE,
         |s| s.lfo.delay,
         |s, v| s.lfo.delay = v,
     ),
@@ -306,7 +325,7 @@ pub(super) const BINDINGS: [Binding<ControlValues>; COUNT] = [
         state::DESCRIPTORS[20],
         ParameterSemantics {
             normalization: hex_lattice_contract::ParameterNormalization::PositiveLogarithmic,
-            ..SCALAR_ENVELOPE
+            ..DIRECT_SAMPLE_RATE
         },
         |s| s.lfo.rate,
         |s, v| s.lfo.rate = v,

@@ -8,8 +8,9 @@
 //! one-pole (20 ms with high quality); Fade crossfades taps over 50 ms, Jump
 //! is immediate. Feedback, mix, filter enable/frequency/width ramp over 10 ms
 //! on compatible authored edits. Mapped feedback and mix adopt their canonical
-//! values on the same sample without restarting another control's ramp. The
-//! internal oscillator scales time by 1 + depth * oscillator and
+//! values on the same sample without restarting another control's ramp. Mapped
+//! oscillator depth and free rate also adopt each sample's value. The internal
+//! oscillator scales time by 1 + depth * oscillator and
 //! filter center by 2^(4 * depth * oscillator); both are range-clamped. Filter
 //! coefficients update every 16 frames independent of block partitions.
 //! Ping-pong averages stereo input into the left line and crossfeeds outputs.
@@ -291,7 +292,7 @@ impl Runtime {
         let flags = self.speculative.controls.effective_ref().flags;
         let hq = flags.high_quality;
         BlockSettings {
-            immediate: [false; 2],
+            immediate: automation::ImmediateControls::default(),
             freeze: flags.freeze && !self.releasing,
             hq,
             alpha: time_alpha(self.rate, hq),
@@ -303,8 +304,10 @@ impl Runtime {
         let old_timing = self.speculative.timing;
         self.speculative.controls.reset();
         self.speculative.timing = automation::timing(&self.speculative.controls);
-        if old.other_targets_changed(self.speculative.controls.effective_ref(), [false; 2])
-            || old_timing != self.speculative.timing
+        if old.other_targets_changed(
+            self.speculative.controls.effective_ref(),
+            automation::ImmediateControls::default(),
+        ) || old_timing != self.speculative.timing
         {
             self.speculative.ramp_left = self.rate.div_ceil(100);
         }
@@ -346,10 +349,12 @@ impl Runtime {
             .controls
             .resolve(&automation::BINDINGS, values)?;
         let mut block = self.block_settings();
-        block.immediate = [
-            values.has_sample_rate_modulation(FEEDBACK),
-            values.has_sample_rate_modulation(DRY_WET),
-        ];
+        block.immediate = automation::ImmediateControls {
+            feedback: values.has_sample_rate_modulation(FEEDBACK),
+            mix: values.has_sample_rate_modulation(DRY_WET),
+            lfo_delay: values.has_sample_rate_modulation(LFO_DELAY),
+            lfo_rate: values.has_sample_rate_modulation(LFO_RATE),
+        };
         let flags_admitted = [11, 12, 13, 14, 25, 26]
             .iter()
             .any(|&i| self.speculative.controls.admitted(i));
@@ -418,7 +423,12 @@ impl Runtime {
             hq,
             alpha,
             fade_frames,
-            immediate: [feedback_routed, mix_routed],
+            immediate:
+                automation::ImmediateControls {
+                    feedback: feedback_routed,
+                    mix: mix_routed,
+                    ..
+                },
         } = block;
         let s = &mut self.speculative;
         let targets = s.controls.effective_ref();
@@ -570,7 +580,7 @@ impl Runtime {
 }
 #[derive(Clone, Copy)]
 struct BlockSettings {
-    immediate: [bool; 2],
+    immediate: automation::ImmediateControls,
     freeze: bool,
     hq: bool,
     alpha: f64,
