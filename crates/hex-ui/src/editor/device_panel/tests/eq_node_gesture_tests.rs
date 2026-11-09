@@ -853,6 +853,14 @@ fn eq_review_nearest_unsupported_node_blocks_nearby_cut_and_bubbles(cx: &mut Tes
         });
         visual.simulate_resize(size(px(880.0), px(650.0)));
         visual.run_until_parked();
+        // Keep the graph's test points visible in the horizontally scrolled chain.
+        editor.update(cx, |view, cx| {
+            let scroll = &view.device_panel.chain_window.scroll;
+            assert!(scroll.max_offset().width > px(48.0));
+            scroll.set_offset(point(-scroll.max_offset().width / 2.0, px(0.0)));
+            cx.notify();
+        });
+        visual.run_until_parked();
         let left = plot(&mut visual, device, 0.02, 0.5);
         let middle = plot(&mut visual, device, 0.5, 0.5);
         let width = f32::from(middle.x - left.x) / 0.48;
