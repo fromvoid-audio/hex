@@ -314,6 +314,13 @@ pub trait NativeProcessorRuntime: StdAny + Send {
         false
     }
 
+    /// This native provider can replace an equivalent static matrix at a
+    /// source modulation handoff without losing any filter or signal history.
+    /// The host still requires the exact same authored configuration and rate.
+    fn permits_memoryless_modulation_handoff(&self) -> bool {
+        false
+    }
+
     /// Opt in when processing a source release without an external clock,
     /// auxiliary input or automation is equivalent to ordinary processing,
     /// and ordinary history copy resumes that exact signal history.
@@ -805,6 +812,28 @@ impl RuntimeEntry {
                 .modulation
                 .as_ref()
                 .is_some_and(|value| value.program().host_output_base().is_some())
+    }
+
+    fn matches_memoryless_modulation_handoff(&self, old: &Self) -> bool {
+        self.owner == old.owner
+            && self.device_id == old.device_id
+            && self.device_type == old.device_type
+            && self.sample_rate == old.sample_rate
+            && self.algorithmic_latency_frames == Some(0)
+            && old.algorithmic_latency_frames == Some(0)
+            && !old.committed_matrix_ramp.is_active()
+            && !old.committed_output_gain_ramp.active()
+            && !old.committed_bypass_ramp.is_active()
+            && self
+                .runtime
+                .permits_memoryless_modulation_handoff_from(&old.runtime)
+            && self
+                .configuration
+                .as_ref()
+                .zip(old.configuration.as_ref())
+                .is_some_and(|(new, old)| {
+                    std::sync::Arc::ptr_eq(new, old) || new.processing_eq_on_callback(old)
+                })
     }
 
     fn can_smooth_bypass_from(&self, old: &Self) -> bool {
@@ -1761,38 +1790,37 @@ impl NativeRuntimeChain {
     }
 
     /// Preflight a retiring-donor transfer for a source effect recipe. The
-    /// native provider, trims, processing class and topology must still match.
-    /// Live publication may change modulation while the same source/device
-    /// identities carry committed history. Strict continuation compares the
-    /// prepared declaration independently from its moving sample history.
+    /// native provider, trims and topology must still match. A live edit may
+    /// replace a static matrix with a provider that explicitly proves it has
+    /// no signal history to carry. Other live edits preserve committed DSP
+    /// history. Strict continuation also compares the prepared declaration.
     pub fn can_transfer_source_recipe_history_from(
         &self,
         previous: &Self,
         edit_modulation: bool,
     ) -> bool {
         self.len() == previous.len()
-            && self.configuration_matches_range(previous, 0..self.len())
-            && self
-                .entries
-                .iter()
-                .zip(&previous.entries)
-                .all(|(left, right)| {
+            && self.entries.iter().zip(&previous.entries).enumerate().all(
+                |(index, (left, right))| {
                     !matches!(left.runtime, RuntimeOwnership::Foreign(_))
                         && !matches!(right.runtime, RuntimeOwnership::Foreign(_))
                         && left.bypassed == right.bypassed
                         && left.input_gain == right.input_gain
                         && left.output_gain == right.output_gain
                         && left.algorithmic_latency_frames == right.algorithmic_latency_frames
-                        && left.output_tail == right.output_tail
                         && left.automation.is_empty()
                         && right.automation.is_empty()
+                        && ((left.output_tail == right.output_tail
+                            && self.configuration_matches_range(previous, index..index + 1))
+                            || edit_modulation && left.matches_memoryless_modulation_handoff(right))
                         && (edit_modulation
                             || match (&left.modulation, &right.modulation) {
                                 (None, None) => true,
                                 (Some(left), Some(right)) => left.same_declaration(right),
                                 _ => false,
                             })
-                })
+                },
+            )
             && !self.transition_busy_from(previous)
             && self.can_inherit_from(previous)
     }

@@ -51,7 +51,7 @@ pub fn project_device_modulation_target_supported(
     };
     let device = location.device;
     if matches!(location.owner, DeviceOwner::Source(_))
-        && !source_provider_mapping_supported(device.state().type_id())
+        && !source_provider_mapping_supported(device.state(), parameter)
     {
         return false;
     }
@@ -105,10 +105,15 @@ pub fn project_device_host_gain_modulation_supported(project: &Project, device: 
 
 /// These source providers keep a zero-latency processor and identity host
 /// matrix when the first provider route is added or the last is removed.
-fn source_provider_mapping_supported(id: hex_lattice_contract::DeviceTypeId) -> bool {
+fn source_provider_mapping_supported(state: &NativeDeviceState, parameter: ParameterId) -> bool {
+    let id = state.type_id();
     id == hex_devices::auto_pan::AUTO_PAN_TYPE_ID
         || id == hex_devices::gate::GATE_TYPE_ID
         || id == hex_devices::reverb::REVERB_TYPE_ID
+        || id == hex_devices::utility::UTILITY_TYPE_ID
+            && hex_devices::utility::UtilityDefinition::supports_source_matrix_modulation(
+                state, parameter,
+            )
 }
 
 pub(super) fn validate_source_owners(project: &Project) -> Result<(), Invalid> {

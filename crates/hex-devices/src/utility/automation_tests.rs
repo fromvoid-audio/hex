@@ -259,16 +259,26 @@ fn registry_shared_automation_requires_explicit_factory_and_current_parameter_su
             )
             .is_err()
     );
-    let unsupported = crate::compressor::COMPRESSOR_DEFINITION
+    let compressor = crate::compressor::COMPRESSOR_DEFINITION
         .default_state()
         .unwrap();
+    let threshold = crate::compressor::parameter::THRESHOLD;
+    let prepared = registry
+        .prepare_runtime_instance_with_automation(identity, &compressor, &context, &[threshold])
+        .unwrap();
+    assert!(
+        prepared
+            .processor
+            .unwrap()
+            .supports_parameter_automation(threshold)
+    );
     assert!(
         registry
             .prepare_runtime_instance_with_automation(
                 identity,
-                &unsupported,
+                &compressor,
                 &context,
-                &[crate::compressor::parameter::THRESHOLD]
+                &[parameter::BASS_MONO]
             )
             .is_err()
     );
