@@ -6647,6 +6647,16 @@ fn modulation_panel_adds_and_maps_seeded_random(cx: &mut TestAppContext) {
     );
 }
 
+#[gpui::test]
+fn modulation_panel_adds_and_maps_an_audio_rate_modulator(cx: &mut TestAppContext) {
+    assert_modulation_mapping(
+        cx,
+        "audio rate",
+        hex_engine::audio_rate_modulator::TYPE_ID,
+        &[hex_devices::utility::parameter::GAIN],
+    );
+}
+
 fn assert_modulation_mapping(
     cx: &mut TestAppContext,
     source_kind: &str,
