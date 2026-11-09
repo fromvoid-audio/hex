@@ -47,6 +47,28 @@ fn instrument_modulation_supported(source: &hex_project::NativeSource) -> bool {
         && source.instrument().state().type_id() == hex_devices::fm4::device::FM4_TYPE_ID
 }
 
+/// The native note-pressure slot belongs to the FM4 source receiver. A
+/// bank with a pressure slot already owns that source identity.
+pub fn project_device_can_add_note_pressure(project: &Project, device: DeviceId) -> bool {
+    let Some(location) = project.device_location(device) else {
+        return false;
+    };
+    let (DeviceUnitClass::Instrument, DeviceOwner::Source(source)) =
+        (location.class, location.owner)
+    else {
+        return false;
+    };
+    project
+        .native_source(source)
+        .is_some_and(instrument_modulation_supported)
+        && !location
+            .device
+            .modulation()
+            .sources()
+            .iter()
+            .any(|source| source.state.type_id() == note_pressure::TYPE_ID)
+}
+
 /// State-aware eligibility for native device-panel mapping. Ownership is
 /// resolved from the current project. Preparation independently validates the
 /// actual factory, runtime binding and source program before publication.

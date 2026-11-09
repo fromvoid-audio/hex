@@ -6,7 +6,7 @@ use crate::editor::context_menu::EditorContextAction;
 use gpui::{AnyElement, Point, SharedString};
 use hex_engine::{
     audio_rate_modulator as audio_rate, follower_modulator as follower, lfo_modulator as lfo,
-    macro_modulator as manual, random_modulator as random,
+    macro_modulator as manual, note_pressure_modulator as pressure, random_modulator as random,
 };
 use hex_lattice_contract::{ParameterId, ParameterModulation};
 use hex_project::{
@@ -22,15 +22,17 @@ enum SourceKind {
     Macro,
     Random,
     AudioRate,
+    NotePressure,
 }
 
 impl SourceKind {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Lfo,
         Self::Follower,
         Self::Macro,
         Self::Random,
         Self::AudioRate,
+        Self::NotePressure,
     ];
 
     fn label(self) -> &'static str {
@@ -40,6 +42,7 @@ impl SourceKind {
             Self::Macro => "macro",
             Self::Random => "random",
             Self::AudioRate => "audio rate",
+            Self::NotePressure => "note pressure",
         }
     }
 
@@ -51,6 +54,7 @@ impl SourceKind {
             Self::Lfo => lfo::Settings::default().encode(),
             Self::Follower => follower::Settings::default().encode(),
             Self::AudioRate => audio_rate::default_state(),
+            Self::NotePressure => pressure::default_state(),
             Self::Macro => manual::Settings::default().encode(),
             Self::Random => random::Settings {
                 seed: identity,
@@ -192,10 +196,15 @@ fn open_add_menu(
         .or_else(|| window.focused(cx));
     let focus = cx.focus_handle();
     window.focus(&focus);
+    let allow_note_pressure = view.state.as_ref().is_some_and(|state| {
+        hex_engine::project_device_can_add_note_pressure(&state.project, target.device)
+    });
     let items = SourceKind::ALL
         .into_iter()
-        .filter(|kind| {
-            allow_audio_input || !matches!(kind, SourceKind::Follower | SourceKind::AudioRate)
+        .filter(|kind| match kind {
+            SourceKind::Follower | SourceKind::AudioRate => allow_audio_input,
+            SourceKind::NotePressure => allow_note_pressure,
+            _ => true,
         })
         .map(|kind| MenuItem {
             label: kind.label(),
@@ -360,8 +369,8 @@ pub(super) fn panel(
             format!("add-modulator-{}", id.value()),
             theme::text("+ modulator"),
         )
-        .on_click(cx.listener(
-            move |view, event: &gpui::ClickEvent, window, cx| {
+        .on_click(
+            cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
                 cx.stop_propagation();
                 open_add_menu(
                     view,
@@ -371,8 +380,8 @@ pub(super) fn panel(
                     window,
                     cx,
                 );
-            },
-        ));
+            }),
+        );
         body = body.child(add_button);
     }
     if let Some(source) = selected
@@ -400,9 +409,11 @@ pub(super) fn panel(
         .into_iter()
         .flat_map(|source| bank.source_route_ancestors(source))
         .collect();
+    let pressure_selected = selected.is_some_and(|id| is_pressure_source(bank.sources(), id));
     let mapping_source_for = |target, destination| {
         selected.filter(|source| {
-            !blocked_targets.is_empty()
+            !pressure_selected
+                && !blocked_targets.is_empty()
                 && !blocked_targets.contains(&target)
                 && bank.routes().len() < hex_project::MAX_MODULATION_ROUTES_PER_DEVICE
                 && !bank
@@ -433,6 +444,7 @@ pub(super) fn panel(
             manual::TYPE_ID => SourceKind::Macro,
             random::TYPE_ID => SourceKind::Random,
             audio_rate::TYPE_ID => SourceKind::AudioRate,
+            pressure::TYPE_ID => SourceKind::NotePressure,
             _ => continue,
         };
         let label = kind.label();
@@ -471,14 +483,16 @@ pub(super) fn panel(
             ))
             .child(control)
             .children(
-                (bank.sources().len() < hex_project::MAX_MODULATORS_PER_DEVICE).then(|| {
-                    button(
-                        cx,
-                        source_key("duplicate"),
-                        theme::text("duplicate"),
-                        Edit::DuplicateSource(source_id),
-                    )
-                }),
+                (!matches!(kind, SourceKind::NotePressure)
+                    && bank.sources().len() < hex_project::MAX_MODULATORS_PER_DEVICE)
+                    .then(|| {
+                        button(
+                            cx,
+                            source_key("duplicate"),
+                            theme::text("duplicate"),
+                            Edit::DuplicateSource(source_id),
+                        )
+                    }),
             )
             .child(button(
                 cx,
@@ -486,6 +500,9 @@ pub(super) fn panel(
                 theme::text("×"),
                 Edit::RemoveSource(source_id),
             ));
+        if matches!(kind, SourceKind::NotePressure) {
+            row = row.child(theme::text("one carrier"));
+        }
         if let SourceKind::Lfo = kind
             && let Ok(settings) = lfo::Settings::decode(&source.state)
         {
@@ -796,6 +813,12 @@ pub(super) fn target_overlay(
                     if id == parameter
             )
     });
+    if !assigned
+        && is_pressure_source(bank.sources(), source)
+        && bank.routes().iter().any(|route| route.source == source)
+    {
+        return None;
+    }
     let generation = view.project_generation;
     let revision = state.revision;
     let selector = format!("map-target-{}-{}", device.value(), parameter.value());
@@ -824,6 +847,19 @@ pub(super) fn target_overlay(
             }))
             .into_any_element(),
     )
+}
+
+fn is_pressure_source(sources: &[Modulator], id: ModulationSourceId) -> bool {
+    sources
+        .iter()
+        .any(|source| source.id == id && source.state.type_id() == pressure::TYPE_ID)
+}
+
+fn unipolar_range() -> Result<ModulationRange, Invalid> {
+    Ok(ModulationRange {
+        start: ModulationAmount::new(0.0)?,
+        end: ModulationAmount::new(1.0)?,
+    })
 }
 
 fn action(key: String, label: SharedString) -> Stateful<Div> {
@@ -870,19 +906,33 @@ fn apply(
     let unsupported = |_| Invalid("modulator settings are unsupported");
     let maximum_hz = f64::from(project.sample_rate()) * 0.5;
     match edit {
-        Edit::Add(kind) => sources.push(Modulator {
-            color: Default::default(),
-            id: ModulationSourceId::new(project.next_identity()).map_err(unsupported)?,
-            enabled: true,
-            state: kind
-                .default_state(project.next_identity())
-                .map_err(unsupported)?,
-        }),
+        Edit::Add(kind) => {
+            if matches!(kind, SourceKind::NotePressure)
+                && !hex_engine::project_device_can_add_note_pressure(project, id)
+            {
+                return Err(Invalid(
+                    "one note pressure source is supported on an fm4 receiver",
+                ));
+            }
+            sources.push(Modulator {
+                color: Default::default(),
+                id: ModulationSourceId::new(project.next_identity()).map_err(unsupported)?,
+                enabled: true,
+                state: kind
+                    .default_state(project.next_identity())
+                    .map_err(unsupported)?,
+            });
+        }
         Edit::ToggleSource(id) => {
             let source = find_source(&mut sources, id)?;
             source.enabled = !source.enabled;
         }
         Edit::DuplicateSource(id) => {
+            if is_pressure_source(&sources, id) {
+                return Err(Invalid(
+                    "one note pressure source is supported on an fm4 receiver",
+                ));
+            }
             return bank.duplicate_source(id, project.next_identity());
         }
         Edit::RemoveSource(id) => {
@@ -962,6 +1012,13 @@ fn apply(
             source.state = settings.encode().map_err(unsupported)?;
         }
         Edit::Map(source, target) => {
+            let pressure = is_pressure_source(&sources, source);
+            if pressure
+                && (!matches!(target, MappingTarget::Device(_))
+                    || routes.iter().any(|route| route.source == source))
+            {
+                return Err(Invalid("note pressure supports one carrier assignment"));
+            }
             let destination = match target {
                 MappingTarget::Device(parameter) => {
                     if !hex_engine::project_device_modulation_target_supported(
@@ -1006,7 +1063,11 @@ fn apply(
                 output: ModulationOutputId::MAIN,
                 destination,
                 amount: ModulationAmount::new(0.1)?,
-                range: ModulationRange::default(),
+                range: if pressure {
+                    unipolar_range()?
+                } else {
+                    ModulationRange::default()
+                },
                 enabled: true,
             });
         }
@@ -1017,10 +1078,7 @@ fn apply(
         Edit::Range(id) => {
             let route = find_route(&mut routes, id)?;
             route.range = if route.range == ModulationRange::default() {
-                ModulationRange {
-                    start: ModulationAmount::new(0.0)?,
-                    end: ModulationAmount::new(1.0)?,
-                }
+                unipolar_range()?
             } else {
                 ModulationRange::default()
             };
