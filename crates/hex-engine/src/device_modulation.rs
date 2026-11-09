@@ -504,8 +504,16 @@ impl EffectModulation {
                     .and_then(|settings| settings.prepare(source.id, sample_rate)),
                 adsr::TYPE_ID => adsr::Settings::decode(&source.state)
                     .and_then(|settings| settings.prepare(source.id, sample_rate)),
-                steps::TYPE_ID => steps::Settings::decode(&source.state)
-                    .and_then(|settings| settings.prepare(source.id, sample_rate)),
+                steps::TYPE_ID => {
+                    let settings =
+                        steps::Settings::decode(&source.state).map_err(invalid_source)?;
+                    if instrument_events
+                        && matches!(settings.timing, steps::Timing::Arrangement { .. })
+                    {
+                        return Err(Invalid("arrangement-synced steps requires a native effect"));
+                    }
+                    settings.prepare(source.id, sample_rate)
+                }
                 random_hold::TYPE_ID => random_hold::Settings::decode(&source.state)
                     .and_then(|settings| settings.prepare(source.id, sample_rate)),
                 _ => return Err(Invalid("modulator state or rate is unsupported")),

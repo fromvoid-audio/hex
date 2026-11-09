@@ -387,8 +387,21 @@ pub(crate) fn contains_sampler_modulation(project: &Project) -> bool {
     })
 }
 
+const STEPS: DeviceTypeId = DeviceTypeId::from_static("hex.modulator.steps");
+
 pub(crate) fn contains_steps(project: &Project) -> bool {
-    contains_source(project, DeviceTypeId::from_static("hex.modulator.steps"))
+    contains_source(project, STEPS)
+}
+
+/// The timing field in payload version 2 is an Arrangement beat subdivision.
+pub(crate) fn contains_arrangement_steps(project: &Project) -> bool {
+    project.devices().any(|device| {
+        device
+            .modulation()
+            .sources()
+            .iter()
+            .any(|source| source.state.type_id() == STEPS && source.state.state_version() >= 2)
+    })
 }
 
 pub(crate) fn contains_adsr(project: &Project) -> bool {
@@ -521,7 +534,9 @@ pub(crate) fn refuse_legacy(project: &Project) -> Result<(), StorageError> {
     Ok(())
 }
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
-    let version = if contains_steps(project) {
+    let version = if contains_arrangement_steps(project) {
+        crate::ARRANGEMENT_STEPS_SCHEMA_VERSION
+    } else if contains_steps(project) {
         crate::STEPS_MODULATOR_SCHEMA_VERSION
     } else if contains_adsr(project) {
         crate::ADSR_MODULATOR_SCHEMA_VERSION
@@ -637,6 +652,15 @@ pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError
         return Err(StorageError::Invalid(
             "modulation inventory must be nonempty",
         ));
+    }
+    let arrangement_steps_schema = version == crate::ARRANGEMENT_STEPS_SCHEMA_VERSION;
+    if contains_arrangement_steps(&project) != arrangement_steps_schema {
+        return Err(StorageError::Invalid(
+            "arrangement steps require their matching project schema",
+        ));
+    }
+    if arrangement_steps_schema {
+        return Ok(project);
     }
     let steps_schema = version == crate::STEPS_MODULATOR_SCHEMA_VERSION;
     if contains_steps(&project) != steps_schema {
