@@ -2856,8 +2856,15 @@ impl RendererRuntime {
             match source_effect_stage::SourceEffectStages::prepare(project, recipes) {
                 Ok(stages) => stages,
                 Err(error) => {
-                    runtime_error = Some(error.0);
-                    source_effect_stage::SourceEffectStages::default()
+                    return Self {
+                        device_chains,
+                        source_effects: source_effect_stage::SourceEffectStages::default(),
+                        return_chains,
+                        main_chain: hex_lattice::NativeRuntimeChain::empty(),
+                        return_scratch,
+                        runtime_error: Some(error.0),
+                        compensation: None,
+                    };
                 }
             };
         let main_chain = match project.new_main_device_runtime() {
