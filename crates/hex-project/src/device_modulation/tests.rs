@@ -147,6 +147,36 @@ fn reusing_a_slot_id_with_a_new_provider_cannot_retarget_its_existing_routes() {
 }
 
 #[test]
+fn source_ancestors_include_transitive_feeds_but_exclude_disabled_routes() {
+    let destination = |id| ModulationDestination::Modulator {
+        source: ModulationSourceId::new(id).unwrap(),
+        module_type: DeviceTypeId::from_static("test.modulator"),
+        parameter: ParameterId::from_static(1),
+    };
+    let mut disabled = route(8, 4, destination(1));
+    disabled.enabled = false;
+    let bank = DeviceModulation::new(
+        (1..=4).map(source).collect(),
+        vec![
+            route(5, 1, destination(2)),
+            route(6, 2, destination(3)),
+            disabled,
+        ],
+    )
+    .unwrap();
+    let ids = bank
+        .source_route_ancestors(ModulationSourceId::new(3).unwrap())
+        .map(ModulationSourceId::value)
+        .collect::<Vec<_>>();
+    assert_eq!(ids, [3, 2, 1]);
+    assert!(
+        bank.source_route_ancestors(ModulationSourceId::new(5).unwrap())
+            .next()
+            .is_none()
+    );
+}
+
+#[test]
 fn cycles_missing_sources_stale_providers_and_invalid_values_refuse_atomically() {
     let target = |id| ModulationDestination::Modulator {
         source: ModulationSourceId::new(id).unwrap(),
