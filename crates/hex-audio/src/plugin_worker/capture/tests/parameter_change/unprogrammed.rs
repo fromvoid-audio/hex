@@ -1,5 +1,5 @@
-//! A newly armed target owns a hold before any programme mentions it. Cancel
-//! restores its Begin value through that same hold before releasing custody.
+//! A newly armed target owns a hold before any program mentions it. Both
+//! ordinary cleanup and atomic base restoration use its original worker.
 use super::*;
 use crate::plugin_worker::NativeParameterHold;
 use hex_plugin_host::transport::{
@@ -177,30 +177,48 @@ fn holds_restore_and_release_before_the_first_target_programme() {
         );
         render(&owner, 3, 0.75, Some((1, Some(0.75))));
         processed(&mut owner, &change, 0.5);
-        // Explicit Cancel fallback while no programme can restore this ID.
-        let restore = admit(
-            &mut owner,
-            NativeParameterHold::Change {
-                hold: &hold,
-                normalized: 0.25,
-            },
-        );
-        render(&owner, 4, 0.75, None);
-        processed(&mut owner, &restore, 0.25);
-        let release = admit(&mut owner, NativeParameterHold::Release { hold: &hold });
+        // Exercise existing cleanup and the atomic recording end. Another
+        // lane keeps supplying its independent value during restoration.
+        let release = if other_lane {
+            admit(
+                &mut owner,
+                NativeParameterHold::RestoreAndRelease {
+                    hold: &hold,
+                    normalized: 0.25,
+                },
+            )
+        } else {
+            let restore = admit(
+                &mut owner,
+                NativeParameterHold::Change {
+                    hold: &hold,
+                    normalized: 0.25,
+                },
+            );
+            render(&owner, 4, 0.75, None);
+            processed(&mut owner, &restore, 0.25);
+            admit(&mut owner, NativeParameterHold::Release { hold: &hold })
+        };
+        let release_sequence = if other_lane { 4 } else { 5 };
+        if other_lane {
+            render(&owner, 4, 0.75, None);
+        }
         render(&owner, 5, 0.5, Some((2, Some(0.5))));
         assert!(matches!(
             terminal(&mut owner, &release),
-            NativeWorkerParameterProgress::Released {
-                sequence: 5,
-                first_frame: 40
-            }
+            NativeWorkerParameterProgress::Released { sequence, first_frame }
+                if sequence == release_sequence && first_frame == release_sequence * 8
         ));
-        render(&owner, 6, 0.25, Some((3, Some(0.25))));
-        render(&owner, 7, 0.25, Some((4, None)));
+        if other_lane {
+            render(&owner, 6, 0.25, Some((3, None)));
+            render(&owner, 7, 0.25, None);
+        } else {
+            render(&owner, 6, 0.25, Some((3, Some(0.25))));
+            render(&owner, 7, 0.25, Some((4, None)));
+        }
         let stale = admit(
             &mut owner,
-            NativeParameterHold::Change {
+            NativeParameterHold::RestoreAndRelease {
                 hold: &hold,
                 normalized: 0.75,
             },
