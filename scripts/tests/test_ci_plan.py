@@ -1643,7 +1643,11 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/src/editor/cpu_meter.rs"], inventory, [owner]),
             {owner: [cpu]})
-        all_modules = [cpu, disk, "editor::pending_edit::", viewport]
+        thumbnail = "editor::midi_thumbnail::"
+        self.assertEqual(plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/midi_thumbnail.rs"], inventory, [owner]),
+            {owner: [thumbnail]})
+        all_modules = [cpu, disk, thumbnail, "editor::pending_edit::", viewport]
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/tests/unit_editor_state.rs"], inventory, [owner]),
             {owner: all_modules})
@@ -1652,6 +1656,7 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/tests/unit_pending_edit.rs"], inventory, [owner]), {})
         for names, expected in ((filters[owner], True), ([viewport], True), ([disk], True), ([cpu], True),
+                                ([thumbnail], True),
                                 (all_modules, True), (["editor::"], True),
                                 (["editor::save::"], False)):
             boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
