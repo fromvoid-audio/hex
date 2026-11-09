@@ -110,7 +110,8 @@ fn clamped_panel_width(requested: f32, window_width: f32) -> f32 {
         (window_width
             - MIN_WORKSPACE_WIDTH
             - 4.0
-            - 2.0 * hex_widgets::PANEL_FRAME_INSET
+            // Both the browser and workspace panels have framed surrounds.
+            - 4.0 * hex_widgets::PANEL_FRAME_INSET
             - super::workspace_view::PANEL_GUTTER)
             .max(MIN_WIDTH),
     )
@@ -2905,7 +2906,7 @@ mod tests {
     #[test]
     fn browser_width_preserves_minimum_workspace_and_panel() {
         assert_eq!(clamped_panel_width(280.0, 1_240.0), 280.0);
-        assert_eq!(clamped_panel_width(500.0, 880.0), 305.0);
+        assert_eq!(clamped_panel_width(500.0, 880.0), 297.0);
         assert_eq!(clamped_panel_width(100.0, 880.0), MIN_WIDTH);
     }
 
