@@ -2,6 +2,11 @@
 //! receipts and retains a batch until Session acknowledges its admission.
 //! The disk worker seals the file independently of callback and UI lifetimes.
 use super::Session;
+mod native_recovery;
+pub use native_recovery::{
+    MAX_NATIVE_RECOVERY_CONTINUATION_EVENTS, NativeRecoveryContinuation, NativeRecoveryTerminal,
+    copy_native_recovery_on_control,
+};
 mod plugin_observation;
 pub use plugin_observation::{
     FailedPluginContinuation, copy_failed_plugin_on_control,

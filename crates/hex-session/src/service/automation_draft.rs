@@ -17,12 +17,15 @@ use super::{Session, recovery};
 use hex_storage::automation_draft::DraftWriter;
 mod native_device;
 mod recovery_copy;
-pub(in crate::service) use recovery_copy::copy_failed_with_tail_on_control;
+pub(in crate::service) use recovery_copy::{
+    copy_failed_with_tail_on_control, copy_outcome_with_tail_on_control,
+};
 mod recovery_worker;
 pub use hex_storage::automation_draft::{
     AppliedEvent, DraftAbortReason, DraftClock, DraftPrefixIdentity, DraftProgress,
     DraftProvenance, DraftTarget, DraftTerminal,
 };
+pub(in crate::service) use native_device::native_application_clock;
 pub use native_device::{
     DeviceDraftInput, Vst3ApplicationValue, Vst3CaptureTarget, Vst3ParameterApplication,
 };
