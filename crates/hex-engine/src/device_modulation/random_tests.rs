@@ -1,4 +1,4 @@
-use crate::{Audio, Renderer};
+use crate::{Audio, PlaybackCommand, Renderer, playback::Playback};
 use hex_devices::{
     modulation::random_hold::Settings,
     utility::{MAX_UTILITY_GAIN, UTILITY_DEFINITION, UTILITY_TYPE_ID, parameter},
@@ -91,6 +91,23 @@ fn saved_random_modulation_drives_utility_and_restarts_on_seek() {
     renderer.seek(0);
     let mut restarted = [[0.0; 2]; FRAMES];
     renderer.render(&mut restarted).unwrap();
+    assert_eq!(restarted, output);
+
+    // An Arrangement loop wraps the content cursor while keeping the
+    // stateful source on its running sequence.
+    editor
+        .execute(Command::SetLoopRegion {
+            start: 0,
+            end: 3,
+            enabled: true,
+        })
+        .unwrap();
+    let graph = crate::compile::project(editor.project(), &media).unwrap();
+    let mut looped = Playback::new(graph);
+    looped.apply(PlaybackCommand::Play);
+    for block in restarted.chunks_mut(7) {
+        looped.render(block).unwrap();
+    }
     assert_eq!(restarted, output);
 
     editor
