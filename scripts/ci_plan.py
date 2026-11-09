@@ -17,7 +17,7 @@ if _PYTHON_SPEC is None or _PYTHON_SPEC.loader is None:
 python_tests = importlib.util.module_from_spec(_PYTHON_SPEC)
 _PYTHON_SPEC.loader.exec_module(python_tests)
 
-POLICY_VERSION = 11
+POLICY_VERSION = 18
 UI_PACKAGES = {"hex-ui", "hex-widgets"}
 # Opaque state reaches storage through runtime type IDs, not a Cargo dependency.
 # Changes here must be reviewed with the real registration/codec consumers.
@@ -235,9 +235,19 @@ def module_declarations(source_root: Path) -> dict[Path, list[tuple[Path, list[s
 TEST_ATTRIBUTE = re.compile(r"#\[(?:gpui::)?test\b")
 # Unit test targets which compile the owning source directly. Keep their libtest
 # names under the original module path so scoped coverage remains observable.
-UI_UNIT_TARGETS = {"editor::disk_overload::": "unit_editor_state",
+UI_UNIT_TARGETS = {"editor::audio_admission::": "unit_editor_state",
+                   "editor::clip_content_cache::profile::navigation::selection::": "unit_editor_state",
+                   "editor::cpu_meter::": "unit_editor_state",
+                   "editor::disk_overload::": "unit_editor_state",
+                   "editor::midi_thumbnail::": "unit_editor_state",
                    "editor::pending_edit::": "unit_editor_state",
+                   "editor::play_intent::": "unit_editor_state",
+                   "editor::recovery_state::": "unit_editor_state",
+                   "editor::track_meters::scale::": "unit_editor_state",
                    "editor::viewport::": "unit_editor_state"}
+# Recovery's real prepared-audio test is a sibling so importing its state into
+# the unit binary cannot also compile and run the integration fixture there.
+UI_INTEGRATION_PAIRS = {"editor::recovery_state::": "editor::recovery_state_integration_tests::"}
 MOD_LINE = re.compile(r"(pub(\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")
 PATH_ATTRIBUTE = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
 
@@ -352,6 +362,10 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
     for owner, names in filters.items():
         if owner in whole:
             continue
+        if owner == "hex-ui":
+            for module, integration in UI_INTEGRATION_PAIRS.items():
+                if module in names or integration in names:
+                    names.update((module, integration))
         # A filter already covered by a broader selected module is redundant.
         selected[owner] = sorted(n for n in names if not any(n != o and n.startswith(o) for o in names))
     return selected

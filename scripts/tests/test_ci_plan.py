@@ -1639,7 +1639,40 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/src/editor/disk_overload.rs"], inventory, [owner]),
             {owner: [disk]})
-        all_modules = [disk, "editor::pending_edit::", viewport]
+        cpu = "editor::cpu_meter::"
+        self.assertEqual(plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/cpu_meter.rs"], inventory, [owner]),
+            {owner: [cpu]})
+        thumbnail = "editor::midi_thumbnail::"
+        self.assertEqual(plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/midi_thumbnail.rs"], inventory, [owner]),
+            {owner: [thumbnail]})
+        scale = "editor::track_meters::scale::"
+        self.assertEqual(plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/track_meters/scale.rs"], inventory, [owner]),
+            {owner: [scale]})
+        admission = "editor::audio_admission::"
+        self.assertEqual(plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/audio_admission.rs"], inventory, [owner]),
+            {owner: [admission]})
+        navigation = "editor::clip_content_cache::profile::navigation::selection::"
+        self.assertEqual(plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/navigation_profile/selection.rs"], inventory, [owner]),
+            {owner: [navigation]})
+        recovery = "editor::recovery_state::"
+        recovery_integration = "editor::recovery_state_integration_tests::"
+        self.assertEqual(plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/recovery_state.rs"], inventory, [owner]),
+            {owner: [recovery, recovery_integration]})
+        self.assertEqual(plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/recovery_state_integration_tests.rs"], inventory, [owner]),
+            {owner: [recovery, recovery_integration]})
+        play_intent = "editor::play_intent::"
+        self.assertEqual(plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/play_intent.rs"], inventory, [owner]),
+            {owner: [play_intent]})
+        all_modules = [admission, navigation, cpu, disk, thumbnail, "editor::pending_edit::",
+                       play_intent, recovery, recovery_integration, scale, viewport]
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/tests/unit_editor_state.rs"], inventory, [owner]),
             {owner: all_modules})
@@ -1647,7 +1680,12 @@ class ModuleScopeTests(unittest.TestCase):
         # a subset; this migration uses an explicitly reviewed check set.
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/tests/unit_pending_edit.rs"], inventory, [owner]), {})
-        for names, expected in ((filters[owner], True), ([viewport], True), ([disk], True),
+        for names, expected in ((filters[owner], True), ([viewport], True), ([disk], True), ([cpu], True),
+                                ([thumbnail], True), ([scale], True), ([admission], True), ([navigation], True),
+                                ([play_intent], True),
+                                ([recovery, recovery_integration], True),
+                                (["editor::clip_content_cache::"], True),
+                                (["editor::track_meters::"], True),
                                 (all_modules, True), (["editor::"], True),
                                 (["editor::save::"], False)):
             boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
@@ -1661,7 +1699,11 @@ class ModuleScopeTests(unittest.TestCase):
             if unit:
                 self.assertTrue(ci.module_scoped(unit[0].argv))
                 for name in names:
-                    self.assertIn(name, unit[0].argv)
+                    if name != recovery_integration:
+                        self.assertIn(name, unit[0].argv)
+                if recovery in names:
+                    library = next(step for step in steps if step.step_id == "ui-feature-tests")
+                    self.assertIn(recovery_integration, library.argv)
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
                     "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
                     "module_filters": {}}

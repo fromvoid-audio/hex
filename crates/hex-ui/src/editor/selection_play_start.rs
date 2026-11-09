@@ -233,25 +233,28 @@ mod tests {
                     .arrangement_section(copy)
                     .unwrap()
                     .start(),
-                hex_project::BeatTime::from_quarters(12).unwrap()
+                hex_project::BeatTime::from_quarters(13).unwrap()
             );
             assert_eq!(
                 view.playback_start_frame(),
-                12 * 24_000,
+                13 * 24_000,
                 "committed copy selection supplies its actual start"
             );
             copy
         });
         let down = editor.read_with(&visual, |view, _| position(view, 14));
         let target = editor.read_with(&visual, |view, _| position(view, 16));
-        let command = Modifiers::command();
-        visual.simulate_mouse_down(down, MouseButton::Left, command);
-        visual.simulate_mouse_move(target, MouseButton::Left, command);
-        visual.simulate_mouse_up(target, MouseButton::Left, command);
+        let marker_modifiers = Modifiers {
+            alt: true,
+            ..Modifiers::command()
+        };
+        visual.simulate_mouse_down(down, MouseButton::Left, marker_modifiers);
+        visual.simulate_mouse_move(target, MouseButton::Left, marker_modifiers);
+        visual.simulate_mouse_up(target, MouseButton::Left, marker_modifiers);
         editor.read_with(&visual, |view, _| {
             assert_eq!(
                 view.playback_start_frame(),
-                12 * 24_000,
+                13 * 24_000,
                 "move receipt retains canonical start"
             )
         });
@@ -264,7 +267,7 @@ mod tests {
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
             assert_eq!(view.sections.selected, Some(copy));
-            assert_eq!(view.playback_start_frame(), 14 * 24_000);
+            assert_eq!(view.playback_start_frame(), 15 * 24_000);
             assert_eq!(
                 view.last_transport_command, None,
                 "neither edit seeks playback"
@@ -284,7 +287,7 @@ mod tests {
                 Some(copy),
                 "ordinary duplicate preserves its existing selection contract"
             );
-            assert_eq!(view.playback_start_frame(), 14 * 24_000);
+            assert_eq!(view.playback_start_frame(), 15 * 24_000);
         });
         visual.simulate_keystrokes("backspace");
         let event = editor.update(&mut visual, |view, _| next(&view.service));

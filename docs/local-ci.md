@@ -93,9 +93,12 @@ unit tests. The counter stays dev-only and native worker I/O stays off callback.
 
 ## Merge selection
 
-The pure pending-edit receipt, viewport and disk-overload tests run in the small
-`hex-ui` target `unit_editor_state`; the selector includes it for each owner and
-the enclosing editor module. Run it with
+The pure audio-admission, navigation-profile selection, pending-edit receipt,
+play-intent, recovery-state, viewport, MIDI-thumbnail geometry, CPU-meter,
+track-meter scale and disk-overload tests run in the small `hex-ui` target
+`unit_editor_state`; the selector includes it for each owner and its enclosing
+modules. Recovery-state changes also select its real prepared-audio integration
+test. Run the unit target with
 `cargo test -p hex-ui --test unit_editor_state --locked`.
 Other `hex-ui` tests have not yet been classified into separate tiers; in
 particular, the real-window receipt and delayed-acknowledgement tests remain in
