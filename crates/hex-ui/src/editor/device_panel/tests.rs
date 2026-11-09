@@ -6723,6 +6723,79 @@ fn modulation_panel_drags_host_input_and_output_depths_independently(cx: &mut Te
 }
 
 #[gpui::test]
+fn modulation_panel_edits_steps_and_reopens_the_exact_signed_pattern(cx: &mut TestAppContext) {
+    use hex_devices::utility::parameter::GAIN;
+    use hex_engine::steps_modulator::{Direction, Settings};
+
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let base = state.project.device(device).unwrap().state().clone();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1500.0), px(650.0)));
+    visual.run_until_parked();
+    let bank = |view: &EditorView| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .modulation()
+            .clone()
+    };
+    let read = |view: &EditorView| Settings::decode(&bank(view).sources()[0].state).unwrap();
+    let click = click_modulator_control;
+    click(&mut visual, "device-modulator-toggle".into(), false);
+    add_modulator_from_menu(&mut visual, device, "steps");
+    pump_until(&editor, cx, |view| bank(view).sources().len() == 1);
+    let source = editor.read_with(cx, |view, _| bank(view).sources()[0].id);
+    let mut expected = Settings::default();
+    assert_eq!(editor.read_with(cx, |view, _| read(view)), expected);
+    type Edit = fn(&mut Settings);
+    let edits: [(&str, Edit); 5] = [
+        ("step time-shorter", |settings| {
+            settings.duration_micros = 62_500
+        }),
+        ("direction", |settings| {
+            settings.direction = Direction::Backward
+        }),
+        ("length-more", |settings| settings.pattern.push(0)),
+        ("step-1-more", |settings| settings.pattern[0] += 3277),
+        ("step-2-less", |settings| settings.pattern[1] -= 3277),
+    ];
+    visual.run_until_parked();
+    for (suffix, edit) in edits {
+        click(
+            &mut visual,
+            format!("steps-{}-{suffix}", source.value()),
+            true,
+        );
+        edit(&mut expected);
+        pump_until(&editor, cx, |view| read(view) == expected);
+        visual.run_until_parked();
+    }
+    click(&mut visual, format!("steps-{}-map", source.value()), true);
+    click(
+        &mut visual,
+        format!("map-target-{}-{}", device.value(), GAIN.value()),
+        false,
+    );
+    pump_until(&editor, cx, |view| bank(view).routes().len() == 1);
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(project.device(device).unwrap().state(), &base);
+        assert_eq!(read(view), expected);
+        assert_eq!(bank(view).routes()[0].source, source);
+        assert_eq!(
+            hex_storage::schema_version_for(project),
+            hex_storage::STEPS_MODULATOR_SCHEMA_VERSION,
+        );
+        let reopened = hex_storage::decode(&hex_storage::encode(project).unwrap()).unwrap();
+        assert_eq!(&reopened, project.as_ref());
+    });
+}
+
+#[gpui::test]
 fn modulation_panel_maps_delay_feedback_mix_and_oscillator_without_changing_authored_values(
     cx: &mut TestAppContext,
 ) {
@@ -7081,6 +7154,7 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
             "ramp",
             "ahd on release",
             "adsr",
+            "steps",
         ],
     );
     visual.simulate_keystrokes("escape");
@@ -7992,6 +8066,7 @@ fn add_modulator_from_menu(visual: &mut VisualTestContext, device: DeviceId, kin
             "math",
             "buttons",
             "mix",
+            "steps",
         ]
         .iter()
         .position(|label| *label == kind)
