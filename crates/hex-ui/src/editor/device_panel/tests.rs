@@ -6407,6 +6407,28 @@ fn assert_modulation_mapping(
         visual.run_until_parked();
         bounds
     };
+    let scroll_to = |visual: &mut VisualTestContext, key: &str| {
+        let key = Box::leak(key.to_string().into_boxed_str());
+        let target = visual.debug_bounds(key).unwrap();
+        let strip = visual.debug_bounds("device-modulator-scroll").unwrap();
+        if !strip.contains(&target.center()) {
+            visual.simulate_event(gpui::ScrollWheelEvent {
+                position: strip.center(),
+                delta: gpui::ScrollDelta::Pixels(point(
+                    px(0.0),
+                    strip.center().y - target.center().y,
+                )),
+                ..Default::default()
+            });
+            visual.run_until_parked();
+        }
+        let target = visual.debug_bounds(key).unwrap();
+        let strip = visual.debug_bounds("device-modulator-scroll").unwrap();
+        assert!(
+            strip.contains(&target.center()),
+            "{key} at {target:?} outside {strip:?}"
+        );
+    };
     click(&mut visual, "device-modulator-toggle".into());
     click(&mut visual, format!("add-{source_kind}-{}", device.value()));
     let source = |view: &EditorView| {
@@ -6462,28 +6484,6 @@ fn assert_modulation_mapping(
                 .sources()
                 .first()?;
             hex_engine::random_modulator::Settings::decode(&slot.state).ok()
-        };
-        let scroll_to = |visual: &mut VisualTestContext, key: &str| {
-            let key = Box::leak(key.to_string().into_boxed_str());
-            let target = visual.debug_bounds(key).unwrap();
-            let strip = visual.debug_bounds("device-modulator-scroll").unwrap();
-            if !strip.contains(&target.center()) {
-                visual.simulate_event(gpui::ScrollWheelEvent {
-                    position: strip.center(),
-                    delta: gpui::ScrollDelta::Pixels(point(
-                        px(0.0),
-                        strip.center().y - target.center().y,
-                    )),
-                    ..Default::default()
-                });
-                visual.run_until_parked();
-            }
-            let target = visual.debug_bounds(key).unwrap();
-            let strip = visual.debug_bounds("device-modulator-scroll").unwrap();
-            assert!(
-                strip.contains(&target.center()),
-                "{key} at {target:?} outside {strip:?}"
-            );
         };
         let initial = editor.read_with(cx, |view, _| settings(view).unwrap());
         let pending = |view: &EditorView| {
@@ -6595,4 +6595,55 @@ fn assert_modulation_mapping(
             ))
             .is_none()
     );
+    if type_id == hex_engine::lfo_modulator::TYPE_ID {
+        use hex_project::{ModulationAmount, ModulationRange};
+        let routes = |view: &EditorView| {
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .unwrap()
+                .modulation()
+                .routes()
+                .to_vec()
+        };
+        let mut active = editor.read_with(cx, |view, _| routes(view));
+        let id = active[0].id.value();
+        let mut click_route = |suffix: &str| {
+            visual.run_until_parked();
+            let selector = format!("modulation-route-{id}-{suffix}");
+            scroll_to(&mut visual, &selector);
+            click(&mut visual, selector);
+        };
+        click_route("more");
+        active[0].amount = ModulationAmount::new(active[0].amount.get() + 0.05).unwrap();
+        pump_until(&editor, cx, |view| routes(view) == active);
+        // The control bounds reflect the acknowledged authored state.
+        click_route("range");
+        active[0].range = ModulationRange {
+            start: ModulationAmount::new(0.0).unwrap(),
+            end: ModulationAmount::new(1.0).unwrap(),
+        };
+        pump_until(&editor, cx, |view| routes(view) == active);
+
+        let mut bypassed = active.clone();
+        bypassed[0].enabled = false;
+        click_route("toggle");
+        pump_until(&editor, cx, |view| routes(view) == bypassed);
+        editor.read_with(cx, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            let loaded = hex_storage::decode(&hex_storage::encode(project).unwrap()).unwrap();
+            assert_eq!(
+                loaded.device(device).unwrap().modulation().routes(),
+                bypassed
+            );
+        });
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |view| routes(view) == active);
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+        pump_until(&editor, cx, |view| routes(view) == bypassed);
+        click_route("toggle");
+        pump_until(&editor, cx, |view| routes(view) == active);
+    }
 }

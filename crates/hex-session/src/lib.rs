@@ -767,29 +767,13 @@ impl Session {
         project: &Project,
         device: hex_project::DeviceId,
     ) -> Result<hex_engine::NativeDeviceClass, SessionError> {
-        for track in project.tracks() {
-            if track
-                .instrument()
-                .is_some_and(|instrument| instrument.id() == device)
-            {
-                return Ok(hex_engine::NativeDeviceClass::Instrument);
-            }
-            if track.devices().iter().any(|effect| effect.id() == device) {
-                return Ok(hex_engine::NativeDeviceClass::Effect);
-            }
-        }
-        if project
-            .return_tracks()
-            .iter()
-            .any(|track| track.devices().iter().any(|effect| effect.id() == device))
-            || project
-                .main_devices()
-                .iter()
-                .any(|effect| effect.id() == device)
-        {
-            return Ok(hex_engine::NativeDeviceClass::Effect);
-        }
-        Err(SessionError::Invalid("device no longer exists"))
+        let location = project
+            .device_location(device)
+            .ok_or(SessionError::Invalid("device no longer exists"))?;
+        Ok(match location.class {
+            hex_project::DeviceUnitClass::Instrument => hex_engine::NativeDeviceClass::Instrument,
+            hex_project::DeviceUnitClass::Effect => hex_engine::NativeDeviceClass::Effect,
+        })
     }
 
     pub fn sine_table(&self) -> Arc<hex_engine::SineTable> {
