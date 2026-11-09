@@ -323,3 +323,208 @@ fn occurrence_gain_is_applied_after_original_velocity_law_and_released_ids_retir
     let mut ids = [0; VOICES];
     assert_eq!(pair.active_occurrence_ids(&mut ids).unwrap(), 0);
 }
+
+#[test]
+fn sparse_high_slot_and_reused_low_slot_match_source_and_partition_history() {
+    let mut settings = Fm4Settings::defaults();
+    settings.envelope = [0.0, 0.0, 1.0, 0.0];
+    let tuning = hex_lattice::TuningTable::default();
+    let (factory, inline) = prepared(48000, settings, &tuning);
+    let mut whole = NativeInstrumentRuntimePair::new(factory.as_ref(), LIMITS).unwrap();
+    let mut split = NativeInstrumentRuntimePair::new(factory.as_ref(), LIMITS).unwrap();
+    let resources = BorrowedDeviceResources(&[]);
+    let events = (1..=64).map(|id| on(id, 0, 60, 100)).collect::<Vec<_>>();
+    for pair in [&mut whole, &mut split] {
+        pair.begin_block();
+        pair.process_block(&events, &mut [[0.0; 2]; 1], &resources)
+            .unwrap();
+        pair.commit_block();
+    }
+    let mut events = (1..64)
+        .map(|id| NativeInstrumentEvent::NoteOff {
+            frame_offset: 0,
+            occurrence_id: id,
+        })
+        .collect::<Vec<_>>();
+    events.push(on(65, 17, 60, 100));
+    events.push(NativeInstrumentEvent::NoteOff {
+        frame_offset: 29,
+        occurrence_id: 64,
+    });
+    whole.begin_block();
+    split.begin_block();
+    let mut expected = [[0.0; 2]; 64];
+    let mut actual = expected;
+    whole
+        .process_block(&events, &mut expected, &resources)
+        .unwrap();
+    split
+        .process_block(&events[..63], &mut actual[..17], &resources)
+        .unwrap();
+    let remaining = [
+        on(65, 0, 60, 100),
+        NativeInstrumentEvent::NoteOff {
+            frame_offset: 12,
+            occurrence_id: 64,
+        },
+    ];
+    split
+        .process_block(&remaining, &mut actual[17..], &resources)
+        .unwrap();
+    assert_eq!(actual, expected);
+    let note = inline.prepare_note(60, 100).unwrap();
+    for (offset, actual) in actual.iter().enumerate() {
+        let old = if offset < 29 {
+            note.sample(offset as u64 + 1, u64::MAX, &resources)[0]
+        } else {
+            0.0
+        };
+        let new = if offset >= 17 {
+            note.sample((offset - 17) as u64, u64::MAX, &resources)[0]
+        } else {
+            0.0
+        };
+        assert_eq!(*actual, [(f64::from(old) + f64::from(new)) as f32; 2]);
+    }
+    whole.commit_block();
+    split.rollback_block();
+    let mut ids = [0; VOICES];
+    assert_eq!(whole.active_occurrence_ids(&mut ids).unwrap(), 1);
+    assert_eq!(ids[0], 65);
+}
+
+#[test]
+fn committed_target_snapshot_finishes_existing_ramp_and_preserves_resolved_base_on_retarget() {
+    let mut settings = Fm4Settings::defaults();
+    settings.carriers = [0.75, -0.25, 0.5, 0.0];
+    settings.envelope = [0.0, 0.0, 1.0, 0.02];
+    let tuning = hex_lattice::TuningTable::default();
+    let (factory, _) = prepared(48000, settings, &tuning);
+    let mut original = NativeInstrumentRuntimePair::new(factory.as_ref(), LIMITS).unwrap();
+    let mut frozen = NativeInstrumentRuntimePair::new(factory.as_ref(), LIMITS).unwrap();
+    let ids = CARRIERS.map(|descriptor| descriptor.id);
+    let base = settings
+        .carriers
+        .map(|value| Some(ParameterValue::Float(value)));
+    let targets = Values {
+        weights: [Some(-0.25), Some(0.5), None, None],
+        bad_at: None,
+    };
+    for pair in [&mut original, &mut frozen] {
+        assert!(pair.supports_committed_parameter_targets());
+        let mut copied = [None; 4];
+        pair.copy_committed_parameter_targets(&ids, &mut copied)
+            .unwrap();
+        assert_eq!(
+            copied, base,
+            "authored Base differs from descriptor defaults"
+        );
+        pair.begin_block();
+        automated(
+            pair,
+            &[on(1, 0, 60, 100)],
+            &mut [[0.0; 2]; 64],
+            &Values {
+                weights: [None; 4],
+                bad_at: None,
+            },
+        )
+        .unwrap();
+        pair.commit_block();
+        pair.begin_block();
+        automated(
+            pair,
+            &[NativeInstrumentEvent::NoteOff {
+                frame_offset: 8,
+                occurrence_id: 1,
+            }],
+            &mut [[0.0; 2]; 16],
+            &targets,
+        )
+        .unwrap();
+        pair.copy_committed_parameter_targets(&ids, &mut copied)
+            .unwrap();
+        assert_eq!(copied, base, "open speculative ramp is not committed");
+        pair.commit_block();
+    }
+    let mut copied = [None; 4];
+    frozen
+        .copy_committed_parameter_targets(&ids, &mut copied)
+        .unwrap();
+    assert_eq!(
+        copied,
+        [-0.25, 0.5, 0.5, 0.0].map(|value| Some(ParameterValue::Float(value)))
+    );
+    let frozen_values = Values {
+        weights: copied.map(|value| match value {
+            Some(ParameterValue::Float(value)) => Some(value),
+            _ => panic!("complete float target"),
+        }),
+        bad_at: None,
+    };
+    let mut next_settings = settings;
+    next_settings.carriers = [0.125; 4];
+    let (next_factory, _) = prepared(48000, next_settings, &tuning);
+    let InstrumentHistoryRetargetPreparation::Prepared(proof) =
+        next_factory.prepare_history_retarget_target().unwrap()
+    else {
+        panic!("retarget proof")
+    };
+    let mut next = NativeInstrumentRuntimePair::new(next_factory.as_ref(), LIMITS).unwrap();
+    next.retarget_from(&frozen, proof.as_ref()).unwrap();
+    let mut after_retarget = [None; 4];
+    next.copy_committed_parameter_targets(&ids, &mut after_retarget)
+        .unwrap();
+    assert_eq!(
+        after_retarget, copied,
+        "observation must not resolve a new prepared Base"
+    );
+    next.reset();
+    next.copy_committed_parameter_targets(&ids, &mut after_retarget)
+        .unwrap();
+    assert_eq!(
+        after_retarget,
+        next_settings
+            .carriers
+            .map(|value| Some(ParameterValue::Float(value)))
+    );
+    let mut expected = [[0.0; 2]; 1100];
+    let mut actual = expected;
+    let mut offset = 0;
+    for &requested in [7, 31, 128].iter().cycle() {
+        if offset == actual.len() {
+            break;
+        }
+        let count = requested.min(actual.len() - offset);
+        original.begin_block();
+        automated(
+            &mut original,
+            &[],
+            &mut expected[offset..offset + count],
+            &targets,
+        )
+        .unwrap();
+        original.commit_block();
+        frozen.begin_block();
+        automated(
+            &mut frozen,
+            &[],
+            &mut actual[offset..offset + count],
+            &frozen_values,
+        )
+        .unwrap();
+        frozen.commit_block();
+        offset += count;
+    }
+    assert_eq!(
+        actual, expected,
+        "freezing targets does not restart or cancel ramps"
+    );
+    assert!(actual[..64].iter().any(|frame| frame[0] != 0.0));
+    assert_eq!(&actual[actual.len() - 16..], &[[0.0; 2]; 16]);
+    frozen.reset();
+    frozen
+        .copy_committed_parameter_targets(&ids, &mut copied)
+        .unwrap();
+    assert_eq!(copied, base);
+}

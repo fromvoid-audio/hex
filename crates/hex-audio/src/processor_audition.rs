@@ -365,6 +365,8 @@ fn validate(
     if match identity.owner {
         ProcessorChainOwner::Track(id) | ProcessorChainOwner::Return(id) => id == 0,
         ProcessorChainOwner::Main => false,
+        // Source stages do not participate in live audition yet.
+        ProcessorChainOwner::Source(_) => true,
     } {
         return Err(TargetError::InvalidOwner);
     }
@@ -480,6 +482,12 @@ mod tests {
             ),
             (
                 PostNodeIdentity::new(ProcessorChainOwner::Return(0), 17, main.device_type),
+                12,
+                48_000,
+                TargetError::InvalidOwner,
+            ),
+            (
+                PostNodeIdentity::new(ProcessorChainOwner::Source(4), 17, main.device_type),
                 12,
                 48_000,
                 TargetError::InvalidOwner,

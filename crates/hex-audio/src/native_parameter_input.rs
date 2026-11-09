@@ -7,13 +7,20 @@
 //! Sixty-four normal commands may be outstanding; Release and Cancel each keep
 //! a reserved terminal slot. There is no recording-duration/event lifetime cap.
 use crate::{
-    live_delivery::{CAPACITY, Credits, Pending},
+    live_delivery::{CAPACITY, Credits, IN_FLIGHT, Pending},
     prepared::{AppliedAudioSource, Status},
 };
 use hex_engine::{NativeParameterApplication, NativeParameterInputTarget};
 use hex_lattice::{NativeTransientOperation, NativeTransientValue};
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::sync::Arc;
+
+/// Maximum outstanding receipts for ordinary parameter values (including
+/// superseded values) before control must consume delivery credits.
+pub const MAX_PENDING_VALUE_RECEIPTS: usize = IN_FLIGHT;
+
+/// Maximum outstanding receipts including reserved terminal capacity.
+pub const MAX_PENDING_RECEIPTS: usize = CAPACITY;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Target {

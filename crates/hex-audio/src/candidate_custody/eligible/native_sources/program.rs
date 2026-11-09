@@ -15,6 +15,20 @@ impl Custody {
     }
 }
 impl CandidateRoot {
+    /// Copied observation from the exact live loaned endpoint. It is not an
+    /// installation, graph, worker pickup, or reclamation acknowledgement.
+    pub(crate) fn try_native_source_committed_quantum(
+        &self,
+        binding: Binding,
+    ) -> Result<Option<crate::plugin_worker::CommittedQuantum>, &'static str> {
+        self.require_native_source_control_open()?;
+        self.try_with_native_source_endpoint(binding, |loaned, endpoint| {
+            if !loaned || !endpoint.transport_is_live_on_control() {
+                return Err("native callback source is not live and loaned");
+            }
+            Ok(endpoint.committed_quantum_on_control())
+        })?
+    }
     pub(crate) fn reserve_native_program_revision(
         &self,
         binding: Binding,
@@ -145,11 +159,19 @@ mod tests {
         assert_eq!(root.native_source_prepared_state(binding).unwrap(), state);
         assert_eq!(outer.native_source_received_program(binding), None);
         assert_eq!(outer.try_native_source_received_program(binding), Ok(None));
+        assert!(
+            outer.try_native_source_committed_quantum(binding).is_err(),
+            "an unloaned endpoint grants no callback observation"
+        );
         #[cfg(feature = "allocation-probe")]
         outer
             .with_native_source_work_held_on_control(|| {
                 assert_eq!(
                     outer.try_native_source_received_program(binding),
+                    Err("native preparation is busy")
+                );
+                assert_eq!(
+                    outer.try_native_source_committed_quantum(binding),
                     Err("native preparation is busy")
                 );
             })
@@ -164,6 +186,15 @@ mod tests {
         );
         assert_eq!(outer.native_source_processed_program(binding), None);
         let callback = outer.loan_native_endpoint(binding).unwrap();
+        assert_eq!(outer.try_native_source_committed_quantum(binding), Ok(None));
+        assert!(
+            outer
+                .try_native_source_committed_quantum(Binding {
+                    epoch: binding.epoch + 1,
+                    ..binding
+                })
+                .is_err()
+        );
         let second = outer.reserve_native_program_revision(binding).unwrap();
         assert_eq!(second.get(), first.get() + 1);
         assert_eq!(read().1, second);
@@ -190,28 +221,45 @@ mod tests {
         };
         use hex_lattice::ForeignProcessors;
         let mut frames = [[0.5, -0.25]; 8];
-        let render = || {
-            bank.begin_rendering(8).unwrap();
-            bank.process_segment(node, 0, &mut frames, None).unwrap();
-            bank.finish_rendering(true).unwrap();
-        };
-        #[cfg(feature = "allocation-probe")]
-        {
-            let measured = allocation_counter::measure(render);
+        for (start, end, expected) in [
+            (
+                0,
+                3,
+                crate::plugin_worker::CommittedQuantumState::OpenUnprogrammed,
+            ),
+            (3, 8, crate::plugin_worker::CommittedQuantumState::Closed),
+        ] {
+            let render = || {
+                bank.begin_rendering(end - start).unwrap();
+                bank.process_segment(node, 0, &mut frames[start..end], None)
+                    .unwrap();
+                bank.finish_rendering(true).unwrap();
+            };
+            #[cfg(feature = "allocation-probe")]
+            {
+                let measured = allocation_counter::measure(render);
+                assert_eq!(
+                    (
+                        measured.count_total,
+                        measured.bytes_total,
+                        measured.count_current,
+                        measured.bytes_current
+                    ),
+                    (0, 0, 0, 0)
+                );
+            }
+            #[cfg(not(feature = "allocation-probe"))]
+            {
+                let mut render = render;
+                render();
+            }
             assert_eq!(
-                (
-                    measured.count_total,
-                    measured.bytes_total,
-                    measured.count_current,
-                    measured.bytes_current
-                ),
-                (0, 0, 0, 0)
+                outer.try_native_source_committed_quantum(binding),
+                Ok(Some(crate::plugin_worker::CommittedQuantum {
+                    binding,
+                    state: expected
+                }))
             );
-        }
-        #[cfg(not(feature = "allocation-probe"))]
-        {
-            let mut render = render;
-            render();
         }
         let deadline = Instant::now() + Duration::from_secs(1);
         while outer.native_source_processed_program(binding).is_none() {
@@ -235,6 +283,10 @@ mod tests {
         outer
             .ingest_native_endpoint(callback)
             .unwrap_or_else(|_| panic!("original endpoint reunion"));
+        assert!(
+            outer.try_native_source_committed_quantum(binding).is_err(),
+            "a returned endpoint is no longer loaned"
+        );
         assert_eq!(read().1, second);
         assert!(
             outer
@@ -245,7 +297,21 @@ mod tests {
                 .is_err()
         );
         assert_eq!(read().1, second);
+        let callback = outer.loan_native_endpoint(binding).unwrap();
+        let mut revoked_bank = super::super::endpoints::NativeEndpointBank::new().unwrap();
+        assert!(revoked_bank.install(binding.root, callback).is_ok());
+        revoked_bank.reject_rendering();
+        assert!(
+            outer.try_native_source_committed_quantum(binding).is_err(),
+            "revocation must not expose a stale observation"
+        );
+        let mut returned = std::array::from_fn(|_| None);
+        assert!(revoked_bank.extract(binding.root, &mut returned));
+        outer
+            .ingest_native_endpoint(returned.into_iter().flatten().next().unwrap())
+            .unwrap_or_else(|_| panic!("revoked endpoint reunion"));
         assert!(root.retire_native_source(binding));
+        assert!(outer.try_native_source_committed_quantum(binding).is_err());
         assert!(outer.reserve_native_program_revision(binding).is_err());
         assert_eq!(outer.native_source_received_program(binding), None);
         assert!(outer.try_native_source_received_program(binding).is_err());

@@ -4,6 +4,122 @@ use crate::plugin_worker::{NativeWorkerCapture, NativeWorkerCaptureProgress};
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn fenced_quantum_requires_its_current_uninterrupted_graph_fence() {
+    let _serial = serial();
+    let mut f = fixture_with_quantum("processing", 0, 256);
+    let playback = compile(&f, true);
+    publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
+    f.control.command(PlaybackCommand::Play).unwrap();
+    physical_block::<256>(&mut f);
+    replacement::wait_for_blocks(&f.control.native_candidate_root(), f.binding, 1);
+    f.control.command(PlaybackCommand::Pause).unwrap();
+    physical_block::<256>(&mut f);
+    let mut committed = None;
+    f.data.owner_mut().unwrap().run(|callback, _| {
+        committed = callback.native_sources.test_committed_frames(f.binding);
+    });
+    replacement::wait_for_blocks(
+        &f.control.native_candidate_root(),
+        f.binding,
+        committed.unwrap() / 256,
+    );
+    let source = f.control.status.native_effect_source().unwrap();
+    let fence = f.control.request_native_epoch_fence(source).unwrap();
+    assert!(
+        f.control
+            .try_fenced_native_quantum_on_control(source, fence, f.binding)
+            .is_err()
+    );
+    allocation_free(|| {
+        f.data
+            .owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block())
+    });
+    assert_eq!(
+        f.control.stopped_edit_fence_state(fence),
+        StoppedEditFenceState::Ready
+    );
+    let checkpoint = f
+        .control
+        .try_fenced_native_quantum_on_control(source, fence, f.binding)
+        .unwrap()
+        .unwrap();
+    assert_eq!(checkpoint.observation().binding, f.binding);
+    assert!(f.control.fenced_native_quantum_fence_is_ready(checkpoint));
+    #[cfg(feature = "allocation-probe")]
+    f.control
+        .native_candidate_root()
+        .with_native_source_work_held_on_control(|| {
+            assert_eq!(
+                f.control
+                    .try_fenced_native_quantum_on_control(source, fence, f.binding),
+                Err("native preparation is busy")
+            );
+        })
+        .unwrap();
+    f.control.status.closing.store(true, Release);
+    assert!(
+        f.control
+            .try_fenced_native_quantum_on_control(source, fence, f.binding)
+            .is_err()
+    );
+    assert!(!f.control.fenced_native_quantum_fence_is_ready(checkpoint));
+    f.control.status.closing.store(false, Release);
+    assert!(
+        f.control
+            .try_fenced_native_quantum_on_control(
+                source,
+                fence,
+                Binding {
+                    epoch: f.binding.epoch + 1,
+                    ..f.binding
+                }
+            )
+            .is_err()
+    );
+    assert!(
+        f.control
+            .try_fenced_native_quantum_on_control(
+                AppliedAudioSource {
+                    audio_revision: source.audio_revision + 1,
+                    ..source
+                },
+                fence,
+                f.binding
+            )
+            .is_err()
+    );
+    allocation_free(|| {
+        f.data
+            .owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.revoke_native_effects())
+    });
+    assert!(
+        f.control
+            .try_fenced_native_quantum_on_control(source, fence, f.binding)
+            .is_err()
+    );
+    assert!(f.control.fenced_native_quantum_fence_is_ready(checkpoint));
+    f.control.stop();
+    assert!(!f.control.fenced_native_quantum_fence_is_ready(checkpoint));
+    assert!(
+        f.control
+            .try_fenced_native_quantum_on_control(source, fence, f.binding)
+            .is_err()
+    );
+    f.control.release_stopped_edit_fence(fence);
+    assert!(!f.control.fenced_native_quantum_fence_is_ready(checkpoint));
+    let returned = dispose(f);
+    assert!(
+        matches!(returned.disposal, native::PreparationDisposal::Reaped(retired)
+        if retired.status.success() && retired.terminal.is_some())
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn stopped_input_terminal_keeps_original_root_binding_until_drained() {
     use crate::plugin_worker::NativeWorkerParameterProgress;
     let _serial = serial();

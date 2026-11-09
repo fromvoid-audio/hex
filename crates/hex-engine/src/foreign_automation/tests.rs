@@ -89,7 +89,6 @@ fn projects_the_ramp_at_each_tempo_boundary_then_chases_after_wrap() {
     let output = render(&program, &origins, &[]);
     let expected = [
         (0, 0.5 - 3.0 * 0.25 / 4000.0),
-        (2, 0.5 - 0.25 / 4000.0),
         (3, 0.5),
         (5, 0.5 + 2.0 * 0.25 / 8000.0),
         (6, 0.25),
@@ -228,24 +227,32 @@ fn coincident_frames_keep_the_later_point_and_one_point_holds_across_its_origin(
     )
     .unwrap()
     .unwrap();
-    assert_eq!(program.point_budget(), 4);
+    assert_eq!(program.point_budget(), 2);
     let points = render(&program, &[0, 1, 2, 3, 4, 5, 6, 7].map(Some), &[]);
     assert_eq!(
         points
             .iter()
             .map(|p| (p.frame, p.id, p.normalized))
             .collect::<Vec<_>>(),
-        [(0, 0, 0.75), (0, 7, 0.5), (7, 0, 0.75), (7, 7, 0.5)]
+        [(0, 0, 0.75), (0, 7, 0.5)]
     );
 }
 
 #[test]
 fn refuses_dense_or_mismatched_programs_and_checks_admitted_runs() {
     use AutomationInterpolation::Step;
-    let lanes: Vec<_> = (0..17)
-        .map(|id| lane(id, vec![point(BeatTime::ZERO, 0.25, Step)]))
+    let lanes: Vec<_> = (0..9)
+        .map(|id| {
+            lane(
+                id,
+                vec![
+                    point(BeatTime::ZERO, 0.25, Step),
+                    point(BeatTime::from_ratio(1, 2000).unwrap(), 0.75, Step),
+                ],
+            )
+        })
         .collect();
-    let capabilities: Vec<_> = (0..17)
+    let capabilities: Vec<_> = (0..9)
         .map(|id| ParameterCapability {
             id,
             steps: 0,
@@ -259,11 +266,11 @@ fn refuses_dense_or_mismatched_programs_and_checks_admitted_runs() {
     assert!(Program::prepare(&lanes, CLASS, &capabilities, &tempo(), profile).is_err());
     assert!(Program::prepare(&lanes[..1], [2; 16], &capabilities, &tempo(), profile).is_err());
     assert!(Program::prepare(&lanes[..1], CLASS, &capabilities[1..], &tempo(), profile).is_err());
-    // The seventeenth armed parameter still needs its canonical base even
+    // The ninth armed parameter still needs its canonical base even
     // when its authored lane is absent; it cannot evade the shared budget.
-    assert!(Program::prepare(&lanes[..16], CLASS, &capabilities, &tempo(), profile).is_err());
+    assert!(Program::prepare(&lanes[..8], CLASS, &capabilities, &tempo(), profile).is_err());
 
-    let program = Program::prepare(&lanes[..16], CLASS, &capabilities[..16], &tempo(), profile)
+    let program = Program::prepare(&lanes[..8], CLASS, &capabilities[..8], &tempo(), profile)
         .unwrap()
         .unwrap();
     assert_eq!(program.point_budget(), MAX_POINTS);
@@ -382,20 +389,6 @@ fn canonical_base_metadata_is_reserved_without_any_authored_lane() {
             normalized_base_bits: 0.5f64.to_bits(),
         })
         .collect::<Vec<_>>();
-    let program = Program::prepare(
-        &[],
-        CLASS,
-        &capabilities,
-        &tempo(),
-        QuantumProfile {
-            frames: 8,
-            max_runs: 1,
-        },
-    );
-    assert!(
-        program.is_err(),
-        "the physical event budget still refuses sixty-four simultaneous base holds"
-    );
     let program = Program::prepare(
         &[],
         CLASS,
@@ -547,5 +540,124 @@ fn canonical_vst3_touch_only_admission_quotes_backing_and_requires_exact_source_
             &[],
         );
         assert_eq!(output[0].normalized, expected);
+    }
+}
+
+#[test]
+fn constant_instrument_bases_share_one_point_each_across_discontinuities() {
+    let capabilities = (0..MAX_POINTS as u32)
+        .map(|id| ParameterCapability {
+            id,
+            steps: 0,
+            normalized_base_bits: (f64::from(id) / 64.0).to_bits(),
+        })
+        .collect::<Vec<_>>();
+    let profile = QuantumProfile::for_arrangement_instrument(256, None);
+    for width in [4, MAX_POINTS] {
+        let program = Program::prepare(&[], CLASS, &capabilities[..width], &tempo(), profile)
+            .unwrap()
+            .unwrap();
+        assert_eq!(program.point_budget(), width);
+        let mut origins = (0..256).map(|frame| Some(frame as u64)).collect::<Vec<_>>();
+        // Silence before first delivery, an origin wrap, and a silent gap.
+        origins[..8].fill(None);
+        origins[80..128]
+            .iter_mut()
+            .for_each(|frame| *frame = frame.map(|n| n - 80));
+        origins[128..144].fill(None);
+        let output = render(&program, &origins, &[8, 32, 64, 128, 144, 192]);
+        assert_eq!(output.len(), width);
+        for (point, capability) in output.iter().zip(&capabilities) {
+            assert_eq!((point.frame, point.id), (8, capability.id));
+            assert_eq!(point.normalized.to_bits(), capability.normalized_base_bits);
+        }
+        assert!(render(&program, &[None; 256], &[]).is_empty());
+    }
+}
+
+#[test]
+fn sparse_authored_curves_share_the_instrument_quantum_without_losing_samples() {
+    use AutomationInterpolation::{Linear, Step};
+    let beat = |quarters| BeatTime::from_quarters(quarters).unwrap();
+    let lanes = [
+        lane(
+            94,
+            vec![point(beat(0), 0.25, Linear), point(beat(2), 0.75, Step)],
+        ),
+        lane(
+            148,
+            vec![
+                point(beat(0), 0.75, Linear),
+                point(beat(1), 0.5, Linear),
+                point(beat(3), 0.25, Step),
+            ],
+        ),
+    ];
+    let capabilities = [94, 148, 200].map(|id| ParameterCapability {
+        id,
+        steps: 0,
+        normalized_base_bits: 0.625f64.to_bits(),
+    });
+    let program = Program::prepare(
+        &lanes,
+        CLASS,
+        &capabilities,
+        &tempo(),
+        QuantumProfile::for_arrangement_instrument(256, None),
+    )
+    .unwrap()
+    .unwrap();
+
+    let mut origins = [None; 256];
+    // Visit the same pair of corners in each of nine runs. Include a wrap
+    // within one SDK slice, a silent gap and independent SDK slice starts.
+    let cuts = [32, 62, 92, 122, 152, 182, 212];
+    for (start, width) in [(0, 17), (17, 15)]
+        .into_iter()
+        .chain(cuts.map(|cut| (usize::from(cut), 27)))
+    {
+        for (offset, origin) in origins[start..start + width].iter_mut().enumerate() {
+            *origin = Some(3994 + offset as u64);
+        }
+    }
+    let output = render(&program, &origins, &cuts);
+    assert_eq!(output.iter().filter(|point| point.id == 200).count(), 1);
+    for (offset, origin) in origins.iter().enumerate() {
+        let Some(origin) = origin else { continue };
+        let slice = cuts.partition_point(|&cut| usize::from(cut) <= offset);
+        let start = slice.checked_sub(1).map_or(0, |i| usize::from(cuts[i]));
+        let end = cuts.get(slice).map_or(256, |&cut| usize::from(cut));
+        for (id, expected) in if *origin < 4000 {
+            let distance = (4000 - origin) as f64;
+            [
+                (94, 0.5 - distance * 0.25 / 4000.0),
+                (148, 0.5 + distance * 0.25 / 4000.0),
+            ]
+        } else {
+            let distance = (origin - 4000) as f64;
+            [
+                (94, 0.5 + distance * 0.25 / 8000.0),
+                (148, 0.5 - distance * 0.25 / 16000.0),
+            ]
+        } {
+            let mut points = output
+                .iter()
+                .filter(|point| point.id == id && (start..end).contains(&usize::from(point.frame)));
+            let left = points
+                .clone()
+                .take_while(|point| usize::from(point.frame) <= offset)
+                .last()
+                .unwrap();
+            let right = points.find(|point| usize::from(point.frame) > offset);
+            let actual = right.map_or(left.normalized, |right| {
+                let ratio =
+                    (offset - usize::from(left.frame)) as f64 / f64::from(right.frame - left.frame);
+                left.normalized + ratio * (right.normalized - left.normalized)
+            });
+            assert!(
+                (actual - expected).abs() < 1e-12,
+                "parameter {id} at frame {offset}"
+            );
+        }
     }
 }

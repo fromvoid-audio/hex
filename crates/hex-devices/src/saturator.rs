@@ -238,9 +238,11 @@ impl NativeDeviceMetadata for SaturatorDefinition {
         id: ParameterId,
     ) -> Result<Option<hex_lattice_contract::ParameterSemantics>, DeviceContractError> {
         decode(state)?;
-        Ok(Some(
-            crate::parameter_binding::binding(&BINDINGS, id)?.semantics,
-        ))
+        let mut semantics = crate::parameter_binding::binding(&BINDINGS, id)?.semantics;
+        if runtime_parameter_automation_supported(id) {
+            semantics.modulation = hex_lattice_contract::ParameterModulation::SampleRate;
+        }
+        Ok(Some(semantics))
     }
 
     fn patch_parameter(
@@ -365,6 +367,20 @@ impl PreparedNativeProcessor for PreparedSaturator {
     }
     fn supports_parameter_automation(&self, parameter: ParameterId) -> bool {
         self.supports(parameter)
+    }
+
+    fn parameter_modulation_semantics(
+        &self,
+        parameter: ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        if !self.supports_parameter_automation(parameter) {
+            return None;
+        }
+        let binding = crate::parameter_binding::binding(&BINDINGS, parameter).ok()?;
+        Some(hex_lattice_contract::ParameterSemantics {
+            modulation: hex_lattice_contract::ParameterModulation::SampleRate,
+            ..binding.semantics
+        })
     }
 
     fn runtime_version(&self) -> u32 {

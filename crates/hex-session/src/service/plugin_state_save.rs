@@ -130,6 +130,9 @@ pub(super) fn project_with_captures(
             return Err("duplicate captured device state".into());
         }
         let target = match capture.owner {
+            ProcessorChainOwner::Source(_) => {
+                return Err("captured source effects are not supported".into());
+            }
             ProcessorChainOwner::Track(id) => {
                 let track = snapshot
                     .tracks

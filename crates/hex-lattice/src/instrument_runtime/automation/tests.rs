@@ -27,6 +27,8 @@ struct Factory {
     grants: Vec<ParameterDescriptor>,
     runtime_grants: Option<&'static [ParameterDescriptor]>,
     creations: Arc<AtomicUsize>,
+    readonly: [u8; 2],
+    target_fault: Arc<AtomicUsize>,
 }
 impl Factory {
     fn supported() -> Self {
@@ -34,6 +36,8 @@ impl Factory {
             grants: DESCRIPTORS.to_vec(),
             runtime_grants: Some(DESCRIPTORS),
             creations: Arc::default(),
+            readonly: [0; 2],
+            target_fault: Arc::default(),
         }
     }
 }
@@ -43,6 +47,8 @@ struct Runtime {
     age: usize,
     level: f32,
     gated: bool,
+    readonly: u8,
+    target_fault: Arc<AtomicUsize>,
 }
 impl PreparedMutableInstrumentRuntime for Factory {
     fn parameter_automation_descriptors(&self) -> &[ParameterDescriptor] {
@@ -64,12 +70,14 @@ impl PreparedMutableInstrumentRuntime for Factory {
         0
     }
     fn create_runtime(&self) -> Box<dyn MutableInstrumentRuntime> {
-        self.creations.fetch_add(1, Ordering::Relaxed);
+        let index = self.creations.fetch_add(1, Ordering::Relaxed);
         Box::new(Runtime {
             grants: self.runtime_grants,
             age: 0,
             level: 1.0,
             gated: false,
+            readonly: self.readonly[index % 2],
+            target_fault: Arc::clone(&self.target_fault),
         })
     }
     fn as_any(&self) -> &dyn Any {
@@ -77,6 +85,13 @@ impl PreparedMutableInstrumentRuntime for Factory {
     }
 }
 impl MutableInstrumentRuntime for Runtime {
+    fn parameter_automation_readonly(&self) -> Option<&dyn InstrumentParameterRuntime> {
+        match self.readonly {
+            0 => None,
+            2 => Some(&WRONG_READONLY),
+            _ => Some(self),
+        }
+    }
     fn parameter_automation(&mut self) -> Option<&mut dyn InstrumentParameterRuntime> {
         self.grants
             .map(|_| self as &mut dyn InstrumentParameterRuntime)
@@ -146,6 +161,41 @@ impl MutableInstrumentRuntime for Runtime {
     }
 }
 impl InstrumentParameterRuntime for Runtime {
+    fn copy_targets(
+        &self,
+        output: &mut [Option<ParameterValue>],
+    ) -> Result<(), NativeInstrumentRuntimeError> {
+        if self.readonly == 3 {
+            return Err(NativeInstrumentRuntimeError::UnsupportedParameterAutomation);
+        }
+        match self.target_fault.load(Ordering::Relaxed) {
+            1 => Err(NativeInstrumentRuntimeError::InvalidParameterAutomation),
+            2 => Ok(()),
+            3 => {
+                output[0] = Some(ParameterValue::Bool(true));
+                Ok(())
+            }
+            4 => {
+                output[0] = Some(ParameterValue::Float(f32::NAN));
+                Ok(())
+            }
+            5 => {
+                output[0] = Some(ParameterValue::Float(2.0));
+                Err(NativeInstrumentRuntimeError::InvalidParameterAutomation)
+            }
+            6 => {
+                output.fill(Some(ParameterValue::Float(self.level)));
+                if let Some(last) = output.last_mut() {
+                    *last = Some(ParameterValue::Float(f32::NAN));
+                }
+                Ok(())
+            }
+            _ => {
+                output.fill(Some(ParameterValue::Float(self.level)));
+                Ok(())
+            }
+        }
+    }
     fn descriptors(&self) -> &[ParameterDescriptor] {
         self.grants.unwrap_or_default()
     }
@@ -293,6 +343,8 @@ fn factory_and_actual_views_must_agree() {
             grants,
             runtime_grants,
             creations: Arc::default(),
+            readonly: [0; 2],
+            target_fault: Arc::default(),
         };
         assert!(matches!(
             NativeInstrumentRuntimePair::new(&factory, LIMITS),
@@ -306,6 +358,8 @@ fn default_provider_refuses_values_but_keeps_ordinary_empty_path() {
         grants: vec![],
         runtime_grants: None,
         creations: Arc::default(),
+        readonly: [0; 2],
+        target_fault: Arc::default(),
     };
     let mut pair = NativeInstrumentRuntimePair::new(&factory, LIMITS).unwrap();
     assert!(!pair.supports_parameter_automation());
@@ -508,4 +562,181 @@ fn clock_gain_and_bulk_refusals_leave_pcm_and_history_untouched() {
     );
     assert_eq!(frames, before);
     assert_eq!(state(&pair), (0, 1.0, false));
+}
+
+struct WrongReadonly;
+static WRONG_READONLY: WrongReadonly = WrongReadonly;
+impl InstrumentParameterRuntime for WrongReadonly {
+    fn descriptors(&self) -> &[ParameterDescriptor] {
+        static OTHER: [ParameterDescriptor; 1] = [ParameterDescriptor {
+            id: ParameterId::from_static(2),
+            ..DESCRIPTORS[0]
+        }];
+        &OTHER
+    }
+    fn preflight(
+        &self,
+        _: &[NativeInstrumentEvent],
+        _: usize,
+        _: Option<&dyn NativeInstrumentClock>,
+        _: &[crate::NativeInstrumentOccurrenceGain],
+        _: &dyn NativeParameterAutomation,
+        _: &dyn crate::DeviceResources,
+    ) -> Result<(), NativeInstrumentRuntimeError> {
+        Ok(())
+    }
+    fn process(
+        &mut self,
+        _: &[NativeInstrumentEvent],
+        _: &mut [StereoFrame],
+        _: Option<&dyn NativeInstrumentClock>,
+        _: &[crate::NativeInstrumentOccurrenceGain],
+        _: &dyn NativeParameterAutomation,
+        _: &dyn crate::DeviceResources,
+    ) {
+    }
+}
+fn snapshot_factory() -> Factory {
+    Factory {
+        readonly: [1; 2],
+        ..Factory::supported()
+    }
+}
+#[test]
+fn target_snapshot_opt_in_requires_both_exact_complete_views() {
+    let pair = NativeInstrumentRuntimePair::new(&Factory::supported(), LIMITS).unwrap();
+    assert!(!pair.supports_committed_parameter_targets());
+    let original = [Some(ParameterValue::Float(0.25))];
+    let mut output = original;
+    assert!(
+        pair.copy_committed_parameter_targets(&[ID], &mut output)
+            .is_err()
+    );
+    assert_eq!(output, original);
+    for readonly in [[0, 1], [1, 0], [2, 2], [3, 3]] {
+        let factory = Factory {
+            readonly,
+            ..Factory::supported()
+        };
+        assert!(NativeInstrumentRuntimePair::new(&factory, LIMITS).is_err());
+    }
+    for fault in 1..=5 {
+        let factory = snapshot_factory();
+        factory.target_fault.store(fault, Ordering::Relaxed);
+        assert!(NativeInstrumentRuntimePair::new(&factory, LIMITS).is_err());
+    }
+}
+#[test]
+fn target_snapshot_refusal_preserves_caller_output_for_bad_grants_and_provider_values() {
+    let factory = snapshot_factory();
+    let pair = NativeInstrumentRuntimePair::new(&factory, LIMITS).unwrap();
+    assert!(pair.supports_committed_parameter_targets());
+    let original = [Some(ParameterValue::Float(0.25))];
+    for ids in [vec![], vec![ParameterId::from_static(2)], vec![ID, ID]] {
+        let mut output = original;
+        assert!(
+            pair.copy_committed_parameter_targets(&ids, &mut output)
+                .is_err()
+        );
+        assert_eq!(output, original);
+    }
+    let mut long = [Some(ParameterValue::Float(0.25)); 2];
+    assert!(
+        pair.copy_committed_parameter_targets(&[ID], &mut long)
+            .is_err()
+    );
+    assert_eq!(long, [Some(ParameterValue::Float(0.25)); 2]);
+    for fault in 1..=5 {
+        factory.target_fault.store(fault, Ordering::Relaxed);
+        let mut output = original;
+        assert!(
+            pair.copy_committed_parameter_targets(&[ID], &mut output)
+                .is_err()
+        );
+        assert_eq!(output, original);
+    }
+}
+#[test]
+fn target_snapshot_observes_only_committed_controls_across_rollback_base_and_reset() {
+    let mut pair = NativeInstrumentRuntimePair::new(&snapshot_factory(), LIMITS).unwrap();
+    let read = |pair: &NativeInstrumentRuntimePair| {
+        let mut output = [None];
+        pair.copy_committed_parameter_targets(&[ID], &mut output)
+            .unwrap();
+        output[0]
+    };
+    let base = Some(ParameterValue::Float(1.0));
+    assert_eq!(read(&pair), base);
+    pair.begin_block();
+    run(
+        &mut pair,
+        &[on(60)],
+        &mut [[0.0; 2]; 4],
+        &Values::authored(),
+    )
+    .unwrap();
+    assert_eq!(read(&pair), base, "speculative controls stay invisible");
+    pair.rollback_block();
+    assert_eq!(read(&pair), base);
+    pair.begin_block();
+    run(
+        &mut pair,
+        &[on(60)],
+        &mut [[0.0; 2]; 4],
+        &Values::authored(),
+    )
+    .unwrap();
+    pair.commit_block();
+    let authored = Some(ParameterValue::Float(1.0 + 3.0 / 64.0));
+    assert_eq!(read(&pair), authored);
+    pair.begin_block();
+    run(
+        &mut pair,
+        &[],
+        &mut [[0.0; 2]; 1],
+        &Values {
+            base: true,
+            ..Values::authored()
+        },
+    )
+    .unwrap();
+    assert_eq!(read(&pair), authored);
+    pair.commit_block();
+    assert_eq!(read(&pair), base);
+    pair.begin_block();
+    run(&mut pair, &[], &mut [[0.0; 2]; 4], &Values::authored()).unwrap();
+    pair.commit_block();
+    pair.reset();
+    assert_eq!(read(&pair), base);
+}
+
+#[test]
+fn late_invalid_target_never_publishes_an_earlier_valid_prefix() {
+    static TWO: [ParameterDescriptor; 2] = [
+        DESCRIPTORS[0],
+        ParameterDescriptor {
+            id: ParameterId::from_static(2),
+            ..DESCRIPTORS[0]
+        },
+    ];
+    let factory = Factory {
+        grants: TWO.to_vec(),
+        runtime_grants: Some(&TWO),
+        ..snapshot_factory()
+    };
+    let pair = NativeInstrumentRuntimePair::new(&factory, LIMITS).unwrap();
+    let ids = [ID, ParameterId::from_static(2)];
+    let original = [Some(ParameterValue::Float(0.25)); 2];
+    let mut output = original;
+    assert!(
+        pair.copy_committed_parameter_targets(&[ids[1], ids[0]], &mut output)
+            .is_err()
+    );
+    assert_eq!(output, original);
+    factory.target_fault.store(6, Ordering::Relaxed);
+    assert!(
+        pair.copy_committed_parameter_targets(&ids, &mut output)
+            .is_err()
+    );
+    assert_eq!(output, original);
 }

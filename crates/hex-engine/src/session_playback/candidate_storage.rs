@@ -5,6 +5,7 @@ use crate::{
     AudioRootStorageLedger, AudioStorageError,
     audio_storage::{Location, Owner},
 };
+mod modulation;
 impl SessionPlayback {
     pub(crate) fn visit_fresh_candidate_storage<'a>(
         &'a self,
@@ -39,6 +40,7 @@ impl SessionPlayback {
             route_scratch,
             track_faders: _,
             track_fader_scratch: _,
+            source_effects,
             device_chains,
             return_chains,
             main_chain,
@@ -83,7 +85,9 @@ impl SessionPlayback {
             candidate_admission_open,
             live_restart: _,
         } = self;
-        if !foreign_arrangement.is_empty()
+        // The closed owner has no source effect lease or backing quote yet.
+        if !source_effects.is_empty()
+            || !foreign_arrangement.is_empty()
             || midi_admission.is_some()
             || live_expression.is_some()
             || computer_keyboard.is_some()
@@ -256,6 +260,7 @@ fn chain_storage<'a>(
         {
             return Err(AudioStorageError::UnsupportedGraph);
         }
+        modulation::visit(&entry, prepared, chain, index, l)?;
         if let Some((primary, scratch)) = entry.runtime_pair::<hex_devices::reverb::ReverbRuntime>()
         {
             for (runtime, object_tag, ring_tag) in [
