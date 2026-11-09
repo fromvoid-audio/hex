@@ -433,6 +433,7 @@ actions!(
         RecoverSavedProject,
         RecoverPreviousSave,
         RecoverKeptSession,
+        OpenAutomationRecovery,
         OpenSettings,
         OpenTuning,
         CloseTuning,

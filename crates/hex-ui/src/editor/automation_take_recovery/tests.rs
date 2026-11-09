@@ -5,7 +5,7 @@ use hex_session::{
     Session,
     service::{
         DeviceAutomationSource, NativeRecoveryContinuation, NativeRecoveryTerminal,
-        automation_draft::{DeviceDraftInput, DraftProvenance, Vst3CaptureTarget},
+        automation_draft::{DeviceDraftInput, Vst3CaptureTarget},
         copy_native_recovery_on_control,
     },
 };
@@ -201,13 +201,17 @@ fn cancelled_picker_and_stale_responses_cannot_release_the_original() {
         !flow.unresolved(),
         "a kept file no longer owns close custody"
     );
-    let (saved_scope, copy) = flow
+    let selected = flow
         .saved
         .take()
         .expect("finished copy offered for explicit apply");
-    assert_eq!(saved_scope, scope);
-    assert_eq!(copy.path, path);
-    assert_eq!(copy.receipt, receipt);
+    assert_eq!(selected.target, scope.target.draft_target());
+    assert_eq!(selected.provenance, scope.stamp);
+    assert_eq!(selected.path, path);
+    assert_eq!(
+        selected.identity,
+        AutomationRecoveryFileIdentity::Copy(receipt)
+    );
     let mut later_keep = Recovery {
         phase: Phase::Keeping {
             scope,
@@ -217,13 +221,12 @@ fn cancelled_picker_and_stale_responses_cannot_release_the_original() {
             },
         },
         request: Some(1),
-        saved: Some((
-            scope,
-            Verified {
-                path: path.clone(),
-                receipt,
-            },
-        )),
+        saved: Some(ReadyApplication {
+            path: path.clone(),
+            target: scope.target.draft_target(),
+            provenance: scope.stamp,
+            identity: AutomationRecoveryFileIdentity::Copy(receipt),
+        }),
     };
     assert_eq!(
         later_keep.settle(1, &Progress::CopyKept(destination.clone())),
@@ -234,7 +237,7 @@ fn cancelled_picker_and_stale_responses_cannot_release_the_original() {
         "the prior file cannot masquerade as the latest keep"
     );
     assert!(destination.is_file() && path.is_file());
-    flow.phase = Phase::Applying { scope, copy };
+    flow.phase = Phase::Applying(selected);
     flow.request = Some(13);
     assert_eq!(flow.settle(12, &Progress::Committed), None);
     assert!(
@@ -242,8 +245,8 @@ fn cancelled_picker_and_stale_responses_cannot_release_the_original() {
         "stale success cannot retire the pending edit"
     );
     assert_eq!(flow.settle(13, &Progress::Refused), None);
-    let (_, copy) = flow.saved.take().expect("refused apply remains retryable");
-    flow.phase = Phase::Applying { scope, copy };
+    let selected = flow.saved.take().expect("refused apply remains retryable");
+    flow.phase = Phase::Applying(selected);
     flow.request = Some(14);
     assert_eq!(
         flow.settle(14, &Progress::Committed),
@@ -379,4 +382,130 @@ fn rendered_copy_action_can_cancel_without_releasing_the_close_fence(
         window.remove_window();
     })
     .unwrap();
+}
+
+#[cfg(all(
+    feature = "ui-test-support",
+    target_os = "macos",
+    target_arch = "aarch64"
+))]
+#[gpui::test]
+fn file_action_selects_a_finished_take_without_applying_it(cx: &mut gpui::TestAppContext) {
+    use gpui::{AnyWindowHandle, AppContext, Empty, VisualTestContext};
+    use hex_session::service::Service;
+    use hex_storage::automation_draft::{AppliedEvent, DraftClock, DraftWriter};
+
+    let directory = std::env::temp_dir().join(format!(
+        "hex-editor-selected-automation-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let directory = Scratch(directory);
+    let path = directory.0.join("finished.hex-automation-draft");
+    let mut capture = Session::new(48_000, 4, 4096).unwrap();
+    let Created::Device(device) = capture
+        .command(Command::InsertMainDevice {
+            before: None,
+            state: hex_engine::default_native_device_state(DeviceTypeId::from_static(
+                "hex.utility",
+            ))
+            .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("fixture did not create a device");
+    };
+    let mut draft = DraftWriter::create_with_clock(
+        &path,
+        capture.project(),
+        DraftTarget::Device {
+            device,
+            target: DeviceAutomationTarget::HostOutputGain,
+        },
+        plugin_scope().stamp,
+        CaptureClock {
+            sample_rate: 48_000,
+            loop_region: None,
+        },
+    )
+    .unwrap();
+    draft
+        .append(&[AppliedEvent {
+            sequence: 1,
+            performance_frame: 8,
+            content_frame: 4,
+            loop_pass: 0,
+            value: hex_project::AutomationValue::new(0.25).unwrap(),
+        }])
+        .unwrap();
+    draft
+        .finish(DraftTerminal::Finished(DraftClock {
+            performance_frame: 16,
+            content_frame: 12,
+            loop_pass: 0,
+        }))
+        .unwrap();
+    drop(draft);
+    let original = std::fs::read(&path).unwrap();
+
+    let service = Service::new(48_000, 4, 4096).unwrap();
+    let deadline = crate::test_wait::hang_deadline();
+    let initial = loop {
+        if let Ok(event) = service.try_event() {
+            break event;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    };
+    let before = initial.state.project.clone();
+    let revision = initial.state.revision;
+    cx.use_native_text_system().expect("native text shaping");
+    cx.update(|cx| crate::theme::load_fonts(cx).expect("bundled ioskeley mono"));
+    let window: AnyWindowHandle = *cx.add_window(|_, _| Empty);
+    let editor = cx
+        .update_window(window, |_, window, cx| {
+            let editor = window.replace_root(cx, |window, cx| {
+                EditorView::new(window, cx, service, Err("offline fixture".into()))
+            });
+            editor.update(cx, |view, cx| {
+                view.receive(initial);
+                window.focus(&view.focus);
+                cx.notify();
+            });
+            editor
+        })
+        .unwrap();
+    let mut visual = VisualTestContext::from_window(window, cx);
+    visual.run_until_parked();
+    visual.dispatch_action(crate::editor::OpenAutomationRecovery);
+    assert!(visual.did_prompt_for_paths());
+    visual.simulate_paths_selection(None);
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(view.automation_take_recovery.saved.is_none());
+        assert!(!view.automation_take_recovery.unresolved());
+    });
+    visual.dispatch_action(crate::editor::OpenAutomationRecovery);
+    assert!(visual.did_prompt_for_paths());
+    visual.simulate_paths_selection(Some(vec![path.clone()]));
+    visual.run_until_parked();
+    crate::editor::device_automation::host_tests::pump(&mut visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        assert_eq!(state.revision, revision);
+        assert_eq!(state.project, before);
+        assert!(!view.automation_take_recovery.unresolved());
+        let selected = view.automation_take_recovery.saved.as_ref().unwrap();
+        assert_eq!(selected.path, path);
+        assert!(matches!(
+            selected.identity,
+            AutomationRecoveryFileIdentity::Sealed(_)
+        ));
+        assert_eq!(
+            view.automation_recovery_status(),
+            Some(("apply recovered automation", true))
+        );
+    });
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    visual.update(|window, _| window.remove_window());
 }
