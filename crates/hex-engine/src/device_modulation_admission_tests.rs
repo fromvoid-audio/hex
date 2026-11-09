@@ -83,7 +83,10 @@ fn arrangement_and_session_refuse_unknown_modulator_without_committing() {
 
 #[test]
 fn saved_lfos_modulate_automation_per_sample_in_arrangement_session_and_sealed_playback() {
-    use crate::{Audio, PlaybackAction, PlaybackCommand, PreparedRevision, Renderer};
+    use crate::{
+        Audio, LaunchQuantization, PlaybackAction, PlaybackCommand, PreparedRevision, Renderer,
+        SessionPlaybackCommand,
+    };
     use hex_devices::{
         modulation::lfo::{Rate, Settings},
         utility::{MAX_UTILITY_GAIN, UTILITY_DEFINITION, parameter},
@@ -129,6 +132,27 @@ fn saved_lfos_modulate_automation_per_sample_in_arrangement_session_and_sealed_p
             }],
         })
         .unwrap();
+    let Created::Scene(scene) = editor
+        .execute(Command::AddScene {
+            name: "modulation".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene fixture");
+    };
+    let Created::SessionClip(clip) = editor
+        .execute(Command::CreateSessionAudioClip {
+            track,
+            scene,
+            name: "modulation".into(),
+            asset,
+            source_start: 0,
+            source_end: 8,
+        })
+        .unwrap()
+    else {
+        panic!("session clip fixture");
+    };
     let next = editor.project().snapshot().next_id;
     let source = |offset, rate, phase| Modulator {
         id: ModulationSourceId::new(next + offset).unwrap(),
@@ -213,6 +237,14 @@ fn saved_lfos_modulate_automation_per_sample_in_arrangement_session_and_sealed_p
     );
     let mut playback = crate::playback::Playback::try_from_prepared_with_session(revision).unwrap();
     playback
+        .try_apply_action(PlaybackAction::Session(
+            SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            },
+        ))
+        .unwrap();
+    playback
         .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
         .unwrap();
     playback.render(&mut pcm[..3]).unwrap();
@@ -254,6 +286,14 @@ fn saved_lfos_modulate_automation_per_sample_in_arrangement_session_and_sealed_p
         .unwrap();
     assert_eq!(summary.data.unknown_storage, 0);
     let owner = cell.owner_on_control().unwrap();
+    owner
+        .test_apply_action(PlaybackAction::Session(
+            SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            },
+        ))
+        .unwrap();
     owner
         .test_apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
         .unwrap();
