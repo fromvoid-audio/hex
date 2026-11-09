@@ -6,8 +6,8 @@
 //! No canonical edits, defaults, scheduler or native DSP runs here on callback.
 use crate::plugin_worker::{NativeWorker, NativeWorkerStartFailure};
 use hex_lattice::{
-    ForeignNote, ForeignProcessorNode, ForeignProcessors, PreparedForeignProcessor,
-    ProcessorInstanceIdentity,
+    ForeignModulationSamples, ForeignNote, ForeignProcessorNode, ForeignProcessors,
+    PreparedForeignProcessor, ProcessorInstanceIdentity,
 };
 use hex_lattice_contract::{
     DeviceContractError, ForeignProcessorBinding as Binding, NativeDeviceState,
@@ -26,7 +26,9 @@ pub use automation::AuthoredSelection;
 mod bypass;
 mod definition;
 mod tail;
+mod transport;
 pub use definition::{NativeEffectDefinition, UnavailableEffect};
+use transport::EffectTransport;
 mod hosting;
 pub(crate) mod manual_base_capture;
 pub use hex_lattice_contract::ForeignProcessorBinding as EffectBinding;
@@ -53,6 +55,7 @@ struct Configuration {
     state: NativeDeviceState,
     prepared: PreparedForeignProcessor,
     authored: automation::SourceCapabilities,
+    dense_raw_id: Option<u32>,
     program_revision: std::num::NonZeroU64,
     state_verifier: Option<hex_lattice_contract::Vst3StateVerifier>,
 }
@@ -96,6 +99,7 @@ pub(crate) struct NativeEffectRenewal {
     sample_rate: u32,
     prepared: PreparedForeignProcessor,
     authored: automation::SourceCapabilities,
+    dense_raw_id: Option<u32>,
     state_authority: hex_lattice_contract::Vst3StateAuthority,
 }
 /// Listed constructor backing of the original unsplit effect. Inline effect
@@ -151,11 +155,12 @@ impl NativeEffect {
             sample_rate: configuration.sample_rate,
             prepared: configuration.prepared,
             authored: configuration.authored,
+            dense_raw_id: configuration.dense_raw_id,
             state_authority,
         };
         drop((configuration.state, dry, source_metadata));
-        worker
-            .into_quiescent_on_control(transport)
+        transport
+            .into_quiescent_on_control(worker)
             .map(|owner| (owner, renewal))
     }
     pub fn prepare_on_control(
@@ -197,11 +202,17 @@ impl NativeEffect {
     fn preconstruction_data_bytes_on_control(
         instance: &Prepared,
         prepared: PreparedForeignProcessor,
+        reserve_dense: bool,
     ) -> Option<usize> {
         let source = instance.storage_with_authored_capacity_on_control(
             hex_plugin_host::transport::MAX_PARAMETER_POINTS,
         )?;
-        NativeWorker::preconstruction_data_bytes_for_source_on_control(source)?
+        let worker = if reserve_dense {
+            NativeWorker::preconstruction_dense_effect_for_source_on_control(source)?
+        } else {
+            NativeWorker::preconstruction_data_bytes_for_source_on_control(source)?
+        };
+        worker
             .checked_add(
                 (prepared.total_latency_frames() as usize)
                     .checked_mul(std::mem::size_of::<[f32; 2]>())?,
@@ -227,10 +238,51 @@ impl NativeEffect {
     #[allow(clippy::result_large_err)] // Refusal retains the actual source.
     pub(crate) fn prepare_with_renewal_on_control(
         identity: ProcessorInstanceIdentity,
+        instance: Prepared,
+        max_data_bytes: usize,
+        authored: Option<(hex_plugin_state::ClassId, &[u32])>,
+        renewal: Option<NativeEffectRenewal>,
+    ) -> Result<Self, NativeWorkerStartFailure> {
+        let dense_raw_id = renewal.as_ref().and_then(|old| old.dense_raw_id);
+        Self::prepare_with_transport_on_control(
+            identity,
+            instance,
+            max_data_bytes,
+            authored,
+            renewal,
+            dense_raw_id,
+        )
+    }
+
+    /// Reserve one exact continuous raw parameter on the original stereo
+    /// effect. The selected raw ID must be included in the source metadata
+    /// request. The host still owns graph admission and callback acceptance.
+    #[allow(clippy::result_large_err)]
+    pub fn prepare_retained_with_dense_parameter_on_control(
+        identity: ProcessorInstanceIdentity,
+        instance: Prepared,
+        max_data_bytes: usize,
+        authored: (hex_plugin_state::ClassId, &[u32]),
+        dense_raw_id: u32,
+    ) -> Result<Self, NativeWorkerStartFailure> {
+        Self::prepare_with_transport_on_control(
+            identity,
+            instance,
+            max_data_bytes,
+            Some(authored),
+            None,
+            Some(dense_raw_id),
+        )
+    }
+
+    #[allow(clippy::result_large_err)] // The actual refused source stays in control custody.
+    fn prepare_with_transport_on_control(
+        identity: ProcessorInstanceIdentity,
         mut instance: Prepared,
         max_data_bytes: usize,
         authored: Option<(hex_plugin_state::ClassId, &[u32])>,
         renewal: Option<NativeEffectRenewal>,
+        dense_raw_id: Option<u32>,
     ) -> Result<Self, NativeWorkerStartFailure> {
         let mut configuration = match Self::configuration_on_control(identity, &instance) {
             Ok(configuration) => configuration,
@@ -250,6 +302,15 @@ impl NativeEffect {
         }) {
             return Err(NativeWorkerStartFailure::retain_source_on_control(
                 Error::Protocol("native renewal source differs"),
+                instance,
+            ));
+        }
+        if dense_raw_id.is_some_and(|id| {
+            configuration.prepared.is_instrument_profile()
+                || authored.is_none_or(|(_, selected)| selected.binary_search(&id).is_err())
+        }) {
+            return Err(NativeWorkerStartFailure::retain_source_on_control(
+                Error::Protocol("native dense parameter selection differs"),
                 instance,
             ));
         }
@@ -297,9 +358,12 @@ impl NativeEffect {
         let dry_frames = configuration.prepared.total_latency_frames() as usize;
         // Reserve the actual retirement diagnostics before starting the worker;
         // the unused allowance is not part of its resident storage inventory.
-        let known_data =
-            Self::preconstruction_data_bytes_on_control(&instance, configuration.prepared)
-                .and_then(|n| n.checked_add(hex_plugin_host::NATIVE_DIAGNOSTIC_DATA_BYTES));
+        let known_data = Self::preconstruction_data_bytes_on_control(
+            &instance,
+            configuration.prepared,
+            dense_raw_id.is_some(),
+        )
+        .and_then(|n| n.checked_add(hex_plugin_host::NATIVE_DIAGNOSTIC_DATA_BYTES));
         if known_data.is_none_or(|bytes| bytes > max_data_bytes) {
             return Err(NativeWorkerStartFailure::retain_source_on_control(
                 Error::Protocol("native effect data reservation exceeded or unavailable"),
@@ -324,6 +388,19 @@ impl NativeEffect {
             configuration.authored = capabilities;
             authored_bases = bases;
         }
+        if dense_raw_id.is_some_and(|id| {
+            !configuration
+                .authored
+                .parameters()
+                .iter()
+                .any(|parameter| parameter.id == id && parameter.steps == 0)
+        }) {
+            return Err(NativeWorkerStartFailure::retain_source_on_control(
+                Error::Protocol("native dense parameter must be continuous"),
+                instance,
+            ));
+        }
+        configuration.dense_raw_id = dense_raw_id;
         if let Err(cause) = instance.reserve_authored_parameter_capacity_on_control(
             hex_plugin_host::transport::MAX_PARAMETER_POINTS,
         ) {
@@ -357,14 +434,21 @@ impl NativeEffect {
             instance.ready().tail_frames,
             configuration.prepared.total_latency_frames(),
         );
-        let (worker, callback) = NativeWorker::start_retained_on_control(instance)?;
+        let (worker, transport) = if dense_raw_id.is_some() {
+            let (worker, callback) =
+                NativeWorker::start_retained_dense_effect_on_control(instance)?;
+            (worker, EffectTransport::Dense(callback))
+        } else {
+            let (worker, callback) = NativeWorker::start_retained_on_control(instance)?;
+            (worker, EffectTransport::Ordinary(callback))
+        };
         Ok(Self {
             worker,
             source_metadata,
             state_authority,
             callback: NativeEffectCallback {
                 configuration,
-                transport: callback,
+                transport,
                 input: [[0.0; 2]; MAX_FRAMES],
                 dry_output: [[0.0; 2]; MAX_FRAMES],
                 dry,
@@ -437,6 +521,7 @@ impl NativeEffect {
             state,
             prepared,
             authored: automation::SourceCapabilities::default(),
+            dense_raw_id: None,
             program_revision: std::num::NonZeroU64::new(config.binding.epoch)
                 .ok_or(Error::Protocol("native automation source epoch is invalid"))?,
             state_verifier: None,
@@ -478,16 +563,16 @@ impl NativeEffect {
     pub fn transport_storage_on_control(
         &self,
     ) -> Option<hex_plugin_host::transport::ConstructorStorage> {
-        self.worker
-            .transport_storage_on_control(&self.callback.transport)
+        self.callback.transport.storage_on_control(&self.worker)
     }
     /// Immutable source backing from this exact unsplit constructor pair.
     /// Other worker/dry/error resources and preparation peaks remain separate.
     pub fn retained_source_storage_on_control(
         &self,
     ) -> Option<hex_plugin_host::native::PreparedStorage> {
-        self.worker
-            .retained_source_storage_on_control(&self.callback.transport)
+        self.callback
+            .transport
+            .source_storage_on_control(&self.worker)
     }
     /// Inspect the original worker/source/queues plus actual aligned dry Vec
     /// capacity. Equal state is not used to deduplicate payloads: the alias is
@@ -497,8 +582,9 @@ impl NativeEffect {
     pub fn constructor_storage_on_control(&self) -> Option<NativeEffectStorage> {
         Some(NativeEffectStorage {
             worker: self
-                .worker
-                .constructor_storage_on_control(&self.callback.transport)?,
+                .callback
+                .transport
+                .worker_storage_on_control(&self.worker)?,
             dry_data_bytes: self
                 .callback
                 .dry
@@ -520,7 +606,7 @@ impl NativeEffect {
 /// never finally destroy it or the matching worker on the callback lane.
 pub struct NativeEffectCallback {
     configuration: Configuration,
-    transport: Callback,
+    transport: EffectTransport,
     input: [[f32; 2]; MAX_FRAMES],
     dry_output: [[f32; 2]; MAX_FRAMES],
     dry: Vec<[f32; 2]>,
@@ -536,7 +622,7 @@ impl NativeEffectCallback {
         self.configuration.identity
     }
     pub fn matches_worker(&self, worker: &NativeWorker) -> bool {
-        worker.owns_callback(&self.transport)
+        self.transport.matches_worker(worker)
     }
     /// Bound one actual complete host callback before the engine stages any
     /// segments. A chunk/subsegment length is not the physical callback extent.
@@ -645,10 +731,11 @@ impl NativeEffectCallback {
                 state,
                 prepared,
                 authored: automation::SourceCapabilities::default(),
+                dense_raw_id: None,
                 program_revision: std::num::NonZeroU64::new(binding.epoch).unwrap(),
                 state_verifier: None,
             },
-            transport,
+            transport: EffectTransport::Ordinary(transport),
             input: [[0.0; 2]; MAX_FRAMES],
             dry_output: [[0.0; 2]; MAX_FRAMES],
             dry: vec![[0.0; 2]; latency as usize],
@@ -699,7 +786,45 @@ impl ForeignProcessors for NativeEffectCallback {
         notes: &[ForeignNote],
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
+        self.stage_segment(node, offset, frames, parameters, notes, clock, None)
+    }
+
+    fn process_segment_with_modulation(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [[f32; 2]],
+        lane: ForeignModulationSamples<'_>,
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        self.stage_segment(node, offset, frames, &[], &[], clock, Some(lane))
+    }
+
+    fn committed_tail_is_drained(&self, node: ForeignProcessorNode<'_>) -> bool {
+        self.matches(node)
+            && self.reported_tail_is_drained()
+            && self.transport.has_complete_staged_callback()
+    }
+
+    fn reject_callback(&mut self) {
+        self.transport.reject(Fault::Revoked);
+    }
+}
+
+impl NativeEffectCallback {
+    #[allow(clippy::too_many_arguments)] // Separate borrowed views share one physical acceptance.
+    pub(super) fn stage_segment(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [[f32; 2]],
+        parameters: &[hex_lattice_contract::ForeignParameterPoint],
+        notes: &[ForeignNote],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        lane: Option<ForeignModulationSamples<'_>>,
+    ) -> Result<(), DeviceContractError> {
         if !self.matches(node)
+            || lane.is_some_and(|lane| Some(lane.id) != self.configuration.dense_raw_id)
             || node.automation.is_some_and(|program| {
                 program.binding != self.configuration.binding
                     || !self.configuration.authored.has_metadata_container()
@@ -751,11 +876,13 @@ impl ForeignProcessors for NativeEffectCallback {
         // The original joining worker retains processor parameter observations
         // for control queries; the native helper mirrors them to its controller.
         // Receiving that feedback here must not revoke an otherwise valid epoch.
-        let playing = if node.prepared.is_instrument_profile() || node.automation.is_some() {
-            clock.and_then(|clock| clock.transport_is_running())
-        } else {
-            None
-        };
+        let playing =
+            if node.prepared.is_instrument_profile() || node.automation.is_some() || lane.is_some()
+            {
+                clock.and_then(|clock| clock.transport_is_running())
+            } else {
+                None
+            };
         let timing = SegmentTiming {
             playing,
             at: |index| {
@@ -804,6 +931,10 @@ impl ForeignProcessors for NativeEffectCallback {
                 }),
                 manual: Some(&manual_origin),
             },
+            lane.map(|lane| hex_plugin_host::transport::DenseParameterLane {
+                id: lane.id,
+                normalized: lane.normalized,
+            }),
         );
         if result.is_err() {
             // The transport revoked only this endpoint's epoch. Leave the
@@ -828,15 +959,10 @@ impl ForeignProcessors for NativeEffectCallback {
         );
         Ok(())
     }
-    fn committed_tail_is_drained(&self, node: ForeignProcessorNode<'_>) -> bool {
-        self.matches(node)
-            && self.reported_tail_is_drained()
-            && self.transport.has_complete_staged_callback()
-    }
-    fn reject_callback(&mut self) {
-        self.transport.reject(Fault::Revoked);
-    }
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod dense_tests;

@@ -812,6 +812,25 @@ impl NativeWorker {
         self.owns_callback(callback).then_some(())?;
         self.source_storage
     }
+    pub(crate) fn dense_effect_transport_storage_on_control(
+        &self,
+        callback: &DenseEffectCallback,
+    ) -> Option<ConstructorStorage> {
+        callback.constructor_storage_on_control(&self.reaper.control)
+    }
+
+    pub(crate) fn retained_dense_effect_source_storage_on_control(
+        &self,
+        callback: &DenseEffectCallback,
+    ) -> Option<hex_plugin_host::native::PreparedStorage> {
+        self.owns_dense_effect_callback(callback).then_some(())?;
+        self.source_storage
+    }
+
+    pub(crate) fn owns_dense_effect_callback(&self, callback: &DenseEffectCallback) -> bool {
+        callback.matches_control(&self.reaper.control)
+    }
+
     pub fn revoke_on_control(&self) {
         self.reaper.revoke();
     }
