@@ -1123,3 +1123,78 @@ fn buttons_reader_floor_round_trips_two_switches_and_distinct_outputs() {
     assert!(crate::decode(&serde_json::to_vec(&wrong).unwrap()).is_err());
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn mix_reader_floor_keeps_previous_buttons_and_three_input_assignments() {
+    let mut editor = Editor::new(legacy_fixture(), 8).unwrap();
+    let device = editor.project().main_devices()[0].id();
+    let next = editor.project().next_identity();
+    let slot = |offset, type_name, payload| Modulator {
+        id: ModulationSourceId::new(next + offset).unwrap(),
+        color: ElementColor::Cyan,
+        enabled: true,
+        state: NativeDeviceState::new(DeviceTypeId::from_static(type_name), 1, payload).unwrap(),
+    };
+    let buttons = slot(0, "hex.modulator.buttons", vec![1, 0]);
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device,
+            modulation: DeviceModulation::new(vec![buttons.clone()], vec![]).unwrap(),
+        })
+        .unwrap();
+    let root = temp_dir();
+    let previous = root.join("buttons.hex");
+    crate::save_new(&previous, editor.project()).unwrap();
+    let original = std::fs::read(&previous).unwrap();
+    let (opened, token) = crate::load_with_token(&previous).unwrap();
+    assert_eq!(opened, *editor.project());
+    assert_eq!(
+        crate::schema_version_for(&opened),
+        crate::BUTTONS_MODULATOR_SCHEMA_VERSION
+    );
+
+    let mix = slot(
+        1,
+        "hex.modulator.mix",
+        [-0.25_f32, 0.625, 0.25]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect(),
+    );
+    let routes = (1..=3)
+        .map(|input| DeviceModulationRoute {
+            id: ModulationRouteId::new(next + 1 + u64::from(input)).unwrap(),
+            source: buttons.id,
+            output: ModulationOutputId::MAIN,
+            destination: ModulationDestination::Modulator {
+                source: mix.id,
+                module_type: mix.state.type_id(),
+                parameter: ParameterId::from_static(input),
+            },
+            amount: ModulationAmount::new(0.25).unwrap(),
+            range: ModulationRange::default(),
+            enabled: true,
+        })
+        .collect();
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device,
+            modulation: DeviceModulation::new(vec![buttons, mix], routes).unwrap(),
+        })
+        .unwrap();
+    let project = editor.project();
+    assert_eq!(
+        crate::schema_version_for(project),
+        crate::MIX_MODULATOR_SCHEMA_VERSION
+    );
+    assert!(token.requires_save_confirmation(project).unwrap());
+    let path = root.join("mix.hex");
+    crate::save_new(&path, project).unwrap();
+    assert_eq!(crate::load(&path).unwrap(), *project);
+    assert_eq!(std::fs::read(&previous).unwrap(), original);
+    let mut wrong: serde_json::Value =
+        serde_json::from_slice(&crate::encode(project).unwrap()).unwrap();
+    wrong["version"] = crate::BUTTONS_MODULATOR_SCHEMA_VERSION.into();
+    assert!(crate::decode(&serde_json::to_vec(&wrong).unwrap()).is_err());
+    std::fs::remove_dir_all(root).unwrap();
+}

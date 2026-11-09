@@ -663,7 +663,44 @@ fn macro_four_routes_each_output_and_applies_an_incoming_signal_per_sample() {
 
 #[test]
 fn saved_math_inputs_drive_native_gain_in_ordinary_and_closed_graphs() {
-    use hex_devices::modulation::{lfo, math};
+    use hex_devices::modulation::math;
+    check_saved_composition(
+        math::Settings {
+            operation: math::Operation::Subtract,
+            inputs: [0.0, 0.25],
+        }
+        .encode()
+        .unwrap(),
+        &[(0.0, math::INPUT_A, 0.25), (0.25, math::INPUT_B, 0.125)],
+        [1.0, 1.125, 0.875, 0.75],
+    );
+}
+
+#[test]
+fn saved_mix_blends_three_independent_signals_in_ordinary_and_closed_graphs() {
+    use hex_devices::modulation::mix;
+    check_saved_composition(
+        mix::Settings {
+            inputs: [-0.25, 0.5],
+            blend: 0.5,
+        }
+        .encode()
+        .unwrap(),
+        &[
+            (0.0, mix::INPUT_A, 0.5),
+            (0.25, mix::INPUT_B, 0.25),
+            (0.5, mix::BLEND, 0.25),
+        ],
+        [1.203125, 1.140625, 0.9375, 1.125],
+    );
+}
+
+fn check_saved_composition(
+    settings: hex_lattice_contract::NativeDeviceState,
+    inputs: &[(f64, hex_lattice_contract::ParameterId, f32)],
+    gains: [f32; 4],
+) {
+    use hex_devices::modulation::lfo;
 
     let mut editor = Editor::new(crate::audio_preparation::candidate_test_project(), 4).unwrap();
     let track = editor.project().tracks()[0].id();
@@ -681,7 +718,8 @@ fn saved_math_inputs_drive_native_gain_in_ordinary_and_closed_graphs() {
     };
     let next = editor.project().next_identity();
     let identity = |offset| ModulationSourceId::new(next + offset).unwrap();
-    let source = identity(1);
+    let source = identity(0);
+    let module_type = settings.type_id();
     let square = |offset, phase| Modulator {
         id: identity(offset),
         color: Default::default(),
@@ -694,21 +732,18 @@ fn saved_math_inputs_drive_native_gain_in_ordinary_and_closed_graphs() {
         .encode()
         .unwrap(),
     };
-    let slots = vec![
-        square(0, 0.0),
-        Modulator {
-            id: source,
-            color: Default::default(),
-            enabled: true,
-            state: math::Settings {
-                operation: math::Operation::Subtract,
-                inputs: [0.0, 0.25],
-            }
-            .encode()
-            .unwrap(),
-        },
-        square(2, 0.25),
-    ];
+    let mut slots = vec![Modulator {
+        id: source,
+        color: Default::default(),
+        enabled: true,
+        state: settings,
+    }];
+    slots.extend(
+        inputs
+            .iter()
+            .enumerate()
+            .map(|(index, &(phase, _, _))| square(index as u64 + 1, phase)),
+    );
     let route = |id, source, destination, amount| DeviceModulationRoute {
         id: ModulationRouteId::new(next + id).unwrap(),
         source,
@@ -720,23 +755,33 @@ fn saved_math_inputs_drive_native_gain_in_ordinary_and_closed_graphs() {
     };
     let input = |parameter| ModulationDestination::Modulator {
         source,
-        module_type: math::TYPE_ID,
+        module_type,
         parameter,
     };
-    let routes = [
-        route(3, identity(2), input(math::INPUT_B), 0.125),
-        route(4, identity(0), input(math::INPUT_A), 0.25),
-        route(
-            5,
-            source,
-            ModulationDestination::Device {
-                device_type: UTILITY_TYPE_ID,
-                target: DeviceAutomationTarget::Parameter(parameter::GAIN),
-                vst3_class: None,
-            },
-            0.25 / MAX_UTILITY_GAIN,
-        ),
-    ];
+    let next_route = inputs.len() as u64 + 1;
+    let mut routes: Vec<_> = inputs
+        .iter()
+        .enumerate()
+        .map(|(index, &(_, parameter, amount))| {
+            let index = index as u64;
+            route(
+                next_route + index,
+                identity(index + 1),
+                input(parameter),
+                amount,
+            )
+        })
+        .collect();
+    routes.push(route(
+        next_route + inputs.len() as u64,
+        source,
+        ModulationDestination::Device {
+            device_type: UTILITY_TYPE_ID,
+            target: DeviceAutomationTarget::Parameter(parameter::GAIN),
+            vst3_class: None,
+        },
+        0.25 / MAX_UTILITY_GAIN,
+    ));
     let edit = |routes| Command::ReplaceDeviceModulation {
         device,
         modulation: DeviceModulation::new(slots.clone(), routes).unwrap(),
@@ -748,16 +793,12 @@ fn saved_math_inputs_drive_native_gain_in_ordinary_and_closed_graphs() {
         PreparedRevision::prepare(project, &media, Arc::new(SineTable::new()), None)
     };
     let (_, revision) = editor
-        .execute_prepared(edit(routes.to_vec()), prepare)
+        .execute_prepared(edit(routes.clone()), prepare)
         .unwrap();
     let stable = editor.project().clone();
     let mut invalid = routes;
-    invalid[0].destination = input(hex_lattice_contract::ParameterId::from_static(3));
-    assert!(
-        editor
-            .execute_prepared(edit(invalid.to_vec()), prepare)
-            .is_err()
-    );
+    invalid[0].destination = input(hex_lattice_contract::ParameterId::from_static(100));
+    assert!(editor.execute_prepared(edit(invalid), prepare).is_err());
     assert_eq!(*editor.project(), stable);
     assert_eq!(editor.project().device(device).unwrap().state(), &base);
     let mut playback = Playback::try_from_prepared_with_session(Arc::new(revision)).unwrap();
@@ -767,7 +808,6 @@ fn saved_math_inputs_drive_native_gain_in_ordinary_and_closed_graphs() {
     let mut output = [[0.0; 2]; 8];
     playback.render(&mut output[..3]).unwrap();
     playback.render(&mut output[3..]).unwrap();
-    let gains = [1.0, 1.125, 0.875, 0.75];
     let check = |output: &[[f32; 2]]| {
         for (&frame, &gain) in output.iter().zip(gains.iter().cycle()) {
             for (&actual, expected) in frame.iter().zip(dry.map(|sample| sample * gain)) {

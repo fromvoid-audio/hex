@@ -138,6 +138,8 @@ pub use hex_devices::modulation::macro_four as macro_four_modulator;
 pub use hex_devices::modulation::macro_value as macro_modulator;
 /// Versioned Math settings and its two modulation destinations.
 pub use hex_devices::modulation::math as math_modulator;
+/// Versioned Mix settings and its three modulation destinations.
+pub use hex_devices::modulation::mix as mix_modulator;
 /// The authored note-pressure source codec. Active readings belong to the voice.
 pub use hex_devices::modulation::note_pressure as note_pressure_modulator;
 /// The authored reusable random sample-and-hold source codec.
