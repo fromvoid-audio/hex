@@ -4495,9 +4495,26 @@ fn hiding_a_returned_pointer_gesture_finishes_the_overlay_without_history(cx: &m
 fn same_update_typed_value_on_clean_close_opens_prompt_and_cancel_keeps_it(
     cx: &mut TestAppContext,
 ) {
-    let (project, track, device, parameter) = utility_fixture();
-    let (handle, editor) =
-        super::super::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+    let environment = super::super::test_environment::Environment::new().unwrap();
+    let (service, _, track, device) =
+        actor_native_effect_fixture(hex_devices::utility::UTILITY_TYPE_ID);
+    service
+        .submit(Request::SaveNew(environment.root().join("clean.hex")))
+        .unwrap();
+    let saved = receive_service_event(&service);
+    assert!(saved.error.is_none(), "{:?}", saved.error);
+    assert!(!saved.state.unsaved);
+    let parameter = hex_engine::native_device_view(
+        saved.state.project.track(track).unwrap().devices()[0].state(),
+    )
+    .unwrap()
+    .parameters
+    .iter()
+    .find(|p| p.descriptor.label == "width")
+    .unwrap()
+    .descriptor
+    .id;
+    let (handle, editor) = actor_editor_window(cx, service, saved.state, track);
     editor.update(cx, |view, cx| {
         view.selected_track = Some(track);
         view.device_panel_active = true;
@@ -4510,18 +4527,23 @@ fn same_update_typed_value_on_clean_close_opens_prompt_and_cancel_keeps_it(
     cx.update_window(handle, |_, window, cx| {
         editor.update(cx, |view, cx| {
             assert!(!view.request_window_close(window, cx));
-            assert!(view.close_prompt_open);
+            assert!(view.automation_close_preflight.frozen());
             let snapshot = view.device_gesture.snapshot().expect("synchronous begin");
             assert_eq!(snapshot.value, ParameterValue::Float(3.0));
             assert!(view.device_gesture.has_pending_terminal());
         });
     })
     .expect("request close");
+    super::super::close::wait_for_close_prompt(&editor, cx);
     assert!(cx.has_pending_prompt());
     cx.simulate_prompt_answer("cancel");
     cx.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert!(view.state.as_ref().is_some_and(|state| !state.unsaved));
+        assert!(view.state.as_ref().is_some_and(|state| state.unsaved));
+        assert_eq!(
+            parameter_value(view.state.as_ref().unwrap(), track, device, parameter),
+            ParameterValue::Float(3.0)
+        );
         assert!(!view.close_prompt_open);
         let Some(ParameterControl::Float { entity, .. }) = view
             .device_panel
@@ -4844,61 +4866,10 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
     let entry = hex_engine::native_device_catalog()
         .expect("catalog")
         .remove(0);
-    let mut project_editor =
-        Editor::new(Project::new(48_000).expect("project"), 8).expect("editor");
-    let Created::Track(track) = project_editor
-        .execute(Command::AddTrack {
-            name: "device track".into(),
-        })
-        .expect("track")
-    else {
-        panic!("track result")
-    };
-    project_editor
-        .execute(Command::InsertDevice {
-            track,
-            before: None,
-            state: hex_engine::default_native_device_state(entry.type_id).expect("default"),
-        })
-        .expect("device");
-    let initial_project = project_editor.project().clone();
-    let device = initial_project.track(track).expect("track").devices()[0].id();
+    let (service, state, track, device) = actor_native_effect_fixture(entry.type_id);
+    let initial_project = (*state.project).clone();
     let parameter = entry.parameters[0].id;
-
-    let bootstrap = cx.add_window(|_, _| gpui::Empty);
-    let handle = *bootstrap;
-    let editor = cx
-        .update_window(handle, |_, window, cx| {
-            let service = Service::new(48_000, 8, 8_000_000).expect("service");
-            let editor = window.replace_root(cx, |window, cx| {
-                EditorView::new(window, cx, service, Err("offline ui test".into()))
-            });
-            editor.update(cx, |view, cx| {
-                view.state = Some(Arc::new(ViewState {
-                    canonical_audio_source: None,
-                    comparison_audio: None,
-                    project: Arc::new(initial_project.clone()),
-                    waveforms: Default::default(),
-                    source_overviews: Default::default(),
-                    audio_clip_waveforms: std::collections::BTreeMap::new(),
-                    midi_preview: Arc::new(Default::default()),
-                    gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
-                    timeline_frames: 384_000,
-                    can_undo: false,
-                    can_redo: false,
-                    revision: 1,
-                    unsaved: false,
-                    document_path: None,
-                }));
-                view.selected_track = Some(track);
-                view.device_panel_active = true;
-                view.clip_view_open = true;
-                view.mode = super::super::EditorMode::Session;
-                cx.notify();
-            });
-            editor
-        })
-        .expect("window");
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
 
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
@@ -4946,6 +4917,7 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
         });
     })
     .expect("close request");
+    super::super::close::wait_for_close_prompt(&editor, cx);
     assert!(
         cx.has_pending_prompt(),
         "invalid draft still permits explicit discard"
