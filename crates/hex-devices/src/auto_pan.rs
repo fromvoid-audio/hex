@@ -36,6 +36,7 @@ pub mod parameter {
 
 const SMOOTHED_ENVELOPE: hex_lattice_contract::ParameterSemantics =
     hex_lattice_contract::ParameterSemantics {
+        modulation: hex_lattice_contract::ParameterModulation::SampleRate,
         smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
         ..crate::parameter_binding::SCALAR_ENVELOPE
     };
@@ -102,6 +103,7 @@ const BINDINGS: [crate::parameter_binding::Binding<AutoPanSettings>; 4] = [
             presentation: ParameterPresentation::Linear,
         },
         hex_lattice_contract::ParameterSemantics {
+            modulation: hex_lattice_contract::ParameterModulation::SampleRate,
             smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
             ..crate::parameter_binding::CHOICE_ENVELOPE
         },
@@ -415,6 +417,20 @@ impl PreparedNativeProcessor for PreparedAutoPan {
     }
     fn supports_parameter_automation(&self, parameter: ParameterId) -> bool {
         self.supports(parameter)
+    }
+
+    fn parameter_modulation_semantics(
+        &self,
+        parameter: ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        if !self.supports(parameter) {
+            return None;
+        }
+        Some(
+            crate::parameter_binding::binding(&BINDINGS, parameter)
+                .ok()?
+                .semantics,
+        )
     }
 
     fn runtime_version(&self) -> u32 {
