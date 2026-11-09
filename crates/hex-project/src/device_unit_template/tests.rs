@@ -277,3 +277,33 @@ fn portable_unit_rejects_out_of_range_nesting_before_decoding_can_admit_it() {
         Invalid("portable device nesting exceeds its limit")
     );
 }
+
+#[test]
+fn portable_capture_preserves_authored_vst3_bytes_but_drops_process_local_approval() {
+    use hex_lattice_contract::{VST3_DEVICE_TYPE_ID, Vst3StateAuthority};
+    let authority = Vst3StateAuthority::new_on_control().unwrap();
+    let verifier = authority.verifier();
+    let state = authority
+        .approve_processing_on_control(
+            NativeDeviceState::new(VST3_DEVICE_TYPE_ID, 1, vec![9, 2, 3]).unwrap(),
+        )
+        .unwrap();
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Device(root) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: state.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("main device");
+    };
+    let authored = editor.project().device(root).unwrap().state();
+    assert!(verifier.approves_processing(authored));
+    let unit = editor.project().capture_portable_device_unit(root).unwrap();
+    let captured = &unit.nodes()[0].state;
+    assert_eq!(captured, authored);
+    assert!(!verifier.approves(captured));
+    assert!(!verifier.approves_processing(captured));
+    assert!(verifier.approves_processing(authored));
+}
