@@ -57,9 +57,7 @@ fn loaded_sampler_modulation_supported(state: &NativeDeviceState) -> bool {
 }
 
 fn instrument_note_events_supported(source: &hex_project::NativeSource) -> bool {
-    fm4_modulation_supported(source)
-        || source.receiver().is_some()
-            && loaded_sampler_modulation_supported(source.instrument().state())
+    source.receiver().is_some() && instrument_modulation_supported(source.instrument().state())
 }
 
 /// Instrument owners whose current prepared runtime supplies ordered note events.
@@ -527,13 +525,8 @@ impl EffectModulation {
                 _ => return Err(Invalid("modulator state or rate is unsupported")),
             }
             .map_err(invalid_source)?;
-            if prepared.reads_note_events()
-                && (!instrument_events
-                    || device.state().type_id() == hex_devices::operator_state::OPERATOR_TYPE_ID)
-            {
-                return Err(Invalid(
-                    "this modulator requires a supported note-event provider",
-                ));
+            if prepared.reads_note_events() && !instrument_events {
+                return Err(Invalid("this modulator requires instrument note events"));
             }
             retain(ModulationOutputId::MAIN, prepared);
         }
