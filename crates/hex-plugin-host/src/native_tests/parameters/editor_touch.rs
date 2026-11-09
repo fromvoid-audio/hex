@@ -203,7 +203,7 @@ fn actual_editor_takeover_restores_reading_and_unlaned_values_without_cutting_no
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn sdk_group_performs_wait_together_for_real_physical_capacity() {
-    for pattern in ["held", "split"] {
+    for pattern in ["held", "split", "overflow"] {
         let case = Case::new();
         let setup = case.setup_restore(148);
         let end = case.root.join("group-end");
@@ -235,7 +235,14 @@ fn sdk_group_performs_wait_together_for_real_physical_capacity() {
         loop {
             let batch = instance.poll_parameter_edits_on_worker().unwrap();
             ordered.extend_from_slice(batch.as_slice());
-            if batch.ready >= 4 {
+            let ready = if pattern == "overflow" {
+                ordered
+                    .iter()
+                    .any(|edit| edit.kind == ParameterEditKind::GroupAborted)
+            } else {
+                batch.ready >= 4
+            };
+            if ready {
                 break;
             }
             assert!(
@@ -245,6 +252,43 @@ fn sdk_group_performs_wait_together_for_real_physical_capacity() {
             thread::yield_now();
         }
         let input = [0.125, -0.25];
+        if pattern == "overflow" {
+            assert_eq!(
+                ordered.iter().map(|edit| edit.kind).collect::<Vec<_>>(),
+                [
+                    ParameterEditKind::GroupBegin,
+                    ParameterEditKind::Begin,
+                    ParameterEditKind::Begin,
+                    ParameterEditKind::End,
+                    ParameterEditKind::End,
+                    ParameterEditKind::GroupAborted,
+                ],
+            );
+            assert_eq!(ordered[0].gesture, ordered[5].gesture);
+            let mut block = request(instance.configuration(), 0);
+            block.pcm[..64].fill(input);
+            block
+                .parameters
+                .push(ParameterPoint {
+                    frame: 0,
+                    id: 0,
+                    normalized: 0.25,
+                })
+                .unwrap();
+            let actual = instance
+                .exchange_armed_authored_with_editor_on_worker(block, None)
+                .unwrap();
+            assert!(actual.performs.as_slice().is_empty());
+            assert_eq!(actual.block.pcm[..64], [input; 64]);
+            assert!(
+                instance
+                    .stop_and_reap_on_control()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+            continue;
+        }
         let mut dense = request(instance.configuration(), 0);
         dense.pcm[..64].fill(input);
         for frame in 1..64 {

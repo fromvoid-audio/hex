@@ -143,6 +143,7 @@ class RestoreController final : public IEditController {
     void grouped_edit_tick() {
         const auto* pattern=std::getenv("HEX_ORIGINAL_GROUPED_EDITOR_PATTERN");
         const bool split=pattern && !std::strcmp(pattern,"split");
+        const bool overflow=pattern && !std::strcmp(pattern,"overflow");
         const auto* end=std::getenv("HEX_ORIGINAL_EDITOR_END_RELEASE");
         if(edits_sent && (!end || std::strlen(end)>4096 || ::access(end,F_OK)!=0)) return;
         void* queried=nullptr;
@@ -159,7 +160,13 @@ class RestoreController final : public IEditController {
             if(split) {check(group->finishGroupEdit());check(group->startGroupEdit());}
             check(handler->performEdit(0,0.75));
             check(handler->performEdit(drag_axis_id,0.5));
-            if(split) check(group->finishGroupEdit());
+            if(overflow) {
+                // Seven pending callbacks use the entire group budget
+                // except its reserved terminal. A new Begin cannot steal it.
+                check(handler->endEdit(0));check(handler->endEdit(drag_axis_id));
+                if(handler->beginEdit(0)!=kResultFalse || group->finishGroupEdit()!=kResultFalse) ok=false;
+                CFRunLoopTimerInvalidate(edit_timer);
+            } else if(split) check(group->finishGroupEdit());
         } else {
             if(split) check(group->startGroupEdit());
             check(handler->endEdit(0));check(handler->endEdit(drag_axis_id));
