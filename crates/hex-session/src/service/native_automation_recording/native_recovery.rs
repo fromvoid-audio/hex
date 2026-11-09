@@ -137,5 +137,122 @@ pub fn copy_native_recovery_on_control(
     )
 }
 
+impl Lane {
+    pub(super) fn prepare_native_recovery(
+        &mut self,
+        scope: DeviceAutomationTakeScope,
+    ) -> Result<Step, String> {
+        if scope.target.native().is_none() {
+            return Err("native recovery requires a native target".into());
+        }
+        if self.failed.is_some() {
+            let path = self.failed_outcome(scope)?.path.clone();
+            return Ok(Step::Progress(DeviceAutomationTakeProgress::Retained(path)));
+        }
+        let active = self
+            .active
+            .as_mut()
+            .filter(|active| active.scope == scope && active.source.matches(scope))
+            .ok_or("native recovery does not own the original writer")?;
+        if !active.preparing_native_recovery {
+            let progress = active.input.progress();
+            if progress
+                .terminal_requested
+                .is_some_and(|terminal| terminal != DraftTerminal::Interrupted)
+                && !progress.failed
+            {
+                return Err("native writer already has a terminal · poll its outcome first".into());
+            }
+            if progress.terminal_requested.is_none() {
+                active.worker.request_interruption_on_control()?;
+            }
+            active.preparing_native_recovery = true;
+        }
+        while active.input.poll().is_some() {}
+        let Some(outcome) = active.input.try_take_outcome() else {
+            return Ok(Step::Progress(DeviceAutomationTakeProgress::Pending));
+        };
+        let source = active.source;
+        let path = outcome.path.clone();
+        self.active = None;
+        self.failed = Some(Failed {
+            scope,
+            source,
+            outcome: Arc::new(outcome),
+        });
+        Ok(Step::Progress(DeviceAutomationTakeProgress::Retained(path)))
+    }
+
+    pub(super) fn start_native_recovery_copy(
+        &mut self,
+        scope: DeviceAutomationTakeScope,
+        destination: &Path,
+        max_events: u64,
+        continuation: &NativeRecoveryContinuation,
+    ) -> Result<Step, String> {
+        if scope.target.native().is_none() {
+            return Err("native recovery requires a native target".into());
+        }
+        let source = self.failed_source(scope)?;
+        let outcome = Arc::clone(self.failed_outcome(scope)?);
+        let path = super::super::recovery::absolute_document_path(destination)?;
+        let copy_path = path.clone();
+        let continuation = continuation.clone();
+        self.failed_copy
+            .start_with_receipt(&outcome, move |outcome| {
+                copy_native_recovery_on_control(
+                    outcome,
+                    &copy_path,
+                    copy_limits(),
+                    max_events,
+                    scope,
+                    source,
+                    &continuation,
+                )
+            })?;
+        self.copy_destination = Some(PendingCopy::Native(path));
+        Ok(Step::Progress(DeviceAutomationTakeProgress::Pending))
+    }
+
+    pub(super) fn keep_native_recovery_copy(
+        &mut self,
+        scope: DeviceAutomationTakeScope,
+        selected: &Path,
+        receipt: RecoveryCopyReceipt,
+        max_events: u64,
+    ) -> Result<Step, String> {
+        if scope.target.native().is_none()
+            || max_events > hex_project::MAX_DEVICE_AUTOMATION_POINTS as u64
+        {
+            return Err("invalid native recovery target or event budget".into());
+        }
+        let outcome = Arc::clone(self.failed_outcome(scope)?);
+        if self.copy_destination.is_some() {
+            return Err("native recovery copy is still pending".into());
+        }
+        let (path, _) = self
+            .verified_native_copy
+            .as_ref()
+            .filter(|(path, current)| path.as_path() == selected && *current == receipt)
+            .ok_or("verified native recovery copy changed or is unavailable")?;
+        let path = path.clone();
+        receipt.with_verified_on_control(&path, copy_limits(), max_events, || {
+            if !Arc::ptr_eq(self.failed_outcome(scope)?, &outcome) {
+                return Err("original native recovery custody changed".into());
+            }
+            self.verified_native_copy = None;
+            self.failed = None;
+            Ok(())
+        })?;
+        Ok(Step::Progress(DeviceAutomationTakeProgress::CopyKept(path)))
+    }
+}
+
+fn copy_limits() -> DraftReadLimits {
+    DraftReadLimits {
+        max_source_bytes: hex_storage::MAX_PROJECT_DOCUMENT_BYTES as u64,
+    }
+}
+
 #[cfg(test)]
 mod tests;
