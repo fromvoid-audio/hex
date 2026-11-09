@@ -109,7 +109,12 @@ pub(super) fn panel(
             ));
         }
     }
-    let mut body = div().flex().flex_col().gap(px(3.0)).child(header);
+    let mut body = div()
+        .flex()
+        .flex_col()
+        .flex_shrink_0()
+        .gap(px(3.0))
+        .child(header);
     let selected = view
         .device_panel
         .mapping_source
@@ -354,6 +359,8 @@ pub(super) fn panel(
         div()
             .id("device-modulator-scroll")
             .debug_selector(|| "device-modulator-scroll".into())
+            .flex()
+            .flex_col()
             .max_h(px(58.0))
             .overflow_y_scroll()
             .child(body)
