@@ -45,6 +45,37 @@ pub fn project_device_modulation_target_supported(
             .unwrap_or(false)
 }
 
+/// Control-side mapping eligibility for the native post-processor trim.
+/// The closed provider's actual factory supplies the latency. No render
+/// runtime or audio resources are constructed by this query.
+pub fn project_device_output_gain_modulation_supported(
+    project: &Project,
+    device: hex_project::DeviceId,
+) -> bool {
+    let Some(device) = crate::device_automation::effect_devices(project)
+        .find(|candidate| candidate.id() == device)
+    else {
+        return false;
+    };
+    let state = device.state();
+    if !crate::native_effect_storage::is_closed_type(state.type_id()) {
+        return false;
+    }
+    let Ok(registry) = hex_devices::native_registry() else {
+        return false;
+    };
+    let context = hex_lattice::DevicePreparationContext {
+        sample_rate: project.sample_rate(),
+        tuning: &hex_lattice::TuningTable::default(),
+        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    };
+    registry
+        .prepare_processor(state, &context)
+        .is_ok_and(|factory| {
+            factory.is_none_or(|factory| factory.algorithmic_latency_frames() == Some(0))
+        })
+}
+
 pub(super) fn validate_source_owners(project: &Project) -> Result<(), Invalid> {
     if project.native_sources().iter().any(|source| {
         source

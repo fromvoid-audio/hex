@@ -362,3 +362,27 @@ fn host_input_modulation_follows_the_unmodulated_matrix_and_shares_output_source
         compare_native_and_sealed_pcm(project, asset, &audio, compare);
     }
 }
+
+#[test]
+fn output_gain_mapping_requires_a_closed_zero_latency_effect() {
+    use hex_devices::saturator::SATURATOR_DEFINITION;
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    for (state, expected) in [
+        (UTILITY_DEFINITION.default_state().unwrap(), true),
+        (SATURATOR_DEFINITION.default_state().unwrap(), false),
+    ] {
+        let Created::Device(device) = editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state,
+            })
+            .unwrap()
+        else {
+            panic!("native effect fixture");
+        };
+        assert_eq!(
+            crate::project_device_output_gain_modulation_supported(editor.project(), device),
+            expected,
+        );
+    }
+}
