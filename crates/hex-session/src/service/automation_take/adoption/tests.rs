@@ -104,9 +104,28 @@ fn write_take(
     events: &[AppliedEvent],
     end: u64,
 ) -> CompletedAutomationTake {
+    write_target_take(
+        path,
+        session,
+        device,
+        DeviceAutomationTarget::Vst3 { parameter: 0 },
+        stamp,
+        events,
+        end,
+    )
+}
+fn write_target_take(
+    path: &Path,
+    session: &Session,
+    device: DeviceId,
+    kind: DeviceAutomationTarget,
+    stamp: DraftProvenance,
+    events: &[AppliedEvent],
+    end: u64,
+) -> CompletedAutomationTake {
     let target = DraftTarget::Device {
         device,
-        target: DeviceAutomationTarget::Vst3 { parameter: 0 },
+        target: kind,
     };
     let mut writer = DraftWriter::create_with_clock(
         path,
@@ -239,12 +258,84 @@ fn mismatched_provenance_and_current_source_refuse_without_editing_or_discarding
 }
 
 #[test]
+fn multi_minute_native_and_raw_zero_vst3_takes_keep_every_distinct_step() {
+    let files = Files::new();
+    let (mut session, vst3, stamp) = fixture(AutomationInterpolation::Linear);
+    let Created::Device(native) = session
+        .editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(
+                "hex.utility",
+            ))
+            .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("native effect")
+    };
+    let count = 1_101;
+    let stride = 9_600; // 5 delivered points/second, over 3 minutes.
+    let events: Vec<_> = (1..=count)
+        .map(|index| event(index * stride, if index % 2 == 0 { 0.25 } else { 0.75 }))
+        .collect();
+    let terminal = (count + 1) * stride;
+    for (device, target, label) in [
+        (vst3, DeviceAutomationTarget::Vst3 { parameter: 0 }, "vst3"),
+        (native, DeviceAutomationTarget::HostOutputGain, "native"),
+    ] {
+        let before = session.project().clone();
+        let path = files.0.join(format!("{label}.hex-automation-draft"));
+        let mut take = write_target_take(&path, &session, device, target, stamp, &events, terminal);
+        let bytes = fs::read(&path).unwrap();
+        let command =
+            prepare_device_take_adoption_on_control(&session, None, &mut take, stamp).unwrap();
+        session.editor.execute(command).unwrap();
+        let recorded = session.project().clone();
+        let lane = recorded
+            .device(device)
+            .unwrap()
+            .automation_target(target)
+            .unwrap();
+        let [span] = lane.touch.as_slice() else {
+            panic!("one continuous take")
+        };
+        assert_eq!(span.steps.len(), events.len());
+        let timing = recorded.tempo_map();
+        for (step, event) in span.steps.iter().zip(&events) {
+            assert_eq!(
+                timing.beat_to_frame(step.beat).unwrap(),
+                event.content_frame
+            );
+            assert_eq!(step.value, event.value);
+        }
+        assert_eq!(timing.beat_to_frame(span.end).unwrap(), terminal);
+        assert_eq!(
+            lane.points.as_slice(),
+            before
+                .device(device)
+                .unwrap()
+                .automation_target(target)
+                .map_or(&[][..], |lane| lane.points.as_slice())
+        );
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert!(session.editor.undo());
+        assert_eq!(session.project(), &before);
+        assert!(session.editor.redo());
+        assert_eq!(session.project(), &recorded);
+        let saved = files.0.join(format!("{label}.hex"));
+        hex_storage::save_new(&saved, &recorded).unwrap();
+        assert_eq!(hex_storage::load(&saved).unwrap(), recorded);
+    }
+}
+
+#[test]
 fn over_budget_recorded_density_retains_exact_source_and_draft_without_truncation() {
     let files = Files::new();
     let path = files.path();
     let (session, device, stamp) = fixture(AutomationInterpolation::Step);
     let before = session.project().clone();
-    let events: Vec<_> = (0..=hex_project::MAX_DEVICE_AUTOMATION_POINTS_PER_LANE as u64)
+    let events: Vec<_> = (0..=hex_project::MAX_DEVICE_AUTOMATION_TOUCH_STEPS_PER_LANE as u64)
         .map(|frame| event(frame, (frame % 2) as f32))
         .collect();
     let mut take = write_take(
