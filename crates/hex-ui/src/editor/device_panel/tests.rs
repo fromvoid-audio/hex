@@ -6777,6 +6777,7 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
             "button",
             "math",
             "buttons",
+            "mix",
         ],
     );
     visual.simulate_keystrokes("escape");
@@ -7374,6 +7375,127 @@ fn modulation_panel_closes_the_add_menu_when_its_device_is_removed(cx: &mut Test
     });
 }
 
+#[gpui::test]
+fn modulation_panel_maps_all_three_mix_inputs_and_the_result(cx: &mut TestAppContext) {
+    use hex_devices::utility::parameter::GAIN;
+    use hex_engine::mix_modulator as mix;
+    use hex_project::{DeviceAutomationTarget, DeviceModulation, ModulationDestination};
+
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let base = state.project.device(device).unwrap().state().clone();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1500.0), px(650.0)));
+    visual.run_until_parked();
+    let bank = |view: &EditorView| -> DeviceModulation {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .modulation()
+            .clone()
+    };
+    let click = click_modulator_control;
+    click(&mut visual, "device-modulator-toggle".into(), false);
+    let source_kinds = ["lfo", "macro", "random", "mix"];
+    for (index, kind) in source_kinds.into_iter().enumerate() {
+        add_modulator_from_menu(&mut visual, device, kind);
+        pump_until(&editor, cx, |view| bank(view).sources().len() == index + 1);
+        visual.run_until_parked();
+    }
+    let slots = editor.read_with(cx, |view, _| bank(view));
+    let mix_source = slots.sources()[3].id;
+    let key = |suffix| format!("mix-{}-{suffix}", mix_source.value());
+    let settings =
+        |view: &EditorView| mix::Settings::decode(&bank(view).sources()[3].state).unwrap();
+    let edits = [
+        (
+            "a-more",
+            mix::Settings {
+                inputs: [0.05, 1.0],
+                blend: 0.5,
+            },
+        ),
+        (
+            "b-less",
+            mix::Settings {
+                inputs: [0.05, 0.95],
+                blend: 0.5,
+            },
+        ),
+        (
+            "blend-more",
+            mix::Settings {
+                inputs: [0.05, 0.95],
+                blend: 0.55,
+            },
+        ),
+    ];
+    for (suffix, expected) in edits {
+        click(&mut visual, key(suffix), true);
+        pump_until(&editor, cx, |view| settings(view) == expected);
+        visual.run_until_parked();
+    }
+    for (index, input) in ["a", "b", "blend"].into_iter().enumerate() {
+        let upstream = slots.sources()[index].id;
+        click(
+            &mut visual,
+            format!("{}-{}-map", source_kinds[index], upstream.value()),
+            true,
+        );
+        click(
+            &mut visual,
+            format!("map-mix-{input}-{}-{}", device.value(), mix_source.value()),
+            true,
+        );
+        pump_until(&editor, cx, |view| bank(view).routes().len() == index + 1);
+        visual.run_until_parked();
+    }
+    click(&mut visual, key("map"), true);
+    click(
+        &mut visual,
+        format!("map-target-{}-{}", device.value(), GAIN.value()),
+        false,
+    );
+    pump_until(&editor, cx, |view| bank(view).routes().len() == 4);
+    let mapped = editor.read_with(cx, |view, _| {
+        let mapped = bank(view);
+        for (index, parameter) in [mix::INPUT_A, mix::INPUT_B, mix::BLEND]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(mapped.routes()[index].source, slots.sources()[index].id);
+            assert_eq!(
+                mapped.routes()[index].destination,
+                ModulationDestination::Modulator {
+                    source: mix_source,
+                    module_type: mix::TYPE_ID,
+                    parameter
+                }
+            );
+        }
+        assert_eq!(mapped.routes()[3].source, mix_source);
+        assert!(matches!(
+            mapped.routes()[3].destination,
+            ModulationDestination::Device {
+                target: DeviceAutomationTarget::Parameter(GAIN),
+                ..
+            }
+        ));
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(project.device(device).unwrap().state(), &base);
+        let reopened = hex_storage::decode(&hex_storage::encode(project).unwrap()).unwrap();
+        assert_eq!(&reopened, project.as_ref());
+        mapped
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        bank(view).routes() == &mapped.routes()[..3]
+    });
+}
+
 fn add_modulator_from_menu(visual: &mut VisualTestContext, device: DeviceId, kind: &str) {
     click_modulator_control(visual, format!("add-modulator-{}", device.value()), true);
     let panel = visual
@@ -7395,6 +7517,7 @@ fn add_modulator_from_menu(visual: &mut VisualTestContext, device: DeviceId, kin
             "button",
             "math",
             "buttons",
+            "mix",
         ]
         .iter()
         .position(|label| *label == kind)
