@@ -50,8 +50,32 @@ struct Route {
     source: usize,
     target_index: usize,
     order: usize,
+    contribution: RangeContribution,
+}
+
+/// A validated affine mapping from bipolar samples to normalized offsets.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RangeContribution {
     scale: f64,
     offset: f64,
+}
+
+impl RangeContribution {
+    pub(crate) fn prepare(amount: f32, range: [f32; 2]) -> Result<Self, Error> {
+        if !(-1.0..=1.0).contains(&amount) || range.iter().any(|v| !(-1.0..=1.0).contains(v)) {
+            return Err(Error::InvalidParameterValue);
+        }
+        let [start, end] = range.map(f64::from);
+        let half_amount = f64::from(amount) * 0.5;
+        Ok(Self {
+            scale: half_amount * (end - start),
+            offset: half_amount * (end + start),
+        })
+    }
+
+    pub(crate) fn sample(self, bipolar: f32) -> f64 {
+        f64::from(bipolar) * self.scale + self.offset
+    }
 }
 
 /// Control-prepared target and route inventory. IDs are stable and sorted.
@@ -132,24 +156,18 @@ impl PreparedModulation {
             .try_reserve_exact(routes.len())
             .map_err(|_| Error::RuntimeAllocation)?;
         for (order, route) in routes.iter().enumerate() {
-            if route.source >= source_count
-                || !route.amount.is_finite()
-                || !(-1.0..=1.0).contains(&route.amount)
-                || route.range.iter().any(|v| !(-1.0..=1.0).contains(v))
-            {
+            if route.source >= source_count {
                 return Err(Error::InvalidParameterValue);
             }
             let target_index = ids
                 .binary_search(&route.target)
                 .map_err(|_| Error::UnknownParameter)?;
-            let [start, end] = route.range.map(f64::from);
-            let half_amount = f64::from(route.amount) * 0.5;
+            let contribution = RangeContribution::prepare(route.amount, route.range)?;
             prepared_routes.push(Route {
                 source: route.source,
                 target_index,
                 order,
-                scale: half_amount * (end - start),
-                offset: half_amount * (end + start),
+                contribution,
             });
         }
         // Include original order in the key so sorting uses no scratch
@@ -301,7 +319,7 @@ impl ModulationBlock<'_> {
                 .get(route.source)
                 .and_then(|source| source.get(offset))
                 .ok_or(Error::InvalidParameterValue)?;
-            sum += f64::from(*sample) * route.scale + route.offset;
+            sum += route.contribution.sample(*sample);
         }
         if sum == 0.0 {
             authored.descriptor.validate(base)?;
