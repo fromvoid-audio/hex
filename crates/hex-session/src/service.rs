@@ -34,6 +34,7 @@ mod audio_sink;
 pub mod automation_draft;
 pub mod automation_take;
 mod native_automation_recording;
+mod plugin_editor_group;
 pub use native_automation_recording::{
     AutomationRecoveryFileIdentity, DeviceAutomationSource, DeviceAutomationTakeAction,
     DeviceAutomationTakeCompletion, DeviceAutomationTakeProgress, DeviceAutomationTakeScope,
@@ -42,6 +43,10 @@ pub use native_automation_recording::{
     SealedAutomationRecoveryFile, copy_failed_plugin_on_control,
     copy_failed_plugin_with_receipt_on_control, copy_native_recovery_on_control,
     prepare_failed_plugin_continuation, prepare_verified_vst3_recovery_on_control,
+};
+pub use plugin_editor_group::{
+    MAX_VST3_EDITOR_GROUP_MEMBERS, PluginEditorRecordingTarget, Vst3EditorGroupObservation,
+    Vst3EditorGroupReceipt, Vst3EditorGroupRows,
 };
 #[cfg(test)]
 mod busy_reason_tests;
@@ -2947,17 +2952,47 @@ fn run_worker(
                     }
                     let device = session
                         .project()
-                        .device(input.device)
+                        .device(input.target.device())
                         .filter(|device| !device.bypassed())
                         .ok_or("vst3 editor recording device changed")?;
-                    if vst3_automation_class(device.state()) != Some(input.class) {
+                    if vst3_automation_class(device.state()) != Some(input.target.class()) {
                         return Err("vst3 editor recording class changed".into());
                     }
-                    let reading = device
-                        .automation_target(hex_project::DeviceAutomationTarget::Vst3 {
-                            parameter: input.parameter,
-                        })
-                        .is_some_and(hex_project::DeviceAutomation::is_reading);
+                    let target = match input.target {
+                        PluginEditorRecordingTarget::Single {
+                            device: id,
+                            class,
+                            parameter,
+                            ..
+                        } => {
+                            let reading = device
+                                .automation_target(hex_project::DeviceAutomationTarget::Vst3 {
+                                    parameter,
+                                })
+                                .is_some_and(hex_project::DeviceAutomation::is_reading);
+                            PluginEditorRecordingTarget::Single {
+                                device: id,
+                                class,
+                                parameter,
+                                reading,
+                            }
+                        }
+                        PluginEditorRecordingTarget::Group(group) => {
+                            if group.ids().iter().any(|&parameter| {
+                                device
+                                    .automation_target(hex_project::DeviceAutomationTarget::Vst3 {
+                                        parameter,
+                                    })
+                                    .is_none_or(|lane| lane.vst3_class != Some(group.class()))
+                            }) {
+                                return Err(
+                                    "assign each vst3 group parameter to an automation lane first"
+                                        .into(),
+                                );
+                            }
+                            input.target
+                        }
+                    };
                     let sink = events
                         .resident_audio()
                         .ok_or("vst3 output is unavailable")?;
@@ -2971,7 +3006,7 @@ fn run_worker(
                     }
                     .begin_editor(
                         &session,
-                        PluginEditorRecordingInput { reading, ..*input },
+                        PluginEditorRecordingInput { target, ..*input },
                         *request_id,
                         sink,
                     )

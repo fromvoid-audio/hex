@@ -12,7 +12,8 @@ use hex_session::device_gesture::GestureKey;
 use hex_session::service::automation_draft::Vst3CaptureTarget;
 use hex_session::service::{
     DeviceAutomationSource, DeviceCaptureTarget, PluginEditorRecordingInput,
-    PluginParameterObservation as Observation, RequestCancellation, ResidentRuntimeLoop,
+    PluginEditorRecordingTarget, PluginParameterObservation as Observation, RequestCancellation,
+    ResidentRuntimeLoop,
 };
 mod correlation;
 use correlation::{Correlation, Match};
@@ -67,6 +68,15 @@ impl Plugins {
         {
             return Err("finish the previous vst3 operation first".into());
         }
+        let PluginEditorRecordingTarget::Single {
+            device,
+            class,
+            parameter,
+            reading,
+        } = input.target
+        else {
+            return Err("grouped vst3 editor recording is unavailable on this output".into());
+        };
         let (applied, transport_epoch) = control
             .status
             .live_native_parameter_source()
@@ -90,7 +100,7 @@ impl Plugins {
             .find(|source| {
                 source.accepted
                     && !source.retiring
-                    && source.device == input.device.value()
+                    && source.device == device.value()
                     && source.project_generation == input.context.project_generation
                     && source.binding.root == applied.output_identity
             })
@@ -98,13 +108,13 @@ impl Plugins {
             .ok_or("the selected vst3 editor source is unavailable on this output")?;
         let read_base = |control: &mut PublicationControl| {
             let metadata = edits::source_metadata(control, binding, cancellation)?;
-            if metadata.selection().cid != input.class {
+            if metadata.selection().cid != class {
                 return Err("vst3 editor class changed".into());
             }
             Ok::<_, String>(
                 metadata
                     .authored_base_values()
-                    .find_map(|(id, value)| (id == input.parameter).then_some(value)),
+                    .find_map(|(id, value)| (id == parameter).then_some(value)),
             )
         };
         let base = match read_base(control)? {
@@ -115,8 +125,8 @@ impl Plugins {
                     host,
                     control,
                     binding,
-                    input.class,
-                    input.parameter,
+                    class,
+                    parameter,
                     None,
                     cancellation,
                 )?;
@@ -124,9 +134,9 @@ impl Plugins {
             }
         };
         let target = Vst3CaptureTarget {
-            device: input.device,
-            class: input.class,
-            parameter: input.parameter,
+            device,
+            class,
+            parameter,
             binding,
         };
         let source = DeviceAutomationSource {
@@ -143,9 +153,9 @@ impl Plugins {
             target,
             source,
             plan: TouchPlan {
-                parameter: input.parameter,
+                parameter,
                 base,
-                reading: input.reading,
+                reading,
             },
         };
         self.editor_recording = Some(Recording::Prepared(Box::new(prepared)));

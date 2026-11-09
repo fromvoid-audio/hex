@@ -1397,3 +1397,218 @@ fn cached_interruption_retires_the_exact_gesture_without_claiming_a_retained_pre
     assert!(client.acknowledge_with_snapshot(&ended.ack, machine.snapshot()));
     assert!(client.begin_plugin_recording(origin).is_ok());
 }
+
+#[cfg(feature = "recording-fault-test-support")]
+#[test]
+fn grouped_editor_writer_failure_retains_late_restorations_until_explicit_keep() {
+    use crate::service::automation_draft::{
+        DraftClock, DraftTerminal, GroupApplication, GroupDraftEvent, Vst3GroupCaptureTarget,
+        Vst3GroupTarget,
+    };
+    use hex_storage::automation_draft::DraftReadLimits;
+
+    let (files, session, mut scope, mut source) = fixture();
+    let DeviceCaptureTarget::Vst3(scalar) = scope.target else {
+        panic!("foreign fixture");
+    };
+    let target = Vst3GroupCaptureTarget {
+        draft: Vst3GroupTarget::new(scalar.device, scalar.class, &[0, 11]).unwrap(),
+        binding: scalar.binding,
+    };
+    scope.target = DeviceCaptureTarget::Vst3Group(target);
+    source.target = scope.target;
+    let key = GestureKey {
+        generation: scope.stamp.project_generation,
+        token: scope.stamp.gesture_serial,
+    };
+    let current = scope.context();
+    let observe = |receipt| {
+        PluginParameterObservation::Grouped(Vst3EditorGroupObservation {
+            key,
+            context: current,
+            source,
+            receipt,
+        })
+    };
+    let row = |ordinal, parameter, sdk_gesture, content, application| GroupDraftEvent {
+        ordinal,
+        parameter,
+        sdk_gesture,
+        sdk_sequence: ordinal + 18,
+        clock: DraftClock {
+            performance_frame: 8 + content,
+            content_frame: content,
+            loop_pass: 0,
+        },
+        application,
+    };
+    let rows = [
+        row(1, 0, 10, 0, GroupApplication::Value(0.25)),
+        row(2, 11, 11, 0, GroupApplication::Value(0.75)),
+        row(3, 0, 10, 8, GroupApplication::Restored),
+        row(4, 11, 11, 16, GroupApplication::Restored),
+    ];
+    let applied = |rows: &[GroupDraftEvent]| {
+        let mut batch = [None; MAX_VST3_EDITOR_GROUP_MEMBERS];
+        for (slot, row) in batch.iter_mut().zip(rows) {
+            *slot = Some(*row);
+        }
+        observe(Vst3EditorGroupReceipt::Applied(
+            Vst3EditorGroupRows::new(batch, rows[0].clock.performance_frame + 9).unwrap(),
+        ))
+    };
+    let mut state = State::default();
+    let mut lane = Lane::default();
+    let recovery = files.0.join("recovery.hex");
+    Preparation {
+        state: &mut state,
+        lane: &mut lane,
+        document_base: None,
+        recovery: Some(&recovery),
+        may_defer: false,
+        deferred: false,
+    }
+    .admit_ready(
+        &session,
+        current,
+        key,
+        observe(Vst3EditorGroupReceipt::Ready),
+    )
+    .unwrap();
+    state.active.as_mut().unwrap().editor_request = Some(7);
+    let original = lane.path().unwrap().to_owned();
+    let original_bytes = std::fs::read(&original).unwrap();
+    assert!(!state.close_safe() && !lane.close_safe());
+    lane.receive(
+        &session,
+        None,
+        current,
+        scope,
+        &DeviceAutomationTakeAction::InjectWriterFailure,
+    )
+    .unwrap();
+
+    let drive = |state: &mut State, lane: &mut Lane, sink: &mut Sink| {
+        Preparation {
+            state,
+            lane,
+            document_base: None,
+            recovery: None,
+            may_defer: false,
+            deferred: false,
+        }
+        .drive(&session, current, sink);
+    };
+    let mut sink = Sink {
+        observations: VecDeque::from([applied(&rows[..2])]),
+        ..Sink::default()
+    };
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        drive(&mut state, &mut lane, &mut sink);
+        if state
+            .active
+            .as_ref()
+            .is_some_and(|active| active.outcome.as_ref().is_some_and(Result::is_err))
+        {
+            break;
+        }
+        assert!(Instant::now() < until);
+        crate::test_wait::pause();
+    }
+    assert!(sink.observations.is_empty());
+    sink.editor = Some(key);
+    sink.observations.extend([
+        applied(&rows[2..3]),
+        applied(&rows[3..]),
+        observe(Vst3EditorGroupReceipt::Finished(rows[3].clock)),
+    ]);
+    drive(&mut state, &mut lane, &mut sink);
+    assert!(sink.editor_cancelled);
+    let settled = state.finish_editor(7, &lane).unwrap();
+    assert!(settled.result.is_err());
+    assert!(!state.close_safe() && !lane.close_safe());
+    assert_eq!(std::fs::read(&original).unwrap(), original_bytes);
+
+    let destination = files.0.join("verified.hex-automation-draft");
+    assert!(matches!(
+        start_failed_copy(&state, &mut lane, scope, &destination, 8, false).unwrap(),
+        Step::Progress(DeviceAutomationTakeProgress::Pending)
+    ));
+    let until = Instant::now() + Duration::from_secs(2);
+    let receipt = loop {
+        match lane
+            .receive(
+                &session,
+                None,
+                current,
+                scope,
+                &DeviceAutomationTakeAction::PollFailedCopy,
+            )
+            .unwrap()
+        {
+            Step::Progress(DeviceAutomationTakeProgress::VerifiedCopy { path, receipt }) => {
+                assert_eq!(path, destination);
+                break receipt;
+            }
+            Step::Progress(DeviceAutomationTakeProgress::Pending) => {
+                assert!(Instant::now() < until);
+                crate::test_wait::pause();
+            }
+            _ => panic!("unexpected recovery result"),
+        }
+    };
+    assert_eq!(receipt.terminal(), DraftTerminal::Finished(rows[3].clock));
+    let mut completed = receipt
+        .open_completed_group_on_control(
+            &destination,
+            DraftReadLimits {
+                max_source_bytes: 65_536,
+            },
+            8,
+        )
+        .unwrap();
+    let mut copied = [None; 4];
+    assert_eq!(completed.read_events(0, &mut copied).unwrap(), 4);
+    assert_eq!(copied, rows.map(Some));
+    drop(completed);
+    assert!(matches!(
+        keep_failed_copy(&mut state, &mut lane, scope, &destination, receipt, 8, false).unwrap(),
+        Step::Progress(DeviceAutomationTakeProgress::CopyKept(path)) if path == destination
+    ));
+    assert!(state.close_safe() && lane.close_safe());
+    assert_eq!(std::fs::read(original).unwrap(), original_bytes);
+    let selected = native_automation_recording::inspect_sealed_file(&destination).unwrap();
+    assert_eq!(selected.target, scope.target.draft_target());
+    let (edit, _) = native_automation_recording::recover_sealed(
+        &session,
+        None,
+        selected.target,
+        selected.provenance,
+        &destination,
+        AutomationRecoveryFileIdentity::Sealed(selected.identity),
+    )
+    .unwrap();
+    assert!(
+        matches!(edit.as_ref(), Command::SpliceVst3AutomationTouchGroup { lanes, .. } if lanes.len() == 2)
+    );
+
+    use std::io::Write as _;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&destination)
+        .unwrap()
+        .write_all(&[0])
+        .unwrap();
+    assert!(
+        native_automation_recording::recover_sealed(
+            &session,
+            None,
+            selected.target,
+            selected.provenance,
+            &destination,
+            AutomationRecoveryFileIdentity::Sealed(selected.identity),
+        )
+        .is_err()
+    );
+}

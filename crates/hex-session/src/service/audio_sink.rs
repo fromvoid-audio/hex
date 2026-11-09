@@ -85,10 +85,7 @@ impl<'a> PluginParameterGestureInput<'a> {
 pub struct PluginEditorRecordingInput {
     pub key: crate::device_gesture::GestureKey,
     pub context: hex_engine::AudioSourceContext,
-    pub device: hex_project::DeviceId,
-    pub class: [u8; 16],
-    pub parameter: u32,
-    pub reading: bool,
+    pub target: super::PluginEditorRecordingTarget,
 }
 
 /// Control-side observation copied only after matching the complete private
@@ -106,7 +103,9 @@ pub struct PluginParameterDelivery {
 }
 /// A confirmed point or a conservative interruption with no invented clock.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)] // A whole physical group remains one control observation.
 pub enum PluginParameterObservation {
+    Grouped(super::Vst3EditorGroupObservation),
     Ready {
         key: crate::device_gesture::GestureKey,
         context: hex_engine::AudioSourceContext,

@@ -117,8 +117,8 @@ pub use sparse_audio::SparseFrameMap;
 mod device_automation;
 mod device_modulation;
 pub use device_modulation::{
-    project_device_can_add_note_pressure, project_device_host_gain_modulation_supported,
-    project_device_modulation_target_supported,
+    fm4_note_pressure_parameter_supported, project_device_can_add_note_pressure,
+    project_device_host_gain_modulation_supported, project_device_modulation_target_supported,
 };
 /// Versioned, control-side settings for the built-in envelope follower.
 pub use hex_devices::modulation::audio_rate as audio_rate_modulator;

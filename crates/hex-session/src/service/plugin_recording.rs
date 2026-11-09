@@ -657,8 +657,14 @@ impl Preparation<'_> {
         observation: PluginParameterObservation,
     ) -> Result<(), String> {
         let scope = DeviceAutomationTakeScope::from_plugin_ready(context, &observation)?;
-        let PluginParameterObservation::Ready { key, source, .. } = observation else {
-            return Err("vst3 recording did not begin with ready".into());
+        let (key, source) = match observation {
+            PluginParameterObservation::Ready { key, source, .. } => (key, source),
+            PluginParameterObservation::Grouped(group)
+                if group.receipt == Vst3EditorGroupReceipt::Ready =>
+            {
+                (group.key, group.source)
+            }
+            _ => return Err("vst3 recording did not begin with ready".into()),
         };
         if key != expected_key {
             return Err("vst3 recording ready belongs to another gesture".into());
@@ -727,7 +733,12 @@ impl Preparation<'_> {
                 break;
             };
             active.has_points |= matches!(action, DeviceAutomationTakeAction::PluginObservation(observation)
-                if matches!(**observation, PluginParameterObservation::Delivered(_)));
+            if matches!(**observation,
+                PluginParameterObservation::Delivered(_)
+                | PluginParameterObservation::Grouped(Vst3EditorGroupObservation {
+                    receipt: Vst3EditorGroupReceipt::Applied(_), ..
+                })
+            ));
             match self
                 .lane
                 .receive(session, self.document_base, context, active.scope, action)
@@ -735,22 +746,31 @@ impl Preparation<'_> {
                 Ok(Step::Progress(DeviceAutomationTakeProgress::Backpressured)) => break,
                 Ok(Step::Progress(progress)) => {
                     if let DeviceAutomationTakeAction::PluginObservation(observation) = action {
-                        active.released |=
-                            matches!(**observation, PluginParameterObservation::Restored(_));
-                        active.interrupted |= matches!(
-                            **observation,
-                            PluginParameterObservation::Interrupted { .. }
-                        );
-                        active.source_lost |= matches!(
-                            **observation,
-                            PluginParameterObservation::Interrupted { .. }
-                        );
-                        active.ended |= matches!(
+                        let restored = matches!(
                             **observation,
                             PluginParameterObservation::Restored(_)
-                                | PluginParameterObservation::Unchanged { .. }
-                                | PluginParameterObservation::Interrupted { .. }
+                                | PluginParameterObservation::Grouped(Vst3EditorGroupObservation {
+                                    receipt: Vst3EditorGroupReceipt::Finished(_),
+                                    ..
+                                })
                         );
+                        let interrupted = matches!(
+                            **observation,
+                            PluginParameterObservation::Interrupted { .. }
+                                | PluginParameterObservation::Grouped(Vst3EditorGroupObservation {
+                                    receipt: Vst3EditorGroupReceipt::Interrupted,
+                                    ..
+                                })
+                        );
+                        active.released |= restored;
+                        active.interrupted |= interrupted;
+                        active.source_lost |= interrupted;
+                        active.ended |= restored
+                            || interrupted
+                            || matches!(
+                                **observation,
+                                PluginParameterObservation::Unchanged { .. }
+                            );
                     }
                     active.sealing |= progress == DeviceAutomationTakeProgress::Sealing;
                     active.pending = None;
@@ -913,6 +933,23 @@ impl Preparation<'_> {
                 && point.application.value == automation_draft::Vst3ApplicationValue::Restored
         };
         match observation {
+            PluginParameterObservation::Grouped(group)
+                if group.matches(active.scope, active.source) =>
+            {
+                match group.receipt {
+                    Vst3EditorGroupReceipt::Ready => {}
+                    Vst3EditorGroupReceipt::Applied(_) => active.has_points = true,
+                    Vst3EditorGroupReceipt::Finished(_) => {
+                        active.released = true;
+                        active.ended = true;
+                    }
+                    Vst3EditorGroupReceipt::Interrupted => {
+                        active.interrupted = true;
+                        active.source_lost = true;
+                        active.ended = true;
+                    }
+                }
+            }
             PluginParameterObservation::Restored(point) if matches(point) => {
                 active.released = true;
                 active.ended = true;
