@@ -1,8 +1,9 @@
 //! Control-side connection from one keyed SDK gesture to the existing device
-//! take Lane. The Lane retains disk custody; this owner retains at most one
-//! original observation under backpressure, at most two later SDK observations
-//! during failed-input release, and one terminal request while disk
-//! completion is pending. No callback, UI clock or second writer lives here.
+//! take Lane. The Lane retains disk custody; this owner retains one pending
+//! original observation and one terminal request while disk completion is
+//! pending. Failed input retains at most two later host knob observations,
+//! or the separately bounded original editor prefix. No callback, UI clock
+//! or second writer lives here.
 use super::*;
 use crate::device_gesture::{PluginGesturePreparation, PreparedGesture};
 use native_automation_recording::{Lane, Step};
@@ -30,6 +31,9 @@ struct Active {
     released: bool,
     ended: bool,
     failed_observations: [Option<PluginParameterObservation>; 2],
+    // The original plug-in editor owns a deeper Main receipt queue than a
+    // Hex knob. Allocate this tail only after its exact cancellation is owed.
+    failed_editor: Option<Vec<PluginParameterObservation>>,
     interrupted: bool,
     sealing: bool,
     outcome: Option<Result<Step, String>>,
@@ -37,6 +41,14 @@ struct Active {
 }
 
 impl Active {
+    fn has_failed_tail(&self) -> bool {
+        self.failed_observations.iter().any(Option::is_some)
+            || self
+                .failed_editor
+                .as_ref()
+                .is_some_and(|tail| !tail.is_empty())
+    }
+
     fn terminal_error(&self, error: SessionError) -> SessionError {
         if self.source_lost {
             SessionError::PluginSourceLost(error.to_string())
@@ -323,12 +335,24 @@ impl State {
         if !failed.ended || failed.scope != scope || failed.source != source {
             return Err("vst3 recovery custody is incomplete or belongs to another source".into());
         }
-        let mut observations = Vec::with_capacity(3);
+        let mut observations = Vec::with_capacity(
+            failed
+                .failed_editor
+                .as_ref()
+                .map_or(3, |tail| tail.len() + 1),
+        );
         if let Some(pending) = failed.pending.as_ref() {
             let DeviceAutomationTakeAction::PluginObservation(observation) = pending else {
                 return Err("vst3 recovery has an unsupported pending action".into());
             };
             observations.push(**observation);
+        }
+        if let Some(tail) = &failed.failed_editor {
+            if failed.failed_observations.iter().any(Option::is_some) {
+                return Err("vst3 recovery has two observation owners".into());
+            }
+            observations.extend(tail.iter().copied());
+            return Ok(observations);
         }
         let mut gap = false;
         for observation in failed.failed_observations {
@@ -581,6 +605,7 @@ impl Preparation<'_> {
                     released: false,
                     ended: false,
                     failed_observations: [None; 2],
+                    failed_editor: None,
                     interrupted: false,
                     sealing: false,
                     outcome: None,
@@ -780,17 +805,19 @@ impl Preparation<'_> {
     fn retire_detached(&mut self, context: hex_engine::AudioSourceContext) {
         if self.state.active.as_ref().is_some_and(|active| {
             self.state.terminal.is_none()
-                && (active.source_lost || context != active.scope.context())
+                && (active.source_lost
+                    || context != active.scope.context()
+                    || active.failed_editor.is_some())
                 && active.ended
                 && active.outcome.is_some()
         }) && let Some(active) = self.state.active.take()
         {
-            self.state.retired = Some(active.key);
+            self.state.retired = active.failed_editor.is_none().then_some(active.key);
             // The original terminal is still owed an exact acknowledgement.
             // Keep it until its synthetic attempt, even after source custody ends.
             if active.pending.is_some()
                 || matches!(active.outcome, Some(Err(_)))
-                || active.failed_observations.iter().any(Option::is_some)
+                || active.has_failed_tail()
                 || self.lane.busy()
             {
                 self.state.failed = Some(active);
@@ -808,68 +835,100 @@ impl Preparation<'_> {
         let Some(active) = self.state.active.as_mut() else {
             return;
         };
-        for slot in &mut active.failed_observations {
-            if slot.is_some() {
+        if active.ended {
+            return;
+        }
+        if active.failed_editor.is_some() || sink.cancel_plugin_editor_recording(active.key) {
+            let tail = active.failed_editor.get_or_insert_with(Vec::new);
+            // Account the pending Session action separately. Reserve before
+            // popping, and let the adapter retain backpressure on refusal.
+            let remaining = (MAX_FAILED_PLUGIN_EDITOR_OBSERVATIONS - 1).saturating_sub(tail.len());
+            let credit = remaining.min(4);
+            if tail.try_reserve_exact(remaining).is_err() {
+                return;
+            }
+            for _ in 0..credit {
+                let Some(observation) = sink.take_plugin_parameter_observation() else {
+                    break;
+                };
+                Self::observe_failed(active, observation);
+                if let Some(tail) = active.failed_editor.as_mut() {
+                    tail.push(observation);
+                }
+                if active.ended {
+                    break;
+                }
+            }
+            return;
+        }
+        for index in 0..active.failed_observations.len() {
+            if active.failed_observations[index].is_some() {
                 continue;
             }
             let Some(observation) = sink.take_plugin_parameter_observation() else {
                 break;
             };
-            let matches = |point: PluginParameterDelivery| {
-                DeviceAutomationTakeScope::from_plugin_ready(
-                    active.scope.context(),
-                    &PluginParameterObservation::Ready {
-                        key: point.key,
-                        context: point.context,
-                        target: point.target,
-                        source: point.source,
-                    },
-                )
-                .is_ok_and(|scope| scope == active.scope)
-                    && point.source.section_loop == active.source.section_loop
-                    && point.application.binding == point.target.binding
-                    && point.application.parameter == point.target.parameter
-                    && point.delivery_performance_frame
-                        >= point.application.origin.performance_frame
-                    && point.application.value == automation_draft::Vst3ApplicationValue::Restored
-            };
-            match observation {
-                PluginParameterObservation::Restored(point) if matches(point) => {
-                    active.released = true;
-                    active.ended = true;
-                }
-                PluginParameterObservation::Unchanged { key }
-                    if key == active.key && !active.has_points =>
-                {
-                    active.ended = true;
-                }
-                PluginParameterObservation::Interrupted {
+            Self::observe_failed(active, observation);
+            active.failed_observations[index] = Some(observation);
+            if active.ended {
+                break;
+            }
+        }
+    }
+
+    fn observe_failed(active: &mut Active, observation: PluginParameterObservation) {
+        let matches = |point: PluginParameterDelivery| {
+            DeviceAutomationTakeScope::from_plugin_ready(
+                active.scope.context(),
+                &PluginParameterObservation::Ready {
+                    key: point.key,
+                    context: point.context,
+                    target: point.target,
+                    source: point.source,
+                },
+            )
+            .is_ok_and(|scope| scope == active.scope)
+                && point.source.section_loop == active.source.section_loop
+                && point.application.binding == point.target.binding
+                && point.application.parameter == point.target.parameter
+                && point.delivery_performance_frame >= point.application.origin.performance_frame
+                && point.application.value == automation_draft::Vst3ApplicationValue::Restored
+        };
+        match observation {
+            PluginParameterObservation::Restored(point) if matches(point) => {
+                active.released = true;
+                active.ended = true;
+            }
+            PluginParameterObservation::Unchanged { key }
+                if key == active.key && !active.has_points =>
+            {
+                active.ended = true;
+            }
+            PluginParameterObservation::Interrupted {
+                key,
+                context,
+                target,
+                source,
+                ..
+            } if DeviceAutomationTakeScope::from_plugin_ready(
+                active.scope.context(),
+                &PluginParameterObservation::Ready {
                     key,
                     context,
                     target,
                     source,
-                    ..
-                } if DeviceAutomationTakeScope::from_plugin_ready(
-                    active.scope.context(),
-                    &PluginParameterObservation::Ready {
-                        key,
-                        context,
-                        target,
-                        source,
-                    },
-                )
-                .is_ok_and(|scope| scope == active.scope) =>
-                {
-                    active.interrupted = true;
-                    active.source_lost = true;
-                    active.ended = true;
-                }
-                PluginParameterObservation::Delivered(_) => {
-                    active.has_points = true;
-                }
-                _ => {}
+                },
+            )
+            .is_ok_and(|scope| scope == active.scope) =>
+            {
+                active.interrupted = true;
+                active.source_lost = true;
+                active.ended = true;
             }
-            *slot = Some(observation);
+            PluginParameterObservation::Delivered(_) => {
+                active.has_points = true;
+            }
+            _ => {}
         }
     }
 
@@ -973,10 +1032,7 @@ impl Preparation<'_> {
             );
         }
         let result = result.map_err(|error| active.terminal_error(error));
-        if active.pending.is_some()
-            || self.lane.busy()
-            || active.failed_observations.iter().any(Option::is_some)
-        {
+        if active.pending.is_some() || self.lane.busy() || active.has_failed_tail() {
             self.state.failed = Some(active);
         }
         result
