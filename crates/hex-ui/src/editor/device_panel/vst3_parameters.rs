@@ -3613,16 +3613,16 @@ mod tests {
                         .clone();
                     let body = body(view, self.device, cx);
                     let panel = super::super::modulators::vst3_panel(view, cx, &device);
-                    div().w(px(300.0)).h(px(360.0)).child(
-                        hex_widgets::device_frame_with_modulators(
-                            theme::text("vst3"),
-                            theme::device_frame_style(true),
-                            div(),
-                            div(),
-                            body,
-                            panel,
-                        ),
+                    hex_widgets::device_frame_with_modulators(
+                        theme::text("vst3"),
+                        theme::device_frame_style(true),
+                        div(),
+                        div(),
+                        body,
+                        panel,
                     )
+                    .w(px(300.0))
+                    .h(px(360.0))
                 })
             }
         }
