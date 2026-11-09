@@ -14,13 +14,18 @@ pub use plugin_observation::{
 };
 mod recovery;
 use super::automation_draft::{
-    DeviceDraftInput, DraftProvenance, DraftWorker, DraftWorkerOutcome, RecoveryCopyReceipt,
-    RecoveryCopyWorker, Vst3CaptureTarget, Vst3ParameterApplication,
+    DeviceDraftInput, DraftProvenance, DraftWorker, DraftWorkerOutcome, GroupDraftEvent,
+    RecoveryCopyReceipt, RecoveryCopyWorker, Vst3CaptureTarget, Vst3GroupCaptureTarget,
+    Vst3ParameterApplication,
 };
-use super::automation_take::{CompletedAutomationTake, prepare_device_take_adoption_on_control};
+use super::automation_take::{
+    CompletedAutomationTake, prepare_device_take_adoption_on_control,
+    prepare_group_take_adoption_on_control,
+};
 use hex_engine::{AudioSourceContext, NativeParameterApplication, NativeParameterInputTarget};
 use hex_storage::automation_draft::{
-    CaptureClock, DraftAbortReason, DraftReadLimits, DraftTerminal,
+    CaptureClock, CompletedGroupedDraft, DraftAbortReason, DraftClock, DraftReadLimits,
+    DraftTerminal,
 };
 pub use recovery::{
     AutomationRecoveryFileIdentity, SealedAutomationRecoveryFile,
@@ -41,6 +46,7 @@ use std::{
 pub enum DeviceCaptureTarget {
     Native(NativeParameterInputTarget),
     Vst3(Vst3CaptureTarget),
+    Vst3Group(Vst3GroupCaptureTarget),
 }
 impl DeviceCaptureTarget {
     /// Durable target identity; this does not grant live worker admission.
@@ -57,13 +63,14 @@ impl DeviceCaptureTarget {
                     parameter: target.parameter,
                 },
             },
+            Self::Vst3Group(target) => DraftTarget::Vst3Group(target.draft),
         }
     }
 
     pub fn native(self) -> Option<NativeParameterInputTarget> {
         match self {
             Self::Native(target) => Some(target),
-            Self::Vst3(_) => None,
+            Self::Vst3(_) | Self::Vst3Group(_) => None,
         }
     }
 }
@@ -107,7 +114,7 @@ impl From<DeviceCaptureTarget> for TakePublication {
     fn from(target: DeviceCaptureTarget) -> Self {
         match target {
             DeviceCaptureTarget::Native(target) => Self::Native(target),
-            DeviceCaptureTarget::Vst3(_) => Self::Vst3,
+            DeviceCaptureTarget::Vst3(_) | DeviceCaptureTarget::Vst3Group(_) => Self::Vst3,
         }
     }
 }
@@ -153,6 +160,10 @@ pub enum DeviceAutomationTakeAction {
     Finish(NativeParameterApplication),
     AppendVst3(Arc<[(u64, Vst3ParameterApplication)]>),
     FinishVst3(Vst3ParameterApplication),
+    /// Group rows carry actual Main clocks in delivery order, with one SDK
+    /// gesture per member and an independent file ordinal.
+    AppendVst3Group(Arc<[GroupDraftEvent]>),
+    FinishVst3Group(DraftClock),
     /// Original SDK/final-output observation. Retain it until Appended or
     /// Sealing; Backpressured does not consume its sequence or original clock.
     PluginObservation(Box<super::PluginParameterObservation>),
@@ -499,6 +510,16 @@ impl Lane {
                 scope.stamp,
                 clock,
             ),
+            DeviceCaptureTarget::Vst3Group(target) => {
+                DeviceDraftInput::start_vst3_group_on_control(
+                    session,
+                    document_base,
+                    path,
+                    target,
+                    scope.stamp,
+                    clock,
+                )
+            }
         }?;
         self.active = Some(Active {
             scope,
@@ -715,6 +736,31 @@ impl Lane {
                     .finish_vst3_delivered(target, scope.stamp, *application)?;
                 Progress::Sealing
             }
+            DeviceAutomationTakeAction::AppendVst3Group(batch) => {
+                let DeviceCaptureTarget::Vst3Group(target) = scope.target else {
+                    return Err("grouped vst3 applications require a grouped take".into());
+                };
+                if active
+                    .input
+                    .append_vst3_group_delivered(target, scope.stamp, batch)?
+                    .is_some()
+                {
+                    Progress::Appended
+                } else {
+                    Progress::Backpressured
+                }
+            }
+            DeviceAutomationTakeAction::FinishVst3Group(clock) => {
+                let DeviceCaptureTarget::Vst3Group(target) = scope.target else {
+                    return Err("grouped vst3 restoration requires a grouped take".into());
+                };
+                active.input.finish_vst3_group_delivered(
+                    target,
+                    scope.stamp,
+                    DraftTerminal::Finished(*clock),
+                )?;
+                Progress::Sealing
+            }
             DeviceAutomationTakeAction::Abort(reason) => {
                 match scope.target {
                     DeviceCaptureTarget::Native(target) => {
@@ -724,6 +770,13 @@ impl Lane {
                         active
                             .input
                             .abort_vst3_delivered(target, scope.stamp, *reason)?
+                    }
+                    DeviceCaptureTarget::Vst3Group(target) => {
+                        active.input.finish_vst3_group_delivered(
+                            target,
+                            scope.stamp,
+                            DraftTerminal::Aborted(*reason),
+                        )?
                     }
                 }
                 Progress::Sealing
@@ -790,6 +843,29 @@ impl Lane {
             return Ok(Step::Progress(DeviceAutomationTakeProgress::Retained(
                 outcome.path,
             )));
+        }
+        if let DeviceCaptureTarget::Vst3Group(target) = scope.target {
+            let command = (|| {
+                let mut take = CompletedGroupedDraft::open(
+                    &outcome.path,
+                    DraftReadLimits {
+                        max_source_bytes: hex_storage::MAX_PROJECT_DOCUMENT_BYTES as u64,
+                    },
+                    hex_project::MAX_DEVICE_AUTOMATION_POINTS as u64,
+                )
+                .map_err(|error| error.to_string())?;
+                if take.target() != target.draft {
+                    return Err("sealed group does not match the original capture target".into());
+                }
+                prepare_group_take_adoption_on_control(
+                    session,
+                    document_base,
+                    &mut take,
+                    scope.stamp,
+                )
+            })()
+            .map_err(|error| retained_error(&outcome.path, &error))?;
+            return Ok(Step::Commit(Box::new(command), outcome.path));
         }
         let mut take = CompletedAutomationTake::open_on_control(
             &outcome.path,

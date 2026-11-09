@@ -13,7 +13,9 @@ use hex_storage::automation_draft::{
 };
 use std::path::{Path, PathBuf};
 
+mod group;
 mod vst3;
+pub use group::Vst3GroupCaptureTarget;
 pub use vst3::{Vst3ApplicationValue, Vst3CaptureTarget, Vst3ParameterApplication};
 
 pub(in crate::service) fn native_application_clock(
@@ -35,6 +37,10 @@ enum Capture {
     },
     Vst3 {
         target: Vst3CaptureTarget,
+    },
+    Vst3Group {
+        target: Vst3GroupCaptureTarget,
+        latest: Option<super::GroupDraftEvent>,
     },
 }
 
