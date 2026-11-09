@@ -1201,3 +1201,68 @@ fn resolved_edge_scene_witness_distinguishes_occlusion_order(cx: &mut TestAppCon
         "detect the actual clip mask"
     );
 }
+
+#[gpui::test]
+fn resolved_backdrop_edge_follows_hover_without_capturing_input(cx: &mut TestAppContext) {
+    use gpui::{Context, Render, Window, div, prelude::*, px, rgb};
+    use std::{cell::Cell, rc::Rc};
+    struct Fixture(Rc<Cell<usize>>);
+    impl Render for Fixture {
+        fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl gpui::IntoElement {
+            let clicks = self.0.clone();
+            let body = div()
+                .absolute()
+                .inset_0()
+                .debug_selector(|| "resolved-hover-body".into())
+                .on_mouse_down(MouseButton::Left, move |_, _, _| {
+                    clicks.set(clicks.get() + 1)
+                });
+            let style = super::Backdrop {
+                body: 0x112233,
+                header: 0x223344,
+                outline: 0xf003a7,
+                hover_outline: 0x03f0a7,
+                stroke: 1.0 / window.scale_factor(),
+                bottom_radius: 2.0,
+                header_height: 12.0,
+                notch: super::Notch::new(true),
+            };
+            div()
+                .relative()
+                .w(px(201.0))
+                .h(px(50.0))
+                .debug_selector(|| "resolved-hover-lane".into())
+                .child(super::backdrop_shell(
+                    body,
+                    0.127,
+                    0.197,
+                    style,
+                    true,
+                    || "resolved-hover-edge".into(),
+                ))
+        }
+    }
+    let clicks = Rc::new(Cell::new(0));
+    let handle = *cx.add_window(|_, _| Fixture(clicks.clone()));
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let body = visual.debug_bounds("resolved-hover-body").unwrap();
+    let edge = visual.debug_bounds("resolved-hover-edge").unwrap();
+    let scale = visual.update(|window, _| window.scale_factor());
+    assert_eq!(edge.left(), body.right());
+    let has_edge_color = |visual: &mut VisualTestContext, color| {
+        visual
+            .rendered_filled_quads("resolved-hover-lane")
+            .iter()
+            .any(|(bounds, actual)| {
+                bounds.left() == edge.left().scale(scale)
+                    && *actual == gpui::Background::from(rgb(color))
+            })
+    };
+    assert!(has_edge_color(&mut visual, 0xf003a7));
+    visual.simulate_mouse_move(body.center(), None, Modifiers::default());
+    visual.run_until_parked();
+    assert!(has_edge_color(&mut visual, 0x03f0a7));
+    visual.simulate_click(body.center(), Modifiers::default());
+    assert_eq!(clicks.get(), 1);
+}
