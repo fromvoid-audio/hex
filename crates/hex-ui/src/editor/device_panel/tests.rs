@@ -6275,7 +6275,7 @@ fn exercise_sampler_modulation_mapper(cx: &mut TestAppContext, host_output: bool
     let empty = editor.read_with(cx, |view, _| Arc::clone(view.state.as_ref().unwrap()));
     let track = empty.project.tracks()[0].id();
     let mut visual = VisualTestContext::from_window(fixture.handle, cx);
-    visual.simulate_resize(size(px(1500.0), px(650.0)));
+    visual.simulate_resize(size(px(1800.0), px(650.0)));
     editor.update(&mut visual, |view, cx| {
         view.mode = super::super::EditorMode::Session;
         view.selected_track = Some(track);
@@ -6410,7 +6410,7 @@ fn exercise_sampler_modulation_mapper(cx: &mut TestAppContext, host_output: bool
             hit.size.width > px(0.0),
             "gain has no visible horizontal area"
         );
-        if hit.size.height <= px(0.0) {
+        if target.bottom() > visible.bottom() - px(6.0) {
             visual.simulate_event(gpui::ScrollWheelEvent {
                 position: point(hit.center().x, visible.bottom() - px(14.0)),
                 delta: gpui::ScrollDelta::Pixels(point(
@@ -6421,6 +6421,8 @@ fn exercise_sampler_modulation_mapper(cx: &mut TestAppContext, host_output: bool
             });
             visual.run_until_parked();
         }
+        let rail = visual.debug_bounds("device-chain-scroll").unwrap();
+        let visible = visual.debug_bounds(shell).unwrap().intersect(&rail);
         let hit = visual
             .debug_bounds(target_selector)
             .unwrap()
@@ -6435,7 +6437,8 @@ fn exercise_sampler_modulation_mapper(cx: &mut TestAppContext, host_output: bool
     visual.run_until_parked();
     assert_eq!(
         visual.rendered_cursor_style(),
-        Some(gpui::CursorStyle::ResizeUpDown)
+        Some(gpui::CursorStyle::ResizeUpDown),
+        "sampler modulation target at {target:?}"
     );
     visual.simulate_click(target, Modifiers::default());
     visual.run_until_parked();
