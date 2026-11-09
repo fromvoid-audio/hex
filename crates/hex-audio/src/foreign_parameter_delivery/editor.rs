@@ -61,6 +61,15 @@ pub struct TouchPlan {
     pub reading: bool,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum TouchAdmission<'a> {
+    Single(TouchPlan),
+    /// Each target already has a reading or canonical Base point in the
+    /// prepared foreign program. The group adds no restoration points to a
+    /// valid physical quantum and does not borrow another admission budget.
+    Group(&'a [hex_plugin_host::protocol::EditorTouchTarget]),
+}
+
 struct Reservation(Arc<Status>);
 impl Drop for Reservation {
     fn drop(&mut self) {
@@ -318,7 +327,7 @@ impl Callback {
                     return;
                 };
                 if (!quantum.input.performs.as_slice().is_empty()
-                    || quantum.input.restoration.is_some())
+                    || !quantum.input.restorations.as_slice().is_empty())
                     && (self.receipts.slots() <= 1
                         || self.receipts.push(Receipt::Confirmed(quantum)).is_err())
                 {
@@ -401,7 +410,7 @@ mod tests {
                     callback_offset: 2,
                     scope: target.scope,
                     performs: Default::default(),
-                    restoration: None,
+                    restorations: Default::default(),
                     lost_origin: false,
                     origin: Some(ManualParameterOrigin {
                         arrangement_frame: 2,

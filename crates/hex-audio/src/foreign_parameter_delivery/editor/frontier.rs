@@ -128,7 +128,9 @@ impl Frontier {
                     self.pending.push_back(Pending { input, due });
                     return Ok(confirmed);
                 }
-            } else if !input.performs.as_slice().is_empty() || input.restoration.is_some() {
+            } else if !input.performs.as_slice().is_empty()
+                || !input.restorations.as_slice().is_empty()
+            {
                 return Err(AbortReason::MissingOrigin);
             }
         }
@@ -203,7 +205,7 @@ mod tests {
                 loop_pass: sequence,
             }),
             performs: Default::default(),
-            restoration: None,
+            restorations: Default::default(),
             lost_origin: false,
         }
     }
