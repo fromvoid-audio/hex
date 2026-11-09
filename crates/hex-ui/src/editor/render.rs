@@ -321,6 +321,25 @@ impl EditorView {
                 );
             }
         }
+        if let Some((label, actionable)) = self.automation_recovery_status() {
+            let item = div()
+                .id("automation-take-recovery")
+                .debug_selector(|| "automation-take-recovery".into())
+                .px_1()
+                .flex_shrink_0()
+                .text_color(rgb(theme::color(if actionable {
+                    theme::PaletteRole::Primary
+                } else {
+                    theme::PaletteRole::Muted
+                })))
+                .child(theme::text(label));
+            bar = bar.child(if actionable {
+                item.cursor_pointer()
+                    .on_click(cx.listener(|view, _, _, cx| view.start_automation_recovery(cx)))
+            } else {
+                item
+            });
+        }
         bar = bar.child(self.controller_input_row(cx));
         if self.audio_batch.is_some() {
             bar = bar.child(

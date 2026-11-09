@@ -271,6 +271,7 @@ impl EditorView {
             || self.gain_recorder.blocks_edits()
             || self.midi_recorder.blocks_edits()
             || self.native_automation_recorder.busy()
+            || self.automation_take_recovery.unresolved()
             || self.close_prompt_open
             || self.save_dialog_open
             || self.project_open.busy()
@@ -390,6 +391,7 @@ impl EditorView {
             && self.worker_requests_pending == 0
             && !self.device_gesture_pending()
             && !self.native_automation_recorder.busy()
+            && !self.automation_take_recovery.unresolved()
             && self.tuning.client.snapshot().is_none()
         {
             self.submit_automation_close_query(quit, deadline, cx);
@@ -500,9 +502,13 @@ impl EditorView {
             && self.pending_requests.is_empty()
             && self.worker_requests_pending == 0
             && !self.native_automation_recorder.busy()
+            && !self.automation_take_recovery.unresolved()
             && !self.device_gesture_pending();
         if !valid {
             self.release_automation_close(cx);
+            if !safe {
+                self.probe_failed_plugin_automation();
+            }
             self.error = Some(
                 "automation take needs recovery or pending work changed · close cancelled".into(),
             );
