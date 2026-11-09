@@ -154,12 +154,27 @@ impl GateRuntime {
         bypassed: bool,
     ) -> Result<(), DeviceContractError> {
         let mut resolved = self.controls.resolve(&BINDINGS, values)?;
+        let modulates_threshold = values.has_sample_rate_modulation(parameter::THRESHOLD);
+        let modulates_return = values.has_sample_rate_modulation(parameter::RETURN);
         for (offset, frame) in frames.iter_mut().enumerate() {
-            if let Some(next) = self
+            let next = self
                 .controls
-                .sample(&BINDINGS, &mut resolved, values, offset)?
-            {
-                let settings = next.effective();
+                .sample(&BINDINGS, &mut resolved, values, offset)?;
+            let mut settings = next
+                .as_ref()
+                .map_or_else(|| self.controls.effective(), |next| next.effective());
+            // Keep the unmodulated detector level authoritative. When both
+            // levels are modulated, the opening threshold governs the return.
+            if settings.return_db > settings.threshold_db {
+                if modulates_return {
+                    settings.return_db = settings.threshold_db;
+                } else if modulates_threshold {
+                    settings.threshold_db = settings.return_db;
+                } else {
+                    return Err(DeviceContractError::InvalidParameterValue);
+                }
+            }
+            if settings != self.settings {
                 validate(settings)?;
                 // Stage every fallible conversion before installing the candidate.
                 let threshold = if settings.threshold_db == self.settings.threshold_db {
@@ -180,7 +195,6 @@ impl GateRuntime {
                 let attack = checked_frames(settings.attack_ms, self.sample_rate)?;
                 let hold = checked_frames(settings.hold_ms.max(MIN_HOLD_MS), self.sample_rate)?;
                 let release = checked_frames(settings.release_ms, self.sample_rate)?;
-                self.controls.install(next);
                 self.threshold = threshold;
                 self.return_level = return_level;
                 self.floor_gain = floor_gain;
@@ -188,6 +202,9 @@ impl GateRuntime {
                 self.hold_frames = hold;
                 self.release_frames = release;
                 self.install_settings(settings);
+            }
+            if let Some(next) = next {
+                self.controls.install(next);
             }
             let original = *frame;
             self.process_frame(frame);

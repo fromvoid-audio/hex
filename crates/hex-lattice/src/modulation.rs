@@ -429,6 +429,11 @@ impl NativeParameterAutomation for ModulationBlock<'_> {
     fn parameter_ids(&self) -> &[ParameterId] {
         &self.program.ids
     }
+
+    fn has_sample_rate_modulation(&self, parameter: ParameterId) -> bool {
+        self.program.has_routes(parameter)
+    }
+
     fn value_at(&self, id: ParameterId, offset: usize) -> Option<ParameterValue> {
         self.program
             .ids
