@@ -601,5 +601,78 @@ fn lfo_rate_route_upgrades_the_exact_previous_format_and_preserves_the_complete_
         serde_json::from_slice(&std::fs::read(&audio_path).unwrap()).unwrap();
     wrong_version["version"] = crate::TEMPO_LFO_RATE_ROUTE_SCHEMA_VERSION.into();
     assert!(crate::decode(&serde_json::to_vec(&wrong_version).unwrap()).is_err());
+    let prior_audio_bytes = std::fs::read(&audio_path).unwrap();
+    let (prior_audio, prior_token) = crate::load_with_token(&audio_path).unwrap();
+    let instrument = prior_audio.tracks()[0].instrument().unwrap();
+    let instrument_id = instrument.id();
+    let instrument_type = DeviceTypeId::from_static("hex.instrument.fm4");
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: instrument_id,
+            state: NativeDeviceState::new(instrument_type, 1, vec![1]).unwrap(),
+        })
+        .unwrap();
+    let next = editor.project().next_identity();
+    let source = ModulationSourceId::new(next).unwrap();
+    let state = prior_audio.device(id).unwrap().modulation().sources()[0]
+        .state
+        .clone();
+    let bank = DeviceModulation::new(
+        vec![Modulator {
+            id: source,
+            color: ElementColor::Cyan,
+            enabled: true,
+            state,
+        }],
+        vec![DeviceModulationRoute {
+            id: ModulationRouteId::new(next + 1).unwrap(),
+            source,
+            output: ModulationOutputId::MAIN,
+            destination: ModulationDestination::Device {
+                device_type: instrument_type,
+                target: DeviceAutomationTarget::Parameter(ParameterId::from_static(29)),
+                vst3_class: None,
+            },
+            amount: ModulationAmount::new(0.2).unwrap(),
+            range: ModulationRange::default(),
+            enabled: true,
+        }],
+    )
+    .unwrap();
+    let mut wrongly_new: serde_json::Value = serde_json::from_slice(&prior_audio_bytes).unwrap();
+    wrongly_new["version"] = crate::INSTRUMENT_MODULATION_SCHEMA_VERSION.into();
+    assert!(crate::decode(&serde_json::to_vec(&wrongly_new).unwrap()).is_err());
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device: instrument_id,
+            modulation: bank,
+        })
+        .unwrap();
+    let instrument_project = editor.project();
+    assert_eq!(
+        crate::schema_version_for(instrument_project),
+        crate::INSTRUMENT_MODULATION_SCHEMA_VERSION
+    );
+    assert!(
+        prior_token
+            .requires_save_confirmation(instrument_project)
+            .unwrap()
+    );
+    let instrument_path = dir.join("instrument-modulation.hex");
+    crate::save_new(&instrument_path, instrument_project).unwrap();
+    assert_eq!(crate::load(&instrument_path).unwrap(), *instrument_project);
+    assert_eq!(std::fs::read(&audio_path).unwrap(), prior_audio_bytes);
+    let mut old_label: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&instrument_path).unwrap()).unwrap();
+    // The previous codec admitted this opaque shape. Load it unchanged
+    // and require consent before saving it with the new playback floor.
+    old_label["version"] = crate::AUDIO_RATE_MODULATOR_SCHEMA_VERSION.into();
+    let legacy_instrument = dir.join("opaque-instrument-bank.hex");
+    let bytes = serde_json::to_vec(&old_label).unwrap();
+    std::fs::write(&legacy_instrument, &bytes).unwrap();
+    let (migrated, token) = crate::load_with_token(&legacy_instrument).unwrap();
+    assert_eq!(migrated, *instrument_project);
+    assert!(token.requires_save_confirmation(&migrated).unwrap());
+    assert_eq!(std::fs::read(&legacy_instrument).unwrap(), bytes);
     std::fs::remove_dir_all(dir).unwrap();
 }

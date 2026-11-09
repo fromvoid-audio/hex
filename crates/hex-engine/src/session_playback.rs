@@ -1874,6 +1874,9 @@ impl SessionPlayback {
                 .map_err(SessionPlaybackError::from)?;
             let mut runtime = runtime;
             if let Some(runtime) = runtime.as_mut() {
+                if let Some(modulation) = revision.session().instrument_modulation(id) {
+                    runtime.install_modulation(modulation)?;
+                }
                 if track.source_id().is_some() && !revision.requires_control_sampler_sources() {
                     runtime.enable_source_live();
                 }

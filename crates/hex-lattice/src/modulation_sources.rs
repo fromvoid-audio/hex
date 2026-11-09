@@ -147,6 +147,14 @@ impl PreparedModulationSource {
         )
     }
 
+    /// True when rendering needs a causal pre-device audio tap.
+    pub fn reads_audio_input(&self) -> bool {
+        matches!(
+            self.initial,
+            SourceState::Follower(_) | SourceState::AudioRate
+        )
+    }
+
     pub fn sample_rate(&self) -> f64 {
         self.sample_rate
     }
@@ -408,12 +416,9 @@ impl ModulationSourceBank {
             chunk_frames,
             last_frames: 0,
             active: false,
-            follows_input: sources.iter().any(|source| {
-                matches!(
-                    source.initial,
-                    SourceState::Follower(_) | SourceState::AudioRate
-                )
-            }),
+            follows_input: sources
+                .iter()
+                .any(PreparedModulationSource::reads_audio_input),
         };
         if bank
             .storage_bytes()?

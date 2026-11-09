@@ -78,7 +78,7 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = AUDIO_RATE_MODULATOR_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = INSTRUMENT_MODULATION_SCHEMA_VERSION;
 
 /// Schema70 stores an independent original source span for signed musical event placement.
 pub const MUSICAL_EVENT_SOURCE_SCHEMA_VERSION: u32 = 70;
@@ -119,6 +119,8 @@ pub const LFO_RATE_ROUTE_SCHEMA_VERSION: u32 = 85;
 pub const TEMPO_LFO_RATE_ROUTE_SCHEMA_VERSION: u32 = 86;
 /// Schema87 admits the Audio Rate source alongside every prior bank configuration.
 pub const AUDIO_RATE_MODULATOR_SCHEMA_VERSION: u32 = 87;
+/// Schema88 admits native source instrument banks in the complete modulation inventory.
+pub const INSTRUMENT_MODULATION_SCHEMA_VERSION: u32 = 88;
 
 fn contains_larger_device_state(project: &Project) -> bool {
     schema::device_assets::authored_states(project)
@@ -177,8 +179,11 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// Non-sine LFOs use schema84 with complete slot colors and any bound source effects.
 /// Free LFO rate assignments require schema85 and tempo-synced rate assignments
 /// require schema86 regardless of oscillator shape. Audio Rate uses schema87.
+/// Banks on native source instruments use schema88.
 pub fn schema_version_for(project: &Project) -> u32 {
-    if schema::device_modulation::contains_audio_rate(project) {
+    if schema::device_modulation::contains_instrument_modulation(project) {
+        INSTRUMENT_MODULATION_SCHEMA_VERSION
+    } else if schema::device_modulation::contains_audio_rate(project) {
         AUDIO_RATE_MODULATOR_SCHEMA_VERSION
     } else if let Some(version) = schema::device_modulation::lfo_rate_route_schema(project) {
         version
@@ -402,7 +407,8 @@ impl From<serde_json::Error> for StorageError {
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 /// Nonempty serial units use schema80; flat projects retain their prior layout.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    if schema::device_modulation::contains_audio_rate(project)
+    if schema::device_modulation::contains_instrument_modulation(project)
+        || schema::device_modulation::contains_audio_rate(project)
         || schema::device_modulation::lfo_rate_route_schema(project).is_some()
         || schema::device_modulation::contains_newer_lfo(project)
     {
@@ -666,7 +672,7 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
 /// From schema30 through79 the migration chain parses the bytes once (after one
 /// duplicate-field check) and each frozen layer adapts that single value in
 /// place; those layers never re-serialize the document for the next one.
-/// Schemas80 through87 materialize a compatible predecessor envelope before using that chain.
+/// Schemas80 through88 materialize a compatible predecessor envelope before using that chain.
 pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     decode_impl(bytes, false)
 }
@@ -695,7 +701,8 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
         | LFO_SHAPE_SCHEMA_VERSION
         | LFO_RATE_ROUTE_SCHEMA_VERSION
         | TEMPO_LFO_RATE_ROUTE_SCHEMA_VERSION
-        | AUDIO_RATE_MODULATOR_SCHEMA_VERSION => {
+        | AUDIO_RATE_MODULATOR_SCHEMA_VERSION
+        | INSTRUMENT_MODULATION_SCHEMA_VERSION => {
             schema::device_modulation::decode(bytes, header.version)
         }
         SERIAL_DEVICE_SCHEMA_VERSION => schema::serial_units::decode(bytes),
