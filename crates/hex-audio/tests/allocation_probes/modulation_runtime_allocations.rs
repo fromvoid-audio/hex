@@ -97,11 +97,21 @@ fn chunk_transactions_do_not_allocate_or_free() {
 
 #[test]
 fn utility_graph_modulation_transactions_do_not_allocate_or_free() {
+    probe_utility_graph(false);
+}
+
+#[test]
+fn utility_graph_with_lfo_rate_modulation_does_not_allocate_or_free() {
+    probe_utility_graph(true);
+}
+
+fn probe_utility_graph(routed_rate: bool) {
     use hex_devices::utility::{UTILITY_DEFINITION, UTILITY_TYPE_ID, UtilityDefinition, parameter};
     use hex_lattice::PreparedNativeProcessor;
     use hex_lattice::{
         LfoWaveform, NativeRuntimeChain, PreparedModulationState, PreparedProcessorFactory,
-        PreparedRuntimeInstance, ProcessorChainOwner, SourceModulationRoute, StereoMatrix,
+        PreparedRuntimeInstance, ProcessorChainOwner, SourceModulationParameter,
+        SourceModulationRoute, StereoMatrix,
     };
     use hex_lattice_contract::NativeDeviceMetadata;
     use std::sync::Arc;
@@ -129,14 +139,16 @@ fn utility_graph_modulation_transactions_do_not_allocate_or_free() {
             3,
         )
         .unwrap();
-        let source = PreparedModulationSource::tempo_with_waveform(
-            ModulationSourceId::new(1).unwrap(),
-            48_000.0,
-            120.0,
-            4.0,
-            0.0,
-            waveform,
-        )
+        let oscillator = ModulationSourceId::new(1).unwrap();
+        let source = if routed_rate {
+            PreparedModulationSource::free_with_waveform(
+                oscillator, 48_000.0, 12_000.0, 0.0, waveform,
+            )
+        } else {
+            PreparedModulationSource::tempo_with_waveform(
+                oscillator, 48_000.0, 120.0, 4.0, 0.0, waveform,
+            )
+        }
         .unwrap();
 
         let follower = PreparedModulationSource::envelope_follower(
@@ -152,18 +164,29 @@ fn utility_graph_modulation_transactions_do_not_allocate_or_free() {
             0.25,
         )
         .unwrap();
+        let mut source_routes = vec![SourceModulationRoute {
+            source: 0,
+            target: 2,
+            parameter: SourceModulationParameter::MacroValue,
+            amount: 0.2,
+            range: [0.0, 1.0],
+        }];
+        if routed_rate {
+            source_routes.push(SourceModulationRoute {
+                source: 1,
+                target: 0,
+                parameter: SourceModulationParameter::FreeLfoRate,
+                amount: 0.2,
+                range: [-1.0, 1.0],
+            });
+        }
         let prepared = PreparedRuntimeInstance {
             modulation: Some(
                 PreparedModulationState::with_source_routes(
                     vec![source, follower, manual],
                     program,
                     17,
-                    &[SourceModulationRoute {
-                        source: 0,
-                        target: 2,
-                        amount: 0.2,
-                        range: [0.0, 1.0],
-                    }],
+                    &source_routes,
                 )
                 .unwrap(),
             ),

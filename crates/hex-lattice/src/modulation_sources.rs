@@ -12,7 +12,9 @@
 //! preallocated cache shares clock reads across sources; absent clock values use
 //! the prepared tempo. Rate/mode retargeting follows the same block transaction
 //! as phase, and graph inheritance retains the new graph's prepared timing mode.
-use crate::{NativeInstrumentClock, modulation_source_routes::PreparedSourceRoute};
+use crate::{
+    NativeInstrumentClock, SourceModulationParameter, modulation_source_routes::PreparedSourceRoute,
+};
 use hex_dsp::{EnvelopeFollower, LfoRate, LfoWaveform, ModulationLfo, RandomHold, StereoFrame};
 use hex_lattice_contract::{DeviceContractError as Error, ModulationSourceId};
 
@@ -22,7 +24,7 @@ pub const MAX_MODULATION_SOURCE_CHUNK_FRAMES: usize = 8192;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Timing {
-    Free,
+    Free(LfoRate),
     Tempo {
         beats_per_cycle: f64,
         fallback: LfoRate,
@@ -31,7 +33,7 @@ enum Timing {
 impl Timing {
     fn rate(self, sample_rate: f64, tempo_micro_bpm: u32) -> Result<Option<LfoRate>, Error> {
         match self {
-            Self::Free => Ok(None),
+            Self::Free(_) => Ok(None),
             Self::Tempo {
                 beats_per_cycle,
                 fallback,
@@ -100,8 +102,21 @@ pub struct PreparedModulationSource {
     sample_rate: f64,
 }
 impl PreparedModulationSource {
-    pub(crate) fn is_macro(&self) -> bool {
-        matches!(self.initial, SourceState::Macro(_))
+    pub(crate) fn supports_modulation_parameter(
+        &self,
+        parameter: SourceModulationParameter,
+    ) -> bool {
+        matches!(
+            (parameter, self.initial),
+            (SourceModulationParameter::MacroValue, SourceState::Macro(_))
+                | (
+                    SourceModulationParameter::FreeLfoRate,
+                    SourceState::Lfo {
+                        timing: Timing::Free(_),
+                        ..
+                    }
+                )
+        )
     }
 
     pub fn sample_rate(&self) -> f64 {
@@ -135,7 +150,7 @@ impl PreparedModulationSource {
             sample_rate,
             initial: SourceState::Lfo {
                 oscillator: lfo,
-                timing: Timing::Free,
+                timing: Timing::Free(rate),
             },
         })
     }
@@ -442,6 +457,17 @@ impl ModulationSourceBank {
         clock: Option<&dyn NativeInstrumentClock>,
         input: Option<&[StereoFrame]>,
     ) -> Result<(), Error> {
+        self.render_chunk_with_routes(frames, clock, input, &[], 0)
+    }
+
+    pub(crate) fn render_chunk_with_routes(
+        &mut self,
+        frames: usize,
+        clock: Option<&dyn NativeInstrumentClock>,
+        input: Option<&[StereoFrame]>,
+        routes: &[PreparedSourceRoute],
+        target_mask: u32,
+    ) -> Result<(), Error> {
         if !self.active || frames > self.chunk_frames {
             return Err(Error::InvalidParameterValue);
         }
@@ -483,7 +509,10 @@ impl ModulationSourceBank {
                 }
             }
         }
-        for source in &mut self.sources {
+        for (index, source) in self.sources.iter_mut().enumerate() {
+            if target_mask & (1 << index) != 0 {
+                continue;
+            }
             let output = source
                 .samples
                 .get_mut(..frames)
@@ -491,8 +520,11 @@ impl ModulationSourceBank {
             match &mut source.scratch {
                 SourceState::Lfo {
                     oscillator,
-                    timing: Timing::Free,
-                } => oscillator.render(output),
+                    timing: Timing::Free(authored),
+                } => {
+                    oscillator.set_rate(*authored);
+                    oscillator.render(output);
+                }
                 SourceState::Lfo { oscillator, timing } => {
                     let tempos = self
                         .tempo_cache
@@ -512,18 +544,26 @@ impl ModulationSourceBank {
                 SourceState::Random(random) => random.render(output),
             }
         }
+        if let Err(error) = self.render_routed_sources(frames, routes) {
+            self.rollback();
+            return Err(error);
+        }
         self.last_frames = frames;
         Ok(())
     }
 
-    /// Compose in dependency order after the chunk's raw sources are rendered.
-    /// Control preparation ties every index and non-self edge to this bank.
-    pub(crate) fn apply_source_routes(
+    /// Upstream buffers are complete before this target renders. A prepared
+    /// group contains only one typed target parameter and excludes self edges.
+    fn render_routed_sources(
         &mut self,
+        frames: usize,
         routes: &[PreparedSourceRoute],
     ) -> Result<(), Error> {
         for incoming in routes.chunk_by(|a, b| a.target == b.target) {
-            let index = incoming[0].target;
+            let Some(route) = incoming.first() else {
+                continue;
+            };
+            let index = route.target;
             let (before, target_and_after) = self
                 .sources
                 .split_at_mut_checked(index)
@@ -531,8 +571,8 @@ impl ModulationSourceBank {
             let (target, after) = target_and_after
                 .split_first_mut()
                 .ok_or(Error::InvalidDescriptor)?;
-            for (frame, value) in target.samples[..self.last_frames].iter_mut().enumerate() {
-                let mut sum = 0.0_f64;
+            let sum_at = |frame| -> f64 {
+                let mut sum = 0.0;
                 for route in incoming {
                     let source = if route.source < index {
                         &before[route.source]
@@ -541,9 +581,44 @@ impl ModulationSourceBank {
                     };
                     sum += route.contribution.sample(source.samples[frame]);
                 }
-                if sum != 0.0 {
-                    *value = (f64::from(*value) + sum).clamp(0.0, 1.0) as f32;
+                sum
+            };
+            let output = target
+                .samples
+                .get_mut(..frames)
+                .ok_or(Error::RuntimeBudgetExceeded)?;
+            match (route.parameter, &mut target.scratch) {
+                (SourceModulationParameter::MacroValue, SourceState::Macro(base)) => {
+                    for (frame, sample) in output.iter_mut().enumerate() {
+                        let sum = sum_at(frame);
+                        *sample = if sum == 0.0 {
+                            *base
+                        } else {
+                            (f64::from(*base) + sum).clamp(0.0, 1.0) as f32
+                        };
+                    }
                 }
+                (
+                    SourceModulationParameter::FreeLfoRate,
+                    SourceState::Lfo {
+                        oscillator,
+                        timing: Timing::Free(authored),
+                    },
+                ) => {
+                    for (frame, sample) in output.iter_mut().enumerate() {
+                        let depth = sum_at(frame).clamp(-1.0, 1.0);
+                        let rate = if depth == 0.0 {
+                            *authored
+                        } else {
+                            authored
+                                .scaled((4.0 * depth).exp2())
+                                .map_err(|_| Error::InvalidParameterValue)?
+                        };
+                        oscillator.set_rate(rate);
+                        *sample = oscillator.next_sample();
+                    }
+                }
+                _ => return Err(Error::UnsupportedProcessingClass),
             }
         }
         Ok(())
