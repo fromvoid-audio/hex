@@ -6498,19 +6498,32 @@ fn modulation_panel_maps_continuous_and_discrete_eq8_controls_without_editing_au
 fn modulation_panel_maps_all_fm4_carriers_through_the_scrolled_instrument_body(
     cx: &mut TestAppContext,
 ) {
-    exercise_fm4_modulation_mapper(cx, false);
+    exercise_fm4_modulation_mapper(cx, Fm4MappingFixture::Carriers);
 }
 
 #[gpui::test]
 fn modulation_panel_maps_unipolar_fm4_pressure_to_one_carrier(cx: &mut TestAppContext) {
-    exercise_fm4_modulation_mapper(cx, true);
+    exercise_fm4_modulation_mapper(cx, Fm4MappingFixture::Pressure);
 }
 
-fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, pressure: bool) {
+#[gpui::test]
+fn modulation_panel_maps_fm4_oscillator_levels(cx: &mut TestAppContext) {
+    exercise_fm4_modulation_mapper(cx, Fm4MappingFixture::OscillatorLevels);
+}
+
+enum Fm4MappingFixture {
+    Carriers,
+    Pressure,
+    OscillatorLevels,
+}
+
+fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFixture) {
     use hex_devices::fm4::device::{FM4_DEFINITION, FM4_TYPE_ID, parameter};
     use hex_lattice_contract::NativeDeviceMetadata;
     use hex_project::{DeviceAutomationTarget, ModulationDestination};
 
+    let pressure = matches!(fixture, Fm4MappingFixture::Pressure);
+    let levels = matches!(fixture, Fm4MappingFixture::OscillatorLevels);
     let service = Service::new(48_000, 8, 8_000_000).unwrap();
     receive_service_event(&service);
     let original = FM4_DEFINITION.default_state().unwrap();
@@ -6611,13 +6624,15 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, pressure: bool) {
         visual.run_until_parked();
     }
     click(&mut visual, format!("{kind}-{}-map", source.value()), true);
-    editor.update(cx, |view, cx| {
-        view.device_panel.parameter_rows[&device]
-            .scroll
-            .set_offset(point(px(0.0), px(-1_000_000.0)));
-        cx.notify();
-    });
-    visual.run_until_parked();
+    if !levels {
+        editor.update(cx, |view, cx| {
+            view.device_panel.parameter_rows[&device]
+                .scroll
+                .set_offset(point(px(0.0), px(-1_000_000.0)));
+            cx.notify();
+        });
+        visual.run_until_parked();
+    }
 
     let map_key = |parameter: hex_lattice_contract::ParameterId| {
         format!("map-target-{}-{}", device.value(), parameter.value())
@@ -6630,18 +6645,24 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, pressure: bool) {
         )
         .into_boxed_str(),
     );
-    assert!(visual.debug_bounds(release_control).is_some());
+    if !levels {
+        assert!(visual.debug_bounds(release_control).is_some());
+    }
     assert!(
         visual
             .debug_bounds(Box::leak(map_key(parameter::RELEASE).into_boxed_str()))
             .is_none()
     );
 
-    let carriers = [1, 2, 3, 4].map(parameter::carrier);
-    let targets = if pressure {
-        &carriers[..1]
+    let controls = if levels {
+        [1, 2, 3, 4].map(parameter::oscillator_level)
     } else {
-        &carriers[..]
+        [1, 2, 3, 4].map(parameter::carrier)
+    };
+    let targets = if pressure {
+        &controls[..1]
+    } else {
+        &controls[..]
     };
     let body = Box::leak(format!("device-body-{}", device.value()).into_boxed_str());
     let shell = Box::leak(format!("device-shell-{}", device.value()).into_boxed_str());
@@ -6656,15 +6677,16 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, pressure: bool) {
         let selector = Box::leak(key.clone().into_boxed_str());
         // The inner row window overscans its scroll area. The outer housing
         // can also clip it when the modulator strip is open.
-        for _ in 0..3 {
+        for _ in 0..8 {
             let bounds = viewport(&mut visual);
-            let position = visual.debug_bounds(selector).unwrap().center();
-            if bounds.contains(&position) {
+            let position = visual.debug_bounds(selector).map(|target| target.center());
+            if position.is_some_and(|position| bounds.contains(&position)) {
                 break;
             }
+            let delta = position.map_or(px(-56.0), |position| bounds.center().y - position.y);
             visual.simulate_event(gpui::ScrollWheelEvent {
                 position: bounds.center(),
-                delta: gpui::ScrollDelta::Pixels(point(px(0.0), bounds.center().y - position.y)),
+                delta: gpui::ScrollDelta::Pixels(point(px(0.0), delta)),
                 ..Default::default()
             });
             visual.run_until_parked();
@@ -6691,7 +6713,7 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, pressure: bool) {
     }
 
     if pressure {
-        for target in &carriers[1..] {
+        for target in &controls[1..] {
             assert!(
                 visual
                     .debug_bounds(Box::leak(map_key(*target).into_boxed_str()))

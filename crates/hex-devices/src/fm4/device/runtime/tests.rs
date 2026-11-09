@@ -124,6 +124,95 @@ fn automated(
     )
 }
 #[test]
+fn oscillator_level_reveals_an_fm_ancestor_even_with_a_pressure_revealed_carrier() {
+    use std::num::NonZeroU64;
+
+    struct Levels;
+    impl NativeParameterAutomation for Levels {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            const IDS: [ParameterId; 1] = [parameter::oscillator_level(2)];
+            &IDS
+        }
+
+        fn value_at(&self, id: ParameterId, offset: usize) -> Option<ParameterValue> {
+            (id == parameter::oscillator_level(2)).then_some(ParameterValue::Float(
+                if offset.is_multiple_of(2) { 0.0 } else { 0.5 },
+            ))
+        }
+
+        fn has_sample_rate_modulation(&self, id: ParameterId) -> bool {
+            id == parameter::oscillator_level(2)
+        }
+    }
+
+    let tuning = hex_lattice::TuningTable::default();
+    let resources = BorrowedDeviceResources(&[]);
+    let mut settings = Fm4Settings::defaults();
+    settings.envelope = [0.0, 0.0, 1.0, 0.02];
+    settings.oscillators[1][1] = 0.0;
+    settings.modulation[1][0] = 0.25;
+    let oracle = [0.0, 0.5].map(|level| {
+        let mut authored = settings;
+        authored.oscillators[1][1] = level;
+        let (_, instrument) = prepared(48_000, authored, &tuning);
+        instrument.prepare_note(60, 127).unwrap()
+    });
+    for use_pressure in [false, true] {
+        let mut authored = settings;
+        if use_pressure {
+            authored.carriers = [0.0; 4];
+        }
+        let (mut factory, instrument) = prepared(48_000, authored, &tuning);
+        let mut events = vec![on(1, 0, 60, 127)];
+        if use_pressure {
+            let carrier = CARRIERS[0];
+            let route = PreparedPressureRoute::new(
+                carrier,
+                modulation_semantics(carrier.id).unwrap(),
+                0.5,
+                [0.0, 1.0],
+            )
+            .unwrap();
+            factory = instrument
+                .prepare_mutable_note_pressure(
+                    hex_lattice_contract::ModulationSourceId::new(1).unwrap(),
+                    Some(route),
+                )
+                .unwrap();
+            events.push(NativeInstrumentEvent::NotePressure {
+                frame_offset: 0,
+                occurrence_id: NonZeroU64::new(1).unwrap(),
+                value: 127,
+            });
+        }
+        let mut pair = NativeInstrumentRuntimePair::new(factory.as_ref(), LIMITS).unwrap();
+        let mut frames = [[0.0; 2]; 138];
+        pair.begin_block();
+        pair.process_block_with_clock_and_automation(
+            &events,
+            &mut frames,
+            None,
+            &[],
+            &Levels,
+            &resources,
+        )
+        .unwrap();
+        pair.commit_block();
+        for (index, actual) in frames.into_iter().enumerate() {
+            assert_eq!(
+                actual,
+                oracle[index % 2].sample(index as u64, u64::MAX, &resources),
+                "pressure={use_pressure}, frame {index}",
+            );
+        }
+        let mut effective = [None; TARGETS.len()];
+        pair.copy_committed_parameter_targets(&TARGETS.map(|target| target.id), &mut effective)
+            .unwrap();
+        assert_eq!(effective[1], Some(ParameterValue::Float(0.5)));
+    }
+}
+
+#[test]
 fn carrier_automation_reveals_inaudible_operator_on_held_note_then_restores_base() {
     let rate = 48000;
     let tuning = hex_lattice::TuningTable::default();
@@ -402,7 +491,13 @@ fn committed_target_snapshot_finishes_existing_ramp_and_preserves_resolved_base_
     let (factory, _) = prepared(48000, settings, &tuning);
     let mut original = NativeInstrumentRuntimePair::new(factory.as_ref(), LIMITS).unwrap();
     let mut frozen = NativeInstrumentRuntimePair::new(factory.as_ref(), LIMITS).unwrap();
-    let ids = CARRIERS.map(|descriptor| descriptor.id);
+    let read_carriers = |pair: &NativeInstrumentRuntimePair| {
+        let ids = TARGETS.map(|descriptor| descriptor.id);
+        let mut values = [None; TARGETS.len()];
+        pair.copy_committed_parameter_targets(&ids, &mut values)
+            .unwrap();
+        <[Option<ParameterValue>; 4]>::try_from(&values[LEVELS.len()..]).unwrap()
+    };
     let base = settings
         .carriers
         .map(|value| Some(ParameterValue::Float(value)));
@@ -412,9 +507,7 @@ fn committed_target_snapshot_finishes_existing_ramp_and_preserves_resolved_base_
     };
     for pair in [&mut original, &mut frozen] {
         assert!(pair.supports_committed_parameter_targets());
-        let mut copied = [None; 4];
-        pair.copy_committed_parameter_targets(&ids, &mut copied)
-            .unwrap();
+        let copied = read_carriers(pair);
         assert_eq!(
             copied, base,
             "authored Base differs from descriptor defaults"
@@ -442,15 +535,14 @@ fn committed_target_snapshot_finishes_existing_ramp_and_preserves_resolved_base_
             &targets,
         )
         .unwrap();
-        pair.copy_committed_parameter_targets(&ids, &mut copied)
-            .unwrap();
-        assert_eq!(copied, base, "open speculative ramp is not committed");
+        assert_eq!(
+            read_carriers(pair),
+            base,
+            "open speculative ramp is not committed"
+        );
         pair.commit_block();
     }
-    let mut copied = [None; 4];
-    frozen
-        .copy_committed_parameter_targets(&ids, &mut copied)
-        .unwrap();
+    let copied = read_carriers(&frozen);
     assert_eq!(
         copied,
         [-0.25, 0.5, 0.5, 0.0].map(|value| Some(ParameterValue::Float(value)))
@@ -472,18 +564,14 @@ fn committed_target_snapshot_finishes_existing_ramp_and_preserves_resolved_base_
     };
     let mut next = NativeInstrumentRuntimePair::new(next_factory.as_ref(), LIMITS).unwrap();
     next.retarget_from(&frozen, proof.as_ref()).unwrap();
-    let mut after_retarget = [None; 4];
-    next.copy_committed_parameter_targets(&ids, &mut after_retarget)
-        .unwrap();
+    let after_retarget = read_carriers(&next);
     assert_eq!(
         after_retarget, copied,
         "observation must not resolve a new prepared Base"
     );
     next.reset();
-    next.copy_committed_parameter_targets(&ids, &mut after_retarget)
-        .unwrap();
     assert_eq!(
-        after_retarget,
+        read_carriers(&next),
         next_settings
             .carriers
             .map(|value| Some(ParameterValue::Float(value)))
@@ -523,10 +611,7 @@ fn committed_target_snapshot_finishes_existing_ramp_and_preserves_resolved_base_
     assert!(actual[..64].iter().any(|frame| frame[0] != 0.0));
     assert_eq!(&actual[actual.len() - 16..], &[[0.0; 2]; 16]);
     frozen.reset();
-    frozen
-        .copy_committed_parameter_targets(&ids, &mut copied)
-        .unwrap();
-    assert_eq!(copied, base);
+    assert_eq!(read_carriers(&frozen), base);
 }
 
 #[test]
@@ -541,7 +626,7 @@ fn an_unmapped_pressure_slot_retains_held_readings_until_its_identity_changes() 
     let target = CARRIERS[0];
     let route = PreparedPressureRoute::new(
         target,
-        carrier_semantics(target.id).unwrap(),
+        modulation_semantics(target.id).unwrap(),
         -0.25,
         [0.0, 1.0],
     )
