@@ -239,7 +239,7 @@ impl State {
                 .map(|block| hex_plugin_host::protocol::EditorPcm {
                     block,
                     performs: Default::default(),
-                    restoration: None,
+                    restorations: Default::default(),
                 }),
             Some(Processor::Function(_)) => Err(Fault::InvalidParameters),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -260,13 +260,13 @@ impl State {
                         .map(|block| hex_plugin_host::protocol::EditorPcm {
                             block,
                             performs: Default::default(),
-                            restoration: None,
+                            restorations: Default::default(),
                         }),
                     (false, false, None) => instance.exchange_on_worker(block).map(|block| {
                         hex_plugin_host::protocol::EditorPcm {
                             block,
                             performs: Default::default(),
-                            restoration: None,
+                            restorations: Default::default(),
                         }
                     }),
                 };
@@ -533,8 +533,14 @@ fn transport_runner_with_setup(
                             |hex_plugin_host::protocol::EditorPcm {
                                  block: reply,
                                  performs,
-                                 restoration,
+                                 restorations,
                              }| {
+                                // This consumer still arms only the legacy single-target mode.
+                                let restoration = match restorations.as_slice() {
+                                    [] => None,
+                                    [row] => Some(*row),
+                                    _ => return Err(Fault::Protocol),
+                                };
                                 // Native exchange already validated the complete SDK
                                 // reply. Retain its private input receipt even if Stop
                                 // revokes the transport before callback publication.
