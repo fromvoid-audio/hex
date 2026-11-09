@@ -24,9 +24,12 @@ fn actual_effect_data_limit_precedes_allocations_and_retains_original_disposal()
         let fits = allowance == diagnostic;
         let instance = original_instance_for_binding(binding);
         let configuration = NativeEffect::configuration_on_control(identity, &instance).unwrap();
-        let quoted =
-            NativeEffect::preconstruction_data_bytes_on_control(&instance, configuration.prepared)
-                .unwrap();
+        let quoted = NativeEffect::preconstruction_data_bytes_on_control(
+            &instance,
+            configuration.prepared,
+            false,
+        )
+        .unwrap();
         drop(configuration);
         let limit = quoted + allowance;
         let mut outcome = None;
