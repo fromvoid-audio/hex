@@ -2,12 +2,13 @@
 //! Control preparation resolves stable IDs and validates real factory bindings.
 //! Prepared declarations borrow no project data and never enter project history.
 use hex_devices::modulation::{
-    audio_rate, button, envelope_follower, lfo, macro_value, note_pressure, random_hold,
+    audio_rate, button, envelope_follower, lfo, macro_four, macro_value, note_pressure, random_hold,
 };
 use hex_lattice::{
-    HostGainModulationRoute, ModulationRoute, ModulationTarget, PreparedModulation,
-    PreparedModulationSource, PreparedModulationState, PreparedMutableInstrumentRuntime,
-    PreparedProcessorFactory, SourceModulationParameter, SourceModulationRoute,
+    HostGainModulationRoute, MAX_MODULATION_SOURCES, ModulationRoute, ModulationTarget,
+    PreparedModulation, PreparedModulationSource, PreparedModulationState,
+    PreparedMutableInstrumentRuntime, PreparedProcessorFactory, SourceModulationParameter,
+    SourceModulationRoute,
 };
 use hex_lattice_contract::{
     DeviceAutomationTarget, HostGain, NativeDeviceMetadata, NativeDeviceState, ParameterDescriptor,
@@ -45,6 +46,19 @@ fn effect_location_supported(project: &Project, location: DeviceLocation<'_>) ->
 fn instrument_modulation_supported(source: &hex_project::NativeSource) -> bool {
     source.receiver().is_some()
         && source.instrument().state().type_id() == hex_devices::fm4::device::FM4_TYPE_ID
+}
+
+/// Remaining device-local prepared signal buffers. Occurrence pressure is
+/// owned by the instrument and does not use a bank signal buffer.
+pub fn device_available_modulation_outputs(device: &Device) -> usize {
+    let used = device
+        .modulation()
+        .sources()
+        .iter()
+        .filter(|slot| slot.enabled && slot.state.type_id() != note_pressure::TYPE_ID)
+        .map(|slot| source_output_count(slot.state.type_id()))
+        .sum::<usize>();
+    MAX_MODULATION_SOURCES.saturating_sub(used)
 }
 
 /// The native note-pressure slot belongs to the FM4 source receiver. A
@@ -360,9 +374,33 @@ impl EffectModulation {
         );
         ordered.sort_unstable_by_key(|source| source.id);
 
-        let mut sources = reserved(ordered.len())?;
-        let mut ids = reserved(ordered.len())?;
+        let output_count = ordered
+            .iter()
+            .filter(|slot| slot.enabled)
+            .map(|slot| source_output_count(slot.state.type_id()))
+            .sum::<usize>();
+        if output_count > MAX_MODULATION_SOURCES {
+            return Err(Invalid("device modulator output capacity reached"));
+        }
+        let mut sources = reserved(output_count)?;
+        let mut outputs = reserved(output_count)?;
         for source in ordered {
+            if source.state.type_id() == macro_four::TYPE_ID {
+                let settings =
+                    macro_four::Settings::decode(&source.state).map_err(invalid_source)?;
+                for parameter in macro_four::VALUE_PARAMETERS {
+                    let output = macro_four::output_for_parameter(parameter)
+                        .ok_or(Invalid("macro-4 output is unsupported"))?;
+                    let prepared = settings
+                        .prepare(source.id, sample_rate, output)
+                        .map_err(invalid_source)?;
+                    if source.enabled {
+                        outputs.push((source.id, output));
+                        sources.push(prepared);
+                    }
+                }
+                continue;
+            }
             let prepared = match source.state.type_id() {
                 lfo::TYPE_ID => lfo::Settings::decode(&source.state).and_then(|settings| {
                     settings.prepare(source.id, sample_rate, fallback_bpm, maximum_bpm)
@@ -379,7 +417,7 @@ impl EffectModulation {
             }
             .map_err(invalid_source)?;
             if source.enabled {
-                ids.push(source.id);
+                outputs.push((source.id, ModulationOutputId::MAIN));
                 sources.push(prepared);
             }
         }
@@ -412,12 +450,15 @@ impl EffectModulation {
         let mut parameters = reserved(automation.len() + bank.routes().len())?;
         parameters.extend_from_slice(automation);
         for route in bank.routes().iter().filter(|route| route.enabled) {
-            let Ok(source) = ids.binary_search(&route.source) else {
+            let Ok(source) = outputs.binary_search(&(route.source, route.output)) else {
+                if outputs
+                    .binary_search_by_key(&route.source, |(id, _)| *id)
+                    .is_ok()
+                {
+                    return Err(Invalid("modulator source output is unsupported"));
+                }
                 continue;
             };
-            if route.output != ModulationOutputId::MAIN {
-                return Err(Invalid("modulator source output is unsupported"));
-            }
             let amount = route.amount.get();
             let range = [route.range.start.get(), route.range.end.get()];
             if range != [-1.0, 1.0]
@@ -463,10 +504,17 @@ impl EffectModulation {
                     module_type,
                     parameter,
                 } => {
-                    let target = ids.binary_search(&target).ok();
+                    let output = if module_type == macro_four::TYPE_ID {
+                        macro_four::output_for_parameter(parameter)
+                            .ok_or(Invalid("macro-4 control is unsupported"))?
+                    } else {
+                        ModulationOutputId::MAIN
+                    };
+                    let target = outputs.binary_search(&(target, output)).ok();
                     let target_source = target.and_then(|index| sources.get(index));
                     let parameter = match (module_type, parameter) {
-                        (macro_value::TYPE_ID, macro_value::VALUE_PARAMETER) => {
+                        (macro_four::TYPE_ID, _)
+                        | (macro_value::TYPE_ID, macro_value::VALUE_PARAMETER) => {
                             SourceModulationParameter::MacroValue
                         }
                         (lfo::TYPE_ID, lfo::RATE_PARAMETER) => {
@@ -522,7 +570,13 @@ impl EffectModulation {
             .iter()
             .filter(|route| matches!(route.destination, ModulationDestination::Modulator { .. }))
             .count();
-        Self::quote_routes(bank.sources().len(), bank.routes().len(), 1, source_routes)
+        let outputs = bank
+            .sources()
+            .iter()
+            .map(|slot| source_output_count(slot.state.type_id()))
+            .sum::<usize>()
+            .min(MAX_MODULATION_SOURCES);
+        Self::quote_routes(outputs, bank.routes().len(), 1, source_routes)
     }
 
     /// The same estimate applies to summed source and route counts when
@@ -532,11 +586,14 @@ impl EffectModulation {
         routes: usize,
         banks: usize,
     ) -> Option<(usize, usize)> {
-        Self::quote_routes(sources, routes, banks, routes)
+        let outputs = sources
+            .checked_mul(macro_four::VALUE_PARAMETERS.len())?
+            .min(banks.checked_mul(MAX_MODULATION_SOURCES)?);
+        Self::quote_routes(outputs, routes, banks, routes)
     }
 
     fn quote_routes(
-        sources: usize,
+        outputs: usize,
         routes: usize,
         banks: usize,
         source_routes: usize,
@@ -544,16 +601,18 @@ impl EffectModulation {
         use hex_lattice_contract::{MAX_PARAMETERS_PER_DEVICE, ModulationSourceId};
         use hex_project::Modulator;
         use std::mem::size_of;
-        if sources == 0 {
+        if outputs == 0 {
             return Some((0, 0));
         }
         let targets = banks.checked_mul(MAX_PARAMETERS_PER_DEVICE)?;
-        let retained = PreparedModulationState::quoted_heap_bytes(sources, targets, routes)?
+        let retained = PreparedModulationState::quoted_heap_bytes(outputs, targets, routes)?
             .checked_add(PreparedModulationState::quoted_source_route_bytes(
                 source_routes,
             )?)?;
-        let overlap = sources
-            .checked_mul(size_of::<&Modulator>() + size_of::<ModulationSourceId>())?
+        let overlap = outputs
+            .checked_mul(
+                size_of::<&Modulator>() + size_of::<(ModulationSourceId, ModulationOutputId)>(),
+            )?
             .checked_add(routes.checked_mul(
                 size_of::<ModulationRoute>().max(size_of::<HostGainModulationRoute>())
                     + size_of::<ParameterId>(),
@@ -686,6 +745,14 @@ impl EffectModulation {
             });
         }
         Ok(targets)
+    }
+}
+
+fn source_output_count(device_type: hex_lattice_contract::DeviceTypeId) -> usize {
+    if device_type == macro_four::TYPE_ID {
+        macro_four::VALUE_PARAMETERS.len()
+    } else {
+        1
     }
 }
 

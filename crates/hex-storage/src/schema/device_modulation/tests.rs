@@ -849,3 +849,71 @@ fn button_schema_preserves_effect_only_banks_and_reader_consent() {
     assert!(crate::decode(&serde_json::to_vec(&wrong).unwrap()).is_err());
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn macro_four_schema_preserves_values_outputs_and_prior_reader_consent() {
+    let mut editor = Editor::new(legacy_fixture(), 8).unwrap();
+    let unit = &editor.project().main_devices()[0];
+    let device = unit.id();
+    let device_type = unit.state().type_id();
+    let root = temp_dir();
+    let prior_path = root.join("prior.hex");
+    crate::save_new(&prior_path, editor.project()).unwrap();
+    let old_bytes = std::fs::read(&prior_path).unwrap();
+    let old_token = crate::load_with_token(&prior_path).unwrap().1;
+    let prior_version = crate::schema_version_for(editor.project());
+    let next = editor.project().next_identity();
+    let source = ModulationSourceId::new(next).unwrap();
+    let module = Modulator {
+        id: source,
+        enabled: true,
+        color: ElementColor::Cyan,
+        state: NativeDeviceState::new(
+            DeviceTypeId::from_static("hex.modulator.macro-four"),
+            1,
+            [0.125_f32, 0.25, 0.5, 0.75]
+                .into_iter()
+                .flat_map(f32::to_le_bytes)
+                .collect(),
+        )
+        .unwrap(),
+    };
+    let routes = (1..=4)
+        .map(|index| DeviceModulationRoute {
+            id: ModulationRouteId::new(next + u64::from(index)).unwrap(),
+            source,
+            output: ModulationOutputId::new(index).unwrap(),
+            destination: ModulationDestination::Device {
+                device_type,
+                target: DeviceAutomationTarget::Parameter(ParameterId::from_static(1)),
+                vst3_class: None,
+            },
+            amount: ModulationAmount::new(index as f32 / 8.0).unwrap(),
+            range: ModulationRange::default(),
+            enabled: true,
+        })
+        .collect();
+    let modulation = DeviceModulation::new(vec![module], routes).unwrap();
+    editor
+        .execute(Command::ReplaceDeviceModulation { device, modulation })
+        .unwrap();
+    let current = editor.project();
+    assert_eq!(
+        crate::schema_version_for(current),
+        crate::MACRO_FOUR_MODULATOR_SCHEMA_VERSION
+    );
+    assert!(old_token.requires_save_confirmation(current).unwrap());
+    let current_path = root.join("macro-four.hex");
+    crate::save_new(&current_path, current).unwrap();
+    assert_eq!(crate::load(&current_path).unwrap(), *current);
+    assert_eq!(std::fs::read(&prior_path).unwrap(), old_bytes);
+    assert_eq!(
+        crate::schema_version_for(&crate::load(&prior_path).unwrap()),
+        prior_version
+    );
+    let mut wrong: serde_json::Value =
+        serde_json::from_slice(&crate::encode(current).unwrap()).unwrap();
+    wrong["version"] = crate::BUTTON_MODULATOR_SCHEMA_VERSION.into();
+    assert!(crate::decode(&serde_json::to_vec(&wrong).unwrap()).is_err());
+    std::fs::remove_dir_all(root).unwrap();
+}
