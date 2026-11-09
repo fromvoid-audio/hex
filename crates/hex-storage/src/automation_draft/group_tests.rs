@@ -22,7 +22,7 @@ fn events() -> [GroupDraftEvent; 5] {
                 sdk_sequence,
                 sdk_gesture,
                 clock: DraftClock {
-                    performance_frame: 100 + offset,
+                    performance_frame: 100_u64 + offset,
                     content_frame,
                     loop_pass: u64::from(offset >= 2),
                 },
