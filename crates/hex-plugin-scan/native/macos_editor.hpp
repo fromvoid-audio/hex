@@ -203,7 +203,7 @@ public:
         return true;
     }
     bool is_open() const { return visibility.is_open(window); }
-    std::optional<EditorState> open(IPlugView* editor) {
+    std::optional<EditorState> open(IPlugView* editor,bool activate) {
         view=editor;
         if(!view) return EditorState::Unavailable;
         ViewRect rect{};
@@ -239,8 +239,12 @@ public:
             if(!resize_delegate) return unavailable();
             [window setDelegate:resize_delegate];
         }
-        [window makeKeyAndOrderFront:nil];
-        [NSApp activateIgnoringOtherApps:YES];
+        if(activate) {
+            [window makeKeyAndOrderFront:nil];
+            [NSApp activateIgnoringOtherApps:YES];
+        } else {
+            [window orderFrontRegardless];
+        }
         next_application_check=std::chrono::steady_clock::now()+std::chrono::milliseconds(100);
         return is_open()?std::optional<EditorState>(EditorState::Open):unavailable();
     }

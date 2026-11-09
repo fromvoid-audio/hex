@@ -1024,10 +1024,16 @@ int main(int argc,char** argv) {
                             else if(hex_instance::editor_request(page_query.kind)) {
                                 @autoreleasepool {
                                     const bool was_open=editor.is_open();
-                                    if(!editor.close()) page_failure=Teardown;
-                                    else if(was_open || page_query.kind==hex_instance::CLOSE_EDITOR)
+                                    const auto kind=page_query.kind;
+                                    if(kind==hex_instance::REOPEN_EDITOR && was_open)
+                                        editor_state=hex_instance::EditorState::Open;
+                                    else if(!editor.close()) page_failure=Teardown;
+                                    else if(kind==hex_instance::DETACH_EDITOR)
+                                        editor_state=was_open?hex_instance::EditorState::Open:hex_instance::EditorState::Closed;
+                                    else if(was_open || kind==hex_instance::CLOSE_EDITOR)
                                         editor_state=hex_instance::EditorState::Closed;
-                                    else if(const auto result=editor.open(instance.create_editor_on_control())) editor_state=*result;
+                                    else if(const auto result=editor.open(instance.create_editor_on_control(),kind!=hex_instance::REOPEN_EDITOR))
+                                        editor_state=*result;
                                     else page_failure=Teardown;
                                 }
                             } else if(!instance.parameter_page_on_control(page_query,parameter_page)) page_failure=HostControl;
