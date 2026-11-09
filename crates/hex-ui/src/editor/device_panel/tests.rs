@@ -6601,8 +6601,9 @@ fn modulation_panel_maps_all_fm4_carriers_through_the_scrolled_instrument_body(
         if housing.contains(&strip.origin) {
             break;
         }
+        let position = viewport(&mut visual).center();
         visual.simulate_event(gpui::ScrollWheelEvent {
-            position: viewport(&mut visual).center(),
+            position,
             delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(1000.0))),
             ..Default::default()
         });
