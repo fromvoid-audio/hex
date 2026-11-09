@@ -56,8 +56,8 @@ use hex_lattice_contract::{
 pub use hex_tuning::{TuningTable, Waveform as TuningWaveform};
 pub use meter::{DeviceMeter, DevicePeaks, DynamicsMeter, RenderWorkMeter, RenderWorkSample};
 pub use modulation::{
-    MAX_MODULATION_BLOCK_FRAMES, MAX_MODULATION_ROUTES, MAX_MODULATION_SOURCES, ModulationBlock,
-    ModulationRoute, ModulationTarget, PreparedModulation,
+    HostOutputModulationRoute, MAX_MODULATION_BLOCK_FRAMES, MAX_MODULATION_ROUTES,
+    MAX_MODULATION_SOURCES, ModulationBlock, ModulationRoute, ModulationTarget, PreparedModulation,
 };
 pub use modulation_runtime::ModulationRuntime;
 pub use modulation_source_routes::SourceModulationRoute;
@@ -788,6 +788,15 @@ struct RuntimeEntry {
 }
 
 impl RuntimeEntry {
+    fn modulates_host_output(&self) -> bool {
+        !self.bypassed
+            && !self.automation_frozen
+            && self
+                .modulation
+                .as_ref()
+                .is_some_and(|value| value.program().has_host_output_routes())
+    }
+
     fn can_smooth_bypass_from(&self, old: &Self) -> bool {
         if self.algorithmic_latency_frames == Some(0) && old.algorithmic_latency_frames == Some(0) {
             self.supports_smoothed_bypass && old.supports_smoothed_bypass
@@ -1237,6 +1246,18 @@ impl NativeRuntimeChain {
                 .map(PreparedModulationState::prepare)
                 .transpose()?;
             if let Some(modulation) = &modulation {
+                if let Some(base) = modulation.program().host_output_base()
+                    && (instance.definition.as_ref().map_or(
+                        Some(0),
+                        PreparedProcessorFactory::algorithmic_latency_frames,
+                    ) != Some(0)
+                        || instance
+                            .configuration
+                            .as_ref()
+                            .is_none_or(|state| state.output_gain_millidb() != base.millidb()))
+                {
+                    return Err(DeviceContractError::UnsupportedProcessingClass);
+                }
                 if (!modulation.program().parameter_ids().is_empty()
                     && !instance.matrix.is_identity())
                     || matches!(
@@ -3183,7 +3204,15 @@ impl NativeRuntimeChain {
             if !entry.bypassed {
                 entry.scratch_matrix_ramp.apply_block(entry.matrix, frames);
             }
-            Self::process_native_provider(entry, frames, Some(key), clock, input, external)?;
+            Self::process_native_provider(
+                entry,
+                frames,
+                Some(key),
+                clock,
+                output_clock,
+                input,
+                external,
+            )?;
         } else if let RuntimeOwnership::Foreign(runtime) = &mut entry.runtime {
             let configuration = entry
                 .configuration
@@ -3226,7 +3255,15 @@ impl NativeRuntimeChain {
         } else if entry.bypassed {
             if entry.runtime.is_stateful() || entry.modulation.is_some() {
                 if entry.matrix.is_identity() {
-                    Self::process_native_provider(entry, frames, None, clock, input, external)?;
+                    Self::process_native_provider(
+                        entry,
+                        frames,
+                        None,
+                        clock,
+                        output_clock,
+                        input,
+                        external,
+                    )?;
                 } else {
                     for (frame_index, frame) in frames.iter_mut().enumerate() {
                         let audible = *frame;
@@ -3251,6 +3288,7 @@ impl NativeRuntimeChain {
                                 shifted,
                                 None,
                                 None,
+                                None,
                             )?;
                         } else {
                             entry.runtime.process_bypassed_with_clock(
@@ -3264,11 +3302,19 @@ impl NativeRuntimeChain {
             }
         } else {
             entry.scratch_matrix_ramp.apply_block(entry.matrix, frames);
-            Self::process_native_provider(entry, frames, None, clock, input, external)?;
+            Self::process_native_provider(
+                entry,
+                frames,
+                None,
+                clock,
+                output_clock,
+                input,
+                external,
+            )?;
         }
-        if !entry.bypassed && !foreign_applies_output_gain {
+        if !entry.bypassed && !foreign_applies_output_gain && !entry.modulates_host_output() {
             Self::apply_host_gain(entry, frames, output_clock, false, input, external)?;
-        } else if !entry.bypassed && !frames.is_empty() {
+        } else if !entry.bypassed && foreign_applies_output_gain && !frames.is_empty() {
             entry.scratch_host_gains[1] = if entry.automation_frozen {
                 entry.committed_host_gains[1]
             } else {
@@ -3286,6 +3332,7 @@ impl NativeRuntimeChain {
         frames: &mut [StereoFrame],
         key: Option<&[StereoFrame]>,
         clock: Option<&dyn NativeInstrumentClock>,
+        output_clock: Option<&dyn NativeInstrumentClock>,
         input: Option<NativeTransientValue>,
         external: Option<&dyn ExternalParameterAutomation>,
     ) -> Result<(), DeviceContractError> {
@@ -3299,6 +3346,28 @@ impl NativeRuntimeChain {
         let upstream = values
             .as_ref()
             .map(|value| value as &dyn NativeParameterAutomation);
+        use host_output_gain_ramp::TransientGain;
+        let host_values = entry
+            .modulates_host_output()
+            .then(|| {
+                entry.automation.block_with_optional_external(
+                    output_clock,
+                    frames.len(),
+                    input,
+                    external,
+                )
+            })
+            .transpose()?;
+        let transient = entry.scratch_transient_output_gain;
+        let host_target = hex_lattice_contract::DeviceAutomationTarget::HostOutputGain;
+        if host_values.is_some()
+            && !frames.is_empty()
+            && transient == TransientGain::Follow
+            && (entry.automation.has_host_target(host_target)
+                || input.is_some_and(|input| input.target() == host_target))
+        {
+            entry.scratch_output_gain_ramp = host_output_gain_ramp::OutputGainRamp::INACTIVE;
+        }
         let runtime = &mut entry.runtime;
         if let Some(modulation) = entry
             .modulation
@@ -3345,10 +3414,26 @@ impl NativeRuntimeChain {
                             }
                         } else {
                             runtime.process_automation(chunk, chunk_clock, values, entry.bypassed)
+                        }?;
+                        if let Some(host) = host_values.as_ref()
+                            && let Some(gain) = host_output_gain_ramp::apply_modulated(
+                                &mut entry.scratch_output_gain_ramp,
+                                transient,
+                                host,
+                                values,
+                                offset,
+                                chunk,
+                            )?
+                        {
+                            entry.scratch_host_gains[1] = gain;
                         }
+                        Ok(())
                     },
                 )?;
                 offset = end;
+            }
+            if host_values.is_some() && !frames.is_empty() {
+                host_output_gain_ramp::finish_release(entry);
             }
             Ok(())
         } else if let Some(key) = key {
@@ -3396,7 +3481,7 @@ impl NativeRuntimeChain {
                     .automation
                     .block_with_external(clock, frames.len(), None, external)?;
             }
-            if let Some(applied) = entry.scratch_output_gain_ramp.apply(gain, frames) {
+            if let Some(applied) = entry.scratch_output_gain_ramp.apply(gain.linear(), frames) {
                 entry.scratch_host_gains[index] = applied;
             }
             return Ok(());
