@@ -405,7 +405,65 @@ fn source_effect_binding_commits_only_after_its_terminal_and_survives_history() 
     );
     let undone = history(&mut session, &active, &mut sink, false, 3);
     assert_eq!(session.project().snapshot(), before);
-    let _ = history(&mut session, &undone, &mut sink, true, 4);
+    let rebound = history(&mut session, &undone, &mut sink, true, 4);
     assert_eq!(session.project().snapshot(), bound);
     assert_eq!(observed.source_confirmations.load(Ordering::Acquire), 4);
+
+    use hex_project::{
+        DeviceAutomationTarget, DeviceModulation, DeviceModulationRoute, ModulationAmount,
+        ModulationDestination, ModulationOutputId, ModulationRange, ModulationRouteId,
+        ModulationSourceId, Modulator,
+    };
+    let next = session.project().next_identity();
+    let modulator = ModulationSourceId::new(next).unwrap();
+    let bank = DeviceModulation::new(
+        vec![Modulator {
+            id: modulator,
+            color: Default::default(),
+            enabled: true,
+            state: hex_engine::lfo_modulator::Settings::default()
+                .encode()
+                .unwrap(),
+        }],
+        vec![DeviceModulationRoute {
+            id: ModulationRouteId::new(next + 1).unwrap(),
+            source: modulator,
+            output: ModulationOutputId::MAIN,
+            destination: ModulationDestination::Device {
+                device_type: session.project().device(child).unwrap().state().type_id(),
+                target: DeviceAutomationTarget::HostOutputGain,
+                vst3_class: None,
+            },
+            amount: ModulationAmount::new(0.05).unwrap(),
+            range: ModulationRange::default(),
+            enabled: true,
+        }],
+    )
+    .unwrap();
+    let edit = || Command::ReplaceDeviceModulation {
+        device: child,
+        modulation: bank.clone(),
+    };
+    observed
+        .refuse_source_confirmation
+        .store(true, Ordering::Release);
+    let rejected = session.command_resident_snapshot(
+        edit(),
+        context(5),
+        &mut sink,
+        sampler_export::Admission::default(),
+        Some(&rebound),
+    );
+    assert!(matches!(rejected, Err(SessionError::NativeAudio(message))
+        if message == "fixture callback refused source edit"));
+    assert_eq!(session.project().snapshot(), bound);
+
+    observed
+        .refuse_source_confirmation
+        .store(false, Ordering::Release);
+    let (_, edited) = command(&mut session, &rebound, &mut sink, edit(), 6);
+    assert_eq!(session.project().device(child).unwrap().modulation(), &bank);
+    let _ = history(&mut session, &edited, &mut sink, false, 7);
+    assert_eq!(session.project().snapshot(), bound);
+    assert_eq!(observed.source_confirmations.load(Ordering::Acquire), 7);
 }
