@@ -87,6 +87,13 @@ impl NativeTransientOperation {
 pub trait NativeParameterAutomation {
     fn parameter_ids(&self) -> &[ParameterId];
 
+    /// A routed normalized value before the final clamp, if available. A
+    /// provider with a subsequent per-occurrence contribution can sum it
+    /// without losing offsets that temporarily exceeded the target range.
+    fn normalized_before_clamp(&self, _parameter: ParameterId, _offset: usize) -> Option<f64> {
+        None
+    }
+
     /// Whether an active sample-rate route targets this value in the block.
     /// A route remains present at zero offset. Authored automation alone
     /// never reports a modulation route.

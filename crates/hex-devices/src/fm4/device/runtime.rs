@@ -4,7 +4,9 @@
 //! explicitly unavailable). One twin owns 64 inline occurrence slots; batches
 //! admit at most 259 events. Released slots remain occupied until the exact
 //! authored ADSR tail ends. Capacity refusal is read-only; there is no stealing.
-//! Events at equal offsets retain order; controller expressions have no FM4 law.
+//! Events at equal offsets retain order. A prepared pressure route affects the
+//! matching held voice only, retains its last pressure through release, and
+//! clears on retirement or reset. Channel-wide expressions have no FM4 law.
 //!
 //! Carrier weights apply before note events. Cold/reset controls adopt directly;
 //! later authored changes use a five-millisecond linear ramp, retargeted from
@@ -44,7 +46,7 @@ use hex_lattice::{
     MutableInstrumentRuntime, NativeInstrumentClock, NativeInstrumentEvent,
     NativeInstrumentOccurrenceGain, NativeInstrumentRuntimeError as Error,
     NativeParameterAutomation, PreparedInstrumentHistoryRetarget, PreparedMutableInstrumentRuntime,
-    StereoFrame,
+    PreparedPressureRoute, StereoFrame,
 };
 use std::any::Any;
 const VOICES: usize = 64;
@@ -66,6 +68,24 @@ impl Fm4Definition {
         context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn PreparedMutableInstrumentRuntime>, DeviceContractError> {
         Ok(Box::new(Factory::prepare(state, context)?))
+    }
+
+    /// Control-side grant of one inline per-occurrence pressure assignment.
+    /// The same native twins retain voices, authored controls and phase.
+    pub fn prepare_pressure_runtime(
+        &self,
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+        route: PreparedPressureRoute,
+    ) -> Result<Box<dyn PreparedMutableInstrumentRuntime>, DeviceContractError> {
+        let index = CARRIERS
+            .iter()
+            .position(|descriptor| *descriptor == route.descriptor())
+            .filter(|_| carrier_semantics(route.descriptor().id) == Some(route.semantics()))
+            .ok_or(DeviceContractError::UnsupportedProcessingClass)?;
+        let mut factory = Factory::prepare(state, context)?;
+        factory.config.pressure = Some(PressureRoute { index, route });
+        Ok(Box::new(factory))
     }
 }
 impl Factory {
@@ -131,11 +151,18 @@ impl Factory {
                     release: frames(envelope.release_seconds),
                 },
                 table: crate::shared_sine_table(),
+                pressure: None,
                 smoothing: ((u64::from(sample_rate) * 5 + 500) / 1000) as u32,
             },
         })
     }
 }
+#[derive(Clone, Copy)]
+struct PressureRoute {
+    index: usize,
+    route: PreparedPressureRoute,
+}
+
 #[derive(Clone, Copy)]
 struct Config {
     identity: [u8; PAYLOAD_BYTES],
@@ -147,6 +174,7 @@ struct Config {
     envelope: PreparedEnvelope,
     table: &'static crate::SineTable,
     smoothing: u32,
+    pressure: Option<PressureRoute>,
 }
 impl Config {
     fn same_target(&self, other: &Self) -> bool {
@@ -182,6 +210,7 @@ struct Voice {
     gate: Option<u64>,
     phase_offsets: [u64; 4],
     release_ceiling: u64,
+    pressure: u8,
 }
 impl Voice {
     fn advance(&mut self, frames: u64) {
@@ -278,6 +307,7 @@ impl Runtime {
                     gate: None,
                     phase_offsets: [0; 4],
                     release_ceiling: config.envelope.release,
+                    pressure: 0,
                 };
             }
             NativeInstrumentEvent::NoteOff { occurrence_id, .. } => {
@@ -288,8 +318,19 @@ impl Runtime {
                     voice.advance(0);
                 }
             }
-            NativeInstrumentEvent::NotePressure { .. } => {
-                return Err(Error::UnsupportedNotePressure);
+            NativeInstrumentEvent::NotePressure {
+                occurrence_id,
+                value,
+                ..
+            } => {
+                if config.pressure.is_none() {
+                    return Err(Error::UnsupportedNotePressure);
+                }
+                let voice = voices
+                    .iter_mut()
+                    .find(|voice| voice.id == occurrence_id.get() && voice.gate.is_none())
+                    .ok_or(Error::InvalidEventBatch)?;
+                voice.pressure = value;
             }
             NativeInstrumentEvent::Expression { .. } => {}
         }
@@ -344,6 +385,7 @@ impl Runtime {
         let modulated = CARRIERS.map(|descriptor| {
             values.is_some_and(|values| values.has_sample_rate_modulation(descriptor.id))
         });
+        let pressure = self.config.pressure;
         for (offset, frame) in frames.iter_mut().enumerate() {
             if !steady_base {
                 let carriers = std::array::from_fn(|index| {
@@ -376,6 +418,11 @@ impl Runtime {
             if next_event != first_event {
                 active_count = self.active_slots(&mut slots);
             }
+            let unclamped = pressure.and_then(|pressure| {
+                values.and_then(|values| {
+                    values.normalized_before_clamp(pressure.route.descriptor().id, offset)
+                })
+            });
             let mut sum = 0.0_f64;
             for &slot in &slots[..active_count] {
                 // Collected from this fixed array; no caller-supplied index.
@@ -395,7 +442,17 @@ impl Runtime {
                 let sample = if amplitude == 0.0 {
                     0.0
                 } else {
-                    let output = if voice.phase_offsets == [0; 4] {
+                    let override_carrier = pressure.and_then(|pressure| {
+                        let base = self.effective.routing.carriers[pressure.index];
+                        let canonical = ParameterValue::Float(base as f32);
+                        match pressure.route.compose(canonical, unclamped, voice.pressure) {
+                            Ok(ParameterValue::Float(value)) if value != base as f32 => {
+                                Some((pressure.index, f64::from(value)))
+                            }
+                            _ => None,
+                        }
+                    });
+                    let output = if voice.phase_offsets == [0; 4] && override_carrier.is_none() {
                         self.effective.routed_output::<false>(
                             self.config.table,
                             voice.age,
@@ -404,6 +461,12 @@ impl Runtime {
                         )
                     } else {
                         let mut configuration = self.effective;
+                        if let Some((index, value)) = override_carrier {
+                            // A per-voice route can reveal an operator pruned
+                            // from the source-global configuration.
+                            configuration.levels = self.config.full.levels;
+                            configuration.routing.carriers[index] = value;
+                        }
                         for (phase, offset) in
                             configuration.phases.iter_mut().zip(voice.phase_offsets)
                         {
@@ -435,6 +498,9 @@ impl Runtime {
     }
 }
 impl PreparedMutableInstrumentRuntime for Factory {
+    fn supports_note_pressure(&self) -> bool {
+        self.config.pressure.is_some()
+    }
     fn parameter_automation_descriptors(&self) -> &[ParameterDescriptor] {
         &CARRIERS
     }
@@ -490,6 +556,9 @@ impl PreparedMutableInstrumentRuntime for Factory {
     }
 }
 impl MutableInstrumentRuntime for Runtime {
+    fn supports_note_pressure(&self) -> bool {
+        self.config.pressure.is_some()
+    }
     fn parameter_automation(&mut self) -> Option<&mut dyn InstrumentParameterRuntime> {
         Some(self)
     }
@@ -674,12 +743,22 @@ impl InstrumentParameterRuntime for Runtime {
     fn preflight(
         &self,
         _: &[NativeInstrumentEvent],
-        _: usize,
+        frames: usize,
         _: Option<&dyn NativeInstrumentClock>,
         _: &[NativeInstrumentOccurrenceGain],
-        _: &dyn NativeParameterAutomation,
+        values: &dyn NativeParameterAutomation,
         _: &dyn DeviceResources,
     ) -> Result<(), Error> {
+        if let Some(pressure) = self.config.pressure {
+            let id = pressure.route.descriptor().id;
+            if (0..frames).any(|offset| {
+                values
+                    .normalized_before_clamp(id, offset)
+                    .is_some_and(|v| !v.is_finite())
+            }) {
+                return Err(Error::InvalidParameterAutomation);
+            }
+        }
         Ok(())
     }
     fn process(
