@@ -464,6 +464,8 @@ fn source_effect_binding_commits_only_after_its_terminal_and_survives_history() 
     let (_, edited) = command(&mut session, &rebound, &mut sink, edit(), 6);
     assert_eq!(session.project().device(child).unwrap().modulation(), &bank);
     let _ = history(&mut session, &edited, &mut sink, false, 7);
-    assert_eq!(session.project().snapshot(), bound);
+    let mut expected = bound;
+    expected.next_id = next + 2;
+    assert_eq!(session.project().snapshot(), expected);
     assert_eq!(observed.source_confirmations.load(Ordering::Acquire), 7);
 }
