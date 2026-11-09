@@ -112,6 +112,7 @@ pub(super) enum Action {
     Reenable(Target),
     Override(Target),
     ToggleNativeArm(Target),
+    ToggleVst3Arm(Target),
     Shape(Target, AutomationInterpolation),
 }
 
@@ -761,6 +762,18 @@ impl EditorView {
             ("add new automation lane", Action::Show(entry, true)),
         ];
         actions.extend(self.device_automation_read_action(target));
+        if let (Some(class), DeviceAutomationTarget::Vst3 { parameter }) =
+            (target.vst3_class, target.kind)
+            && self.device_automation_read_selection(target)
+                == Some(hex_project::AutomationReadSelection::Authored)
+        {
+            let label = if self.vst3_automation_arm_selected(device, class, parameter) {
+                "disarm automation recording"
+            } else {
+                "arm automation recording"
+            };
+            actions.push((label, Action::ToggleVst3Arm(target)));
+        }
         self.open_automation_menu(position, actions, window, cx);
         true
     }
@@ -859,6 +872,7 @@ impl EditorView {
             | Action::Reenable(target)
             | Action::Override(target)
             | Action::ToggleNativeArm(target)
+            | Action::ToggleVst3Arm(target)
             | Action::Shape(target, _) => self.state.as_ref().is_none_or(|state| {
                 target
                     .identity_current(&state.project, self.project_generation)
@@ -1129,6 +1143,18 @@ impl EditorView {
             ),
             Action::ToggleNativeArm(target) => {
                 self.toggle_native_automation_arm(target.device, target.kind);
+            }
+            Action::ToggleVst3Arm(target) => {
+                if let (Some(class), DeviceAutomationTarget::Vst3 { parameter }) =
+                    (target.vst3_class, target.kind)
+                    && self.device_automation_read_selection(target)
+                        == Some(hex_project::AutomationReadSelection::Authored)
+                {
+                    self.toggle_vst3_automation_arm(target.device, class, parameter);
+                } else {
+                    self.error =
+                        Some("enable automation on this parameter before arming recording".into());
+                }
             }
             Action::Clear(target) => {
                 self.commit_device_automation(target, Vec::new(), cx);
