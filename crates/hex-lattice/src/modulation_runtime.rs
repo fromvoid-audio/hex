@@ -7,7 +7,7 @@
 use crate::{
     MAX_MODULATION_BLOCK_FRAMES, MAX_MODULATION_SOURCES, ModulationBlock, ModulationSourceBank,
     ModulationSourceId, NativeParameterAutomation, PreparedModulation, PreparedModulationSource,
-    modulation_source_routes::PreparedSourceRoute,
+    modulation_source_routes::{PreparedSourceRoute, target_mask},
 };
 use hex_lattice_contract::DeviceContractError as Error;
 
@@ -17,6 +17,7 @@ pub struct ModulationRuntime {
     bank: ModulationSourceBank,
     program: PreparedModulation,
     source_routes: Vec<PreparedSourceRoute>,
+    routed_targets: u32,
 }
 
 impl ModulationRuntime {
@@ -39,6 +40,7 @@ impl ModulationRuntime {
         Ok(Self {
             bank,
             program,
+            routed_targets: target_mask(&source_routes),
             source_routes,
         })
     }
@@ -162,12 +164,13 @@ impl ModulationRuntime {
                 return Err(Error::UnknownParameter);
             }
         }
-        self.bank.render_chunk_with_input(frames, clock, input)?;
-        let result = self.bank.apply_source_routes(&self.source_routes);
-        if result.is_err() {
-            self.bank.rollback();
-        }
-        result
+        self.bank.render_chunk_with_routes(
+            frames,
+            clock,
+            input,
+            &self.source_routes,
+            self.routed_targets,
+        )
     }
 
     fn consume_values(
@@ -212,6 +215,12 @@ impl ModulationRuntime {
 
     /// Retarget an active source without resetting its speculative history.
     pub fn retarget(&mut self, source: PreparedModulationSource) -> Result<(), Error> {
+        if self.source_routes.iter().any(|route| {
+            self.bank.source_id(route.target) == Some(source.id)
+                && !source.supports_modulation_parameter(route.parameter)
+        }) {
+            return Err(Error::UnsupportedProcessingClass);
+        }
         self.bank.retarget(source)
     }
 
