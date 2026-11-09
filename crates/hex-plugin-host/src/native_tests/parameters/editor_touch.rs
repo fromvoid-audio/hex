@@ -86,7 +86,7 @@ fn actual_editor_takeover_restores_reading_and_unlaned_values_without_cutting_no
                     })
                     .unwrap();
                 instance
-                    .exchange_armed_authored_with_editor_touch_on_worker(input, plan)
+                    .exchange_armed_authored_with_editor_touch_on_worker(input, plan, None)
                     .unwrap()
             } else {
                 instance

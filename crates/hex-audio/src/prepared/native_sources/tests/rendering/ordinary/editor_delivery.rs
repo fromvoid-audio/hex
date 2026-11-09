@@ -1,12 +1,22 @@
 //! A signed editor input is witnessed only on the final compensated Main sample.
 use super::*;
-use crate::foreign_parameter_delivery::editor::{AbortReason, Receipt};
+use crate::foreign_parameter_delivery::editor::{AbortReason, Receipt, TouchPlan};
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 use hex_plugin_host::{protocol::ParameterEditKind, transport::ManualParameterOrigin};
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn raw_zero_editor_value_waits_for_its_exact_compensated_main_sample() {
+    verify_editor_delivery(false);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn editor_touch_and_its_distinct_restoration_reach_compensated_main_once() {
+    verify_editor_delivery(true);
+}
+
+fn verify_editor_delivery(reading: bool) {
     const CHILD: &str = "HEX_ORDINARY_EDITOR_MAIN_DRIVER";
     if std::env::var_os(CHILD).is_none() {
         let temporary =
@@ -16,7 +26,10 @@ fn raw_zero_editor_value_waits_for_its_exact_compensated_main_sample() {
         let result = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", &name, "--ignored", "--test-threads=1"])
             .env(CHILD, "1")
-            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "89")
+            .env(
+                "HEX_ORIGINAL_INSTANCE_VARIANT",
+                if reading { "147" } else { "89" },
+            )
             .env("HEX_ORIGINAL_INSTANCE_RELEASE", temporary.join("release"))
             .output()
             .unwrap();
@@ -32,7 +45,11 @@ fn raw_zero_editor_value_waits_for_its_exact_compensated_main_sample() {
     }
 
     let _serial = serial();
-    let mut f = fixture("processing");
+    let mut f = if reading {
+        fixture_with_authored("processing", 2, 8, &[7])
+    } else {
+        fixture("processing")
+    };
     let overdrive = &hex_devices::overdrive::OVERDRIVE_DEFINITION;
     let dry = overdrive
         .patch_parameter(
@@ -65,10 +82,22 @@ fn raw_zero_editor_value_waits_for_its_exact_compensated_main_sample() {
     let source = f.control.status.native_effect_source().unwrap();
     let until = Instant::now() + Duration::from_secs(2);
     let target = loop {
-        match f
-            .control
-            .arm_native_source_editor_delivery_on_control(source, f.binding)
-        {
+        let armed = if reading {
+            f.control
+                .arm_native_source_editor_touch_delivery_on_control(
+                    source,
+                    f.binding,
+                    TouchPlan {
+                        parameter: 7,
+                        base: 0.25,
+                        reading: true,
+                    },
+                )
+        } else {
+            f.control
+                .arm_native_source_editor_delivery_on_control(source, f.binding)
+        };
+        match armed {
             Ok(target) => break target,
             Err("native preparation is busy") => {}
             Err(reason) => panic!("{reason}"),
@@ -76,6 +105,9 @@ fn raw_zero_editor_value_waits_for_its_exact_compensated_main_sample() {
         assert!(Instant::now() < until);
         std::thread::yield_now();
     };
+    if reading {
+        assert!(f.control.status.reserve_native_parameter_input().is_err());
+    }
     std::fs::write(
         std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap(),
         b"editor",
@@ -89,7 +121,7 @@ fn raw_zero_editor_value_waits_for_its_exact_compensated_main_sample() {
         {
             Ok(Some(batch)) => {
                 ordered.extend_from_slice(batch.as_slice());
-                if stage && batch.ready > 0 {
+                if stage && batch.ready >= if reading { 2 } else { 1 } {
                     return true;
                 }
             }
@@ -100,6 +132,10 @@ fn raw_zero_editor_value_waits_for_its_exact_compensated_main_sample() {
             && ordered
                 .iter()
                 .any(|point| point.kind == ParameterEditKind::Perform)
+            && (!reading
+                || ordered
+                    .iter()
+                    .any(|point| point.kind == ParameterEditKind::End))
     };
     while !poll(&mut f, true) {
         assert!(
@@ -163,15 +199,22 @@ fn raw_zero_editor_value_waits_for_its_exact_compensated_main_sample() {
     let [point] = confirmed.input.performs.as_slice() else {
         panic!("one actual editor input")
     };
-    let ordered = ordered
+    let actual_perform = ordered
         .iter()
         .find(|point| point.kind == ParameterEditKind::Perform)
         .unwrap();
     assert_eq!(
         (point.id, point.sequence, point.gesture, point.normalized),
-        (0, ordered.sequence, ordered.gesture, 0.75)
+        (
+            if reading { 7 } else { 0 },
+            actual_perform.sequence,
+            actual_perform.gesture,
+            0.75
+        )
     );
-    assert_eq!(ordered.first_frame, 16);
+    assert_eq!(actual_perform.first_frame, 16);
+    assert_eq!(confirmed.input.restoration, None);
+    assert!(!confirmed.input.lost_origin);
     assert_eq!(sound, [0.5625, -1.125]);
     assert_ne!(before[2], sound);
     assert_eq!(
@@ -184,6 +227,49 @@ fn raw_zero_editor_value_waits_for_its_exact_compensated_main_sample() {
             .try_native_source_editor_delivery_on_control()
             .is_none()
     );
+    if reading {
+        assert_eq!(physical_block::<7>(&mut f), [[0.5625, -1.125]; 7]);
+        assert!(
+            f.control
+                .try_native_source_editor_delivery_on_control()
+                .is_none()
+        );
+        assert_eq!(physical_block::<1>(&mut f), [[0.21875, -0.4375]; 1]);
+        let Some(Receipt::Confirmed(end)) =
+            f.control.try_native_source_editor_delivery_on_control()
+        else {
+            panic!("the first restored Main sample must carry its exact terminal");
+        };
+        assert_eq!(end.target, target);
+        assert_eq!(end.main_performance_frame, 51);
+        assert_eq!(end.input.sequence, 3);
+        assert_eq!(
+            end.input.origin,
+            Some(ManualParameterOrigin {
+                arrangement_frame: 13,
+                performance_frame: 13,
+                loop_pass: 0,
+            })
+        );
+        assert!(end.input.performs.as_slice().is_empty());
+        let ended = ordered
+            .iter()
+            .find(|point| point.kind == ParameterEditKind::End)
+            .unwrap();
+        assert_eq!(
+            end.input.restoration,
+            Some(hex_plugin_host::protocol::EditorRestoration {
+                sequence: ended.sequence,
+                gesture: point.gesture,
+                parameter: 7,
+            })
+        );
+        assert!(
+            f.control
+                .try_native_source_editor_delivery_on_control()
+                .is_none()
+        );
+    }
     assert!(
         f.control
             .cancel_native_source_editor_delivery_on_control(target)
@@ -201,5 +287,9 @@ fn raw_zero_editor_value_waits_for_its_exact_compensated_main_sample() {
             .try_native_source_editor_delivery_on_control()
             .is_none()
     );
+    if reading {
+        f.control.status.reserve_native_parameter_input().unwrap();
+        f.control.status.native_parameter_input_end();
+    }
     dispose(f);
 }

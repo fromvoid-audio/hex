@@ -51,11 +51,33 @@ struct Signals {
     frontier: AtomicU64,
 }
 
+/// The exact selected parameter and its original fallback, established by
+/// the source owner before this active scope may enter the SDK.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TouchPlan {
+    pub parameter: u32,
+    pub base: f64,
+    pub reading: bool,
+}
+
+struct Reservation(Arc<Status>);
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        self.0.native_parameter_input_end();
+    }
+}
+
+struct Armed {
+    target: Target,
+    _scope: EditorScope,
+    _reservation: Option<Reservation>,
+}
+
 pub(crate) struct Control {
     commands: Producer<Target>,
     receipts: Consumer<Receipt>,
     signals: Arc<Signals>,
-    target: Option<(Target, EditorScope)>,
+    target: Option<Armed>,
     serial: u64,
 }
 
@@ -102,6 +124,7 @@ impl Control {
         status: &Status,
         source: AppliedAudioSource,
         binding: Binding,
+        exclusive: Option<Arc<Status>>,
         arm: impl FnOnce(NonZeroU64) -> Result<(EditorScope, u16), &'static str>,
     ) -> Result<Target, &'static str> {
         if self.target.is_some() || !self.receipts.is_empty() || self.commands.slots() == 0 {
@@ -122,6 +145,12 @@ impl Control {
         // Consume this serial even if the exact owner is already closing.
         // The original worker will never accept a reused serial.
         self.serial = scope.get();
+        let reservation = exclusive
+            .map(|status| {
+                status.reserve_native_parameter_input()?;
+                Ok::<_, &'static str>(Reservation(status))
+            })
+            .transpose()?;
         let (armed, quantum_frames) = arm(scope)?;
         let target = Target {
             source,
@@ -133,12 +162,16 @@ impl Control {
         self.commands
             .push(target)
             .map_err(|_| "vst3 editor delivery is busy")?;
-        self.target = Some((target, armed));
+        self.target = Some(Armed {
+            target,
+            _scope: armed,
+            _reservation: reservation,
+        });
         Ok(target)
     }
 
     pub(crate) fn cancel(&self, target: Target) -> bool {
-        if self.target.as_ref().map(|(current, _)| *current) != Some(target) {
+        if self.target.as_ref().map(|armed| armed.target) != Some(target) {
             return false;
         }
         self.signals.cancelled.store(target.scope.get(), Release);
@@ -153,9 +186,9 @@ impl Control {
                 // absent terminal never confirms a pending physical reply.
                 std::sync::atomic::fence(Acquire);
                 self.receipts.pop().ok().or_else(|| {
-                    let (target, _) = self.target.as_ref()?;
+                    let target = self.target.as_ref()?.target;
                     Some(Receipt::Aborted {
-                        target: *target,
+                        target,
                         reason: AbortReason::OutputFailed,
                     })
                 })?
@@ -163,7 +196,7 @@ impl Control {
             Err(_) => return None,
         };
         if let Receipt::Aborted { target, .. } = receipt
-            && self.target.as_ref().map(|(current, _)| *current) == Some(target)
+            && self.target.as_ref().map(|armed| armed.target) == Some(target)
         {
             // Only control disarms or drops the exact original worker signal.
             self.target = None;
@@ -176,7 +209,7 @@ impl Control {
     /// first capture this frontier, then drain the corresponding PCM receipts.
     pub(crate) fn confirmed_sequence(&self, target: Target) -> Option<u64> {
         let scope = target.scope.get();
-        if self.target.as_ref().map(|(current, _)| *current) != Some(target)
+        if self.target.as_ref().map(|armed| armed.target) != Some(target)
             || self.signals.frontier_scope.load(Acquire) != scope
         {
             return None;
@@ -236,7 +269,8 @@ impl Callback {
                     self.abort(target, AbortReason::ClockExhausted);
                     return;
                 };
-                if !quantum.input.performs.as_slice().is_empty()
+                if (!quantum.input.performs.as_slice().is_empty()
+                    || quantum.input.restoration.is_some())
                     && (self.receipts.slots() <= 1
                         || self.receipts.push(Receipt::Confirmed(quantum)).is_err())
                 {
@@ -266,7 +300,9 @@ impl Callback {
                 data_bytes: std::mem::size_of::<Signals>()
                     .checked_add(self.frontier.heap_bytes()?)?,
                 shared_groups: 1,
-                shared_handles: 2,
+                // Two signal aliases and, for an exclusive editor touch,
+                // one optional alias of the already charged output status.
+                shared_handles: 3,
             })
     }
 }
@@ -317,6 +353,8 @@ mod tests {
                     callback_offset: 2,
                     scope: target.scope,
                     performs: Default::default(),
+                    restoration: None,
+                    lost_origin: false,
                     origin: Some(ManualParameterOrigin {
                         arrangement_frame: 2,
                         performance_frame: 8,

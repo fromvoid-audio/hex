@@ -366,9 +366,32 @@ impl PublicationControl {
     ) -> Result<crate::foreign_parameter_delivery::editor::Target, &'static str> {
         self.require_parameter_delivery_source(source, binding)?;
         self.foreign_editor_delivery
-            .begin(&self.status, source, binding, |scope| {
-                self.candidate_root.arm_native_editor_pcm(binding, scope)
+            .begin(&self.status, source, binding, None, |scope| {
+                self.candidate_root
+                    .arm_native_editor_pcm(binding, scope, None)
             })
+    }
+
+    /// Arm one exclusive original SDK editor target for compensated delivery.
+    /// While live, the existing native parameter input reservation excludes
+    /// another host gesture from taking the same output.
+    pub fn arm_native_source_editor_touch_delivery_on_control(
+        &mut self,
+        source: AppliedAudioSource,
+        binding: Binding,
+        touch: crate::foreign_parameter_delivery::editor::TouchPlan,
+    ) -> Result<crate::foreign_parameter_delivery::editor::Target, &'static str> {
+        self.require_parameter_delivery_source(source, binding)?;
+        self.foreign_editor_delivery.begin(
+            &self.status,
+            source,
+            binding,
+            Some(Arc::clone(&self.status)),
+            |scope| {
+                self.candidate_root
+                    .arm_native_editor_pcm(binding, scope, Some(touch))
+            },
+        )
     }
 
     pub fn cancel_native_source_editor_delivery_on_control(

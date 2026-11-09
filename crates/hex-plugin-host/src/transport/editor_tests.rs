@@ -65,7 +65,7 @@ fn batch() -> EditorPerforms {
 
 #[test]
 fn editor_scope_and_origin_are_frozen_at_the_original_quantum_start() {
-    let (control, mut callback, mut worker) = fixture();
+    let (mut control, mut callback, mut worker) = fixture();
     let scope = NonZeroU64::MIN;
     stage(&mut callback, 0, 3, true);
     let _arm = control.arm_editor_pcm(scope).unwrap();
@@ -96,6 +96,8 @@ fn editor_scope_and_origin_are_frozen_at_the_original_quantum_start() {
             callback_offset: 2,
             scope,
             performs,
+            restoration: None,
+            lost_origin: false,
             origin: Some(ManualParameterOrigin {
                 arrangement_frame: 900,
                 performance_frame: 1008,
@@ -109,7 +111,7 @@ fn editor_scope_and_origin_are_frozen_at_the_original_quantum_start() {
 #[test]
 fn refused_or_ended_editor_scope_never_delivers_a_processed_reply() {
     for reject in [false, true] {
-        let (control, mut callback, mut worker) = fixture();
+        let (mut control, mut callback, mut worker) = fixture();
         let scope = NonZeroU64::MIN;
         let arm = control.arm_editor_pcm(scope).unwrap();
         stage(&mut callback, 0, 8, true);
@@ -148,7 +150,7 @@ fn unarmed_worker_cannot_publish_editor_facts() {
 
 #[test]
 fn armed_empty_exchange_confirms_its_quantum_without_an_edit() {
-    let (control, mut callback, mut worker) = fixture();
+    let (mut control, mut callback, mut worker) = fixture();
     let _arm = control.arm_editor_pcm(NonZeroU64::MIN).unwrap();
     for sequence in 0..3 {
         stage(&mut callback, sequence * 8, 8, true);

@@ -15,7 +15,7 @@
 //! DSP rollback occurs.
 
 type Frame = [f32; 2];
-use crate::protocol::EditorPerforms;
+use crate::protocol::{EditorPerforms, EditorRestoration};
 use hex_lattice_contract::ForeignProcessorBinding as Binding;
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::num::NonZeroU64;
@@ -499,7 +499,17 @@ impl Control {
     /// Enable observation on new physical quantum starts for this exact pair.
     /// Serial numbers must increase per pair. Ending discards unconsumed
     /// markers; drain wanted observations before ending an orderly scope.
-    pub fn arm_editor_pcm(&self, serial: NonZeroU64) -> Result<EditorScope, Fault> {
+    pub fn arm_editor_pcm(&mut self, serial: NonZeroU64) -> Result<EditorScope, Fault> {
+        self.arm_editor_pcm_after(serial, || {})
+    }
+
+    /// The unique control owner installs its exact worker plan before the
+    /// release publication can make this serial visible to the callback.
+    pub fn arm_editor_pcm_after(
+        &mut self,
+        serial: NonZeroU64,
+        prepare: impl FnOnce(),
+    ) -> Result<EditorScope, Fault> {
         if self.is_revoked() {
             return Err(Fault::Revoked);
         }
@@ -508,10 +518,8 @@ impl Control {
         if previous & 1 != 0 || serial.get() <= previous >> 1 {
             return Err(Fault::Protocol);
         }
-        self.revoked
-            .editor_scope
-            .compare_exchange(previous, value, AcqRel, Acquire)
-            .map_err(|_| Fault::Protocol)?;
+        prepare();
+        self.revoked.editor_scope.store(value, Release);
         Ok(EditorScope {
             signal: Arc::clone(&self.revoked),
             serial,
@@ -709,13 +717,22 @@ pub struct AcceptedEditorQuantum {
     pub callback_offset: u16,
     pub scope: NonZeroU64,
     pub performs: EditorPerforms,
+    pub restoration: Option<EditorRestoration>,
+    pub lost_origin: bool,
     pub origin: Option<ManualParameterOrigin>,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct EditorPcmFacts {
+    pub performs: EditorPerforms,
+    pub restoration: Option<EditorRestoration>,
+    pub lost_origin: bool,
 }
 
 #[derive(Clone, Copy)]
 struct EditorExchange {
     scope: NonZeroU64,
-    performs: EditorPerforms,
+    facts: EditorPcmFacts,
     origin: Option<ManualParameterOrigin>,
 }
 
@@ -1277,7 +1294,9 @@ impl Callback {
                             first_frame: stage.state.output.block.first_frame,
                             callback_offset: (frame_offset + index) as u16,
                             scope: editor.scope,
-                            performs: editor.performs,
+                            performs: editor.facts.performs,
+                            restoration: editor.facts.restoration,
+                            lost_origin: editor.facts.lost_origin,
                             origin: editor.origin,
                         });
                     }
@@ -1607,6 +1626,25 @@ impl Worker {
         manual: Option<ManualParameterInput>,
         performs: Option<EditorPerforms>,
     ) -> Result<(), Fault> {
+        self.complete_with_editor_facts(
+            reply,
+            manual,
+            performs.map(|performs| EditorPcmFacts {
+                performs,
+                restoration: None,
+                lost_origin: false,
+            }),
+        )
+    }
+
+    /// Publish the distinct SDK restoration beside the same checked PCM.
+    /// The later Main owner still controls final output acceptance.
+    pub fn complete_with_editor_facts(
+        &mut self,
+        reply: Block,
+        manual: Option<ManualParameterInput>,
+        facts: Option<EditorPcmFacts>,
+    ) -> Result<(), Fault> {
         if self.revoked.is_revoked() {
             return Err(Fault::Revoked);
         }
@@ -1616,11 +1654,11 @@ impl Worker {
         self.revoked
             .processed_prefix
             .store(self.sequence.saturating_add(1), Release);
-        let editor = match (in_flight.editor_scope, performs) {
+        let editor = match (in_flight.editor_scope, facts) {
             (None, None) => None,
-            (Some(scope), Some(performs)) => Some(EditorExchange {
+            (Some(scope), Some(facts)) => Some(EditorExchange {
                 scope,
-                performs,
+                facts,
                 origin: in_flight.manual_origin,
             }),
             _ => return self.fail(Fault::Protocol),

@@ -95,6 +95,9 @@ impl Frontier {
                 return Err(AbortReason::MissedOperation);
             }
             self.input_sequence = Some(input.sequence);
+            if input.lost_origin {
+                return Err(AbortReason::MissingOrigin);
+            }
             if let Some(origin) = input.origin {
                 let due = origin
                     .performance_frame
@@ -125,7 +128,7 @@ impl Frontier {
                     self.pending.push_back(Pending { input, due });
                     return Ok(confirmed);
                 }
-            } else if !input.performs.as_slice().is_empty() {
+            } else if !input.performs.as_slice().is_empty() || input.restoration.is_some() {
                 return Err(AbortReason::MissingOrigin);
             }
         }
@@ -200,6 +203,8 @@ mod tests {
                 loop_pass: sequence,
             }),
             performs: Default::default(),
+            restoration: None,
+            lost_origin: false,
         }
     }
 
