@@ -27,6 +27,7 @@ mod modulation_compositor_allocations;
 mod modulation_lfo_allocations;
 mod modulation_runtime_allocations;
 mod modulation_source_bank_allocations;
+mod note_pressure_allocations;
 mod operator_filter_proof_allocations;
 mod operator_fixed_allocations;
 mod overdrive_sealed_allocations;

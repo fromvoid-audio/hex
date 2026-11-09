@@ -258,7 +258,8 @@ impl MutableInstrumentTrackRuntime {
         live.expire();
         for &event in transitions {
             match event {
-                NativeInstrumentEvent::Expression { .. } => live.push(event)?,
+                NativeInstrumentEvent::Expression { .. }
+                | NativeInstrumentEvent::NotePressure { .. } => live.push(event)?,
                 NativeInstrumentEvent::NoteOff {
                     frame_offset,
                     occurrence_id: token,

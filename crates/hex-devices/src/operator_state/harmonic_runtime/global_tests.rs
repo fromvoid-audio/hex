@@ -757,6 +757,9 @@ fn global_pcm_and_expression_are_partition_independent() {
                             occurrence_id,
                         }
                     }
+                    NativeInstrumentEvent::NotePressure { .. } => {
+                        panic!("unexpected test note pressure")
+                    }
                     NativeInstrumentEvent::Expression { expression, .. } => {
                         NativeInstrumentEvent::Expression {
                             frame_offset: at - start,
