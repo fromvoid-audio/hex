@@ -1476,14 +1476,16 @@ fn exact_pcm_editor_performs_exclude_overwritten_values_without_consuming_receip
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn idle_and_ordinary_editor_input_is_not_replayed_as_opted_in_pcm() {
     use crate::protocol::ParameterEditKind::End;
-    for idle in [false, true] {
+    // The ordinary raw-zero profile deliberately refuses a live zero-frame
+    // exchange. The editor/automation coexistence profile admits idle flushes.
+    for (idle, variant) in [(false, 89), (true, 147)] {
         let case = Case::new();
         let mut instance = Prepared::prepare(
             &build(),
             source(),
             options(),
             PreparationCancellation::new_on_control().unwrap(),
-            case.setup_restore(89),
+            case.setup_restore(variant),
         )
         .unwrap();
         fs::write(case.release(), b"emit one editor value").unwrap();
