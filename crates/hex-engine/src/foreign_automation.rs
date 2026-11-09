@@ -22,9 +22,22 @@ pub use hex_lattice::ForeignParameterCapability as ParameterCapability;
 pub struct QuantumProfile {
     pub frames: u16,
     pub max_runs: u16,
+    // A normal Arrangement traversal is interrupted only by a loop wrap.
+    // SDK slices and gaps in an advancing Arrangement clock do not revisit
+    // its cuts. Hard transport jumps can still use the checked physical queue.
+    max_traversals: u16,
 }
 
 impl QuantumProfile {
+    /// Use when no Arrangement clock or loop geometry constrains the origins.
+    pub const fn arbitrary(frames: u16, max_runs: u16) -> Self {
+        Self {
+            frames,
+            max_runs,
+            max_traversals: max_runs,
+        }
+    }
+
     /// Start with one run, allow the seven SDK timing cuts, and bound loop
     /// wraps by their minimum spacing.
     pub(crate) fn arrangement(frames: u16, region: Option<hex_project::LoopRegion>) -> Self {
@@ -36,6 +49,7 @@ impl QuantumProfile {
         Self {
             frames,
             max_runs: (8 + wraps).min(u64::from(frames)) as u16,
+            max_traversals: (1 + wraps).min(u64::from(frames)) as u16,
         }
     }
 
@@ -47,7 +61,16 @@ impl QuantumProfile {
     ) -> Self {
         let mut profile = Self::arrangement(frames, region);
         profile.max_runs = profile.max_runs.max(frames.min(9));
+        profile.max_traversals = profile.max_traversals.max(frames.min(2));
         profile
+    }
+
+    fn point_bounds(self, interior: usize) -> (usize, usize) {
+        let endpoints = 2 * usize::from(self.max_runs);
+        let bound = |traversals| {
+            usize::from(self.frames).min(endpoints + interior * usize::from(traversals))
+        };
+        (bound(self.max_traversals), bound(self.max_runs))
     }
 
     /// With a shared origin of zero and at least one quantum between that
@@ -119,10 +142,7 @@ impl BoundProgram {
             source.class,
             source.parameters,
             tempo,
-            QuantumProfile {
-                frames: source.quantum_frames,
-                max_runs,
-            },
+            QuantumProfile::arbitrary(source.quantum_frames, max_runs),
         )?
         .map(|program| Self {
             program,
@@ -353,6 +373,8 @@ impl Program {
             || profile.frames > MAX_QUANTUM_FRAMES
             || profile.max_runs == 0
             || profile.max_runs > profile.frames
+            || profile.max_traversals == 0
+            || profile.max_traversals > profile.max_runs
             || capabilities.windows(2).any(|pair| pair[0].id >= pair[1].id)
             || capabilities.iter().any(|parameter| {
                 let value = f64::from_bits(parameter.normalized_base_bits);
@@ -391,7 +413,8 @@ impl Program {
         prepared
             .try_reserve_exact(capabilities.len())
             .map_err(|_| Invalid("could not reserve foreign automation lanes"))?;
-        let mut point_budget = 0;
+        let mut arrangement_budget = 0;
+        let mut physical_budget = 0;
         for parameter in capabilities {
             let id = parameter.id;
             let authored_lane = authored
@@ -415,16 +438,17 @@ impl Program {
                 .map(|lane| touch::Overlay::prepare(&lane.touch, &knots, parameter.steps, tempo))
                 .transpose()?
                 .flatten();
-            point_budget += if overlay.is_none() && knots.len() == 1 {
+            let (arrangement_points, physical_points) = if let Some(overlay) = &overlay {
+                overlay.point_bounds(profile)
+            } else if knots.len() == 1 {
                 // The SDK retains a constant value across slices and origin runs.
-                1
+                (1, 1)
             } else {
-                overlay.as_ref().map_or_else(
-                    || point_bound(&knots, profile),
-                    |overlay| overlay.point_bound(profile),
-                )
+                authored_point_bounds(&knots, profile)
             };
-            if point_budget > MAX_POINTS {
+            arrangement_budget += arrangement_points;
+            physical_budget += physical_points;
+            if arrangement_budget > MAX_POINTS {
                 return Err(Invalid(
                     "foreign automation exceeds the quantum point budget",
                 ));
@@ -434,7 +458,10 @@ impl Program {
         Ok(Some(Self {
             lanes: prepared,
             profile,
-            point_budget,
+            // A seek can splice another origin into a partially staged quantum.
+            // Check the actual output against the entire fixed queue in that
+            // case. The PCM caller stages the queue and discards it on failure.
+            point_budget: physical_budget.min(MAX_POINTS),
         }))
     }
 
@@ -508,6 +535,7 @@ impl Program {
             return Err(Invalid("foreign automation origin runs exceed admission"));
         }
 
+        let output = &mut output[..self.point_budget];
         let first_origin = origins.iter().position(Option::is_some);
         let mut count = 0;
         let mut start = 0;
@@ -628,7 +656,7 @@ fn prepare_knots(
     Ok(knots)
 }
 
-fn point_bound(knots: &[Knot], profile: QuantumProfile) -> usize {
+fn authored_point_bounds(knots: &[Knot], profile: QuantumProfile) -> (usize, usize) {
     // Two endpoints per run (also needed across adjacent origin jumps).
     // An interior corner costs one point, plus one for the old value just
     // before a step. A sliding window bounds those costs for any run.
@@ -644,7 +672,7 @@ fn point_bound(knots: &[Knot], profile: QuantumProfile) -> usize {
         }
         most_interior = most_interior.max(window);
     }
-    usize::from(profile.frames).min((2 + most_interior) * usize::from(profile.max_runs))
+    profile.point_bounds(most_interior)
 }
 
 fn step_before(knots: &[Knot], index: usize) -> Option<f64> {
@@ -652,14 +680,14 @@ fn step_before(knots: &[Knot], index: usize) -> Option<f64> {
     (!previous.linear && previous.value != knots[index].value).then_some(previous.value)
 }
 
-fn point_bound_frames(
-    frames: impl ExactSizeIterator<Item = u64> + Clone,
+fn touch_point_bounds(
+    frames: impl Iterator<Item = u64> + Clone,
     profile: QuantumProfile,
-) -> usize {
-    // Each run starts with a chase and has at most two points per section.
-    // A sliding window bounds the number of additional sections visited by
-    // any contiguous run of this quantum size, regardless of timeline start.
-    let length = frames.len();
+) -> (usize, usize) {
+    // Each SDK/origin run has two endpoint points. Every interior cut adds
+    // at most two more. Splitting a traversal into SDK runs does not repeat
+    // the cuts; a wrap can revisit them. Bound each traversal using one
+    // sliding window as wide as the physical quantum.
     let mut first = frames.clone().peekable();
     let mut window = 0usize;
     let mut most_knots = 0;
@@ -674,8 +702,7 @@ fn point_bound_frames(
         }
         most_knots = most_knots.max(window);
     }
-    let sections = if length == 1 { 1 } else { most_knots + 1 };
-    usize::from(profile.frames).min(2 * sections * usize::from(profile.max_runs))
+    profile.point_bounds(2 * most_knots)
 }
 
 impl Lane {

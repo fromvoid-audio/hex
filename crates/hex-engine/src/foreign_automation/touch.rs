@@ -1,7 +1,7 @@
 //! Control-prepared half-open overlays. The original knots are never split or
 //! rewritten: uncovered samples retain the original interpolation anchors.
 //! Cuts bound callback work and participate in the ordinary quantum admission.
-use super::{Invalid, Knot, Lane, QuantumProfile, point_bound_frames};
+use super::{Invalid, Knot, Lane, QuantumProfile, touch_point_bounds};
 use hex_lattice_contract::ForeignParameterPoint;
 use hex_project::{DeviceAutomationTouchSpan, TempoMap};
 
@@ -150,8 +150,8 @@ impl Overlay {
         })
     }
 
-    pub(super) fn point_bound(&self, profile: QuantumProfile) -> usize {
-        point_bound_frames(self.cuts.iter().copied(), profile)
+    pub(super) fn point_bounds(&self, profile: QuantumProfile) -> (usize, usize) {
+        touch_point_bounds(self.cuts.iter().copied(), profile)
     }
 
     fn value(&self, frame: u64) -> Option<f64> {
