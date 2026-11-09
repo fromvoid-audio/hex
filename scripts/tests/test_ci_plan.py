@@ -1645,9 +1645,10 @@ class ModuleScopeTests(unittest.TestCase):
         filters = plan.module_test_filters(root, [path], inventory, [owner])
         self.assertEqual(filters, {owner: ["editor::pending_edit::"]})
         viewport = "editor::viewport::"
+        timeline = ["editor::musical_time::", "editor::signed_frame_viewport::", viewport]
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/src/editor/viewport.rs"], inventory, [owner]),
-            {owner: [viewport]})
+            {owner: timeline})
         disk = "editor::disk_overload::"
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/src/editor/disk_overload.rs"], inventory, [owner]),
@@ -1684,8 +1685,8 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/src/editor/play_intent.rs"], inventory, [owner]),
             {owner: [play_intent]})
-        all_modules = [admission, navigation, cpu, disk, thumbnail, "editor::pending_edit::",
-                       play_intent, recovery, recovery_integration, scale, viewport]
+        all_modules = sorted([admission, navigation, cpu, disk, thumbnail, "editor::pending_edit::",
+                              play_intent, recovery, recovery_integration, scale, *timeline])
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/tests/unit_editor_state.rs"], inventory, [owner]),
             {owner: all_modules})
@@ -1712,7 +1713,7 @@ class ModuleScopeTests(unittest.TestCase):
             if unit:
                 self.assertTrue(ci.module_scoped(unit[0].argv))
                 for name in names:
-                    if name != recovery_integration:
+                    if name != recovery_integration and name not in timeline[:2]:
                         self.assertIn(name, unit[0].argv)
                 if recovery in names:
                     library = next(step for step in steps if step.step_id == "ui-feature-tests")
@@ -1727,6 +1728,29 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertNotIn("--lib", feature.argv)
         self.assertNotIn("--test", feature.argv)
         self.assertTrue(any(step.step_id == "ui-piano-unit-tests" for step in steps))
+        self.assertTrue(any(step.step_id == "ui-timeline-unit-tests" for step in steps))
+
+    def test_timeline_target_follows_its_viewport_dependencies(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        timeline = ["editor::musical_time::", "editor::signed_frame_viewport::", "editor::viewport::"]
+        for path in ("musical_time.rs", "signed_frame_viewport.rs", "viewport.rs"):
+            self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner]),
+                             {owner: timeline})
+        self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_timeline.rs"], inventory, [owner]),
+                         {owner: timeline})
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
+                    "single_run": {owner: "ui-test-support"}, "module_filters": {owner: timeline}}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": []})
+        self.assertEqual(sum("unit_timeline" in step.argv for step in steps), 1)
+        self.assertEqual(sum("unit_editor_state" in step.argv for step in steps), 1)
+        self.assertTrue(any(step.step_id == "ui-timeline-unit-tests" for step in ci.planned_steps({"scope": "full"})))
+        health = ci.planned_steps({"scope": "rust", "health": {"python": False, "workspace_inputs": True, "packages": []}})
+        self.assertTrue(any(step.step_id == "health-ui-timeline-unit" for step in health))
 
     def test_piano_unit_target_follows_owners_and_runs_once(self):
         root = SCRIPTS.parent

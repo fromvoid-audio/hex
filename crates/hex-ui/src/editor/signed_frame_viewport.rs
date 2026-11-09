@@ -122,7 +122,7 @@ impl SignedFrameViewport {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::*;
     #[test]
