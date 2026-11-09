@@ -2,7 +2,8 @@
 use super::*;
 use crate::NativeParameterAutomation;
 use hex_lattice_contract::{
-    MAX_PARAMETERS_PER_DEVICE, ParameterDescriptor, ParameterId, ParameterValue,
+    MAX_PARAMETERS_PER_DEVICE, ParameterDescriptor, ParameterId, ParameterModulation,
+    ParameterSemantics, ParameterValue,
 };
 
 /// Maximum frames in one automated segment. Hosts split larger blocks without
@@ -22,6 +23,16 @@ pub const MAX_INSTRUMENT_AUTOMATION_FRAMES: usize = 4_096;
 /// History copy/reset must include all effective values and smoothing history.
 pub trait InstrumentParameterRuntime {
     fn descriptors(&self) -> &[ParameterDescriptor];
+
+    /// Same immutable per-parameter grant as the preparing factory. When a
+    /// borrowed block reports a route for an admitted ID, the provider consumes
+    /// its canonical value at each sample.
+    fn parameter_modulation_semantics(
+        &self,
+        _parameter: ParameterId,
+    ) -> Option<ParameterSemantics> {
+        None
+    }
     /// Copy every descriptor's last selected canonical target, resolving Base.
     /// This observes targets, not smoothed effective values or future curves;
     /// feeding the result back lets existing ramps finish without restarting.
@@ -74,10 +85,22 @@ pub(super) fn validate_grants(
 
 pub(super) fn matches_grants(
     runtime: &mut dyn MutableInstrumentRuntime,
+    prepared: &dyn PreparedMutableInstrumentRuntime,
     descriptors: &[ParameterDescriptor],
 ) -> bool {
     match runtime.parameter_automation() {
-        Some(view) => !descriptors.is_empty() && view.descriptors() == descriptors,
+        Some(view) => {
+            !descriptors.is_empty()
+                && view.descriptors() == descriptors
+                && descriptors.iter().all(|&descriptor| {
+                    let grant = prepared.parameter_modulation_semantics(descriptor.id);
+                    grant == view.parameter_modulation_semantics(descriptor.id)
+                        && grant.is_none_or(|semantics| {
+                            semantics.modulation == ParameterModulation::SampleRate
+                                && semantics.validate(descriptor).is_ok()
+                        })
+                })
+        }
         None => descriptors.is_empty(),
     }
 }
@@ -128,10 +151,11 @@ pub(super) fn validate_target_views(
 }
 
 fn validate_values(
-    descriptors: &[ParameterDescriptor],
+    view: &dyn InstrumentParameterRuntime,
     values: &dyn NativeParameterAutomation,
     frames: usize,
 ) -> Result<(), NativeInstrumentRuntimeError> {
+    let descriptors = view.descriptors();
     let invalid = NativeInstrumentRuntimeError::InvalidParameterAutomation;
     let ids = values.parameter_ids();
     if frames > MAX_INSTRUMENT_AUTOMATION_FRAMES
@@ -145,6 +169,11 @@ fn validate_values(
         *binding = descriptors
             .binary_search_by_key(id, |descriptor| descriptor.id)
             .map_err(|_| invalid)?;
+        if values.has_sample_rate_modulation(*id)
+            && view.parameter_modulation_semantics(*id).is_none()
+        {
+            return Err(NativeInstrumentRuntimeError::UnsupportedParameterModulation);
+        }
     }
     let mut readings = [None; MAX_PARAMETERS_PER_DEVICE];
     let readings = &mut readings[..ids.len()];
@@ -257,7 +286,7 @@ impl NativeInstrumentRuntimePair {
             .scratch
             .parameter_automation()
             .ok_or(NativeInstrumentRuntimeError::IncompatibleTwins)?;
-        validate_values(view.descriptors(), values, frames.len())?;
+        validate_values(view, values, frames.len())?;
         view.preflight(events, frames.len(), clock, gains, values, resources)?;
         if !frames.is_empty() {
             view.process(events, frames, clock, gains, values, resources);

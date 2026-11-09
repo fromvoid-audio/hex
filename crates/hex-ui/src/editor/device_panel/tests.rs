@@ -6646,6 +6646,16 @@ fn modulation_panel_adds_and_maps_seeded_random(cx: &mut TestAppContext) {
     );
 }
 
+#[gpui::test]
+fn modulation_panel_adds_and_maps_an_audio_rate_modulator(cx: &mut TestAppContext) {
+    assert_modulation_mapping(
+        cx,
+        "audio rate",
+        hex_engine::audio_rate_modulator::TYPE_ID,
+        &[hex_devices::utility::parameter::GAIN],
+    );
+}
+
 fn assert_modulation_mapping(
     cx: &mut TestAppContext,
     source_kind: &str,
@@ -6689,7 +6699,11 @@ fn assert_modulation_mapping(
         );
     };
     click(&mut visual, "device-modulator-toggle".into());
-    click(&mut visual, format!("add-{source_kind}-{}", device.value()));
+    click_modulator_control(
+        &mut visual,
+        format!("add-{source_kind}-{}", device.value()),
+        true,
+    );
     let source = |view: &EditorView| {
         view.state
             .as_ref()?
@@ -6710,7 +6724,11 @@ fn assert_modulation_mapping(
     let source_id = editor.read_with(cx, |view, _| source(view).unwrap());
     visual.run_until_parked();
     if type_id == hex_engine::macro_modulator::TYPE_ID {
-        click(&mut visual, format!("macro-{}-more", source_id.value()));
+        click_modulator_control(
+            &mut visual,
+            format!("macro-{}-more", source_id.value()),
+            true,
+        );
         let value = |view: &EditorView| {
             let bank = view.state.as_ref()?.project.device(device)?.modulation();
             let source = bank.sources().first()?;
@@ -6774,9 +6792,10 @@ fn assert_modulation_mapping(
         visual.run_until_parked();
         scroll_to(&mut visual, &format!("random-{}-map", source_id.value()));
     }
-    click(
+    click_modulator_control(
         &mut visual,
         format!("{source_kind}-{}-map", source_id.value()),
+        true,
     );
     assert_eq!(
         editor.read_with(cx, |view, _| view.device_panel.mapping_source),
@@ -6825,7 +6844,9 @@ fn assert_modulation_mapping(
         let current = project.device(device).unwrap();
         if matches!(
             type_id,
-            hex_engine::macro_modulator::TYPE_ID | hex_engine::random_modulator::TYPE_ID
+            hex_engine::macro_modulator::TYPE_ID
+                | hex_engine::random_modulator::TYPE_ID
+                | hex_engine::audio_rate_modulator::TYPE_ID
         ) {
             let bytes = hex_storage::encode(project).unwrap();
             let reopened = hex_storage::decode(&bytes).unwrap();
@@ -6854,6 +6875,41 @@ fn assert_modulation_mapping(
             ))
             .is_none()
     );
+    if type_id == hex_engine::audio_rate_modulator::TYPE_ID {
+        use hex_project::ModulationAmount;
+        let route = |view: &EditorView| {
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .unwrap()
+                .modulation()
+                .routes()[0]
+        };
+        let mut adjusted = editor.read_with(cx, |view, _| route(view));
+        let key = format!("modulation-route-{}-less", adjusted.id.value());
+        for _ in 0..3 {
+            click_modulator_control(&mut visual, key.clone(), true);
+            adjusted.amount = ModulationAmount::new(adjusted.amount.get() - 0.05).unwrap();
+            pump_until(&editor, cx, |view| route(view) == adjusted);
+            visual.run_until_parked();
+        }
+        assert!(adjusted.amount.get() < 0.0);
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |view| route(view).amount.get() == 0.0);
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+        pump_until(&editor, cx, |view| route(view) == adjusted);
+        editor.read_with(cx, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            let loaded = hex_storage::decode(&hex_storage::encode(project).unwrap()).unwrap();
+            assert_eq!(
+                loaded.device(device).unwrap().modulation().routes(),
+                [adjusted]
+            );
+            assert_eq!(loaded.device(device).unwrap().state(), &original);
+        });
+    }
     if type_id == hex_engine::lfo_modulator::TYPE_ID {
         use hex_project::{ModulationAmount, ModulationRange};
         let routes = |view: &EditorView| {
@@ -7096,8 +7152,12 @@ fn modulation_panel_maps_a_bound_source_effect_on_its_receiver(cx: &mut TestAppC
     pump_until(&editor, cx, |view| source_slot(view).is_some());
     let slot = editor.read_with(cx, |view, _| source_slot(view).unwrap());
     visual.run_until_parked();
-    click(&mut visual, format!("lfo-{}-map", slot.value()));
-    click(&mut visual, format!("map-output-gain-{}", device.value()));
+    click_modulator_control(&mut visual, format!("lfo-{}-map", slot.value()), true);
+    click_modulator_control(
+        &mut visual,
+        format!("map-output-gain-{}", device.value()),
+        true,
+    );
 
     let route_count = |view: &EditorView| {
         view.state

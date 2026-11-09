@@ -3,8 +3,8 @@
 use super::*;
 use gpui::{AnyElement, SharedString};
 use hex_engine::{
-    follower_modulator as follower, lfo_modulator as lfo, macro_modulator as manual,
-    random_modulator as random,
+    audio_rate_modulator as audio_rate, follower_modulator as follower, lfo_modulator as lfo,
+    macro_modulator as manual, random_modulator as random,
 };
 use hex_lattice_contract::{ParameterId, ParameterModulation};
 use hex_project::{
@@ -19,10 +19,17 @@ enum SourceKind {
     Follower,
     Macro,
     Random,
+    AudioRate,
 }
 
 impl SourceKind {
-    const ALL: [Self; 4] = [Self::Lfo, Self::Follower, Self::Macro, Self::Random];
+    const ALL: [Self; 5] = [
+        Self::Lfo,
+        Self::Follower,
+        Self::Macro,
+        Self::Random,
+        Self::AudioRate,
+    ];
 
     fn label(self) -> &'static str {
         match self {
@@ -30,6 +37,7 @@ impl SourceKind {
             Self::Follower => "follower",
             Self::Macro => "macro",
             Self::Random => "random",
+            Self::AudioRate => "audio rate",
         }
     }
 
@@ -40,6 +48,7 @@ impl SourceKind {
         match self {
             Self::Lfo => lfo::Settings::default().encode(),
             Self::Follower => follower::Settings::default().encode(),
+            Self::AudioRate => audio_rate::default_state(),
             Self::Macro => manual::Settings::default().encode(),
             Self::Random => random::Settings {
                 seed: identity,
@@ -326,6 +335,7 @@ pub(super) fn panel(
             follower::TYPE_ID => SourceKind::Follower,
             manual::TYPE_ID => SourceKind::Macro,
             random::TYPE_ID => SourceKind::Random,
+            audio_rate::TYPE_ID => SourceKind::AudioRate,
             _ => continue,
         };
         let label = kind.label();
@@ -641,7 +651,7 @@ pub(super) fn panel(
             .debug_selector(|| "device-modulator-scroll".into())
             .flex()
             .flex_col()
-            .max_h(px(58.0))
+            .max_h(px(78.0))
             .occlude()
             .overflow_y_scroll()
             .child(body)

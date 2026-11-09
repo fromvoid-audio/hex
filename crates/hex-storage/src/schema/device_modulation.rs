@@ -4,7 +4,9 @@
 //! slot color key; schema81 maps absent colors to gray and remains the write
 //! format for entirely gray banks with legacy LFO state. Schema84 carries LFO
 //! payload versions newer than sine v1, requires every slot's color, and admits
-//! bound source units through the same flat membership envelope. Module payloads
+//! bound source units through the same flat membership envelope. Schemas85 and
+//! 86 admit free and synced LFO rate assignments. Schema87 requires an Audio
+//! Rate source and can contain all earlier bank configurations. Module payloads
 //! stay opaque here; playback admission validates the provider's exact codec.
 use crate::{Project, StorageError};
 use hex_lattice_contract::{DeviceAutomationTarget, DeviceTypeId, NativeDeviceState, ParameterId};
@@ -363,6 +365,18 @@ pub(crate) fn contains_colors(project: &Project) -> bool {
             .any(|source| source.color != ElementColor::default())
     })
 }
+const AUDIO_RATE: DeviceTypeId = DeviceTypeId::from_static("hex.modulator.audio-rate");
+
+pub(crate) fn contains_audio_rate(project: &Project) -> bool {
+    project.devices().any(|device| {
+        device
+            .modulation()
+            .sources()
+            .iter()
+            .any(|source| source.state.type_id() == AUDIO_RATE)
+    })
+}
+
 const LFO: DeviceTypeId = DeviceTypeId::from_static("hex.modulator.lfo");
 
 /// The existing route DTO already carries the provider and parameter IDs.
@@ -415,7 +429,9 @@ pub(crate) fn refuse_legacy(project: &Project) -> Result<(), StorageError> {
     Ok(())
 }
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
-    let version = if let Some(version) = lfo_rate_route_schema(project) {
+    let version = if contains_audio_rate(project) {
+        crate::AUDIO_RATE_MODULATOR_SCHEMA_VERSION
+    } else if let Some(version) = lfo_rate_route_schema(project) {
         version
     } else if contains_newer_lfo(project) {
         crate::LFO_SHAPE_SCHEMA_VERSION
@@ -486,6 +502,15 @@ pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError
         return Err(StorageError::Invalid(
             "modulation inventory must be nonempty",
         ));
+    }
+    let audio_rate_schema = version == crate::AUDIO_RATE_MODULATOR_SCHEMA_VERSION;
+    if contains_audio_rate(&project) != audio_rate_schema {
+        return Err(StorageError::Invalid(
+            "audio rate modulators require their matching project schema",
+        ));
+    }
+    if audio_rate_schema {
+        return Ok(project);
     }
     let rate_schema = lfo_rate_route_schema(&project);
     let declared_rate_schema = matches!(
