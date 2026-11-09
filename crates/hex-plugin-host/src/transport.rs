@@ -354,6 +354,23 @@ impl ProcessTiming {
     }
 }
 
+/// One authored raw SDK parameter with a normalized value at every sample.
+#[derive(Clone, Copy)]
+pub struct DenseParameterLane<'a> {
+    pub id: u32,
+    pub normalized: &'a [f64],
+}
+impl DenseParameterLane<'_> {
+    pub(crate) fn valid(self, frames: usize) -> bool {
+        parameters::valid_id(self.id)
+            && self.normalized.len() == frames
+            && self
+                .normalized
+                .iter()
+                .all(|value| (0.0..=1.0).contains(value))
+    }
+}
+
 /// Inline wire payload; dropping it never reclaims a resource.
 #[derive(Clone, Copy)]
 pub struct Block {

@@ -21,12 +21,16 @@
 //! record then appends its prepared SDK step count as a u32. The one admitted
 //! manual point, if present, leads the block at offset zero with its own tag. Replies and
 //! stopped flushes keep the original records.
-//! These records carry transport data; they do not promise SDK event admission.
+//! Request bit 0x0800 carries one additional authored lane after the timing
+//! data, with raw ID and SDK step count as u32 followed by one f64 per frame.
+//! Replies retain their sparse bound. Wire records alone grant no SDK access.
 use super::*;
 use std::io::{self, Read, Write};
 
 pub const HEADER_BYTES: usize = 64;
 const AUTHORED_PARAMETER_VERSION_BIT: u16 = 0x8000;
+const DENSE_PARAMETER_VERSION_BIT: u16 = 0x0800;
+const DENSE_PARAMETER_HEADER_BYTES: usize = 8;
 const TIMING_BYTES: usize = 24;
 const EXTENDED_TIMING_BYTES: usize = 40;
 const TIMING_CHANGE_BYTES: usize = 8 + EXTENDED_TIMING_BYTES;
@@ -36,13 +40,15 @@ pub const MAX_PACKET_BYTES: usize = HEADER_BYTES
     + MAX_PARAMETER_POINTS * 20
     + EXTENDED_TIMING_BYTES
     + MAX_TIMING_CHANGES * TIMING_CHANGE_BYTES;
+pub const MAX_DENSE_PACKET_BYTES: usize =
+    MAX_PACKET_BYTES + DENSE_PARAMETER_HEADER_BYTES + MAX_FRAMES * 8;
 
 fn invalid() -> io::Error {
     io::ErrorKind::InvalidData.into()
 }
 
 pub fn write(writer: &mut impl Write, block: &Block) -> io::Result<()> {
-    write_with_parameters(writer, block, None, None)
+    write_with_parameters(writer, block, None, None, None)
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -52,7 +58,17 @@ pub(crate) fn write_authored(
     manual_parameter: Option<ParameterPoint>,
     step_count: &dyn Fn(u32) -> Option<u32>,
 ) -> io::Result<()> {
-    write_with_parameters(writer, block, Some(step_count), manual_parameter)
+    write_with_parameters(writer, block, Some(step_count), manual_parameter, None)
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) fn write_dense_authored(
+    writer: &mut impl Write,
+    block: &Block,
+    lane: DenseParameterLane<'_>,
+    step_count: &dyn Fn(u32) -> Option<u32>,
+) -> io::Result<()> {
+    write_with_parameters(writer, block, Some(step_count), None, Some(lane))
 }
 
 fn write_with_parameters(
@@ -60,6 +76,7 @@ fn write_with_parameters(
     block: &Block,
     step_count: Option<&dyn Fn(u32) -> Option<u32>>,
     manual_parameter: Option<ParameterPoint>,
+    dense: Option<DenseParameterLane<'_>>,
 ) -> io::Result<()> {
     if block.frames == 0 || usize::from(block.frames) > MAX_FRAMES {
         return Err(invalid());
@@ -79,6 +96,23 @@ fn write_with_parameters(
     }
     let mut packet = [0_u8; MAX_PACKET_BYTES];
     packet[..4].copy_from_slice(b"HXVB");
+    let dense_steps = dense
+        .map(|lane| {
+            if !lane.valid(usize::from(block.frames))
+                || block
+                    .parameters
+                    .as_slice()
+                    .iter()
+                    .any(|point| point.id == lane.id)
+            {
+                return Err(invalid());
+            }
+            step_count
+                .and_then(|lookup| lookup(lane.id))
+                .filter(|&steps| steps <= i32::MAX as u32)
+                .ok_or_else(invalid)
+        })
+        .transpose()?;
     let changes = block.timing_changes.as_slice();
     let version = if !changes.is_empty() {
         6_u16
@@ -96,7 +130,7 @@ fn write_with_parameters(
         .any(|event| event.note_id.is_some())
     {
         3_u16
-    } else if block.parameters.as_slice().is_empty() {
+    } else if block.parameters.as_slice().is_empty() && dense.is_none() {
         1_u16
     } else {
         2_u16
@@ -110,10 +144,15 @@ fn write_with_parameters(
     {
         return Err(invalid());
     }
-    let authored = step_count.is_some() && !block.parameters.as_slice().is_empty();
+    let authored = step_count.is_some() && (!points.is_empty() || dense.is_some());
     let wire_version = version
         | if authored {
             AUTHORED_PARAMETER_VERSION_BIT
+        } else {
+            0
+        }
+        | if dense.is_some() {
+            DENSE_PARAMETER_VERSION_BIT
         } else {
             0
         };
@@ -189,6 +228,17 @@ fn write_with_parameters(
         offset += TIMING_CHANGE_BYTES;
     }
     writer.write_all(&packet[..offset])?;
+    if let Some((lane, steps)) = dense.zip(dense_steps) {
+        let mut payload = [0_u8; DENSE_PARAMETER_HEADER_BYTES + MAX_FRAMES * 8];
+        payload[..4].copy_from_slice(&lane.id.to_le_bytes());
+        payload[4..DENSE_PARAMETER_HEADER_BYTES].copy_from_slice(&steps.to_le_bytes());
+        let mut offset = DENSE_PARAMETER_HEADER_BYTES;
+        for value in lane.normalized {
+            payload[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+            offset += 8;
+        }
+        writer.write_all(&payload[..offset])?;
+    }
     writer.flush()
 }
 
