@@ -1520,6 +1520,9 @@ pub(super) fn request(value: &Request) -> Description {
         } => {
             describe!("device_automation_take"; ["request_id" => request_id, "gesture_serial" => scope.stamp.gesture_serial]; omitted="delivery data")
         }
+        Request::InspectSealedAutomationRecovery { request_id, .. } => {
+            describe!("inspect_sealed_automation_recovery"; ["request_id" => request_id]; omitted="path")
+        }
         Request::QueryFailedPluginAutomation { request_id } => {
             describe!("query_failed_plugin_automation"; ["request_id" => request_id]; omitted="none")
         }
