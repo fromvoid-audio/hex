@@ -3,7 +3,7 @@
 //! Prepared declarations borrow no project data and never enter project history.
 use hex_devices::modulation::{
     audio_rate, button, buttons, envelope_follower, lfo, macro_four, macro_value, math, mix,
-    note_pressure, random_hold,
+    note_counter, note_pressure, random_hold,
 };
 use hex_lattice::{
     HostGainModulationRoute, MAX_MODULATION_SOURCES, ModulationRoute, ModulationTarget,
@@ -341,7 +341,7 @@ impl EffectModulation {
         sample_rate: u32,
         automation: &[ParameterId],
     ) -> Result<Option<Self>, Invalid> {
-        Self::plan_without_voice_source(device, project, sample_rate, automation, None)
+        Self::plan_bank(device, project, sample_rate, automation, None, false)
     }
 
     pub(super) fn plan_instrument(
@@ -355,21 +355,23 @@ impl EffectModulation {
             .iter()
             .find(|slot| slot.state.type_id() == note_pressure::TYPE_ID)
             .map(|slot| slot.id);
-        Self::plan_without_voice_source(
+        Self::plan_bank(
             device,
             Some(project),
             project.sample_rate(),
             automation,
             voice_source,
+            true,
         )
     }
 
-    fn plan_without_voice_source(
+    fn plan_bank(
         device: &Device,
         project: Option<&Project>,
         sample_rate: u32,
         automation: &[ParameterId],
         voice_source: Option<hex_lattice_contract::ModulationSourceId>,
+        instrument_events: bool,
     ) -> Result<Option<Self>, Invalid> {
         let bank = device.modulation();
         if bank.is_empty() {
@@ -450,11 +452,16 @@ impl EffectModulation {
                     .and_then(|settings| settings.prepare(source.id, sample_rate)),
                 mix::TYPE_ID => mix::Settings::decode(&source.state)
                     .and_then(|settings| settings.prepare(source.id, sample_rate)),
+                note_counter::TYPE_ID => note_counter::Settings::decode(&source.state)
+                    .and_then(|settings| settings.prepare(source.id, sample_rate)),
                 random_hold::TYPE_ID => random_hold::Settings::decode(&source.state)
                     .and_then(|settings| settings.prepare(source.id, sample_rate)),
                 _ => return Err(Invalid("modulator state or rate is unsupported")),
             }
             .map_err(invalid_source)?;
+            if prepared.reads_note_events() && !instrument_events {
+                return Err(Invalid("this modulator requires instrument note events"));
+            }
             retain(ModulationOutputId::MAIN, prepared);
         }
         if sources.is_empty() {
