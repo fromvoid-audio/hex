@@ -217,7 +217,9 @@ impl EditorView {
             Action::SaveDefault => {
                 if let Some(owner) = self.device_preset_ready(owner.device, owner.class, cx) {
                     if let Some(root) = self.browser.data_directory().map(Path::to_path_buf) {
-                        if self.enqueue_device_barrier(Request::SaveDeviceDefault { owner, root }) {
+                        if self
+                            .enqueue_device_barrier(Request::SaveDeviceUnitDefault { owner, root })
+                        {
                             self.error = None;
                             self.status = "saving device default".into();
                         }
@@ -327,7 +329,7 @@ impl EditorView {
         match path {
             Ok(path) => {
                 let request = if save {
-                    Request::SaveDevicePreset { owner, path }
+                    Request::SaveDeviceUnitPreset { owner, path }
                 } else {
                     Request::LoadDevicePreset { owner, path }
                 };
