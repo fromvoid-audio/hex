@@ -6693,31 +6693,42 @@ fn assert_modulation_mapping(
         let map = format!("lfo-{}-map", source_id.value());
         scroll_to(&mut visual, &map);
         click(&mut visual, map);
-        let output_target = format!("map-output-gain-{}", device.value());
-        scroll_to(&mut visual, &output_target);
-        click(&mut visual, output_target);
-        pump_until(&editor, cx, |view| routes(view).len() == active.len() + 1);
-        let mapped = editor.read_with(cx, |view, _| {
-            let project = &view.state.as_ref().unwrap().project;
-            let current = project.device(device).unwrap();
-            let mapped = routes(view);
-            let route = mapped.last().unwrap();
-            assert_eq!(route.source, source_id);
-            assert!(matches!(
-                route.destination,
-                hex_project::ModulationDestination::Device {
-                    target: hex_project::DeviceAutomationTarget::HostOutputGain,
-                    ..
-                }
-            ));
-            assert_eq!(current.state().output_gain_millidb(), 0);
-            let loaded = hex_storage::decode(&hex_storage::encode(project).unwrap()).unwrap();
-            assert_eq!(loaded.device(device).unwrap().modulation().routes(), mapped);
-            mapped
-        });
-        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
-        pump_until(&editor, cx, |view| routes(view) == active);
-        editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
-        pump_until(&editor, cx, |view| routes(view) == mapped);
+        let mut previous = active;
+        for (target, name) in [
+            (
+                hex_project::DeviceAutomationTarget::HostOutputGain,
+                "output-gain",
+            ),
+            (
+                hex_project::DeviceAutomationTarget::HostInputGain,
+                "input-gain",
+            ),
+        ] {
+            let key = format!("map-{name}-{}", device.value());
+            scroll_to(&mut visual, &key);
+            click(&mut visual, key);
+            pump_until(&editor, cx, |view| routes(view).len() == previous.len() + 1);
+            let mapped = editor.read_with(cx, |view, _| {
+                let project = &view.state.as_ref().unwrap().project;
+                let current = project.device(device).unwrap();
+                let mapped = routes(view);
+                let route = mapped.last().unwrap();
+                assert_eq!(route.source, source_id);
+                assert!(matches!(
+                    route.destination,
+                    hex_project::ModulationDestination::Device { target: actual, .. } if actual == target
+                ));
+                assert_eq!(current.state().output_gain_millidb(), 0);
+                assert_eq!(current.state().input_gain_millidb(), 0);
+                let loaded = hex_storage::decode(&hex_storage::encode(project).unwrap()).unwrap();
+                assert_eq!(loaded.device(device).unwrap().modulation().routes(), mapped);
+                mapped
+            });
+            editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+            pump_until(&editor, cx, |view| routes(view) == previous);
+            editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+            pump_until(&editor, cx, |view| routes(view) == mapped);
+            previous = mapped;
+        }
     }
 }
