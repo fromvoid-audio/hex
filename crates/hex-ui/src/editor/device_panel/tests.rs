@@ -6379,7 +6379,9 @@ fn modulation_panel_maps_an_lfo_into_a_macro_and_then_a_device_parameter(cx: &mu
 }
 
 #[gpui::test]
-fn modulation_panel_maps_a_free_lfo_rate_and_refuses_ineligible_targets(cx: &mut TestAppContext) {
+fn modulation_panel_maps_both_lfo_rate_modes_and_preserves_assignments_on_sync(
+    cx: &mut TestAppContext,
+) {
     use hex_devices::utility::parameter;
     use hex_engine::lfo_modulator as lfo;
     use hex_project::{DeviceModulation, ModulationDestination};
@@ -6422,14 +6424,11 @@ fn modulation_panel_maps_a_free_lfo_rate_and_refuses_ineligible_targets(cx: &mut
     visual.run_until_parked();
 
     click(&mut visual, format!("macro-{}-map", manual.value()), true);
-    assert!(
-        visual
-            .debug_bounds(Box::leak(rate_key(synced).into_boxed_str()))
-            .is_none()
-    );
-    click(&mut visual, rate_key(free), true);
-    pump_until(&editor, cx, |view| bank(view).routes().len() == 1);
-    visual.run_until_parked();
+    for (index, target) in [synced, free].into_iter().enumerate() {
+        click(&mut visual, rate_key(target), true);
+        pump_until(&editor, cx, |view| bank(view).routes().len() == index + 1);
+        visual.run_until_parked();
+    }
     assert!(
         visual
             .debug_bounds(Box::leak(rate_key(free).into_boxed_str()))
@@ -6437,20 +6436,40 @@ fn modulation_panel_maps_a_free_lfo_rate_and_refuses_ineligible_targets(cx: &mut
         "duplicate"
     );
     click(&mut visual, format!("macro-{}-map", manual.value()), true);
-    assert!(
-        visual
-            .debug_bounds(Box::leak(
-                format!("lfo-{}-sync", free.value()).into_boxed_str()
-            ))
-            .is_none(),
-        "assigned lfo stays free-running"
+    let synced_rate = |view: &EditorView| {
+        lfo::Settings::decode(&bank(view).sources()[1].state)
+            .unwrap()
+            .rate
+    };
+    let original_synced = editor.read_with(cx, |view, _| synced_rate(view));
+    let assigned = editor.read_with(cx, |view, _| bank(view).routes().to_vec());
+    for is_free in [true, false] {
+        click(&mut visual, format!("lfo-{}-sync", synced.value()), true);
+        pump_until(&editor, cx, |view| {
+            matches!(synced_rate(view), lfo::Rate::Hertz(_)) == is_free
+        });
+        editor.read_with(cx, |view, _| {
+            assert_eq!(bank(view).routes(), assigned);
+            let project = &view.state.as_ref().unwrap().project;
+            let version = if is_free {
+                hex_storage::LFO_RATE_ROUTE_SCHEMA_VERSION
+            } else {
+                hex_storage::TEMPO_LFO_RATE_ROUTE_SCHEMA_VERSION
+            };
+            assert_eq!(hex_storage::schema_version_for(project), version);
+        });
+        visual.run_until_parked();
+    }
+    assert_eq!(
+        editor.read_with(cx, |view, _| synced_rate(view)),
+        original_synced
     );
     let rate_route = editor.read_with(cx, |view, _| bank(view).routes()[0]);
     assert_eq!(rate_route.source, manual);
     assert_eq!(
         rate_route.destination,
         ModulationDestination::Modulator {
-            source: free,
+            source: synced,
             module_type: lfo::TYPE_ID,
             parameter: lfo::RATE_PARAMETER,
         }
@@ -6467,10 +6486,10 @@ fn modulation_panel_maps_a_free_lfo_rate_and_refuses_ineligible_targets(cx: &mut
         visual.run_until_parked();
     }
 
-    click(&mut visual, format!("lfo-{}-map", free.value()), true);
+    click(&mut visual, format!("lfo-{}-map", synced.value()), true);
     assert!(
         visual
-            .debug_bounds(Box::leak(rate_key(free).into_boxed_str()))
+            .debug_bounds(Box::leak(rate_key(synced).into_boxed_str()))
             .is_none(),
         "self-route"
     );
@@ -6487,15 +6506,15 @@ fn modulation_panel_maps_a_free_lfo_rate_and_refuses_ineligible_targets(cx: &mut
         format!("map-target-{}-{}", device.value(), parameter::GAIN.value()),
         false,
     );
-    pump_until(&editor, cx, |view| bank(view).routes().len() == 2);
+    pump_until(&editor, cx, |view| bank(view).routes().len() == 3);
     let mapped = editor.read_with(cx, |view, _| {
         let project = &view.state.as_ref().unwrap().project;
         let mapped = bank(view);
-        assert_eq!(mapped.routes()[1].source, free);
+        assert_eq!(mapped.routes()[2].source, synced);
         assert_eq!(mapped.sources()[0], slots.sources()[0]);
         assert_eq!(
             hex_storage::schema_version_for(project),
-            hex_storage::LFO_RATE_ROUTE_SCHEMA_VERSION
+            hex_storage::TEMPO_LFO_RATE_ROUTE_SCHEMA_VERSION
         );
         let loaded = hex_storage::decode(&hex_storage::encode(project).unwrap()).unwrap();
         assert_eq!(loaded.device(device).unwrap().modulation(), &mapped);
@@ -6503,7 +6522,7 @@ fn modulation_panel_maps_a_free_lfo_rate_and_refuses_ineligible_targets(cx: &mut
     });
     editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
     pump_until(&editor, cx, |view| {
-        bank(view).routes() == &mapped.routes()[..1]
+        bank(view).routes() == &mapped.routes()[..2]
     });
     editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
     pump_until(&editor, cx, |view| bank(view) == mapped);

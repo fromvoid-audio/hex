@@ -384,37 +384,31 @@ pub(super) fn panel(
             };
             let destination = lfo_rate_destination(source_id);
             let rate_text = format!("{rate:.2} {units}");
-            let rate_control = if matches!(settings.rate, lfo::Rate::Hertz(_))
-                && let Some(mapping_source) = mapping_source_for(source_id, destination)
-            {
-                button(
-                    cx,
-                    format!("map-lfo-rate-{}-{}", id.value(), source_id.value()),
-                    theme::text(rate_text),
-                    Edit::Map(mapping_source, MappingTarget::LfoRate(source_id)),
-                )
-                .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
-                .into_any_element()
-            } else if selected.is_some()
-                || bank
-                    .routes()
-                    .iter()
-                    .any(|route| route.destination == destination)
-            {
-                div()
-                    .px(px(4.0))
-                    .h(px(15.0))
-                    .child(theme::text(rate_text))
+            let rate_control =
+                if let Some(mapping_source) = mapping_source_for(source_id, destination) {
+                    button(
+                        cx,
+                        format!("map-lfo-rate-{}-{}", id.value(), source_id.value()),
+                        theme::text(rate_text),
+                        Edit::Map(mapping_source, MappingTarget::LfoRate(source_id)),
+                    )
+                    .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
                     .into_any_element()
-            } else {
-                button(
-                    cx,
-                    source_key("sync"),
-                    theme::text(rate_text),
-                    Edit::Sync(source_id),
-                )
-                .into_any_element()
-            };
+                } else if selected.is_some() {
+                    div()
+                        .px(px(4.0))
+                        .h(px(15.0))
+                        .child(theme::text(rate_text))
+                        .into_any_element()
+                } else {
+                    button(
+                        cx,
+                        source_key("sync"),
+                        theme::text(rate_text),
+                        Edit::Sync(source_id),
+                    )
+                    .into_any_element()
+                };
             row = row
                 .child(button(
                     cx,
@@ -790,14 +784,6 @@ fn apply(
             source.state = settings.encode().map_err(unsupported)?;
         }
         Edit::Sync(id) => {
-            if routes
-                .iter()
-                .any(|route| route.destination == lfo_rate_destination(id))
-            {
-                return Err(Invalid(
-                    "remove rate assignments before changing lfo timing",
-                ));
-            }
             let source = find_source(&mut sources, id)?;
             let mut settings = lfo::Settings::decode(&source.state).map_err(unsupported)?;
             let beats_per_second = f64::from(
@@ -884,10 +870,7 @@ fn apply(
                 MappingTarget::Macro(target) => macro_destination(target),
                 MappingTarget::LfoRate(target) => {
                     let source = find_source(&mut sources, target)?;
-                    let settings = lfo::Settings::decode(&source.state).map_err(unsupported)?;
-                    if !matches!(settings.rate, lfo::Rate::Hertz(_)) {
-                        return Err(Invalid("lfo rate modulation requires a free-running lfo"));
-                    }
+                    lfo::Settings::decode(&source.state).map_err(unsupported)?;
                     lfo_rate_destination(target)
                 }
             };
