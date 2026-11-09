@@ -24,7 +24,7 @@ fn close_backend(
     drop(data);
     drop(errors);
     assert!(!retirement.advance().unwrap());
-    std::thread::spawn(move || {
+    let mut retirement = std::thread::spawn(move || {
         let mut backend = Some(());
         let mut pending = false;
         let mut disposed = false;
@@ -40,7 +40,21 @@ fn close_backend(
         retirement
     })
     .join()
-    .unwrap()
+    .unwrap();
+    finish_source_carrier_return(&mut retirement);
+    retirement
+}
+
+// Backend disposal may leave an exact endpoint in NativeRetirement when Root
+// Work is busy. Keep polling that same owner before waiting for source recovery;
+// this is not a claim that graph cleanup or worker retirement has completed.
+fn finish_source_carrier_return(retirement: &mut NativeRetirement) {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !retirement.test_native_source_carriers_returned() {
+        retirement.advance().unwrap();
+        assert!(Instant::now() < deadline, "native source carrier return");
+        std::thread::yield_now();
+    }
 }
 
 struct Fixture {

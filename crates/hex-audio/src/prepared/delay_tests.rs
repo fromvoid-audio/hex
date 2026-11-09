@@ -97,6 +97,304 @@ fn editor_with_delay() -> (Editor, hex_project::TrackId, hex_project::DeviceId) 
 }
 
 #[test]
+fn fenced_live_retained_receiver_restart_installs_at_current_cursor_without_allocations() {
+    let (mut editor, receiver, _) = editor_with_delay();
+    let source = editor
+        .project()
+        .track(receiver)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let Created::Track(peer) = editor
+        .execute(Command::AddMidiTrack {
+            name: "peer".into(),
+        })
+        .unwrap()
+    else {
+        panic!("peer")
+    };
+    editor
+        .execute(Command::BindTrackSource {
+            track: peer,
+            source: Some(source),
+        })
+        .unwrap();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track: peer,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 64,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let ordinary = editor.project().clone();
+    let mut snapshot = ordinary.snapshot();
+    snapshot.retained_source_paths.push(receiver.value());
+    let retained = Project::from_snapshot(snapshot).unwrap();
+    for (from, to) in [(&ordinary, &retained), (&retained, &ordinary)] {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let revision = control
+            .publish_with_policy_and_context_generation(
+                graph(from),
+                PublicationPolicy::InstallFreshRuntime,
+                7,
+            )
+            .unwrap();
+        let mut output = [[0.0; 2]; 127];
+        block(&mut callback, &mut output);
+        control.command(PlaybackCommand::Play).unwrap();
+        let mut old_audible = false;
+        for _ in 0..8 {
+            block(&mut callback, &mut output);
+            old_audible |= output.iter().flatten().any(|sample| sample.abs() > 1e-6);
+        }
+        assert!(
+            old_audible,
+            "the predecessor must have active delay history"
+        );
+        let mut unfenced = graph(to);
+        assert!(unfenced.request_live_restart());
+        let refused = control
+            .publish_with_policy_and_context_generation(
+                unfenced,
+                PublicationPolicy::InheritRuntime,
+                7,
+            )
+            .unwrap();
+        block(&mut callback, &mut output);
+        assert_ne!(refused, revision);
+        assert_eq!(control.status.applied_revision.load(Acquire), revision);
+        assert!(control.status.playing.load(Acquire));
+        control.reclaim();
+        let gate = control
+            .request_live_arrangement_edit_fence(7, revision)
+            .unwrap();
+        block(&mut callback, &mut output);
+        assert_eq!(control.arrangement_edit_playing(gate), Some(true));
+        let mut next = graph(to);
+        assert!(next.request_live_restart());
+        let installed = control
+            .publish_with_policy_and_context_generation(
+                next,
+                PublicationPolicy::InheritUnderArrangement(gate),
+                7,
+            )
+            .unwrap();
+        let before = control.status.position.load(Acquire);
+        block(&mut callback, &mut output);
+        assert_eq!(control.status.applied_revision.load(Acquire), installed);
+        assert_eq!(control.status.position.load(Acquire), before + 127);
+        assert!(control.status.playing.load(Acquire));
+        assert_eq!(
+            output, [[0.0; 2]; 127],
+            "old delay history must not be inherited"
+        );
+        control.release_stopped_edit_fence(gate);
+        let mut peer_audible = false;
+        for _ in 0..8 {
+            block(&mut callback, &mut output);
+            peer_audible |= output.iter().flatten().any(|sample| sample.abs() > 1e-6);
+        }
+        assert!(
+            peer_audible,
+            "the linked peer must resume through the fresh source"
+        );
+        control.stop();
+        block(&mut callback, &mut output);
+        control.request_shutdown();
+        block(&mut callback, &mut output);
+        control.reclaim();
+
+        // A priority Stop that races the ready live fence remains effective.
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let revision = control
+            .publish_with_policy_and_context_generation(
+                graph(from),
+                PublicationPolicy::InstallFreshRuntime,
+                7,
+            )
+            .unwrap();
+        block(&mut callback, &mut output);
+        control.command(PlaybackCommand::Play).unwrap();
+        block(&mut callback, &mut output);
+        let stale = control
+            .request_live_arrangement_edit_fence(7, revision)
+            .unwrap();
+        block(&mut callback, &mut output);
+        control.release_stopped_edit_fence(stale);
+        let mut refused = graph(to);
+        assert!(refused.request_live_restart());
+        assert!(
+            control
+                .publish_with_policy_and_context_generation(
+                    refused,
+                    PublicationPolicy::InheritUnderArrangement(stale),
+                    7,
+                )
+                .is_err()
+        );
+        assert_eq!(control.status.applied_revision.load(Acquire), revision);
+        assert!(control.status.playing.load(Acquire));
+        let cancelled = control
+            .request_live_arrangement_edit_fence(7, revision)
+            .unwrap();
+        block(&mut callback, &mut output);
+        let mut pending = graph(to);
+        assert!(pending.request_live_restart());
+        let cancelled_revision = control
+            .publish_with_policy_and_context_generation(
+                pending,
+                PublicationPolicy::InheritUnderArrangement(cancelled),
+                7,
+            )
+            .unwrap();
+        control.release_stopped_edit_fence(cancelled);
+        block(&mut callback, &mut output);
+        assert_ne!(cancelled_revision, revision);
+        assert_eq!(control.status.applied_revision.load(Acquire), revision);
+        assert!(control.status.playing.load(Acquire));
+        control.reclaim();
+        let gate = control
+            .request_live_arrangement_edit_fence(7, revision)
+            .unwrap();
+        block(&mut callback, &mut output);
+        let mut next = graph(to);
+        assert!(next.request_live_restart());
+        let installed = control
+            .publish_with_policy_and_context_generation(
+                next,
+                PublicationPolicy::InheritUnderArrangement(gate),
+                7,
+            )
+            .unwrap();
+        control.stop();
+        block(&mut callback, &mut output);
+        assert_eq!(control.status.applied_revision.load(Acquire), installed);
+        assert!(!control.status.playing.load(Acquire));
+        assert_eq!(control.status.position.load(Acquire), 0);
+        control.release_stopped_edit_fence(gate);
+        control.request_shutdown();
+        block(&mut callback, &mut output);
+        control.reclaim();
+
+        // A stopped candidate installs fresh under the stopped fence at its
+        // captured cursor, without inheriting the old source history.
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let mut old = graph(from);
+        old.apply(PlaybackCommand::Seek(1234));
+        let revision = control
+            .publish_with_policy_and_context_generation(
+                old,
+                PublicationPolicy::InstallFreshRuntime,
+                7,
+            )
+            .unwrap();
+        block(&mut callback, &mut output);
+        let gate = control.request_arrangement_edit_fence(7, revision).unwrap();
+        block(&mut callback, &mut output);
+        assert_eq!(control.arrangement_edit_position(gate), Some(1234));
+        let mut next = graph(to);
+        next.apply(PlaybackCommand::Seek(1234));
+        let installed = control
+            .publish_with_policy_and_context_generation(
+                next,
+                PublicationPolicy::InstallUnderStoppedArrangement(gate),
+                7,
+            )
+            .unwrap();
+        block(&mut callback, &mut output);
+        assert_eq!(control.status.applied_revision.load(Acquire), installed);
+        assert_eq!(control.status.position.load(Acquire), 1234);
+        assert!(!control.status.playing.load(Acquire));
+        control.release_stopped_edit_fence(gate);
+        control.request_shutdown();
+        block(&mut callback, &mut output);
+        control.reclaim();
+    }
+}
+
+#[test]
+fn retained_receiver_reopened_from_storage_renders_peer_without_callback_allocations() {
+    let (mut editor, receiver, _) = editor_with_delay();
+    let source = editor
+        .project()
+        .track(receiver)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let Created::Track(peer) = editor
+        .execute(Command::AddMidiTrack {
+            name: "peer".into(),
+        })
+        .unwrap()
+    else {
+        panic!("peer")
+    };
+    editor
+        .execute(Command::BindTrackSource {
+            track: peer,
+            source: Some(source),
+        })
+        .unwrap();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track: peer,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 64,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let mut snapshot = editor.project().snapshot();
+    snapshot.retained_source_paths.push(receiver.value());
+    let retained = Project::from_snapshot(snapshot).unwrap();
+    let bytes = hex_storage::encode(&retained).unwrap();
+    let reopened = hex_storage::decode(&bytes).unwrap();
+    assert_eq!(reopened.snapshot(), retained.snapshot());
+    let (mut control, mut callback) = channel(48_000).unwrap();
+    control.publish(graph(&reopened)).unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    let mut output = [[0.0; 2]; 127];
+    let mut audible = false;
+    for _ in 0..12 {
+        block(&mut callback, &mut output);
+        audible |= output.iter().flatten().any(|sample| sample.abs() > 1e-6);
+    }
+    assert!(
+        audible,
+        "the peer remains audible through the retained source"
+    );
+    control.stop();
+    block(&mut callback, &mut output);
+    control.request_shutdown();
+    block(&mut callback, &mut output);
+    control.reclaim();
+}
+
+#[test]
 fn play_from_chases_vector_with_fresh_delay_without_callback_allocations() {
     let (mut editor, track, _) = editor_with_delay();
     let device = editor
@@ -139,7 +437,8 @@ fn play_from_chases_vector_with_fresh_delay_without_callback_allocations() {
         control.command(PlaybackCommand::Pause).unwrap();
         let paused = control.status.position.load(Acquire);
         block(&mut callback, &mut output);
-        assert_eq!(control.status.position.load(Acquire), paused);
+        // The 128-frame queued Pause fade is still rendering (#4151).
+        assert_eq!(control.status.position.load(Acquire), paused + 127);
         // Pause releases clip gates while the same source and its effect tails
         // remain available to live input. Stop below still resets to silence.
         assert!(output.iter().flatten().all(|sample| sample.is_finite()));
@@ -315,6 +614,7 @@ fn track_mix_edits_preserve_delay_history_under_new_gain_and_balance() {
         block(&mut reference, &mut expected);
     }
     assert_eq!(output, expected);
+    let mut current_gain = [1.0_f32; 2];
     for (gain, balance) in [(0.5, 0.0), (0.25, -1.0), (0.75, 1.0), (1.0, 0.0)] {
         editor.execute(Command::Gain { track, gain }).unwrap();
         editor.execute(Command::Balance { track, balance }).unwrap();
@@ -324,8 +624,12 @@ fn track_mix_edits_preserve_delay_history_under_new_gain_and_balance() {
         assert_eq!(control.status.applied_revision.load(Acquire), revision);
         let left = gain * if balance > 0.0 { 1.0 - balance } else { 1.0 };
         let right = gain * if balance < 0.0 { 1.0 + balance } else { 1.0 };
-        for (actual, source) in output.iter().zip(&expected) {
-            assert_eq!(*actual, [source[0] * left, source[1] * right]);
+        for (index, (actual, source)) in output.iter().zip(&expected).enumerate() {
+            let remaining = (240 - index) as f32;
+            for (channel, target) in [left, right].into_iter().enumerate() {
+                current_gain[channel] += (target - current_gain[channel]) / remaining;
+                assert!((actual[channel] - source[channel] * current_gain[channel]).abs() < 1e-6);
+            }
         }
         control.reclaim();
     }

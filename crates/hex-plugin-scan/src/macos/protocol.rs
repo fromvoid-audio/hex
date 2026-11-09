@@ -3,6 +3,8 @@ use super::identity::{Bundle, Executable, MAX_PATH_BYTES};
 use super::macho::Image;
 use crate::{Decoder, Discovery, MAX_PACKET, decode_packet_for_platform};
 
+/// Explicit interactive scanner mode. The supervisor channel must stay open.
+pub const WAIT_FOR_PLUGIN_ARG: &str = "--wait-for-plugin";
 pub const REQUEST: &[u8; 8] = b"HXMACRQ1";
 pub const PREFLIGHT: &[u8; 8] = b"HXMACPF1";
 pub const ADMIT: &[u8; 8] = b"HXMACAK1";

@@ -60,16 +60,27 @@ impl EditorView {
             return;
         }
         self.arrangement_device_preview = None;
-        // Existing-device moves retain their rail/card contract.
-        if !matches!(drag.source, NativeDeviceDragSource::Browser { .. })
-            || !self.native_device_drag_is_current(drag)
-            || self.mode != EditorMode::Arrangement
-        {
+        // Existing-device moves retain their rail/card contract. Plugin
+        // effects can target a track, while creating a track requires a
+        // separate atomic plugin-preparation contract.
+        let plugin_effect = match &drag.source {
+            NativeDeviceDragSource::Browser { .. } => false,
+            NativeDeviceDragSource::PluginEffect(selection)
+                if selection.role == hex_plugin_catalog::PluginRole::Effect =>
+            {
+                true
+            }
+            _ => return,
+        };
+        if !self.native_device_drag_is_current(drag) || self.mode != EditorMode::Arrangement {
             return;
         }
         let Some(target) = self.painted_arrangement_drop_target(x, y) else {
             return;
         };
+        if plugin_effect && matches!(target, ArrangementDropTarget::NewTrack { .. }) {
+            return;
+        }
         let destination = match target {
             ArrangementDropTarget::NewTrack { before_track, .. } => {
                 ArrangementDeviceDestination::NewTrack { before_track }
@@ -108,6 +119,13 @@ impl EditorView {
             });
         let captured = self.arrangement_device_preview;
         let pointer = window.mouse_position();
+        let unsupported_new_track = owns
+            && self.native_device_drag_is_current(drag)
+            && matches!(drag.source, NativeDeviceDragSource::PluginEffect(_))
+            && matches!(
+                self.painted_arrangement_drop_target(f32::from(pointer.x), f32::from(pointer.y)),
+                Some(ArrangementDropTarget::NewTrack { .. })
+            );
         self.update_arrangement_device_drop(drag, f32::from(pointer.x), f32::from(pointer.y));
         let current = self.arrangement_device_preview;
         let valid = owns
@@ -125,25 +143,50 @@ impl EditorView {
             && self.device_gesture_barriers.is_empty()
             && self.device_gesture.snapshot().is_none()
             && !self.device_panel.has_pending_draft(cx);
-        let source = drag.source;
+        let source = &drag.source;
         self.clear_native_device_drag(drag);
         cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
-        if let (true, Some(preview), NativeDeviceDragSource::Browser { class, type_id }) =
+        if let (true, Some(preview), NativeDeviceDragSource::PluginEffect(selection)) =
+            (valid, captured, source)
+            && let ArrangementDeviceDestination::ExistingTrack { track, .. } = preview.destination
+        {
+            self.insert_plugin_effect(
+                selection,
+                hex_session::service::PluginEffectDestination::Track(track),
+                None,
+                cx,
+            );
+        } else if let (true, Some(preview), NativeDeviceDragSource::Browser { class, type_id }) =
             (valid, captured, source)
         {
+            let gain = match self.device_track_gain(preview.destination) {
+                Ok(gain) => gain,
+                Err(error) => {
+                    self.error = Some(error.into());
+                    cx.notify();
+                    return;
+                }
+            };
             if self.enqueue_device_barrier(Request::DropBrowserDeviceOnArrangement {
                 project_generation: drag.project_generation,
                 revision: drag.revision,
-                class,
-                type_id,
+                class: *class,
+                type_id: *type_id,
                 destination: preview.destination,
+                new_track_gain: gain,
             }) {
                 self.error = None;
                 self.status = "adding device to arrangement".into();
             }
         } else {
-            self.error =
-                Some("device drop canceled · target or project changed, or editing is busy".into());
+            self.error = Some(
+                if unsupported_new_track {
+                    "creating a track with a vst3 is not supported yet"
+                } else {
+                    "device drop canceled · target or project changed, or editing is busy"
+                }
+                .into(),
+            );
         }
         cx.notify();
     }

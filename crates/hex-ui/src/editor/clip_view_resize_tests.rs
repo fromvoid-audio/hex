@@ -451,3 +451,68 @@ fn clip_detail_small_window_returns_scroll_useful_piano_instead_of_crushing_trac
             >= px(44.0)
     );
 }
+
+#[gpui::test]
+fn editor_picker_fits_bottom_right_and_closed_pane_has_no_header(cx: &mut TestAppContext) {
+    let (project, track, _, clip) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    for mode in [EditorMode::Arrangement, EditorMode::Session] {
+        for (width, height) in [(880.0, 540.0), (1280.0, 800.0)] {
+            visual.simulate_resize(gpui::size(px(width), px(height)));
+            editor.update(&mut visual, |view, cx| {
+                view.mode = mode;
+                view.selected_track = Some(track);
+                view.selected_clip = Some(clip);
+                view.device_panel_active = false;
+                view.clip_view_open = false;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            let status = visual.debug_bounds("editor-status-bar").unwrap();
+            let picker = visual.debug_bounds("clip-view-toggle-row").unwrap();
+            assert!(picker.top() >= status.top() && picker.bottom() <= status.bottom());
+            assert!(
+                picker.right() <= status.right(),
+                "picker={picker:?}, status={status:?}"
+            );
+            assert!(picker.left() > status.center().x);
+            assert_eq!(
+                visual.debug_bounds("clip-view").unwrap().size.height,
+                px(0.0)
+            );
+            for selector in ["device-detail-tab", "clip-detail-tab"] {
+                let target = visual.debug_bounds(selector).unwrap().center();
+                visual.simulate_click(target, Modifiers::default());
+                editor.read_with(&visual, |view, _| {
+                    assert!(view.clip_view_open);
+                    assert_eq!(view.device_panel_active, selector == "device-detail-tab");
+                });
+                let frame = visual.debug_bounds("workspace-editor-panel").unwrap();
+                let main = visual.debug_bounds("workspace-main-panel").unwrap();
+                let content = visual.debug_bounds("clip-view").unwrap();
+                assert_eq!(frame.top(), main.bottom() + px(3.0));
+                assert_eq!(content.top(), frame.top() + px(4.0));
+                assert_eq!(content.left(), frame.left() + px(4.0));
+                assert_eq!(content.right(), frame.right() - px(4.0));
+                assert_eq!(content.bottom(), frame.bottom() - px(4.0));
+                let scale = visual.update(|window, _| window.scale_factor());
+                let (corners, _) = visual
+                    .rendered_surface_geometry("workspace-editor-panel")
+                    .unwrap();
+                assert_eq!(corners.top_left, px(4.0).scale(scale));
+                assert_eq!(corners.bottom_right, px(4.0).scale(scale));
+                let toggle = visual.debug_bounds("clip-view-toggle").unwrap().center();
+                visual.simulate_click(toggle, Modifiers::default());
+                assert_eq!(
+                    visual.debug_bounds("clip-view").unwrap().size.height,
+                    px(0.0)
+                );
+            }
+            editor.read_with(&visual, |view, _| {
+                assert!(view.last_enqueued_edit.is_none());
+                assert!(view.pending_requests.is_empty());
+            });
+        }
+    }
+}

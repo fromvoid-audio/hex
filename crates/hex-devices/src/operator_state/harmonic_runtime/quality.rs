@@ -18,6 +18,7 @@ impl Default for Decimator {
     }
 }
 impl Decimator {
+    #[inline(always)]
     pub fn sample(&mut self, input: f32) -> f32 {
         if input == 0.0 {
             self.silent = self.silent.saturating_add(1)

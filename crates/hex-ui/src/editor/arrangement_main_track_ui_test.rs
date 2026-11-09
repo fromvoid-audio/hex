@@ -62,14 +62,19 @@ pub(super) fn completed_event(state: &ViewState) -> Event {
         sampler_load_complete: None,
         sampler_edit_complete: None,
         plugin_effect_complete: Vec::new(),
+        plugin_parameter_observation: false,
+        plugin_parameters: None,
         computer_keyboard_complete: None,
         midi_take_complete: None,
+        device_automation_take_complete: None,
         tuning_audition_complete: None,
         live_expression_complete: None,
         bounce_complete: None,
         audio_batch_complete: None,
         audio_batch_failure: None,
+        import_truncation: None,
         save_complete: false,
+        save_correlation: None,
         document_format_upgrade_required: false,
         save_confirmation_required: false,
         open_complete: false,
@@ -117,7 +122,7 @@ fn return_section_is_bounded_and_pinned_above_main_at_minimum_size(cx: &mut Test
         .debug_bounds("arrangement-content")
         .expect("regular tracks remain independently scrollable");
     let detail = visual
-        .debug_bounds("clip-view-toggle-row")
+        .debug_bounds("clip-view")
         .expect("detail pane remains available");
     assert_eq!(returns.size.height, px(88.0));
     assert!(
@@ -221,7 +226,7 @@ fn main_track_stays_pinned_below_regular_tracks_at_minimum_size(cx: &mut TestApp
             .debug_bounds("arrangement-content")
             .expect("scrollable regular track and append region");
         let detail = visual
-            .debug_bounds("clip-view-toggle-row")
+            .debug_bounds("clip-view")
             .expect("shared detail panel remains below arrangement");
         assert_eq!(row.size.height, px(super::tracks::TRACK_ROW_HEIGHT));
         assert!(row.origin.y >= content.origin.y + content.size.height - px(1.0));
@@ -247,23 +252,20 @@ fn main_track_stays_pinned_below_regular_tracks_at_minimum_size(cx: &mut TestApp
 }
 
 #[gpui::test]
-fn main_gain_control_dispatches_canonical_master_command(cx: &mut TestAppContext) {
+fn main_gain_slider_composes_with_lane_selection_in_both_views(cx: &mut TestAppContext) {
     let (handle, editor) = editor_window(cx, project_with_tracks(1), Arc::default());
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    let button = visual
-        .debug_bounds("main-gain-up")
-        .expect("main gain control");
-    let button_point = point(button.center().x, button.center().y);
-    visual.simulate_mouse_down(button_point, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(button_point, MouseButton::Left, Modifiers::default());
-    editor.read_with(cx, |view, _| {
-        assert!(matches!(
-            view.last_enqueued_edit.as_ref(),
-            Some(Command::MasterGainBy { amount }) if (*amount - 0.1).abs() < f32::EPSILON
-        ));
-    });
-
+    let slider = visual
+        .debug_bounds("main-volume-slider")
+        .expect("shared Main gain slider");
+    assert!(visual.debug_bounds("main-gain-up").is_none());
+    assert!(
+        visual
+            .debug_bounds("main-track-controls")
+            .unwrap()
+            .contains(&slider.center())
+    );
     let lane = visual
         .debug_bounds("main-track-lane")
         .expect("main timeline lane");
@@ -283,17 +285,10 @@ fn main_gain_control_dispatches_canonical_master_command(cx: &mut TestAppContext
     });
     visual.run_until_parked();
     let session_gain = visual
-        .debug_bounds("main-gain-up")
-        .expect("session keeps its master controls");
-    let session_click = point(session_gain.center().x, session_gain.center().y);
-    visual.simulate_mouse_down(session_click, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(session_click, MouseButton::Left, Modifiers::default());
-    editor.read_with(cx, |view, _| {
-        assert!(matches!(
-            view.last_enqueued_edit.as_ref(),
-            Some(Command::MasterGainBy { amount }) if (*amount - 0.1).abs() < f32::EPSILON
-        ));
-    });
+        .debug_bounds("main-volume-slider")
+        .expect("Console shares the Main slider");
+    assert_eq!(session_gain.size.height, slider.size.height);
+    assert!(visual.debug_bounds("main-gain-up").is_none());
 }
 
 #[gpui::test]
@@ -637,7 +632,7 @@ fn return_headers_share_track_geometry_without_redundant_section_chrome(cx: &mut
                 assert_eq!(header.size, ordinary.size);
                 assert_eq!(header.right(), ordinary.right());
                 if count == 1 {
-                    // The minimum window correctly clamps headers to 176px.
+                    // The minimum window clamps headers to the shared minimum.
                     // Give the shared width owner room for a real resize.
                     visual.simulate_resize(size(px(1280.0), px(800.0)));
                     visual.run_until_parked();
@@ -678,14 +673,9 @@ fn return_headers_share_track_geometry_without_redundant_section_chrome(cx: &mut
                         format!("return-track-header-{}", id.value()).into_boxed_str(),
                     ))
                     .unwrap();
-                let gain_prefix = if mode == hex_session::DocumentAudioMode::Resident {
-                    "return-volume"
-                } else {
-                    "return-gain-up"
-                };
                 for prefix in [
                     "return-track-focus",
-                    gain_prefix,
+                    "return-volume",
                     "return-mute",
                     "return-remove",
                 ] {
@@ -927,10 +917,40 @@ fn clips_and_main_sections_share_grid_endpoints_through_fractional_pan_and_resiz
                     bounds.right()
                 );
                 if bounds.size.width > px(0.0) {
-                    assert!(
-                        visual.rendered_surface_geometry(selector).is_some(),
-                        "actual painted surface: {selector}, bounds={bounds:?}, offset={offset}, tail={tail}"
-                    );
+                    if selector == "arrangement-section-0" {
+                        // Section fill is a shaped canvas, not one full rectangular
+                        // scene quad. Its upper piece must retain the same endpoint.
+                        let cut = crate::section_surface::cut(
+                            f32::from(bounds.size.width),
+                            f32::from(bounds.size.height),
+                            crate::section_surface::CHAMFER,
+                        );
+                        let projected = bounds.scale(scale);
+                        assert!(
+                            visual
+                                .rendered_filled_quads(selector)
+                                .iter()
+                                .any(|(paint, _)| (f64::from(paint.left())
+                                    - f64::from(projected.left()))
+                                .abs()
+                                    < 0.1
+                                    && (f64::from(paint.right()) - f64::from(projected.right()))
+                                        .abs()
+                                        < 0.1
+                                    && (f64::from(paint.top()) - f64::from(projected.top())).abs()
+                                        < 0.1
+                                    && (f64::from(paint.size.height)
+                                        - f64::from((bounds.size.height - px(cut)).scale(scale)))
+                                    .abs()
+                                        < 0.1),
+                            "actual shaped section: {bounds:?}, offset={offset}, tail={tail}"
+                        );
+                    } else {
+                        assert!(
+                            visual.rendered_surface_geometry(selector).is_some(),
+                            "actual painted surface: {selector}, bounds={bounds:?}, offset={offset}, tail={tail}"
+                        );
+                    }
                 }
             }
             for selector in [

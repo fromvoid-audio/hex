@@ -1247,8 +1247,6 @@ dependencies = [
 [[package]]
 name = "cpal"
 version = "0.17.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8942da362c0f0d895d7cac616263f2f9424edc5687364dfd1d25ef7eba506d7"
 dependencies = [
  "alsa",
  "coreaudio-rs",
@@ -2589,6 +2587,7 @@ dependencies = [
 name = "hex-clap-scan"
 version = "0.1.0"
 dependencies = [
+ "hex-scan-supervisor",
  "rustix 1.1.5",
  "serde",
  "serde_json",
@@ -2612,6 +2611,7 @@ name = "hex-desktop"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "fs2",
  "gpui",
  "hex-audio",
  "hex-diagnostics",
@@ -2629,6 +2629,9 @@ dependencies = [
  "hex-stream",
  "hex-tuning",
  "hex-ui",
+ "nix 0.31.3",
+ "serde_json",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -2744,6 +2747,7 @@ dependencies = [
 name = "hex-plugin-scan"
 version = "0.1.0"
 dependencies = [
+ "hex-scan-supervisor",
  "rustix 1.1.5",
  "serde",
  "serde_json",
@@ -2771,7 +2775,28 @@ name = "hex-project"
 version = "0.1.0"
 dependencies = [
  "hex-lattice-contract",
+ "hex-plugin-state",
  "hex-tuning",
+]
+
+[[package]]
+name = "hex-sandbox"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "hex-devices",
+ "hex-preferences",
+ "hex-project",
+ "hex-widgets",
+]
+
+[[package]]
+name = "hex-scan-supervisor"
+version = "0.1.0"
+dependencies = [
+ "rustix 1.1.5",
+ "serde",
+ "signal-hook",
 ]
 
 [[package]]
@@ -2799,9 +2824,10 @@ dependencies = [
  "hex-project",
  "hex-tuning",
  "libc",
+ "rustix 1.1.5",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -2825,8 +2851,10 @@ version = "0.1.0"
 name = "hex-ui"
 version = "0.1.0"
 dependencies = [
+ "fastrand 2.5.0",
  "gpui",
  "hex-audio",
+ "hex-devices",
  "hex-diagnostics",
  "hex-engine",
  "hex-lattice-contract",
@@ -2838,9 +2866,13 @@ dependencies = [
  "hex-preferences",
  "hex-project",
  "hex-session",
+ "hex-storage",
  "hex-tuning",
  "hex-widgets",
+ "image",
+ "resvg",
  "serde_json",
+ "usvg",
 ]
 
 [[package]]

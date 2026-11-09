@@ -40,6 +40,7 @@ impl Event {
     fn decode(self) -> Result<AudioEvent, StorageError> {
         Ok(AudioEvent {
             active: self.active,
+            gain: hex_project::ClipGain::UNITY,
             source: self.source,
             id: self.id,
             start: self.start,
@@ -291,7 +292,7 @@ fn attach(
                 "invalid nested audio source document",
             ));
         }
-        let isolated = super::event_activation::decode(&serde_json::to_vec(&child.document)?)?;
+        let isolated = super::event_activation::decode_value(child.document.clone())?;
         let clips: Vec<_> = isolated
             .tracks()
             .iter()
@@ -339,8 +340,10 @@ fn attach(
 }
 
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
-    let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
-    let mut value: Value = serde_json::from_slice(bytes)?;
+    decode_value(super::audio_events::parse_unique(bytes)?)
+}
+/// Decode an envelope parsed once by [`super::audio_events::parse_unique`].
+pub(crate) fn decode_value(mut value: Value) -> Result<Project, StorageError> {
     if value.get("version").and_then(Value::as_u64) != Some(58) {
         return Err(StorageError::Invalid("invalid nested audio schema"));
     }
@@ -364,7 +367,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         }
     }
     value["version"] = 57.into();
-    let project = super::event_activation::decode(&serde_json::to_vec(&value)?)?;
+    let project = super::event_activation::decode_value(value)?;
     let mut snapshot = project.snapshot();
     let mut count = 0;
     for track in &mut snapshot.tracks {

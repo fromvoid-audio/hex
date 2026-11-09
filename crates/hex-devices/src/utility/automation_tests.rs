@@ -310,6 +310,7 @@ fn scoped_gain_only_filters_skip_safely_and_enableable_lanes_keep_dormant_histor
     )
     .unwrap();
     let scoped = hex_lattice::PreparedRuntimeInstance {
+        modulation: None,
         automation: unadmitted_program,
         meter: Default::default(),
         owner: hex_lattice::ProcessorChainOwner::Track(1),
@@ -531,4 +532,225 @@ fn failed_derived_configuration_keeps_controls_cache_atomic_for_same_value_retry
         matrix,
         UTILITY_DEFINITION.prepare_effect_matrix(&expected).unwrap()
     );
+}
+
+#[test]
+fn bypass_advances_the_same_filter_and_automated_control_history() {
+    let base = UTILITY_DEFINITION.default_state().unwrap();
+    let factory = UtilityDefinition::prepare_owned_automated_filter(&base, 48_000).unwrap();
+    let values = |muted| {
+        Values::new(vec![
+            (parameter::MUTE, ParameterValue::Bool(muted)),
+            (parameter::DC_REMOVE, ParameterValue::Bool(true)),
+            (parameter::BASS_MONO, ParameterValue::Bool(true)),
+        ])
+    };
+    let unmuted = values(false);
+    for muted in [false, true] {
+        let values = values(muted);
+        let mut active = factory.create_runtime();
+        let mut bypassed = factory.create_runtime();
+        let input = signal();
+        // Seed an audible residual before the automation can mute the output.
+        for runtime in [&mut active, &mut bypassed] {
+            let mut warmup = input.clone();
+            runtime
+                .process_block_with_automation(
+                    &mut warmup,
+                    None,
+                    &unmuted,
+                    &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                )
+                .unwrap();
+            assert!(!runtime.is_quiescent());
+        }
+        let mut wet = input.clone();
+        let mut dry = input.clone();
+        active
+            .process_block_with_automation(
+                &mut wet,
+                None,
+                &values,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+        bypassed
+            .process_bypassed_block_with_automation(
+                &mut dry,
+                None,
+                &values,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+        assert_eq!(dry, input);
+        let mut after_active = signal();
+        let mut after_bypass = after_active.clone();
+        active
+            .process_block_with_automation(
+                &mut after_active,
+                None,
+                &unmuted,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+        bypassed
+            .process_block_with_automation(
+                &mut after_bypass,
+                None,
+                &unmuted,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+        assert_eq!(after_bypass, after_active);
+    }
+}
+
+#[test]
+fn shared_lfo_drives_two_utility_controls_on_each_sample() {
+    use hex_lattice::{
+        ModulationRoute, ModulationSourceId, ModulationTarget, PreparedLfoSource,
+        PreparedModulation,
+    };
+    let base = UTILITY_DEFINITION.default_state().unwrap();
+    let factory = UtilityDefinition::prepare_owned_automated_filter(&base, 48_000).unwrap();
+    let ids = [parameter::GAIN, parameter::BALANCE];
+    let targets = ids.map(|id| ModulationTarget {
+        descriptor: *DESCRIPTORS.iter().find(|d| d.id == id).unwrap(),
+        semantics: factory.parameter_modulation_semantics(id).unwrap(),
+        base: UTILITY_DEFINITION.read_parameter(&base, id).unwrap(),
+    });
+    let program = PreparedModulation::new(
+        &targets,
+        &[
+            ModulationRoute {
+                source: 0,
+                target: ids[0],
+                amount: 0.01,
+                range: [-1.0, 1.0],
+            },
+            ModulationRoute {
+                source: 0,
+                target: ids[1],
+                amount: 0.2,
+                range: [-1.0, 1.0],
+            },
+        ],
+        1,
+    )
+    .unwrap();
+    let source_id = ModulationSourceId::new(1).unwrap();
+    let source = PreparedLfoSource::tempo(source_id, 48_000.0, 120.0, 1.0 / 6_000.0, 0.0).unwrap();
+
+    let declaration = hex_lattice::PreparedModulationState::new(vec![source], program, 2).unwrap();
+    let instance = hex_lattice::PreparedRuntimeInstance {
+        modulation: Some(declaration),
+        automation: Default::default(),
+        meter: Default::default(),
+        owner: hex_lattice::ProcessorChainOwner::Track(1),
+        device_id: 2,
+        device_type: UTILITY_TYPE_ID,
+        matrix: StereoMatrix::identity(),
+        bypassed: false,
+        sample_rate: 48_000,
+        configuration: Some(std::sync::Arc::new(base.clone())),
+        definition: Some(hex_lattice::PreparedProcessorFactory::Legacy(
+            std::sync::Arc::new(factory),
+        )),
+    };
+    let mut wrong_rate = instance.clone();
+    wrong_rate.sample_rate = 44_100;
+    assert!(matches!(
+        hex_lattice::NativeRuntimeChain::new_prepared(vec![wrong_rate]),
+        Err(DeviceContractError::InvalidParameterValue)
+    ));
+    let mut undeclared = instance.clone();
+    let mut invalid_targets = targets;
+    invalid_targets[0].semantics.modulation =
+        hex_lattice_contract::ParameterModulation::Unsupported;
+    undeclared.modulation = Some(
+        hex_lattice::PreparedModulationState::new(
+            vec![source],
+            PreparedModulation::new(&invalid_targets, &[], 1).unwrap(),
+            2,
+        )
+        .unwrap(),
+    );
+    assert!(matches!(
+        hex_lattice::NativeRuntimeChain::new_prepared(vec![undeclared]),
+        Err(DeviceContractError::UnsupportedProcessingClass)
+    ));
+    let mut chain = hex_lattice::NativeRuntimeChain::new_prepared(vec![instance.clone()]).unwrap();
+    chain.begin_block();
+    let input = [[0.25, -0.1]; 5];
+    let mut output = input;
+    chain.process_block(&mut output).unwrap();
+    for (index, lfo) in [0.0, 1.0, 0.0, -1.0, 0.0].into_iter().enumerate() {
+        let gain = (1.0 + lfo * 0.01 * MAX_UTILITY_GAIN).clamp(0.0, MAX_UTILITY_GAIN);
+        let balance = lfo * 0.4;
+        let state = UTILITY_DEFINITION
+            .patch_parameter(&base, ids[0], ParameterValue::Float(gain))
+            .unwrap();
+        let state = UTILITY_DEFINITION
+            .patch_parameter(&state, ids[1], ParameterValue::Float(balance))
+            .unwrap();
+        let expected = static_render(&state, &input[index..index + 1])[0];
+        for channel in 0..2 {
+            assert!((output[index][channel] - expected[channel]).abs() < 1e-5);
+        }
+    }
+    chain.rollback_block();
+    chain.begin_block();
+    let mut retry = input;
+    chain.process_block(&mut retry).unwrap();
+    assert_eq!(retry, output);
+    chain.commit_block();
+    let mut replacement = hex_lattice::NativeRuntimeChain::new_prepared(vec![instance]).unwrap();
+    replacement.inherit_from(&chain);
+    chain.begin_block();
+    replacement.begin_block();
+    let mut continued = input;
+    let mut inherited = input;
+    chain.process_block(&mut continued).unwrap();
+    replacement.process_block(&mut inherited).unwrap();
+    assert_eq!(continued, inherited);
+    assert_ne!(continued, output);
+    replacement.commit_block();
+    replacement.reset();
+    replacement.begin_block();
+    let mut reset = input;
+    replacement.process_block(&mut reset).unwrap();
+    assert_eq!(reset, output);
+    struct StepTempo;
+    impl hex_lattice::NativeInstrumentClock for StepTempo {
+        fn beat_at_offset(&self, _: usize) -> Option<u64> {
+            None
+        }
+        fn tempo_micro_bpm_at_offset(&self, offset: usize) -> Option<u32> {
+            Some(if offset < 3 { 120_000_000 } else { 60_000_000 })
+        }
+    }
+    replacement.reset();
+    replacement.begin_block();
+    let mut tempo_output = input;
+    replacement
+        .process_range_with_clock(0..1, &mut tempo_output, Some(&StepTempo), Some(&StepTempo))
+        .unwrap();
+    for (index, lfo) in [0.0, 1.0, 0.0, -1.0, -std::f32::consts::FRAC_1_SQRT_2]
+        .into_iter()
+        .enumerate()
+    {
+        let gain = (1.0 + lfo * 0.01 * MAX_UTILITY_GAIN).clamp(0.0, MAX_UTILITY_GAIN);
+        let state = UTILITY_DEFINITION
+            .patch_parameter(&base, ids[0], ParameterValue::Float(gain))
+            .unwrap();
+        let state = UTILITY_DEFINITION
+            .patch_parameter(&state, ids[1], ParameterValue::Float(lfo * 0.4))
+            .unwrap();
+        let expected = static_render(&state, &input[index..index + 1])[0];
+        for channel in 0..2 {
+            assert!((tempo_output[index][channel] - expected[channel]).abs() < 1e-5);
+        }
+    }
+
+    assert_eq!(UTILITY_DEFINITION.default_state().unwrap(), base);
 }

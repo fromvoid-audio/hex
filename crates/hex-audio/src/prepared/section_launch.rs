@@ -27,6 +27,9 @@ impl Callback {
                 || old.playback.session_route_state_generation() != fence.route_state_generation
         }) || self.status.admitted_ticket.load(Acquire)
             != fence.admitted_command_ticket
+            || self.status.last_output_fault_epoch.load(Acquire) != fence.output_fault_epoch
+            || self.status.render_fault.load(Acquire)
+            || self.status.device_fault.load(Acquire)
             || self.status.pending_stop_marker.load(Acquire) != 0;
         let result = if cancelled {
             Err(PlaybackHandoffRejection::FreshRuntimeCancelled)
@@ -95,12 +98,12 @@ impl Callback {
             return Ok(false);
         }
         let (before, after) = output.split_at_mut(prefix);
-        self.render_project(before)?;
+        self.render_project(before, 0)?;
         // Revalidate immediately before the swap, including a cancellation or
         // priority Stop racing the old prefix. Retired owners keep ordinary
         // fixed return-ring custody, including under backpressure.
         self.advance_legacy_publication(Some(after.len()));
-        self.render_project(after)?;
+        self.render_project(after, prefix)?;
         Ok(true)
     }
 }
@@ -192,6 +195,89 @@ mod tests {
             callback.begin_block();
             callback.render(output).unwrap();
         }
+    }
+
+    #[test]
+    fn fault_rejects_waiting_section_instead_of_waiting_on_stopped_clock() {
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let source = source();
+                let (mut control, mut callback) = active(&source, 3_997, true);
+                let fence = control.capture_fresh_runtime_fence().unwrap();
+                let revision = control
+                    .publish_with_policy(
+                        candidate(&source),
+                        PublicationPolicy::InstallSectionWhenReady {
+                            fence,
+                            quantization: LaunchQuantization::EightBars,
+                        },
+                    )
+                    .unwrap();
+                callback.report_render_fault(Some(&Invalid("injected failure")), 3_997);
+                let mut output = [[1.0; 2]; 16];
+                render_checked(&mut callback, &mut output);
+                assert_eq!(output, [[0.0; 2]; 16]);
+                assert_eq!(
+                    control.status.rejected_revision(),
+                    Some((revision, PlaybackHandoffRejection::RuntimeFenceChanged))
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn sample_recording_keeps_both_parts_of_a_section_launch() {
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let source = source();
+                let (mut control, mut callback) = active(&source, 3_997, true);
+                let generation = callback
+                    .active
+                    .as_ref()
+                    .and_then(ActivePublication::current)
+                    .unwrap()
+                    .control_context_generation;
+                let fence = control.capture_fresh_runtime_fence().unwrap();
+                control
+                    .publish_with_policy(
+                        candidate(&source),
+                        PublicationPolicy::InstallSectionWhenReady {
+                            fence,
+                            quantization: LaunchQuantization::Quarter,
+                        },
+                    )
+                    .unwrap();
+                let mut take = control
+                    .sample_recording
+                    .start(generation, &[], true)
+                    .unwrap();
+                assert!(take.ready());
+                let mut output = [[0.0; 2]; 17];
+                render_checked(&mut callback, &mut output);
+                callback.finish_sample_recording(true);
+                let mut seen = false;
+                assert_eq!(
+                    take.drain(|frames, _, pcm| {
+                        assert!(!seen);
+                        assert_eq!(
+                            crate::sample_recording::Reader::source_frames(pcm, frames, 0),
+                            Some(&output[..])
+                        );
+                        seen = true;
+                    }),
+                    None
+                );
+                assert!(seen);
+                assert_eq!(&output[..3], &[[0.125; 2]; 3]);
+                assert_eq!(&output[3..], &[[0.625; 2]; 14]);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]

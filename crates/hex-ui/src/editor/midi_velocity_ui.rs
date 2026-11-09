@@ -87,7 +87,7 @@ impl EditorView {
                 generation: self.project_generation,
                 revision: state.revision,
                 clip,
-                start: self.piano_beat_start.raw(),
+                start: self.piano_beat_start,
                 span: self.piano_beat_span.raw(),
             },
             bounds,
@@ -132,7 +132,7 @@ impl EditorView {
             generation: self.project_generation,
             revision: state.revision,
             clip,
-            start: self.piano_beat_start.raw(),
+            start: self.piano_beat_start,
             span: self.piano_beat_span.raw(),
         };
         if self
@@ -407,8 +407,9 @@ impl EditorView {
                             &hitbox,
                         );
                         if let Some((first, last)) = time_selection {
-                            let first = first.max(key.start);
-                            let last = last.min(key.start.saturating_add(key.span));
+                            let first = i128::from(first).max(key.start);
+                            let last = i128::from(last)
+                                .min(key.start.saturating_add(i128::from(key.span)));
                             if first < last {
                                 let left =
                                     ((first - key.start) as f64 / key.span as f64) as f32 * width;
@@ -419,10 +420,8 @@ impl EditorView {
                                         point(bounds.origin.x + px(left), bounds.origin.y),
                                         size(px(right - left), bounds.size.height),
                                     ),
-                                    gpui::Hsla::from(rgb(theme::color(
-                                        theme::PaletteRole::Secondary,
-                                    )))
-                                    .opacity(theme::TIME_SELECTION_OPACITY),
+                                    gpui::Hsla::from(rgb(theme::time_selection_fill()))
+                                        .opacity(theme::TIME_SELECTION_OPACITY),
                                 ));
                             }
                         }
@@ -564,38 +563,28 @@ impl EditorView {
                                 else {
                                     view.cancel_midi_note_gesture();
                                     view.midi_focus.focus(window);
-                                    if event.modifiers.shift {
-                                        view.cancel_midi_audition();
-                                        view.clear_midi_time_selection();
-                                        if let Some(marquee) = view
-                                            .velocity_marquee_context(captured.bounds)
-                                            .and_then(|context| {
-                                                super::midi_selection::Marquee::begin(
-                                                    context,
-                                                    position,
-                                                    true,
-                                                    &view.midi_selection,
-                                                )
-                                            })
-                                            && view.capture_midi_marquee_pointer(
-                                                &marquee,
-                                                super::midi_marquee::Surface::Velocity(Arc::clone(
-                                                    &down_scene,
-                                                )),
-                                                window,
-                                                cx,
+                                    view.cancel_midi_audition();
+                                    view.clear_midi_time_selection();
+                                    if let Some(marquee) = view
+                                        .velocity_marquee_context(captured.bounds)
+                                        .and_then(|context| {
+                                            super::midi_selection::Marquee::begin(
+                                                context,
+                                                position,
+                                                event.modifiers.shift,
+                                                &view.midi_selection,
                                             )
-                                        {
-                                            view.midi_velocity.install_marquee(marquee);
-                                        }
-                                    } else {
-                                        view.begin_midi_velocity_time_selection(
-                                            captured.bounds,
-                                            f32::from(event.position.x),
-                                            event.modifiers.platform,
+                                        })
+                                        && view.capture_midi_marquee_pointer(
+                                            &marquee,
+                                            super::midi_marquee::Surface::Velocity(Arc::clone(
+                                                &down_scene,
+                                            )),
                                             window,
                                             cx,
-                                        );
+                                        )
+                                    {
+                                        view.midi_velocity.install_marquee(marquee);
                                     }
                                     cx.stop_propagation();
                                     cx.notify();

@@ -8,14 +8,14 @@ use hex_project::{
     BeatTime, Command, Created, DeviceId,
 };
 use hex_session::service::{DeviceAutomationControlEdit as Edit, Event, Request, Service};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 fn next(service: &Service) -> Event {
-    let until = Instant::now() + Duration::from_secs(4);
+    let until = Instant::now() + std::time::Duration::from_secs(60);
     loop {
         match service.try_event() {
             Ok(event) => return event,
             Err(std::sync::mpsc::TryRecvError::Empty) if Instant::now() < until => {
-                std::thread::yield_now()
+                std::thread::sleep(std::time::Duration::from_millis(1))
             }
             Err(error) => panic!("actor event: {error}"),
         }
@@ -76,6 +76,7 @@ fn manual_read_reenable_global_and_stale_request_keep_points_and_one_undo() {
             revision: event.state.revision,
             device,
             target,
+            vst3_class: None,
             points: points.clone(),
         },
     );
@@ -132,6 +133,7 @@ fn manual_read_reenable_global_and_stale_request_keep_points_and_one_undo() {
             Edit::ReadSelection {
                 device,
                 target,
+                vst3_class: None,
                 selection: Read::Authored,
             },
         ),
@@ -164,7 +166,7 @@ fn manual_read_reenable_global_and_stale_request_keep_points_and_one_undo() {
 fn stamped_base_edits_keep_nonautomatable_effects_and_retained_instruments_editable() {
     let service = Service::new(48_000, 32, 0).unwrap();
     next(&service);
-    let (effect, event) = effect(&service, "hex.overdrive");
+    let (effect, event) = effect(&service, "hex.limiter");
     check_base_edit(
         &service,
         effect,

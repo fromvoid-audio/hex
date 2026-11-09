@@ -2,7 +2,7 @@
 use super::*;
 use hex_lattice_contract::NativeDeviceMetadata;
 use hex_project::{Command, Created, Editor};
-fn project() -> (hex_project::Project, hex_project::TrackId) {
+fn project(grouped: bool) -> (hex_project::Project, hex_project::TrackId) {
     let (base, track) = utility_fixture::project();
     let mut snapshot = base.snapshot();
     snapshot.tracks[0].devices[0].state = hex_devices::reverb::REVERB_DEFINITION
@@ -31,6 +31,22 @@ fn project() -> (hex_project::Project, hex_project::TrackId) {
         gain: 0.4,
     })
     .unwrap();
+    if grouped {
+        let Created::Track(group) = edit
+            .execute(Command::GroupTracks {
+                tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group")
+        };
+        edit.execute(Command::Gain {
+            track: group,
+            gain: 0.5,
+        })
+        .unwrap();
+    }
     (edit.project().clone(), track)
 }
 fn owner(
@@ -86,12 +102,22 @@ fn zero_counts(counts: allocation_counter::AllocationInfo) {
 }
 #[test]
 fn actual_native_reverb_track_return_pcm_freeze_tail_moves_and_control_reclamation() {
+    native_reverb_case(false);
+}
+#[test]
+fn grouped_native_reverb_tail_moves_through_group_without_callback_allocation() {
+    native_reverb_case(true);
+}
+fn native_reverb_case(grouped: bool) {
     use hex_lattice_contract::ParameterValue;
     let _serial = serial();
     assert!(hex_engine::audio_storage_constructor_layout_supported());
-    let (a_project, track) = project();
+    let (a_project, track) = project(grouped);
     let mut edit = Editor::new(a_project.clone(), 16).unwrap();
-    let devices: Vec<_> = edit.project().tracks()[0]
+    let devices: Vec<_> = edit
+        .project()
+        .track(track)
+        .unwrap()
         .devices()
         .iter()
         .chain(edit.project().return_tracks()[0].devices())
@@ -214,8 +240,11 @@ fn actual_native_reverb_track_return_pcm_freeze_tail_moves_and_control_reclamati
     control.command(PlaybackCommand::Stop).unwrap();
     zero_counts(allocation_counter::measure(|| {
         data.owner_mut().unwrap().run(|callback, _| {
-            callback.begin_block();
-            callback.render(&mut block).unwrap();
+            // The queued Stop fades over 128 frames before it resets (#4151).
+            for _ in 0..2 {
+                callback.begin_block();
+                callback.render(&mut block).unwrap();
+            }
         })
     }));
     assert_eq!(block, [[0.0; 2]; 127]);

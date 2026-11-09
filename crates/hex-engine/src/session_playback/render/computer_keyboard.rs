@@ -2,6 +2,40 @@
 use super::*;
 
 impl SessionPlayback {
+    pub(crate) fn prepare_foreign_keyboard(
+        &mut self,
+        track: hex_project::TrackId,
+        input: Arc<crate::computer_keyboard::ComputerKeyboardInput>,
+    ) -> Result<(), crate::Invalid> {
+        if self.computer_keyboard.is_some() {
+            return Err(crate::Invalid("a computer keyboard is already prepared"));
+        }
+        self.foreign_arrangement.attach_keyboard(track, input)?;
+        if self.validate_candidate_runtime_storage(0).is_err() {
+            self.foreign_arrangement.remove_keyboard_on_control();
+            return Err(crate::Invalid(
+                "computer keyboard exceeds graph storage budget",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn shares_foreign_keyboard(&self, previous: &Self) -> bool {
+        self.foreign_arrangement
+            .shares_keyboard(&previous.foreign_arrangement)
+    }
+
+    pub(crate) fn detach_foreign_keyboard(&mut self) {
+        self.foreign_arrangement.detach_keyboard();
+    }
+
+    pub(crate) fn cancel_foreign_keyboard(
+        &self,
+        priority_stop: Option<&crate::computer_keyboard::KeyboardActivationClock>,
+    ) {
+        self.foreign_arrangement.cancel_keyboard(priority_stop);
+    }
+
     pub(super) fn render_stopped_main_tails(
         &mut self,
         output: &mut [Frame],
@@ -147,8 +181,9 @@ impl SessionPlayback {
                     offset,
                     observer,
                     capture,
-                    None,
+                    sources,
                     foreign,
+                    None,
                     None,
                 )?;
                 if drain_edit_tails {
@@ -156,7 +191,7 @@ impl SessionPlayback {
                         .render_chunk(chunk, offset, capture, foreign)?;
                 }
                 self.compensation
-                    .as_ref()
+                    .as_mut()
                     .ok_or(SessionPlaybackError::DeviceRuntime)?
                     .process_main_with_foreign(
                         &mut self.main_chain,
@@ -197,6 +232,18 @@ impl SessionPlayback {
                 let mut frames = [[0.0; 2]; 256];
                 let frames = &mut frames[..chunk.len()];
                 if self.source_input_receiver() == Some(index) {
+                    let parameter_context = instrument_automation::SourceAutomation::new(
+                        &self.revision,
+                        index,
+                        instrument_automation::Origin {
+                            arrangement: Some(self.arrangement_frame),
+                            performance: self.performance_frame,
+                            pass: self.arrangement_loop_pass,
+                            running: false,
+                        },
+                        frames.len(),
+                    )?;
+                    let parameter_block = parameter_context.block();
                     source_live::render_source_live_input(
                         self.computer_keyboard.as_mut().map(Box::as_mut),
                         self.mutable_instruments[index].as_mut(),
@@ -207,6 +254,9 @@ impl SessionPlayback {
                         frames,
                         &timing,
                         false,
+                        parameter_block
+                            .as_ref()
+                            .map(|values| values as &dyn hex_lattice::NativeParameterAutomation),
                     )?;
                 } else if let Some(runtime) = self.mutable_instruments[index]
                     .as_mut()
@@ -225,6 +275,18 @@ impl SessionPlayback {
                             timing.sample_rate(),
                         )
                         .map_err(|error| error.render_error())?;
+                    let parameter_context = instrument_automation::SourceAutomation::new(
+                        &self.revision,
+                        index,
+                        instrument_automation::Origin {
+                            arrangement: Some(self.arrangement_frame),
+                            performance: self.performance_frame,
+                            pass: self.arrangement_loop_pass,
+                            running: false,
+                        },
+                        frames.len(),
+                    )?;
+                    let parameter_block = parameter_context.block();
                     runtime
                         .process_source_segment(
                             self.performance_frame,
@@ -235,6 +297,9 @@ impl SessionPlayback {
                             Some(&source_clock),
                             &hex_lattice::EMPTY_DEVICE_RESOURCES,
                             None,
+                            parameter_block.as_ref().map(|values| {
+                                values as &dyn hex_lattice::NativeParameterAutomation
+                            }),
                         )
                         .map_err(|error| error.render_error())?;
                 }
@@ -303,7 +368,15 @@ impl SessionPlayback {
                         .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                 }
                 for (frame_index, frame) in frames.iter_mut().enumerate() {
-                    let mixed = track.mix_at(self.arrangement_frame).apply_frame(*frame);
+                    let mix = track.mix_at(self.arrangement_frame);
+                    let fader = &mut self.track_fader_scratch[index];
+                    let mix = if track.has_gain_automation() {
+                        fader.follow(mix.channel_gain());
+                        mix
+                    } else {
+                        mix.with_channel_gain(fader.next())
+                    };
+                    let mixed = mix.apply_frame(*frame);
                     *frame = mixed;
                     chunk[frame_index][0] += mixed[0];
                     chunk[frame_index][1] += mixed[1];
@@ -333,7 +406,7 @@ impl SessionPlayback {
                 self.return_effect_tails
                     .render_chunk(chunk, offset, capture, foreign)?;
             }
-            self.render_detached_tails(self.performance_frame, chunk, offset, capture)?;
+            self.render_detached_tails(self.performance_frame, chunk, offset, capture, None)?;
             self.advance_paused_analytic_releases(count)?;
             offset = end;
         }

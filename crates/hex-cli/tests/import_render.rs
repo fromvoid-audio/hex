@@ -1,6 +1,44 @@
 use std::{fs, process::Command};
 
 #[test]
+fn edit_demo_renders_the_restored_gain_and_trim() {
+    let directory = std::env::temp_dir().join(format!("hex-cli-edit-demo-{}", std::process::id()));
+    fs::create_dir(&directory).unwrap();
+    let output = directory.join("edited.wav");
+    let baseline = directory.join("baseline.wav");
+    let original = Command::new(env!("CARGO_BIN_EXE_hex-cli"))
+        .arg("demo")
+        .arg(&baseline)
+        .output()
+        .unwrap();
+    assert!(original.status.success(), "{:?}", original.stderr);
+    let result = Command::new(env!("CARGO_BIN_EXE_hex-cli"))
+        .arg("edit-demo")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "{:?}", result.stderr);
+    let bytes = fs::read(&output).unwrap();
+    assert_eq!(&bytes[..4], b"RIFF");
+    // The trimmed clip starts at two beats (48,000 stereo PCM16 frames).
+    let first_clip_byte = 44 + 48_000 * 4;
+    assert!(bytes[44..first_clip_byte].iter().all(|byte| *byte == 0));
+    assert!(bytes[first_clip_byte..].iter().any(|byte| *byte != 0));
+    let original = fs::read(&baseline).unwrap();
+    let original_clip_byte = 44 + 24_000 * 4;
+    // Both clips start at source zero; the edit's restored track gain is 0.5.
+    for frame in 0..1_000 {
+        let at = original_clip_byte + frame * 4;
+        let edited_at = first_clip_byte + frame * 4;
+        let original_sample = i16::from_le_bytes([original[at], original[at + 1]]) as i32;
+        let edited_sample = i16::from_le_bytes([bytes[edited_at], bytes[edited_at + 1]]) as i32;
+        // Each independently positioned PCM16 sample has TPDF dither.
+        assert!((2 * edited_sample - original_sample).abs() <= 4);
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn imports_actual_wav_and_refuses_overwrite_or_bad_media() {
     let directory = std::env::temp_dir().join(format!("hex-cli-import-{}", std::process::id()));
     fs::create_dir(&directory).unwrap();

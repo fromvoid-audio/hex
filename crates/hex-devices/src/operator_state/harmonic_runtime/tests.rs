@@ -340,7 +340,7 @@ fn noise_catalog_native_and_analytic_pcm_is_partition_independent() {
             );
         }
     }
-    assert_eq!(size_of::<Spectrum>(), 2_800);
+    assert_eq!(size_of::<Spectrum>(), 2_808);
 }
 
 #[test]
@@ -369,6 +369,7 @@ fn tuning_retargets_held_and_released_voice_steps_without_resetting_phase_or_fee
             .tuning
             .patch(ParameterId::from_static(66), ParameterValue::Float(170.0))
             .unwrap();
+        settings.pitch_keytrack = keytrack::Settings::from_fixed(settings.tuning.fixed_flags());
         if lfo {
             settings.lfo.0[0] = 1;
             settings.lfo.0[5] = 0.2f32.to_bits();
@@ -455,10 +456,11 @@ fn tuning_retargets_held_and_released_voice_steps_without_resetting_phase_or_fee
                 (c.id, c.age, c.gate, c.phases, c.previous)
             );
         }
-        let invalid = make(settings, 30000.0);
-        let refused = invalid.create_runtime();
-        let proof = Target(invalid.configuration.configuration_id());
-        assert!(!refused.can_retarget_history_from(next.as_ref(), &proof));
+        // Oscillators above nyquist are silenced, not refused.
+        let silenced = make(settings, 30000.0);
+        let admitted = silenced.create_runtime();
+        let proof = Target(silenced.configuration.configuration_id());
+        assert!(admitted.can_retarget_history_from(next.as_ref(), &proof));
         let mut before = [[0.0; 2]; 137];
         let mut expected = before;
         let mut exact = last.create_runtime();
@@ -466,5 +468,71 @@ fn tuning_retargets_held_and_released_voice_steps_without_resetting_phase_or_fee
         third.process_block(&[], &mut before, &hex_lattice::EMPTY_DEVICE_RESOURCES);
         exact.process_block(&[], &mut expected, &hex_lattice::EMPTY_DEVICE_RESOURCES);
         assert_eq!(before, expected);
+    }
+}
+
+#[test]
+fn pure_sine_spectrum_matches_table_across_phases_and_interpolation_modes() {
+    let settings =
+        OperatorSettings::from_state(&OPERATOR_METADATA.default_state().unwrap()).unwrap();
+    let spectrum = Spectrum::prepare(&settings);
+    let table = crate::shared_sine_table();
+    let bank = prepared_bank().unwrap();
+    let phase_table = harmonic_phase_table().unwrap();
+    for interpolate in [false, true] {
+        for phase in [0, 1, 1 << 62, 1 << 63, u64::MAX]
+            .into_iter()
+            .chain((0..4096_u64).map(|i| i.wrapping_mul(0x9e3779b97f4a7c15)))
+        {
+            let expected =
+                (0.0_f64 + f64::from(table.sample_phase_policy(phase, interpolate))) as f32;
+            let actual = spectrum.sample_policy(
+                0,
+                phase,
+                1 << 54,
+                0,
+                1 << 54,
+                table,
+                bank,
+                phase_table,
+                interpolate,
+            );
+            assert_eq!(
+                actual.to_bits(),
+                expected.to_bits(),
+                "phase={phase} interpolate={interpolate}"
+            );
+        }
+    }
+}
+
+#[test]
+fn builtin_and_custom_spectra_transition_matches_independent_weighted_output() {
+    let builtin_settings =
+        OperatorSettings::from_state(&OPERATOR_METADATA.default_state().unwrap()).unwrap();
+    let mut custom_settings = builtin_settings;
+    custom_settings.harmonics.custom[0] = true;
+    custom_settings.harmonics.amplitudes[0] = [0.0; 64];
+    custom_settings.harmonics.amplitudes[0][0] = 0.25;
+    custom_settings.harmonics.amplitudes[0][3] = 0.5;
+    let builtin = Spectrum::prepare(&builtin_settings);
+    let custom = Spectrum::prepare(&custom_settings);
+    let table = crate::shared_sine_table();
+    let bank = prepared_bank().unwrap();
+    let phase_table = harmonic_phase_table().unwrap();
+    for amount in [0.0, 0.25, 0.5, 0.75, 1.0] {
+        let mixed = Spectrum::at(builtin, custom, amount);
+        let reverse = Spectrum::at(custom, builtin, 1.0 - amount);
+        for phase in [0, 1 << 58, 1 << 61, 1 << 62, u64::MAX] {
+            for step in [1 << 54, 1 << 61, 1 << 63] {
+                let sample = |spectrum: &Spectrum| {
+                    spectrum.sample(0, phase, step, 0, step, table, bank, phase_table)
+                };
+                let expected = f64::from(sample(&builtin)) * (1.0 - amount)
+                    + f64::from(sample(&custom)) * amount;
+                assert!((f64::from(sample(&mixed)) - expected).abs() < 2e-6);
+                assert!((f64::from(sample(&reverse)) - expected).abs() < 2e-6);
+            }
+        }
     }
 }
