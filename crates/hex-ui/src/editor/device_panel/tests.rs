@@ -6790,10 +6790,16 @@ fn modulation_panel_maps_a_bound_source_effect_on_its_receiver(cx: &mut TestAppC
         &bound.state.project,
         device
     ));
+    let gain = hex_lattice_contract::ParameterId::from_static(1);
+    assert!(hex_engine::project_device_modulation_target_supported(
+        &bound.state.project,
+        device,
+        gain,
+    ));
     assert!(!hex_engine::project_device_modulation_target_supported(
         &bound.state.project,
         device,
-        hex_lattice_contract::ParameterId::from_static(1),
+        hex_lattice_contract::ParameterId::from_static(11),
     ));
 
     let (handle, editor) = actor_editor_window(cx, service, bound.state, receiver);
@@ -6846,6 +6852,12 @@ fn modulation_panel_maps_a_bound_source_effect_on_its_receiver(cx: &mut TestAppC
             .len()
     };
     pump_until(&editor, cx, |view| route_count(view) == 1);
+    visual.run_until_parked();
+    click(
+        &mut visual,
+        format!("map-target-{}-{}", device.value(), gain.value()),
+    );
+    pump_until(&editor, cx, |view| route_count(view) == 2);
     editor.read_with(cx, |view, _| {
         let project = &view.state.as_ref().unwrap().project;
         let location = project.device_location(device).unwrap();
@@ -6860,17 +6872,24 @@ fn modulation_panel_maps_a_bound_source_effect_on_its_receiver(cx: &mut TestAppC
                 ..
             }
         ));
+        let matrix_route = location.device.modulation().routes()[1];
+        assert_eq!(matrix_route.source, slot);
+        assert!(
+            matches!(matrix_route.destination, ModulationDestination::Device {
+            target: DeviceAutomationTarget::Parameter(id), ..
+        } if id == gain)
+        );
         let reopened = hex_storage::decode(&hex_storage::encode(project).unwrap()).unwrap();
         assert_eq!(
             reopened.device(device).unwrap().modulation().routes(),
-            &[route]
+            &[route, matrix_route]
         );
     });
 
     editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
-    pump_until(&editor, cx, |view| route_count(view) == 0);
-    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
     pump_until(&editor, cx, |view| route_count(view) == 1);
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+    pump_until(&editor, cx, |view| route_count(view) == 2);
     editor.update(cx, |view, cx| {
         view.selected_track = Some(contributor);
         cx.notify();

@@ -14,15 +14,29 @@ use std::{collections::BTreeMap, hint::black_box, sync::Arc};
 
 #[test]
 fn native_source_receiver_modulation_renders_and_continues_without_allocating() {
-    probe_source_gain_handoff(false);
+    probe_source_gain_handoff(Handoff::Unchanged);
 }
 
 #[test]
 fn changed_native_source_modulation_installs_without_allocating() {
-    probe_source_gain_handoff(true);
+    probe_source_gain_handoff(Handoff::HostDepth);
 }
 
-fn probe_source_gain_handoff(retarget: bool) {
+#[test]
+fn source_utility_matrix_changes_class_without_callback_allocation() {
+    probe_source_gain_handoff(Handoff::Matrix);
+}
+
+#[derive(Clone, Copy)]
+enum Handoff {
+    Unchanged,
+    HostDepth,
+    Matrix,
+}
+
+fn probe_source_gain_handoff(handoff: Handoff) {
+    let matrix = matches!(handoff, Handoff::Matrix);
+    let retarget = !matches!(handoff, Handoff::Unchanged);
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     let Created::Track(track) = editor
         .execute(Command::InsertTrackWithDevice {
@@ -78,12 +92,16 @@ fn probe_source_gain_handoff(retarget: bool) {
             output: ModulationOutputId::MAIN,
             destination: ModulationDestination::Device {
                 device_type: UTILITY_TYPE_ID,
-                target: DeviceAutomationTarget::HostOutputGain,
+                target: if matrix {
+                    DeviceAutomationTarget::Parameter(hex_devices::utility::parameter::GAIN)
+                } else {
+                    DeviceAutomationTarget::HostOutputGain
+                },
                 vst3_class: None,
             },
             amount: ModulationAmount::new(0.03).unwrap(),
             range: ModulationRange::default(),
-            enabled: true,
+            enabled: !matrix,
         }],
     )
     .unwrap();
@@ -129,6 +147,7 @@ fn probe_source_gain_handoff(retarget: bool) {
         let old = editor.project().device(device).unwrap().modulation();
         let mut route = old.routes()[0];
         route.amount = ModulationAmount::new(-0.025).unwrap();
+        route.enabled = true;
         let modulation = DeviceModulation::new(old.sources().to_vec(), vec![route]).unwrap();
         editor
             .execute(Command::ReplaceDeviceModulation { device, modulation })

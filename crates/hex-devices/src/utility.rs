@@ -773,6 +773,18 @@ impl PreparedUtilityFilterRuntime {
 }
 
 impl UtilityDefinition {
+    /// A source-local matrix can switch to its modulated provider only when
+    /// authored settings and the route cannot activate either filter.
+    pub fn supports_source_matrix_modulation(
+        state: &NativeDeviceState,
+        parameter: ParameterId,
+    ) -> bool {
+        decode_state(state).is_ok_and(|settings| !settings.dc_remove && !settings.bass_mono)
+            && parameter != parameter::DC_REMOVE
+            && parameter != parameter::BASS_MONO
+            && runtime_parameter_automation_supported(parameter)
+    }
+
     /// Closed fixed-inline factory for the full Utility law. Automation always
     /// retains filters, including dormant histories, with an identity host matrix.
     pub fn prepare_owned_automated_filter(
