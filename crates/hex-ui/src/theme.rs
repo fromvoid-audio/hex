@@ -752,7 +752,7 @@ pub(crate) fn section_colors(
     (fill, text, border)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::*;
 
@@ -1111,9 +1111,6 @@ mod tests {
                                 >= 4.5
                         );
                     }
-                    println!(
-                        "palette_swatch surface={surface:06x} hue={hue:?} selected={selected} regular={regular:06x} accent={accent:06x} separation={separation:.4}"
-                    );
                 }
             }
         }
@@ -1127,7 +1124,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod element_palette_tests {
     use super::*;
     #[test]
