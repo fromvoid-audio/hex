@@ -21,6 +21,7 @@ use crate::{
     modulation_note_gate::NoteGate,
     modulation_ramp::{ModulationRampCurve, Ramp},
     modulation_source_routes::PreparedSourceRoute,
+    modulation_steps::{ModulationStepDirection, Steps},
 };
 use hex_dsp::{EnvelopeFollower, LfoRate, LfoWaveform, ModulationLfo, RandomHold, StereoFrame};
 use hex_lattice_contract::{DeviceContractError as Error, ModulationOutputId, ModulationSourceId};
@@ -143,6 +144,7 @@ enum SourceState {
     Adsr(Adsr),
     AhdRelease(AhdRelease),
     Random(RandomHold),
+    Steps(Steps),
 }
 
 impl SourceState {
@@ -176,6 +178,7 @@ impl SourceState {
             (Self::Adsr(envelope), Self::Adsr(old)) => envelope.inherit(old),
             (Self::AhdRelease(envelope), Self::AhdRelease(old)) => envelope.inherit(old),
             (Self::Random(random), Self::Random(old)) => random.inherit_history(&old),
+            (Self::Steps(steps), Self::Steps(old)) => steps.inherit(old),
             _ => return false,
         }
         true
@@ -518,6 +521,29 @@ impl PreparedModulationSource {
             id,
             output: ModulationOutputId::MAIN,
             initial: SourceState::Adsr(Adsr::new(durations, sustain, single_trigger)),
+            sample_rate: f64::from(sample_rate),
+        })
+    }
+
+    /// Prepare a signed step pattern. Every step lasts exactly the given
+    /// number of admitted frames. The signed value -32767 means -1, and
+    /// 32767 means +1. A one-step pattern holds its value in every direction.
+    pub fn steps(
+        id: ModulationSourceId,
+        sample_rate: u32,
+        pattern: &[i16],
+        frames_per_step: u32,
+        direction: ModulationStepDirection,
+    ) -> Result<Self, Error> {
+        if !(8_000..=192_000).contains(&sample_rate) || frames_per_step > 60 * sample_rate {
+            return Err(Error::InvalidParameterValue);
+        }
+        let duration =
+            std::num::NonZeroU32::new(frames_per_step).ok_or(Error::InvalidParameterValue)?;
+        Ok(Self {
+            id,
+            output: ModulationOutputId::MAIN,
+            initial: SourceState::Steps(Steps::new(pattern, duration, direction)?),
             sample_rate: f64::from(sample_rate),
         })
     }
@@ -910,6 +936,7 @@ impl ModulationSourceBank {
                     envelope.render(gate.ok_or(Error::InvalidParameterValue)?, output);
                 }
                 SourceState::Random(random) => random.render(output),
+                SourceState::Steps(steps) => steps.render(output),
             }
         }
         if let Err(error) = self.render_routed_sources(frames, routes) {
@@ -1210,6 +1237,76 @@ mod tests {
         for inputs in [[f32::NAN, 0.0], [0.0, 1.25]] {
             assert!(PreparedModulationSource::math(id, 48_000, inputs, Op::Add).is_err());
         }
+    }
+
+    #[test]
+    fn steps_follow_sample_boundaries_through_rollback_handoff_and_reset() {
+        use ModulationStepDirection::{Backward, Forward, PingPong};
+        let id = ModulationSourceId::new(1).unwrap();
+        let pattern = [-32767, 0, 32767];
+        for (direction, expected) in [
+            (Forward, [-1.0, -1.0, 0.0, 0.0, 1.0, 1.0, -1.0, -1.0, 0.0]),
+            (Backward, [1.0, 1.0, 0.0, 0.0, -1.0, -1.0, 1.0, 1.0, 0.0]),
+            (PingPong, [-1.0, -1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, -1.0]),
+        ] {
+            let source =
+                PreparedModulationSource::steps(id, 48_000, &pattern, 2, direction).unwrap();
+            let mut bank = ModulationSourceBank::new(&[source], 9).unwrap();
+            bank.begin();
+            bank.render_chunk(9).unwrap();
+            assert_eq!(bank.samples(id).unwrap(), expected);
+            bank.rollback();
+            bank.begin();
+            bank.render_chunk(5).unwrap();
+            assert_eq!(bank.samples(id).unwrap(), &expected[..5]);
+            bank.commit().unwrap();
+            let mut successor = ModulationSourceBank::new(&[source], 9).unwrap();
+            successor.inherit_committed(&bank).unwrap();
+            successor.begin();
+            successor.render_chunk(4).unwrap();
+            assert_eq!(successor.samples(id).unwrap(), &expected[5..]);
+            successor.commit().unwrap();
+            successor.reset_all();
+            successor.begin();
+            successor.render_chunk(9).unwrap();
+            assert_eq!(successor.samples(id).unwrap(), expected);
+        }
+        for (pattern, duration) in [
+            (&[][..], 2),
+            (&[0; 17], 2),
+            (&[i16::MIN], 2),
+            (&[0], 0),
+            (&[0], 60 * 48_000 + 1),
+        ] {
+            assert!(
+                PreparedModulationSource::steps(id, 48_000, pattern, duration, Forward).is_err()
+            );
+        }
+        let source = PreparedModulationSource::steps(id, 48_000, &[32767], 1, PingPong).unwrap();
+        let mut bank = ModulationSourceBank::new(&[source], 8).unwrap();
+        bank.begin();
+        bank.render_chunk(8).unwrap();
+        assert_eq!(bank.samples(id).unwrap(), [1.0; 8]);
+    }
+
+    #[test]
+    fn steps_handoff_uses_the_new_pattern_and_clamps_a_shorter_cursor() {
+        use ModulationStepDirection::PingPong;
+        let id = ModulationSourceId::new(1).unwrap();
+        let original =
+            PreparedModulationSource::steps(id, 48_000, &[-32767, 0, 32767], 3, PingPong).unwrap();
+        let shorter =
+            PreparedModulationSource::steps(id, 48_000, &[32767, -32767], 2, PingPong).unwrap();
+        let mut old = ModulationSourceBank::new(&[original], 8).unwrap();
+        old.begin();
+        old.render_chunk(8).unwrap();
+        old.commit().unwrap();
+
+        let mut new = ModulationSourceBank::new(&[shorter], 8).unwrap();
+        new.inherit_committed(&old).unwrap();
+        new.begin();
+        new.render_chunk(5).unwrap();
+        assert_eq!(new.samples(id).unwrap(), [-1.0, 1.0, 1.0, -1.0, -1.0]);
     }
 
     #[test]
