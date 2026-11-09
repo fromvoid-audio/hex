@@ -327,3 +327,89 @@ fn bound_source_effect_schema_preserves_colored_slots_and_requires_upgrade_conse
     recursive["source_effect_base_version"] = 83.into();
     assert!(crate::decode(&serde_json::to_vec(&recursive).unwrap()).is_err());
 }
+
+#[test]
+fn shaped_lfo_uses_its_own_schema_and_retains_bound_units_and_slot_metadata() {
+    let mut editor = Editor::new(authored(), 8).unwrap();
+    let parent = editor.project().tracks()[0].instrument().unwrap().id();
+    editor
+        .execute(Command::InsertNestedDevice {
+            parent,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap();
+    let device = &editor.project().main_devices()[0];
+    let id = device.id();
+    let mut slots = device.modulation().sources().to_vec();
+    let routes = device.modulation().routes().to_vec();
+    let mut payload = vec![0];
+    payload.extend(1.0_f64.to_le_bytes());
+    payload.extend(0.0_f64.to_le_bytes());
+    let lfo = DeviceTypeId::from_static("hex.modulator.lfo");
+    slots.push(Modulator {
+        id: ModulationSourceId::new(editor.project().next_identity()).unwrap(),
+        enabled: true,
+        color: ElementColor::Cyan,
+        state: NativeDeviceState::new(lfo, 1, payload.clone()).unwrap(),
+    });
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device: id,
+            modulation: DeviceModulation::new(slots.clone(), routes.clone()).unwrap(),
+        })
+        .unwrap();
+
+    let dir = temp_dir();
+    let legacy = dir.join("sine.hex");
+    crate::save_new(&legacy, editor.project()).unwrap();
+    let original = std::fs::read(&legacy).unwrap();
+    let (loaded, token) = crate::load_with_token(&legacy).unwrap();
+    assert_eq!(loaded, *editor.project());
+    assert_eq!(
+        crate::schema_version_for(&loaded),
+        crate::BOUND_SOURCE_EFFECT_SCHEMA_VERSION
+    );
+    assert!(!token.requires_save_confirmation(&loaded).unwrap());
+
+    payload.push(3);
+    slots.last_mut().unwrap().state = NativeDeviceState::new(lfo, 2, payload).unwrap();
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device: id,
+            modulation: DeviceModulation::new(slots, routes).unwrap(),
+        })
+        .unwrap();
+    let shaped = editor.project();
+    assert_eq!(
+        crate::schema_version_for(shaped),
+        crate::LFO_SHAPE_SCHEMA_VERSION
+    );
+    assert!(token.requires_save_confirmation(shaped).unwrap());
+    let upgraded = dir.join("square.hex");
+    crate::save_new(&upgraded, shaped).unwrap();
+    assert_eq!(crate::load(&upgraded).unwrap(), *shaped);
+    assert_eq!(std::fs::read(&legacy).unwrap(), original);
+
+    let mut wrong_schema: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&upgraded).unwrap()).unwrap();
+    wrong_schema["version"] = crate::MODULATION_SLOT_COLOR_SCHEMA_VERSION.into();
+    assert!(crate::decode(&serde_json::to_vec(&wrong_schema).unwrap()).is_err());
+
+    let mut missing_shape: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&upgraded).unwrap()).unwrap();
+    let slot = missing_shape["device_modulation"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|row| row["device"] == id.value())
+        .unwrap()["sources"]
+        .as_array_mut()
+        .unwrap()
+        .last_mut()
+        .unwrap();
+    slot["state_version"] = 1.into();
+    slot["payload"].as_array_mut().unwrap().pop();
+    assert!(crate::decode(&serde_json::to_vec(&missing_shape).unwrap()).is_err());
+
+    std::fs::remove_dir_all(dir).unwrap();
+}

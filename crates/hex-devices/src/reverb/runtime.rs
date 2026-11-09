@@ -305,6 +305,16 @@ impl PreparedNativeProcessor for PreparedReverb {
             && (parameter != p::SMOOTH || self.smoothing_admitted)
     }
 
+    fn parameter_modulation_semantics(
+        &self,
+        parameter: ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        automation::semantics(parameter).filter(|semantics| {
+            self.supports_parameter_automation(parameter)
+                && semantics.modulation == hex_lattice_contract::ParameterModulation::SampleRate
+        })
+    }
+
     fn supports_smoothed_bypass(&self) -> bool {
         // Zero latency and history advancement under bypass permit the host's
         // reversible 5 ms blend without a second room or retained-tail owner.

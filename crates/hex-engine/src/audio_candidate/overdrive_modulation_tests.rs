@@ -130,6 +130,7 @@ fn overdrive_modulation_matches_independent_sample_frames_in_both_compilers() {
             state: Settings {
                 rate: Rate::Hertz(2_000.0),
                 phase: 0.0,
+                ..Settings::default()
             }
             .encode()
             .unwrap(),

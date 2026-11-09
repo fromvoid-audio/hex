@@ -126,6 +126,7 @@ pub use device_modulation::{
     ModulationRange, ModulationRouteId, ModulationSourceId, Modulator,
 };
 mod device_inventory;
+pub use device_inventory::{DeviceLocation, DeviceOwner};
 mod device_unit_template;
 pub use device_automation::{
     AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
