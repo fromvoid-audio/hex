@@ -765,7 +765,7 @@ mod tests {
     #[test]
     fn waveform_replacement_keeps_phase_through_tempo_and_rollback() {
         let id = ModulationSourceId::new(1).unwrap();
-        let sine = PreparedModulationSource::free(id, 8.0, 1.0, 0.0).unwrap();
+        let sine = PreparedModulationSource::tempo(id, 8.0, 60.0, 1.0, 0.0).unwrap();
         let square = PreparedModulationSource::tempo_with_waveform(
             id,
             8.0,
