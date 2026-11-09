@@ -27,7 +27,7 @@ use hex_session::{
 use hex_widgets::NumericEventPhase;
 use std::sync::{Arc, atomic::Ordering::Acquire};
 mod editor_input;
-use editor_input::EditorCapture;
+use editor_input::{EditorArm, EditorCapture, EditorGroupSelection};
 
 // A refused writer batch can coexist with an entire endpoint window. Reserve
 // room to read the terminal even when both sets of applied values are full.
@@ -63,7 +63,8 @@ pub(super) struct Recorder {
     serial: u64,
     request: u64,
     plugin_take: Option<(GestureKey, Arm)>,
-    editor_arm: Option<Arm>,
+    editor_arm: Option<EditorArm>,
+    editor_group: Option<EditorGroupSelection>,
     editor_take: Option<EditorCapture>,
 }
 
