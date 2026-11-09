@@ -1,15 +1,16 @@
 //! A reopened authored source effect uses the ordinary shared-source callback.
 use hex_devices::utility::{MAX_UTILITY_GAIN, UTILITY_DEFINITION, parameter};
+use hex_engine::playback::Playback;
 use hex_engine::{PreparedRevision, SessionPlayback, SessionPlaybackCommand, SineTable};
 use hex_lattice_contract::NativeDeviceMetadata;
 use hex_project::{
     AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, Command, Created,
-    DeviceAutomationTarget, Editor, Project, TrackDeviceSlot,
+    DeviceAutomationTarget, DeviceAutomationTouchSpan, DeviceAutomationTouchStep, Editor, Project,
+    TrackDeviceSlot,
 };
 use std::{collections::BTreeMap, hint::black_box, sync::Arc};
 
-#[test]
-fn reopened_source_effect_automation_crosses_a_step_without_callback_allocation() {
+fn source_effect_fixture() -> (Editor, hex_project::DeviceId) {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     let Created::Track(track) = editor
         .execute(Command::InsertTrackWithDevice {
@@ -66,6 +67,12 @@ fn reopened_source_effect_automation_crosses_a_step_without_callback_allocation(
             velocity: 100,
         })
         .unwrap();
+    (editor, device)
+}
+
+#[test]
+fn reopened_source_effect_automation_crosses_a_step_without_callback_allocation() {
+    let (mut editor, device) = source_effect_fixture();
     editor
         .execute(Command::ReplaceDeviceAutomationTarget {
             device,
@@ -109,4 +116,95 @@ fn reopened_source_effect_automation_crosses_a_step_without_callback_allocation(
     );
     assert!(pcm[..128].iter().all(|&frame| frame == [0.0; 2]));
     assert!(pcm[128..].iter().any(|frame| frame[0].abs() > 0.001));
+}
+
+#[test]
+fn reopened_source_effect_touch_reads_the_compensated_source_clock() {
+    use hex_devices::limiter::{DEFINITION, parameter as limiter_parameter};
+    use hex_lattice_contract::ParameterValue;
+
+    let (mut editor, device) = source_effect_fixture();
+    let limiter = DEFINITION
+        .patch_parameter(
+            &DEFINITION.default_state().unwrap(),
+            limiter_parameter::LOOKAHEAD,
+            ParameterValue::Choice(2),
+        )
+        .unwrap();
+    editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: limiter,
+        })
+        .unwrap();
+    let base = editor.project().clone();
+    let start = 64;
+    let end = 128;
+    let beat = |frame| base.tempo_map().frame_to_beat(frame).unwrap();
+    editor
+        .execute(Command::SpliceDeviceAutomationTouch {
+            device,
+            target: DeviceAutomationTarget::Parameter(parameter::MUTE),
+            vst3_class: None,
+            spans: vec![DeviceAutomationTouchSpan {
+                start: beat(start),
+                end: beat(end),
+                steps: vec![DeviceAutomationTouchStep {
+                    beat: beat(start),
+                    value: AutomationValue::new(1.0).unwrap(),
+                }],
+            }],
+        })
+        .unwrap();
+    let reopened = hex_storage::decode(&hex_storage::encode(editor.project()).unwrap()).unwrap();
+    assert_eq!(reopened, *editor.project());
+    let replay = |project: &Project, block| {
+        let prepared = Arc::new(
+            PreparedRevision::prepare(project, &BTreeMap::new(), Arc::new(SineTable::new()), None)
+                .unwrap(),
+        );
+        let delay = Playback::from_prepared(Arc::clone(&prepared)).main_output_latency_frames();
+        let mut runtime = SessionPlayback::new(prepared).unwrap();
+        let mut pcm = [[0.0; 2]; 512];
+        let measured = allocation_counter::measure(|| {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            for frames in pcm.chunks_mut(block) {
+                runtime.render(frames).unwrap();
+            }
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        (pcm, delay as usize)
+    };
+    let (before, delay) = replay(&base, 29);
+    let (after, reopened_delay) = replay(&reopened, 23);
+    assert!(delay > 0);
+    assert_eq!(reopened_delay, delay);
+    let start = delay + start as usize;
+    let end = delay + end as usize;
+    assert!(
+        before[start..end]
+            .iter()
+            .any(|frame| frame[0].abs() > 0.001)
+    );
+    for (index, (got, plain)) in after.iter().zip(before).enumerate() {
+        let expected = if (start..end).contains(&index) {
+            [0.0; 2]
+        } else {
+            plain
+        };
+        assert!(
+            got.iter()
+                .zip(expected)
+                .all(|(got, expected)| (*got - expected).abs() < 1e-6),
+            "reopened frame {index}, compensated touch {start}..{end}: {got:?} != {expected:?}"
+        );
+    }
 }

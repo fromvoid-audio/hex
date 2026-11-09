@@ -9,12 +9,16 @@
 //! The extended touch schema wraps the prior format only when a lane's
 //! base plus recorded steps exceeds the historical combined bound. It
 //! preserves all steps and keeps the historical bound on every older layer.
+//! Schema100 extracts native source effect touch rows before encoding the complete
+//! prior project. The exact stored source owner may be dormant; the codec grants
+//! no authority to arm or play a source without a receiver. Schema102 uses
+//! that envelope over a required schema101 Ramp bank.
 use super::{automation_read::Selection, device_automation};
-#[cfg(test)]
-use crate::DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION;
 use crate::{
-    EXTENDED_AUTOMATION_TOUCH_SCHEMA_VERSION, NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION, Project,
-    StorageError,
+    DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION, EXTENDED_AUTOMATION_TOUCH_SCHEMA_VERSION,
+    NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION, NATIVE_SOURCE_EFFECT_TOUCH_SCHEMA_VERSION, Project,
+    RAMP_MODULATOR_SCHEMA_VERSION, SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION, StorageError,
+    VST3_AUTOMATION_TOUCH_SCHEMA_VERSION,
 };
 use hex_lattice_contract::ParameterId;
 use hex_project::{
@@ -24,7 +28,7 @@ use hex_project::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
@@ -217,7 +221,14 @@ pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
     rows.sort_unstable_by_key(|(key, _)| *key);
     let core = Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))?;
     let mut value = super::vst3_automation::encode(&core)?;
-    value["version"] = crate::schema_version_for(project).into();
+    // An outer source or serial envelope owns its own version. Stamp this
+    // leaf's layout even when the complete project selects a newer wrapper.
+    value["version"] = if contains_vst3(project) {
+        VST3_AUTOMATION_TOUCH_SCHEMA_VERSION
+    } else {
+        DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION
+    }
+    .into();
     value["device_automation_touch"] =
         serde_json::to_value(rows.into_iter().map(|(_, lane)| lane).collect::<Vec<_>>())?;
     Ok(value)
@@ -278,7 +289,7 @@ pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError
             continue;
         };
         for row in lanes {
-            restore_lane(&mut device.automation, row, false)?;
+            restore_lane(&mut device.automation, row, Some(false))?;
         }
     }
     if !by_device.is_empty() {
@@ -292,12 +303,12 @@ pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError
 fn restore_lane(
     lanes: &mut Vec<DeviceAutomation>,
     row: DeviceAutomation,
-    extended: bool,
+    must_exceed_legacy_bound: Option<bool>,
 ) -> Result<(), StorageError> {
     let slot = lanes.binary_search_by_key(&row.target, |lane| lane.target);
     let base_points = slot.ok().map_or(0, |index| lanes[index].points.len());
     let exceeds_old = base_points + row.point_count() > MAX_DEVICE_AUTOMATION_POINTS_PER_LANE;
-    if exceeds_old != extended {
+    if must_exceed_legacy_bound.is_some_and(|extended| exceeds_old != extended) {
         return Err(StorageError::Invalid(
             "device automation touch length disagrees with project format",
         ));
@@ -320,6 +331,23 @@ fn restore_lane(
     Ok(())
 }
 
+fn native_source_effects(project: &Project) -> impl Iterator<Item = &hex_project::Device> {
+    project
+        .native_sources()
+        .iter()
+        .filter(|source| source.instrument_index() == 0)
+        .flat_map(|source| source.post_instrument_effects())
+}
+
+pub(crate) fn contains_native_source_effect(project: &Project) -> bool {
+    // Project validation has already excluded native touch rows on foreign devices.
+    native_source_effects(project).any(|effect| {
+        effect.automation().iter().any(|lane| {
+            !lane.touch.is_empty() && !matches!(lane.target, DeviceAutomationTarget::Vst3 { .. })
+        })
+    })
+}
+
 pub(crate) fn contains_native_instrument(project: &Project) -> bool {
     project.native_sources().iter().any(|source| {
         source.instrument().automation().iter().any(|lane| {
@@ -332,6 +360,7 @@ pub(crate) fn contains_native_instrument(project: &Project) -> bool {
 enum Envelope {
     NativeInstrument,
     Extended,
+    NativeSourceEffect(u32),
 }
 
 impl Envelope {
@@ -339,6 +368,7 @@ impl Envelope {
         match self {
             Self::NativeInstrument => NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION,
             Self::Extended => EXTENDED_AUTOMATION_TOUCH_SCHEMA_VERSION,
+            Self::NativeSourceEffect(version) => version,
         }
     }
     const fn fields(self) -> (&'static str, &'static str) {
@@ -346,6 +376,10 @@ impl Envelope {
             Self::NativeInstrument => (
                 "native_instrument_touch_base_version",
                 "native_instrument_touch",
+            ),
+            Self::NativeSourceEffect(_) => (
+                "native_source_effect_touch_base_version",
+                "native_source_effect_touch",
             ),
             Self::Extended => (
                 "extended_automation_touch_base_version",
@@ -356,7 +390,40 @@ impl Envelope {
     const fn step_limit(self) -> usize {
         match self {
             Self::NativeInstrument => MAX_DEVICE_AUTOMATION_POINTS_PER_LANE,
-            Self::Extended => MAX_DEVICE_AUTOMATION_TOUCH_STEPS_PER_LANE,
+            Self::Extended | Self::NativeSourceEffect(_) => {
+                MAX_DEVICE_AUTOMATION_TOUCH_STEPS_PER_LANE
+            }
+        }
+    }
+
+    fn owners(self, project: &Project) -> BTreeSet<u64> {
+        match self {
+            Self::NativeInstrument => project
+                .native_sources()
+                .iter()
+                .map(|source| source.instrument().id().value())
+                .collect(),
+            Self::NativeSourceEffect(_) => native_source_effects(project)
+                .map(|effect| effect.id().value())
+                .collect(),
+            Self::Extended => BTreeSet::new(),
+        }
+    }
+
+    fn admits_target(
+        self,
+        owners: &BTreeSet<u64>,
+        device: u64,
+        target: DeviceAutomationTarget,
+    ) -> bool {
+        match self {
+            Self::NativeInstrument => {
+                owners.contains(&device) && matches!(target, DeviceAutomationTarget::Parameter(_))
+            }
+            Self::NativeSourceEffect(_) => {
+                owners.contains(&device) && !matches!(target, DeviceAutomationTarget::Vst3 { .. })
+            }
+            Self::Extended => true,
         }
     }
 }
@@ -379,24 +446,30 @@ pub(crate) fn encode_extended(project: &Project) -> Result<Value, StorageError> 
     encode_envelope(project, Envelope::Extended)
 }
 
+pub(crate) fn source_effect_schema_version(project: &Project) -> u32 {
+    if super::device_modulation::contains_ramp(project) {
+        SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION
+    } else {
+        NATIVE_SOURCE_EFFECT_TOUCH_SCHEMA_VERSION
+    }
+}
+
+pub(crate) fn encode_native_source_effect(project: &Project) -> Result<Value, StorageError> {
+    encode_envelope(
+        project,
+        Envelope::NativeSourceEffect(source_effect_schema_version(project)),
+    )
+}
+
 fn encode_envelope(project: &Project, envelope: Envelope) -> Result<Value, StorageError> {
     let mut snapshot = project.snapshot();
     let mut rows = Vec::new();
-    let instrument_ids: std::collections::BTreeSet<_> = project
-        .native_sources()
-        .iter()
-        .map(|source| source.instrument().id().value())
-        .collect();
+    let owners = envelope.owners(project);
     for device in device_automation::devices(&mut snapshot) {
         for lane in &mut device.automation {
-            let include = match envelope {
-                Envelope::NativeInstrument => {
-                    instrument_ids.contains(&device.id)
-                        && matches!(lane.target, DeviceAutomationTarget::Parameter(_))
-                        && !lane.touch.is_empty()
-                }
-                Envelope::Extended => extended_lane(lane),
-            };
+            let include = !lane.touch.is_empty()
+                && envelope.admits_target(&owners, device.id, lane.target)
+                && (!matches!(envelope, Envelope::Extended) || extended_lane(lane));
             if include {
                 rows.push(((device.id, lane.target), Lane::take(device.id, lane)?));
             }
@@ -425,6 +498,13 @@ pub(crate) fn decode_extended(bytes: &[u8]) -> Result<Project, StorageError> {
     decode_envelope(bytes, Envelope::Extended)
 }
 
+pub(crate) fn decode_native_source_effect(
+    bytes: &[u8],
+    version: u32,
+) -> Result<Project, StorageError> {
+    decode_envelope(bytes, Envelope::NativeSourceEffect(version))
+}
+
 fn decode_envelope(bytes: &[u8], envelope: Envelope) -> Result<Project, StorageError> {
     let mut value = super::audio_events::parse_unique(bytes)?;
     let object = value
@@ -435,7 +515,12 @@ fn decode_envelope(bytes: &[u8], envelope: Envelope) -> Result<Project, StorageE
         .remove(base_field)
         .and_then(|base| base.as_u64())
         .filter(|base| {
-            (u64::from(crate::CURRENT_SCHEMA_VERSION)..u64::from(envelope.version())).contains(base)
+            if envelope.version() == SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION {
+                *base == u64::from(RAMP_MODULATOR_SCHEMA_VERSION)
+            } else {
+                (u64::from(crate::CURRENT_SCHEMA_VERSION)..u64::from(envelope.version()))
+                    .contains(base)
+            }
         })
         .ok_or(StorageError::Invalid(
             "invalid automation touch base schema",
@@ -448,23 +533,18 @@ fn decode_envelope(bytes: &[u8], envelope: Envelope) -> Result<Project, StorageE
     }
     object.insert("version".into(), base.into());
     let core = crate::decode(&serde_json::to_vec(&value)?)?;
-    let instruments: std::collections::BTreeSet<_> = core
-        .native_sources()
-        .iter()
-        .map(|source| source.instrument().id().value())
-        .collect();
+    let owners = envelope.owners(&core);
     let mut snapshot = core.snapshot();
     let mut by_device = BTreeMap::<u64, Vec<DeviceAutomation>>::new();
     let mut previous = None;
     for row in rows {
-        if matches!(envelope, Envelope::NativeInstrument)
-            && (!instruments.contains(&row.device) || !matches!(row.target, Target::Parameter(_)))
-        {
-            return Err(StorageError::Invalid(
-                "native instrument touch owner no longer exists",
-            ));
-        }
         let (target, class) = row.target.decode_target(envelope.version())?;
+        if !envelope.admits_target(&owners, row.device, target) {
+            return Err(StorageError::Invalid(match envelope {
+                Envelope::NativeInstrument => "native instrument touch owner no longer exists",
+                _ => "automation touch source owner or target differs from its format",
+            }));
+        }
         let key = (row.device, target);
         if previous.is_some_and(|previous| previous >= key)
             || row.spans.is_empty()
@@ -485,7 +565,11 @@ fn decode_envelope(bytes: &[u8], envelope: Envelope) -> Result<Project, StorageE
                 restore_lane(
                     &mut device.automation,
                     row,
-                    matches!(envelope, Envelope::Extended),
+                    match envelope {
+                        Envelope::NativeInstrument => Some(false),
+                        Envelope::Extended => Some(true),
+                        Envelope::NativeSourceEffect(_) => None,
+                    },
                 )?;
             }
         }
@@ -504,6 +588,187 @@ mod tests {
     use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
     use hex_project::{Command, Created, Editor};
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn source_effect_touch_uses_a_distinct_schema_and_preserves_other_lanes() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(receiver) = editor
+            .execute(Command::InsertTrackWithDevice {
+                name: "source".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("receiver");
+        };
+        let track = editor.project().track(receiver).unwrap();
+        let source = track.source_id().unwrap();
+        let instrument = track.instrument().unwrap().id();
+        editor
+            .execute(Command::BindTrackSource {
+                track: receiver,
+                source: None,
+            })
+            .unwrap();
+        let effect_state = || {
+            NativeDeviceState::new(DeviceTypeId::from_static("test.effect"), 1, vec![8]).unwrap()
+        };
+        let Created::Device(source_effect) = editor
+            .execute(Command::InsertNestedDevice {
+                parent: instrument,
+                state: effect_state(),
+            })
+            .unwrap()
+        else {
+            panic!("source effect");
+        };
+        editor
+            .execute(Command::BindTrackSource {
+                track: receiver,
+                source: Some(source),
+            })
+            .unwrap();
+        let Created::Device(main) = editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: effect_state(),
+            })
+            .unwrap()
+        else {
+            panic!("main effect");
+        };
+        let target = DeviceAutomationTarget::HostOutputGain;
+        let span = |count| DeviceAutomationTouchSpan {
+            start: BeatTime::ZERO,
+            end: BeatTime::from_quarters(2).unwrap(),
+            steps: (0..count)
+                .map(|i| DeviceAutomationTouchStep {
+                    beat: BeatTime::from_ratio(i, 1024).unwrap(),
+                    value: AutomationValue::new(if i % 2 == 0 { 0.25 } else { 0.75 }).unwrap(),
+                })
+                .collect(),
+        };
+        let splice = |device, count| Command::SpliceDeviceAutomationTouch {
+            device,
+            target,
+            vst3_class: None,
+            spans: vec![span(count)],
+        };
+        editor.execute(splice(main, 2)).unwrap();
+        let earlier = editor.project().clone();
+        let old = crate::encode(&earlier).unwrap();
+        assert_eq!(
+            crate::schema_version_for(&earlier),
+            crate::BOUND_SOURCE_EFFECT_SCHEMA_VERSION
+        );
+        assert_eq!(crate::decode(&old).unwrap(), earlier);
+
+        editor.execute(splice(source_effect, 1025)).unwrap();
+        let recorded = editor.project().clone();
+        let encoded = crate::encode(&recorded).unwrap();
+        assert_eq!(
+            crate::schema_version_for(&recorded),
+            NATIVE_SOURCE_EFFECT_TOUCH_SCHEMA_VERSION
+        );
+        assert_eq!(crate::decode(&encoded).unwrap(), recorded);
+        let mut wrong_owner: Value = serde_json::from_slice(&encoded).unwrap();
+        wrong_owner["native_source_effect_touch"][0]["device"] = main.value().into();
+        assert!(crate::decode(&serde_json::to_vec(&wrong_owner).unwrap()).is_err());
+
+        editor
+            .execute(Command::SetNativeSourceReceiver {
+                source,
+                track: None,
+            })
+            .unwrap();
+        assert_eq!(
+            crate::schema_version_for(editor.project()),
+            NATIVE_SOURCE_EFFECT_TOUCH_SCHEMA_VERSION
+        );
+        assert_eq!(
+            crate::decode(&crate::encode(editor.project()).unwrap()).unwrap(),
+            *editor.project()
+        );
+        assert_eq!(crate::decode(&old).unwrap(), earlier);
+
+        use hex_project::{DeviceModulation, ElementColor, ModulationSourceId, Modulator};
+        let counter = Modulator {
+            id: ModulationSourceId::new(editor.project().next_identity()).unwrap(),
+            color: ElementColor::Cyan,
+            enabled: true,
+            state: NativeDeviceState::new(
+                DeviceTypeId::from_static("hex.modulator.note-counter"),
+                1,
+                vec![12, 0, 5, 0, 1],
+            )
+            .unwrap(),
+        };
+        editor
+            .execute(Command::ReplaceDeviceModulation {
+                device: instrument,
+                modulation: DeviceModulation::new(vec![counter], Vec::new()).unwrap(),
+            })
+            .unwrap();
+        let with_counter = crate::encode(editor.project()).unwrap();
+        let document: Value = serde_json::from_slice(&with_counter).unwrap();
+        assert_eq!(
+            document["native_source_effect_touch_base_version"],
+            crate::NOTE_COUNTER_MODULATOR_SCHEMA_VERSION,
+        );
+        assert_eq!(crate::decode(&with_counter).unwrap(), *editor.project());
+        let prior =
+            std::env::temp_dir().join(format!("hex-ramp-source-touch-{}.hex", std::process::id()));
+        crate::save_new(&prior, editor.project()).unwrap();
+        let (_, token) = crate::load_with_token(&prior).unwrap();
+        let mut slots = editor
+            .project()
+            .device(instrument)
+            .unwrap()
+            .modulation()
+            .sources()
+            .to_vec();
+        let mut payload = 500_000_u32.to_le_bytes().to_vec();
+        payload.extend_from_slice(&[0, 0, 1]);
+        slots.push(Modulator {
+            id: ModulationSourceId::new(editor.project().next_identity()).unwrap(),
+            color: ElementColor::Cyan,
+            enabled: true,
+            state: NativeDeviceState::new(
+                DeviceTypeId::from_static("hex.modulator.ramp"),
+                1,
+                payload,
+            )
+            .unwrap(),
+        });
+        editor
+            .execute(Command::ReplaceDeviceModulation {
+                device: instrument,
+                modulation: DeviceModulation::new(slots, Vec::new()).unwrap(),
+            })
+            .unwrap();
+        let combined = editor.project();
+        assert_eq!(
+            crate::schema_version_for(combined),
+            SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION
+        );
+        assert!(token.requires_save_confirmation(combined).unwrap());
+        let bytes = crate::encode(combined).unwrap();
+        assert_eq!(crate::decode(&bytes).unwrap(), *combined);
+        assert_eq!(std::fs::read(&prior).unwrap(), with_counter);
+        std::fs::remove_file(prior).unwrap();
+        let mut downgraded: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            downgraded["native_source_effect_touch_base_version"],
+            RAMP_MODULATOR_SCHEMA_VERSION
+        );
+        downgraded["version"] = NATIVE_SOURCE_EFFECT_TOUCH_SCHEMA_VERSION.into();
+        assert!(crate::decode(&serde_json::to_vec(&downgraded).unwrap()).is_err());
+        let mut unsupported: Value = serde_json::from_slice(&with_counter).unwrap();
+        unsupported["version"] = SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION.into();
+        assert!(crate::decode(&serde_json::to_vec(&unsupported).unwrap()).is_err());
+    }
 
     #[test]
     fn native_instrument_touch_wraps_prior_codecs_without_widening_them() {

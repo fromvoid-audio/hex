@@ -78,7 +78,7 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = RAMP_MODULATOR_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION;
 
 /// Schema70 stores an independent original source span for signed musical event placement.
 pub const MUSICAL_EVENT_SOURCE_SCHEMA_VERSION: u32 = 70;
@@ -141,8 +141,13 @@ pub const BUTTONS_MODULATOR_SCHEMA_VERSION: u32 = 96;
 pub const MIX_MODULATOR_SCHEMA_VERSION: u32 = 97;
 /// Schema98 admits a note-event Note Counter source.
 pub const NOTE_COUNTER_MODULATOR_SCHEMA_VERSION: u32 = 98;
-/// Schema99 admits the note-triggered Ramp source.
-pub const RAMP_MODULATOR_SCHEMA_VERSION: u32 = 99;
+/// Schema100 retains native post-instrument source effect touch rows over the
+/// complete prior codec, including modulation and other touch lanes.
+pub const NATIVE_SOURCE_EFFECT_TOUCH_SCHEMA_VERSION: u32 = 100;
+/// Schema101 admits the note-triggered Ramp source.
+pub const RAMP_MODULATOR_SCHEMA_VERSION: u32 = 101;
+/// Schema102 preserves source effect touches around a schema101 Ramp bank.
+pub const SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION: u32 = 102;
 
 fn contains_larger_device_state(project: &Project) -> bool {
     schema::device_assets::authored_states(project)
@@ -206,9 +211,13 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// prior project codec, including any instrument or long touch envelope.
 /// Note pressure on FM4 uses schema91. Button uses schema92. Macro-4 uses schema93.
 /// Loaded Sampler banks use schema94. Math uses schema95. Buttons uses schema96.
-/// Mix uses schema97. Note Counter uses schema98. Ramp uses schema99.
+/// Mix uses schema97. Note Counter uses schema98.
+/// Native source effect touches use schema100. Ramp uses schema101, or
+/// schema102 in a project with recorded native source effect touches.
 pub fn schema_version_for(project: &Project) -> u32 {
-    if schema::device_modulation::contains_ramp(project) {
+    if schema::device_automation_touch::contains_native_source_effect(project) {
+        schema::device_automation_touch::source_effect_schema_version(project)
+    } else if schema::device_modulation::contains_ramp(project) {
         RAMP_MODULATOR_SCHEMA_VERSION
     } else if schema::device_modulation::contains_note_counter(project) {
         NOTE_COUNTER_MODULATOR_SCHEMA_VERSION
@@ -456,6 +465,11 @@ impl From<serde_json::Error> for StorageError {
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 /// Nonempty serial units use schema80; flat projects retain their prior layout.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
+    if schema::device_automation_touch::contains_native_source_effect(project) {
+        return encode_document(
+            &schema::device_automation_touch::encode_native_source_effect(project)?,
+        );
+    }
     if schema::device_modulation::contains_ramp(project)
         || schema::device_modulation::contains_note_counter(project)
         || schema::device_modulation::contains_mix(project)
@@ -760,6 +774,12 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
         return Err(StorageError::Invalid("unsupported project format"));
     }
     let project = match header.version {
+        NATIVE_SOURCE_EFFECT_TOUCH_SCHEMA_VERSION
+        | SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION
+            if !inside_envelope =>
+        {
+            schema::device_automation_touch::decode_native_source_effect(bytes, header.version)
+        }
         EXTENDED_AUTOMATION_TOUCH_SCHEMA_VERSION if !inside_envelope => {
             schema::device_automation_touch::decode_extended(bytes)
         }
@@ -917,6 +937,15 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
     {
         return Err(StorageError::Invalid(
             "bound source effects require their current project schema",
+        ));
+    }
+    if !matches!(
+        header.version,
+        NATIVE_SOURCE_EFFECT_TOUCH_SCHEMA_VERSION | SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION
+    ) && schema::device_automation_touch::contains_native_source_effect(&project)
+    {
+        return Err(StorageError::Invalid(
+            "recorded source effect touches require their current project schema",
         ));
     }
     Ok(project)

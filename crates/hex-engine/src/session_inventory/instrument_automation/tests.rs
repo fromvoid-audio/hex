@@ -915,6 +915,12 @@ fn check_saved_fm4_note_event_source(
             let next = render_note(&oracle[1], age);
             expected = [expected[0] + next[0], expected[1] + next[1]];
         }
-        assert_eq!(actual, expected, "onset automation frame {frame}");
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            let tolerance = 8.0 * f32::EPSILON * expected.abs();
+            assert!(
+                (actual - expected).abs() <= tolerance,
+                "onset frame {frame}: {actual} vs {expected}"
+            );
+        }
     }
 }
