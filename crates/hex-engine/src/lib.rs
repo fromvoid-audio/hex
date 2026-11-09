@@ -118,6 +118,7 @@ pub use sparse_audio::SparseFrameMap;
 
 mod device_automation;
 mod device_modulation;
+pub use device_modulation::foreign_modulation_target as project_vst3_modulation_target;
 pub use device_modulation::{
     device_available_modulation_outputs, fm4_note_pressure_parameter_supported,
     project_device_can_add_note_pressure, project_device_has_modulation_note_events,

@@ -369,9 +369,7 @@ pub(super) fn prepare_voice_pressure(
 }
 
 /// The first native effect reservation owns exactly one continuous raw ID.
-pub(crate) fn foreign_modulation_target(
-    device: &Device,
-) -> Result<Option<(u32, [u8; 16])>, Invalid> {
+pub fn foreign_modulation_target(device: &Device) -> Result<Option<(u32, [u8; 16])>, Invalid> {
     if device.state().type_id() != VST3_DEVICE_TYPE_ID {
         return Ok(None);
     }

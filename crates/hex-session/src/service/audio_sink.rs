@@ -195,6 +195,32 @@ impl<'a> ResidentEffectPreparation<'a> {
             })
     }
 
+    /// Canonical raw target for this effect's requested dense reservation.
+    /// The host independently validates the actual original source metadata.
+    pub fn modulated_plugin_target(&self, device: u64) -> Result<Option<(u32, [u8; 16])>, String> {
+        let Some(candidate) = self
+            .project
+            .automation_devices()
+            .find(|candidate| candidate.id().value() == device && is_plugin_effect(candidate))
+        else {
+            return Ok(None);
+        };
+        let selected = hex_engine::project_vst3_modulation_target(candidate)
+            .map_err(|error| error.to_string())?;
+        if selected.is_some()
+            && !self
+                .project
+                .device_location(candidate.id())
+                .is_some_and(|location| {
+                    location.class == hex_project::DeviceUnitClass::Effect
+                        && !matches!(location.owner, hex_project::DeviceOwner::Source(_))
+                })
+        {
+            return Err("vst3 modulation requires a track, return or main effect".into());
+        }
+        Ok(selected)
+    }
+
     /// An authored program is immutable for one native worker epoch. An
     /// instrument loop edit may keep that epoch when the run budget matches.
     pub fn same_authored_plugin_program(
@@ -1762,6 +1788,61 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(7, Some(class)), (11, Some(class))]
         );
+        assert_eq!(input.modulated_plugin_target(device.value()).unwrap(), None);
+        use hex_project::{
+            DeviceModulation, DeviceModulationRoute, ModulationAmount, ModulationDestination,
+            ModulationOutputId, ModulationRouteId, ModulationSourceId, Modulator,
+        };
+        let first = editor.project().next_identity();
+        let source = ModulationSourceId::new(first).unwrap();
+        editor
+            .execute(Command::ReplaceDeviceModulation {
+                device,
+                modulation: DeviceModulation::new(
+                    vec![Modulator {
+                        id: source,
+                        color: Default::default(),
+                        enabled: false,
+                        state: hex_engine::lfo_modulator::Settings::default()
+                            .encode()
+                            .unwrap(),
+                    }],
+                    vec![DeviceModulationRoute {
+                        id: ModulationRouteId::new(first + 1).unwrap(),
+                        source,
+                        output: ModulationOutputId::MAIN,
+                        destination: ModulationDestination::Device {
+                            device_type: hex_plugin_state::TYPE_ID,
+                            target: DeviceAutomationTarget::Vst3 { parameter: 0 },
+                            vst3_class: Some(class),
+                        },
+                        amount: ModulationAmount::new(0.25).unwrap(),
+                        range: Default::default(),
+                        enabled: false,
+                    }],
+                )
+                .unwrap(),
+            })
+            .unwrap();
+        let projected = |project: &Project, reopen| {
+            ResidentEffectPreparation {
+                project,
+                context: hex_engine::AudioSourceContext {
+                    project_generation: 1,
+                    editor_revision: 2,
+                },
+                restoring_plugin_state: reopen,
+                preparing_edit: !reopen,
+            }
+            .modulated_plugin_target(device.value())
+            .unwrap()
+        };
+        assert_eq!(projected(editor.project(), false), Some((0, class)));
+        assert_eq!(projected(editor.project(), true), Some((0, class)));
+        assert!(editor.undo());
+        assert_eq!(projected(editor.project(), false), None);
+        assert!(editor.redo());
+        assert_eq!(projected(editor.project(), false), Some((0, class)));
     }
 
     #[test]
