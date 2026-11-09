@@ -294,6 +294,25 @@ pub struct GestureClient {
 }
 
 impl GestureClient {
+    /// Share the local identity space without pretending the original editor
+    /// delivered a Hex pointer gesture or owning any of its acknowledgements.
+    pub fn reserve_plugin_editor_key(
+        &mut self,
+        generation: u64,
+    ) -> Result<GestureKey, &'static str> {
+        if self.active.is_some() || self.in_flight.is_some() || self.recovery_pending {
+            return Err("finish the current device gesture first");
+        }
+        self.next_token = self
+            .next_token
+            .checked_add(1)
+            .ok_or("device gesture limit reached")?;
+        Ok(GestureKey {
+            generation,
+            token: self.next_token,
+        })
+    }
+
     pub fn begin(
         &mut self,
         generation: u64,
