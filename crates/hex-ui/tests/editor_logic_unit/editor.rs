@@ -25,3 +25,9 @@ mod refresh_state;
 #[allow(dead_code)]
 #[path = "../../src/editor/fade_calculation.rs"]
 mod fade_calculation;
+
+#[allow(dead_code)]
+#[path = "../../src/editor/console_track_page.rs"]
+mod console_track_page;
+#[path = "track_meters.rs"]
+mod track_meters;

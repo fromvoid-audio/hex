@@ -17,7 +17,7 @@ if _PYTHON_SPEC is None or _PYTHON_SPEC.loader is None:
 python_tests = importlib.util.module_from_spec(_PYTHON_SPEC)
 _PYTHON_SPEC.loader.exec_module(python_tests)
 
-POLICY_VERSION = 45
+POLICY_VERSION = 46
 UI_PACKAGES = {"hex-ui", "hex-widgets"}
 # Opaque state reaches storage through runtime type IDs, not a Cargo dependency.
 # Changes here must be reviewed with the real registration/codec consumers.
@@ -277,7 +277,10 @@ UI_UNIT_TARGETS = {"editor::audio_admission::": "unit_editor_state",
                    "editor::session_navigation::": "unit_editor_logic",
                    "editor::session_route_view::": "unit_editor_logic",
                    "editor::signed_frame_viewport::": "unit_timeline",
+                   "editor::track_meters::decay::": "unit_editor_logic",
+                   "editor::track_meters::follower::": "unit_editor_logic",
                    "editor::track_meters::scale::": "unit_editor_state",
+                   "editor::track_meters::selection::": "unit_editor_logic",
                    "editor::user_errors::": "unit_editor_logic",
                    "editor::viewport::": "unit_editor_state",
                    "section_appearance::": "unit_section",
@@ -292,6 +295,7 @@ UI_UNIT_FEATURES = {"unit_piano_roll": "ui-unit-tier", "unit_timeline": "ui-unit
 UI_UNIT_COHORTS = [{"editor::midi_drag::", "editor::midi_group_drag::", "editor::midi_scene::", "editor::midi_selection::", "editor::midi_stroke::", "editor::midi_velocity::", "editor::midi_viewport_grid::"},
                    {"editor::device_panel::eq_panel::group_move::", "editor::device_panel::eq_panel::gestures::"},
                    {"editor::musical_time::", "editor::seek::", "editor::signed_frame_viewport::", "editor::viewport::"},
+                   {"editor::refresh_state::", "editor::track_meters::decay::", "editor::track_meters::follower::", "editor::track_meters::scale::"},
                    {"section_appearance::", "section_reorder::"}]
 # Recovery's real prepared-audio test is a sibling so importing its state into
 # the unit binary cannot also compile and run the integration fixture there.
@@ -301,7 +305,10 @@ UI_INTEGRATION_PAIRS = {"editor::recovery_state::": "editor::recovery_state_inte
                         "editor::fade_calculation::": "editor::fades::",
                         "editor::midi_wheel_mapping::": "editor::midi_wheel::",
                         "editor::refresh_state::": "editor::output_meter_ui_test::",
-                        "editor::session_navigation::": "editor::session_navigation_ui_test::"}
+                        "editor::session_navigation::": "editor::session_navigation_ui_test::",
+                        "editor::track_meters::selection::": "editor::track_meters::tests::",
+                        "editor::track_meters::decay::": "editor::track_meters::tests::",
+                        "editor::track_meters::follower::": "editor::track_meters::main_output::tests::"}
 MOD_LINE = re.compile(r"(pub(\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")
 PATH_ATTRIBUTE = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
 
@@ -417,14 +424,20 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
         if owner in whole:
             continue
         if owner == "hex-ui":
-            for module, integration in UI_INTEGRATION_PAIRS.items():
-                if any(module.startswith(name) or name.startswith(module)
-                       or integration.startswith(name) or name.startswith(integration)
-                       for name in names):
-                    names.update((module, integration))
-            for cohort in UI_UNIT_COHORTS:
-                if names & cohort:
-                    names.update(cohort)
+            # Pairs and shared unit dependencies can introduce one another;
+            # close over both before dropping paths covered by an ancestor.
+            while True:
+                before = len(names)
+                for module, integration in UI_INTEGRATION_PAIRS.items():
+                    if any(module.startswith(name) or name.startswith(module)
+                           or integration.startswith(name) or name.startswith(integration)
+                           for name in names):
+                        names.update((module, integration))
+                for cohort in UI_UNIT_COHORTS:
+                    if names & cohort:
+                        names.update(cohort)
+                if len(names) == before:
+                    break
         # A filter already covered by a broader selected module is redundant.
         selected[owner] = sorted(n for n in names if not any(n != o and n.startswith(o) for o in names))
     return selected
