@@ -6,8 +6,8 @@ use crate::editor::context_menu::EditorContextAction;
 use gpui::{AnyElement, Point, SharedString};
 use hex_engine::{
     audio_rate_modulator as audio_rate, button_modulator as manual_button,
-    follower_modulator as follower, lfo_modulator as lfo, macro_modulator as manual,
-    note_pressure_modulator as pressure, random_modulator as random,
+    follower_modulator as follower, lfo_modulator as lfo, macro_four_modulator as macro_four,
+    macro_modulator as manual, note_pressure_modulator as pressure, random_modulator as random,
 };
 use hex_lattice_contract::{ParameterId, ParameterModulation};
 use hex_project::{
@@ -21,6 +21,7 @@ enum SourceKind {
     Lfo,
     Follower,
     Macro,
+    MacroFour,
     Random,
     AudioRate,
     NotePressure,
@@ -28,10 +29,11 @@ enum SourceKind {
 }
 
 impl SourceKind {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::Lfo,
         Self::Follower,
         Self::Macro,
+        Self::MacroFour,
         Self::Random,
         Self::AudioRate,
         Self::NotePressure,
@@ -43,10 +45,19 @@ impl SourceKind {
             Self::Lfo => "lfo",
             Self::Follower => "follower",
             Self::Macro => "macro",
+            Self::MacroFour => "macro-4",
             Self::Random => "random",
             Self::AudioRate => "audio rate",
             Self::NotePressure => "note pressure",
             Self::Button => "button",
+        }
+    }
+
+    fn required_outputs(self) -> usize {
+        match self {
+            Self::NotePressure => 0,
+            Self::MacroFour => macro_four::VALUE_PARAMETERS.len(),
+            _ => 1,
         }
     }
 
@@ -61,6 +72,7 @@ impl SourceKind {
             Self::NotePressure => pressure::default_state(),
             Self::Button => manual_button::encode(false),
             Self::Macro => manual::Settings::default().encode(),
+            Self::MacroFour => macro_four::Settings::default().encode(),
             Self::Random => random::Settings {
                 seed: identity,
                 rate_hz: 1.0,
@@ -70,11 +82,42 @@ impl SourceKind {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::editor) struct MappingOutput {
+    source: ModulationSourceId,
+    output: ModulationOutputId,
+}
+
+impl MappingOutput {
+    pub(super) const fn main(source: ModulationSourceId) -> Self {
+        Self {
+            source,
+            output: ModulationOutputId::MAIN,
+        }
+    }
+
+    fn owns(self, route: &DeviceModulationRoute) -> bool {
+        route.source == self.source && route.output == self.output
+    }
+
+    fn valid_for(self, slot: &Modulator) -> bool {
+        self.source == slot.id
+            && if slot.state.type_id() == macro_four::TYPE_ID {
+                macro_four::VALUE_PARAMETERS.iter().any(|&parameter| {
+                    macro_four::output_for_parameter(parameter) == Some(self.output)
+                })
+            } else {
+                self.output == ModulationOutputId::MAIN
+            }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum MappingTarget {
     Device(ParameterId),
     HostGain(HostGainTarget),
     Macro(ModulationSourceId),
+    MacroFour(ModulationSourceId, ParameterId),
     LfoRate(ModulationSourceId),
 }
 
@@ -109,6 +152,17 @@ fn macro_destination(source: ModulationSourceId) -> ModulationDestination {
     }
 }
 
+fn macro_four_destination(
+    source: ModulationSourceId,
+    parameter: ParameterId,
+) -> ModulationDestination {
+    ModulationDestination::Modulator {
+        source,
+        module_type: macro_four::TYPE_ID,
+        parameter,
+    }
+}
+
 fn lfo_rate_destination(source: ModulationSourceId) -> ModulationDestination {
     ModulationDestination::Modulator {
         source,
@@ -128,6 +182,7 @@ enum Edit {
     Sync(ModulationSourceId),
     LfoShape(ModulationSourceId, lfo::Waveform),
     MacroValue(ModulationSourceId, f32),
+    MacroFourValue(ModulationSourceId, ParameterId, f32),
     FollowerTime {
         source: ModulationSourceId,
         attack: bool,
@@ -135,7 +190,7 @@ enum Edit {
     },
     RandomRate(ModulationSourceId, f64),
     Reseed(ModulationSourceId),
-    Map(ModulationSourceId, MappingTarget),
+    Map(MappingOutput, MappingTarget),
     Adjust(ModulationRouteId, f32),
     Range(ModulationRouteId),
     ToggleRoute(ModulationRouteId),
@@ -205,8 +260,14 @@ fn open_add_menu(
     let allow_note_pressure = view.state.as_ref().is_some_and(|state| {
         hex_engine::project_device_can_add_note_pressure(&state.project, target.device)
     });
+    let outputs_available = view
+        .state
+        .as_ref()
+        .and_then(|state| state.project.device(target.device))
+        .map_or(0, hex_engine::device_available_modulation_outputs);
     let items = SourceKind::ALL
         .into_iter()
+        .filter(|kind| kind.required_outputs() <= outputs_available)
         .filter(|kind| match kind {
             SourceKind::Follower | SourceKind::AudioRate => allow_audio_input,
             SourceKind::NotePressure => allow_note_pressure,
@@ -330,7 +391,7 @@ pub(super) fn panel(
         .device_panel
         .mapping_source
         .filter(|(device, source)| {
-            *device == id && bank.sources().iter().any(|slot| slot.id == *source)
+            *device == id && bank.sources().iter().any(|slot| source.valid_for(slot))
         })
         .map(|(_, source)| source);
     let host_gain_available = if selected.is_some() || (!has_target && bank.is_empty()) {
@@ -364,7 +425,10 @@ pub(super) fn panel(
         }))
     };
     let mut body = div().flex().flex_col().flex_shrink_0().gap(px(3.0));
-    if bank.sources().len() < hex_project::MAX_MODULATORS_PER_DEVICE {
+    if bank.sources().len() < hex_project::MAX_MODULATORS_PER_DEVICE
+        && (hex_engine::device_available_modulation_outputs(device) > 0
+            || hex_engine::project_device_can_add_note_pressure(&state.project, id))
+    {
         let target = AddModulatorTarget {
             generation,
             revision,
@@ -399,7 +463,7 @@ pub(super) fn panel(
             .filter_map(|stage| {
                 let (target, key, label) = stage.mapping();
                 let assigned = bank.routes().iter().any(|route| {
-                    route.source == source
+                    source.owns(route)
                         && matches!(route.destination, ModulationDestination::Device { target: existing, .. } if existing == target)
                 });
                 (!assigned).then(|| button(
@@ -413,9 +477,10 @@ pub(super) fn panel(
     }
     let blocked_targets: Vec<_> = selected
         .into_iter()
-        .flat_map(|source| bank.source_route_ancestors(source))
+        .flat_map(|source| bank.source_route_ancestors(source.source))
         .collect();
-    let pressure_selected = selected.is_some_and(|id| is_pressure_source(bank.sources(), id));
+    let pressure_selected =
+        selected.is_some_and(|output| is_pressure_source(bank.sources(), output.source));
     let mapping_source_for = |target, destination| {
         selected.filter(|source| {
             !pressure_selected
@@ -425,7 +490,7 @@ pub(super) fn panel(
                 && !bank
                     .routes()
                     .iter()
-                    .any(|route| route.source == *source && route.destination == destination)
+                    .any(|route| source.owns(route) && route.destination == destination)
         })
     };
     let multiple_macros = bank
@@ -448,6 +513,7 @@ pub(super) fn panel(
             lfo::TYPE_ID => SourceKind::Lfo,
             follower::TYPE_ID => SourceKind::Follower,
             manual::TYPE_ID => SourceKind::Macro,
+            macro_four::TYPE_ID => SourceKind::MacroFour,
             random::TYPE_ID => SourceKind::Random,
             audio_rate::TYPE_ID => SourceKind::AudioRate,
             pressure::TYPE_ID => SourceKind::NotePressure,
@@ -462,20 +528,20 @@ pub(super) fn panel(
         } else {
             label.to_owned()
         };
-        let mapping = selected == Some(source_id);
         let source_key = |suffix: &str| format!("{label}-{}-{suffix}", source_id.value());
-        let control = action(
-            source_key("map"),
-            theme::text(if mapping { "done" } else { "map" }),
-        )
-        .on_click(cx.listener(move |view, _, _, cx| {
-            cx.stop_propagation();
-            if view.project_generation != generation {
-                return;
-            }
-            view.device_panel.mapping_source = (!mapping).then_some((id, source_id));
-            cx.notify();
-        }));
+        let map_control = |cx: &mut Context<EditorView>, key, source| {
+            let mapping = selected == Some(source);
+            action(key, theme::text(if mapping { "done" } else { "map" })).on_click(cx.listener(
+                move |view, _, _, cx| {
+                    cx.stop_propagation();
+                    if view.project_generation != generation {
+                        return;
+                    }
+                    view.device_panel.mapping_source = (!mapping).then_some((id, source));
+                    cx.notify();
+                },
+            ))
+        };
         let mut row = div()
             .flex()
             .flex_wrap()
@@ -488,7 +554,10 @@ pub(super) fn panel(
                 theme::text(if source.enabled { "on" } else { "off" }),
                 Edit::ToggleSource(source_id),
             ))
-            .child(control)
+            .children(
+                (!matches!(kind, SourceKind::MacroFour))
+                    .then(|| map_control(cx, source_key("map"), MappingOutput::main(source_id))),
+            )
             .children(
                 (!matches!(kind, SourceKind::NotePressure)
                     && bank.sources().len() < hex_project::MAX_MODULATORS_PER_DEVICE)
@@ -653,6 +722,64 @@ pub(super) fn panel(
                     ));
             }
         }
+        if let SourceKind::MacroFour = kind
+            && let Ok(settings) = macro_four::Settings::decode(&source.state)
+        {
+            let mut controls = div().w_full().flex().flex_wrap().gap(px(3.0));
+            for (parameter, value) in macro_four::VALUE_PARAMETERS
+                .into_iter()
+                .zip(settings.values)
+            {
+                let Some(output) = macro_four::output_for_parameter(parameter) else {
+                    continue;
+                };
+                let number = output.value();
+                let key = |suffix| source_key(&format!("{number}-{suffix}"));
+                let value = format!("{number} · {:.0}%", value * 100.0);
+                let destination = macro_four_destination(source_id, parameter);
+                let value_control =
+                    if let Some(mapping) = mapping_source_for(source_id, destination) {
+                        button(
+                            cx,
+                            format!("map-macro-4-{}-{}-{number}", id.value(), source_id.value()),
+                            theme::text(value),
+                            Edit::Map(mapping, MappingTarget::MacroFour(source_id, parameter)),
+                        )
+                        .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                        .into_any_element()
+                    } else {
+                        theme::text(value).into_any_element()
+                    };
+                controls = controls.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(2.0))
+                        .children([value_control])
+                        .child(button(
+                            cx,
+                            key("less"),
+                            theme::text("−"),
+                            Edit::MacroFourValue(source_id, parameter, -0.05),
+                        ))
+                        .child(button(
+                            cx,
+                            key("more"),
+                            theme::text("+"),
+                            Edit::MacroFourValue(source_id, parameter, 0.05),
+                        ))
+                        .children([map_control(
+                            cx,
+                            key("map"),
+                            MappingOutput {
+                                source: source_id,
+                                output,
+                            },
+                        )]),
+                );
+            }
+            row = row.child(controls);
+        }
         if let SourceKind::Random = kind
             && let Ok(settings) = random::Settings::decode(&source.state)
         {
@@ -737,7 +864,23 @@ pub(super) fn panel(
                         "macro value".to_owned()
                     }
                 }
+                ModulationDestination::Modulator {
+                    source,
+                    module_type: macro_four::TYPE_ID,
+                    parameter,
+                } => {
+                    let Some(slot) = bank.sources().iter().position(|slot| slot.id == source)
+                    else {
+                        continue;
+                    };
+                    format!("macro-4 {} control {}", slot + 1, parameter.value())
+                }
                 _ => continue,
+            };
+            let label = if matches!(kind, SourceKind::MacroFour) {
+                format!("{} → {label}", route.output.value())
+            } else {
+                label
             };
             let key = |suffix| format!("modulation-route-{}-{suffix}", route.id.value());
             let range = if route.range == ModulationRange::default() {
@@ -815,21 +958,21 @@ pub(super) fn target_overlay(
         || !target
             .semantics
             .is_some_and(|semantics| semantics.modulation == ParameterModulation::SampleRate)
-        || !bank.sources().iter().any(|row| row.id == source)
+        || !bank.sources().iter().any(|row| source.valid_for(row))
     {
         return None;
     }
     let assigned = bank.routes().iter().any(|route| {
-        route.source == source
+        source.owns(route)
             && matches!(
                 route.destination,
                 ModulationDestination::Device { target: DeviceAutomationTarget::Parameter(id), .. }
                     if id == parameter
             )
     });
-    if is_pressure_source(bank.sources(), source)
+    if is_pressure_source(bank.sources(), source.source)
         && (!hex_engine::fm4_note_pressure_parameter_supported(parameter)
-            || (!assigned && bank.routes().iter().any(|route| route.source == source)))
+            || (!assigned && bank.routes().iter().any(|route| source.owns(route))))
     {
         return None;
     }
@@ -927,6 +1070,9 @@ fn apply(
     let maximum_hz = f64::from(project.sample_rate()) * 0.5;
     match edit {
         Edit::Add(kind) => {
+            if kind.required_outputs() > hex_engine::device_available_modulation_outputs(device) {
+                return Err(Invalid("device modulator output capacity reached"));
+            }
             if matches!(kind, SourceKind::NotePressure)
                 && !hex_engine::project_device_can_add_note_pressure(project, id)
             {
@@ -1009,6 +1155,20 @@ fn apply(
             settings.value = (settings.value + change).clamp(0.0, 1.0);
             source.state = settings.encode().map_err(unsupported)?;
         }
+        Edit::MacroFourValue(id, parameter, change) => {
+            let source = find_source(&mut sources, id)?;
+            let mut settings = macro_four::Settings::decode(&source.state).map_err(unsupported)?;
+            let index = macro_four::VALUE_PARAMETERS
+                .iter()
+                .position(|&candidate| candidate == parameter)
+                .ok_or(Invalid("macro-4 control is unsupported"))?;
+            let value = settings
+                .values
+                .get_mut(index)
+                .ok_or(Invalid("macro-4 control is unsupported"))?;
+            *value = (*value + change).clamp(0.0, 1.0);
+            source.state = settings.encode().map_err(unsupported)?;
+        }
         Edit::FollowerTime {
             source,
             attack,
@@ -1037,10 +1197,13 @@ fn apply(
             source.state = settings.encode().map_err(unsupported)?;
         }
         Edit::Map(source, target) => {
-            let pressure = is_pressure_source(&sources, source);
+            if !sources.iter().any(|slot| source.valid_for(slot)) {
+                return Err(Invalid("modulator source output is unsupported"));
+            }
+            let pressure = is_pressure_source(&sources, source.source);
             if pressure
                 && (!matches!(target, MappingTarget::Device(id) if hex_engine::fm4_note_pressure_parameter_supported(id))
-                    || routes.iter().any(|route| route.source == source))
+                    || routes.iter().any(|route| source.owns(route)))
             {
                 return Err(Invalid("note pressure supports one carrier assignment"));
             }
@@ -1070,6 +1233,13 @@ fn apply(
                     }
                 }
                 MappingTarget::Macro(target) => macro_destination(target),
+                MappingTarget::MacroFour(target, parameter) => {
+                    let target = find_source(&mut sources, target)?;
+                    macro_four::Settings::decode(&target.state).map_err(unsupported)?;
+                    macro_four::output_for_parameter(parameter)
+                        .ok_or(Invalid("macro-4 control is unsupported"))?;
+                    macro_four_destination(target.id, parameter)
+                }
                 MappingTarget::LfoRate(target) => {
                     let source = find_source(&mut sources, target)?;
                     lfo::Settings::decode(&source.state).map_err(unsupported)?;
@@ -1078,14 +1248,14 @@ fn apply(
             };
             if routes
                 .iter()
-                .any(|route| route.source == source && route.destination == destination)
+                .any(|route| source.owns(route) && route.destination == destination)
             {
                 return Err(Invalid("this source already modulates the parameter"));
             }
             routes.push(DeviceModulationRoute {
                 id: ModulationRouteId::new(project.next_identity())?,
-                source,
-                output: ModulationOutputId::MAIN,
+                source: source.source,
+                output: source.output,
                 destination,
                 amount: ModulationAmount::new(0.1)?,
                 range: if pressure {
@@ -1174,7 +1344,7 @@ mod tests {
         let mapped = apply(
             editor.project(),
             device,
-            Edit::Map(first, MappingTarget::Macro(second)),
+            Edit::Map(MappingOutput::main(first), MappingTarget::Macro(second)),
         )
         .unwrap();
         let mut routes = mapped.routes().to_vec();
