@@ -2,3 +2,4 @@
 //! belong to the prepared graph.
 pub mod envelope_follower;
 pub mod lfo;
+pub mod random_hold;

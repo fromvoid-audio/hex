@@ -2,7 +2,9 @@
 //! revision-bound edits. A selected mapping source is view state only.
 use super::*;
 use gpui::{AnyElement, SharedString};
-use hex_engine::{follower_modulator as follower, lfo_modulator as lfo};
+use hex_engine::{
+    follower_modulator as follower, lfo_modulator as lfo, random_modulator as random,
+};
 use hex_lattice_contract::{ParameterId, ParameterModulation};
 use hex_project::{
     Device, DeviceAutomationTarget, DeviceModulation, DeviceModulationRoute, Invalid,
@@ -14,6 +16,7 @@ use hex_project::{
 enum Edit {
     AddLfo,
     AddFollower,
+    AddRandom,
     ToggleSource(ModulationSourceId),
     RemoveSource(ModulationSourceId),
     Rate(ModulationSourceId, f64),
@@ -23,6 +26,8 @@ enum Edit {
         attack: bool,
         factor: f64,
     },
+    RandomRate(ModulationSourceId, f64),
+    Reseed(ModulationSourceId),
     Map(ModulationSourceId, ParameterId),
     Adjust(ModulationRouteId, f32),
     Range(ModulationRouteId),
@@ -78,6 +83,12 @@ pub(super) fn panel(
                         theme::text("+ follower"),
                         Edit::AddFollower,
                     ))
+                    .child(button(
+                        cx,
+                        format!("add-random-{}", id.value()),
+                        theme::text("+ random"),
+                        Edit::AddRandom,
+                    ))
                 },
             ),
     );
@@ -90,9 +101,11 @@ pub(super) fn panel(
         let source_id = source.id;
         let lfo = lfo::Settings::decode(&source.state).ok();
         let follower = follower::Settings::decode(&source.state).ok();
-        let (label, prefix) = match (lfo, follower) {
-            (Some(_), _) => ("lfo", "lfo"),
-            (_, Some(_)) => ("follower", "follower"),
+        let random = random::Settings::decode(&source.state).ok();
+        let (label, prefix) = match (lfo, follower, random) {
+            (Some(_), _, _) => ("lfo", "lfo"),
+            (_, Some(_), _) => ("follower", "follower"),
+            (_, _, Some(_)) => ("random", "random"),
             _ => continue,
         };
         let mapping = selected == Some(source_id);
@@ -186,6 +199,33 @@ pub(super) fn panel(
                         )),
                 );
             }
+        }
+        if let Some(settings) = random {
+            row = row.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(3.0))
+                    .child(button(
+                        cx,
+                        source_key("slower"),
+                        theme::text("−"),
+                        Edit::RandomRate(source_id, 0.5),
+                    ))
+                    .child(theme::text(format!("{:.2} hz", settings.rate_hz)))
+                    .child(button(
+                        cx,
+                        source_key("faster"),
+                        theme::text("+"),
+                        Edit::RandomRate(source_id, 2.0),
+                    ))
+                    .child(button(
+                        cx,
+                        source_key("reseed"),
+                        theme::text("new seed"),
+                        Edit::Reseed(source_id),
+                    )),
+            );
         }
         body = body.child(row);
         for route in bank
@@ -360,9 +400,14 @@ fn apply(
     let unsupported = |_| Invalid("modulator settings are unsupported");
     let maximum_hz = f64::from(project.sample_rate()) * 0.5;
     match edit {
-        Edit::AddLfo | Edit::AddFollower => {
+        Edit::AddLfo | Edit::AddFollower | Edit::AddRandom => {
             let state = match edit {
                 Edit::AddLfo => lfo::Settings::default().encode(),
+                Edit::AddRandom => random::Settings {
+                    seed: project.next_identity(),
+                    rate_hz: 1.0,
+                }
+                .encode(),
                 _ => follower::Settings::default().encode(),
             }
             .map_err(unsupported)?;
@@ -426,6 +471,18 @@ fn apply(
                 &mut settings.release_seconds
             };
             *time = (*time * factor).clamp(0.0001, 10.0);
+            source.state = settings.encode().map_err(unsupported)?;
+        }
+        Edit::RandomRate(id, factor) => {
+            let source = find_source(&mut sources, id)?;
+            let mut settings = random::Settings::decode(&source.state).map_err(unsupported)?;
+            settings.rate_hz = (settings.rate_hz * factor).clamp(0.01, maximum_hz);
+            source.state = settings.encode().map_err(unsupported)?;
+        }
+        Edit::Reseed(id) => {
+            let source = find_source(&mut sources, id)?;
+            let mut settings = random::Settings::decode(&source.state).map_err(unsupported)?;
+            settings.seed = settings.seed.wrapping_add(0xd1b5_4a32_d192_ed03);
             source.state = settings.encode().map_err(unsupported)?;
         }
         Edit::Map(source, parameter) => {

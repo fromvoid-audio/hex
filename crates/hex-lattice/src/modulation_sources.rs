@@ -13,7 +13,7 @@
 //! the prepared tempo. Rate/mode retargeting follows the same block transaction
 //! as phase, and graph inheritance retains the new graph's prepared timing mode.
 use crate::NativeInstrumentClock;
-use hex_dsp::{EnvelopeFollower, LfoRate, ModulationLfo, StereoFrame};
+use hex_dsp::{EnvelopeFollower, LfoRate, ModulationLfo, RandomHold, StereoFrame};
 use hex_lattice_contract::{DeviceContractError as Error, ModulationSourceId};
 
 pub const MAX_MODULATION_SOURCE_SOURCES: usize = 32;
@@ -58,6 +58,7 @@ enum SourceState {
         timing: Timing,
     },
     Follower(EnvelopeFollower),
+    Random(RandomHold),
 }
 
 impl SourceState {
@@ -80,6 +81,7 @@ impl SourceState {
                 },
             ) => oscillator.inherit_phase(&old),
             (Self::Follower(follower), Self::Follower(old)) => follower.inherit_envelope(&old),
+            (Self::Random(random), Self::Random(old)) => random.inherit_history(&old),
             _ => return false,
         }
         true
@@ -155,6 +157,22 @@ impl PreparedModulationSource {
         Ok(Self {
             id,
             initial: SourceState::Follower(follower),
+            sample_rate: f64::from(sample_rate),
+        })
+    }
+
+    /// Prepare a free-running, seeded sample-and-hold source.
+    pub fn random_hold(
+        id: ModulationSourceId,
+        sample_rate: u32,
+        seed: u64,
+        rate_hz: f64,
+    ) -> Result<Self, Error> {
+        let random = RandomHold::new(seed, sample_rate, rate_hz)
+            .map_err(|_| Error::InvalidParameterValue)?;
+        Ok(Self {
+            id,
+            initial: SourceState::Random(random),
             sample_rate: f64::from(sample_rate),
         })
     }
@@ -417,6 +435,7 @@ impl ModulationSourceBank {
                 SourceState::Follower(follower) => follower
                     .render(input.ok_or(Error::InvalidParameterValue)?, output)
                     .map_err(|_| Error::InvalidParameterValue)?,
+                SourceState::Random(random) => random.render(output),
             }
         }
         self.last_frames = frames;
@@ -534,6 +553,40 @@ impl ModulationSourceBank {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn random_modulation_rolls_back_and_restarts_from_the_authored_seed() {
+        let id = ModulationSourceId::new(1).unwrap();
+        let source = PreparedModulationSource::random_hold(id, 8, 0, 2.0).unwrap();
+        let mut bank = ModulationSourceBank::new(&[source], 8).unwrap();
+        let observe = |bank: &ModulationSourceBank| {
+            bank.samples(id)
+                .unwrap()
+                .iter()
+                .map(|sample| sample.to_bits())
+                .collect::<Vec<_>>()
+        };
+        let expected = [0x3f44_4150; 4]
+            .into_iter()
+            .chain([0xbe0c_3b10; 4])
+            .collect::<Vec<_>>();
+        bank.begin();
+        bank.render_chunk(8).unwrap();
+        assert_eq!(observe(&bank), expected);
+        bank.rollback();
+        bank.begin();
+        bank.render_chunk(8).unwrap();
+        assert_eq!(observe(&bank), expected);
+        bank.commit().unwrap();
+        bank.begin();
+        bank.render_chunk(4).unwrap();
+        assert_eq!(observe(&bank), [0xbf72_7746; 4]);
+        bank.rollback();
+        bank.reset_all();
+        bank.begin();
+        bank.render_chunk(8).unwrap();
+        assert_eq!(observe(&bank), expected);
+    }
 
     #[test]
     fn follower_requires_finite_input_and_refusal_leaves_other_sources_untouched() {

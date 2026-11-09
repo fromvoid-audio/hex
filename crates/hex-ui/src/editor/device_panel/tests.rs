@@ -6253,6 +6253,16 @@ fn modulation_panel_adds_and_maps_an_envelope_follower(cx: &mut TestAppContext) 
     );
 }
 
+#[gpui::test]
+fn modulation_panel_adds_and_maps_seeded_random(cx: &mut TestAppContext) {
+    assert_modulation_mapping(
+        cx,
+        "random",
+        hex_engine::random_modulator::TYPE_ID,
+        &[hex_devices::utility::parameter::GAIN],
+    );
+}
+
 fn assert_modulation_mapping(
     cx: &mut TestAppContext,
     source_kind: &str,
@@ -6294,6 +6304,30 @@ fn assert_modulation_mapping(
     pump_until(&editor, cx, |view| source(view).is_some());
     let source_id = editor.read_with(cx, |view, _| source(view).unwrap());
     visual.run_until_parked();
+    if source_kind == "random" {
+        let settings = |view: &EditorView| {
+            let slot = view
+                .state
+                .as_ref()?
+                .project
+                .device(device)?
+                .modulation()
+                .sources()
+                .first()?;
+            hex_engine::random_modulator::Settings::decode(&slot.state).ok()
+        };
+        let initial = editor.read_with(cx, |view, _| settings(view).unwrap());
+        click(&mut visual, format!("random-{}-faster", source_id.value()));
+        pump_until(&editor, cx, |view| {
+            settings(view).is_some_and(|value| value.rate_hz == 2.0)
+        });
+        visual.run_until_parked();
+        click(&mut visual, format!("random-{}-reseed", source_id.value()));
+        pump_until(&editor, cx, |view| {
+            settings(view).is_some_and(|value| value.seed != initial.seed)
+        });
+        visual.run_until_parked();
+    }
     click(
         &mut visual,
         format!("{source_kind}-{}-map", source_id.value()),
@@ -6343,6 +6377,14 @@ fn assert_modulation_mapping(
     editor.read_with(cx, |view, _| {
         let device = view.state.as_ref().unwrap().project.device(device).unwrap();
         assert_eq!(device.state(), &original);
+        if source_kind == "random" {
+            let project = &view.state.as_ref().unwrap().project;
+            let restored = hex_storage::decode(&hex_storage::encode(project).unwrap()).unwrap();
+            assert_eq!(
+                restored.device(device.id()).unwrap().modulation(),
+                device.modulation()
+            );
+        }
         assert_eq!(device.modulation().sources()[0].state.type_id(), type_id);
         assert!(
             device
