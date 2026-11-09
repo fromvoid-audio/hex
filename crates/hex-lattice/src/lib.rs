@@ -22,6 +22,7 @@ mod meter;
 mod modulation;
 #[cfg(test)]
 mod modulation_graph_tests;
+mod modulation_note_counter;
 mod modulation_runtime;
 mod modulation_source_routes;
 mod modulation_sources;

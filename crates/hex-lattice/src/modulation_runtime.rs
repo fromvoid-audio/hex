@@ -6,7 +6,8 @@
 //! must call `rollback` before beginning the next block.
 use crate::{
     MAX_MODULATION_BLOCK_FRAMES, MAX_MODULATION_SOURCES, ModulationBlock, ModulationSourceBank,
-    ModulationSourceId, NativeParameterAutomation, PreparedModulation, PreparedModulationSource,
+    ModulationSourceId, NativeInstrumentEvent, NativeParameterAutomation, PreparedModulation,
+    PreparedModulationSource,
     modulation_source_routes::{PreparedSourceRoute, target_mask},
 };
 use hex_lattice_contract::DeviceContractError as Error;
@@ -124,7 +125,22 @@ impl ModulationRuntime {
         clock: Option<&dyn crate::NativeInstrumentClock>,
         consume: impl FnOnce(&dyn NativeParameterAutomation) -> Result<(), Error>,
     ) -> Result<(), Error> {
-        self.render_sources(frames, upstream, clock, None)?;
+        self.render_sources(frames, upstream, clock, None, None)?;
+        self.consume_values(frames, upstream, |values| consume(values))
+    }
+
+    /// Render against the ordinary instrument host's current event batch.
+    /// Offsets are relative to this chunk. The same ordered events are
+    /// passed to the instrument consumer synchronously.
+    pub fn render_instrument_chunk(
+        &mut self,
+        frames: usize,
+        upstream: Option<&dyn NativeParameterAutomation>,
+        clock: Option<&dyn crate::NativeInstrumentClock>,
+        events: &[NativeInstrumentEvent],
+        consume: impl FnOnce(&dyn NativeParameterAutomation) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        self.render_sources(frames, upstream, clock, None, Some(events))?;
         self.consume_values(frames, upstream, |values| consume(values))
     }
 
@@ -140,7 +156,7 @@ impl ModulationRuntime {
         consume: impl FnOnce(&mut [crate::StereoFrame], &ModulationBlock<'_>) -> Result<(), Error>,
     ) -> Result<(), Error> {
         let frames = input.len();
-        self.render_sources(frames, upstream, clock, tap.or(Some(input)))?;
+        self.render_sources(frames, upstream, clock, tap.or(Some(input)), None)?;
         self.consume_values(frames, upstream, |values| consume(input, values))
     }
 
@@ -150,6 +166,7 @@ impl ModulationRuntime {
         upstream: Option<&dyn NativeParameterAutomation>,
         clock: Option<&dyn crate::NativeInstrumentClock>,
         input: Option<&[crate::StereoFrame]>,
+        note_events: Option<&[NativeInstrumentEvent]>,
     ) -> Result<(), Error> {
         if frames > self.bank.chunk_frames() || frames > MAX_MODULATION_BLOCK_FRAMES {
             return Err(Error::RuntimeBudgetExceeded);
@@ -168,6 +185,7 @@ impl ModulationRuntime {
             frames,
             clock,
             input,
+            note_events,
             &self.source_routes,
             self.routed_targets,
         )
@@ -632,6 +650,119 @@ mod tests {
         check(&mut successor, &expected);
         successor.reset_all();
         check(&mut successor, &expected);
+    }
+
+    #[test]
+    fn note_counter_follows_sample_offsets_and_transaction_custody() {
+        use crate::NativeInstrumentExpression;
+        use std::num::NonZeroU64;
+
+        let fixture = prepared(6_000.0);
+        let id = ParameterId::from_static(1);
+        let target = ModulationTarget {
+            descriptor: fixture.program().descriptor(id).unwrap(),
+            semantics: fixture.program().semantics(id).unwrap(),
+            base: ParameterValue::Float(0.5),
+        };
+        let program = PreparedModulation::new(
+            &[target],
+            &[ModulationRoute {
+                source: 0,
+                target: id,
+                amount: 0.5,
+                range: [-1.0, 1.0],
+            }],
+            1,
+        )
+        .unwrap();
+        let counter = PreparedModulationSource::note_counter(
+            ModulationSourceId::new(1).unwrap(),
+            48_000,
+            5,
+            2,
+            true,
+        )
+        .unwrap();
+        let declaration = crate::PreparedModulationState::new(vec![counter], program, 8).unwrap();
+        let mut runtime = declaration.prepare().unwrap();
+        let onset = |frame_offset, occurrence_id| NativeInstrumentEvent::NoteOn {
+            frame_offset,
+            occurrence_id,
+            pitch: 60,
+            velocity: 100,
+        };
+        let first = [
+            NativeInstrumentEvent::Expression {
+                frame_offset: 0,
+                expression: NativeInstrumentExpression::ModWheel(64),
+            },
+            onset(0, 1),
+            onset(0, 2),
+            NativeInstrumentEvent::NotePressure {
+                frame_offset: 1,
+                occurrence_id: NonZeroU64::new(1).unwrap(),
+                value: 32,
+            },
+            NativeInstrumentEvent::NoteOff {
+                frame_offset: 2,
+                occurrence_id: 1,
+            },
+        ];
+        let second = [onset(0, 3), onset(2, 4)];
+        let check = |runtime: &mut ModulationRuntime, events, expected: &[f32]| {
+            runtime
+                .render_instrument_chunk(expected.len(), None, None, events, |block| {
+                    for (offset, &sample) in expected.iter().enumerate() {
+                        assert_eq!(
+                            block.value_at(id, offset),
+                            Some(ParameterValue::Float(sample))
+                        );
+                    }
+                    Ok(())
+                })
+                .unwrap();
+        };
+        runtime.begin();
+        assert!(runtime.render_chunk(3, None, |_| Ok(())).is_err());
+        for invalid in [
+            &[onset(3, 1)][..],
+            &[onset(1, 1), onset(0, 2)],
+            &[onset(0, 1); 513],
+        ] {
+            assert!(
+                runtime
+                    .render_instrument_chunk(3, None, None, invalid, |_| Ok(()))
+                    .is_err()
+            );
+        }
+        check(&mut runtime, &first, &[1.0; 3]);
+        runtime.rollback();
+        runtime.begin();
+        check(&mut runtime, &first, &[1.0; 3]);
+        runtime.commit().unwrap();
+        let mut successor = declaration.prepare().unwrap();
+        successor.inherit_committed(&runtime).unwrap();
+        successor.begin();
+        check(&mut successor, &second, &[0.25, 0.25, 0.75]);
+        successor.commit().unwrap();
+        successor.reset_all();
+        successor.begin();
+        check(&mut successor, &[], &[0.0; 2]);
+        let combined = [
+            first[0],
+            first[1],
+            first[2],
+            first[3],
+            first[4],
+            onset(3, 3),
+            onset(5, 4),
+        ];
+        check(
+            &mut successor,
+            &combined,
+            &[1.0, 1.0, 1.0, 0.25, 0.25, 0.75],
+        );
+        successor.commit().unwrap();
     }
 
     #[test]
