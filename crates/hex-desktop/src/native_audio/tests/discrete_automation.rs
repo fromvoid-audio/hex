@@ -70,7 +70,7 @@ fn native_toggle_and_choice_take_keeps_only_the_delivered_step() {
             .control
             .command(PlaybackCommand::PlayFrom(0))
             .unwrap();
-        let base = (0..4).map(|_| render(&h)[63]).last().unwrap();
+        let base = (0..4).fold([0.0; 2], |_, _| render(&h)[63]);
         assert!(base[0] > 0.01 && base[1] < -0.01);
         let status = h.audio.as_ref().unwrap().status().unwrap();
         let source = status.recording_source().unwrap();
@@ -218,20 +218,33 @@ fn native_toggle_and_choice_take_keeps_only_the_delivered_step() {
         let path = directory.join("recorded-discrete.hex");
         assert!(h.run(Request::SaveNew(path.clone())).save_complete);
         assert_eq!(hex_storage::load(&path).unwrap(), *redo.state.project);
-        let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
-        let opened = h.run(Request::Open(path));
+        drop(h);
+        let mut reopened = ResidentHarness::with_frame_limit(8192);
+        assert!(reopened.next().error.is_none());
+        reopened.applied(0);
+        let output = reopened
+            .audio
+            .as_ref()
+            .unwrap()
+            .control
+            .output_identity()
+            .unwrap();
+        let opened = reopened.run(Request::Open(path));
         assert!(opened.project_replaced && opened.open_complete);
-        super::resident_lifecycle::finish_replacement(&mut h, &opened, output);
-        h.audio
+        super::resident_lifecycle::finish_replacement(&mut reopened, &opened, output);
+        reopened
+            .audio
             .as_mut()
             .unwrap()
             .control
-            .command(PlaybackCommand::PlayFrom(0))
+            .command(PlaybackCommand::Play)
             .unwrap();
         let start = usize::try_from(application.arrangement_frame).unwrap();
         let end = usize::try_from(restored.arrangement_frame).unwrap();
         assert!((1..8192).contains(&start) && (start + 1..8192).contains(&end));
-        let pcm = (0..=end / 64).flat_map(|_| render(&h)).collect::<Vec<_>>();
+        let pcm = (0..=end / 64)
+            .flat_map(|_| render(&reopened))
+            .collect::<Vec<_>>();
         assert_eq!(pcm[start - 1], base);
         assert!(pcm[start..end].iter().all(|sample| *sample == touched));
         assert_eq!(pcm[end], base);
