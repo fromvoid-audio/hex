@@ -3,7 +3,64 @@
 //! Current SDK/provider metadata still admit the canonical command; no historical
 //! live worker binding is stored, reconstructed or accepted as capability.
 use super::*;
-use hex_storage::automation_draft::DraftTarget;
+use hex_storage::automation_draft::{AutomationContentIdentity, DraftReader, DraftTarget};
+
+const MAX_RECOVERY_EVENTS: u64 = hex_project::MAX_DEVICE_AUTOMATION_POINTS as u64;
+
+/// Opaque proof selected on control. Both forms are revalidated before applying.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AutomationRecoveryFileIdentity {
+    Copy(RecoveryCopyReceipt),
+    Sealed(AutomationContentIdentity),
+}
+
+/// Read-only selected device draft; owns neither writer custody nor an edit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SealedAutomationRecoveryFile {
+    pub path: PathBuf,
+    pub target: DraftTarget,
+    pub provenance: DraftProvenance,
+    pub identity: AutomationContentIdentity,
+}
+
+fn open_bounded_sealed(
+    path: &Path,
+    limits: DraftReadLimits,
+) -> Result<CompletedAutomationTake, String> {
+    let reader = DraftReader::open_bounded(path, limits, MAX_RECOVERY_EVENTS)
+        .map_err(|error| error.to_string())?;
+    let completed = reader.into_completed().map_err(|error| error.to_string())?;
+    CompletedAutomationTake::from_completed_on_control(completed)
+}
+
+pub(in crate::service) fn inspect_sealed_file(
+    path: &Path,
+) -> Result<SealedAutomationRecoveryFile, String> {
+    let path = super::super::recovery::absolute_document_path(path)?;
+    let take = open_bounded_sealed(
+        &path,
+        DraftReadLimits {
+            max_source_bytes: hex_storage::MAX_PROJECT_DOCUMENT_BYTES as u64,
+        },
+    )
+    .map_err(|reason| retained_error(&path, &reason))?;
+    if take.event_count() == 0 {
+        return Err(retained_error(
+            &path,
+            "automation recovery file has no recorded applications",
+        ));
+    }
+    let target = take.target();
+    if !matches!(target, DraftTarget::Device { .. }) {
+        return Err("automation recovery file does not target a device".into());
+    }
+    Ok(SealedAutomationRecoveryFile {
+        path,
+        target,
+        provenance: take.provenance(),
+        identity: take.content_identity(),
+    })
+}
 
 /// Prepare a canonical edit from the verified source without publishing it or
 /// releasing original custody. Call on control, never the audio callback.
@@ -55,20 +112,23 @@ pub(in crate::service) fn recover_sealed(
     expected_target: DraftTarget,
     expected: DraftProvenance,
     path: &Path,
-    receipt: Option<RecoveryCopyReceipt>,
+    identity: AutomationRecoveryFileIdentity,
 ) -> Result<(Box<hex_project::Command>, TakePublication), String> {
     let result = (|| {
         let limits = DraftReadLimits {
             max_source_bytes: hex_storage::MAX_PROJECT_DOCUMENT_BYTES as u64,
         };
-        let mut take = match receipt {
-            Some(receipt) => receipt.open_completed_on_control(
-                path,
-                limits,
-                hex_project::MAX_DEVICE_AUTOMATION_POINTS as u64,
-            )?,
-            None => CompletedAutomationTake::open_on_control(path, limits)
-                .map_err(|error| error.to_string())?,
+        let mut take = match identity {
+            AutomationRecoveryFileIdentity::Copy(receipt) => {
+                receipt.open_completed_on_control(path, limits, MAX_RECOVERY_EVENTS)?
+            }
+            AutomationRecoveryFileIdentity::Sealed(selected) => {
+                let take = open_bounded_sealed(path, limits)?;
+                if take.content_identity() != selected {
+                    return Err("automation recovery file changed after selection".into());
+                }
+                take
+            }
         };
         if take.target() != expected_target {
             return Err("sealed recovery belongs to another device or parameter".into());

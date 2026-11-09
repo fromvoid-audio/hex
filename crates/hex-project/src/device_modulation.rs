@@ -219,6 +219,32 @@ impl DeviceModulation {
     pub fn routes(&self) -> &[DeviceModulationRoute] {
         &self.routes
     }
+    /// Sources that can already feed this slot through enabled routes. The slot
+    /// itself is included so a mapping picker can exclude self and cycle edges.
+    pub fn source_route_ancestors(
+        &self,
+        source: ModulationSourceId,
+    ) -> impl Iterator<Item = ModulationSourceId> {
+        let mut reached = [None; MAX_MODULATORS_PER_DEVICE];
+        if self.sources.iter().any(|slot| slot.id == source) {
+            reached[0] = Some(source);
+        }
+        let mut count = usize::from(reached[0].is_some());
+        for index in 0..self.sources.len() {
+            let Some(target) = reached[index] else { break };
+            for route in self.routes.iter().filter(|route| route.enabled) {
+                if matches!(route.destination, ModulationDestination::Modulator { source, .. } if source == target)
+                    && !reached[..count].contains(&Some(route.source))
+                    && let Some(slot) = reached.get_mut(count)
+                {
+                    *slot = Some(route.source);
+                    count += 1;
+                }
+            }
+        }
+        reached.into_iter().flatten()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.sources.is_empty() && self.routes.is_empty()
     }
