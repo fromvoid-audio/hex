@@ -651,7 +651,7 @@ pub(super) fn panel(
             .debug_selector(|| "device-modulator-scroll".into())
             .flex()
             .flex_col()
-            .max_h(px(58.0))
+            .max_h(px(78.0))
             .occlude()
             .overflow_y_scroll()
             .child(body)

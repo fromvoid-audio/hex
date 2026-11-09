@@ -6699,7 +6699,11 @@ fn assert_modulation_mapping(
         );
     };
     click(&mut visual, "device-modulator-toggle".into());
-    click(&mut visual, format!("add-{source_kind}-{}", device.value()));
+    click_modulator_control(
+        &mut visual,
+        format!("add-{source_kind}-{}", device.value()),
+        true,
+    );
     let source = |view: &EditorView| {
         view.state
             .as_ref()?
@@ -6720,7 +6724,11 @@ fn assert_modulation_mapping(
     let source_id = editor.read_with(cx, |view, _| source(view).unwrap());
     visual.run_until_parked();
     if type_id == hex_engine::macro_modulator::TYPE_ID {
-        click(&mut visual, format!("macro-{}-more", source_id.value()));
+        click_modulator_control(
+            &mut visual,
+            format!("macro-{}-more", source_id.value()),
+            true,
+        );
         let value = |view: &EditorView| {
             let bank = view.state.as_ref()?.project.device(device)?.modulation();
             let source = bank.sources().first()?;
@@ -6784,9 +6792,10 @@ fn assert_modulation_mapping(
         visual.run_until_parked();
         scroll_to(&mut visual, &format!("random-{}-map", source_id.value()));
     }
-    click(
+    click_modulator_control(
         &mut visual,
         format!("{source_kind}-{}-map", source_id.value()),
+        true,
     );
     assert_eq!(
         editor.read_with(cx, |view, _| view.device_panel.mapping_source),
@@ -6835,7 +6844,9 @@ fn assert_modulation_mapping(
         let current = project.device(device).unwrap();
         if matches!(
             type_id,
-            hex_engine::macro_modulator::TYPE_ID | hex_engine::random_modulator::TYPE_ID
+            hex_engine::macro_modulator::TYPE_ID
+                | hex_engine::random_modulator::TYPE_ID
+                | hex_engine::audio_rate_modulator::TYPE_ID
         ) {
             let bytes = hex_storage::encode(project).unwrap();
             let reopened = hex_storage::decode(&bytes).unwrap();
@@ -7106,8 +7117,12 @@ fn modulation_panel_maps_a_bound_source_effect_on_its_receiver(cx: &mut TestAppC
     pump_until(&editor, cx, |view| source_slot(view).is_some());
     let slot = editor.read_with(cx, |view, _| source_slot(view).unwrap());
     visual.run_until_parked();
-    click(&mut visual, format!("lfo-{}-map", slot.value()));
-    click(&mut visual, format!("map-output-gain-{}", device.value()));
+    click_modulator_control(&mut visual, format!("lfo-{}-map", slot.value()), true);
+    click_modulator_control(
+        &mut visual,
+        format!("map-output-gain-{}", device.value()),
+        true,
+    );
 
     let route_count = |view: &EditorView| {
         view.state
