@@ -11,4 +11,5 @@ pub mod math;
 pub mod mix;
 pub mod note_counter;
 pub mod note_pressure;
+pub mod ramp;
 pub mod random_hold;

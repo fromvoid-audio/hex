@@ -726,10 +726,36 @@ fn exercise_saved_fm4_routes(oscillator_levels: bool) {
 
 #[test]
 fn saved_note_counter_changes_a_real_fm4_carrier_at_each_onset_sample() {
+    use hex_devices::modulation::note_counter;
+    let settings = note_counter::Settings {
+        steps: 3,
+        increment: 1,
+        bipolar: false,
+    };
+    check_saved_fm4_note_event_source(settings.encode().unwrap(), &[0.5, 1.0], |_, second| {
+        usize::from(second)
+    });
+}
+
+#[test]
+fn saved_ramp_restarts_a_real_fm4_carrier_on_the_onset_and_holds_its_endpoint() {
+    use hex_devices::modulation::ramp;
+    let settings = ramp::Settings {
+        duration_micros: 125,
+        ..ramp::Settings::default()
+    };
+    let steps: [f32; 7] = std::array::from_fn(|step| step as f32 * (1.0 / 6.0));
+    check_saved_fm4_note_event_source(settings.encode().unwrap(), &steps, |age, _| age.min(6));
+}
+
+fn check_saved_fm4_note_event_source(
+    settings: hex_lattice_contract::NativeDeviceState,
+    levels: &[f32],
+    select: impl Fn(usize, bool) -> usize,
+) {
     use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
     use hex_devices::{
         fm4::device::{FM4_DEFINITION, FM4_TYPE_ID, parameter},
-        modulation::note_counter,
         utility::UTILITY_DEFINITION,
     };
     use hex_lattice::{
@@ -757,7 +783,7 @@ fn saved_note_counter_changes_a_real_fm4_carrier_at_each_onset_sample() {
     let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
     let Created::Track(track) = editor
         .execute(Command::InsertTrackWithDevice {
-            name: "counter fm4".into(),
+            name: "note event fm4".into(),
             before_track: None,
             slot: hex_project::TrackDeviceSlot::Instrument,
             state: authored.clone(),
@@ -812,13 +838,7 @@ fn saved_note_counter_changes_a_real_fm4_carrier_at_each_onset_sample() {
         id: source,
         enabled: true,
         color: Default::default(),
-        state: note_counter::Settings {
-            steps: 3,
-            increment: 1,
-            bipolar: false,
-        }
-        .encode()
-        .unwrap(),
+        state: settings,
     };
     let table = Arc::new(crate::SineTable::new());
     let prepare = |project: &Project| {
@@ -873,9 +893,10 @@ fn saved_note_counter_changes_a_real_fm4_carrier_at_each_onset_sample() {
             .prepare_note(pitch, 127)
             .unwrap()
     };
-    let first_half = note(0.5, 60);
-    let first_full = note(1.0, 60);
-    let second = note(1.0, 64);
+    let oracles: Vec<_> = levels
+        .iter()
+        .map(|&level| [note(level, 60), note(level, 64)])
+        .collect();
     let render_note = |note: &hex_lattice::PreparedAnalyticNote, frame: usize| {
         note.sample(frame as u64, u64::MAX, &EMPTY_DEVICE_RESOURCES)
     };
@@ -886,13 +907,20 @@ fn saved_note_counter_changes_a_real_fm4_carrier_at_each_onset_sample() {
         playback.render(block).unwrap();
     }
     for (frame, actual) in output.into_iter().enumerate() {
-        let expected = if frame < SECOND {
-            render_note(&first_half, frame)
-        } else {
-            let [a, b] = render_note(&first_full, frame);
-            let [c, d] = render_note(&second, frame - SECOND);
-            [a + c, b + d]
-        };
-        assert_eq!(actual, expected, "onset automation frame {frame}");
+        let second = frame >= SECOND;
+        let age = if second { frame - SECOND } else { frame };
+        let oracle = &oracles[select(age, second)];
+        let mut expected = render_note(&oracle[0], frame);
+        if second {
+            let next = render_note(&oracle[1], age);
+            expected = [expected[0] + next[0], expected[1] + next[1]];
+        }
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            let tolerance = 8.0 * f32::EPSILON * expected.abs();
+            assert!(
+                (actual - expected).abs() <= tolerance,
+                "onset frame {frame}: {actual} vs {expected}"
+            );
+        }
     }
 }

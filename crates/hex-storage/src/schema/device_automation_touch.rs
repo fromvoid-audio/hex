@@ -11,12 +11,14 @@
 //! preserves all steps and keeps the historical bound on every older layer.
 //! Schema100 extracts native source effect touch rows before encoding the complete
 //! prior project. The exact stored source owner may be dormant; the codec grants
-//! no authority to arm or play a source without a receiver.
+//! no authority to arm or play a source without a receiver. Schema102 uses
+//! that envelope over a required schema101 Ramp bank.
 use super::{automation_read::Selection, device_automation};
 use crate::{
     DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION, EXTENDED_AUTOMATION_TOUCH_SCHEMA_VERSION,
     NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION, NATIVE_SOURCE_EFFECT_TOUCH_SCHEMA_VERSION, Project,
-    StorageError, VST3_AUTOMATION_TOUCH_SCHEMA_VERSION,
+    RAMP_MODULATOR_SCHEMA_VERSION, SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION, StorageError,
+    VST3_AUTOMATION_TOUCH_SCHEMA_VERSION,
 };
 use hex_lattice_contract::ParameterId;
 use hex_project::{
@@ -358,7 +360,7 @@ pub(crate) fn contains_native_instrument(project: &Project) -> bool {
 enum Envelope {
     NativeInstrument,
     Extended,
-    NativeSourceEffect,
+    NativeSourceEffect(u32),
 }
 
 impl Envelope {
@@ -366,7 +368,7 @@ impl Envelope {
         match self {
             Self::NativeInstrument => NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION,
             Self::Extended => EXTENDED_AUTOMATION_TOUCH_SCHEMA_VERSION,
-            Self::NativeSourceEffect => NATIVE_SOURCE_EFFECT_TOUCH_SCHEMA_VERSION,
+            Self::NativeSourceEffect(version) => version,
         }
     }
     const fn fields(self) -> (&'static str, &'static str) {
@@ -375,7 +377,7 @@ impl Envelope {
                 "native_instrument_touch_base_version",
                 "native_instrument_touch",
             ),
-            Self::NativeSourceEffect => (
+            Self::NativeSourceEffect(_) => (
                 "native_source_effect_touch_base_version",
                 "native_source_effect_touch",
             ),
@@ -388,7 +390,9 @@ impl Envelope {
     const fn step_limit(self) -> usize {
         match self {
             Self::NativeInstrument => MAX_DEVICE_AUTOMATION_POINTS_PER_LANE,
-            Self::Extended | Self::NativeSourceEffect => MAX_DEVICE_AUTOMATION_TOUCH_STEPS_PER_LANE,
+            Self::Extended | Self::NativeSourceEffect(_) => {
+                MAX_DEVICE_AUTOMATION_TOUCH_STEPS_PER_LANE
+            }
         }
     }
 
@@ -399,7 +403,7 @@ impl Envelope {
                 .iter()
                 .map(|source| source.instrument().id().value())
                 .collect(),
-            Self::NativeSourceEffect => native_source_effects(project)
+            Self::NativeSourceEffect(_) => native_source_effects(project)
                 .map(|effect| effect.id().value())
                 .collect(),
             Self::Extended => BTreeSet::new(),
@@ -416,7 +420,7 @@ impl Envelope {
             Self::NativeInstrument => {
                 owners.contains(&device) && matches!(target, DeviceAutomationTarget::Parameter(_))
             }
-            Self::NativeSourceEffect => {
+            Self::NativeSourceEffect(_) => {
                 owners.contains(&device) && !matches!(target, DeviceAutomationTarget::Vst3 { .. })
             }
             Self::Extended => true,
@@ -442,8 +446,19 @@ pub(crate) fn encode_extended(project: &Project) -> Result<Value, StorageError> 
     encode_envelope(project, Envelope::Extended)
 }
 
+pub(crate) fn source_effect_schema_version(project: &Project) -> u32 {
+    if super::device_modulation::contains_ramp(project) {
+        SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION
+    } else {
+        NATIVE_SOURCE_EFFECT_TOUCH_SCHEMA_VERSION
+    }
+}
+
 pub(crate) fn encode_native_source_effect(project: &Project) -> Result<Value, StorageError> {
-    encode_envelope(project, Envelope::NativeSourceEffect)
+    encode_envelope(
+        project,
+        Envelope::NativeSourceEffect(source_effect_schema_version(project)),
+    )
 }
 
 fn encode_envelope(project: &Project, envelope: Envelope) -> Result<Value, StorageError> {
@@ -483,8 +498,11 @@ pub(crate) fn decode_extended(bytes: &[u8]) -> Result<Project, StorageError> {
     decode_envelope(bytes, Envelope::Extended)
 }
 
-pub(crate) fn decode_native_source_effect(bytes: &[u8]) -> Result<Project, StorageError> {
-    decode_envelope(bytes, Envelope::NativeSourceEffect)
+pub(crate) fn decode_native_source_effect(
+    bytes: &[u8],
+    version: u32,
+) -> Result<Project, StorageError> {
+    decode_envelope(bytes, Envelope::NativeSourceEffect(version))
 }
 
 fn decode_envelope(bytes: &[u8], envelope: Envelope) -> Result<Project, StorageError> {
@@ -497,7 +515,12 @@ fn decode_envelope(bytes: &[u8], envelope: Envelope) -> Result<Project, StorageE
         .remove(base_field)
         .and_then(|base| base.as_u64())
         .filter(|base| {
-            (u64::from(crate::CURRENT_SCHEMA_VERSION)..u64::from(envelope.version())).contains(base)
+            if envelope.version() == SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION {
+                *base == u64::from(RAMP_MODULATOR_SCHEMA_VERSION)
+            } else {
+                (u64::from(crate::CURRENT_SCHEMA_VERSION)..u64::from(envelope.version()))
+                    .contains(base)
+            }
         })
         .ok_or(StorageError::Invalid(
             "invalid automation touch base schema",
@@ -545,7 +568,7 @@ fn decode_envelope(bytes: &[u8], envelope: Envelope) -> Result<Project, StorageE
                     match envelope {
                         Envelope::NativeInstrument => Some(false),
                         Envelope::Extended => Some(true),
-                        Envelope::NativeSourceEffect => None,
+                        Envelope::NativeSourceEffect(_) => None,
                     },
                 )?;
             }
@@ -695,6 +718,56 @@ mod tests {
             crate::NOTE_COUNTER_MODULATOR_SCHEMA_VERSION,
         );
         assert_eq!(crate::decode(&with_counter).unwrap(), *editor.project());
+        let prior =
+            std::env::temp_dir().join(format!("hex-ramp-source-touch-{}.hex", std::process::id()));
+        crate::save_new(&prior, editor.project()).unwrap();
+        let (_, token) = crate::load_with_token(&prior).unwrap();
+        let mut slots = editor
+            .project()
+            .device(instrument)
+            .unwrap()
+            .modulation()
+            .sources()
+            .to_vec();
+        let mut payload = 500_000_u32.to_le_bytes().to_vec();
+        payload.extend_from_slice(&[0, 0, 1]);
+        slots.push(Modulator {
+            id: ModulationSourceId::new(editor.project().next_identity()).unwrap(),
+            color: ElementColor::Cyan,
+            enabled: true,
+            state: NativeDeviceState::new(
+                DeviceTypeId::from_static("hex.modulator.ramp"),
+                1,
+                payload,
+            )
+            .unwrap(),
+        });
+        editor
+            .execute(Command::ReplaceDeviceModulation {
+                device: instrument,
+                modulation: DeviceModulation::new(slots, Vec::new()).unwrap(),
+            })
+            .unwrap();
+        let combined = editor.project();
+        assert_eq!(
+            crate::schema_version_for(combined),
+            SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION
+        );
+        assert!(token.requires_save_confirmation(combined).unwrap());
+        let bytes = crate::encode(combined).unwrap();
+        assert_eq!(crate::decode(&bytes).unwrap(), *combined);
+        assert_eq!(std::fs::read(&prior).unwrap(), with_counter);
+        std::fs::remove_file(prior).unwrap();
+        let mut downgraded: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            downgraded["native_source_effect_touch_base_version"],
+            RAMP_MODULATOR_SCHEMA_VERSION
+        );
+        downgraded["version"] = NATIVE_SOURCE_EFFECT_TOUCH_SCHEMA_VERSION.into();
+        assert!(crate::decode(&serde_json::to_vec(&downgraded).unwrap()).is_err());
+        let mut unsupported: Value = serde_json::from_slice(&with_counter).unwrap();
+        unsupported["version"] = SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION.into();
+        assert!(crate::decode(&serde_json::to_vec(&unsupported).unwrap()).is_err());
     }
 
     #[test]
