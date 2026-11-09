@@ -71,6 +71,7 @@ enum Edit {
     RemoveSource(ModulationSourceId),
     Rate(ModulationSourceId, f64),
     Sync(ModulationSourceId),
+    LfoShape(ModulationSourceId, lfo::Waveform),
     MacroValue(ModulationSourceId, f32),
     FollowerTime {
         source: ModulationSourceId,
@@ -202,6 +203,12 @@ pub(super) fn panel(
                 lfo::Rate::Hertz(rate) => (rate, "hz"),
                 lfo::Rate::BeatsPerCycle(rate) => (rate, "beats"),
             };
+            let (shape, next) = match settings.waveform {
+                lfo::Waveform::Sine => ("sine", lfo::Waveform::Triangle),
+                lfo::Waveform::Triangle => ("triangle", lfo::Waveform::RisingRamp),
+                lfo::Waveform::RisingRamp => ("ramp", lfo::Waveform::Square),
+                lfo::Waveform::Square => ("square", lfo::Waveform::Sine),
+            };
             row = row
                 .child(button(
                     cx,
@@ -220,7 +227,16 @@ pub(super) fn panel(
                     source_key("faster"),
                     theme::text("+"),
                     Edit::Rate(source_id, 2.0),
-                ));
+                ))
+                .child(
+                    button(
+                        cx,
+                        source_key("waveform"),
+                        theme::text(shape),
+                        Edit::LfoShape(source_id, next),
+                    )
+                    .w(px(55.0)),
+                );
         }
         if let SourceKind::Follower = kind
             && let Ok(settings) = follower::Settings::decode(&source.state)
@@ -572,6 +588,12 @@ fn apply(
                     lfo::Rate::Hertz((beats_per_second / beats).clamp(0.01, maximum_hz))
                 }
             };
+            source.state = settings.encode().map_err(unsupported)?;
+        }
+        Edit::LfoShape(id, waveform) => {
+            let source = find_source(&mut sources, id)?;
+            let mut settings = lfo::Settings::decode(&source.state).map_err(unsupported)?;
+            settings.waveform = waveform;
             source.state = settings.encode().map_err(unsupported)?;
         }
         Edit::MacroValue(id, change) => {
