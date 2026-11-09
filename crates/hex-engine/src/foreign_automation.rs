@@ -3,7 +3,10 @@
 //! before admission. This owner neither loads a plug-in nor publishes a graph.
 pub(crate) mod storage;
 use crate::Invalid;
-use hex_lattice::{ForeignNote, ForeignProcessorNode, ForeignProcessors, NativeInstrumentClock};
+use hex_lattice::{
+    ForeignModulationSamples, ForeignNote, ForeignProcessorNode, ForeignProcessors,
+    NativeInstrumentClock,
+};
 use hex_lattice_contract::{DeviceAutomationTarget, ForeignParameterPoint};
 use hex_lattice_contract::{DeviceContractError, ForeignProcessorBinding};
 use hex_project::{AutomationInterpolation, AutomationPoint, DeviceAutomation, TempoMap};
@@ -343,6 +346,23 @@ impl ForeignProcessors for WithPrograms<'_> {
             frames,
             parameters,
             notes,
+            clock,
+        )
+    }
+
+    fn process_segment_with_modulation(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [[f32; 2]],
+        lane: ForeignModulationSamples<'_>,
+        clock: Option<&dyn NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        self.inner.process_segment_with_modulation(
+            self.programs.attach(node)?,
+            offset,
+            frames,
+            lane,
             clock,
         )
     }

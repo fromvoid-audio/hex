@@ -205,3 +205,93 @@ fn unreserved_or_wrong_dense_target_refuses_before_any_request() {
         assert!(matches!(worker.receive_request(), Err(Fault::Revoked)));
     }
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn native_dense_carrier_preserves_shifted_segments_and_rejects_wrong_epoch() {
+    if fixture_child("80") {
+        return;
+    }
+    let source = original_instance_for_binding(BINDING);
+    let class = source.configuration().identity.class;
+    let effect = NativeEffect::prepare_retained_with_dense_parameter_on_control(
+        identity(),
+        source,
+        usize::MAX,
+        (class, &[0]),
+        0,
+    )
+    .unwrap();
+    let config = effect.callback.configuration.clone();
+    let node = ForeignProcessorNode {
+        output_gain: 0.5,
+        ..node(&config)
+    };
+    let (mut workers, mut callbacks) =
+        NativeEffectCallbacks::from_effects_on_control(vec![effect]).unwrap();
+    let mut pcm = [[0.25; 2]; 8];
+    let values = [0.125, 0.75, 0.25, 0.875, 0.5, 0.25, 0.875, 1.0];
+    for block in 0..3 {
+        pcm.fill([0.25; 2]);
+        let mut stage = || {
+            callbacks.begin_host_callback(8).unwrap();
+            for (offset, len) in [(0, 3), (3, 5)] {
+                let mut window = crate::prepared::NativeEffectWindow::new(&mut callbacks, offset);
+                assert!(window.returns_post_trim(node));
+                window
+                    .process_segment_with_modulation(
+                        node,
+                        0,
+                        &mut pcm[offset..offset + len],
+                        ForeignModulationSamples {
+                            id: 0,
+                            normalized: &values[offset..offset + len],
+                        },
+                        None,
+                    )
+                    .unwrap();
+            }
+            callbacks.finish_host_callback(true).unwrap();
+        };
+        #[cfg(feature = "allocation-probe")]
+        {
+            let measured = allocation_counter::measure(&mut stage);
+            assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
+            assert_eq!((measured.count_current, measured.bytes_current), (0, 0));
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        stage();
+        callbacks
+            .wait_offline_on_control(&workers, || false)
+            .unwrap();
+        assert_eq!(workers[0].published_blocks_on_control(), block + 1);
+    }
+    assert_eq!(pcm, values.map(|value| [(value * 0.25) as f32; 2]));
+    callbacks.begin_host_callback(8).unwrap();
+    let wrong = ForeignProcessorNode {
+        prepared: node
+            .prepared
+            .with_binding(Binding {
+                epoch: BINDING.epoch + 1,
+                ..BINDING
+            })
+            .unwrap(),
+        ..node
+    };
+    assert_eq!(
+        callbacks.process_segment_with_modulation(
+            wrong,
+            0,
+            &mut pcm,
+            ForeignModulationSamples {
+                id: 0,
+                normalized: &values
+            },
+            None,
+        ),
+        Err(DeviceContractError::ForeignProcessingUnavailable)
+    );
+    assert!(callbacks.finish_host_callback(true).is_err());
+    assert_eq!(workers[0].published_blocks_on_control(), 3);
+    assert!(workers[0].retire_on_control().unwrap().failure.is_none());
+}
