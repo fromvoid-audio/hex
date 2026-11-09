@@ -6752,7 +6752,7 @@ fn modulation_panel_drags_host_input_and_output_depths_independently(cx: &mut Te
 #[gpui::test]
 fn modulation_panel_edits_steps_and_reopens_the_exact_signed_pattern(cx: &mut TestAppContext) {
     use hex_devices::utility::parameter::GAIN;
-    use hex_engine::steps_modulator::{Direction, Settings};
+    use hex_engine::steps_modulator::{Direction, Settings, Timing};
 
     let (service, state, track, device, _, _) = actor_utility_fixture();
     let base = state.project.device(device).unwrap().state().clone();
@@ -6781,7 +6781,7 @@ fn modulation_panel_edits_steps_and_reopens_the_exact_signed_pattern(cx: &mut Te
     type Edit = fn(&mut Settings);
     let edits: [(&str, Edit); 5] = [
         ("step time-shorter", |settings| {
-            settings.duration_micros = 62_500
+            settings.timing = Timing::FreeMicros(62_500)
         }),
         ("direction", |settings| {
             settings.direction = Direction::Backward
@@ -6820,6 +6820,25 @@ fn modulation_panel_edits_steps_and_reopens_the_exact_signed_pattern(cx: &mut Te
         let reopened = hex_storage::decode(&hex_storage::encode(project).unwrap()).unwrap();
         assert_eq!(&reopened, project.as_ref());
     });
+
+    let current = editor.read_with(cx, |view, _| bank(view));
+    let mut slots = current.sources().to_vec();
+    expected.timing = Timing::Arrangement { steps_per_beat: 4 };
+    slots[0].state = expected.encode().unwrap();
+    editor.update(cx, |view, _| {
+        assert!(
+            view.enqueue(Request::Edit(Command::ReplaceDeviceModulation {
+                device,
+                modulation: hex_project::DeviceModulation::new(slots, current.routes().to_vec())
+                    .unwrap(),
+            }))
+        );
+    });
+    pump_until(&editor, cx, |view| read(view) == expected);
+    visual.run_until_parked();
+    let key = |suffix| Box::leak(format!("steps-{}-{suffix}", source.value()).into_boxed_str());
+    assert!(visual.debug_bounds(key("arrangement-time")).is_some());
+    assert!(visual.debug_bounds(key("step time-shorter")).is_none());
 }
 
 #[gpui::test]

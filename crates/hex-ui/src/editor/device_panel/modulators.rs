@@ -1060,14 +1060,22 @@ pub(super) fn panel(
                 steps::Direction::Backward => "backward",
                 steps::Direction::PingPong => "ping pong",
             };
-            let time = envelope_time(
-                cx,
-                "step time",
-                settings.duration_micros,
-                [false, true].map(|longer| Edit::Steps(source_id, StepsEdit::Time { longer })),
-            );
+            let timing = match settings.timing {
+                steps::Timing::FreeMicros(micros) => envelope_time(
+                    cx,
+                    "step time",
+                    micros,
+                    [false, true].map(|longer| Edit::Steps(source_id, StepsEdit::Time { longer })),
+                ),
+                steps::Timing::Arrangement { steps_per_beat } => {
+                    let timing = source_key("arrangement-time");
+                    div()
+                        .debug_selector(move || timing.clone())
+                        .child(theme::text(format!("arrangement 1/{}", 4 * steps_per_beat)))
+                }
+            };
             row = row
-                .children([time])
+                .children([timing])
                 .child(button(
                     cx,
                     source_key("direction"),
@@ -1866,8 +1874,12 @@ fn apply(
             let mut settings = steps::Settings::decode(&source.state).map_err(unsupported)?;
             match edit {
                 StepsEdit::Time { longer } => {
-                    settings.duration_micros =
-                        duration_step(settings.duration_micros, longer).max(ramp::MIN_MICROS);
+                    let steps::Timing::FreeMicros(micros) = settings.timing else {
+                        return Err(Invalid("free-running step time is unavailable"));
+                    };
+                    settings.timing = steps::Timing::FreeMicros(
+                        duration_step(micros, longer).max(ramp::MIN_MICROS),
+                    );
                 }
                 StepsEdit::Length { add } => {
                     let count = settings.pattern.len();

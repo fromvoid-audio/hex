@@ -1244,31 +1244,42 @@ fn note_event_reader_floors_preserve_settings_and_instrument_routes() {
     let mut prior_bytes = original;
     let mut prior_token = token;
     let mut prior_schema = crate::MIX_MODULATOR_SCHEMA_VERSION;
-    for (name, payload, schema) in [
+    for (name, payload_version, payload, schema) in [
         (
             "hex.modulator.note-counter",
+            1,
             vec![12, 0, 5, 0, 1],
             crate::NOTE_COUNTER_MODULATOR_SCHEMA_VERSION,
         ),
         (
             "hex.modulator.ramp",
+            1,
             ramp,
             crate::RAMP_MODULATOR_SCHEMA_VERSION,
         ),
         (
             "hex.modulator.ahd-release",
+            1,
             ahd,
             crate::AHD_RELEASE_MODULATOR_SCHEMA_VERSION,
         ),
         (
             "hex.modulator.adsr",
+            1,
             adsr,
             crate::ADSR_MODULATOR_SCHEMA_VERSION,
         ),
         (
             "hex.modulator.steps",
+            1,
             vec![125, 0, 0, 0, 2, 3, 1, 128, 133, 255, 255, 127],
             crate::STEPS_MODULATOR_SCHEMA_VERSION,
+        ),
+        (
+            "hex.modulator.steps",
+            2,
+            vec![16, 0, 0, 0, 1, 2, 1, 128, 255, 127],
+            crate::ARRANGEMENT_STEPS_SCHEMA_VERSION,
         ),
     ] {
         let project = editor.project();
@@ -1280,7 +1291,12 @@ fn note_event_reader_floors_preserve_settings_and_instrument_routes() {
             id: source,
             color: ElementColor::Cyan,
             enabled: true,
-            state: NativeDeviceState::new(DeviceTypeId::from_static(name), 1, payload).unwrap(),
+            state: NativeDeviceState::new(
+                DeviceTypeId::from_static(name),
+                payload_version,
+                payload,
+            )
+            .unwrap(),
         });
         let mut routes = bank.routes().to_vec();
         routes.push(DeviceModulationRoute {
