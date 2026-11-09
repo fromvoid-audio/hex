@@ -122,6 +122,8 @@ pub use device_modulation::{
 };
 /// Versioned, control-side settings for the built-in envelope follower.
 pub use hex_devices::modulation::audio_rate as audio_rate_modulator;
+/// The authored on/off source codec.
+pub use hex_devices::modulation::button as button_modulator;
 pub use hex_devices::modulation::envelope_follower as follower_modulator;
 /// Versioned, control-side settings for the built-in LFO modulator.
 pub use hex_devices::modulation::lfo as lfo_modulator;

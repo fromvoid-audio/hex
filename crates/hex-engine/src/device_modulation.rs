@@ -2,7 +2,7 @@
 //! Control preparation resolves stable IDs and validates real factory bindings.
 //! Prepared declarations borrow no project data and never enter project history.
 use hex_devices::modulation::{
-    audio_rate, envelope_follower, lfo, macro_value, note_pressure, random_hold,
+    audio_rate, button, envelope_follower, lfo, macro_value, note_pressure, random_hold,
 };
 use hex_lattice::{
     HostGainModulationRoute, ModulationRoute, ModulationTarget, PreparedModulation,
@@ -365,6 +365,7 @@ impl EffectModulation {
                     settings.prepare(source.id, sample_rate, fallback_bpm, maximum_bpm)
                 }),
                 audio_rate::TYPE_ID => audio_rate::prepare(&source.state, source.id, sample_rate),
+                button::TYPE_ID => button::prepare(&source.state, source.id, sample_rate),
                 envelope_follower::TYPE_ID => envelope_follower::Settings::decode(&source.state)
                     .and_then(|settings| settings.prepare(source.id, sample_rate)),
                 macro_value::TYPE_ID => macro_value::Settings::decode(&source.state)
@@ -416,6 +417,14 @@ impl EffectModulation {
             }
             let amount = route.amount.get();
             let range = [route.range.start.get(), route.range.end.get()];
+            if range != [-1.0, 1.0]
+                && bank
+                    .sources()
+                    .iter()
+                    .any(|slot| slot.id == route.source && slot.state.type_id() == button::TYPE_ID)
+            {
+                return Err(Invalid("button assignments use the original on/off values"));
+            }
             match route.destination {
                 ModulationDestination::Device {
                     device_type,

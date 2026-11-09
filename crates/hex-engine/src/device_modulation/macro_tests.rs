@@ -102,6 +102,99 @@ fn macro_value_updates_active_sample_frames_and_matches_the_sealed_graph() {
     }
 }
 
+#[test]
+fn saved_button_switches_signed_gain_after_live_handoff() {
+    use hex_devices::modulation::button;
+
+    let mut editor = Editor::new(crate::audio_preparation::candidate_test_project(), 4).unwrap();
+    let track = editor.project().tracks()[0].id();
+    let asset = editor.project().assets().next().unwrap().id();
+    let base = UTILITY_DEFINITION.default_state().unwrap();
+    let Created::Device(device) = editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: base.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("utility fixture");
+    };
+    let next = editor.project().next_identity();
+    let source = ModulationSourceId::new(next).unwrap();
+    let route = DeviceModulationRoute {
+        id: ModulationRouteId::new(next + 1).unwrap(),
+        source,
+        output: ModulationOutputId::MAIN,
+        destination: ModulationDestination::Device {
+            device_type: UTILITY_TYPE_ID,
+            target: DeviceAutomationTarget::Parameter(parameter::GAIN),
+            vst3_class: None,
+        },
+        amount: ModulationAmount::new(-0.5 / MAX_UTILITY_GAIN).unwrap(),
+        range: ModulationRange::default(),
+        enabled: true,
+    };
+    let replace = |on, route| Command::ReplaceDeviceModulation {
+        device,
+        modulation: DeviceModulation::new(
+            vec![Modulator {
+                color: Default::default(),
+                id: source,
+                enabled: true,
+                state: button::encode(on).unwrap(),
+            }],
+            vec![route],
+        )
+        .unwrap(),
+    };
+    let dry = [0.125, -0.25];
+    let audio = Audio::new(48_000, vec![dry; 8]).unwrap();
+    let media = BTreeMap::from([(asset, audio.clone())]);
+    let prepare = |project: &hex_project::Project| {
+        PreparedRevision::prepare(project, &media, Arc::new(SineTable::new()), None)
+    };
+    let (_, initial) = editor
+        .execute_prepared(replace(false, route), prepare)
+        .unwrap();
+    let mut playback = Playback::try_from_prepared_with_session(Arc::new(initial)).unwrap();
+    playback
+        .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
+        .unwrap();
+    let mut output = [[0.0; 2]; 8];
+    playback.render(&mut output[..3]).unwrap();
+    assert_eq!(output[..3], [dry; 3]);
+
+    let prior = editor.project().clone();
+    let invalid = DeviceModulationRoute {
+        range: ModulationRange {
+            start: ModulationAmount::new(0.0).unwrap(),
+            end: ModulationAmount::new(1.0).unwrap(),
+        },
+        ..route
+    };
+    assert!(
+        editor
+            .execute_prepared(replace(false, invalid), prepare)
+            .is_err()
+    );
+    assert_eq!(*editor.project(), prior);
+
+    let (_, updated) = editor
+        .execute_prepared(replace(true, route), prepare)
+        .unwrap();
+    let current = editor.project().device(device).unwrap();
+    assert_eq!(current.state(), &base);
+    assert_eq!(current.modulation().routes(), [route]);
+    let mut successor = Playback::try_from_prepared_with_session(Arc::new(updated)).unwrap();
+    successor.try_inherit_runtime_from(&mut playback).unwrap();
+    successor.render(&mut output[3..]).unwrap();
+    assert_eq!(output[3..], [dry.map(|sample| sample * 0.5); 5]);
+    if render_sealed(editor.project(), asset, &audio, &mut output) {
+        assert_eq!(output, [dry.map(|sample| sample * 0.5); 8]);
+    }
+}
+
 fn render_sealed(
     project: &hex_project::Project,
     asset: hex_project::AssetId,

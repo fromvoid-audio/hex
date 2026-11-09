@@ -6514,7 +6514,7 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, pressure: bool) {
                 .map(|item| item.label)
                 .collect::<Vec<_>>()
         }),
-        ["lfo", "macro", "random", "note pressure"],
+        ["lfo", "macro", "random", "note pressure", "button"],
     );
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
@@ -6887,7 +6887,7 @@ fn add_modulator_from_menu(visual: &mut VisualTestContext, device: DeviceId, kin
         let position = point(panel.center().x, panel.origin.y + px(10.0));
         visual.simulate_click(position, Modifiers::default());
     } else {
-        let steps = ["lfo", "follower", "macro", "random", "audio rate"]
+        let steps = ["lfo", "follower", "macro", "random", "audio rate", "button"]
             .iter()
             .position(|label| *label == kind)
             .expect("modulator type in audio effect menu");
@@ -7186,6 +7186,18 @@ fn modulation_panel_adds_and_maps_an_audio_rate_modulator(cx: &mut TestAppContex
     );
 }
 
+#[gpui::test]
+fn modulation_panel_maps_and_toggles_a_button(cx: &mut TestAppContext) {
+    use hex_devices::utility::{UTILITY_TYPE_ID, parameter::GAIN};
+    assert_modulation_mapping(
+        cx,
+        UTILITY_TYPE_ID,
+        "button",
+        hex_engine::button_modulator::TYPE_ID,
+        &[GAIN],
+    );
+}
+
 fn assert_modulation_mapping(
     cx: &mut TestAppContext,
     device_type: hex_lattice_contract::DeviceTypeId,
@@ -7395,6 +7407,41 @@ fn assert_modulation_mapping(
                 .all(|route| route.source == source_id)
         );
     });
+    if type_id == hex_engine::button_modulator::TYPE_ID {
+        let on = |view: &EditorView| {
+            let project = &view.state.as_ref().unwrap().project;
+            let slot = &project.device(device).unwrap().modulation().sources()[0];
+            assert_eq!(slot.id, source_id);
+            hex_engine::button_modulator::decode(&slot.state).unwrap()
+        };
+        assert!(!editor.read_with(cx, |view, _| on(view)));
+        click_modulator_control(
+            &mut visual,
+            format!("button-{}-value", source_id.value()),
+            true,
+        );
+        pump_until(&editor, cx, on);
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            assert_eq!(
+                hex_storage::schema_version_for(project),
+                hex_storage::BUTTON_MODULATOR_SCHEMA_VERSION
+            );
+            assert_eq!(
+                hex_storage::decode(&hex_storage::encode(project).unwrap()).unwrap(),
+                **project
+            );
+            let route = project.device(device).unwrap().modulation().routes()[0];
+            assert_eq!(
+                [route.range.start.get(), route.range.end.get()],
+                [-1.0, 1.0]
+            );
+        });
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |view| !on(view));
+        visual.run_until_parked();
+    }
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     assert!(
