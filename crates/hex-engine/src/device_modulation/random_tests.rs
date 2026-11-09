@@ -41,6 +41,7 @@ fn saved_random_modulation_drives_utility_and_restarts_on_seek() {
     let source = ModulationSourceId::new(next).unwrap();
     let bank = DeviceModulation::new(
         vec![Modulator {
+            color: Default::default(),
             id: source,
             enabled: true,
             state: Settings {
