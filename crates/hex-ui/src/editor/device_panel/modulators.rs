@@ -2,7 +2,7 @@
 //! revision-bound edits. A selected mapping source is view state only.
 use super::*;
 use gpui::{AnyElement, SharedString};
-use hex_engine::lfo_modulator as lfo;
+use hex_engine::{follower_modulator as follower, lfo_modulator as lfo};
 use hex_lattice_contract::{ParameterId, ParameterModulation};
 use hex_project::{
     Device, DeviceAutomationTarget, DeviceModulation, DeviceModulationRoute, Invalid,
@@ -12,11 +12,17 @@ use hex_project::{
 
 #[derive(Clone, Copy)]
 enum Edit {
-    Add,
+    AddLfo,
+    AddFollower,
     ToggleSource(ModulationSourceId),
     RemoveSource(ModulationSourceId),
     Rate(ModulationSourceId, f64),
     Sync(ModulationSourceId),
+    FollowerTime {
+        source: ModulationSourceId,
+        attack: bool,
+        factor: f64,
+    },
     Map(ModulationSourceId, ParameterId),
     Adjust(ModulationRouteId, f32),
     Range(ModulationRouteId),
@@ -53,6 +59,7 @@ pub(super) fn panel(
     let mut body = div().flex().flex_col().gap(px(3.0)).child(
         div()
             .flex()
+            .flex_wrap()
             .items_center()
             .gap(px(4.0))
             .child(theme::text("modulators"))
@@ -63,7 +70,13 @@ pub(super) fn panel(
                         cx,
                         format!("add-lfo-{}", id.value()),
                         theme::text("+ lfo"),
-                        Edit::Add,
+                        Edit::AddLfo,
+                    ))
+                    .child(button(
+                        cx,
+                        format!("add-follower-{}", id.value()),
+                        theme::text("+ follower"),
+                        Edit::AddFollower,
                     ))
                 },
             ),
@@ -75,15 +88,15 @@ pub(super) fn panel(
         .map(|(_, source)| source);
     for source in bank.sources() {
         let source_id = source.id;
-        let Ok(settings) = lfo::Settings::decode(&source.state) else {
-            continue;
+        let lfo = lfo::Settings::decode(&source.state).ok();
+        let follower = follower::Settings::decode(&source.state).ok();
+        let (label, prefix) = match (lfo, follower) {
+            (Some(_), _) => ("lfo", "lfo"),
+            (_, Some(_)) => ("envelope follower", "follower"),
+            _ => continue,
         };
         let mapping = selected == Some(source_id);
-        let (rate, units) = match settings.rate {
-            lfo::Rate::Hertz(rate) => (rate, "hz"),
-            lfo::Rate::BeatsPerCycle(rate) => (rate, "beats"),
-        };
-        let source_key = |suffix| format!("lfo-{}-{suffix}", source_id.value());
+        let source_key = |suffix: &str| format!("{prefix}-{}-{suffix}", source_id.value());
         let control = action(
             source_key("map"),
             theme::text(if mapping { "done" } else { "map" }),
@@ -96,20 +109,31 @@ pub(super) fn panel(
             view.device_panel.mapping_source = (!mapping).then_some((id, source_id));
             cx.notify();
         }));
-        body = body.child(
-            div()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap(px(3.0))
-                .child(theme::text("lfo"))
-                .child(button(
-                    cx,
-                    source_key("power"),
-                    theme::text(if source.enabled { "on" } else { "off" }),
-                    Edit::ToggleSource(source_id),
-                ))
-                .child(control)
+        let mut row = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(3.0))
+            .child(theme::text(label))
+            .child(button(
+                cx,
+                source_key("power"),
+                theme::text(if source.enabled { "on" } else { "off" }),
+                Edit::ToggleSource(source_id),
+            ))
+            .child(control)
+            .child(button(
+                cx,
+                source_key("remove"),
+                theme::text("×"),
+                Edit::RemoveSource(source_id),
+            ));
+        if let Some(settings) = lfo {
+            let (rate, units) = match settings.rate {
+                lfo::Rate::Hertz(rate) => (rate, "hz"),
+                lfo::Rate::BeatsPerCycle(rate) => (rate, "beats"),
+            };
+            row = row
                 .child(button(
                     cx,
                     source_key("slower"),
@@ -127,14 +151,43 @@ pub(super) fn panel(
                     source_key("faster"),
                     theme::text("+"),
                     Edit::Rate(source_id, 2.0),
-                ))
-                .child(button(
-                    cx,
-                    source_key("remove"),
-                    theme::text("×"),
-                    Edit::RemoveSource(source_id),
-                )),
-        );
+                ));
+        }
+        if let Some(settings) = follower {
+            for (attack, name, seconds) in [
+                (true, "attack", settings.attack_seconds),
+                (false, "release", settings.release_seconds),
+            ] {
+                row = row.child(
+                    div()
+                        .flex()
+                        .gap(px(2.0))
+                        .items_center()
+                        .child(button(
+                            cx,
+                            source_key(&format!("{name}-less")),
+                            theme::text("−"),
+                            Edit::FollowerTime {
+                                source: source_id,
+                                attack,
+                                factor: 0.5,
+                            },
+                        ))
+                        .child(theme::text(format!("{name} {:.1} ms", seconds * 1000.0)))
+                        .child(button(
+                            cx,
+                            source_key(&format!("{name}-more")),
+                            theme::text("+"),
+                            Edit::FollowerTime {
+                                source: source_id,
+                                attack,
+                                factor: 2.0,
+                            },
+                        )),
+                );
+            }
+        }
+        body = body.child(row);
         for route in bank
             .routes()
             .iter()
@@ -305,12 +358,20 @@ fn apply(
     let mut sources = bank.sources().to_vec();
     let mut routes = bank.routes().to_vec();
     let unsupported = |_| Invalid("modulator settings are unsupported");
+    let maximum_hz = f64::from(project.sample_rate()) * 0.5;
     match edit {
-        Edit::Add => sources.push(Modulator {
-            id: ModulationSourceId::new(project.next_identity()).map_err(unsupported)?,
-            enabled: true,
-            state: lfo::Settings::default().encode().map_err(unsupported)?,
-        }),
+        Edit::AddLfo | Edit::AddFollower => {
+            let state = match edit {
+                Edit::AddLfo => lfo::Settings::default().encode(),
+                _ => follower::Settings::default().encode(),
+            }
+            .map_err(unsupported)?;
+            sources.push(Modulator {
+                id: ModulationSourceId::new(project.next_identity()).map_err(unsupported)?,
+                enabled: true,
+                state,
+            });
+        }
         Edit::ToggleSource(id) => {
             let source = find_source(&mut sources, id)?;
             source.enabled = !source.enabled;
@@ -326,7 +387,7 @@ fn apply(
             let source = find_source(&mut sources, id)?;
             let mut settings = lfo::Settings::decode(&source.state).map_err(unsupported)?;
             settings.rate = match settings.rate {
-                lfo::Rate::Hertz(rate) => lfo::Rate::Hertz((rate * factor).clamp(0.01, 100.0)),
+                lfo::Rate::Hertz(rate) => lfo::Rate::Hertz((rate * factor).clamp(0.01, maximum_hz)),
                 lfo::Rate::BeatsPerCycle(rate) => {
                     lfo::Rate::BeatsPerCycle((rate / factor).clamp(0.0625, 64.0))
                 }
@@ -347,9 +408,24 @@ fn apply(
                     lfo::Rate::BeatsPerCycle((beats_per_second / rate).clamp(0.0625, 64.0))
                 }
                 lfo::Rate::BeatsPerCycle(beats) => {
-                    lfo::Rate::Hertz((beats_per_second / beats).clamp(0.01, 100.0))
+                    lfo::Rate::Hertz((beats_per_second / beats).clamp(0.01, maximum_hz))
                 }
             };
+            source.state = settings.encode().map_err(unsupported)?;
+        }
+        Edit::FollowerTime {
+            source,
+            attack,
+            factor,
+        } => {
+            let source = find_source(&mut sources, source)?;
+            let mut settings = follower::Settings::decode(&source.state).map_err(unsupported)?;
+            let time = if attack {
+                &mut settings.attack_seconds
+            } else {
+                &mut settings.release_seconds
+            };
+            *time = (*time * factor).clamp(0.0001, 10.0);
             source.state = settings.encode().map_err(unsupported)?;
         }
         Edit::Map(source, parameter) => {
