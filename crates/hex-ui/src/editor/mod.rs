@@ -107,6 +107,7 @@ mod context_menu;
 mod controller;
 mod controller_input;
 mod detail_context;
+mod device_action_owner;
 mod device_comparison;
 mod device_gesture;
 mod device_panel;
@@ -949,6 +950,7 @@ pub(super) struct EditorView {
     group_selection_history: group_selection::SelectionHistory,
     pending_clip_move: Option<pending_clip_move::Pending>,
     close_prompt_open: bool,
+    automation_close_preflight: close::AutomationClosePreflight,
     export_pending: bool,
     bounce_control: Option<hex_session::service::ExportControl>,
     /// `b` is held during the active Arrangement clip drag; release bounces.
@@ -1349,7 +1351,7 @@ impl EditorView {
     fn new_with_browser_paths(
         window: &mut Window,
         cx: &mut Context<Self>,
-        service: Service,
+        mut service: Service,
         output: Result<crate::EditorAudio, String>,
         paths: (
             std::path::PathBuf,
@@ -1377,6 +1379,12 @@ impl EditorView {
             theme_preferences_path,
             project_directory_path,
         ) = paths;
+        let device_defaults_error = preferences_path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .ok_or_else(|| "device default data folder is unavailable".to_owned())
+            .and_then(|root| service.set_device_defaults_directory(root.to_path_buf()))
+            .err();
         let (audio, status) = match output {
             Ok(audio) => (Some(audio), "loading project · audio ready".into()),
             Err(error) => (
@@ -1721,6 +1729,7 @@ impl EditorView {
             group_selection_history: group_selection::SelectionHistory::default(),
             pending_clip_move: None,
             close_prompt_open: false,
+            automation_close_preflight: Default::default(),
             export_pending: false,
             bounce_control: None,
             drag_bounce_held: false,
@@ -1736,7 +1745,7 @@ impl EditorView {
             format_upgrade_prompt: None,
             preset_dialog_open: false,
             status,
-            error: None,
+            error: device_defaults_error.map(Into::into),
             stream_source_warning: false,
             recovery_failure: None,
             recovery_prompt_open: false,

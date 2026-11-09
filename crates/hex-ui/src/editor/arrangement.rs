@@ -107,8 +107,7 @@ impl EditorView {
     }
 
     pub(super) fn arrangement(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
-        let available_width =
-            (f32::from(window.bounds().size.width) - self.browser_content_width(window)).max(0.0);
+        let available_width = self.workspace_body_width(window);
         if self
             .track_layout
             .available_width
@@ -127,16 +126,13 @@ impl EditorView {
                 .flex_1()
                 .min_h_0()
                 .bg(rgb(theme::color(theme::PaletteRole::Background)));
-            let main = self.main_track_row(viewport, &[], &[], window.scale_factor(), cx);
+            let main = self.main_track_row(viewport, &[], &[], window.scale_factor(), window, cx);
             let returns = self.return_tracks_view(cx);
             return self.arrangement_surface(upper, returns, main, cx);
         };
         self.sync_track_layout(state.project.tracks());
         let clip_move_guide = self.displayed_clip_move_guide_frame();
-        let ruler_width = (f32::from(window.bounds().size.width)
-            - self.browser_content_width(window)
-            - self.track_header_width())
-        .max(0.0);
+        let ruler_width = (self.workspace_body_width(window) - self.track_header_width()).max(0.0);
         if self.arrangement_track_index(0).is_none() {
             let empty_viewport = self.visible_viewport(state.timeline_frames);
             let grid = super::musical_time::grid_lines(
@@ -201,8 +197,14 @@ impl EditorView {
                     ),
                     cx,
                 )]);
-            let main =
-                self.main_track_row(empty_viewport, &bands, &grid, window.scale_factor(), cx);
+            let main = self.main_track_row(
+                empty_viewport,
+                &bands,
+                &grid,
+                window.scale_factor(),
+                window,
+                cx,
+            );
             let returns = self.return_tracks_view(cx);
             return self.arrangement_surface(upper, returns, main, cx);
         }
@@ -285,7 +287,7 @@ impl EditorView {
                 ruler_width,
                 cx,
             ));
-        let main = self.main_track_row(viewport, &bands, &grid, window.scale_factor(), cx);
+        let main = self.main_track_row(viewport, &bands, &grid, window.scale_factor(), window, cx);
         let returns = self.return_tracks_view(cx);
         self.arrangement_surface(upper, returns, main, cx)
     }
@@ -474,6 +476,14 @@ impl EditorView {
                             }
                             if view.pointer_hits_priority_clip_control(x, y, event.modifiers.alt) {
                                 return (false, false);
+                            }
+                            if event.click_count == 2
+                                && let Some((track, _)) = view.visible_lane_at(x, y)
+                                && let Some(clip) = view.visible_clip_at_pointer(track, x, y)
+                            {
+                                view.select_clip_header(track, clip, event.modifiers, window, cx);
+                                view.focus.focus(window);
+                                return (true, false);
                             }
                             if event.click_count == 2
                                 && !event.modifiers.shift
@@ -811,6 +821,7 @@ impl EditorView {
         bands: &[super::musical_time::GridBand],
         lines: &[super::musical_time::GridLine],
         scale: f32,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Div {
         let state = self.state.clone();
@@ -834,7 +845,7 @@ impl EditorView {
             .children([main_track_grid_layer(bands, lines, viewport, scale)])
             .child(super::arrangement_map::view(self, viewport))
             .children(self.main_time_selection_overlay(viewport))
-            .children(self.section_elements(viewport, scale, cx))
+            .children(self.section_elements(viewport, scale, window, cx))
             .children([self.section_pointer_events(cx)])
             .children(automation)
             .child(

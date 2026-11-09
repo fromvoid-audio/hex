@@ -13,6 +13,8 @@ use crate::{
 };
 use std::{ops::Deref, sync::Arc};
 
+mod unit_parent;
+
 // The preceding format allowed256 retained sources PLUS256 track instruments.
 // Migration retains both; the existing global device budget is unchanged.
 pub const MAX_NATIVE_SOURCES: usize = crate::MAX_TRACKS * 2;
@@ -134,6 +136,8 @@ impl From<&NativeSource> for NativeSourceSnapshot {
             devices: source
                 .devices()
                 .map(|d| DeviceSnapshot {
+                    modulation: d.modulation.clone(),
+                    parent: d.parent.map(|id| id.value()),
                     automation: d.automation().to_vec(),
                     id: d.id().value(),
                     state: d.state().clone(),
@@ -230,9 +234,53 @@ impl Project {
         binding: &SourceBinding,
         receiver: TrackId,
     ) -> Result<SourceBinding, Invalid> {
-        let mut device = Device::clone(binding);
-        device.id = DeviceId(self.allocate_id()?);
-        self.register_instrument(binding.0.name().to_owned(), device, receiver)
+        let source = &binding.0;
+        let count = source.devices().count();
+        if self.native_sources.len() >= MAX_NATIVE_SOURCES {
+            return Err(Invalid("native source limit reached"));
+        }
+        if crate::returns::device_count(self)?
+            .checked_add(count)
+            .is_none_or(|count| count > crate::MAX_DEVICES)
+        {
+            return Err(Invalid("project device limit reached"));
+        }
+        let mut devices = Vec::new();
+        devices
+            .try_reserve_exact(count)
+            .map_err(|_| Invalid("could not reserve copied source devices"))?;
+        devices.extend(source.devices().cloned());
+        self.native_sources
+            .try_reserve(1)
+            .map_err(|_| Invalid("could not reserve copied source"))?;
+        let identities = count
+            .checked_add(1)
+            .ok_or(Invalid("source identity count overflow"))?;
+        let (first, _) = self.allocate_id_range(identities)?;
+        for (index, device) in devices.iter_mut().enumerate() {
+            // The reserved inclusive range covers the source plus every node.
+            // Resolve parents against the frozen original, not rewritten IDs.
+            device.parent = device
+                .parent()
+                .map(|parent| {
+                    source
+                        .devices()
+                        .position(|item| item.id() == parent)
+                        .map(|index| DeviceId(first + 1 + index as u64))
+                        .ok_or(Invalid("copied source parent is missing"))
+                })
+                .transpose()?;
+            device.id = DeviceId(first + 1 + index as u64);
+        }
+        let copied = NativeSource::from_parts(
+            SourceId(first),
+            source.name().to_owned(),
+            devices,
+            source.instrument_index(),
+            Some(receiver),
+        )?;
+        self.native_sources.push(copied.clone());
+        Ok(SourceBinding(copied))
     }
     pub(crate) fn bind_track_source(
         &mut self,
@@ -373,6 +421,8 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 .map(|(index, state)| {
                     // allocate_id_range proved this complete inclusive range fits.
                     Device {
+                        modulation: Default::default(),
+                        parent: None,
                         automation: Vec::new(),
                         id: DeviceId(first + 1 + index as u64),
                         state,

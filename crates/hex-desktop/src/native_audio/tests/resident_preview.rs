@@ -363,15 +363,24 @@ impl WorkerAudioSink for ResidentSink {
         &mut self,
     ) -> Option<hex_session::service::PluginParameterObservation> {
         let observation = self.inner.take_plugin_parameter_observation();
-        if std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE")
-            .is_ok_and(|case| case.starts_with("session_record") || case == "session_recover")
-            && let Some(observation) = observation
+        if std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").is_ok_and(|case| {
+            case.starts_with("session_record")
+                || case == "session_recover"
+                || case.starts_with("session_writer_")
+        }) && let Some(observation) = observation
         {
             let mut originals = SESSION_RECORDING_OBSERVATIONS.lock().unwrap();
             assert!(originals.len() < 8, "one bounded recording oracle");
             originals.push(observation);
         }
         observation
+    }
+    fn device_automation_source(
+        &mut self,
+        context: hex_engine::AudioSourceContext,
+        target: hex_session::service::DeviceCaptureTarget,
+    ) -> Result<Option<hex_session::service::DeviceAutomationSource>, String> {
+        self.inner.device_automation_source(context, target)
     }
     fn confirm_plugin_parameter_publication(
         &mut self,
@@ -678,6 +687,8 @@ pub(super) struct ResidentHarness {
     allow_unavailable: bool,
     pub(super) unavailable: Vec<String>,
     pub(super) publication_refusals: Vec<String>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) degraded_devices: Vec<u64>,
     constructor_submitted: Option<(u64, AudioSourceContext)>,
     /// `OutputReleased` events in delivery order: (generation, old output).
     pub(super) released: Vec<(u64, u64)>,
@@ -693,6 +704,8 @@ pub(super) struct ResidentHarness {
     pub(super) plugin_records: Arc<std::sync::atomic::AtomicUsize>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) plugin_progress: Arc<Mutex<crate::native_audio::plugins::PreparationObservation>>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) plugin_failure: Arc<Mutex<Option<String>>>,
 }
 impl ResidentHarness {
     pub(super) fn new() -> Self {
@@ -851,11 +864,14 @@ impl ResidentHarness {
             crate::native_audio::plugins::PreparationObservation::default(),
         ));
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let plugin_failure = Arc::new(Mutex::new(None));
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         if let Some((host, presentation)) = plugin {
             inner.plugins = crate::native_audio::plugins::Plugins::with_fixture(host, presentation);
             inner.plugins.catalog = catalog;
             inner.plugins.facts_gate = facts_gate;
             inner.plugins.progress = Some(Arc::clone(&plugin_progress));
+            inner.plugins.failure_observation = Some(Arc::clone(&plugin_failure));
             // This optional Session-poll diagnostic can lag actual DSP replies.
             // The continuity driver must work without it as a processing clock.
             if std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").as_deref()
@@ -939,6 +955,8 @@ impl ResidentHarness {
             allow_unavailable,
             unavailable: Vec::new(),
             publication_refusals: Vec::new(),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            degraded_devices: Vec::new(),
             constructor_submitted: None,
             released: Vec::new(),
             rebound: None,
@@ -953,6 +971,8 @@ impl ResidentHarness {
             plugin_records,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             plugin_progress,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            plugin_failure,
         }
     }
     /// Attach the actual already-open output and latest submission observation
@@ -1038,6 +1058,10 @@ impl ResidentHarness {
                     state: EditorPublicationState::Refused(error),
                     ..
                 } => self.publication_refusals.push(error),
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                EditorAudioEvent::DegradedPlugins { devices, .. } => {
+                    self.degraded_devices = devices;
+                }
                 EditorAudioEvent::OutputReleased {
                     project_generation,
                     old_output_identity,

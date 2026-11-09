@@ -100,6 +100,15 @@ impl EditorView {
         }
     }
 
+    pub(in crate::editor) fn midi_marker_at(
+        &self,
+        bounds: CanvasBounds,
+        x: f32,
+        invert: bool,
+    ) -> Option<u64> {
+        beat_at(self.midi_ruler_context(bounds)?, x, invert)
+    }
+
     pub(in crate::editor) fn clear_midi_time_selection(&mut self) -> bool {
         self.midi_time_selection.clear()
     }

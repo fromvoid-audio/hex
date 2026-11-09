@@ -1,8 +1,8 @@
 //! Shared section paint; owners retain input, selection and project custody.
 use crate::theme;
 use gpui::{
-    Bounds, Div, PathBuilder, Pixels, Styled, Window, canvas, fill, point, prelude::*, px, rgb,
-    size,
+    Bounds, Div, PathBuilder, Pixels, Styled, Window, canvas, fill, point, prelude::*, px,
+    relative, rgb, rgba, size,
 };
 use hex_project::{BeatTime, ElementColor, SectionId};
 
@@ -61,6 +61,53 @@ pub(crate) fn surface(
             .absolute()
             .inset_0(),
         )
+}
+
+/// A quiet marker body with an explicit stronger outline. Input/custody stay
+/// with the host; this layer is retained with its exact released preview.
+pub(crate) fn marker_only_overlay(color: ElementColor, chamfer: f32, selected: bool) -> Div {
+    gpui::div().absolute().inset_0().child(
+        canvas(
+            |_, _, _| (),
+            move |bounds, _, window, _| {
+                let (fill, outline) = theme::section_marker_only_colors(color, selected);
+                paint(bounds, chamfer, fill, None, window);
+                paint_outline(
+                    bounds,
+                    chamfer,
+                    outline,
+                    theme::SECTION_MARKER_ONLY_OUTLINE_DEVICE_PX,
+                    window,
+                );
+            },
+        )
+        .absolute()
+        .inset_0(),
+    )
+}
+
+/// Match device-chain insertion/replace feedback through its shared secondary
+/// palette token and two-pixel insertion width. Hosts project original targets.
+pub(crate) fn insertion_indicator(left: f32) -> Div {
+    gpui::div()
+        .absolute()
+        .left(relative(left))
+        .top_0()
+        .bottom_0()
+        .w(px(2.0))
+        .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+}
+pub(crate) fn replacement_indicator(left: f32, width: f32) -> Div {
+    let color = theme::color(theme::PaletteRole::Secondary);
+    gpui::div()
+        .absolute()
+        .left(relative(left))
+        .w(relative(width))
+        .top_0()
+        .bottom_0()
+        .border_2()
+        .border_color(rgb(color))
+        .bg(rgba((color << 8) | 0x22))
 }
 
 /// Header height follows the host's lane minimum while sharing production paint.

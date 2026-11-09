@@ -17,6 +17,8 @@ use super::{Session, recovery};
 use hex_storage::automation_draft::DraftWriter;
 mod native_device;
 mod recovery_copy;
+pub(in crate::service) use recovery_copy::copy_failed_with_tail_on_control;
+mod recovery_worker;
 pub use hex_storage::automation_draft::{
     AppliedEvent, DraftAbortReason, DraftClock, DraftPrefixIdentity, DraftProgress,
     DraftProvenance, DraftTarget, DraftTerminal,
@@ -24,7 +26,8 @@ pub use hex_storage::automation_draft::{
 pub use native_device::{
     DeviceDraftInput, Vst3ApplicationValue, Vst3CaptureTarget, Vst3ParameterApplication,
 };
-pub use recovery_copy::copy_failed_on_control;
+pub use recovery_copy::{RecoveryCopyReceipt, copy_failed_on_control};
+pub use recovery_worker::{RecoveryCopyCompletion, RecoveryCopyWorker};
 use std::{
     collections::VecDeque,
     path::{Path, PathBuf},
@@ -144,6 +147,8 @@ struct State {
     failed: bool,
     finished: bool,
     outcome: Option<DraftWorkerOutcome>,
+    #[cfg(feature = "recording-fault-test-support")]
+    fail_next_append: bool,
 }
 struct Shared {
     path: PathBuf,
@@ -321,6 +326,8 @@ fn spawn_with_start(
             failed: false,
             finished: false,
             outcome: None,
+            #[cfg(feature = "recording-fault-test-support")]
+            fail_next_append: false,
         }),
         wake: Condvar::new(),
     });
@@ -350,9 +357,24 @@ fn spawn_with_start(
                 let Some(batch) = state.queue.pop_front() else {
                     break state.terminal.unwrap_or(DraftTerminal::Interrupted);
                 };
+                #[cfg(feature = "recording-fault-test-support")]
+                let inject_failure = std::mem::take(&mut state.fail_next_append);
                 drop(state);
                 if failure.is_some() {
                     retained.push(RetainedBatch(batch));
+                    continue;
+                }
+                #[cfg(feature = "recording-fault-test-support")]
+                if inject_failure {
+                    let message = "injected automation writer failure; retain the take".to_owned();
+                    let progress = writer.progress();
+                    let mut state = worker_shared.state();
+                    state.failed = true;
+                    state
+                        .acknowledgements
+                        .push_back(Ack::Failed(message.clone(), progress));
+                    retained.push(RetainedBatch(batch));
+                    failure = Some(message);
                     continue;
                 }
                 match writer.append(batch.events()) {
@@ -471,6 +493,19 @@ impl RefusedBatch {
     }
 }
 impl DraftInput {
+    #[cfg(feature = "recording-fault-test-support")]
+    pub(in crate::service) fn inject_next_append_failure(&mut self) -> Result<(), &'static str> {
+        let mut state = self.shared.state();
+        if state.failed
+            || state.terminal.is_some()
+            || state.fail_next_append
+            || !state.queue.is_empty()
+        {
+            return Err("automation writer cannot arm failure injection");
+        }
+        state.fail_next_append = true;
+        Ok(())
+    }
     pub fn path(&self) -> &Path {
         &self.shared.path
     }
@@ -641,4 +676,4 @@ impl Drop for DraftWorker {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

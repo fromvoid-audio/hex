@@ -15,6 +15,7 @@ fn oscillator_ratio_and_fixed_hz_sliders_edit_independently_with_canonical_histo
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.update(|window, _| window.activate_window());
     visual.run_until_parked();
+    open_operator_options(&mut visual, device);
     for operator in 0..4 {
         let ratio = 1 + operator * 3;
         let fixed = 62 + operator * 3;
@@ -42,6 +43,13 @@ fn oscillator_ratio_and_fixed_hz_sliders_edit_independently_with_canonical_histo
             ),
         ] {
             if parameter != ratio {
+                let at = operator_context_selection_tests::row_background(
+                    &mut visual,
+                    device,
+                    operator as usize,
+                );
+                visual.simulate_click(at, Modifiers::default());
+                visual.run_until_parked();
                 let toggle = visual
                     .debug_bounds(selector(format!(
                         "device-{}-parameter-{fixed}",

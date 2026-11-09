@@ -297,7 +297,11 @@ impl Gallery {
             );
         device_composition::three_pane(
             shell,
-            device_composition::tabbed_detail(detail, tabs),
+            device_composition::tabbed_detail(
+                detail,
+                tabs,
+                device_composition::VECTOR_DETAIL_WIDTH,
+            ),
             preview,
         )
     }

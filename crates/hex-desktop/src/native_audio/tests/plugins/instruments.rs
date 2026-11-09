@@ -605,6 +605,21 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
     instrument_entrypoint(InstrumentWorkflow::Playback);
 }
 
+/// An opt-in wall-clock driver for the actual native worker, not a physical
+/// audio deadline or a reproduction of any particular user project.
+#[test]
+#[ignore = "requires an installed VST3 instrument, its catalog and a source-bound helper"]
+fn paced_live_instrument_automation_preserves_the_worker() {
+    instrument_entrypoint(InstrumentWorkflow::PacedAuthoring);
+}
+
+/// Includes the live parameter reads present in the reported editing workflow.
+#[test]
+#[ignore = "requires an installed VST3 instrument, its catalog and a source-bound helper"]
+fn paced_automation_and_parameter_polling_preserve_the_worker() {
+    instrument_entrypoint(InstrumentWorkflow::PacedMonitoring);
+}
+
 #[test]
 #[ignore = "requires explicit source-bound SDK receipts and optional installed catalog"]
 fn shared_instrument_lane_authoring_undo_read_controls_and_pcm() {
@@ -797,6 +812,10 @@ fn recorded_session_gesture_commits_one_take_and_reopens() {
                     | "session_stop"
                     | "session_refused"
                     | "session_recover"
+                    | "session_writer_failure"
+                    | "session_writer_adopt"
+                    | "session_writer_refusal"
+                    | "session_writer_source_lost"
                     | "session_cancel"
                     | "session_empty"
             ))
@@ -809,12 +828,19 @@ fn recorded_session_gesture_commits_one_take_and_reopens() {
 enum InstrumentWorkflow {
     Playback,
     Authoring,
+    PacedAuthoring,
+    PacedMonitoring,
     Takeover,
 }
 
 fn instrument_entrypoint(workflow: InstrumentWorkflow) {
     let shared_authoring = !matches!(workflow, InstrumentWorkflow::Playback);
     let takeover = matches!(workflow, InstrumentWorkflow::Takeover);
+    let paced = matches!(
+        workflow,
+        InstrumentWorkflow::PacedAuthoring | InstrumentWorkflow::PacedMonitoring
+    );
+    let monitor = matches!(workflow, InstrumentWorkflow::PacedMonitoring);
     let name = std::thread::current().name().unwrap().to_owned();
     const CHILD: &str = "HEX_DESKTOP_TEST_INSTRUMENT_CHILD";
     let installed = std::env::var("HEX_TEST_VST3_INSTRUMENT_BUNDLE").ok();
@@ -905,7 +931,7 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         panic!("midi track");
     };
     (applied, _) = harness.applied(applied);
-    let (clip_length, note_duration) = if takeover {
+    let (clip_length, note_duration) = if takeover || paced {
         // The headless control driver can render far faster than wall time
         // while waiting for SDK work. Keep its held note alive throughout
         // these operations without adding processing to the test.
@@ -986,14 +1012,37 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         (applied, _) = harness.applied(applied);
         Some(console)
     };
-    let mut insertion = request(&note.state, PluginEffectDestination::Instrument(track));
-    if let Some(bundle) = installed {
-        insertion.selection = installed_selection(
-            &PathBuf::from(std::env::var_os("HEX_TEST_VST3_INSTRUMENT_CATALOG").unwrap()),
-            &bundle,
-            hex_plugin_catalog::PluginRole::Instrument,
-        );
-    }
+    let insertion = if paced {
+        let bundle = installed
+            .as_ref()
+            .expect("paced test requires an installed instrument");
+        PluginEffectInsertion {
+            context: note
+                .state
+                .canonical_audio_source
+                .as_ref()
+                .unwrap()
+                .context(),
+            selection: installed_selection(
+                &PathBuf::from(std::env::var_os("HEX_TEST_VST3_INSTRUMENT_CATALOG").unwrap()),
+                bundle,
+                hex_plugin_catalog::PluginRole::Instrument,
+            ),
+            destination: PluginEffectDestination::Instrument(track),
+            before: None,
+            control: Arc::new(PluginEffectControl::default()),
+        }
+    } else {
+        let mut insertion = request(&note.state, PluginEffectDestination::Instrument(track));
+        if let Some(bundle) = installed.as_ref() {
+            insertion.selection = installed_selection(
+                &PathBuf::from(std::env::var_os("HEX_TEST_VST3_INSTRUMENT_CATALOG").unwrap()),
+                bundle,
+                hex_plugin_catalog::PluginRole::Instrument,
+            );
+        }
+        insertion
+    };
     harness
         .service
         .submit(Request::InsertPluginEffect(insertion))
@@ -1013,6 +1062,15 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
             project_track.instrument().unwrap().id(),
             applied,
             recording_catalog.as_ref().map(|files| files.0.as_path()),
+        );
+        return;
+    }
+    if paced {
+        verify_paced_instrument_authoring(
+            &mut harness,
+            project_track.instrument().unwrap().id(),
+            applied,
+            monitor,
         );
         return;
     }
@@ -1395,6 +1453,237 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         }
         assert_eq!(render_completed_block(&harness), [[0.0; 2]; 256]);
     }
+}
+
+fn verify_paced_instrument_authoring(
+    harness: &mut ResidentHarness,
+    device: hex_project::DeviceId,
+    mut applied: u64,
+    monitor: bool,
+) {
+    use hex_project::{
+        AutomationInterpolation, AutomationPoint, AutomationValue, DeviceAutomationTarget,
+    };
+    use hex_session::service::PluginParameterQuery;
+    let context = harness.submitted.unwrap().1.context;
+    let output_identity = harness
+        .audio
+        .as_ref()
+        .unwrap()
+        .control
+        .output_identity()
+        .unwrap();
+    let page_first: u16 = std::env::var("HEX_TEST_VST3_INSTRUMENT_AUTOMATION_PAGE")
+        .unwrap_or_else(|_| "148".into())
+        .parse()
+        .expect("parameter page offset");
+    harness.run(Request::QueryPluginParameters(PluginParameterQuery {
+        context,
+        device,
+        output_identity,
+        request_id: 10,
+        page_first: Some(page_first),
+    }));
+    let rows = harness.next().plugin_parameters.unwrap().rows.unwrap();
+    let parameter: u32 = std::env::var("HEX_TEST_VST3_INSTRUMENT_AUTOMATION_ID")
+        .unwrap_or_else(|_| "148".into())
+        .parse()
+        .expect("parameter id");
+    let row = rows
+        .iter()
+        .find(|row| row.id == parameter)
+        .expect("requested parameter in inventory");
+    let target = DeviceAutomationTarget::Vst3 { parameter: row.id };
+    let class = row.automation_class.expect("automatable parameter");
+    println!("paced_vst3 parameter={} id={}", row.name, row.id);
+    harness
+        .audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let period = Duration::from_nanos(
+        256 * 1_000_000_000 / u64::from(harness.audio.as_ref().unwrap().sample_rate),
+    );
+    let start = Instant::now();
+    let mut pending = false;
+    let mut sent = 0;
+    let mut completed = 0;
+    let mut query_pending = None;
+    let mut query_sent = 0_u64;
+    let mut query_completed = 0_u64;
+    let mut query_changed = 0_u64;
+    let mut query_yielded = 0_u64;
+    let mut revision = context.editor_revision;
+    let mut max_lateness = Duration::ZERO;
+    let mut peak = 0.0_f32;
+    let mut tail_peak = 0.0_f32;
+    for block in 0..600_u32 {
+        let deadline = start + period * block;
+        if let Some(delay) = deadline.checked_duration_since(Instant::now()) {
+            std::thread::sleep(delay);
+        }
+        harness.pump();
+        max_lateness = max_lateness.max(Instant::now().saturating_duration_since(deadline));
+        let frames = harness.render_plugin_block();
+        let block_peak = frames
+            .into_iter()
+            .flatten()
+            .fold(0.0_f32, |value, sample| value.max(sample.abs()));
+        peak = peak.max(block_peak);
+        if block >= 550 {
+            tail_peak = tail_peak.max(block_peak);
+        }
+        if monitor && query_pending.is_none() && (30..500).contains(&block) && block % 25 == 0 {
+            let query_context = hex_engine::AudioSourceContext {
+                editor_revision: revision,
+                ..context
+            };
+            let request_id = 100 + query_sent;
+            harness
+                .service
+                .submit(Request::QueryPluginParameters(PluginParameterQuery {
+                    context: query_context,
+                    device,
+                    output_identity,
+                    request_id,
+                    page_first: Some(page_first),
+                }))
+                .unwrap();
+            query_sent += 1;
+            query_pending = Some(request_id);
+        }
+        if !pending && sent < 3 && block >= 50 + sent * 125 {
+            let points = [
+                (BeatTime::ZERO, 0.4),
+                (BeatTime::from_ratio(1 + u64::from(sent), 8).unwrap(), 0.7),
+            ]
+            .map(|(beat, value)| AutomationPoint {
+                beat,
+                value: AutomationValue::new(value).unwrap(),
+                outgoing: AutomationInterpolation::Step,
+            })
+            .to_vec();
+            harness
+                .service
+                .submit(Request::DeviceAutomation {
+                    project_generation: context.project_generation,
+                    revision,
+                    device,
+                    target,
+                    vst3_class: Some(class),
+                    points,
+                })
+                .unwrap();
+            sent += 1;
+            pending = true;
+        }
+        while let Ok(event) = harness.service.try_event() {
+            if let Some(error) = &event.error {
+                harness.pump();
+                let progress = *harness.plugin_progress.lock().unwrap();
+                let status = harness.audio.as_ref().unwrap().status().unwrap();
+                let fault = status.render_fault_snapshot();
+                let source = status.native_effect_source();
+                let blocks = harness.plugin_completed.load(Acquire);
+                let worker_failure = harness.plugin_failure.lock().unwrap().clone();
+                panic!(
+                    "live automation failed at block {block}, edits={sent}/{completed}, query={query_pending:?}, observation={}, progress={progress:?}, source={source:?}, blocks={blocks}, degraded={:?}, max_late={max_lateness:?}, render_fault={fault:?}, worker_failure={worker_failure:?}: {error}",
+                    event.plugin_parameter_observation, harness.degraded_devices
+                );
+            }
+            if let Some(result) = event.plugin_parameters {
+                assert_eq!(query_pending, Some(result.query.request_id));
+                match result.rows {
+                    Ok(_) => query_completed += 1,
+                    Err(error) if error == "vst3 parameter refresh yielded to control" => {
+                        query_yielded += 1;
+                    }
+                    Err(error) => {
+                        assert!(
+                            error.contains("changed") || error.contains("cancel"),
+                            "unexpected live query error: {error}"
+                        );
+                        query_changed += 1;
+                    }
+                }
+                query_pending = None;
+            } else if event.state.revision > revision {
+                assert!(pending, "unexpected project revision during polling");
+                revision = event.state.revision;
+                pending = false;
+                completed += 1;
+            } else {
+                assert!(
+                    monitor && query_pending.is_some(),
+                    "unexpected event during authoring"
+                );
+            }
+        }
+        assert!(
+            harness.degraded_devices.is_empty(),
+            "vst endpoint degraded after block {block}, maximum lateness {:?}: {:?}",
+            max_lateness,
+            harness.degraded_devices
+        );
+        let status = harness.audio.as_ref().unwrap().status().unwrap();
+        if block >= 50 {
+            assert!(
+                status.playing.load(Acquire),
+                "the edit requires active playback"
+            );
+        }
+        assert!(!status.device_fault.load(Acquire) && !status.render_fault.load(Acquire));
+        applied = applied.max(status.applied_revision.load(Acquire));
+    }
+    harness.pump();
+    assert!(
+        harness.degraded_devices.is_empty(),
+        "vst endpoint degraded: {:?}",
+        harness.degraded_devices
+    );
+    assert_eq!((sent, completed, pending), (3, 3, false));
+    if monitor {
+        assert!(
+            query_completed >= 5,
+            "too few parameter queries completed: sent={query_sent} completed={query_completed} changed={query_changed} yielded={query_yielded}"
+        );
+        assert!(
+            query_yielded > 0,
+            "the test must exercise a read yielding to an automation edit"
+        );
+        assert!(
+            query_pending.is_none(),
+            "the last parameter query must complete"
+        );
+        assert_eq!(query_sent, query_completed + query_changed + query_yielded);
+        println!(
+            "paced_vst3 queries_sent={query_sent} completed={query_completed} invalidated={query_changed} yielded={query_yielded} pending={}",
+            query_pending.is_some()
+        );
+    }
+    let source = harness
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .native_effect_source()
+        .unwrap();
+    assert_eq!(
+        source.context.editor_revision, revision,
+        "last edit must be applied"
+    );
+    assert!(
+        peak > 0.001 && tail_peak > 0.001,
+        "instrument must remain audible after editing"
+    );
+    println!(
+        "paced_vst3 rate={} blocks=600 edits={completed} applied={applied} max_late_us={} peak={peak} tail_peak={tail_peak}",
+        harness.audio.as_ref().unwrap().sample_rate,
+        max_lateness.as_micros()
+    );
 }
 
 fn verify_shared_instrument_authoring(
@@ -1944,6 +2233,235 @@ fn verify_instrument_takeover(
         let binding = h.plugin_progress.lock().unwrap().binding;
         client.begin_plugin_recording(origin).unwrap();
         assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
+        #[cfg(feature = "recording-fault-test-support")]
+        if matches!(
+            case.as_str(),
+            "session_writer_failure"
+                | "session_writer_adopt"
+                | "session_writer_refusal"
+                | "session_writer_source_lost"
+        ) {
+            use hex_session::service::automation_draft::{DraftProvenance, Vst3CaptureTarget};
+            use hex_session::service::{
+                DeviceAutomationTakeAction as Action, DeviceAutomationTakeProgress as Progress,
+                DeviceAutomationTakeScope, DeviceCaptureTarget,
+            };
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            let applied_source = status.recording_source().unwrap();
+            let scope = DeviceAutomationTakeScope {
+                target: DeviceCaptureTarget::Vst3(Vst3CaptureTarget {
+                    device,
+                    parameter: 7,
+                    class,
+                    binding: binding.unwrap(),
+                }),
+                stamp: DraftProvenance {
+                    sample_rate: 48_000,
+                    output_identity: applied_source.output_identity,
+                    project_generation: origin.context.project_generation,
+                    editor_revision: origin.context.editor_revision,
+                    audio_revision: applied_source.audio_revision,
+                    transport_epoch: status.transport_epoch.load(Acquire),
+                    gesture_serial: client.snapshot().unwrap().key.token,
+                },
+            };
+            let armed = h.run(Request::DeviceAutomationTake {
+                request_id: 491,
+                scope,
+                action: Action::InjectWriterFailure,
+            });
+            assert!(armed.error.is_none(), "{:?}", armed.error);
+            assert_eq!(
+                armed.device_automation_take_complete.unwrap().progress,
+                Progress::Appended
+            );
+            client
+                .change_plugin(PluginParameterValue::new(0.75).unwrap())
+                .unwrap();
+            send(h, &mut client, true);
+            client.finish_plugin(origin.initial).unwrap();
+            let failed = send(h, &mut client, false);
+            assert_eq!(failed.state.project.as_ref(), &before);
+            let directory = recovery_directory.unwrap().join("automation-drafts");
+            let paths = std::fs::read_dir(directory)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect::<Vec<_>>();
+            assert_eq!(paths.len(), 1);
+            let original = std::fs::read(&paths[0]).unwrap();
+            let copy = paths[0].with_extension("recovery-copy");
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                let started = super::automation::edit_with_running_callback(
+                    h,
+                    Request::DeviceAutomationTake {
+                        request_id: 492,
+                        scope,
+                        action: Action::CopyFailedPlugin {
+                            destination: copy.clone(),
+                            max_events: 16,
+                        },
+                    },
+                );
+                if let Some(reason) = started.error {
+                    assert!(
+                        reason.contains("no failed device automation custody")
+                            || reason.contains("vst3 recovery custody is incomplete")
+                            || reason.contains("vst3 recovery requires a quiescent gesture"),
+                        "{reason}"
+                    );
+                    assert!(
+                        Instant::now() < deadline,
+                        "writer custody was not handed off: {reason}"
+                    );
+                    continue;
+                }
+                assert_eq!(
+                    started.device_automation_take_complete.unwrap().progress,
+                    Progress::Pending
+                );
+                break;
+            }
+            let receipt = loop {
+                let event = super::automation::edit_with_running_callback(
+                    h,
+                    Request::DeviceAutomationTake {
+                        request_id: 493,
+                        scope,
+                        action: Action::PollFailedCopy,
+                    },
+                );
+                assert!(event.error.is_none(), "{:?}", event.error);
+                match event.device_automation_take_complete.unwrap().progress {
+                    Progress::Pending => assert!(Instant::now() < deadline),
+                    Progress::VerifiedCopy { path, receipt } => {
+                        assert_eq!(path, copy);
+                        use hex_session::service::PluginParameterObservation as Observation;
+                        use hex_storage::automation_draft::DraftTerminal;
+                        let originals = crate::native_audio::tests::resident_preview::SESSION_RECORDING_OBSERVATIONS.lock().unwrap().clone();
+                        let points = originals
+                            .iter()
+                            .filter(|event| matches!(event, Observation::Delivered(_)))
+                            .count();
+                        assert!(points > 0);
+                        assert_eq!(receipt.events(), points as u64);
+                        let restored = originals.iter().find_map(|event| match event {
+                            Observation::Restored(delivery) => Some(delivery.application.origin),
+                            _ => None,
+                        });
+                        assert_eq!(
+                            receipt.terminal(),
+                            restored.map_or(DraftTerminal::Interrupted, DraftTerminal::Finished)
+                        );
+                        break receipt;
+                    }
+                    other => panic!("unexpected recovery copy: {other:?}"),
+                }
+            };
+            assert_eq!(std::fs::read(&paths[0]).unwrap(), original);
+            assert_eq!(h.service.try_event().ok().and_then(|e| e.error), None);
+            let mut discovered = super::automation::edit_with_running_callback(
+                h,
+                Request::QueryFailedPluginAutomation { request_id: 493 },
+            );
+            assert!(discovered.error.is_none(), "{:?}", discovered.error);
+            let discovery = discovered.device_automation_take_complete.take().unwrap();
+            assert_eq!(discovery.request_id, 493);
+            assert_eq!(
+                discovery.progress,
+                Progress::FailedPluginCustody {
+                    scope: Box::new(scope),
+                    path: std::fs::canonicalize(&paths[0]).unwrap(),
+                }
+            );
+            if case != "session_writer_failure" {
+                use hex_storage::automation_draft::DraftTerminal;
+                assert!(
+                    matches!(receipt.terminal(), DraftTerminal::Finished(_)),
+                    "actual restoration is required for adoption: {:?}",
+                    receipt.terminal()
+                );
+                let copy_bytes = std::fs::read(&copy).unwrap();
+                let adopt = |request_id| Request::DeviceAutomationTake {
+                    request_id,
+                    scope,
+                    action: Action::AdoptFailedPluginCopy { max_events: 16 },
+                };
+                if case == "session_writer_source_lost" {
+                    h.audio.as_ref().unwrap().control.stop();
+                    h.render_plugin_block();
+                    let refused = super::automation::edit_with_running_callback(h, adopt(494));
+                    assert!(refused.error.is_some());
+                    assert_eq!(refused.state.project.as_ref(), &before);
+                    assert_eq!(std::fs::read(&paths[0]).unwrap(), original);
+                    assert_eq!(std::fs::read(&copy).unwrap(), copy_bytes);
+                    let inspected = super::automation::edit_with_running_callback(
+                        h,
+                        Request::DeviceAutomationTake {
+                            request_id: 495,
+                            scope,
+                            action: Action::InspectFailedPluginCopy,
+                        },
+                    );
+                    assert!(
+                        matches!(inspected.device_automation_take_complete.unwrap().progress, Progress::VerifiedCopy { receipt: found, .. } if found == receipt)
+                    );
+                    return;
+                }
+                if case == "session_writer_refusal" {
+                    h.refuse.store(true, std::sync::atomic::Ordering::Release);
+                    let refused = super::automation::edit_with_running_callback(h, adopt(494));
+                    h.refuse.store(false, std::sync::atomic::Ordering::Release);
+                    assert!(refused.error.is_some());
+                    assert_eq!(refused.state.project.as_ref(), &before);
+                    assert_eq!(std::fs::read(&paths[0]).unwrap(), original);
+                    let inspected = super::automation::edit_with_running_callback(
+                        h,
+                        Request::DeviceAutomationTake {
+                            request_id: 495,
+                            scope,
+                            action: Action::InspectFailedPluginCopy,
+                        },
+                    );
+                    assert!(
+                        matches!(inspected.device_automation_take_complete.unwrap().progress, Progress::VerifiedCopy { receipt: found, .. } if found == receipt)
+                    );
+                }
+                let committed = super::automation::edit_with_running_callback(h, adopt(496));
+                assert!(committed.error.is_none(), "{:?}", committed.error);
+                assert_eq!(
+                    committed.device_automation_take_complete.unwrap().progress,
+                    Progress::Committed
+                );
+                assert_ne!(committed.state.project.as_ref(), &before);
+                let after = committed.state.project.clone();
+                assert_eq!(std::fs::read(&paths[0]).unwrap(), original);
+                assert_eq!(std::fs::read(&copy).unwrap(), copy_bytes);
+                let mut cleared = super::automation::edit_with_running_callback(
+                    h,
+                    Request::QueryFailedPluginAutomation { request_id: 498 },
+                );
+                assert!(cleared.error.is_none(), "{:?}", cleared.error);
+                let cleared = cleared.device_automation_take_complete.take().unwrap();
+                assert_eq!(cleared.request_id, 498);
+                assert_eq!(cleared.progress, Progress::FailedPluginUnavailable);
+                let duplicate = super::automation::edit_with_running_callback(h, adopt(497));
+                assert!(duplicate.error.is_some());
+                assert_eq!(duplicate.state.project, after);
+                let undone = super::automation::edit_with_running_callback(h, Request::Undo);
+                assert!(undone.error.is_none(), "{:?}", undone.error);
+                assert_eq!(undone.state.project.as_ref(), &before);
+                let redone = super::automation::edit_with_running_callback(h, Request::Redo);
+                assert!(redone.error.is_none(), "{:?}", redone.error);
+                assert_eq!(redone.state.project, after);
+            }
+            return;
+        }
+        #[cfg(not(feature = "recording-fault-test-support"))]
+        assert!(
+            !case.starts_with("session_writer_"),
+            "fixture feature is required"
+        );
         if case == "session_empty" {
             client.finish_plugin(origin.initial).unwrap();
             let empty = send(h, &mut client, true);

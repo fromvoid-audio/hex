@@ -1,5 +1,7 @@
 //! Compact eight-band equalizer panel backed by registered descriptors and DSP response data.
 mod graph;
+mod group;
+mod selection;
 
 use super::{
     ControlPresentation, ControlText, DeviceControlIdentity, EditorView, ParameterKey,
@@ -32,6 +34,9 @@ const MAX_Q: f32 = 18.0;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Eq8PanelState {
     pub(super) selected_band: usize,
+    pub(super) selected_bands: Option<u8>,
+    marquee_before: Option<(usize, Option<u8>)>,
+    collapse_band: Option<usize>,
     pub(super) selected_lane: usize,
     pub(super) audition_armed: bool,
     pub(super) audition_gesture_active: bool,
@@ -47,6 +52,8 @@ pub(super) struct GraphGestureState {
 pub(super) struct GraphControl {
     pub(super) entity: Entity<ResponseGraph>,
     _subscription: Subscription,
+    _marquee_subscription: Subscription,
+    group_drag: Option<group::Drag>,
 }
 
 #[derive(Clone)]
@@ -94,7 +101,7 @@ pub(super) fn render_body(
         identity,
         device_view,
         bank,
-        panel.selected_band,
+        selection::mask(&panel),
     );
     let mode_parameter = parameter(device_view.parameters.as_slice(), id(201));
     let mode_control = mode_parameter.map_or_else(
@@ -351,12 +358,12 @@ fn band_list(
     identity: DeviceControlIdentity,
     device_view: &NativeDeviceView,
     bank: usize,
-    selected: usize,
+    selected: u8,
 ) -> Div {
     let mut rows = Vec::with_capacity(BAND_COUNT);
     for band in 0..BAND_COUNT {
         let index = band + 1;
-        let selected = selected == band;
+        let selected = selected & (1 << band) != 0;
         let row = hex_widgets::device_compact_row(super::device_layout_style(), selected)
             .id(ElementId::Name(
                 format!("eq8-band-row-{}-{band}", device.value()).into(),
@@ -373,6 +380,8 @@ fn band_list(
                 }
                 if let Some(panel) = view.device_panel.eq8_panels.get_mut(&device) {
                     panel.selected_band = band;
+                    panel.selected_bands = None;
+                    panel.collapse_band = None;
                 }
                 cx.notify();
             }))

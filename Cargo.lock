@@ -2866,6 +2866,7 @@ dependencies = [
  "hex-preferences",
  "hex-project",
  "hex-session",
+ "hex-storage",
  "hex-tuning",
  "hex-widgets",
  "image",

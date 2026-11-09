@@ -11,6 +11,7 @@
 //! physical deadline/Live parity from headless checks. Callback paths borrow prepared data;
 //! control owns preparation and final destruction.
 mod native_effect_storage;
+mod serial_effect_power;
 pub use hex_devices::SineTable;
 pub use hex_devices::auto_pan::{
     AutoPanWaveformPreview, waveform_preview as native_auto_pan_waveform_preview,
@@ -105,9 +106,10 @@ pub use native_device_view::{
     is_sampler_configuration_history_on_control, native_device_catalog,
     native_device_catalog_for_class, native_device_descriptors_for_class,
     native_device_parameter_for_class, native_device_view, native_device_view_for_class,
-    native_effect_frequency_response, patch_sampler_parameter_on_control,
-    sampler_parameter_active_on_control, sampler_parameter_value_on_control,
-    sampler_replacement_template_on_control, validate_sampler_replacement_on_control,
+    native_effect_frequency_response, native_operator_filter_frequency_response,
+    patch_sampler_parameter_on_control, sampler_parameter_active_on_control,
+    sampler_parameter_value_on_control, sampler_replacement_template_on_control,
+    validate_sampler_replacement_on_control,
 };
 pub use sparse_audio::SparseFrameMap;
 

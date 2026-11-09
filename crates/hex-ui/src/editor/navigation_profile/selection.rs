@@ -69,6 +69,15 @@ impl Selection {
     }
 }
 
+/// Default remains one current-layout trial; comparison balances temporal order.
+pub(super) fn comparison_trials(value: Option<&str>) -> Result<&'static [bool], &'static str> {
+    match value {
+        None | Some("0") => Ok(&[false]),
+        Some("1") => Ok(&[true, false, false, true]),
+        _ => Err("navigation layout comparison must be 0 or 1"),
+    }
+}
+
 pub(super) fn iterations(smoke: bool) -> (usize, usize) {
     if smoke { (4, 1) } else { (8 + 40, 8) }
 }
@@ -76,6 +85,25 @@ pub(super) fn iterations(smoke: bool) -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn comparison_retains_default_and_balances_reference_current_trials() {
+        assert_eq!(comparison_trials(None).unwrap(), &[false]);
+        assert_eq!(comparison_trials(Some("0")).unwrap(), &[false]);
+        assert_eq!(
+            comparison_trials(Some("1")).unwrap(),
+            &[true, false, false, true]
+        );
+        for value in ["", " ", "true", "2", "1 "] {
+            assert!(comparison_trials(Some(value)).is_err());
+        }
+        let (rounds, warmup) = iterations(false);
+        assert_eq!(
+            comparison_trials(Some("1")).unwrap().len() * 2 * rounds,
+            384
+        );
+        assert_eq!((rounds, warmup), (48, 8));
+    }
 
     #[test]
     fn default_keeps_complete_generated_and_project_case_inventories() {

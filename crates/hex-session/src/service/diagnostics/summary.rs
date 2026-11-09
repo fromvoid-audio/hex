@@ -207,6 +207,11 @@ pub(super) fn created(value: &hex_project::Created) -> Description {
 
 pub(super) fn command(value: &Command) -> Description {
     match value {
+        Command::InitializeDevice(initialization) => {
+            let mut description = describe!("initialize_device"; ["comparison_present" => initialization.comparison().is_some()]; omitted="comparison");
+            description.nested("creation", command(initialization.command()));
+            description
+        }
         Command::DuplicateAliasClips(value0) => {
             describe!("duplicate_alias_clips"; ["value0_count" => value0.len()]; omitted="")
         }
@@ -353,6 +358,29 @@ pub(super) fn command(value: &Command) -> Description {
             after,
         } => {
             describe!("duplicate_arrangement_section_at"; ["section" => section.value(), "target" => target.value(), "after" => after]; omitted="")
+        }
+        Command::AppendArrangementSectionCopy {
+            section,
+            start,
+            gap_name,
+            ..
+        } => {
+            describe!("append_arrangement_section_copy"; ["section" => section.value(), "start_beats_q32" => start.raw(), "gap_name_redacted_bytes" => gap_name.len()]; omitted="gap_color")
+        }
+        Command::MoveArrangementSectionBeyondEnd {
+            section,
+            start,
+            gap_name,
+            ..
+        } => {
+            describe!("move_arrangement_section_beyond_end"; ["section" => section.value(), "start_beats_q32" => start.raw(), "gap_name_redacted_bytes" => gap_name.len()]; omitted="gap_color")
+        }
+        Command::ReplaceArrangementSection {
+            source,
+            target,
+            copy,
+        } => {
+            describe!("replace_arrangement_section"; ["source" => source.value(), "target" => target.value(), "copy" => copy]; omitted="")
         }
         Command::SplitArrangementSection { section, at } => {
             describe!("split_arrangement_section"; ["section" => section.value(), "at_beats_q32" => at.raw()]; omitted="")
@@ -507,6 +535,19 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("move_track_device"; ["device" => device.value(), "track" => track.value(), "before" => before.map(|id| id.value())]; omitted="")
         }
+        Command::InsertNestedDevice { parent, state } => {
+            describe!("insert_nested_device"; ["parent" => parent.value(), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="")
+        }
+        Command::MoveNativeSourceDevice {
+            source,
+            device,
+            before,
+        } => {
+            describe!("move_native_source_device"; ["source" => source.value(), "device" => device.value(), "before" => before.map(|id| id.value())]; omitted="")
+        }
+        Command::ReparentDevice { device, parent } => {
+            describe!("reparent_device"; ["device" => device.value(), "parent" => parent.map(|id| id.value())]; omitted="")
+        }
         Command::SpliceDeviceAutomationTouch {
             device,
             target,
@@ -514,6 +555,9 @@ pub(super) fn command(value: &Command) -> Description {
             ..
         } => {
             describe!("splice_device_automation_touch"; ["device" => device.value(), "target" => target, "span_count" => spans.len()]; omitted="")
+        }
+        Command::ReplaceDeviceModulation { device, modulation } => {
+            describe!("replace_device_modulation"; ["device" => device.value(), "source_count" => modulation.sources().len(), "route_count" => modulation.routes().len()]; omitted="")
         }
         Command::ReplaceDeviceAutomationTarget {
             device,
@@ -1387,6 +1431,9 @@ pub(super) fn request(value: &Request) -> Description {
         Request::SaveDevicePreset { path, .. } => {
             describe!("save_device_preset"; ["path_redacted_bytes" => path.as_os_str().len()]; omitted="owner")
         }
+        Request::SaveDeviceDefault { root, .. } => {
+            describe!("save_device_default"; ["root_redacted_bytes" => root.as_os_str().len()]; omitted="owner")
+        }
         Request::LoadDevicePreset { path, .. } => {
             describe!("load_device_preset"; ["path_redacted_bytes" => path.as_os_str().len()]; omitted="owner")
         }
@@ -1464,6 +1511,12 @@ pub(super) fn request(value: &Request) -> Description {
             action: _,
         } => {
             describe!("device_automation_take"; ["request_id" => request_id, "gesture_serial" => scope.stamp.gesture_serial]; omitted="delivery data")
+        }
+        Request::QueryFailedPluginAutomation { request_id } => {
+            describe!("query_failed_plugin_automation"; ["request_id" => request_id]; omitted="none")
+        }
+        Request::QueryDeviceAutomationCloseSafety { request_id } => {
+            describe!("query_device_automation_close_safety"; ["request_id" => request_id]; omitted="none")
         }
         Request::RecoverDeviceAutomationTake {
             request_id,
@@ -1897,6 +1950,184 @@ pub(super) fn gesture_target(value: &crate::device_gesture::GestureTarget) -> De
             return_track,
         } => {
             describe!("return_send"; ["track" => track.value(), "return_track" => return_track.value()]; omitted="")
+        }
+    }
+}
+
+#[cfg(test)]
+mod default_tests {
+    use super::*;
+
+    #[test]
+    fn source_reorder_projection_keeps_source_device_and_anchor_identities() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 1).unwrap();
+        let hex_project::Created::NativeSource(source) = editor
+            .execute(Command::CreateNativeSource {
+                name: "source".into(),
+                devices: vec![hex_project::default_instrument_state().unwrap(); 2],
+                instrument_index: 0,
+            })
+            .unwrap()
+        else {
+            panic!("source")
+        };
+        let devices: Vec<_> = editor
+            .project()
+            .native_source(source)
+            .unwrap()
+            .devices()
+            .map(hex_project::Device::id)
+            .collect();
+        let description = command(&Command::MoveNativeSourceDevice {
+            source,
+            device: devices[0],
+            before: Some(devices[1]),
+        });
+        assert_eq!(description.name, "move_native_source_device");
+        assert!(
+            description
+                .details
+                .text
+                .contains(&format!("source={}", source.value()))
+        );
+        assert!(
+            description
+                .details
+                .text
+                .contains(&format!("device={}", devices[0].value()))
+        );
+        assert!(
+            description
+                .details
+                .text
+                .contains(&format!("before=Some({})", devices[1].value()))
+        );
+    }
+
+    #[test]
+    fn initialized_device_projection_preserves_kind_without_names_or_bank_payloads() {
+        let secret = "秘密の音🎵";
+        let type_id = hex_lattice_contract::DeviceTypeId::from_static("test.device");
+        let state =
+            hex_lattice_contract::NativeDeviceState::new(type_id, 1, secret.as_bytes().to_vec())
+                .unwrap();
+        let initialization = hex_project::DeviceInitialization::new(
+            Command::InsertDefaultTrackWithDevice {
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: state.clone(),
+                device_name: secret.into(),
+            },
+            Some(hex_project::DeviceComparison::new(
+                hex_project::DeviceVariant::B,
+                state,
+            )),
+        )
+        .unwrap();
+        let description = command(&Command::InitializeDevice(Box::new(initialization)));
+        assert_eq!(description.name, "initialize_device");
+        let details = description.details.text;
+        assert!(details.contains("creation=insert_default_track_with_device"));
+        assert!(details.contains("comparison_present=true"));
+        assert!(details.contains("state_payload_bytes="));
+        assert!(!details.contains(secret));
+        assert!(!details.contains("秘密"));
+    }
+
+    #[test]
+    fn device_default_projection_redacts_the_configured_data_folder() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 1).unwrap();
+        let hex_project::Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "fixture".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        let class = hex_engine::NativeDeviceClass::Effect;
+        let type_id = hex_lattice_contract::DeviceTypeId::from_static("hex.utility");
+        let state = hex_engine::default_native_device_state_for_class(class, type_id).unwrap();
+        let hex_project::Created::Device(device) = editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state,
+            })
+            .unwrap()
+        else {
+            panic!("device");
+        };
+        let root = std::path::PathBuf::from("/private/秘密の既定🎵");
+        let description = request(&Request::SaveDeviceDefault {
+            owner: crate::service::preset::Owner {
+                project_generation: 3,
+                revision: 7,
+                device,
+                class,
+                type_id,
+            },
+            root: root.clone(),
+        });
+        assert_eq!(description.name, "save_device_default");
+        let details = description.details.text;
+        assert!(details.contains(&format!("root_redacted_bytes={}", root.as_os_str().len())));
+        assert!(!details.contains("秘密"));
+        assert!(!details.contains("/private/"));
+    }
+}
+
+#[cfg(test)]
+mod append_tests {
+    use super::*;
+
+    #[test]
+    fn absolute_placement_gap_names_are_redacted() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 1).unwrap();
+        let hex_project::Created::ArrangementSection(section) = editor
+            .execute(Command::AddArrangementSection {
+                name: "source".into(),
+                color: hex_project::ElementColor::Blue,
+                start: hex_project::BeatTime::ZERO,
+                end: hex_project::BeatTime::from_quarters(4).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("source");
+        };
+        let start = hex_project::BeatTime::from_quarters(8).unwrap();
+        for (edit, name) in [
+            (
+                Command::AppendArrangementSectionCopy {
+                    section,
+                    start,
+                    gap_name: "private secret gap".into(),
+                    gap_color: hex_project::ElementColor::Rose,
+                },
+                "append_arrangement_section_copy",
+            ),
+            (
+                Command::MoveArrangementSectionBeyondEnd {
+                    section,
+                    start,
+                    gap_name: "private secret gap".into(),
+                    gap_color: hex_project::ElementColor::Rose,
+                },
+                "move_arrangement_section_beyond_end",
+            ),
+        ] {
+            let description = command(&edit);
+            assert_eq!(description.name, name);
+            assert!(
+                description
+                    .details
+                    .text
+                    .contains("gap_name_redacted_bytes=")
+            );
+            assert!(!description.details.text.contains("private secret"));
         }
     }
 }

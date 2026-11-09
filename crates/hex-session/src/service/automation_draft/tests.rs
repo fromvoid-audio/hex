@@ -75,7 +75,7 @@ fn reader(path: &Path) -> DraftReader {
     .unwrap()
 }
 
-fn failed_outcome(
+pub(in crate::service) fn failed_outcome(
     path: PathBuf,
     acknowledged: u64,
     durable_prefix: DraftPrefixIdentity,
@@ -114,6 +114,132 @@ fn copy_test(
     max_events: u64,
 ) -> Result<(), String> {
     copy_failed_on_control(outcome, destination, limits, max_events)
+}
+
+fn wait_recovery(worker: &mut RecoveryCopyWorker) -> RecoveryCopyCompletion {
+    let end = Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        if let Some(completion) = worker.poll() {
+            return completion;
+        }
+        assert!(Instant::now() < end, "recovery worker did not finish");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn recovery_worker_keeps_original_custody_while_copy_is_delayed() {
+    let files = Files::new();
+    let source = files.path("worker-source");
+    let destination = files.path("worker-copy");
+    let (project, target, stamp) = fixture();
+    let mut writer = DraftWriter::create_new(&source, &project, target, stamp).unwrap();
+    writer.append(&[event(1)]).unwrap();
+    let identity = writer.durable_prefix_identity();
+    drop(writer);
+    let original = fs::read(&source).unwrap();
+    let outcome = Arc::new(failed_outcome(source.clone(), 1, identity, &[event(2)]));
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let copy_path = destination.clone();
+    let limits = DraftReadLimits {
+        max_source_bytes: 65536,
+    };
+    let mut worker = RecoveryCopyWorker::default();
+    worker
+        .start_with(&outcome, move |source| {
+            let _ = started_tx.send(());
+            release_rx.recv().map_err(|error| error.to_string())?;
+            copy_failed_on_control(source, &copy_path, limits, 2)
+        })
+        .unwrap();
+    let started = started_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .is_ok();
+    let pending = worker.poll().is_none();
+    let refused = worker
+        .start(&outcome, files.path("second"), limits, 2)
+        .is_err();
+    let _ = release_tx.send(());
+    assert!(started && pending && refused);
+    let completion = wait_recovery(&mut worker);
+    assert!(completion.result.is_ok());
+    assert!(Arc::ptr_eq(&outcome, &completion.outcome));
+    assert_eq!(completion.outcome.retained[0].events(), &[event(2)]);
+    assert_eq!(fs::read(source).unwrap(), original);
+    assert_eq!(reader(&destination).progress().durable_events, 2);
+    assert!(worker.poll().is_none());
+}
+
+#[test]
+fn recovery_worker_returns_custody_after_copy_error_and_panic() {
+    let files = Files::new();
+    let source = files.path("worker-source");
+    let (project, target, stamp) = fixture();
+    let writer = DraftWriter::create_new(&source, &project, target, stamp).unwrap();
+    let identity = writer.durable_prefix_identity();
+    drop(writer);
+    let outcome = Arc::new(failed_outcome(source, 0, identity, &[event(1)]));
+    let mut worker = RecoveryCopyWorker::default();
+    worker
+        .start(
+            &outcome,
+            files.path("missing").join("output"),
+            DraftReadLimits {
+                max_source_bytes: 65536,
+            },
+            1,
+        )
+        .unwrap();
+    let refused = wait_recovery(&mut worker);
+    assert!(refused.result.is_err());
+    assert!(Arc::ptr_eq(&outcome, &refused.outcome));
+    worker
+        .start_with(&outcome, |_| panic!("injected worker failure"))
+        .unwrap();
+    let failed = wait_recovery(&mut worker);
+    assert!(failed.result.is_err());
+    assert!(Arc::ptr_eq(&outcome, &failed.outcome));
+    assert_eq!(failed.outcome.retained[0].events(), &[event(1)]);
+}
+
+#[test]
+fn recovery_worker_shutdown_joins_before_releasing_its_custody() {
+    let files = Files::new();
+    let source = files.path("worker-source");
+    let (project, target, stamp) = fixture();
+    let writer = DraftWriter::create_new(&source, &project, target, stamp).unwrap();
+    let identity = writer.durable_prefix_identity();
+    drop(writer);
+    let outcome = Arc::new(failed_outcome(source, 0, identity, &[event(1)]));
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let mut worker = RecoveryCopyWorker::default();
+    worker
+        .start_with(&outcome, move |_| {
+            let _ = entered_tx.send(());
+            release_rx.recv().map_err(|error| error.to_string())?;
+            Ok(())
+        })
+        .unwrap();
+    let entered = entered_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .is_ok();
+    let (dropped_tx, dropped_rx) = std::sync::mpsc::channel();
+    let owner = std::thread::spawn(move || {
+        drop(worker);
+        let _ = dropped_tx.send(());
+    });
+    let waited = dropped_rx
+        .recv_timeout(std::time::Duration::from_millis(20))
+        .is_err();
+    let _ = release_tx.send(());
+    let joined = dropped_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .is_ok();
+    owner.join().unwrap();
+    assert!(entered && waited && joined);
+    assert_eq!(outcome.retained[0].events(), &[event(1)]);
 }
 
 #[test]
@@ -270,6 +396,53 @@ fn send(input: &mut DraftInput, events: &[AppliedEvent]) {
         batch.push(*event).unwrap();
     }
     batch.submit().unwrap();
+}
+
+#[cfg(feature = "recording-fault-test-support")]
+#[test]
+fn per_take_injected_append_failure_retains_original_batch_without_terminal() {
+    let files = Files::new();
+    let path = files.path("injected-writer");
+    let (project, target, stamp) = fixture();
+    let writer = DraftWriter::create_new(&path, &project, target, stamp).unwrap();
+    let original = std::fs::read(&path).unwrap();
+    let (mut input, worker) = spawn_writer_on_control(writer).unwrap();
+    input.inject_next_append_failure().unwrap();
+    assert!(input.inject_next_append_failure().is_err());
+    send(&mut input, &[event(1)]);
+    input.finish(DraftTerminal::Interrupted).unwrap();
+    let outcome = worker.join_on_control().unwrap();
+    assert!(outcome.failure.is_some());
+    assert_eq!(outcome.retained.len(), 1);
+    assert_eq!(outcome.retained[0].events(), &[event(1)]);
+    assert_eq!(outcome.requested_terminal, DraftTerminal::Interrupted);
+    assert_eq!(outcome.progress.durable_terminal, None);
+    assert_eq!(std::fs::read(path).unwrap(), original);
+}
+
+pub(in crate::service) fn injected_failed_writer(
+    writer: DraftWriter,
+    event: AppliedEvent,
+) -> DraftWorkerOutcome {
+    injected_failed_writer_with_terminal(writer, event, DraftTerminal::Interrupted)
+}
+
+pub(in crate::service) fn injected_failed_writer_with_terminal(
+    writer: DraftWriter,
+    event: AppliedEvent,
+    terminal: DraftTerminal,
+) -> DraftWorkerOutcome {
+    let barrier = Arc::new(Barrier::new(2));
+    let held = Arc::clone(&barrier);
+    let (mut input, worker) = spawn_with_start(writer, move || {
+        held.wait();
+    })
+    .unwrap();
+    send(&mut input, &[event]);
+    input.finish(terminal).unwrap();
+    input.shared.state().failed = true;
+    barrier.wait();
+    worker.join_on_control().unwrap()
 }
 #[test]
 fn three_loan_backpressure_and_independent_terminal_preserve_fifo_and_exact_file() {

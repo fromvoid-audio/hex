@@ -225,16 +225,7 @@ impl Project {
     /// Each canonical device is visited once; immutable track source bindings
     /// are views and do not add duplicate authored envelopes to this inventory.
     pub fn automation_devices(&self) -> impl Iterator<Item = &Device> {
-        self.tracks
-            .iter()
-            .flat_map(|track| track.devices())
-            .chain(self.returns.iter().flat_map(|track| track.devices()))
-            .chain(self.main_devices())
-            .chain(
-                self.native_sources
-                    .iter()
-                    .flat_map(|source| source.devices()),
-            )
+        self.devices()
     }
     pub fn has_overridden_device_automation(&self) -> bool {
         self.automation_devices()

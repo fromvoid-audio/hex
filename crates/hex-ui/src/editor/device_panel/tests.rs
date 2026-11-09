@@ -19,6 +19,7 @@ mod device_picker_ui_tests;
 mod device_preset_ui_tests;
 mod device_reorder_tests;
 mod device_theme_tests;
+mod eq8_marquee_tests;
 pub(in crate::editor) mod eq_ui_tests;
 mod gate_ui_tests;
 mod header_actions_tests;
@@ -32,17 +33,23 @@ mod operator_algorithm_ui_tests;
 mod operator_context_selection_tests;
 mod operator_enable_ui_tests;
 mod operator_envelope_reference_ui_tests;
+mod operator_filter_response_tests;
 mod operator_fine_ui_tests;
 #[path = "operator_harmonic_ui_tests.rs"]
 mod operator_harmonic_ui_tests;
+mod operator_keytrack_ui_tests;
 mod operator_navigation_tests;
+mod operator_options_tests;
 mod operator_preview_navigation_tests;
+mod operator_routing_picker_tests;
 mod operator_selector_keys_ui_tests;
 mod operator_tab_tests;
 mod operator_tuning_ui_tests;
 mod operator_voice_ui_tests;
+mod operator_waveform_editor_tests;
 mod overdrive_ui_tests;
 mod parameter_rows_tests;
+mod rattle_ui_tests;
 mod reverb_ui_tests;
 mod saturator_ui_tests;
 mod shortcut_text_tests;
@@ -1437,6 +1444,7 @@ fn browser_instrument_dropped_on_instrument_card_replaces_in_place_and_retires_o
             operator_panel::OperatorPanelState {
                 selected_operator: 3,
                 page: operator_panel::OperatorPage::Routing,
+                ..Default::default()
             },
         );
         let parameter = operator_view.parameters[0];
@@ -1752,7 +1760,11 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     let envelope_graph = visual
         .debug_bounds("operator-envelope-graph")
         .expect("amp envelope is the default contextual view");
-    assert!(envelope_graph.size.width > px(220.0));
+    assert!(
+        envelope_graph.size.width >= px(180.0)
+            && envelope_graph.size.width
+                <= px(crate::device_composition::VECTOR_DETAIL_WIDTH + 30.0)
+    );
     assert!(
         envelope_graph.size.height >= px(80.0),
         "amp graph bounds: {:?}",
@@ -1779,7 +1791,7 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         .expect("right side control column");
     assert!(shell.origin.x + shell.size.width <= detail.origin.x);
     assert!(detail.origin.x + detail.size.width <= preview.origin.x);
-    for section in ["lfo", "filter", "pitch env", "global"] {
+    for section in ["lfo", "filter", "feedback", "global"] {
         let row = visual
             .debug_bounds(Box::leak(
                 format!("operator-preview-row-{}-{section}", instrument_id.value())
@@ -1790,31 +1802,23 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         assert!(row.origin.x >= preview.origin.x);
         assert!(row.origin.x + row.size.width <= preview.origin.x + preview.size.width);
     }
-    for field in operator_panel::preview::Field::ALL {
-        let field = field as usize;
-        let control = visual
-            .debug_bounds(Box::leak(
-                format!("operator-preview-{}-{field}", instrument_id.value()).into_boxed_str(),
-            ))
-            .expect("right-side shared micro dial");
-        assert_eq!(control.size.width, px(hex_widgets::MICRO_DIAL_WIDTH));
-        assert_eq!(control.size.height, px(40.0));
+    for field in 0..6 {
+        assert!(
+            visual
+                .debug_bounds(Box::leak(
+                    format!("operator-preview-{}-{field}", instrument_id.value()).into_boxed_str()
+                ))
+                .is_none(),
+            "native Vector omits unsupported preview dials"
+        );
     }
-    // Three-dial sections start beside the narrow switch/icon column,
-    // rather than inheriting the LFO/filter selector column.
-    for field in [
-        operator_panel::preview::Field::PitchEnvelope,
-        operator_panel::preview::Field::Time,
-    ] {
-        let field = field as usize;
-        let control = visual
+    assert!(
+        visual
             .debug_bounds(Box::leak(
-                format!("operator-preview-{}-{field}", instrument_id.value()).into_boxed_str(),
+                format!("operator-preview-{}-toggle-0", instrument_id.value()).into_boxed_str()
             ))
-            .expect("three-dial row starts next to its icon");
-        assert!(control.origin.x - preview.origin.x >= px(40.0));
-        assert!(control.origin.x - preview.origin.x < px(54.0));
-    }
+            .is_none()
+    );
     // Keep the narrow-window geometry checks above, then expose the right rail
     // before testing a mouse click on the wider companion inspector.
     visual.simulate_resize(size(px(1440.0), px(540.0)));
@@ -1831,15 +1835,15 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.device_panel.operator_pages[&instrument_id].page,
-            operator_panel::OperatorPage::Routing,
-            "global routing icon opens the canonical routing view"
+            operator_panel::OperatorPage::Envelope,
+            "routing picker preserves the selected editor context"
         );
     });
     let envelope_tab =
         Box::leak(format!("operator-page-{}-envelope", instrument_id.value()).into_boxed_str());
     assert!(
-        visual.debug_bounds(envelope_tab).is_none(),
-        "global panel dedicates its middle to modulation"
+        visual.debug_bounds(envelope_tab).is_some(),
+        "routing popup leaves the envelope working surface mounted"
     );
     let shell = visual
         .debug_bounds(Box::leak(
@@ -1855,20 +1859,6 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     let envelope_bounds = visual.debug_bounds(envelope_tab).expect("amp envelope tab");
     visual.simulate_click(envelope_bounds.center(), Modifiers::default());
     visual.run_until_parked();
-    let revision = editor.read_with(cx, |view, _| {
-        view.state.as_ref().expect("project state").revision
-    });
-    let pitch_toggle =
-        Box::leak(format!("operator-preview-{}-toggle-0", instrument_id.value()).into_boxed_str());
-    let bounds = visual
-        .debug_bounds(pitch_toggle)
-        .expect("local pitch toggle");
-    visual.simulate_click(bounds.center(), Modifiers::default());
-    visual.run_until_parked();
-    editor.read_with(cx, |view, _| {
-        assert!(!view.device_panel.operator_previews[&instrument_id].enabled[0]);
-        assert_eq!(view.state.as_ref().unwrap().revision, revision);
-    });
     visual.simulate_resize(size(px(1440.0), px(540.0)));
     visual.run_until_parked();
     editor.update(cx, |view, cx| {
@@ -1933,8 +1923,12 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     let waveform_preview = visual
         .debug_bounds("operator-waveform-cycle")
         .expect("selected oscillator cycle preview");
-    assert!(waveform_preview.size.width > px(240.0));
-    assert_eq!(waveform_preview.size.height, px(86.0));
+    assert!(
+        (px(200.0)..=px(crate::device_composition::VECTOR_DETAIL_WIDTH + 30.0))
+            .contains(&waveform_preview.size.width)
+    );
+    open_operator_options(&mut visual, instrument_id);
+    assert_eq!(waveform_preview.size.height, px(48.0));
     let ratio = hex_lattice_contract::ParameterId::from_static(1);
     enter_typed_value(&mut visual, instrument_id, ratio, "invalid");
     let fix_selector =
@@ -2060,7 +2054,11 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         format!("operator-preview-row-{}-global", instrument_id.value()).into_boxed_str(),
     );
     let tab_bounds = visual.debug_bounds(routing_rail).expect("routing rail");
-    visual.simulate_click(tab_bounds.center(), Modifiers::default());
+    let routing = visual.debug_bounds(route_link).expect("routing picker");
+    visual.simulate_click(
+        point(routing.right() + px(2.0), tab_bounds.center().y),
+        Modifiers::default(),
+    );
     visual.run_until_parked();
     assert!(
         visual
@@ -2670,6 +2668,7 @@ fn operator_shell_controls_preserve_edits_across_explicit_context_selection(
             operator_panel::OperatorPanelState {
                 selected_operator: 0,
                 page: operator_panel::OperatorPage::Routing,
+                ..Default::default()
             },
         );
         cx.notify();
@@ -2732,6 +2731,7 @@ fn operator_shell_controls_preserve_edits_across_explicit_context_selection(
                 operator_panel::OperatorPanelState {
                     selected_operator: selected,
                     page: operator_panel::OperatorPage::Oscillator,
+                    ..Default::default()
                 }
             );
         });
@@ -2749,6 +2749,7 @@ fn operator_shell_controls_preserve_edits_across_explicit_context_selection(
         assert!(!selector.is_open(), "context changes dismiss the old popup")
     });
 
+    open_operator_options(&mut visual, operator);
     let phase_a = hex_lattice_contract::ParameterId::from_static(3);
     enter_typed_value(&mut visual, operator, phase_a, "invalid");
     let d_level = visual
@@ -2853,6 +2854,7 @@ fn operator_shell_controls_preserve_edits_across_explicit_context_selection(
             operator_panel::OperatorPanelState {
                 selected_operator: 0,
                 page: operator_panel::OperatorPage::Routing,
+                ..Default::default()
             },
         );
         cx.notify();
@@ -2874,6 +2876,7 @@ fn operator_shell_controls_preserve_edits_across_explicit_context_selection(
             operator_panel::OperatorPanelState {
                 selected_operator: 0,
                 page: operator_panel::OperatorPage::Routing,
+                ..Default::default()
             },
             "numeric adjustment preserves the explicitly selected editor"
         );
@@ -3019,9 +3022,9 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
                 ))
                 .expect("compact oscillator badge");
             assert_eq!(badge.size, gpui::size(px(6.0), px(36.0)));
-            let fixed_id = 62 + operator * 3;
+            let ratio_id = 1 + operator * 3;
             let level_id = operator * 3 + 2;
-            for parameter in [fixed_id + 1, level_id, 609 + operator] {
+            for parameter in [ratio_id, level_id, 609 + operator] {
                 let field = Box::leak(
                     format!("device-{}-parameter-{parameter}", instrument_id.value())
                         .into_boxed_str(),
@@ -3064,7 +3067,7 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
                     ))
                     .unwrap()
             };
-            let coarse = field_bounds(&mut visual, fixed_id + 1);
+            let coarse = field_bounds(&mut visual, ratio_id);
             let fine = field_bounds(&mut visual, 609 + operator);
             let level = field_bounds(&mut visual, level_id);
             let wave = field_bounds(&mut visual, 57 + operator);
@@ -3076,14 +3079,9 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
                 assert!(field.top() >= row_bounds.top() && field.bottom() <= row_bounds.bottom());
                 assert!(field.right() <= row_bounds.right());
             }
-            let toggle = Box::leak(
-                format!("device-{}-parameter-{fixed_id}", instrument_id.value()).into_boxed_str(),
-            );
-            let toggle_bounds = visual.debug_bounds(toggle).expect("fixed mode toggle");
-            assert!(
-                toggle_bounds.origin.x + toggle_bounds.size.width
-                    <= row_bounds.origin.x + row_bounds.size.width
-            );
+            let keytrack = field_bounds(&mut visual, 613 + operator);
+            assert!(keytrack.left() >= level.right());
+            assert!(keytrack.right() <= row_bounds.right() - px(4.0));
         }
         let lfo = visual
             .debug_bounds(Box::leak(
@@ -3120,29 +3118,28 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
                     <= filter.origin.x + filter.size.width - px(4.0)
             );
         }
-        for (title, fields) in [("pitch env", vec![0, 1, 2]), ("global", vec![3, 4, 5])] {
-            let row = visual
-                .debug_bounds(Box::leak(
-                    format!("operator-preview-row-{}-{title}", instrument_id.value())
-                        .into_boxed_str(),
-                ))
-                .expect("preview row");
-            for field in fields {
-                let field = field as usize;
-                let control = visual
+        for field in 0..6 {
+            assert!(
+                visual
                     .debug_bounds(Box::leak(
                         format!("operator-preview-{}-{field}", instrument_id.value())
                             .into_boxed_str(),
                     ))
-                    .expect("preview control");
-                assert!(control.origin.x >= row.origin.x + px(4.0));
-                assert!(
-                    control.origin.x + control.size.width
-                        <= row.origin.x + row.size.width - px(4.0),
-                    "preview controls need an inset from the dark row edges"
-                );
-            }
+                    .is_none(),
+                "unsupported preview controls are not mounted"
+            );
         }
+        let feedback = visual
+            .debug_bounds(Box::leak(
+                format!("device-{}-parameter-81", instrument_id.value()).into_boxed_str(),
+            ))
+            .expect("real feedback slider");
+        let row = visual
+            .debug_bounds(Box::leak(
+                format!("operator-preview-row-{}-feedback", instrument_id.value()).into_boxed_str(),
+            ))
+            .unwrap();
+        assert!(feedback.left() >= row.left() && feedback.right() <= row.right());
     }
     // LFO uses canonical controls after PR154, with the same accepted row inset.
     let lfo_row = visual
@@ -3162,11 +3159,15 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
                 <= lfo_row.origin.x + lfo_row.size.width - px(4.0)
         );
     }
+    open_operator_options(&mut visual, instrument_id);
     // Fixed frequency and multiplier have distinct IDs from ratio controls.
     // A keyboard edit must follow the focused fixed-frequency field too.
+    let at = operator_context_selection_tests::row_background(&mut visual, instrument_id, 1);
+    visual.simulate_click(at, Modifiers::default());
+    visual.run_until_parked();
     let frequency = visual
         .debug_bounds(Box::leak(
-            format!("device-{}-parameter-66-slider", instrument_id.value()).into_boxed_str(),
+            format!("device-{}-parameter-66-value", instrument_id.value()).into_boxed_str(),
         ))
         .expect("operator b fixed frequency");
     visual.simulate_click(frequency.center(), Modifiers::default());
@@ -3177,6 +3178,7 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
             operator_panel::OperatorPanelState {
                 selected_operator: 0,
                 page: operator_panel::OperatorPage::Routing,
+                ..Default::default()
             },
         );
         cx.notify();
@@ -3190,6 +3192,7 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
             operator_panel::OperatorPanelState {
                 selected_operator: 0,
                 page: operator_panel::OperatorPage::Routing,
+                ..Default::default()
             }
         );
     });
@@ -3409,12 +3412,7 @@ fn utility_panel_matches_compact_geometry_and_uses_shared_mode_popup(cx: &mut Te
             format!("device-drag-title-{}", device.value()).into_boxed_str(),
         ))
         .expect("Utility title");
-    for suffix in [
-        "device-bypass",
-        "device-preset-load",
-        "device-preset-save",
-        "device-remove",
-    ] {
+    for suffix in ["device-bypass", "device-preset-menu", "device-remove"] {
         let selector = Box::leak(format!("{suffix}-{}", device.value()).into_boxed_str());
         let action = visual.debug_bounds(selector).expect("header action");
         assert!(action.origin.x >= frame.origin.x);
@@ -4961,6 +4959,7 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
             super::operator_panel::OperatorPanelState {
                 selected_operator: 2,
                 page: super::operator_panel::OperatorPage::Routing,
+                ..Default::default()
             },
         );
         view.project_generation = view.project_generation.saturating_add(1);
@@ -5011,6 +5010,7 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
             super::operator_panel::OperatorPanelState {
                 selected_operator: 3,
                 page: super::operator_panel::OperatorPage::Envelope,
+                ..Default::default()
             },
         );
         let current = view.state.as_ref().expect("view state");
@@ -6215,4 +6215,19 @@ fn clicking_a_device_meter_clears_its_held_overload_line(cx: &mut TestAppContext
     meter.observe_output(&[[0.0, 2.0]]);
     repaint(&mut visual);
     assert_eq!(visual.rendered_background(right_peak), clipping);
+}
+
+/// Open the real optional oscillator controls for tests that edit those fields.
+fn open_operator_options(visual: &mut VisualTestContext, device: DeviceId) {
+    let panel = Box::leak(format!("operator-options-panel-{}", device.value()).into_boxed_str());
+    if visual.debug_bounds(panel).is_none() {
+        let button = visual
+            .debug_bounds(Box::leak(
+                format!("operator-options-{}", device.value()).into_boxed_str(),
+            ))
+            .expect("oscillator options toggle");
+        visual.simulate_click(button.center(), Modifiers::default());
+        visual.run_until_parked();
+    }
+    assert!(visual.debug_bounds(panel).is_some());
 }
