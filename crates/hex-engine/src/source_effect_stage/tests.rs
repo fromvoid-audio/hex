@@ -456,8 +456,8 @@ fn registry_suffix_respects_order_and_power_without_processing_receiver_clips() 
     assert!(compiled.source_effects.is_empty());
     assert!(prepare_suffix(model, source).unwrap().is_empty());
 
-    // Render the bound singleton separately. Author the same source's suffix
-    // while detached; production cannot bind a source with effects yet.
+    // Prepare the bound receiver separately, then author the suffix on the
+    // detached copy to verify that dormant definitions have no retained charge.
     for track in [receiver, contributor] {
         editor
             .execute(Command::BindTrackSource {
