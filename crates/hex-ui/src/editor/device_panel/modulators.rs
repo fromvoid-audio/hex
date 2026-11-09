@@ -110,6 +110,7 @@ fn lfo_rate_destination(source: ModulationSourceId) -> ModulationDestination {
 enum Edit {
     Add(SourceKind),
     ToggleSource(ModulationSourceId),
+    DuplicateSource(ModulationSourceId),
     RemoveSource(ModulationSourceId),
     Rate(ModulationSourceId, f64),
     Sync(ModulationSourceId),
@@ -376,6 +377,16 @@ pub(super) fn panel(
                 Edit::ToggleSource(source_id),
             ))
             .child(control)
+            .children(
+                (bank.sources().len() < hex_project::MAX_MODULATORS_PER_DEVICE).then(|| {
+                    button(
+                        cx,
+                        source_key("duplicate"),
+                        theme::text("duplicate"),
+                        Edit::DuplicateSource(source_id),
+                    )
+                }),
+            )
             .child(button(
                 cx,
                 source_key("remove"),
@@ -777,6 +788,9 @@ fn apply(
         Edit::ToggleSource(id) => {
             let source = find_source(&mut sources, id)?;
             source.enabled = !source.enabled;
+        }
+        Edit::DuplicateSource(id) => {
+            return bank.duplicate_source(id, project.next_identity());
         }
         Edit::RemoveSource(id) => {
             sources.retain(|source| source.id != id);
