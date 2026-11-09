@@ -193,7 +193,7 @@ fn parse_side(text: &str, negative: &str, positive: &str) -> Option<f64> {
     text.parse::<f64>().ok().map(|value| value / 100.0)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::NumericDisplayCodec;
     use hex_widgets::{NumericScale, NumericSpec};
