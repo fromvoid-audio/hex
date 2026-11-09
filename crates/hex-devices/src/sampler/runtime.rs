@@ -1,11 +1,15 @@
 //! Fixed-capacity mutable sampler host; PCM stays in the borrowed host scope.
+use super::catalog::{GAIN, GAIN_DESCRIPTORS, gain_semantics};
 use super::*;
 use hex_lattice::{
-    DeviceResources, InstrumentHistoryRetargetPreparation, MutableInstrumentRuntime,
+    DeviceResources, InstrumentHistoryRetargetPreparation, InstrumentParameterRuntime,
+    MAX_INSTRUMENT_AUTOMATION_FRAMES, MutableInstrumentRuntime, NativeInstrumentClock,
     NativeInstrumentEvent, NativeInstrumentOccurrenceGain, NativeInstrumentRuntimeError as Error,
-    PreparedInstrumentHistoryRetarget, PreparedMutableInstrumentRuntime,
+    NativeParameterAutomation, PreparedInstrumentHistoryRetarget, PreparedMutableInstrumentRuntime,
 };
-use hex_lattice_contract::DeviceContractError;
+use hex_lattice_contract::{
+    DeviceContractError, ParameterDescriptor, ParameterId, ParameterSemantics, ParameterValue,
+};
 use std::{
     any::{Any, TypeId},
     sync::atomic::{AtomicU64, Ordering},
@@ -52,6 +56,9 @@ pub struct PreparedSamplerRuntime {
     voices: usize,
     tail: u64,
     velocity_amount: f64,
+    base_gain: f64,
+    pan: f64,
+    gain_modulation: bool,
     max_events: usize,
 }
 
@@ -65,6 +72,9 @@ impl PartialEq for PreparedSamplerRuntime {
             voices,
             tail,
             velocity_amount,
+            base_gain,
+            pan,
+            gain_modulation,
             max_events,
         } = self;
         *notes == other.notes
@@ -73,6 +83,9 @@ impl PartialEq for PreparedSamplerRuntime {
             && *voices == other.voices
             && *tail == other.tail
             && *velocity_amount == other.velocity_amount
+            && *base_gain == other.base_gain
+            && *pan == other.pan
+            && *gain_modulation == other.gain_modulation
             && *max_events == other.max_events
     }
 }
@@ -92,6 +105,13 @@ impl PreparedInstrumentHistoryRetarget for SamplerHistoryRetarget {
 }
 
 impl PreparedSamplerRuntime {
+    /// Admit the borrowed gain parameter on both twins. Closed factory owners
+    /// must first reserve and admit the parameter storage for their graph.
+    pub fn with_sample_rate_gain(mut self) -> Self {
+        self.gain_modulation = true;
+        self
+    }
+
     /// Control preparation's exact scalar proof payload allowance. The proof
     /// has no child allocation or source owner; its Box is owned by the graph.
     pub const fn history_retarget_inline_bound() -> usize {
@@ -121,6 +141,9 @@ impl PreparedSamplerRuntime {
             voices,
             tail,
             velocity_amount,
+            base_gain: _,
+            pan: _,
+            gain_modulation: _,
             max_events,
         } = self;
         *source == previous.source
@@ -209,6 +232,9 @@ impl BoundSamplerPlan<'_> {
             voices,
             tail,
             velocity_amount: self.plan.settings.velocity_amount,
+            base_gain: self.plan.settings.gain,
+            pan: self.plan.settings.pan,
+            gain_modulation: false,
             max_events,
         })
     }
@@ -275,8 +301,21 @@ pub struct SamplerRuntime {
     prepared: PreparedSamplerRuntime,
     active: Active,
     fading: Fading,
+    last_gain: f32,
 }
 impl PreparedMutableInstrumentRuntime for PreparedSamplerRuntime {
+    fn parameter_automation_descriptors(&self) -> &[ParameterDescriptor] {
+        if self.gain_modulation {
+            &GAIN_DESCRIPTORS
+        } else {
+            &[]
+        }
+    }
+    fn parameter_modulation_semantics(&self, parameter: ParameterId) -> Option<ParameterSemantics> {
+        self.gain_modulation
+            .then(|| gain_semantics(parameter))
+            .flatten()
+    }
     fn supports_active_occurrence_ids(&self) -> bool {
         true
     }
@@ -312,6 +351,7 @@ impl PreparedMutableInstrumentRuntime for PreparedSamplerRuntime {
             prepared: self.clone(),
             active: [None; MAX_SAMPLER_RUNTIME_VOICES],
             fading: [None; MAX_SAMPLER_RUNTIME_VOICES],
+            last_gain: self.base_gain as f32,
         })
     }
     fn as_any(&self) -> &dyn Any {
@@ -543,6 +583,12 @@ impl SamplerRuntime {
     }
 }
 impl MutableInstrumentRuntime for SamplerRuntime {
+    fn parameter_automation(&mut self) -> Option<&mut dyn InstrumentParameterRuntime> {
+        self.prepared.gain_modulation.then_some(self)
+    }
+    fn parameter_automation_readonly(&self) -> Option<&dyn InstrumentParameterRuntime> {
+        self.prepared.gain_modulation.then_some(self)
+    }
     fn supports_active_occurrence_ids(&self) -> bool {
         true
     }
@@ -601,7 +647,7 @@ impl MutableInstrumentRuntime for SamplerRuntime {
         gains: &[NativeInstrumentOccurrenceGain],
         resources: &dyn DeviceResources,
     ) {
-        self.process_with_gains(events, frames, gains, resources);
+        self.process_with_gains::<false>(events, frames, gains, resources, &[]);
     }
     fn preflight_events(
         &self,
@@ -643,11 +689,12 @@ impl MutableInstrumentRuntime for SamplerRuntime {
         frames: &mut [StereoFrame],
         resources: &dyn DeviceResources,
     ) {
-        self.process_with_gains(events, frames, &[], resources);
+        self.process_with_gains::<false>(events, frames, &[], resources, &[]);
     }
     fn reset(&mut self) {
         self.active.fill(None);
         self.fading.fill(None);
+        self.last_gain = self.prepared.base_gain as f32;
     }
     fn is_quiescent(&self) -> bool {
         self.active.iter().all(Option::is_none) && self.fading.iter().all(Option::is_none)
@@ -666,6 +713,7 @@ impl MutableInstrumentRuntime for SamplerRuntime {
         {
             self.active = previous.active;
             self.fading = previous.fading;
+            self.last_gain = previous.last_gain;
         }
     }
     fn can_retarget_history_from(
@@ -700,6 +748,7 @@ impl MutableInstrumentRuntime for SamplerRuntime {
         {
             self.active = previous.active;
             self.fading = previous.fading;
+            self.last_gain = previous.last_gain;
         }
     }
     fn fixed_storage_bytes(&self) -> usize {
@@ -710,13 +759,68 @@ impl MutableInstrumentRuntime for SamplerRuntime {
     }
 }
 
+impl InstrumentParameterRuntime for SamplerRuntime {
+    fn descriptors(&self) -> &[ParameterDescriptor] {
+        &GAIN_DESCRIPTORS
+    }
+    fn parameter_modulation_semantics(&self, parameter: ParameterId) -> Option<ParameterSemantics> {
+        gain_semantics(parameter)
+    }
+    fn copy_targets(&self, output: &mut [Option<ParameterValue>]) -> Result<(), Error> {
+        let [target] = output else {
+            return Err(Error::InvalidParameterAutomation);
+        };
+        *target = Some(ParameterValue::Float(self.last_gain));
+        Ok(())
+    }
+    fn preflight(
+        &self,
+        _: &[NativeInstrumentEvent],
+        _: usize,
+        _: Option<&dyn NativeInstrumentClock>,
+        _: &[NativeInstrumentOccurrenceGain],
+        _: &dyn NativeParameterAutomation,
+        _: &dyn DeviceResources,
+    ) -> Result<(), Error> {
+        // The pair validates the complete single-gain view before rendering.
+        Ok(())
+    }
+    fn process(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        frames: &mut [StereoFrame],
+        _: Option<&dyn NativeInstrumentClock>,
+        gains: &[NativeInstrumentOccurrenceGain],
+        values: &dyn NativeParameterAutomation,
+        resources: &dyn DeviceResources,
+    ) {
+        if !values.parameter_ids().contains(&GAIN) {
+            self.process_with_gains::<false>(events, frames, gains, resources, &[]);
+            return;
+        }
+        // Read each control sample once, outside the per-voice loops. A
+        // negative sentinel selects the exact authored f64 coefficient.
+        let mut sampled_gain = [-1.0_f32; MAX_INSTRUMENT_AUTOMATION_FRAMES];
+        let Some(sampled_gain) = sampled_gain.get_mut(..frames.len()) else {
+            return;
+        };
+        for (offset, slot) in sampled_gain.iter_mut().enumerate() {
+            if let Some(ParameterValue::Float(value)) = values.value_at(GAIN, offset) {
+                *slot = value;
+            }
+        }
+        self.process_with_gains::<true>(events, frames, gains, resources, sampled_gain);
+    }
+}
+
 impl SamplerRuntime {
-    fn process_with_gains(
+    fn process_with_gains<const MODULATED: bool>(
         &mut self,
         events: &[NativeInstrumentEvent],
         frames: &mut [StereoFrame],
         gains: &[NativeInstrumentOccurrenceGain],
         resources: &dyn DeviceResources,
+        sampled_gain: &[f32],
     ) {
         let pcm = (0..resources
             .len()
@@ -724,6 +828,18 @@ impl SamplerRuntime {
             .filter_map(|index| resources.get(index))
             .find(|view| self.prepared.source.matches(*view));
         let Some(view) = pcm else { return };
+        let pan = self.prepared.pan;
+        let left = 1.0 - pan.max(0.0);
+        let right = 1.0 + pan.min(0.0);
+        let with_gain = |offset: usize, velocity: f64, base: [f64; 2]| {
+            let value = sampled_gain[offset];
+            if value >= 0.0 {
+                let gain = f64::from(value);
+                [(gain * left) * velocity, (gain * right) * velocity]
+            } else {
+                base
+            }
+        };
         let mut active = self.active;
         let mut fading = self.fading;
         let fade = self.prepared.steal_fade_frames() as f64;
@@ -767,6 +883,7 @@ impl SamplerRuntime {
                 for channel_gain in &mut note.channel_gain {
                     *channel_gain *= voice.gain;
                 }
+                let base_gain = note.channel_gain;
                 let mut final_voice = voice;
                 let Ok(alive) = self.advance_voice(&mut final_voice, span as u64) else {
                     return;
@@ -779,6 +896,9 @@ impl SamplerRuntime {
                     let gain = gain_index.map_or(1.0, |index| {
                         gains[index].value_at_offset((offset + relative) as u64)
                     });
+                    if MODULATED {
+                        note.channel_gain = with_gain(offset + relative, voice.gain, base_gain);
+                    }
                     Self::mix_prepared(frame, view.pcm, &cursor, gain, &note);
                     // Checked span advancement above proves these increments
                     // cannot overflow during the rendered prefix.
@@ -799,12 +919,17 @@ impl SamplerRuntime {
                 for channel_gain in &mut note.channel_gain {
                     *channel_gain *= item.voice.gain;
                 }
+                let base_gain = note.channel_gain;
                 let mut final_item = item;
                 let Ok(alive) = self.advance_voice(&mut final_item.voice, span as u64) else {
                     return;
                 };
                 let mut cursor = item.voice;
-                for frame in &mut frames[offset..offset + count] {
+                for (relative, frame) in frames[offset..offset + count].iter_mut().enumerate() {
+                    if MODULATED {
+                        note.channel_gain =
+                            with_gain(offset + relative, item.voice.gain, base_gain);
+                    }
                     let declick = 1.0 - cursor.age.saturating_sub(item.start) as f64 / fade;
                     Self::mix_prepared(frame, view.pcm, &cursor, item.gain * declick, &note);
                     cursor.age = cursor.age.wrapping_add(1);
@@ -819,6 +944,13 @@ impl SamplerRuntime {
         }
         self.active = active;
         self.fading = fading;
+        if !frames.is_empty() {
+            self.last_gain = sampled_gain
+                .last()
+                .copied()
+                .filter(|value| *value >= 0.0)
+                .unwrap_or(self.prepared.base_gain as f32);
+        }
     }
 
     #[cfg(test)]
