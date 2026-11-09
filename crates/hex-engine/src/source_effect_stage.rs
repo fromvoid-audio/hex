@@ -106,9 +106,14 @@ fn validate_runtime_budget(
     Ok(())
 }
 
+struct SourceEffectStage {
+    source: hex_project::SourceId,
+    chain: NativeRuntimeChain,
+}
+
 #[derive(Default)]
 pub(crate) struct SourceEffectStages {
-    chains: Vec<Option<NativeRuntimeChain>>,
+    chains: Vec<Option<SourceEffectStage>>,
 }
 
 impl SourceEffectStages {
@@ -135,7 +140,10 @@ impl SourceEffectStages {
             prepared.extend(instances.iter().cloned());
             let chain = NativeRuntimeChain::new_prepared(prepared)
                 .map_err(|_| Invalid("source effect runtime preparation failed"))?;
-            chains[recipe.receiver] = Some(chain);
+            chains[recipe.receiver] = Some(SourceEffectStage {
+                source: recipe.source,
+                chain,
+            });
         }
         Ok(Self { chains })
     }
@@ -144,18 +152,58 @@ impl SourceEffectStages {
         self.chains.is_empty()
     }
 
+    pub(crate) fn sources(&self) -> impl Iterator<Item = hex_project::SourceId> + '_ {
+        self.chains.iter().flatten().map(|stage| stage.source)
+    }
+
+    /// Match by source identity; a receiver index is only a rendering location.
+    pub(crate) fn can_continue_from(&self, previous: &Self) -> bool {
+        self.sources().count() == previous.sources().count()
+            && self.chains.iter().flatten().all(|stage| {
+                previous
+                    .chains
+                    .iter()
+                    .flatten()
+                    .find(|old| old.source == stage.source)
+                    .is_some_and(|old| {
+                        stage
+                            .chain
+                            .can_transfer_unchanged_native_history_from(&old.chain)
+                    })
+            })
+    }
+
+    /// The caller has preflighted both source layouts and is retiring previous.
+    /// Processors exchange or copy their existing backing; neither bank drops.
+    pub(crate) fn continue_from(&mut self, previous: &mut Self) {
+        for stage in self.chains.iter_mut().flatten() {
+            let old = previous
+                .chains
+                .iter_mut()
+                .flatten()
+                .find(|old| old.source == stage.source)
+                .expect("source effect handoff preflight matched this source");
+            stage.chain.transfer_history_from(&mut old.chain);
+        }
+    }
+
     pub(crate) fn has_monitor_tail(&self) -> bool {
-        self.chains
-            .iter()
-            .flatten()
-            .any(|chain| !chain.committed_range_is_quiescent(0..chain.len()))
+        self.chains.iter().flatten().any(|stage| {
+            !stage
+                .chain
+                .committed_range_is_quiescent(0..stage.chain.len())
+        })
     }
 
     pub(crate) fn has_tail(&self, index: usize) -> bool {
         self.chains
             .get(index)
             .and_then(Option::as_ref)
-            .is_some_and(|chain| !chain.committed_range_is_quiescent(0..chain.len()))
+            .is_some_and(|stage| {
+                !stage
+                    .chain
+                    .committed_range_is_quiescent(0..stage.chain.len())
+            })
     }
 
     pub(crate) fn has_chain(&self, index: usize) -> bool {
@@ -163,14 +211,17 @@ impl SourceEffectStages {
     }
 
     pub(crate) fn chains_mut(&mut self) -> impl Iterator<Item = &mut NativeRuntimeChain> {
-        self.chains.iter_mut().flatten()
+        self.chains
+            .iter_mut()
+            .flatten()
+            .map(|stage| &mut stage.chain)
     }
 
     pub(crate) fn has_stateful_processors(&self) -> bool {
         self.chains
             .iter()
             .flatten()
-            .any(NativeRuntimeChain::has_stateful_processors)
+            .any(|stage| stage.chain.has_stateful_processors())
     }
 
     pub(crate) fn process_isolated(
@@ -190,7 +241,8 @@ impl SourceEffectStages {
         frames: &mut [Frame],
         clock: &dyn NativeInstrumentClock,
     ) -> Result<(), Invalid> {
-        if let Some(chain) = self.chains.get_mut(index).and_then(Option::as_mut) {
+        if let Some(stage) = self.chains.get_mut(index).and_then(Option::as_mut) {
+            let chain = &mut stage.chain;
             chain
                 .process_range_with_clock(0..chain.len(), frames, Some(clock), Some(clock))
                 .map_err(|_| Invalid("prepared source effect segment is invalid"))?;
