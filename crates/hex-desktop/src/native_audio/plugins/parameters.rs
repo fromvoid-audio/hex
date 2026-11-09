@@ -640,6 +640,7 @@ mod tests {
             queued: true,
             observes_latency: false,
             editor_open: false,
+            editor_transfer: false,
             edit_backlog: false,
             edit_recovery: None,
             pending_touch: None,

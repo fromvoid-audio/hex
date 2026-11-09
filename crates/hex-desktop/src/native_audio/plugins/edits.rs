@@ -76,8 +76,12 @@ impl Plugins {
                         })
                 };
                 if superseded {
-                    self.sources[index].accepted = false;
-                    self.sources[index].retiring = true;
+                    let old = &mut self.sources[index];
+                    old.accepted = false;
+                    old.retiring = true;
+                    // The old helper still owns the actual editor. Ask it to
+                    // detach before Root is asked to retire this source.
+                    old.editor_transfer = old.editor_open;
                 }
             }
         }
@@ -283,6 +287,7 @@ impl Plugins {
             queued: false,
             observes_latency: false,
             editor_open: false,
+            editor_transfer: false,
             edit_backlog: false,
             edit_recovery: None,
             pending_touch: None,
@@ -312,7 +317,7 @@ impl Plugins {
                 control,
                 source,
             )?;
-            self.poll(output, desired.map(|source| source.context()));
+            self.poll(output, desired);
             if let Some(ready) = ready {
                 return if ready.processing_eq(state) {
                     Ok(())

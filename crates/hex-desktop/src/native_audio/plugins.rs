@@ -54,6 +54,7 @@ struct Source {
     queued: bool,
     observes_latency: bool,
     editor_open: bool,
+    editor_transfer: bool,
     edit_backlog: bool,
     edit_recovery: Option<bool>,
     pending_touch: Option<parameter_touches::Touch>,
@@ -260,11 +261,12 @@ impl Plugins {
             source.edit_recovery = None;
             source.pending_touch = None;
             source.editor_open = false;
+            source.editor_transfer = false;
         }
         self.editor_checked = None;
         if let Some(editor::EditorOperation::Pending {
             generation,
-            report: true,
+            action: editor::EditorAction::Toggle,
             ..
         }) = &self.editor
         {
@@ -503,6 +505,7 @@ impl Plugins {
                 queued: false,
                 observes_latency: false,
                 editor_open: false,
+                editor_transfer: false,
                 edit_backlog: false,
                 edit_recovery: None,
                 pending_touch: None,
@@ -518,7 +521,7 @@ impl Plugins {
                 result: None,
             });
         }
-        self.poll(output, Some(input.insertion.context));
+        self.poll_for_context(output, Some(input.insertion.context), None);
         match self.pending.as_ref().and_then(|p| p.result.as_ref()) {
             Some(Ok(state)) => Ok(PluginEffectPreparationState::Ready(state.clone())),
             Some(Err(error)) => Err(error.clone()),
@@ -552,12 +555,29 @@ impl Plugins {
             source.retiring |= !source.accepted;
         }
     }
-    pub fn poll(&mut self, output: &mut WorkerPreparedOutput, context: Option<AudioSourceContext>) {
+    pub fn poll(
+        &mut self,
+        output: &mut WorkerPreparedOutput,
+        desired: Option<&CanonicalAudioSourceSnapshot>,
+    ) {
+        self.poll_for_context(
+            output,
+            desired.map(CanonicalAudioSourceSnapshot::context),
+            desired,
+        );
+    }
+
+    fn poll_for_context(
+        &mut self,
+        output: &mut WorkerPreparedOutput,
+        context: Option<AudioSourceContext>,
+        desired: Option<&CanonicalAudioSourceSnapshot>,
+    ) {
         let Some(control) = output.publication.control() else {
             self.output_closed();
             return;
         };
-        self.poll_editor(control, context);
+        self.poll_editor(control, context, desired);
         self.poll_parameters(control, context);
         self.poll_parameter_override(control, context);
         self.poll_restore(control, context);
@@ -688,7 +708,7 @@ impl Plugins {
         // removing one here would shift a later source past its renewal stage.
         while self.restore.is_none() && index < self.sources.len() {
             let source = &self.sources[index];
-            if source.retiring {
+            if source.retiring && !source.editor_transfer && !self.editor_holds(source.binding) {
                 let _ = control.retire_native_source_preparation(source.binding);
                 if control
                     .recover_native_source_preparation(source.binding)
@@ -1040,6 +1060,7 @@ mod idle_tests {
             queued: true,
             observes_latency: true,
             editor_open: false,
+            editor_transfer: false,
             edit_backlog: false,
             edit_recovery: None,
             pending_touch: None,
@@ -1093,6 +1114,7 @@ mod idle_tests {
             queued: true,
             observes_latency: true,
             editor_open: true,
+            editor_transfer: false,
             edit_backlog: false,
             edit_recovery: None,
             pending_touch: None,
