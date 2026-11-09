@@ -100,6 +100,17 @@ track-meter scale and disk-overload tests run in the small `hex-ui` target
 modules. Recovery-state changes also select its real prepared-audio integration
 test. Run the unit target with
 `cargo test -p hex-ui --test unit_editor_state --locked`.
+The source-local piano-roll geometry tests use the separate `ui-unit-tier`
+feature and `unit_piano_roll` target:
+
+```sh
+cargo test -p hex-ui --features ui-unit-tier --test unit_piano_roll --locked
+```
+
+They are intentionally absent from the default and `ui-test-support` library
+runs; the full and merge
+plans explicitly select the unit target when required. The existing ignored
+dense-scene benchmark can be selected on that target with `--release -- --ignored`.
 Other `hex-ui` tests have not yet been classified into separate tiers; in
 particular, the real-window receipt and delayed-acknowledgement tests remain in
 the `ui-test-support` library suite.
