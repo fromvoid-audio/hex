@@ -4,7 +4,7 @@
 //! template or DSP twin. Source-global rendering borrows these programs; actual
 //! factory grants and project ownership control admission. Quotes include retained vectors,
 //! normalized staging, descriptor validation and unread-lane insertion overlap.
-use crate::{AudioStorageError, Invalid};
+use crate::{AudioStorageError, Invalid, device_modulation::EffectModulation};
 use hex_lattice::{
     ParameterAutomationLane, ParameterAutomationPoint, ParameterAutomationTouchSpan,
     PreparedMutableInstrumentRuntime, PreparedParameterAutomation,
@@ -19,6 +19,7 @@ const MAX_PROGRAM_BYTES: usize = 16 * 1024 * 1024;
 pub(super) struct Program {
     pub(super) device: hex_project::DeviceId,
     pub(super) values: PreparedParameterAutomation,
+    pub(super) modulation: Option<hex_lattice::PreparedModulationState>,
 }
 impl Program {
     pub(super) fn visit<'a>(
@@ -32,15 +33,24 @@ impl Program {
             ledger.vec(lanes)?;
             ledger.vec(points)?;
             ledger.vec(self.values.touch_storage())?;
+            if let Some(modulation) = &self.modulation {
+                ledger.bytes(
+                    crate::audio_storage::Owner::exclusive(modulation),
+                    crate::audio_storage::Location("instrument-modulation", 0),
+                    modulation
+                        .heap_storage_bytes()
+                        .ok_or(AudioStorageError::Overflow)?,
+                )?;
+            }
         }
         Ok(())
     }
 }
 
-/// Ordinary program allowance only; four vector rows include empty storage.
+/// Allowance for four automation vectors and optional exclusive modulation storage.
 pub(super) fn reservation() -> crate::AudioStorageLedgerReservation {
     crate::AudioStorageLedgerReservation {
-        data_rows: hex_project::MAX_TRACKS * 4,
+        data_rows: hex_project::MAX_TRACKS * 5,
         handle_rows: 0,
         root_rows: hex_project::MAX_TRACKS,
         max_retained_bytes: MAX_PROGRAM_BYTES,
@@ -61,20 +71,21 @@ pub(super) fn construction_bytes(
         .filter(|track| track.receives_source_audio())
     {
         let Some(device) = track.instrument().filter(|device| {
-            (!device.automation().is_empty() || armed_parameter(device, native_input).is_some())
+            (!device.automation().is_empty()
+                || !device.modulation().is_empty()
+                || armed_parameter(device, native_input).is_some())
                 && !crate::compile::is_vst3_instrument(device)
         }) else {
             continue;
         };
         let (bytes, temporary) =
-            quote_lanes(device.automation(), armed_parameter(device, native_input))?;
+            quote_with_modulation(device, armed_parameter(device, native_input))?;
         retained = add_budget(retained, bytes)?;
         peak = peak.max(add_budget(retained, temporary)?);
     }
     Ok(peak)
 }
 
-#[cfg(test)]
 #[cfg(test)]
 pub(super) fn quote(device: &hex_project::Device) -> Result<(usize, usize), Invalid> {
     quote_lanes(device.automation(), None)
@@ -315,10 +326,15 @@ fn prepare_lanes_with_input(
             "instrument automation actual storage exceeds quote",
         ));
     }
-    Ok(Some(Program { device, values }))
+    Ok(Some(Program {
+        device,
+        values,
+        modulation: None,
+    }))
 }
 
 pub(super) fn prepare_for_receiver(
+    project: &hex_project::Project,
     track: &hex_project::Track,
     factory: Option<&dyn PreparedMutableInstrumentRuntime>,
     registry: &hex_lattice::NativeInstrumentRegistry<'_>,
@@ -329,15 +345,17 @@ pub(super) fn prepare_for_receiver(
         return Ok(None);
     };
     let armed = armed_parameter(device, native_input);
-    if !track.receives_source_audio() || device.automation().is_empty() && armed.is_none() {
+    if !track.receives_source_audio()
+        || device.automation().is_empty() && armed.is_none() && device.modulation().is_empty()
+    {
         return Ok(None);
     }
-    let (retained, overlap) = quote_lanes(device.automation(), armed)?;
+    let (retained, overlap) = quote_with_modulation(device, armed)?;
     add_budget(add_budget(*stored_bytes, retained)?, overlap)?;
     let definition = registry
         .definition(device.state().type_id())
         .ok_or(Invalid("instrument automation definition is missing"))?;
-    let program = prepare_lanes_with_input(
+    let mut program = prepare_lanes_with_input(
         device.id(),
         device.state(),
         device.automation(),
@@ -345,12 +363,51 @@ pub(super) fn prepare_for_receiver(
         factory,
         armed,
     )?;
-    let actual = program
+    let automation_ids = program
         .as_ref()
-        .and_then(|p| p.values.storage_bytes())
-        .ok_or(Invalid("instrument automation storage is unknown"))?;
-    *stored_bytes = add_budget(*stored_bytes, actual)?;
+        .map_or(&[][..], |program| program.values.parameter_ids());
+    let modulation =
+        EffectModulation::plan(device, Some(project), project.sample_rate(), automation_ids)?
+            .map(|plan| plan.prepare_instrument(device.state(), definition, factory))
+            .transpose()?;
+    if modulation.is_some() {
+        program
+            .get_or_insert_with(|| Program {
+                device: device.id(),
+                values: PreparedParameterAutomation::default(),
+                modulation: None,
+            })
+            .modulation = modulation;
+    }
+    if let Some(program) = &program {
+        let actual = program
+            .values
+            .storage_bytes()
+            .ok_or(Invalid("instrument automation storage is unknown"))?;
+        let modulation = program
+            .modulation
+            .as_ref()
+            .map_or(
+                Some(0),
+                hex_lattice::PreparedModulationState::heap_storage_bytes,
+            )
+            .ok_or(Invalid("instrument modulation storage is unknown"))?;
+        *stored_bytes = add_budget(add_budget(*stored_bytes, actual)?, modulation)?;
+    }
     Ok(program)
+}
+
+fn quote_with_modulation(
+    device: &hex_project::Device,
+    armed: Option<hex_lattice_contract::ParameterId>,
+) -> Result<(usize, usize), Invalid> {
+    let (retained, overlap) = quote_lanes(device.automation(), armed)?;
+    let (modulation, staging) =
+        EffectModulation::quote(device).ok_or(Invalid("instrument modulation storage overflow"))?;
+    Ok((
+        add_budget(retained, modulation)?,
+        add_budget(overlap, staging)?,
+    ))
 }
 
 pub(super) fn add_budget(current: usize, additional: usize) -> Result<usize, Invalid> {

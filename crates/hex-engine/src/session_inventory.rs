@@ -631,6 +631,7 @@ impl PreparedSessionInventory {
                     .flatten()
             });
             let automation = instrument_automation::prepare_for_receiver(
+                project,
                 track,
                 mutable_runtime.as_deref(),
                 instrument_registry,
@@ -1409,6 +1410,19 @@ impl PreparedSessionInventory {
     /// Retained canonical source program bytes, excluding provider factories.
     pub fn instrument_automation_storage_bytes(&self) -> usize {
         self.instrument_automation_storage_bytes
+    }
+
+    pub(crate) fn instrument_modulation(
+        &self,
+        receiver: TrackId,
+    ) -> Option<&hex_lattice::PreparedModulationState> {
+        self.mutable_instruments
+            .iter()
+            .find(|entry| entry.track == receiver)?
+            .automation
+            .as_ref()?
+            .modulation
+            .as_ref()
     }
 
     /// Borrow one receiving source's program; contributors never own copies.

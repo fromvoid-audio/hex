@@ -209,7 +209,8 @@ impl ModulationRuntime {
         self.bank.rollback();
     }
 
-    pub(crate) fn reset_all(&mut self) {
+    /// Reset every source to its prepared initial history at a transport discontinuity.
+    pub fn reset_all(&mut self) {
         self.bank.reset_all();
     }
 
@@ -229,7 +230,9 @@ impl ModulationRuntime {
         self.bank.reset(id, phase)
     }
 
-    pub(crate) fn inherit_graph_committed(&mut self, previous: &Self) {
+    /// Carry compatible committed source IDs across a graph edit. The host
+    /// proves stable device ownership before borrowing the old bank.
+    pub fn inherit_graph_committed(&mut self, previous: &Self) {
         self.bank.inherit_graph_committed(&previous.bank);
     }
 

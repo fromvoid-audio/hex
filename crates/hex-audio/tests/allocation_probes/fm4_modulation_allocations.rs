@@ -156,6 +156,152 @@ fn fm4_carriers_follow_sample_routes_and_retry_without_allocating() {
 }
 
 #[test]
+fn fm4_saved_bank_renders_and_hands_off_through_the_callback_without_allocation() {
+    use hex_audio::prepared;
+    use hex_devices::{
+        fm4::device::FM4_TYPE_ID,
+        modulation::lfo::{Rate, Settings, Waveform},
+    };
+    use hex_engine::{
+        PreparedRevision, SineTable,
+        playback::{Playback, PlaybackCommand},
+    };
+    use hex_project::{
+        BeatTime, Command, Created, DeviceAutomationTarget, DeviceModulation,
+        DeviceModulationRoute, Editor, ModulationAmount, ModulationDestination, ModulationOutputId,
+        ModulationRange, ModulationRouteId, ModulationSourceId, Modulator, Project,
+    };
+    use std::{collections::BTreeMap, sync::Arc};
+
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "fm4".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: FM4_DEFINITION.default_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    let device = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let length = BeatTime::from_quarters(4).unwrap();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length,
+        })
+        .unwrap()
+    else {
+        panic!("clip");
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: length,
+            pitch: 60,
+            channel: 0,
+            velocity: 110,
+        })
+        .unwrap();
+    let next = editor.project().next_identity();
+    let source = ModulationSourceId::new(next).unwrap();
+    let slot = Modulator {
+        id: source,
+        color: Default::default(),
+        enabled: true,
+        state: Settings {
+            rate: Rate::Hertz(12_000.0),
+            phase: 0.0,
+            waveform: Waveform::Square,
+        }
+        .encode()
+        .unwrap(),
+    };
+    let mut route = DeviceModulationRoute {
+        id: ModulationRouteId::new(next + 1).unwrap(),
+        source,
+        output: ModulationOutputId::MAIN,
+        destination: ModulationDestination::Device {
+            device_type: FM4_TYPE_ID,
+            target: DeviceAutomationTarget::Parameter(parameter::carrier(1)),
+            vst3_class: None,
+        },
+        amount: ModulationAmount::new(0.25).unwrap(),
+        range: ModulationRange::default(),
+        enabled: true,
+    };
+    let prepare = |editor: &mut Editor, route| {
+        editor
+            .execute(Command::ReplaceDeviceModulation {
+                device,
+                modulation: DeviceModulation::new(vec![slot.clone()], vec![route]).unwrap(),
+            })
+            .unwrap();
+        let revision = Arc::new(
+            PreparedRevision::prepare(
+                editor.project(),
+                &BTreeMap::new(),
+                Arc::new(SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        Playback::try_from_prepared_with_session(revision).unwrap()
+    };
+    let initial = prepare(&mut editor, route);
+    route.amount = ModulationAmount::new(-0.4).unwrap();
+    let changed = prepare(&mut editor, route);
+    editor.execute(Command::RemoveTrack(track)).unwrap();
+    let detached = Playback::try_from_prepared_with_session(Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    ))
+    .unwrap();
+    let (mut control, mut callback) = prepared::channel(48_000).unwrap();
+    assert!(control.publish(initial).is_ok());
+    control.command(PlaybackCommand::Play).unwrap();
+    let mut frames = [[0.0; 2]; 131];
+    let mut render = || {
+        let counts = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(black_box(&mut frames)).unwrap();
+        });
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(frames.iter().flatten().any(|v| v.abs() > 0.0001));
+    };
+    render();
+    assert!(control.publish(changed).is_ok());
+    render();
+    assert!(control.publish(detached).is_ok());
+    render();
+    assert!(control.status.rejected_revision().is_none());
+    assert!(control.reclaim() > 0);
+}
+
+#[test]
 fn fm4_pressure_modulates_only_its_voice_and_preserves_release_and_retry() {
     use hex_lattice::{NativeInstrumentRuntimeError, PreparedPressureRoute};
     use std::num::NonZeroU64;
