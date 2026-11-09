@@ -1,4 +1,4 @@
-//! Transactional, borrowed delivery of a prepared source bank and route program.
+//! Transactional, borrowed delivery of prepared source outputs and routes.
 //!
 //! Construction, admission, and destruction belong to control. The enclosing
 //! graph owns transport policy, source-index resolution, and block transactions.
@@ -11,8 +11,8 @@ use crate::{
 };
 use hex_lattice_contract::DeviceContractError as Error;
 
-/// A device-local bank and program. Route indices refer to the bank's sorted
-/// source IDs; the preparing host must resolve and validate those identities.
+/// A device-local bank and program. Route indices name sorted source/output
+/// pairs that the preparing host resolves and validates.
 pub struct ModulationRuntime {
     bank: ModulationSourceBank,
     program: PreparedModulation,
@@ -186,8 +186,10 @@ impl ModulationRuntime {
                 .take(self.bank.source_count())
                 .enumerate()
             {
-                let id = self.bank.source_id(index).ok_or(Error::InvalidId)?;
-                *slot = self.bank.samples(id).ok_or(Error::InvalidParameterValue)?;
+                *slot = self
+                    .bank
+                    .samples_at_index(index)
+                    .ok_or(Error::InvalidParameterValue)?;
             }
             let source_block = sources
                 .get(..self.bank.source_count())
@@ -217,7 +219,7 @@ impl ModulationRuntime {
     /// Retarget an active source without resetting its speculative history.
     pub fn retarget(&mut self, source: PreparedModulationSource) -> Result<(), Error> {
         if self.source_routes.iter().any(|route| {
-            self.bank.source_id(route.target) == Some(source.id)
+            self.bank.source_key(route.target) == Some(source.key())
                 && !source.supports_modulation_parameter(route.parameter)
         }) {
             return Err(Error::UnsupportedProcessingClass);
@@ -357,6 +359,95 @@ mod tests {
         read(&mut replacement, &mut after).unwrap();
         assert!((after[0] - (0.4 + 0.1 * std::f32::consts::FRAC_1_SQRT_2)).abs() < 1e-6);
         assert!((after[1] - (0.5 - 0.1 * std::f32::consts::FRAC_1_SQRT_2)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn two_outputs_of_one_source_keep_distinct_routes_and_committed_phase() {
+        use hex_lattice_contract::ModulationOutputId;
+
+        let fixture = prepared(6_000.0);
+        let first_id = ParameterId::from_static(1);
+        let second_id = ParameterId::from_static(2);
+        let first = ModulationTarget {
+            descriptor: fixture.program().descriptor(first_id).unwrap(),
+            semantics: fixture.program().semantics(first_id).unwrap(),
+            base: ParameterValue::Float(0.5),
+        };
+        let second = ModulationTarget {
+            descriptor: ParameterDescriptor {
+                id: second_id,
+                ..first.descriptor
+            },
+            ..first
+        };
+        let route = |source, target| ModulationRoute {
+            source,
+            target,
+            amount: 0.25,
+            range: [-1.0, 1.0],
+        };
+        let program = PreparedModulation::new(
+            &[first, second],
+            &[route(0, first_id), route(1, second_id)],
+            2,
+        )
+        .unwrap();
+        let id = ModulationSourceId::new(u64::MAX).unwrap();
+        let source = |phase| {
+            PreparedModulationSource::free_with_waveform(
+                id,
+                48_000.0,
+                12_000.0,
+                phase,
+                crate::LfoWaveform::Square,
+            )
+            .unwrap()
+        };
+        let right = ModulationOutputId::new(2).unwrap();
+        let left_source = source(0.0);
+        let right_source = source(0.25).with_output(right);
+        assert!(ModulationSourceBank::new(&[left_source, left_source], 8).is_err());
+        assert!(ModulationSourceBank::new(&[right_source, left_source], 8).is_err());
+        let declaration =
+            crate::PreparedModulationState::new(vec![left_source, right_source], program, 8)
+                .unwrap();
+        let mut runtime = declaration.prepare().unwrap();
+        let mut successor = declaration.prepare().unwrap();
+        let verify = |runtime: &mut ModulationRuntime, expected: &[[f32; 2]]| {
+            runtime
+                .render_chunk(expected.len(), None, |block| {
+                    for (offset, [left, right]) in expected.iter().copied().enumerate() {
+                        assert_eq!(
+                            block.value_at(first_id, offset),
+                            Some(ParameterValue::Float(left))
+                        );
+                        assert_eq!(
+                            block.value_at(second_id, offset),
+                            Some(ParameterValue::Float(right))
+                        );
+                    }
+                    Ok(())
+                })
+                .unwrap();
+        };
+        let first = [[0.75, 0.75], [0.75, 0.25], [0.25, 0.25]];
+        runtime.begin();
+        verify(&mut runtime, &first);
+        assert_eq!(runtime.bank.samples(id), Some([1.0, 1.0, -1.0].as_slice()));
+        assert_eq!(
+            runtime.bank.samples_for_output(id, right),
+            Some([1.0, -1.0, -1.0].as_slice())
+        );
+        runtime.rollback();
+        runtime.begin();
+        let missing = source(0.0).with_output(ModulationOutputId::new(3).unwrap());
+        assert_eq!(runtime.retarget(missing), Err(Error::InvalidId));
+        verify(&mut runtime, &first);
+        runtime.commit().unwrap();
+        successor.inherit_committed(&runtime).unwrap();
+        successor.begin();
+        verify(&mut successor, &[[0.25, 0.75], [0.75, 0.75]]);
+        successor.commit().unwrap();
     }
 
     #[test]
