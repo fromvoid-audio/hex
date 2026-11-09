@@ -2029,3 +2029,26 @@ fn vst3_first_lane_menu_arms_and_disarms_the_raw_zero_knob(cx: &mut TestAppConte
     drop(backend);
     output.publication.close();
 }
+
+#[gpui::test]
+fn utility_toggle_and_choice_offer_their_exact_recording_targets(cx: &mut TestAppContext) {
+    let (visual, editor, owner, _, device) = window(cx, "hex.utility", Slot::Track);
+    editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        for (parameter, expected) in [(8, "mute"), (4, "channel")] {
+            let kind = DeviceAutomationTarget::Parameter(
+                hex_lattice_contract::ParameterId::from_static(parameter),
+            );
+            let entry = Entry::read(project, view.project_generation, owner, device, kind).unwrap();
+            let EntryMetadata::Provider { descriptor, .. } = entry.metadata else {
+                panic!("utility provider target");
+            };
+            assert_eq!(descriptor.label, expected);
+            assert!(matches!(
+                view.native_automation_arm_action(&entry),
+                Some(("arm automation recording", Action::ToggleNativeArm(target)))
+                    if target.kind == kind && target.device == device
+            ));
+        }
+    });
+}
