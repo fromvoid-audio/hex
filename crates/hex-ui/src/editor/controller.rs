@@ -2379,6 +2379,7 @@ impl EditorView {
         self.plugin_effect_complete(&event);
         self.native_automation_take_completion(&event);
         self.observe_automation_take_recovery(&event);
+        self.observe_vst3_automation_arm(&event);
         if let Some(result) = event.plugin_parameters.take() {
             super::device_panel::vst3_parameters::install_result(
                 self,
