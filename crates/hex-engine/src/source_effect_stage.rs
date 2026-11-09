@@ -301,6 +301,26 @@ impl SourceEffectStages {
         self.chains.get(index).is_some_and(Option::is_some)
     }
 
+    pub(crate) fn chain_for(&self, index: usize, source: u64) -> Option<&NativeRuntimeChain> {
+        self.chains
+            .get(index)?
+            .as_ref()
+            .filter(|stage| stage.source.value() == source)
+            .map(|stage| &stage.chain)
+    }
+
+    pub(crate) fn chain_for_mut(
+        &mut self,
+        index: usize,
+        source: u64,
+    ) -> Option<&mut NativeRuntimeChain> {
+        self.chains
+            .get_mut(index)?
+            .as_mut()
+            .filter(|stage| stage.source.value() == source)
+            .map(|stage| &mut stage.chain)
+    }
+
     pub(crate) fn chains_mut(&mut self) -> impl Iterator<Item = &mut NativeRuntimeChain> {
         self.chains
             .iter_mut()
@@ -337,6 +357,34 @@ impl SourceEffectStages {
             chain
                 .process_range_with_clock(0..chain.len(), frames, Some(clock), Some(clock))
                 .map_err(|_| Invalid("prepared source effect segment is invalid"))?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn process_with_live_input(
+        &mut self,
+        index: usize,
+        frames: &mut [Frame],
+        clock: &dyn NativeInstrumentClock,
+        offset: usize,
+        input: Option<&mut crate::native_parameter_input::Processing>,
+    ) -> Result<(), Invalid> {
+        if let Some(stage) = self.chains.get_mut(index).and_then(Option::as_mut) {
+            let chain = &mut stage.chain;
+            crate::native_parameter_input::process_range_with_external(
+                input,
+                None,
+                chain,
+                0..chain.len(),
+                frames,
+                offset,
+                Some(clock),
+                Some(clock),
+                0,
+                0,
+                &mut hex_lattice::RefuseForeign,
+                &mut None,
+            )?;
         }
         Ok(())
     }

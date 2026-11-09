@@ -6359,12 +6359,10 @@ fn modulation_panel_maps_loaded_sampler_gain_through_its_authored_control(cx: &m
         true,
     );
     assert!(editor.read_with(cx, |view, _| {
-        view.context_menu
-            .as_ref()
-            .unwrap()
-            .items
-            .iter()
-            .any(|item| item.label == "note counter")
+        let items = &view.context_menu.as_ref().unwrap().items;
+        ["note counter", "ramp"]
+            .into_iter()
+            .all(|label| items.iter().any(|item| item.label == label))
     }));
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
@@ -6477,7 +6475,7 @@ fn modulation_panel_maps_sparse_eq_output_gain(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn modulation_panel_omits_note_counter_from_an_effect_without_events(cx: &mut TestAppContext) {
+fn modulation_panel_omits_note_sources_from_an_effect_without_events(cx: &mut TestAppContext) {
     let (service, state, track, device, _, _) = actor_utility_fixture();
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -6494,7 +6492,7 @@ fn modulation_panel_omits_note_counter_from_an_effect_without_events(cx: &mut Te
             .unwrap()
             .items
             .iter()
-            .all(|item| item.label != "note counter")
+            .all(|item| !matches!(item.label, "note counter" | "ramp"))
     }));
 }
 
@@ -6754,6 +6752,11 @@ fn modulation_panel_maps_fm4_note_counter_and_edits_its_settings(cx: &mut TestAp
 }
 
 #[gpui::test]
+fn modulation_panel_maps_fm4_ramp_and_edits_all_controls(cx: &mut TestAppContext) {
+    exercise_fm4_modulation_mapper(cx, Fm4MappingFixture::Ramp);
+}
+
+#[gpui::test]
 fn modulation_panel_maps_all_four_fm4_oscillator_phases(cx: &mut TestAppContext) {
     exercise_fm4_modulation_mapper(cx, Fm4MappingFixture::OscillatorPhases);
 }
@@ -6762,6 +6765,7 @@ enum Fm4MappingFixture {
     Carriers,
     Pressure,
     Counter,
+    Ramp,
     OscillatorLevels,
     OscillatorPhases,
 }
@@ -6773,6 +6777,7 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
 
     let pressure = matches!(fixture, Fm4MappingFixture::Pressure);
     let counter = matches!(fixture, Fm4MappingFixture::Counter);
+    let ramp = matches!(fixture, Fm4MappingFixture::Ramp);
     let levels = matches!(fixture, Fm4MappingFixture::OscillatorLevels);
     let phases = matches!(fixture, Fm4MappingFixture::OscillatorPhases);
     let service = Service::new(48_000, 8, 8_000_000).unwrap();
@@ -6830,6 +6835,7 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
             "buttons",
             "mix",
             "note counter",
+            "ramp",
         ],
     );
     visual.simulate_keystrokes("escape");
@@ -6845,7 +6851,7 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
             .modulation()
             .clone()
     };
-    let kind = if pressure || counter {
+    let kind = if pressure || counter || ramp {
         click(
             &mut visual,
             format!("add-modulator-{}", device.value()),
@@ -6853,8 +6859,10 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
         );
         let kind = if pressure {
             "note pressure"
-        } else {
+        } else if counter {
             "note counter"
+        } else {
+            "ramp"
         };
         let index = editor.read_with(cx, |view, _| {
             view.context_menu
@@ -6912,6 +6920,54 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
             click(
                 &mut visual,
                 format!("note counter-{}-{suffix}", source.value()),
+                true,
+            );
+            pump_until(&editor, cx, |view| settings(view) == expected);
+            visual.run_until_parked();
+        }
+    }
+    if ramp {
+        use hex_engine::ramp_modulator::{Curve, Settings};
+        let settings =
+            |view: &EditorView| Settings::decode(&bank(view).sources()[0].state).unwrap();
+        for (suffix, expected) in [
+            (
+                "shorter",
+                Settings {
+                    duration_micros: 250_000,
+                    ..Settings::default()
+                },
+            ),
+            (
+                "curve",
+                Settings {
+                    duration_micros: 250_000,
+                    curve: Curve::EaseIn,
+                    ..Settings::default()
+                },
+            ),
+            (
+                "direction",
+                Settings {
+                    duration_micros: 250_000,
+                    curve: Curve::EaseIn,
+                    falling: true,
+                    looping: false,
+                },
+            ),
+            (
+                "loop",
+                Settings {
+                    duration_micros: 250_000,
+                    curve: Curve::EaseIn,
+                    falling: true,
+                    looping: true,
+                },
+            ),
+        ] {
+            click(
+                &mut visual,
+                format!("ramp-{}-{suffix}", source.value()),
                 true,
             );
             pump_until(&editor, cx, |view| settings(view) == expected);
@@ -6980,7 +7036,7 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
     } else {
         [1, 2, 3, 4].map(parameter::carrier)
     };
-    let targets = if pressure || counter {
+    let targets = if pressure || counter || ramp {
         &controls[..1]
     } else {
         &controls[..]

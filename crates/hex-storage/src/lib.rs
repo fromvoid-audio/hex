@@ -817,7 +817,7 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
         | AHD_RELEASE_MODULATOR_SCHEMA_VERSION => {
             schema::device_modulation::decode(bytes, header.version)
         }
-        SERIAL_DEVICE_SCHEMA_VERSION => schema::serial_units::decode(bytes),
+        SERIAL_DEVICE_SCHEMA_VERSION => schema::serial_units::decode(bytes, inside_envelope),
         DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION | VST3_AUTOMATION_TOUCH_SCHEMA_VERSION => {
             schema::device_automation_touch::decode(bytes, header.version)
         }

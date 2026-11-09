@@ -237,6 +237,31 @@ pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
     Ok(value)
 }
 
+/// Determine the original 78/79 touch leaf from a legacy serial wrapper's
+/// bounded rows. The real leaf decoder subsequently checks every row and owner.
+pub(crate) fn mislabeled_bound_serial_leaf(value: &Value) -> Result<u32, StorageError> {
+    let rows = value
+        .as_array()
+        .filter(|rows| !rows.is_empty() && rows.len() <= hex_project::MAX_DEVICE_AUTOMATION_POINTS)
+        .ok_or(StorageError::Invalid(
+            "invalid legacy device touch inventory",
+        ))?;
+    let mut version = DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION;
+    for row in rows {
+        let target: Target = serde_json::from_value(
+            row.get("target")
+                .ok_or(StorageError::Invalid(
+                    "legacy device touch target is missing",
+                ))?
+                .clone(),
+        )?;
+        if matches!(target, Target::Vst3 { .. }) {
+            version = VST3_AUTOMATION_TOUCH_SCHEMA_VERSION;
+        }
+    }
+    Ok(version)
+}
+
 pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError> {
     let mut value = super::audio_events::parse_unique(bytes)?;
     let Rows(rows) = serde_json::from_value(
