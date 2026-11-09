@@ -20,10 +20,12 @@ mod host_output_gain_ramp;
 mod matrix_ramp;
 mod meter;
 mod modulation;
+mod modulation_adsr;
 #[cfg(test)]
 mod modulation_graph_tests;
 mod modulation_note_counter;
 mod modulation_note_events;
+mod modulation_note_gate;
 mod modulation_ramp;
 mod modulation_runtime;
 mod modulation_source_routes;
