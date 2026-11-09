@@ -56,6 +56,7 @@ fn modulation_edit_is_revision_bound_and_commits_only_after_resident_admission()
     };
     let bank = DeviceModulation::new(
         vec![Modulator {
+            color: Default::default(),
             id: ModulationSourceId::new(added.state.project.next_identity()).unwrap(),
             enabled: true,
             state: Settings::default().encode().unwrap(),
