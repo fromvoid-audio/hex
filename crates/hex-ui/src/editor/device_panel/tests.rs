@@ -6894,6 +6894,11 @@ fn modulation_panel_maps_fm4_ahd_release_and_edits_all_controls(cx: &mut TestApp
     exercise_fm4_modulation_mapper(cx, Fm4MappingFixture::AhdRelease);
 }
 
+#[gpui::test]
+fn modulation_panel_maps_authored_fm4_connection_depths(cx: &mut TestAppContext) {
+    exercise_fm4_modulation_mapper(cx, Fm4MappingFixture::ConnectionDepths);
+}
+
 enum Fm4MappingFixture {
     Carriers,
     Pressure,
@@ -6902,6 +6907,7 @@ enum Fm4MappingFixture {
     AhdRelease,
     OscillatorLevels,
     OscillatorPhases,
+    ConnectionDepths,
 }
 
 fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFixture) {
@@ -6915,9 +6921,18 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
     let ahd_release = matches!(fixture, Fm4MappingFixture::AhdRelease);
     let levels = matches!(fixture, Fm4MappingFixture::OscillatorLevels);
     let phases = matches!(fixture, Fm4MappingFixture::OscillatorPhases);
+    let edges = matches!(fixture, Fm4MappingFixture::ConnectionDepths);
+    let edge_targets = [parameter::modulation(2, 1), parameter::modulation(3, 2)];
     let service = Service::new(48_000, 8, 8_000_000).unwrap();
     receive_service_event(&service);
-    let original = FM4_DEFINITION.default_state().unwrap();
+    let mut original = FM4_DEFINITION.default_state().unwrap();
+    if edges {
+        for id in edge_targets {
+            original = FM4_DEFINITION
+                .patch_parameter(&original, id, ParameterValue::Float(0.25))
+                .unwrap();
+        }
+    }
     service
         .submit(Request::Edit(Command::InsertTrackWithDevice {
             name: "fm4 track".into(),
@@ -7163,7 +7178,7 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
         visual.run_until_parked();
     }
     click(&mut visual, format!("{kind}-{}-map", source.value()), true);
-    if !levels && !phases {
+    if !levels && !phases && !edges {
         editor.update(cx, |view, cx| {
             view.device_panel.parameter_rows[&device]
                 .scroll
@@ -7184,7 +7199,7 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
         )
         .into_boxed_str(),
     );
-    if !levels && !phases {
+    if !levels && !phases && !edges {
         assert!(visual.debug_bounds(release_control).is_some());
     }
     assert!(
@@ -7200,7 +7215,9 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
     } else {
         [1, 2, 3, 4].map(parameter::carrier)
     };
-    let targets = if pressure || counter || ramp || ahd_release {
+    let targets = if edges {
+        &edge_targets[..]
+    } else if pressure || counter || ramp || ahd_release {
         &controls[..1]
     } else {
         &controls[..]
@@ -7233,7 +7250,10 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
             visual.run_until_parked();
         }
         let bounds = viewport(&mut visual);
-        let position = visual.debug_bounds(selector).unwrap().center();
+        let position = visual
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("missing {key} in {bounds:?}"))
+            .center();
         assert!(
             bounds.contains(&position),
             "{key} at {position:?} outside {bounds:?}"
