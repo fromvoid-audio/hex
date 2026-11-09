@@ -34,13 +34,13 @@ pub(super) fn panel(
     let revision = state.revision;
     let generation = view.project_generation;
     let bank = device.modulation();
-    let targets = view_data.parameters.iter().filter(|row| {
+    let has_target = view_data.parameters.iter().any(|row| {
         row.enabled
             && row
                 .semantics
                 .is_some_and(|semantics| semantics.modulation == ParameterModulation::SampleRate)
     });
-    if targets.clone().next().is_none() && bank.is_empty() {
+    if !has_target && bank.is_empty() {
         return None;
     }
     let button = |cx: &mut Context<EditorView>, key: String, label: SharedString, edit| {
@@ -50,7 +50,7 @@ pub(super) fn panel(
             cx.notify();
         }))
     };
-    let mut content = div().flex().flex_col().gap(px(3.0)).child(
+    let mut body = div().flex().flex_col().gap(px(3.0)).child(
         div()
             .flex()
             .items_center()
@@ -96,7 +96,7 @@ pub(super) fn panel(
             view.device_panel.mapping_source = (!mapping).then_some((id, source_id));
             cx.notify();
         }));
-        content = content.child(
+        body = body.child(
             div()
                 .flex()
                 .flex_wrap()
@@ -158,7 +158,7 @@ pub(super) fn panel(
             } else {
                 "unipolar"
             };
-            content = content.child(
+            body = body.child(
                 div()
                     .flex()
                     .flex_wrap()
@@ -192,29 +192,15 @@ pub(super) fn panel(
                     )),
             );
         }
-        if mapping && bank.routes().len() < hex_project::MAX_MODULATION_ROUTES_PER_DEVICE {
-            let mut choices = div().flex().flex_wrap().gap(px(3.0));
-            for row in targets.clone().filter(|row| {
-                !bank.routes().iter().any(|route| {
-                    route.source == source_id && matches!(
-                        route.destination,
-                        ModulationDestination::Device { target: DeviceAutomationTarget::Parameter(parameter), .. }
-                            if parameter == row.descriptor.id
-                    )
-                })
-            }) {
-                let parameter = row.descriptor.id;
-                choices = choices.child(button(
-                    cx,
-                    format!("map-lfo-{}-{}", source_id.value(), parameter.value()),
-                    theme::text(row.descriptor.label),
-                    Edit::Map(source_id, parameter),
-                ));
-            }
-            content = content.child(choices);
-        }
     }
-    Some(content.into_any_element())
+    Some(
+        div()
+            .id("device-modulator-scroll")
+            .max_h(px(58.0))
+            .overflow_y_scroll()
+            .child(body)
+            .into_any_element(),
+    )
 }
 
 pub(super) fn target_overlay(
