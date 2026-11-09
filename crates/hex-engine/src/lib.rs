@@ -117,7 +117,7 @@ pub use sparse_audio::SparseFrameMap;
 mod device_automation;
 mod device_modulation;
 pub use device_modulation::{
-    project_device_modulation_target_supported, project_device_output_gain_modulation_supported,
+    project_device_host_gain_modulation_supported, project_device_modulation_target_supported,
 };
 /// Versioned, control-side settings for the built-in envelope follower.
 pub use hex_devices::modulation::envelope_follower as follower_modulator;
