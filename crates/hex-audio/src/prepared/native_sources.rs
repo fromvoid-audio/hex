@@ -33,15 +33,9 @@ impl PublicationControl {
         fence: StoppedEditFence,
     ) -> bool {
         self.native_custody
-            && !self.status.closing.load(Acquire)
-            && !self.status.playing.load(Acquire)
-            && self.status.pending_stop_marker.load(Acquire) == 0
-            && self.status.transport_epoch.load(Acquire)
-                == self.status.sampler_edit.ready_transport_epoch.load(Acquire)
-            && self.status.native_effect_source() == Some(source)
-            && self.status.sampler_edit.native_epoch_active()
-            && self.status.sampler_edit.matches_source(fence, source)
-            && self.stopped_edit_fence_state(fence) == StoppedEditFenceState::Ready
+            && self
+                .status
+                .stopped_native_source_fence_matches(source, fence)
     }
 
     /// Read only while the exact stopped native fence remains ready. The

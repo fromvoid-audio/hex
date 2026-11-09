@@ -105,6 +105,7 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
             soloed: false,
             devices: vec![
                 DeviceSnapshot {
+                    modulation: Default::default(),
                     parent: None,
                     automation: Vec::new(),
                     comparison: None,
@@ -113,6 +114,7 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
                     state: utility_state.clone(),
                 },
                 DeviceSnapshot {
+                    modulation: Default::default(),
                     parent: None,
                     automation: Vec::new(),
                     comparison: None,
@@ -122,6 +124,7 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
                 },
             ],
             instrument: Some(hex_project::DeviceSnapshot {
+                modulation: Default::default(),
                 parent: None,
                 automation: Vec::new(),
                 comparison: None,

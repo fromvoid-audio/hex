@@ -428,6 +428,7 @@ mod tests {
             .find(|candidate| candidate.id == track.value())
             .expect("new track");
         track_snapshot.devices.push(DeviceSnapshot {
+            modulation: Default::default(),
             parent: None,
             automation: Vec::new(),
             comparison: None,
@@ -483,6 +484,7 @@ mod tests {
             .find(|candidate| candidate.id == track.value())
             .expect("new track");
         track_snapshot.devices.push(DeviceSnapshot {
+            modulation: Default::default(),
             parent: None,
             automation: Vec::new(),
             comparison: None,
@@ -542,6 +544,7 @@ mod tests {
             .find(|candidate| candidate.id == track.value())
             .expect("new track");
         track_snapshot.devices.push(DeviceSnapshot {
+            modulation: Default::default(),
             parent: None,
             automation: Vec::new(),
             comparison: None,
@@ -663,6 +666,7 @@ mod tests {
             .find(|candidate| candidate.id == track.value())
             .expect("new track");
         track_snapshot.devices.push(DeviceSnapshot {
+            modulation: Default::default(),
             parent: None,
             automation: Vec::new(),
             comparison: None,

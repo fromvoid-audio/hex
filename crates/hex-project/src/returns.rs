@@ -141,6 +141,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             find_mut(project, return_track)?.devices.insert(
                 index,
                 Device {
+                    modulation: Default::default(),
                     parent: None,
                     automation: Vec::new(),
                     comparison: None,

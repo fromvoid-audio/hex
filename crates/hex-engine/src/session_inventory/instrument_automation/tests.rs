@@ -146,12 +146,12 @@ fn four_carrier_program_uses_canonical_mapping_touch_base_and_content_clock() {
         block.value_at(ParameterId::from_static(30), 2),
         Some(ParameterValue::Float(-0.5))
     );
-    assert!(!crate::project_device_automation_target_supported(
+    assert!(crate::project_device_automation_target_supported(
         editor.project(),
         id,
         DeviceAutomationTarget::Parameter(carrier)
     ));
-    assert!(crate::device_automation::validate_project(editor.project()).is_err());
+    crate::device_automation::validate_project(editor.project()).unwrap();
 }
 #[test]
 fn retained_storage_fits_quote_and_visits_once_independently_of_inventory_marker() {
@@ -310,15 +310,13 @@ fn ordinary_construction_quote_counts_shared_receiving_program_once() {
             )
             .unwrap();
             let prepare = |editor: &Editor| {
-                crate::device_automation::with_fm4_source_curves(|| {
-                    crate::PreparedRevision::prepare(
-                        editor.project(),
-                        &std::collections::BTreeMap::new(),
-                        std::sync::Arc::new(hex_devices::SineTable::new()),
-                        None,
-                    )
-                    .unwrap()
-                })
+                crate::PreparedRevision::prepare(
+                    editor.project(),
+                    &std::collections::BTreeMap::new(),
+                    std::sync::Arc::new(hex_devices::SineTable::new()),
+                    None,
+                )
+                .unwrap()
             };
             let revision = prepare(&editor);
             assert!(revision.session().instrument_automation_storage_bytes() > 0);

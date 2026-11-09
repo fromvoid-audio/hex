@@ -108,6 +108,7 @@ pub fn default_instrument_state() -> Result<NativeDeviceState, Invalid> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Device {
+    pub(crate) modulation: crate::DeviceModulation,
     pub(crate) parent: Option<DeviceId>,
     pub(crate) automation: Vec<crate::DeviceAutomation>,
     pub(crate) id: DeviceId,
@@ -116,6 +117,9 @@ pub struct Device {
     pub(crate) comparison: Option<crate::DeviceComparison>,
 }
 impl Device {
+    pub fn modulation(&self) -> &crate::DeviceModulation {
+        &self.modulation
+    }
     /// Serial-unit parent in this canonical chain; `None` identifies a root.
     pub fn parent(&self) -> Option<DeviceId> {
         self.parent
@@ -145,6 +149,7 @@ impl Project {
         }
         let mut candidate = self.clone();
         candidate.apply(command.clone())?;
+        candidate.validate_device_modulation()?;
         Ok(candidate)
     }
 }
@@ -176,6 +181,10 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             Ok(crate::Created::None)
         }
         Command::RemoveDevice(id) => {
+            if let Some(source) = project.source_owning_device(id) {
+                project.remove_source_device(source, id)?;
+                return Ok(crate::Created::None);
+            }
             if let Ok((track, index)) = locate_device(project, id) {
                 let span = crate::device_inventory::serial_unit_span(
                     &project.tracks[track].devices,
@@ -238,6 +247,14 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
         }
         Command::InsertNestedDevice { parent, state } => {
             unit_parent::insert(project, parent, state)
+        }
+        Command::MoveNativeSourceDevice {
+            source,
+            device,
+            before,
+        } => {
+            project.move_source_device(source, device, before)?;
+            Ok(crate::Created::None)
         }
         Command::ReparentDevice { device, parent } => {
             unit_parent::apply(project, device, parent)?;
@@ -344,6 +361,7 @@ fn insert_instrument(
     let binding = project.register_instrument(
         name,
         Device {
+            modulation: Default::default(),
             parent: None,
             automation: Vec::new(),
             comparison: None,
@@ -398,6 +416,7 @@ fn insert(
     target.devices.insert(
         index,
         Device {
+            modulation: Default::default(),
             parent: None,
             automation: Vec::new(),
             comparison: None,
