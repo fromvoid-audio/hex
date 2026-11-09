@@ -193,6 +193,7 @@ pub struct Prepared {
     idle_flush_sequence: u64,
     last_edit_sequence: u64,
     last_pcm_edit_sequence: u64,
+    last_pcm_restoration_sequence: u64,
     last_edit_frame: u64,
     parameter_page: Option<parameter_page::PendingPage>,
     parameter_page_sequence: u64,
@@ -593,6 +594,7 @@ impl Pending {
             idle_flush_sequence: 0,
             last_edit_sequence: 0,
             last_pcm_edit_sequence: 0,
+            last_pcm_restoration_sequence: 0,
             last_edit_frame: 0,
             parameter_page: None,
             parameter_page_sequence: 0,
@@ -651,15 +653,30 @@ impl Prepared {
     /// Only on the existing joining transport worker. A failed operation
     /// permanently faults this lease; no foreign DSP retry/replay is possible.
     pub fn exchange_on_worker(&mut self, block: Block) -> Result<Block> {
-        self.exchange_on_worker_with_metadata(block, None, None, false)
+        self.exchange_on_worker_with_metadata(block, None, None, false, None)
             .map(|reply| reply.block)
     }
 
     /// Opt this exchange into facts about the effective editor input. This
     /// does not drain or acknowledge the ordered editor receipt reader.
     pub fn exchange_editor_on_worker(&mut self, block: Block) -> Result<protocol::EditorPcm> {
-        self.exchange_on_worker_with_metadata(block, None, None, true)
+        self.exchange_on_worker_with_metadata(block, None, None, true, None)
     }
+    /// Apply an eligible unlaned editor touch with the original normalized base.
+    /// The caller must bind this plan to the actual canonical source.
+    pub fn exchange_editor_touch_on_worker(
+        &mut self,
+        block: Block,
+        plan: protocol::EditorTouchPlan,
+    ) -> Result<protocol::EditorPcm> {
+        if !self.has_armed_authored_parameter(plan.parameter) || plan.reading {
+            return Err(Error::Protocol(
+                "editor touch requires an exact writable unlaned target",
+            ));
+        }
+        self.exchange_on_worker_with_metadata(block, None, None, true, Some(plan))
+    }
+
     /// Deliver one authored input block to the same lease that observed the
     /// selected parameters. The SDK processing snapshot rechecks eligibility
     /// and steps before entering DSP. Normalized feedback cannot stale them.
@@ -668,7 +685,7 @@ impl Prepared {
         block: Block,
         metadata: &AuthoredParameterMetadata,
     ) -> Result<Block> {
-        self.exchange_authored_with_manual_on_worker(block, metadata, None, false)
+        self.exchange_authored_with_manual_on_worker(block, metadata, None, false, None)
             .map(|reply| reply.block)
     }
 
@@ -678,6 +695,7 @@ impl Prepared {
         metadata: &AuthoredParameterMetadata,
         manual_parameter: Option<crate::transport::ParameterPoint>,
         observe_editor: bool,
+        editor_touch: Option<protocol::EditorTouchPlan>,
     ) -> Result<protocol::EditorPcm> {
         if !metadata.matches(self) {
             return Err(Error::Protocol("authored parameter source differs"));
@@ -687,6 +705,7 @@ impl Prepared {
             Some(metadata),
             manual_parameter,
             observe_editor,
+            editor_touch,
         )
     }
     /// Retain the exact capability observation with the lease that will run
@@ -723,7 +742,7 @@ impl Prepared {
         block: Block,
         manual_parameter: Option<crate::transport::ParameterPoint>,
     ) -> Result<Block> {
-        self.exchange_armed_with_mode(block, manual_parameter, false)
+        self.exchange_armed_with_mode(block, manual_parameter, false, None)
             .map(|reply| reply.block)
     }
 
@@ -733,7 +752,35 @@ impl Prepared {
         block: Block,
         manual_parameter: Option<crate::transport::ParameterPoint>,
     ) -> Result<protocol::EditorPcm> {
-        self.exchange_armed_with_mode(block, manual_parameter, true)
+        self.exchange_armed_with_mode(block, manual_parameter, true, None)
+    }
+
+    /// A scoped editor gesture may temporarily replace one authored parameter.
+    /// Other authored values retain their existing per-sample SDK contract.
+    pub fn exchange_armed_authored_with_editor_touch_on_worker(
+        &mut self,
+        block: Block,
+        plan: protocol::EditorTouchPlan,
+    ) -> Result<protocol::EditorPcm> {
+        if !self.has_armed_authored_parameter(plan.parameter) {
+            return Err(Error::Protocol(
+                "editor touch requires an exact writable target",
+            ));
+        }
+        let points = block.parameters.as_slice();
+        let has_target = points.iter().any(|point| point.id == plan.parameter);
+        if (plan.reading
+            && !points
+                .iter()
+                .any(|point| point.id == plan.parameter && point.frame == 0))
+            || (!plan.reading
+                && (has_target || points.len() == crate::transport::MAX_PARAMETER_POINTS))
+        {
+            return Err(Error::Protocol(
+                "editor touch cannot reserve its exact restoration",
+            ));
+        }
+        self.exchange_armed_with_mode(block, None, true, Some(plan))
     }
 
     fn exchange_armed_with_mode(
@@ -741,6 +788,7 @@ impl Prepared {
         block: Block,
         manual_parameter: Option<crate::transport::ParameterPoint>,
         observe_editor: bool,
+        editor_touch: Option<protocol::EditorTouchPlan>,
     ) -> Result<protocol::EditorPcm> {
         let metadata = self
             .authored_parameter_metadata
@@ -753,6 +801,7 @@ impl Prepared {
             &metadata,
             manual_parameter,
             observe_editor,
+            editor_touch,
         );
         self.authored_parameter_metadata = Some(metadata);
         result
@@ -764,11 +813,18 @@ impl Prepared {
         metadata: Option<&AuthoredParameterMetadata>,
         manual_parameter: Option<crate::transport::ParameterPoint>,
         observe_editor: bool,
+        editor_touch: Option<protocol::EditorTouchPlan>,
     ) -> Result<protocol::EditorPcm> {
         if self.faulted || self.retired.is_some() {
             return Err(Error::Protocol("instance lease is retired or faulted"));
         }
-        let result = self.exchange(block, metadata, manual_parameter, observe_editor);
+        let result = self.exchange(
+            block,
+            metadata,
+            manual_parameter,
+            observe_editor,
+            editor_touch,
+        );
         if result.is_err() {
             self.faulted = true;
             self.lease.cancel_native();
@@ -781,6 +837,7 @@ impl Prepared {
         metadata: Option<&AuthoredParameterMetadata>,
         manual_parameter: Option<crate::transport::ParameterPoint>,
         observe_editor: bool,
+        editor_touch: Option<protocol::EditorTouchPlan>,
     ) -> Result<protocol::EditorPcm> {
         self.check_live_capture_deadline()?;
         self.check_parameter_page_deadline()?;
@@ -789,7 +846,7 @@ impl Prepared {
             .sequence
             .checked_add(1)
             .ok_or(Error::Protocol("instance sequence exhausted"))?;
-        let mut bytes = [0; crate::transport::wire::MAX_PACKET_BYTES];
+        let mut bytes = [0; crate::transport::wire::MAX_PACKET_BYTES + 24];
         let mut cursor = Cursor::new(bytes.as_mut_slice());
         if let Some(metadata) = metadata {
             crate::transport::wire::write_authored(&mut cursor, &block, manual_parameter, &|id| {
@@ -799,7 +856,19 @@ impl Prepared {
             crate::transport::wire::write(&mut cursor, &block)
         }
         .map_err(Error::Io)?;
-        let length = cursor.position() as usize;
+        let mut length = cursor.position() as usize;
+        if let Some(plan) = editor_touch {
+            let plan = plan.wire()?;
+            let end = length + plan.len();
+            bytes
+                .get_mut(length..end)
+                .ok_or(Error::Protocol(
+                    "editor touch packet extent exceeds its bound",
+                ))?
+                .copy_from_slice(&plan);
+            length = end;
+            bytes[5] |= (protocol::EDITOR_TOUCH_BIT >> 8) as u8;
+        }
         if observe_editor {
             bytes[5] |= (protocol::EDITOR_PCM_BIT >> 8) as u8;
         }
@@ -817,7 +886,16 @@ impl Prepared {
                 self.config.binding,
             )?));
         }
-        let output = if observe_editor {
+        let output = if let Some(plan) = editor_touch {
+            protocol::editor_touch_pcm(
+                self.packet.data(),
+                &self.config,
+                self.sequence,
+                self.last_pcm_edit_sequence,
+                plan,
+                self.last_pcm_restoration_sequence,
+            )?
+        } else if observe_editor {
             protocol::editor_pcm(
                 self.packet.data(),
                 &self.config,
@@ -828,11 +906,15 @@ impl Prepared {
             protocol::EditorPcm {
                 block: protocol::pcm(self.packet.data(), &self.config, self.sequence)?,
                 performs: protocol::EditorPerforms::default(),
+                restoration: None,
             }
         };
         token.check()?;
         if let Some(last) = output.performs.as_slice().last() {
             self.last_pcm_edit_sequence = last.sequence;
+        }
+        if let Some(restored) = output.restoration {
+            self.last_pcm_restoration_sequence = restored.sequence;
         }
         self.sequence = next;
         Ok(output)

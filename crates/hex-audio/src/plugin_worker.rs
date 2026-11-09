@@ -187,6 +187,7 @@ impl State {
                 .map(|block| hex_plugin_host::protocol::EditorPcm {
                     block,
                     performs: Default::default(),
+                    restoration: None,
                 }),
             Some(Processor::Function(_)) => Err(Fault::InvalidParameters),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -200,11 +201,13 @@ impl State {
                         .map(|block| hex_plugin_host::protocol::EditorPcm {
                             block,
                             performs: Default::default(),
+                            restoration: None,
                         }),
                     (false, false) => instance.exchange_on_worker(block).map(|block| {
                         hex_plugin_host::protocol::EditorPcm {
                             block,
                             performs: Default::default(),
+                            restoration: None,
                         }
                     }),
                 };
@@ -438,6 +441,7 @@ fn transport_runner_with_setup(
                             |hex_plugin_host::protocol::EditorPcm {
                                  block: reply,
                                  performs,
+                                 ..
                              }| {
                                 // Native exchange already validated the complete SDK
                                 // reply. Retain its private input receipt even if Stop
