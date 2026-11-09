@@ -2507,6 +2507,7 @@ pub(super) mod tests {
     mod export_tests;
     mod fence_tests;
     mod import_reuse_tests;
+    mod modulation_edit_tests;
     mod native_automation_recording;
     mod plugin_effect_tests;
     mod source_binding_tests;

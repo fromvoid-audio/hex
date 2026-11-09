@@ -356,7 +356,7 @@ pub(super) fn render_return_effect(
                     device_view,
                 )
             };
-            device_frame(
+            hex_widgets::device_frame_with_modulators(
                 device_drag_title(
                     view,
                     cx,
@@ -368,6 +368,7 @@ pub(super) fn render_return_effect(
                 leading,
                 actions,
                 body,
+                super::modulators::panel(view, cx, device, device_view),
             )
         }
         Err(error) => {
