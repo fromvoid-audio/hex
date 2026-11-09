@@ -103,7 +103,7 @@ fn fixture(cx: &mut TestAppContext, kind: &str) -> Fixture {
                 .debug_bounds("audio-event-fade-out-top-1")
                 .unwrap()
                 .center(),
-            CursorStyle::ResizeLeftRight,
+            CursorStyle::Arrow,
         ),
         _ => unreachable!(),
     };
