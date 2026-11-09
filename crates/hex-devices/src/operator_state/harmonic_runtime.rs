@@ -449,6 +449,9 @@ impl EventProof {
             return self.apply_global(factory, event);
         }
         match event {
+            NativeInstrumentEvent::NotePressure { .. } => {
+                return Err(Error::UnsupportedNotePressure);
+            }
             NativeInstrumentEvent::Expression { .. } => return Err(Error::InvalidEventBatch),
             NativeInstrumentEvent::NoteOn {
                 occurrence_id,
@@ -626,6 +629,9 @@ impl Runtime {
             return self.apply_global(event, origin, beat, running);
         }
         match event {
+            NativeInstrumentEvent::NotePressure { .. } => {
+                return Err(Error::UnsupportedNotePressure);
+            }
             NativeInstrumentEvent::Expression { .. } => return Err(Error::InvalidEventBatch),
             NativeInstrumentEvent::NoteOn {
                 occurrence_id,
@@ -903,11 +909,7 @@ impl MutableInstrumentRuntime for Runtime {
         let mut proof = EventProof::new(self);
         let mut offset = 0;
         for event in events {
-            let at = match *event {
-                NativeInstrumentEvent::NoteOn { frame_offset, .. }
-                | NativeInstrumentEvent::NoteOff { frame_offset, .. }
-                | NativeInstrumentEvent::Expression { frame_offset, .. } => frame_offset,
-            };
+            let at = event.frame_offset();
             if at < offset || at >= frames {
                 return Err(Error::InvalidEventBatch);
             }
@@ -1044,11 +1046,7 @@ impl MutableInstrumentRuntime for Runtime {
             }
             let mut voices_changed = false;
             while let Some(event) = events.get(cursor) {
-                let at = match *event {
-                    NativeInstrumentEvent::NoteOn { frame_offset, .. }
-                    | NativeInstrumentEvent::NoteOff { frame_offset, .. }
-                    | NativeInstrumentEvent::Expression { frame_offset, .. } => frame_offset,
-                };
+                let at = event.frame_offset();
                 if at != offset {
                     break;
                 }

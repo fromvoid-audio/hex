@@ -269,7 +269,12 @@ impl NativeInstrumentRuntimePair {
                 .ok_or(NativeInstrumentRuntimeError::RuntimeBudgetExceeded)?;
             crate::instrument_gain::validate_occurrence_gains(gains, frames.len(), maximum)?;
         }
-        validate_event_batch(events, frames.len(), self.max_events_per_block)?;
+        validate_event_batch(
+            events,
+            frames.len(),
+            self.max_events_per_block,
+            self.note_pressure,
+        )?;
         self.scratch
             .preflight_events(events, frames.len(), resources)?;
         self.scratch

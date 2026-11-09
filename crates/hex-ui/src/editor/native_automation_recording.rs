@@ -26,6 +26,8 @@ use hex_session::{
 };
 use hex_widgets::NumericEventPhase;
 use std::sync::{Arc, atomic::Ordering::Acquire};
+mod editor_input;
+use editor_input::EditorCapture;
 
 // A refused writer batch can coexist with an entire endpoint window. Reserve
 // room to read the terminal even when both sets of applied values are full.
@@ -61,6 +63,8 @@ pub(super) struct Recorder {
     serial: u64,
     request: u64,
     plugin_take: Option<(GestureKey, Arm)>,
+    editor_arm: Option<Arm>,
+    editor_take: Option<EditorCapture>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -339,7 +343,7 @@ impl Recorder {
         Ok(self.request)
     }
     pub(super) fn busy(&self) -> bool {
-        self.touch.is_some()
+        self.touch.is_some() || self.editor_take.is_some()
     }
 
     fn begin_plugin(
@@ -488,6 +492,7 @@ impl EditorView {
             revision: arm.revision,
             target: selected.then_some((device, kind)),
         }) {
+            self.native_automation_recorder.editor_arm = None;
             self.native_automation_recorder.arm = selected.then_some(arm);
         }
     }
@@ -559,6 +564,7 @@ impl EditorView {
         }) {
             return;
         }
+        self.native_automation_recorder.editor_arm = None;
         self.native_automation_recorder.arm =
             (self.native_automation_recorder.arm != Some(arm)).then_some(arm);
     }
@@ -837,6 +843,9 @@ impl EditorView {
         let Some(completion) = event.device_automation_take_complete.as_ref() else {
             return;
         };
+        if self.plugin_editor_take_completion(event, completion) {
+            return;
+        }
         let Some(mut touch) = self.native_automation_recorder.touch.take() else {
             return;
         };
@@ -929,6 +938,9 @@ impl EditorView {
         request: &Request,
         worker_closed: bool,
     ) {
+        if self.plugin_editor_request_not_submitted(request, worker_closed) {
+            return;
+        }
         let Request::DeviceAutomationTake { request_id, .. } = request else {
             return;
         };
@@ -954,10 +966,10 @@ impl EditorView {
     }
 
     pub(super) fn tick_native_automation_recording(&mut self) -> bool {
+        let mut changed = self.tick_plugin_editor_recording();
         let Some(mut touch) = self.native_automation_recorder.touch.take() else {
-            return false;
+            return changed;
         };
-        let mut changed = false;
         if matches!(touch.phase, Phase::Delivering | Phase::Orphaned) {
             let client = self
                 .audio

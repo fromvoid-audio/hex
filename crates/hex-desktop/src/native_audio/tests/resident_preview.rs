@@ -374,19 +374,40 @@ impl WorkerAudioSink for ResidentSink {
         }
         result
     }
+    fn prepare_plugin_editor_recording(
+        &mut self,
+        input: hex_session::service::PluginEditorRecordingInput,
+    ) -> Result<hex_session::service::PluginParameterObservation, String> {
+        self.inner.prepare_plugin_editor_recording(input)
+    }
+    fn start_plugin_editor_recording(
+        &mut self,
+        key: hex_session::device_gesture::GestureKey,
+    ) -> Result<(), String> {
+        self.inner.start_plugin_editor_recording(key)
+    }
+    fn cancel_plugin_editor_recording(
+        &mut self,
+        key: hex_session::device_gesture::GestureKey,
+    ) -> bool {
+        self.inner.cancel_plugin_editor_recording(key)
+    }
     fn take_plugin_parameter_observation(
         &mut self,
     ) -> Option<hex_session::service::PluginParameterObservation> {
         let observation = self.inner.take_plugin_parameter_observation();
-        if std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").is_ok_and(|case| {
-            case.starts_with("session_record")
-                || matches!(
-                    case.as_str(),
-                    "session_first_lane" | "session_first_lane_with_other"
-                )
-                || case == "session_recover"
-                || case.starts_with("session_writer_")
-        }) && let Some(observation) = observation
+        if (std::env::var("HEX_DESKTOP_ORIGINAL_EDITOR_RECORDING_CHILD").as_deref()
+            == Ok("session")
+            || std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").is_ok_and(|case| {
+                case.starts_with("session_record")
+                    || matches!(
+                        case.as_str(),
+                        "session_first_lane" | "session_first_lane_with_other"
+                    )
+                    || case == "session_recover"
+                    || case.starts_with("session_writer_")
+            }))
+            && let Some(observation) = observation
         {
             let mut originals = SESSION_RECORDING_OBSERVATIONS.lock().unwrap();
             assert!(originals.len() < 8, "one bounded recording oracle");

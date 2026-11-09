@@ -745,3 +745,15 @@ fn refused_recorded_return_keeps_the_exact_final_preview_until_cancel() {
     assert!(client.snapshot().is_none());
     assert_eq!(session.project(), &before);
 }
+
+#[test]
+fn editor_recording_key_is_valid_in_the_initial_project_and_never_reuses_a_pointer_token() {
+    let mut client = GestureClient::default();
+    let editor = client.reserve_plugin_editor_key(0).unwrap();
+    assert_eq!((editor.generation, editor.token), (0, 1));
+    let pointer = client
+        .begin(0, GestureTarget::MainGain, ParameterValue::Float(0.5))
+        .unwrap();
+    assert!(pointer.token > editor.token);
+    assert!(client.reserve_plugin_editor_key(0).is_err());
+}

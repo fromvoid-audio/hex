@@ -288,6 +288,9 @@ impl Runtime {
                     voice.advance(0);
                 }
             }
+            NativeInstrumentEvent::NotePressure { .. } => {
+                return Err(Error::UnsupportedNotePressure);
+            }
             NativeInstrumentEvent::Expression { .. } => {}
         }
         Ok(())
