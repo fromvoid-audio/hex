@@ -124,6 +124,101 @@ fn automated(
     )
 }
 #[test]
+fn oscillator_phase_changes_at_sample_offsets_and_returns_to_authored_after_handoff() {
+    struct Phases<'a>(&'a [f32]);
+    impl NativeParameterAutomation for Phases<'_> {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            const IDS: [ParameterId; 1] = [parameter::oscillator_phase(2)];
+            &IDS
+        }
+        fn value_at(&self, id: ParameterId, offset: usize) -> Option<ParameterValue> {
+            if id != parameter::oscillator_phase(2) {
+                return None;
+            }
+            self.0.get(offset).copied().map(ParameterValue::Float)
+        }
+        fn has_sample_rate_modulation(&self, id: ParameterId) -> bool {
+            id == parameter::oscillator_phase(2)
+        }
+    }
+    let resources = BorrowedDeviceResources(&[]);
+    let tuning = hex_lattice::TuningTable::default();
+    let mut settings = Fm4Settings::defaults();
+    settings.envelope = [0.0, 0.0, 1.0, 0.02];
+    // These valid authored turns quantize to the same DSP phase as zero.
+    let authored_turns = f32::MIN_POSITIVE;
+    settings.oscillators[1][2] = authored_turns;
+    settings.modulation[1][0] = 0.25;
+    let (factory, instrument) = prepared(48_000, settings, &tuning);
+    let authored = instrument.prepare_note(60, 127).unwrap();
+    let expected = [0.0, 0.25, 0.5].map(|phase| {
+        let mut settings = settings;
+        settings.oscillators[1][2] = phase;
+        prepared(48_000, settings, &tuning)
+            .1
+            .prepare_note(60, 127)
+            .unwrap()
+    });
+    let phase_id = parameter::oscillator_phase(2);
+    let phase = [0.0, 0.25, 0.5, 0.0, 0.25, 0.5, 0.0, 0.25, 0.5];
+    let mut pair = NativeInstrumentRuntimePair::new(factory.as_ref(), LIMITS).unwrap();
+    let mut output = [[0.0; 2]; 9];
+    pair.begin_block();
+    pair.process_block_with_clock_and_automation(
+        &[on(1, 0, 60, 127)],
+        &mut output[..4],
+        None,
+        &[],
+        &Phases(&phase[..4]),
+        &resources,
+    )
+    .unwrap();
+    pair.process_block_with_clock_and_automation(
+        &[],
+        &mut output[4..],
+        None,
+        &[],
+        &Phases(&phase[4..]),
+        &resources,
+    )
+    .unwrap();
+    pair.commit_block();
+    for (age, frame) in output.into_iter().enumerate() {
+        assert_eq!(
+            frame,
+            expected[age % 3].sample(age as u64, u64::MAX, &resources)
+        );
+    }
+    let ids = TARGETS.map(|target| target.id);
+    let phase_index = ids.iter().position(|&id| id == phase_id).unwrap();
+    let mut values = [None; TARGETS.len()];
+    pair.copy_committed_parameter_targets(&ids, &mut values)
+        .unwrap();
+    assert_eq!(values[phase_index], Some(ParameterValue::Float(0.5)));
+    let mut successor = NativeInstrumentRuntimePair::new(factory.as_ref(), LIMITS).unwrap();
+    successor.inherit_from(&pair).unwrap();
+    let mut restored = [[0.0; 2]; 5];
+    successor.begin_block();
+    successor
+        .process_block(&[], &mut restored, &resources)
+        .unwrap();
+    successor.commit_block();
+    for (offset, frame) in restored.into_iter().enumerate() {
+        assert_eq!(
+            frame,
+            authored.sample((output.len() + offset) as u64, u64::MAX, &resources)
+        );
+    }
+    successor
+        .copy_committed_parameter_targets(&ids, &mut values)
+        .unwrap();
+    assert_eq!(
+        values[phase_index],
+        Some(ParameterValue::Float(authored_turns))
+    );
+}
+
+#[test]
 fn oscillator_level_reveals_an_fm_ancestor_even_with_a_pressure_revealed_carrier() {
     use std::num::NonZeroU64;
 
@@ -208,7 +303,7 @@ fn oscillator_level_reveals_an_fm_ancestor_even_with_a_pressure_revealed_carrier
         let mut effective = [None; TARGETS.len()];
         pair.copy_committed_parameter_targets(&TARGETS.map(|target| target.id), &mut effective)
             .unwrap();
-        assert_eq!(effective[1], Some(ParameterValue::Float(0.5)));
+        assert_eq!(effective[2], Some(ParameterValue::Float(0.5)));
     }
 }
 
@@ -496,7 +591,7 @@ fn committed_target_snapshot_finishes_existing_ramp_and_preserves_resolved_base_
         let mut values = [None; TARGETS.len()];
         pair.copy_committed_parameter_targets(&ids, &mut values)
             .unwrap();
-        <[Option<ParameterValue>; 4]>::try_from(&values[LEVELS.len()..]).unwrap()
+        <[Option<ParameterValue>; 4]>::try_from(&values[values.len() - CARRIERS.len()..]).unwrap()
     };
     let base = settings
         .carriers

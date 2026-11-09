@@ -44,14 +44,19 @@ fn point(beat: BeatTime, value: f32) -> AutomationPoint {
     }
 }
 #[test]
-fn production_source_admission_allows_oscillator_levels_and_carriers() {
+fn production_source_admission_allows_oscillator_levels_phases_and_carriers() {
     let (mut editor, _, device) = fixture();
     crate::device_automation::validate_project(editor.project()).unwrap();
-    for id in [2, 5, 8, 11, 29, 30, 31, 32] {
+    for id in [2, 3, 5, 6, 8, 9, 11, 12, 29, 30, 31, 32] {
         assert!(crate::project_device_automation_target_supported(
             editor.project(),
             device,
             hex_lattice_contract::DeviceAutomationTarget::Parameter(ParameterId::from_static(id))
+        ));
+        assert!(crate::project_device_modulation_target_supported(
+            editor.project(),
+            device,
+            ParameterId::from_static(id),
         ));
     }
     for id in [1, 28, 33, 36] {

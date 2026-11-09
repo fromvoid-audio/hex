@@ -332,7 +332,9 @@ fn modulation_semantics(id: ParameterId) -> Option<hex_lattice_contract::Paramet
     };
     let smoothing = if (parameter::carrier(1)..=parameter::carrier(4)).contains(&id) {
         ParameterSmoothing::DeviceManaged
-    } else if (1..=4).any(|operator| id == parameter::oscillator_level(operator)) {
+    } else if (1..=4).any(|operator| {
+        id == parameter::oscillator_level(operator) || id == parameter::oscillator_phase(operator)
+    }) {
         ParameterSmoothing::None
     } else {
         return None;

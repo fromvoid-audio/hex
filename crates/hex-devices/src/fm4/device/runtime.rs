@@ -1,4 +1,4 @@
-//! Fixed FM4 voices, oscillator levels and carrier controls used by the native host.
+//! Fixed FM4 voices, oscillator phases, levels and carrier controls used by the native host.
 //!
 //! Control prepares all 128 tuned step entries (invalid/Nyquist keys remain
 //! explicitly unavailable). One twin owns 64 inline occurrence slots; batches
@@ -16,6 +16,9 @@
 //! Each sample's oscillator levels are selected before pruning or rendering.
 //! Unpruned effective levels remain available to a newly audible carrier and
 //! to a detached release.
+//! Sample-rate phases are absolute offsets in turns before the tuned
+//! phase step and any per-voice retune correction. An unassigned phase
+//! resumes the authored offset at the first sample of that segment.
 //! Voice age/gate and the original tuned phase-step law are unchanged by carrier
 //! controls. Per-voice f32 source samples receive occurrence gain before f64 sum.
 //! Complete controls, effective pruning and voices participate in twin history.
@@ -41,7 +44,8 @@
 //! Parameter automation metadata is exposed separately from this runtime.
 use super::*;
 use crate::fm4::{
-    PreparedEnvelope, PreparedFmConfiguration, audible_operator_ancestors, prepared_steps_frequency,
+    PreparedEnvelope, PreparedFmConfiguration, audible_operator_ancestors, phase_from_turns,
+    prepared_steps_frequency,
 };
 use hex_lattice::{
     DeviceResources, InstrumentHistoryRetargetPreparation, InstrumentParameterRuntime,
@@ -62,11 +66,17 @@ const CARRIERS: [ParameterDescriptor; 4] = [
 
 const LEVELS: [ParameterDescriptor; 4] =
     [PARAMETERS[1], PARAMETERS[4], PARAMETERS[7], PARAMETERS[10]];
-const TARGETS: [ParameterDescriptor; 8] = [
+const PHASES: [ParameterDescriptor; 4] =
+    [PARAMETERS[2], PARAMETERS[5], PARAMETERS[8], PARAMETERS[11]];
+const TARGETS: [ParameterDescriptor; 12] = [
     LEVELS[0],
+    PHASES[0],
     LEVELS[1],
+    PHASES[1],
     LEVELS[2],
+    PHASES[2],
     LEVELS[3],
+    PHASES[3],
     CARRIERS[0],
     CARRIERS[1],
     CARRIERS[2],
@@ -182,6 +192,7 @@ impl Factory {
                 steps,
                 base,
                 full,
+                authored_phases: settings.oscillators.map(|oscillator| oscillator[2]),
                 envelope: PreparedEnvelope {
                     attack: frames(envelope.attack_seconds),
                     decay: frames(envelope.decay_seconds),
@@ -211,6 +222,7 @@ struct Config {
     steps: [Option<[u64; 4]>; 128],
     base: PreparedFmConfiguration,
     full: PreparedFmConfiguration,
+    authored_phases: [f32; 4],
     envelope: PreparedEnvelope,
     table: &'static crate::SineTable,
     smoothing: u32,
@@ -305,6 +317,7 @@ struct Runtime {
     voices: [Voice; VOICES],
     controls: [Control; 4],
     levels: [f64; 4],
+    phase_targets: [f32; 4],
     effective: PreparedFmConfiguration,
     unclamped_pressure_target: Option<(ParameterId, f64)>,
     cold: bool,
@@ -320,6 +333,7 @@ impl Runtime {
                 remaining: 0,
             }),
             levels: config.full.levels,
+            phase_targets: config.authored_phases,
             effective: config.base,
             unclamped_pressure_target: None,
             cold: true,
@@ -475,6 +489,15 @@ impl Runtime {
                 .is_some_and(|values| values.parameter_ids().binary_search(&descriptor.id).is_ok())
         });
         let level_values = values.filter(|_| level_lanes.contains(&true));
+        let phase_values = values.filter(|values| {
+            PHASES
+                .iter()
+                .any(|descriptor| values.parameter_ids().binary_search(&descriptor.id).is_ok())
+        });
+        if phase_values.is_none() {
+            self.phase_targets = self.config.authored_phases;
+            self.effective.phases = self.config.full.phases;
+        }
         let modulated = CARRIERS.map(|descriptor| {
             values.is_some_and(|values| values.has_sample_rate_modulation(descriptor.id))
         });
@@ -501,6 +524,18 @@ impl Runtime {
                 });
                 if levels != self.levels || carriers != self.effective.routing.carriers {
                     self.set_controls(levels, carriers);
+                }
+            }
+            if let Some(values) = phase_values {
+                self.phase_targets = self.config.authored_phases;
+                self.effective.phases = self.config.full.phases;
+                for (index, descriptor) in PHASES.into_iter().enumerate() {
+                    if let Some(ParameterValue::Float(turns)) =
+                        values.value_at(descriptor.id, offset)
+                    {
+                        self.phase_targets[index] = turns;
+                        self.effective.phases[index] = phase_from_turns(f64::from(turns));
+                    }
                 }
             }
             self.cold = false;
@@ -760,6 +795,7 @@ impl MutableInstrumentRuntime for Runtime {
             self.inherit_voices(previous);
             self.controls = previous.controls;
             self.levels = previous.levels;
+            self.phase_targets = previous.phase_targets;
             self.effective = previous.effective;
             self.cold = previous.cold;
         }
@@ -822,6 +858,7 @@ impl MutableInstrumentRuntime for Runtime {
                 self.config.full.levels,
                 previous.controls.map(|control| control.current),
             );
+            self.phase_targets = self.config.authored_phases;
             self.cold = previous.cold;
         }
     }
@@ -841,9 +878,14 @@ impl InstrumentParameterRuntime for Runtime {
         if output.len() != TARGETS.len() {
             return Err(Error::InvalidParameterAutomation);
         }
-        let (levels, carriers) = output.split_at_mut(LEVELS.len());
-        for (slot, level) in levels.iter_mut().zip(self.levels) {
-            *slot = Some(ParameterValue::Float(level as f32));
+        let (oscillators, carriers) = output.split_at_mut(LEVELS.len() + PHASES.len());
+        for ((slots, level), phase) in oscillators
+            .chunks_exact_mut(2)
+            .zip(self.levels)
+            .zip(self.phase_targets)
+        {
+            slots[0] = Some(ParameterValue::Float(level as f32));
+            slots[1] = Some(ParameterValue::Float(phase));
         }
         for (slot, control) in carriers.iter_mut().zip(self.controls) {
             *slot = Some(ParameterValue::Float(control.target as f32));
