@@ -34,8 +34,8 @@ pub(crate) fn factory_bytes(
 ) -> Result<usize, Invalid> {
     let state = instance.configuration.as_ref().ok_or(UNKNOWN_FACTORY)?;
     validate_authored(state, registry)?;
-    if instance.automation.storage_bytes() != Some(0) || instance.modulation.is_some() {
-        return Err(Invalid("source effects cannot retain control programs"));
+    if instance.automation.storage_bytes() != Some(0) {
+        return Err(Invalid("source effects cannot retain automation programs"));
     }
     let Some(factory) = &instance.definition else {
         return Ok(0);
@@ -69,11 +69,21 @@ fn device_inline_bytes() -> Option<usize> {
 }
 
 pub(crate) fn construction_bytes(project: &hex_project::Project) -> Option<usize> {
-    construction_for(project.native_sources().iter().filter_map(|source| {
-        source
-            .receiver()
-            .map(|_| source.post_instrument_effects().len())
-    }))
+    let bound = project
+        .native_sources()
+        .iter()
+        .filter(|source| source.receiver().is_some());
+    let recipes = construction_for(
+        bound
+            .clone()
+            .map(|source| source.post_instrument_effects().len()),
+    )?;
+    bound
+        .flat_map(|source| source.post_instrument_effects())
+        .try_fold(recipes, |bytes, device| {
+            let (retained, temporary) = crate::device_modulation::EffectModulation::quote(device)?;
+            bytes.checked_add(retained)?.checked_add(temporary)
+        })
 }
 
 pub(super) fn construction_for(mut counts: impl Iterator<Item = usize>) -> Option<usize> {
@@ -122,8 +132,16 @@ pub(crate) fn retained_bytes(recipes: &Vec<PreparedSourceEffects>) -> Option<usi
                 let state = instance.configuration.as_ref()?;
                 bytes
                     .checked_add(inline)?
-                    .checked_add(state.retained_control_metadata_bytes()?)
+                    .checked_add(state.retained_control_metadata_bytes()?)?
+                    .checked_add(modulation_bytes(instance)?)
             },
         )
     })
+}
+
+pub(super) fn modulation_bytes(instance: &PreparedRuntimeInstance) -> Option<usize> {
+    instance.modulation.as_ref().map_or(
+        Some(0),
+        hex_lattice::PreparedModulationState::heap_storage_bytes,
+    )
 }

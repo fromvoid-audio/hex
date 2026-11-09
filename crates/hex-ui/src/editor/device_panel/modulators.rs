@@ -51,12 +51,28 @@ impl SourceKind {
 }
 
 #[derive(Clone, Copy)]
+enum MappingTarget {
+    Device(ParameterId),
+    HostOutput,
+    Macro(ModulationSourceId),
+}
+
+fn macro_destination(source: ModulationSourceId) -> ModulationDestination {
+    ModulationDestination::Modulator {
+        source,
+        module_type: manual::TYPE_ID,
+        parameter: manual::VALUE_PARAMETER,
+    }
+}
+
+#[derive(Clone, Copy)]
 enum Edit {
     Add(SourceKind),
     ToggleSource(ModulationSourceId),
     RemoveSource(ModulationSourceId),
     Rate(ModulationSourceId, f64),
     Sync(ModulationSourceId),
+    LfoShape(ModulationSourceId, lfo::Waveform),
     MacroValue(ModulationSourceId, f32),
     FollowerTime {
         source: ModulationSourceId,
@@ -65,14 +81,22 @@ enum Edit {
     },
     RandomRate(ModulationSourceId, f64),
     Reseed(ModulationSourceId),
-    Map(ModulationSourceId, ParameterId),
+    Map(ModulationSourceId, MappingTarget),
     Adjust(ModulationRouteId, f32),
     Range(ModulationRouteId),
+    ToggleRoute(ModulationRouteId),
     RemoveRoute(ModulationRouteId),
 }
 
+pub(super) struct OutputMappingAvailability {
+    device: DeviceId,
+    generation: u64,
+    revision: u64,
+    eligible: bool,
+}
+
 pub(super) fn panel(
-    view: &EditorView,
+    view: &mut EditorView,
     cx: &mut Context<EditorView>,
     device: &Device,
     view_data: &NativeDeviceView,
@@ -110,13 +134,67 @@ pub(super) fn panel(
             ));
         }
     }
-    let mut body = div().flex().flex_col().gap(px(3.0)).child(header);
+    let mut body = div()
+        .flex()
+        .flex_col()
+        .flex_shrink_0()
+        .gap(px(3.0))
+        .child(header);
     let selected = view
         .device_panel
         .mapping_source
         .filter(|(device, _)| *device == id)
         .map(|(_, source)| source);
-    for source in bank.sources() {
+    if let Some(source) = selected
+        && bank.routes().len() < hex_project::MAX_MODULATION_ROUTES_PER_DEVICE
+        && !bank.routes().iter().any(|route| {
+            route.source == source
+                && matches!(
+                    route.destination,
+                    ModulationDestination::Device {
+                        target: DeviceAutomationTarget::HostOutputGain,
+                        ..
+                    }
+                )
+        })
+    {
+        let cache = &mut view.device_panel.output_mapping_availability;
+        let available = if let Some(cached) = cache.as_ref().filter(|entry| {
+            entry.device == id && entry.generation == generation && entry.revision == revision
+        }) {
+            cached.eligible
+        } else {
+            let eligible =
+                hex_engine::project_device_output_gain_modulation_supported(&state.project, id);
+            *cache = Some(OutputMappingAvailability {
+                device: id,
+                generation,
+                revision,
+                eligible,
+            });
+            eligible
+        };
+        if available {
+            body = body.child(button(
+                cx,
+                format!("map-output-gain-{}", id.value()),
+                theme::text(hex_engine::DEVICE_OUTPUT_GAIN.label),
+                Edit::Map(source, MappingTarget::HostOutput),
+            ));
+        }
+    }
+    let blocked_targets: Vec<_> = selected
+        .into_iter()
+        .flat_map(|source| bank.source_route_ancestors(source))
+        .collect();
+    let multiple_macros = bank
+        .sources()
+        .iter()
+        .filter(|source| source.state.type_id() == manual::TYPE_ID)
+        .take(2)
+        .count()
+        > 1;
+    for (slot, source) in bank.sources().iter().enumerate() {
         let source_id = source.id;
         let kind = match source.state.type_id() {
             lfo::TYPE_ID => SourceKind::Lfo,
@@ -126,6 +204,11 @@ pub(super) fn panel(
             _ => continue,
         };
         let label = kind.label();
+        let title = if multiple_macros && matches!(kind, SourceKind::Macro) {
+            format!("macro {}", slot + 1)
+        } else {
+            label.to_owned()
+        };
         let mapping = selected == Some(source_id);
         let source_key = |suffix: &str| format!("{label}-{}-{suffix}", source_id.value());
         let control = action(
@@ -145,7 +228,7 @@ pub(super) fn panel(
             .flex_wrap()
             .items_center()
             .gap(px(3.0))
-            .child(theme::text(label))
+            .child(theme::text(title))
             .child(button(
                 cx,
                 source_key("power"),
@@ -166,6 +249,12 @@ pub(super) fn panel(
                 lfo::Rate::Hertz(rate) => (rate, "hz"),
                 lfo::Rate::BeatsPerCycle(rate) => (rate, "beats"),
             };
+            let (shape, next) = match settings.waveform {
+                lfo::Waveform::Sine => ("sine", lfo::Waveform::Triangle),
+                lfo::Waveform::Triangle => ("triangle", lfo::Waveform::RisingRamp),
+                lfo::Waveform::RisingRamp => ("ramp", lfo::Waveform::Square),
+                lfo::Waveform::Square => ("square", lfo::Waveform::Sine),
+            };
             row = row
                 .child(button(
                     cx,
@@ -184,7 +273,16 @@ pub(super) fn panel(
                     source_key("faster"),
                     theme::text("+"),
                     Edit::Rate(source_id, 2.0),
-                ));
+                ))
+                .child(
+                    button(
+                        cx,
+                        source_key("waveform"),
+                        theme::text(shape),
+                        Edit::LfoShape(source_id, next),
+                    )
+                    .w(px(55.0)),
+                );
         }
         if let SourceKind::Follower = kind
             && let Ok(settings) = follower::Settings::decode(&source.state)
@@ -225,20 +323,41 @@ pub(super) fn panel(
         if let SourceKind::Macro = kind
             && let Ok(settings) = manual::Settings::decode(&source.state)
         {
-            row = row
-                .child(button(
-                    cx,
-                    source_key("less"),
-                    theme::text("−"),
-                    Edit::MacroValue(source_id, -0.05),
-                ))
-                .child(theme::text(format!("{:.0}%", settings.value * 100.0)))
-                .child(button(
-                    cx,
-                    source_key("more"),
-                    theme::text("+"),
-                    Edit::MacroValue(source_id, 0.05),
-                ));
+            let value = format!("{:.0}%", settings.value * 100.0);
+            if let Some(mapping_source) = selected.filter(|mapping_source| {
+                !blocked_targets.is_empty()
+                    && !blocked_targets.contains(&source_id)
+                    && bank.routes().len() < hex_project::MAX_MODULATION_ROUTES_PER_DEVICE
+                    && !bank.routes().iter().any(|route| {
+                        route.source == *mapping_source
+                            && route.destination == macro_destination(source_id)
+                    })
+            }) {
+                row = row.child(
+                    button(
+                        cx,
+                        format!("map-macro-{}-{}", id.value(), source_id.value()),
+                        theme::text(value),
+                        Edit::Map(mapping_source, MappingTarget::Macro(source_id)),
+                    )
+                    .border_color(rgb(theme::color(theme::PaletteRole::Primary))),
+                );
+            } else {
+                row = row
+                    .child(button(
+                        cx,
+                        source_key("less"),
+                        theme::text("−"),
+                        Edit::MacroValue(source_id, -0.05),
+                    ))
+                    .child(theme::text(value))
+                    .child(button(
+                        cx,
+                        source_key("more"),
+                        theme::text("+"),
+                        Edit::MacroValue(source_id, 0.05),
+                    ));
+            }
         }
         if let SourceKind::Random = kind
             && let Ok(settings) = random::Settings::decode(&source.state)
@@ -276,18 +395,37 @@ pub(super) fn panel(
             .iter()
             .filter(|route| route.source == source_id)
         {
-            let ModulationDestination::Device {
-                target: DeviceAutomationTarget::Parameter(parameter),
-                ..
-            } = route.destination
-            else {
-                continue;
+            let label = match route.destination {
+                ModulationDestination::Device {
+                    target: DeviceAutomationTarget::Parameter(parameter),
+                    ..
+                } => view_data
+                    .parameters
+                    .iter()
+                    .find(|row| row.descriptor.id == parameter)
+                    .map_or("unavailable", |row| row.descriptor.label)
+                    .to_owned(),
+                ModulationDestination::Device {
+                    target: DeviceAutomationTarget::HostOutputGain,
+                    ..
+                } => hex_engine::DEVICE_OUTPUT_GAIN.label.to_owned(),
+                ModulationDestination::Modulator {
+                    source,
+                    module_type: manual::TYPE_ID,
+                    parameter: manual::VALUE_PARAMETER,
+                } => {
+                    let Some(slot) = bank.sources().iter().position(|slot| slot.id == source)
+                    else {
+                        continue;
+                    };
+                    if multiple_macros {
+                        format!("macro {} value", slot + 1)
+                    } else {
+                        "macro value".to_owned()
+                    }
+                }
+                _ => continue,
             };
-            let label = view_data
-                .parameters
-                .iter()
-                .find(|row| row.descriptor.id == parameter)
-                .map_or("unavailable", |row| row.descriptor.label);
             let key = |suffix| format!("modulation-route-{}-{suffix}", route.id.value());
             let range = if route.range == ModulationRange::default() {
                 "bipolar"
@@ -322,6 +460,12 @@ pub(super) fn panel(
                     ))
                     .child(button(
                         cx,
+                        key("toggle"),
+                        theme::text(if route.enabled { "on" } else { "off" }),
+                        Edit::ToggleRoute(route.id),
+                    ))
+                    .child(button(
+                        cx,
                         key("remove"),
                         theme::text("×"),
                         Edit::RemoveRoute(route.id),
@@ -333,7 +477,10 @@ pub(super) fn panel(
         div()
             .id("device-modulator-scroll")
             .debug_selector(|| "device-modulator-scroll".into())
+            .flex()
+            .flex_col()
             .max_h(px(58.0))
+            .occlude()
             .overflow_y_scroll()
             .child(body)
             .into_any_element(),
@@ -391,7 +538,7 @@ pub(super) fn target_overlay(
                         generation,
                         revision,
                         device,
-                        Edit::Map(source, parameter),
+                        Edit::Map(source, MappingTarget::Device(parameter)),
                     );
                     cx.notify();
                 }
@@ -493,6 +640,12 @@ fn apply(
             };
             source.state = settings.encode().map_err(unsupported)?;
         }
+        Edit::LfoShape(id, waveform) => {
+            let source = find_source(&mut sources, id)?;
+            let mut settings = lfo::Settings::decode(&source.state).map_err(unsupported)?;
+            settings.waveform = waveform;
+            source.state = settings.encode().map_err(unsupported)?;
+        }
         Edit::MacroValue(id, change) => {
             let source = find_source(&mut sources, id)?;
             let mut settings = manual::Settings::decode(&source.state).map_err(unsupported)?;
@@ -526,16 +679,35 @@ fn apply(
             settings.seed = settings.seed.wrapping_add(0xd1b5_4a32_d192_ed03);
             source.state = settings.encode().map_err(unsupported)?;
         }
-        Edit::Map(source, parameter) => {
-            if !hex_engine::project_device_modulation_target_supported(project, id, parameter) {
-                return Err(Invalid(
-                    "this parameter does not support sample-rate modulation",
-                ));
-            }
-            let destination = ModulationDestination::Device {
-                device_type: device.state().type_id(),
-                target: DeviceAutomationTarget::Parameter(parameter),
-                vst3_class: None,
+        Edit::Map(source, target) => {
+            let destination = match target {
+                MappingTarget::Device(parameter) => {
+                    if !hex_engine::project_device_modulation_target_supported(
+                        project, id, parameter,
+                    ) {
+                        return Err(Invalid(
+                            "this parameter does not support sample-rate modulation",
+                        ));
+                    }
+                    ModulationDestination::Device {
+                        device_type: device.state().type_id(),
+                        target: DeviceAutomationTarget::Parameter(parameter),
+                        vst3_class: None,
+                    }
+                }
+                MappingTarget::HostOutput => {
+                    if !hex_engine::project_device_output_gain_modulation_supported(project, id) {
+                        return Err(Invalid(
+                            "this device does not support output gain modulation",
+                        ));
+                    }
+                    ModulationDestination::Device {
+                        device_type: device.state().type_id(),
+                        target: DeviceAutomationTarget::HostOutputGain,
+                        vst3_class: None,
+                    }
+                }
+                MappingTarget::Macro(target) => macro_destination(target),
             };
             if routes
                 .iter()
@@ -568,6 +740,10 @@ fn apply(
                 ModulationRange::default()
             };
         }
+        Edit::ToggleRoute(id) => {
+            let route = find_route(&mut routes, id)?;
+            route.enabled = !route.enabled;
+        }
         Edit::RemoveRoute(id) => routes.retain(|route| route.id != id),
     }
     DeviceModulation::new(
@@ -594,4 +770,66 @@ fn find_route(
         .iter_mut()
         .find(|route| route.id == id)
         .ok_or(Invalid("modulation route no longer exists"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hex_project::{Command, Created, Editor, Project};
+
+    #[test]
+    fn enabling_a_route_that_closes_a_cycle_preserves_the_existing_bank() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Device(device) = editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: hex_engine::default_native_device_state(
+                    hex_devices::utility::UTILITY_TYPE_ID,
+                )
+                .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("utility fixture");
+        };
+        for _ in 0..2 {
+            let modulation = apply(editor.project(), device, Edit::Add(SourceKind::Macro)).unwrap();
+            editor
+                .execute(Command::ReplaceDeviceModulation { device, modulation })
+                .unwrap();
+        }
+        let bank = editor.project().device(device).unwrap().modulation();
+        let [first, second] = [bank.sources()[0].id, bank.sources()[1].id];
+        let mapped = apply(
+            editor.project(),
+            device,
+            Edit::Map(first, MappingTarget::Macro(second)),
+        )
+        .unwrap();
+        let mut routes = mapped.routes().to_vec();
+        let id = ModulationRouteId::new(editor.project().next_identity() + 1).unwrap();
+        routes.push(DeviceModulationRoute {
+            id,
+            source: second,
+            destination: macro_destination(first),
+            enabled: false,
+            ..routes[0]
+        });
+        let modulation = DeviceModulation::new(mapped.sources().to_vec(), routes).unwrap();
+        editor
+            .execute(Command::ReplaceDeviceModulation {
+                device,
+                modulation: modulation.clone(),
+            })
+            .unwrap();
+
+        assert_eq!(
+            apply(editor.project(), device, Edit::ToggleRoute(id)),
+            Err(Invalid("modulation routes form a cycle")),
+        );
+        assert_eq!(
+            editor.project().device(device).unwrap().modulation(),
+            &modulation
+        );
+    }
 }

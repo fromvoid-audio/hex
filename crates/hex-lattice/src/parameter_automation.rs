@@ -80,12 +80,20 @@ impl NativeTransientOperation {
     }
 }
 
-/// Borrowed final canonical values, independent of their producing control
-/// source. The historical automation name remains the shared delivery seam for
-/// future host composition; providers never inspect envelopes or modulators.
-/// IDs remain stable throughout this borrow. None selects immutable base.
+/// Borrowed final canonical values from the host's shared composition seam.
+/// Providers receive typed values and route presence while the host owns the
+/// envelopes, modulator graph, and clocks. IDs stay stable during this borrow.
+/// None selects immutable base.
 pub trait NativeParameterAutomation {
     fn parameter_ids(&self) -> &[ParameterId];
+
+    /// Whether an active sample-rate route targets this value in the block.
+    /// A route remains present at zero offset. Authored automation alone
+    /// never reports a modulation route.
+    fn has_sample_rate_modulation(&self, _parameter: ParameterId) -> bool {
+        false
+    }
+
     /// Canonical units at this segment's sample offset. None means no authored
     /// lane or unavailable content origin; callers use their immutable base.
     fn value_at(&self, parameter: ParameterId, sample_offset: usize) -> Option<ParameterValue>;
@@ -169,18 +177,21 @@ pub struct PreparedParameterAutomationPoint {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum CanonicalValue {
     Provider(ParameterValue),
-    HostGainLinear(f32),
+    HostGain {
+        normalized: NormalizedAutomationValue,
+        linear: f32,
+    },
 }
 impl CanonicalValue {
     pub(crate) fn provider(self) -> Option<ParameterValue> {
         match self {
             Self::Provider(value) => Some(value),
-            Self::HostGainLinear(_) => None,
+            Self::HostGain { .. } => None,
         }
     }
-    fn host_gain(self) -> Option<f32> {
+    fn host_gain(self) -> Option<(NormalizedAutomationValue, f32)> {
         match self {
-            Self::HostGainLinear(value) => Some(value),
+            Self::HostGain { normalized, linear } => Some((normalized, linear)),
             Self::Provider(_) => None,
         }
     }
@@ -241,9 +252,10 @@ impl Mapping {
     }
     pub(crate) fn value(self, normalized: f32) -> Result<CanonicalValue, Error> {
         Ok(match self {
-            Self::HostGain => {
-                CanonicalValue::HostGainLinear(HostGain::from_normalized(normalized)?.linear())
-            }
+            Self::HostGain => CanonicalValue::HostGain {
+                normalized: NormalizedAutomationValue(normalized),
+                linear: HostGain::from_normalized(normalized)?.linear(),
+            },
             Self::Bool => CanonicalValue::Provider(ParameterValue::Bool(normalized >= 0.5)),
             Self::Choice { last } => CanonicalValue::Provider(ParameterValue::Choice(
                 (normalized * last as f32).round() as u32,
@@ -862,9 +874,10 @@ impl PreparedParameterAutomation {
             block.input = Some(match input {
                 NativeTransientValue::Parameter { value, .. } => CanonicalValue::Provider(value),
                 NativeTransientValue::HostInputGain(gain)
-                | NativeTransientValue::HostOutputGain(gain) => {
-                    CanonicalValue::HostGainLinear(gain.linear())
-                }
+                | NativeTransientValue::HostOutputGain(gain) => CanonicalValue::HostGain {
+                    normalized: NormalizedAutomationValue(gain.normalized()),
+                    linear: gain.linear(),
+                },
             });
         }
         Ok(block)
@@ -922,6 +935,26 @@ impl ParameterAutomationBlock<'_> {
     /// Native host gain in linear amplitude units, from the same exact integer
     /// HostGain conversion used by base state. Missing origin uses base fallback.
     pub fn host_gain_at(&self, target: DeviceAutomationTarget, offset: usize) -> Option<f32> {
+        self.host_gain_frame(target, offset)
+            .map(|(_, linear)| linear)
+    }
+
+    /// Host trim in normalized dB space before millidB rounding. This uses the
+    /// same host target, precedence and clock as the linear amplitude read.
+    pub fn host_gain_normalized_at(
+        &self,
+        target: DeviceAutomationTarget,
+        offset: usize,
+    ) -> Option<NormalizedAutomationValue> {
+        self.host_gain_frame(target, offset)
+            .map(|(normalized, _)| normalized)
+    }
+
+    fn host_gain_frame(
+        &self,
+        target: DeviceAutomationTarget,
+        offset: usize,
+    ) -> Option<(NormalizedAutomationValue, f32)> {
         if offset >= self.frames {
             return None;
         }

@@ -120,7 +120,7 @@ fn actual_root_constructs_and_retires_the_original_unsplit_native_effect() {
                 assert_eq!(effect.identity(), identity());
                 let transport = effect.transport_storage_on_control().unwrap();
                 assert_eq!(transport.shared_groups, 3);
-                assert_eq!(transport.shared_handle_bound, 7);
+                assert_eq!(transport.shared_handle_bound, 8);
                 assert!(transport.data_bytes > 0);
                 let source = effect.retained_source_storage_on_control().unwrap();
                 assert_eq!(source.shared_groups, 3);

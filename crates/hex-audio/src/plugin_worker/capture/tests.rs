@@ -3,6 +3,7 @@ use super::*;
 use crate::plugin_worker::native_tests::original_instance;
 use std::{fs, path::PathBuf, process::Command};
 mod controller;
+mod editor_pcm;
 mod parameter_change;
 mod stopped;
 

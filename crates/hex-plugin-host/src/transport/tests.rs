@@ -30,7 +30,7 @@ fn constructor_storage_requires_the_original_pair_and_survives_exchange_and_reti
             + std::mem::size_of::<RingBuffer<OutputReply>>()
             + std::mem::size_of::<Revocation>()
     );
-    assert_eq!((storage.shared_groups, storage.shared_handle_bound), (3, 7));
+    assert_eq!((storage.shared_groups, storage.shared_handle_bound), (3, 8));
     for _ in 0..4 {
         callback
             .stage(&[[0.5; 2]; 8], &[], &mut [[0.0; 2]; 8])
@@ -322,6 +322,7 @@ fn consumer_rejects_each_identity_field_and_nonfinite_or_invalid_events() {
         worker
             .replies
             .push(OutputReply {
+                editor: None,
                 block: reply,
                 manual: Some(ManualExchange {
                     input: ManualParameterInput {
@@ -364,6 +365,7 @@ fn duplicate_and_out_of_order_replies_are_terminal() {
             worker
                 .replies
                 .push(OutputReply {
+                    editor: None,
                     block: first,
                     manual: None,
                 })
@@ -441,6 +443,7 @@ fn bounded_input_validation_and_queue_independent_stop() {
                             parameter_capacity: MAX_PARAMETER_POINTS,
                             authored_program: None,
                             manual_origin: None,
+                            editor_scope: None,
                         })
                         .unwrap();
                 }
@@ -456,6 +459,7 @@ fn bounded_input_validation_and_queue_independent_stop() {
                             parameter_capacity: MAX_PARAMETER_POINTS,
                             authored_program: None,
                             manual_origin: None,
+                            editor_scope: None,
                         })
                         .unwrap();
                 }

@@ -5,8 +5,8 @@
 //! A failed consumer abandons the entire source transaction; later host failures
 //! must call `rollback` before beginning the next block.
 use crate::{
-    MAX_MODULATION_BLOCK_FRAMES, MAX_MODULATION_SOURCES, ModulationSourceBank, ModulationSourceId,
-    NativeParameterAutomation, PreparedModulation, PreparedModulationSource,
+    MAX_MODULATION_BLOCK_FRAMES, MAX_MODULATION_SOURCES, ModulationBlock, ModulationSourceBank,
+    ModulationSourceId, NativeParameterAutomation, PreparedModulation, PreparedModulationSource,
     modulation_source_routes::PreparedSourceRoute,
 };
 use hex_lattice_contract::DeviceContractError as Error;
@@ -55,6 +55,12 @@ impl ModulationRuntime {
             && self.bank.matches_prepared(sources, chunk_frames)
     }
 
+    pub(crate) fn same_declaration(&self, other: &Self) -> bool {
+        self.program == other.program
+            && self.source_routes == other.source_routes
+            && self.bank.same_declaration(&other.bank)
+    }
+
     /// Physical inline and reserved owned storage, excluding allocator metadata.
     pub fn storage_bytes(&self) -> Option<usize> {
         std::mem::size_of::<Self>().checked_add(self.heap_storage_bytes()?)
@@ -87,6 +93,10 @@ impl ModulationRuntime {
         self.bank.chunk_frames()
     }
 
+    pub(crate) fn follows_input(&self) -> bool {
+        self.bank.follows_input()
+    }
+
     pub fn begin(&mut self) {
         self.bank.begin();
     }
@@ -113,24 +123,22 @@ impl ModulationRuntime {
         consume: impl FnOnce(&dyn NativeParameterAutomation) -> Result<(), Error>,
     ) -> Result<(), Error> {
         self.render_sources(frames, upstream, clock, None)?;
-        self.consume_values(frames, upstream, consume)
+        self.consume_values(frames, upstream, |values| consume(values))
     }
 
-    /// Render against the input immediately before the owning device consumes
-    /// it. The same mutable borrow is handed to the provider after all source
-    /// reads complete. No additional PCM copy or ownership is needed.
+    /// Render against the owning device's input tap. A modulated input gain
+    /// uses the independently evaluated, unmodulated tap to avoid feedback.
+    /// Otherwise the same mutable block goes to the provider after source reads.
     pub(crate) fn render_audio_chunk(
         &mut self,
         input: &mut [crate::StereoFrame],
+        tap: Option<&[crate::StereoFrame]>,
         upstream: Option<&dyn NativeParameterAutomation>,
         clock: Option<&dyn crate::NativeInstrumentClock>,
-        consume: impl FnOnce(
-            &mut [crate::StereoFrame],
-            &dyn NativeParameterAutomation,
-        ) -> Result<(), Error>,
+        consume: impl FnOnce(&mut [crate::StereoFrame], &ModulationBlock<'_>) -> Result<(), Error>,
     ) -> Result<(), Error> {
         let frames = input.len();
-        self.render_sources(frames, upstream, clock, Some(input))?;
+        self.render_sources(frames, upstream, clock, tap.or(Some(input)))?;
         self.consume_values(frames, upstream, |values| consume(input, values))
     }
 
@@ -166,7 +174,7 @@ impl ModulationRuntime {
         &mut self,
         frames: usize,
         upstream: Option<&dyn NativeParameterAutomation>,
-        consume: impl FnOnce(&dyn NativeParameterAutomation) -> Result<(), Error>,
+        consume: impl FnOnce(&ModulationBlock<'_>) -> Result<(), Error>,
     ) -> Result<(), Error> {
         let result = (|| {
             let mut sources: [&[f32]; MAX_MODULATION_SOURCES] = [&[]; MAX_MODULATION_SOURCES];

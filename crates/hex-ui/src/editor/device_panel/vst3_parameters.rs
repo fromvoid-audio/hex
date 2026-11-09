@@ -2196,7 +2196,7 @@ fn knob_event(
         return Err("close is pending · automation recording is unavailable");
     }
     if event.phase == NumericEventPhase::Begin {
-        let key = view.device_gesture.begin_plugin(origin)?;
+        let key = view.begin_vst3_parameter_gesture(origin)?;
         *drag = Some((event.gesture.clone(), key));
         return Ok(());
     }
@@ -2204,7 +2204,7 @@ fn knob_event(
         && event.gesture.is_none()
         && view.device_gesture.snapshot().is_none()
     {
-        view.device_gesture.begin_plugin(origin)?;
+        view.begin_vst3_parameter_gesture(origin)?;
         return view.device_gesture.finish_plugin(value);
     }
     let Some((pointer, key)) = drag.as_ref() else {

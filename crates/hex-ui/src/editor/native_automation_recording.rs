@@ -14,7 +14,9 @@ use hex_engine::{NativeParameterApplication, NativeTransientValue};
 use hex_lattice_contract::{DeviceAutomationTarget, HostGain, ParameterValue};
 use hex_project::DeviceId;
 use hex_session::{
-    device_gesture::{GestureKey, GestureTarget},
+    device_gesture::{
+        GestureClient, GestureKey, GesturePhase, GestureTarget, PluginParameterOrigin,
+    },
     service::{
         DeviceAutomationTakeAction as Action, DeviceAutomationTakeProgress as Progress,
         DeviceAutomationTakeScope, Event, MAX_NATIVE_RECOVERY_CONTINUATION_EVENTS,
@@ -36,8 +38,20 @@ const _: () = assert!(
 struct Arm {
     generation: u64,
     revision: u64,
-    device: DeviceId,
-    kind: DeviceAutomationTarget,
+    target: ArmTarget,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ArmTarget {
+    Native {
+        device: DeviceId,
+        kind: DeviceAutomationTarget,
+    },
+    Vst3 {
+        device: DeviceId,
+        class: [u8; 16],
+        parameter: u32,
+    },
 }
 
 #[derive(Default)]
@@ -46,6 +60,7 @@ pub(super) struct Recorder {
     touch: Option<Touch>,
     serial: u64,
     request: u64,
+    plugin_take: Option<(GestureKey, Arm)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -327,6 +342,42 @@ impl Recorder {
         self.touch.is_some()
     }
 
+    fn begin_plugin(
+        &mut self,
+        client: &mut GestureClient,
+        origin: PluginParameterOrigin,
+        class: Option<[u8; 16]>,
+        playing: bool,
+        desired_playing: bool,
+    ) -> Result<GestureKey, &'static str> {
+        let armed = self.arm.filter(|arm| {
+            arm.generation == origin.context.project_generation
+                && class.is_some_and(|class| {
+                    arm.target
+                        == ArmTarget::Vst3 {
+                            device: origin.device,
+                            class,
+                            parameter: origin.parameter,
+                        }
+                })
+        });
+        let Some(arm) = armed else {
+            return client.begin_plugin(origin);
+        };
+        if playing != desired_playing {
+            return Err("wait for playback to settle before recording automation");
+        }
+        if !playing {
+            return client.begin_plugin(origin);
+        }
+        if arm.revision != origin.context.editor_revision {
+            return Err("automation arm changed · arm this parameter again");
+        }
+        let key = client.begin_plugin_recording(origin)?;
+        self.plugin_take = Some((key, arm));
+        Ok(key)
+    }
+
     pub(super) fn owns(&self, target: GestureTarget, key: Option<GestureKey>) -> bool {
         self.touch.as_ref().is_some_and(|touch| {
             touch.gesture == target && Some(touch.key()) == key && touch.end.is_none()
@@ -388,8 +439,7 @@ impl EditorView {
         kind: DeviceAutomationTarget,
     ) -> bool {
         self.native_automation_recorder.arm.is_some_and(|arm| {
-            arm.device == device
-                && arm.kind == kind
+            arm.target == (ArmTarget::Native { device, kind })
                 && arm.generation == self.project_generation
                 && self
                     .state
@@ -403,7 +453,9 @@ impl EditorView {
         device: DeviceId,
         kind: DeviceAutomationTarget,
     ) {
-        if self.native_automation_recorder.busy()
+        if self.automation_close_preflight.frozen()
+            || self.automation_take_recovery.unresolved()
+            || self.native_automation_recorder.busy()
             || self.gain_recorder.blocks_edits()
             || self.midi_recorder.blocks_edits()
             || self.device_gesture_pending()
@@ -428,8 +480,7 @@ impl EditorView {
         let arm = Arm {
             generation: self.project_generation,
             revision: state.revision,
-            device,
-            kind,
+            target: ArmTarget::Native { device, kind },
         };
         let selected = self.native_automation_recorder.arm != Some(arm);
         if self.enqueue(Request::ArmNativeParameterRecording {
@@ -441,10 +492,168 @@ impl EditorView {
         }
     }
 
+    pub(super) fn vst3_automation_arm_selected(
+        &self,
+        device: DeviceId,
+        class: [u8; 16],
+        parameter: u32,
+    ) -> bool {
+        self.native_automation_recorder.arm.is_some_and(|arm| {
+            arm.target
+                == (ArmTarget::Vst3 {
+                    device,
+                    class,
+                    parameter,
+                })
+                && arm.generation == self.project_generation
+                && self
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.revision == arm.revision)
+        })
+    }
+
+    pub(super) fn toggle_vst3_automation_arm(
+        &mut self,
+        device: DeviceId,
+        class: [u8; 16],
+        parameter: u32,
+    ) {
+        if self.automation_close_preflight.frozen()
+            || self.automation_take_recovery.unresolved()
+            || self.native_automation_recorder.busy()
+            || self.gain_recorder.blocks_edits()
+            || self.midi_recorder.blocks_edits()
+            || self.device_gesture_pending()
+            || self.edit_pending()
+        {
+            self.error = Some("finish the current edit or take before arming automation".into());
+            return;
+        }
+        if self.audio.is_none()
+            || self.document_audio_mode != hex_session::DocumentAudioMode::Resident
+        {
+            self.error = Some("automation recording requires ordinary playback".into());
+            return;
+        }
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let arm = Arm {
+            generation: self.project_generation,
+            revision: state.revision,
+            target: ArmTarget::Vst3 {
+                device,
+                class,
+                parameter,
+            },
+        };
+        if self.native_automation_recorder.arm.is_some_and(|current| {
+            matches!(current.target, ArmTarget::Native { .. })
+                && current.generation == arm.generation
+                && current.revision == arm.revision
+        }) && !self.enqueue(Request::ArmNativeParameterRecording {
+            project_generation: arm.generation,
+            revision: arm.revision,
+            target: None,
+        }) {
+            return;
+        }
+        self.native_automation_recorder.arm =
+            (self.native_automation_recorder.arm != Some(arm)).then_some(arm);
+    }
+
+    pub(super) fn begin_vst3_parameter_gesture(
+        &mut self,
+        origin: PluginParameterOrigin,
+    ) -> Result<GestureKey, &'static str> {
+        if self.automation_close_preflight.frozen() {
+            return Err("close is pending · automation recording is unavailable");
+        }
+        if self.native_automation_recorder.busy() || self.automation_take_recovery.unresolved() {
+            return Err("finish or recover the current automation take first");
+        }
+        let class = self
+            .state
+            .as_ref()
+            .and_then(|state| state.project.device(origin.device))
+            .and_then(|device| hex_session::service::vst3_automation_class(device.state()));
+        let playing = self
+            .audio
+            .as_ref()
+            .and_then(|audio| audio.status())
+            .is_some_and(|status| status.playing.load(Acquire));
+        let desired_playing = self.play_intent.desired_playing(playing);
+        self.native_automation_recorder.begin_plugin(
+            &mut self.device_gesture,
+            origin,
+            class,
+            playing,
+            desired_playing,
+        )
+    }
+
+    pub(super) fn owns_vst3_recording(&self, key: GestureKey) -> bool {
+        self.native_automation_recorder
+            .plugin_take
+            .is_some_and(|(recording, _)| recording == key)
+    }
+
+    pub(super) fn observe_vst3_automation_arm(
+        &mut self,
+        project_replaced: bool,
+        ack: Option<&hex_session::device_gesture::GestureAck>,
+        active: bool,
+        revision: u64,
+    ) {
+        let Some((key, mut arm)) = self.native_automation_recorder.plugin_take else {
+            return;
+        };
+        if project_replaced {
+            self.native_automation_recorder.plugin_take = None;
+            return;
+        }
+        let Some(ack) = ack.filter(|ack| ack.key == key) else {
+            return;
+        };
+        if active {
+            return;
+        }
+        self.native_automation_recorder.plugin_take = None;
+        if ack.accepted
+            && ack.phase == GesturePhase::Commit
+            && arm.revision.checked_add(1) == Some(revision)
+            && self.native_automation_recorder.arm == Some(arm)
+        {
+            arm.revision = revision;
+            self.native_automation_recorder.arm = Some(arm);
+        }
+    }
+
     pub(super) fn begin_native_automation_touch(
         &mut self,
         gesture: GestureTarget,
         value: ParameterValue,
+    ) -> Result<Option<GestureKey>, &'static str> {
+        self.begin_native_automation(gesture, value, None)
+    }
+
+    /// A discrete widget owns one value and no ongoing pointer gesture. Mark
+    /// release at admission; the recorder still waits for its actual Set receipt.
+    pub(super) fn begin_native_automation_step(
+        &mut self,
+        gesture: GestureTarget,
+        value: ParameterValue,
+    ) -> Result<bool, &'static str> {
+        self.begin_native_automation(gesture, value, Some(End::Release))
+            .map(|key| key.is_some())
+    }
+
+    fn begin_native_automation(
+        &mut self,
+        gesture: GestureTarget,
+        value: ParameterValue,
+        end: Option<End>,
     ) -> Result<Option<GestureKey>, &'static str> {
         if self.automation_close_preflight.frozen() {
             return Err("close is pending · automation recording is unavailable");
@@ -456,9 +665,12 @@ impl EditorView {
             return Ok(None);
         };
         let kind = automation_target(parameter);
-        if !self.native_automation_arm_selected(device, kind) {
+        let Some(arm) = self.native_automation_recorder.arm.filter(|arm| {
+            arm.target == (ArmTarget::Native { device, kind })
+                && arm.generation == self.project_generation
+        }) else {
             return Ok(None);
-        }
+        };
         let audio = self
             .audio
             .as_ref()
@@ -466,8 +678,15 @@ impl EditorView {
         let status = audio
             .status()
             .ok_or("automation recording output is unavailable")?;
-        if !status.playing.load(Acquire) {
+        let playing = status.playing.load(Acquire);
+        if self.play_intent.desired_playing(playing) != playing {
+            return Err("wait for playback to settle before recording automation");
+        }
+        if !playing {
             return Ok(None);
+        }
+        if self.automation_take_recovery.unresolved() {
+            return Err("finish or recover the current automation take first");
         }
         if self.device_gesture_pending()
             || self.gain_recorder.blocks_edits()
@@ -479,6 +698,9 @@ impl EditorView {
             .state
             .as_ref()
             .ok_or("automation source is unavailable")?;
+        if state.revision != arm.revision {
+            return Err("automation arm changed · arm this parameter again");
+        }
         let input = hex_engine::native_parameter_input_target(&state.project, device, kind)
             .map_err(|error| error.0)?;
         let source = status
@@ -540,7 +762,7 @@ impl EditorView {
             phase: Phase::Starting,
             latest: value,
             pending: Some(pending),
-            end: None,
+            end,
             end_sent: None,
             issued_sequence: 0,
             delivered_sequence: 0,
@@ -662,8 +884,11 @@ impl EditorView {
                 if let Some(arm) = self.native_automation_recorder.arm.as_mut()
                     && arm.generation == touch.scope.stamp.project_generation
                     && arm.revision == touch.scope.stamp.editor_revision
-                    && arm.device == touch.audio.input.device()
-                    && arm.kind == touch.audio.input.target()
+                    && arm.target
+                        == (ArmTarget::Native {
+                            device: touch.audio.input.device(),
+                            kind: touch.audio.input.target(),
+                        })
                     && arm.revision.checked_add(1) == Some(event.state.revision)
                 {
                     arm.revision = event.state.revision;
@@ -854,6 +1079,96 @@ mod tests {
             retired: None,
             retired_batch: None,
             retired_read: 0,
+        }
+    }
+
+    #[test]
+    fn only_an_exact_armed_playing_vst3_target_uses_the_recording_gesture() {
+        use hex_session::device_gesture::{GestureRequest, PluginParameterValue};
+
+        let device = touch().audio.input.device();
+        let class = [9; 16];
+        let origin = PluginParameterOrigin {
+            context: AudioSourceContext {
+                project_generation: 1,
+                editor_revision: 3,
+            },
+            device,
+            parameter: 0,
+            page_first: 0,
+            metadata_revision: 4,
+            initial: PluginParameterValue::new(0.25).unwrap(),
+        };
+        let arm = Arm {
+            generation: 1,
+            revision: 3,
+            target: ArmTarget::Vst3 {
+                device,
+                class,
+                parameter: 0,
+            },
+        };
+        for (armed, selected_class, playing, desired, expected) in [
+            (Some(arm), Some(class), true, true, Ok(true)),
+            (Some(arm), Some(class), false, false, Ok(false)),
+            (None, Some(class), true, true, Ok(false)),
+            (Some(arm), Some([8; 16]), true, true, Ok(false)),
+            (
+                Some(Arm {
+                    generation: 0,
+                    ..arm
+                }),
+                Some(class),
+                true,
+                true,
+                Ok(false),
+            ),
+            (
+                Some(Arm { revision: 2, ..arm }),
+                Some(class),
+                true,
+                true,
+                Err("automation arm changed · arm this parameter again"),
+            ),
+            (
+                Some(arm),
+                Some(class),
+                true,
+                false,
+                Err("wait for playback to settle before recording automation"),
+            ),
+        ] {
+            let mut recorder = Recorder {
+                arm: armed,
+                ..Recorder::default()
+            };
+            let mut client = GestureClient::default();
+            let result =
+                recorder.begin_plugin(&mut client, origin, selected_class, playing, desired);
+            match expected {
+                Ok(expected) => {
+                    let key = result.unwrap();
+                    assert_eq!(
+                        client.next_request(),
+                        Some(GestureRequest::BeginPlugin {
+                            key,
+                            origin,
+                            recording: expected,
+                        })
+                    );
+                    assert_eq!(
+                        recorder.plugin_take.map(|(owner, _)| owner),
+                        expected.then_some(key)
+                    );
+                }
+                Err(reason) => {
+                    assert_eq!(result, Err(reason));
+                    assert!(
+                        client.next_request().is_none(),
+                        "refusal must not enqueue a scalar edit"
+                    );
+                }
+            }
         }
     }
 

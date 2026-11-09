@@ -28,7 +28,7 @@ pub fn channel_storage_bound() -> Option<ConstructorStorage> {
             .checked_add(reply_ring)?
             .checked_add(std::mem::size_of::<Revocation>())?,
         shared_groups: 3,
-        shared_handle_bound: 7,
+        shared_handle_bound: 8,
     })
 }
 
@@ -36,8 +36,8 @@ impl Callback {
     /// Visit only this channel's actual rings and revocation payload. Equal
     /// binding/quantum values from another construction do not establish pairing.
     /// Revocation or a returned worker does not reclaim these retained backings.
-    /// The handle bound includes both original ring endpoints and all three
-    /// private revocation handles, independently of current queue occupancy.
+    /// The handle bound includes both original ring endpoints and up to four
+    /// private revocation handles (including one optional editor scope), independently of current queue occupancy.
     pub fn constructor_storage_on_control(&self, control: &Control) -> Option<ConstructorStorage> {
         if !self.matches_control(control) {
             return None;
@@ -52,7 +52,7 @@ impl Callback {
                 .checked_add(ring_bytes(self.replies.buffer())?)?
                 .checked_add(std::mem::size_of_val(self.revoked.as_ref()))?,
             shared_groups: 3,
-            shared_handle_bound: 7,
+            shared_handle_bound: 8,
         })
     }
 }
