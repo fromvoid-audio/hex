@@ -114,6 +114,9 @@ pub struct ForeignAutomationSource<'a> {
     pub class: [u8; 16],
     pub sample_rate: u32,
     pub quantum_frames: u16,
+    /// Raw continuous ID with a reserved dense lane on this exact effect.
+    /// Ordinary effects and all instruments expose no reservation here.
+    pub dense_parameter: Option<u32>,
     /// Strictly increasing raw parameter IDs.
     pub parameters: &'a [ForeignParameterCapability],
 }

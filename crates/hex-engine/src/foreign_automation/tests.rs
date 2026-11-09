@@ -411,6 +411,7 @@ fn bound_program_requires_the_source_rate_and_preserves_the_worker_revision() {
         class: CLASS,
         sample_rate: 8000,
         quantum_frames: 8,
+        dense_parameter: None,
         parameters: &capabilities,
     };
     let tempo = tempo();
@@ -636,4 +637,65 @@ fn sparse_authored_curves_share_the_instrument_quantum_without_losing_samples() 
             );
         }
     }
+}
+
+#[test]
+fn a_dense_raw_id_has_no_sparse_base_and_refuses_an_active_envelope() {
+    let capabilities = [
+        ParameterCapability {
+            id: 0,
+            steps: 0,
+            normalized_base_bits: 0.25_f64.to_bits(),
+        },
+        ParameterCapability {
+            id: 7,
+            steps: 0,
+            normalized_base_bits: 0.375_f64.to_bits(),
+        },
+    ];
+    let source = hex_lattice::ForeignAutomationSource {
+        binding: ForeignProcessorBinding {
+            root: 1,
+            instance: 2,
+            graph: 3,
+            epoch: 4,
+        },
+        revision: std::num::NonZeroU64::MIN,
+        class: CLASS,
+        sample_rate: 8_000,
+        quantum_frames: 8,
+        dense_parameter: Some(0),
+        parameters: &capabilities,
+    };
+    let tempo = tempo();
+    let profile = QuantumProfile::arbitrary(8, 1);
+    let program = Program::prepare_source(&[], source, &tempo, profile)
+        .unwrap()
+        .unwrap();
+    let mut output = [ForeignParameterPoint::default(); 8];
+    let used = hex_lattice::ForeignAutomationProgram::render_quantum(
+        &program,
+        &std::array::from_fn::<_, 8, _>(|frame| Some(frame as u64)),
+        &[],
+        &mut output,
+    )
+    .unwrap();
+    assert_eq!(
+        &output[..used],
+        &[ForeignParameterPoint {
+            frame: 0,
+            id: 7,
+            normalized: 0.375
+        }]
+    );
+    let mapped_envelope = lane(
+        0,
+        vec![point(BeatTime::ZERO, 0.25, AutomationInterpolation::Step)],
+    );
+    assert!(Program::prepare_source(&[mapped_envelope], source, &tempo, profile).is_err());
+    let wrong = hex_lattice::ForeignAutomationSource {
+        dense_parameter: Some(2),
+        ..source
+    };
+    assert!(Program::prepare_source(&[], wrong, &tempo, profile).is_err());
 }

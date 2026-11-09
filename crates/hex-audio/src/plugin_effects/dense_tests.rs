@@ -11,7 +11,7 @@ const BINDING: Binding = Binding {
     epoch: 1,
 };
 
-fn fixture_child(profile: &str) -> bool {
+pub(super) fn fixture_child(profile: &str) -> bool {
     const CHILD: &str = "HEX_AUDIO_NATIVE_DENSE_EFFECT_CHILD";
     if std::env::var_os(CHILD).is_some() {
         return false;

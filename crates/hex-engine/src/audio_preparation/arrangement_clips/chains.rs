@@ -693,6 +693,13 @@ impl ChainCustody {
             };
             let modulation = modulation
                 .map(|plan| {
+                    if let (Some(effects), Some(foreign)) = (effects, foreign) {
+                        let identity = ProcessorInstanceIdentity::new(owner, device.id().value())
+                            .map_err(|_| AudioStorageError::SourceMismatch)?;
+                        return plan
+                            .prepare_foreign(device, identity, effects, foreign, rate)
+                            .map_err(|_| AudioStorageError::UnsupportedGraph);
+                    }
                     let metadata: &dyn NativeDeviceMetadata = if utility {
                         definition
                     } else if saturator {
@@ -717,9 +724,11 @@ impl ChainCustody {
                         return Err(AudioStorageError::UnsupportedGraph);
                     };
                     plan.prepare(&configuration, metadata, factory.as_ref())
+                        .map(Some)
                         .map_err(|_| AudioStorageError::UnsupportedGraph)
                 })
-                .transpose()?;
+                .transpose()?
+                .flatten();
             let modulation_bytes = modulation
                 .as_ref()
                 .map(|value| {
