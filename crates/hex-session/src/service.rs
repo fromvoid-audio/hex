@@ -37,9 +37,10 @@ mod native_automation_recording;
 pub use native_automation_recording::{
     DeviceAutomationSource, DeviceAutomationTakeAction, DeviceAutomationTakeCompletion,
     DeviceAutomationTakeProgress, DeviceAutomationTakeScope, DeviceCaptureTarget,
-    FailedPluginContinuation, copy_failed_plugin_on_control,
-    copy_failed_plugin_with_receipt_on_control, prepare_failed_plugin_continuation,
-    prepare_verified_vst3_recovery_on_control,
+    FailedPluginContinuation, MAX_NATIVE_RECOVERY_CONTINUATION_EVENTS, NativeRecoveryContinuation,
+    NativeRecoveryTerminal, copy_failed_plugin_on_control,
+    copy_failed_plugin_with_receipt_on_control, copy_native_recovery_on_control,
+    prepare_failed_plugin_continuation, prepare_verified_vst3_recovery_on_control,
 };
 #[cfg(test)]
 mod busy_reason_tests;
