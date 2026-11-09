@@ -191,6 +191,7 @@ fn saved_source_routes_deliver_sample_rate_pcm_and_preserve_authored_macro_value
             state: lfo::Settings {
                 rate: lfo::Rate::Hertz(12_000.0),
                 phase: 0.0,
+                ..lfo::Settings::default()
             }
             .encode()
             .unwrap(),
