@@ -120,6 +120,19 @@ impl ChainCustody {
                         hex_devices::saturator::PreparedSaturator,
                     >::declared_parts())?),
                 )
+            } else if state.type_id() == hex_devices::overdrive::OVERDRIVE_TYPE_ID {
+                let migrated = hex_devices::overdrive::OVERDRIVE_DEFINITION
+                    .migrate_state(state)
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                hex_devices::overdrive::OverdriveDefinition::prepare_owned(&migrated, rate, &[])
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                largest_copy = largest_copy.max(migrated.payload().len());
+                (
+                    migrated.payload().len(),
+                    Some(parts(OwnedShared::<
+                        hex_devices::overdrive::PreparedOverdrive,
+                    >::declared_parts())?),
+                )
             } else if state.type_id() == hex_devices::auto_pan::AUTO_PAN_TYPE_ID {
                 let migrated = hex_devices::auto_pan::AUTO_PAN_DEFINITION
                     .migrate_state(state)
@@ -324,11 +337,12 @@ impl ChainCustody {
             let reverb = device.state().type_id() == hex_devices::reverb::REVERB_TYPE_ID;
             let saturator = device.state().type_id() == hex_devices::saturator::SATURATOR_TYPE_ID;
             let auto_pan = device.state().type_id() == hex_devices::auto_pan::AUTO_PAN_TYPE_ID;
-            let native = utility || reverb || saturator || auto_pan;
+            let overdrive = device.state().type_id() == hex_devices::overdrive::OVERDRIVE_TYPE_ID;
+            let native = utility || reverb || saturator || auto_pan || overdrive;
             let definition = &hex_devices::utility::UTILITY_DEFINITION;
             // Never adopt a provider's state/processor owner. The Utility,
-            // Reverb, Saturator and Auto Pan constructors are closed; foreign factories return scalar facts
-            // only, matched later to the audio owner's original source.
+            // Reverb, Saturator, Auto Pan and Overdrive constructors are closed.
+            // Foreign factories return scalar facts matched to the original source.
             let foreign_definition = if native {
                 None
             } else {
@@ -338,7 +352,12 @@ impl ChainCustody {
                         .ok_or(AudioStorageError::UnsupportedGraph)?,
                 )
             };
-            let migrated = if auto_pan {
+            let migrated = if overdrive {
+                hex_devices::overdrive::OVERDRIVE_DEFINITION
+                    .migrate_state(device.state())
+                    .and_then(|state| state.with_host_metadata_from(device.state()))
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?
+            } else if auto_pan {
                 hex_devices::auto_pan::AUTO_PAN_DEFINITION
                     .migrate_state(device.state())
                     .and_then(|state| state.with_host_metadata_from(device.state()))
@@ -410,7 +429,13 @@ impl ChainCustody {
                 || automation.parameter_ids(),
                 EffectModulation::parameter_ids,
             );
-            let matrix = if bypassed || !native || !parameters.is_empty() || saturator || auto_pan {
+            let matrix = if bypassed
+                || !native
+                || !parameters.is_empty()
+                || saturator
+                || auto_pan
+                || overdrive
+            {
                 StereoMatrix::identity()
             } else if reverb {
                 hex_devices::reverb::REVERB_DEFINITION
@@ -432,7 +457,17 @@ impl ChainCustody {
                     .then(trim)
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?;
             }
-            let processor = if auto_pan {
+            let processor = if overdrive {
+                Some(
+                    OwnedShared::new_owned(
+                        hex_devices::overdrive::OverdriveDefinition::prepare_owned(
+                            &migrated, rate, parameters,
+                        )
+                        .map_err(|_| AudioStorageError::UnsupportedGraph)?,
+                    )
+                    .into_processor_parts_on_control(),
+                )
+            } else if auto_pan {
                 Some(
                     OwnedShared::new_owned(
                         hex_devices::auto_pan::AutoPanDefinition::prepare_owned(
@@ -505,6 +540,8 @@ impl ChainCustody {
                         &hex_devices::saturator::SATURATOR_DEFINITION
                     } else if auto_pan {
                         &hex_devices::auto_pan::AUTO_PAN_DEFINITION
+                    } else if overdrive {
+                        &hex_devices::overdrive::OVERDRIVE_DEFINITION
                     } else if reverb {
                         &hex_devices::reverb::REVERB_DEFINITION
                     } else {
