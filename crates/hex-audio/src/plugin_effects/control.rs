@@ -130,7 +130,12 @@ impl NativeEffect {
         scope: std::num::NonZeroU64,
         touch: Option<crate::foreign_parameter_delivery::editor::TouchAdmission<'_>>,
     ) -> Result<(hex_plugin_host::transport::EditorScope, u16), &'static str> {
-        arm_editor(&mut self.worker, &self.configuration.authored, scope, touch)
+        arm_editor(
+            &mut self.worker,
+            &self.callback.configuration.authored,
+            scope,
+            touch,
+        )
     }
 
     pub(crate) fn poll_parameter_edits(
