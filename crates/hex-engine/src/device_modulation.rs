@@ -62,6 +62,19 @@ pub fn project_device_modulation_target_supported(
         return false;
     };
     let state = device.state();
+    let migrated;
+    let state = if state.state_version() == definition.state_version() {
+        state
+    } else {
+        let Ok(current) = definition
+            .migrate_state(state)
+            .and_then(|current| current.with_host_metadata_from(state))
+        else {
+            return false;
+        };
+        migrated = current;
+        &migrated
+    };
     hex_lattice_contract::validated_parameter_semantics(definition, state, parameter)
         .ok()
         .flatten()
@@ -110,6 +123,11 @@ fn source_provider_mapping_supported(state: &NativeDeviceState, parameter: Param
     id == hex_devices::auto_pan::AUTO_PAN_TYPE_ID
         || id == hex_devices::gate::GATE_TYPE_ID
         || id == hex_devices::compressor::COMPRESSOR_TYPE_ID
+        || id == hex_devices::delay::TYPE_ID
+            && matches!(
+                parameter,
+                hex_devices::delay::FEEDBACK | hex_devices::delay::DRY_WET
+            )
         || id == hex_devices::reverb::REVERB_TYPE_ID
         || id == hex_devices::utility::UTILITY_TYPE_ID
             && hex_devices::utility::UtilityDefinition::supports_source_matrix_modulation(
