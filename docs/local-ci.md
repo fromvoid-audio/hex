@@ -111,6 +111,19 @@ They are intentionally absent from the default and `ui-test-support` library
 runs; the full and merge
 plans explicitly select the unit target when required. The existing ignored
 dense-scene benchmark can be selected on that target with `--release -- --ignored`.
+Timeline geometry and signed viewport tests use the same feature in the
+`unit_timeline` target. Run it with:
+
+```sh
+cargo test -p hex-ui --features ui-unit-tier --test unit_timeline --locked
+```
+
+The merge selector also runs this target for changes to its viewport dependency.
+Session route view-state tests use:
+
+```sh
+cargo test -p hex-ui --features ui-unit-tier --test unit_session --locked
+```
 Other `hex-ui` tests have not yet been classified into separate tiers; in
 particular, the real-window receipt and delayed-acknowledgement tests remain in
 the `ui-test-support` library suite.
