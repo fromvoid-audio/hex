@@ -992,3 +992,75 @@ fn loaded_sampler_bank_migrates_opaque_inventory_and_saves_with_its_new_reader_f
     assert!(crate::decode(&serde_json::to_vec(&missing_bank).unwrap()).is_err());
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn math_schema_preserves_two_named_inputs_and_requires_reader_upgrade() {
+    let mut editor = Editor::new(legacy_fixture(), 8).unwrap();
+    let device = editor.project().main_devices()[0].id();
+    let root = temp_dir();
+    let prior_path = root.join("prior.hex");
+    crate::save_new(&prior_path, editor.project()).unwrap();
+    let original = std::fs::read(&prior_path).unwrap();
+    let token = crate::load_with_token(&prior_path).unwrap().1;
+    let next = editor.project().next_identity();
+    let id = |offset| ModulationSourceId::new(next + offset).unwrap();
+    let math_type = DeviceTypeId::from_static("hex.modulator.math");
+    let mut payload = vec![2];
+    payload.extend_from_slice(&(-0.25_f32).to_le_bytes());
+    payload.extend_from_slice(&0.625_f32.to_le_bytes());
+    let slot = |id, state| Modulator {
+        id,
+        state,
+        color: ElementColor::Cyan,
+        enabled: true,
+    };
+    let slots = vec![
+        slot(
+            id(0),
+            NativeDeviceState::new(math_type, 1, payload).unwrap(),
+        ),
+        slot(
+            id(1),
+            NativeDeviceState::new(
+                DeviceTypeId::from_static("hex.modulator.macro"),
+                1,
+                0.25_f32.to_le_bytes().to_vec(),
+            )
+            .unwrap(),
+        ),
+    ];
+    let routes = (1..=2)
+        .map(|index| DeviceModulationRoute {
+            id: ModulationRouteId::new(next + u64::from(index) + 1).unwrap(),
+            source: id(1),
+            output: ModulationOutputId::MAIN,
+            destination: ModulationDestination::Modulator {
+                source: id(0),
+                module_type: math_type,
+                parameter: ParameterId::from_static(index),
+            },
+            amount: ModulationAmount::new(if index == 1 { 0.25 } else { -0.25 }).unwrap(),
+            range: ModulationRange::default(),
+            enabled: true,
+        })
+        .collect();
+    let modulation = DeviceModulation::new(slots, routes).unwrap();
+    editor
+        .execute(Command::ReplaceDeviceModulation { device, modulation })
+        .unwrap();
+    let project = editor.project();
+    assert_eq!(
+        crate::schema_version_for(project),
+        crate::MATH_MODULATOR_SCHEMA_VERSION
+    );
+    assert!(token.requires_save_confirmation(project).unwrap());
+    let path = root.join("math.hex");
+    crate::save_new(&path, project).unwrap();
+    assert_eq!(crate::load(&path).unwrap(), *project);
+    assert_eq!(std::fs::read(&prior_path).unwrap(), original);
+    let mut wrong: serde_json::Value =
+        serde_json::from_slice(&crate::encode(project).unwrap()).unwrap();
+    wrong["version"] = crate::MODULATION_SLOT_COLOR_SCHEMA_VERSION.into();
+    assert!(crate::decode(&serde_json::to_vec(&wrong).unwrap()).is_err());
+    std::fs::remove_dir_all(root).unwrap();
+}
