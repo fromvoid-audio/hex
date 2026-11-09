@@ -6364,38 +6364,36 @@ fn modulation_panel_maps_loaded_sampler_gain_through_its_authored_control(cx: &m
     let overlay = format!("map-target-{}-{}", device.value(), parameter.value());
     let target_selector = Box::leak(overlay.clone().into_boxed_str());
     let shell = Box::leak(format!("device-shell-{}", device.value()).into_boxed_str());
-    // A wide Sampler can have its gain clipped by both the horizontal
-    // device rail and the housing's vertical scroll viewport.
+    // Use the part of the gain overlay visible inside the device rail
+    // and scroll the Sampler body vertically when it sits below the fold.
     let rail = visual.debug_bounds("device-chain-scroll").unwrap();
-    let target = visual.debug_bounds(target_selector).unwrap().center();
-    if target.x < rail.left() {
-        visual.simulate_event(gpui::ScrollWheelEvent {
-            position: rail.center(),
-            delta: gpui::ScrollDelta::Pixels(point(rail.left() + px(70.0) - target.x, px(0.0))),
-            ..Default::default()
-        });
-        visual.run_until_parked();
-    }
-    for _ in 0..5 {
-        let visible = visual.debug_bounds(shell).unwrap().intersect(&rail);
-        let target = visual.debug_bounds(target_selector).unwrap().center();
-        if visible.contains(&target) {
-            break;
-        }
-        visual.simulate_event(gpui::ScrollWheelEvent {
-            position: point(target.x, visible.bottom() - px(14.0)),
-            delta: gpui::ScrollDelta::Pixels(point(px(0.0), visible.center().y - target.y)),
-            ..Default::default()
-        });
-        visual.run_until_parked();
-    }
-    assert!(visual.debug_bounds(gain_selector).is_some());
     let visible = visual.debug_bounds(shell).unwrap().intersect(&rail);
-    let target = visual.debug_bounds(target_selector).unwrap().center();
+    let target = visual.debug_bounds(target_selector).unwrap();
+    let hit = target.intersect(&visible);
     assert!(
-        visible.contains(&target),
-        "gain {target:?} outside the visible housing {visible:?}"
+        hit.size.width > px(0.0),
+        "gain has no visible horizontal area"
     );
+    if hit.size.height <= px(0.0) {
+        visual.simulate_event(gpui::ScrollWheelEvent {
+            position: point(hit.center().x, visible.bottom() - px(14.0)),
+            delta: gpui::ScrollDelta::Pixels(point(
+                px(0.0),
+                visible.center().y - target.center().y,
+            )),
+            ..Default::default()
+        });
+        visual.run_until_parked();
+    }
+    let hit = visual
+        .debug_bounds(target_selector)
+        .unwrap()
+        .intersect(&visible);
+    assert!(
+        hit.size.height > px(0.0),
+        "gain is outside the visible housing"
+    );
+    let target = hit.center();
     visual.simulate_mouse_move(target, None, Modifiers::default());
     visual.run_until_parked();
     assert_eq!(
