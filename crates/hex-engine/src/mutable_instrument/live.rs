@@ -186,6 +186,10 @@ impl MutableInstrumentTrackRuntime {
             .is_none_or(|ledger| ledger.committed_gates_released())
     }
 
+    pub(crate) fn supports_note_pressure(&self) -> bool {
+        self.pair.supports_note_pressure()
+    }
+
     pub(crate) fn validates_live_note(&self, pitch: u8, velocity: u8) -> bool {
         let Some(occurrence_id) = self.next_id.checked_add(1) else {
             return false;
@@ -251,6 +255,7 @@ impl MutableInstrumentTrackRuntime {
         let capacity = self
             .max_active_occurrences()
             .min(MAX_MUTABLE_OCCURRENCE_PROOFS);
+        let supports_pressure = self.supports_note_pressure();
         let live = self
             .live
             .as_mut()
@@ -258,8 +263,36 @@ impl MutableInstrumentTrackRuntime {
         live.expire();
         for &event in transitions {
             match event {
-                NativeInstrumentEvent::Expression { .. }
-                | NativeInstrumentEvent::NotePressure { .. } => live.push(event)?,
+                NativeInstrumentEvent::Expression { .. } => live.push(event)?,
+                NativeInstrumentEvent::NotePressure {
+                    frame_offset,
+                    occurrence_id: token,
+                    value,
+                } => {
+                    if !supports_pressure {
+                        continue;
+                    }
+                    // Resolve a producer's local token in its exact input generation.
+                    // A detached, released or stale input cannot modify another voice.
+                    if let Some(occurrence_id) = live
+                        .scratch
+                        .iter()
+                        .flatten()
+                        .find(|voice| {
+                            voice.input == input
+                                && voice.token == token.get()
+                                && voice.quiet_age.is_none()
+                                && !voice.release_requested
+                        })
+                        .and_then(|voice| std::num::NonZeroU64::new(voice.id))
+                    {
+                        live.push(NativeInstrumentEvent::NotePressure {
+                            frame_offset,
+                            occurrence_id,
+                            value,
+                        })?;
+                    }
+                }
                 NativeInstrumentEvent::NoteOff {
                     frame_offset,
                     occurrence_id: token,

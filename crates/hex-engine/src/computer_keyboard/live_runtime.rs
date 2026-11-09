@@ -245,6 +245,41 @@ impl ComputerKeyboardRuntime {
                 pitch,
                 velocity,
             } => (channel, pitch, velocity),
+            LiveNoteEvent::PolyPressure {
+                channel,
+                pitch,
+                value,
+            } => {
+                let supported = self.source_input.as_ref().map_or_else(
+                    || {
+                        self.mutable
+                            .as_ref()
+                            .is_some_and(NativeInstrumentRuntimePair::supports_note_pressure)
+                    },
+                    |source| source.note_pressure,
+                );
+                if supported {
+                    let source = VoiceSource::Hardware { channel, pitch };
+                    if let Some(occurrence_id) = self
+                        .scratch
+                        .iter()
+                        .flatten()
+                        .find(|voice| voice.source == source && voice.gate.is_none())
+                        .and_then(|voice| std::num::NonZeroU64::new(voice.id))
+                    {
+                        let slot = events
+                            .get_mut(*len)
+                            .ok_or(Invalid("live note event capacity is unavailable"))?;
+                        *slot = NativeInstrumentEvent::NotePressure {
+                            frame_offset: 0,
+                            occurrence_id,
+                            value,
+                        };
+                        *len += 1;
+                    }
+                }
+                return Ok(());
+            }
         };
         let source = VoiceSource::Hardware { channel, pitch };
         // Repeated same-key on releases the prior occurrence before retriggering.
