@@ -5,8 +5,9 @@ use crate::context_menu::{MenuItem, PopupMenu};
 use crate::editor::context_menu::EditorContextAction;
 use gpui::{AnyElement, Point, SharedString};
 use hex_engine::{
-    audio_rate_modulator as audio_rate, follower_modulator as follower, lfo_modulator as lfo,
-    macro_modulator as manual, note_pressure_modulator as pressure, random_modulator as random,
+    audio_rate_modulator as audio_rate, button_modulator as manual_button,
+    follower_modulator as follower, lfo_modulator as lfo, macro_modulator as manual,
+    note_pressure_modulator as pressure, random_modulator as random,
 };
 use hex_lattice_contract::{ParameterId, ParameterModulation};
 use hex_project::{
@@ -23,16 +24,18 @@ enum SourceKind {
     Random,
     AudioRate,
     NotePressure,
+    Button,
 }
 
 impl SourceKind {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::Lfo,
         Self::Follower,
         Self::Macro,
         Self::Random,
         Self::AudioRate,
         Self::NotePressure,
+        Self::Button,
     ];
 
     fn label(self) -> &'static str {
@@ -43,6 +46,7 @@ impl SourceKind {
             Self::Random => "random",
             Self::AudioRate => "audio rate",
             Self::NotePressure => "note pressure",
+            Self::Button => "button",
         }
     }
 
@@ -55,6 +59,7 @@ impl SourceKind {
             Self::Follower => follower::Settings::default().encode(),
             Self::AudioRate => audio_rate::default_state(),
             Self::NotePressure => pressure::default_state(),
+            Self::Button => manual_button::encode(false),
             Self::Macro => manual::Settings::default().encode(),
             Self::Random => random::Settings {
                 seed: identity,
@@ -116,6 +121,7 @@ fn lfo_rate_destination(source: ModulationSourceId) -> ModulationDestination {
 enum Edit {
     Add(SourceKind),
     ToggleSource(ModulationSourceId),
+    ToggleButton(ModulationSourceId),
     DuplicateSource(ModulationSourceId),
     RemoveSource(ModulationSourceId),
     Rate(ModulationSourceId, f64),
@@ -445,6 +451,7 @@ pub(super) fn panel(
             random::TYPE_ID => SourceKind::Random,
             audio_rate::TYPE_ID => SourceKind::AudioRate,
             pressure::TYPE_ID => SourceKind::NotePressure,
+            manual_button::TYPE_ID => SourceKind::Button,
             _ => continue,
         };
         let label = kind.label();
@@ -500,6 +507,16 @@ pub(super) fn panel(
                 theme::text("×"),
                 Edit::RemoveSource(source_id),
             ));
+        if matches!(kind, SourceKind::Button)
+            && let Ok(on) = manual_button::decode(&source.state)
+        {
+            row = row.child(button(
+                cx,
+                source_key("value"),
+                theme::text(if on { "output on" } else { "output off" }),
+                Edit::ToggleButton(source_id),
+            ));
+        }
         if matches!(kind, SourceKind::NotePressure) {
             row = row.child(theme::text("one carrier"));
         }
@@ -748,12 +765,9 @@ pub(super) fn panel(
                         theme::text("+"),
                         Edit::Adjust(route.id, 0.05),
                     ))
-                    .child(button(
-                        cx,
-                        key("range"),
-                        theme::text(range),
-                        Edit::Range(route.id),
-                    ))
+                    .children((!matches!(kind, SourceKind::Button)).then(|| {
+                        button(cx, key("range"), theme::text(range), Edit::Range(route.id))
+                    }))
                     .child(button(
                         cx,
                         key("toggle"),
@@ -860,6 +874,12 @@ fn is_pressure_source(sources: &[Modulator], id: ModulationSourceId) -> bool {
         .any(|source| source.id == id && source.state.type_id() == pressure::TYPE_ID)
 }
 
+fn is_button_source(sources: &[Modulator], id: ModulationSourceId) -> bool {
+    sources
+        .iter()
+        .any(|source| source.id == id && source.state.type_id() == manual_button::TYPE_ID)
+}
+
 fn unipolar_range() -> Result<ModulationRange, Invalid> {
     Ok(ModulationRange {
         start: ModulationAmount::new(0.0)?,
@@ -931,6 +951,11 @@ fn apply(
         Edit::ToggleSource(id) => {
             let source = find_source(&mut sources, id)?;
             source.enabled = !source.enabled;
+        }
+        Edit::ToggleButton(id) => {
+            let source = find_source(&mut sources, id)?;
+            let on = manual_button::decode(&source.state).map_err(unsupported)?;
+            source.state = manual_button::encode(!on).map_err(unsupported)?;
         }
         Edit::DuplicateSource(id) => {
             if is_pressure_source(&sources, id) {
@@ -1082,6 +1107,9 @@ fn apply(
         }
         Edit::Range(id) => {
             let route = find_route(&mut routes, id)?;
+            if is_button_source(&sources, route.source) {
+                return Err(Invalid("button assignments use the original on/off values"));
+            }
             route.range = if route.range == ModulationRange::default() {
                 unipolar_range()?
             } else {

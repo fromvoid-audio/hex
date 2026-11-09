@@ -143,13 +143,24 @@ class RestoreController final : public IEditController {
     IComponentHandler* handler=nullptr;
     float component_gain=0;uint32 scroll=7;
     ParamValue drag_axis=0.25,independent=0.25;
-    CFRunLoopTimerRef edit_timer=nullptr;bool edits_sent=false,first_group_end_sent=false;
+    CFRunLoopTimerRef edit_timer=nullptr;bool edits_sent=false,first_group_end_sent=false,ordinary_sent=false;
     void grouped_edit_tick() {
         const auto* pattern=std::getenv("HEX_ORIGINAL_GROUPED_EDITOR_PATTERN");
+        const bool ordinary_first=pattern && !std::strcmp(pattern,"ordinary-first");
+        if(ordinary_first) {
+            if(!ordinary_sent) {
+                ordinary_sent=true;
+                if(handler->beginEdit(0)!=kResultOk || handler->performEdit(0,0.5)!=kResultOk ||
+                    handler->endEdit(0)!=kResultOk) ++observed.violations;
+                return;
+            }
+            const auto* gate=std::getenv("HEX_ORIGINAL_GROUPED_RELEASE");
+            if(!gate || std::strlen(gate)>4096 || ::access(gate,F_OK)!=0) return;
+        }
         const bool repeat=pattern && !std::strcmp(pattern,"repeat");
         const bool staggered=pattern && !std::strcmp(pattern,"staggered");
         const bool abort_held=pattern && !std::strcmp(pattern,"abort-held");
-        const bool split=repeat || staggered || (pattern && !std::strcmp(pattern,"split"));
+        const bool split=repeat || staggered || ordinary_first || (pattern && !std::strcmp(pattern,"split"));
         const bool overflow=pattern && !std::strcmp(pattern,"overflow");
         const auto* end=std::getenv(first_group_end_sent?
             "HEX_ORIGINAL_EDITOR_SECOND_END_RELEASE":"HEX_ORIGINAL_EDITOR_END_RELEASE");
