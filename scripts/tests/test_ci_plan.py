@@ -36,6 +36,48 @@ METER_BOUNDARY = ["editor::output_meter_ui_test::", "editor::refresh_state::",
 
 
 class ScopeTests(unittest.TestCase):
+    def test_path_included_storage_text_selects_its_real_consumers(self):
+        inventory = [
+            {"name": "hex-storage", "manifest": "crates/hex-storage/Cargo.toml", "features": {},
+             "dependencies": [], "targets": [{"kind": ["lib"]}]},
+            {"name": "hex-ui", "manifest": "crates/hex-ui/Cargo.toml", "features": {"ui-test-support": []},
+             "dependencies": [{"name": "hex-storage"}], "targets": [{"kind": ["lib"]}]},
+            {"name": "hex-sandbox", "manifest": "crates/hex-sandbox/Cargo.toml", "features": {},
+             "dependencies": [], "targets": [{"kind": ["bin"]}]},
+        ]
+        path = "crates/hex-storage/src/text.rs"
+        _, affected, _ = plan.classify([path], inventory)
+        self.assertEqual(affected, ["hex-sandbox", "hex-storage", "hex-ui"])
+        self.assertEqual(plan.owner_test_packages([path], inventory, affected), affected)
+        self.assertEqual(plan.module_test_filters(SCRIPTS.parent, [path], inventory, affected),
+                         {"hex-storage": ["text_tests::"], "hex-ui": ["theme::tests::"],
+                          "hex-sandbox": ["theme::tests::"]})
+        self.assertEqual(plan.module_test_filters(SCRIPTS.parent, ["crates/hex-storage/src/text_tests.rs"],
+                                                   inventory, ["hex-storage"]), {"hex-storage": ["text_tests::"]})
+        self.assertEqual(plan.module_test_filters(SCRIPTS.parent, ["crates/hex-storage/src/lib.rs"],
+                                                   inventory, ["hex-storage"]), {})
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / path
+            source.parent.mkdir(parents=True)
+            source.write_text("pub fn plain() {}\n")
+            # A missing test owner must widen selection, not name a zero-match test.
+            self.assertEqual(plan.module_test_filters(root, [path], inventory, ["hex-storage"]), {})
+        boundary = plan.boundary_selection(SCRIPTS.parent, [path], inventory, affected)
+        self.assertEqual(boundary["test_packages"], affected)
+        self.assertEqual(boundary["module_filters"]["hex-sandbox"], ["theme::tests::"])
+        steps = ci.boundary_steps({"affected_packages": affected, "cargo_inventory": inventory,
+                                   "paths": [path], "boundary": boundary})
+        self.assertTrue(any("text_tests::" in step.argv for step in steps))
+        self.assertTrue(any("hex-sandbox" in step.argv and "theme::tests::" in step.argv for step in steps))
+        self.assertTrue(any("hex-ui" in step.argv and "theme::tests::" in step.argv for step in steps))
+        _, other, _ = plan.classify(["crates/hex-storage/src/project_name.rs"], inventory)
+        self.assertEqual(other, ["hex-storage", "hex-ui"])
+        with self.assertRaisesRegex(ValueError, "path consumers missing"):
+            plan.classify([path], inventory[:2])
+        with self.assertRaisesRegex(ValueError, "path consumers missing"):
+            plan.boundary_selection(SCRIPTS.parent, [path], inventory, ["hex-storage", "hex-ui"])
+
     def test_all_feature_gated_ui_unit_targets_are_scheduled_once(self):
         targets = set(ci.ci_plan.UI_UNIT_FEATURES)
         health = {"python": False, "workspace_inputs": True, "packages": []}
@@ -581,7 +623,7 @@ class ScopeTests(unittest.TestCase):
                     "hex-session": {"source-overview-test-support"},
                     "hex-stream": {"allocation-probe", "test-support"},
                     "hex-media": {"test-support"},
-                    "hex-sandbox": {"ui-test-support"}}
+                    "hex-sandbox": {"ui-test-support", "ui-unit-tier"}}
         unreviewed = {p["name"]: set(p["features"]) - reviewed.get(p["name"], set())
                       for p in live_inventory if p["name"] in live_affected}
         if any(unreviewed.values()):

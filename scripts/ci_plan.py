@@ -17,11 +17,13 @@ if _PYTHON_SPEC is None or _PYTHON_SPEC.loader is None:
 python_tests = importlib.util.module_from_spec(_PYTHON_SPEC)
 _PYTHON_SPEC.loader.exec_module(python_tests)
 
-POLICY_VERSION = 47
+POLICY_VERSION = 48
 UI_PACKAGES = {"hex-ui", "hex-widgets"}
 # Opaque state reaches storage through runtime type IDs, not a Cargo dependency.
 # Changes here must be reviewed with the real registration/codec consumers.
 RUNTIME_CONSUMERS = {"hex-devices": {"hex-storage"}}
+# Both consumers compile this exact storage source through theme.rs by path.
+PATH_RUNTIME_CONSUMERS = {"crates/hex-storage/src/text.rs": {"hex-ui", "hex-sandbox"}}
 RUNTIME_CONSUMER_NAMES = {name for names in RUNTIME_CONSUMERS.values() for name in names}
 TOOLING = {
     "launch", "scripts/launch-restart.py", "scripts/hex-test-build.py",
@@ -129,7 +131,13 @@ def classify(paths: list[str], inventory: list[dict]) -> tuple[str, list[str], l
         else:
             scopes.add("full")
             reasons.append("high-risk or unknown input: " + path)
-    affected = set(changed)
+    path_consumers = set().union(*(PATH_RUNTIME_CONSUMERS.get(path, set()) for path in paths))
+    missing = path_consumers - {p["name"] for p in inventory}
+    if missing:
+        raise ValueError("reviewed path consumers missing from Cargo inventory: " + ", ".join(sorted(missing)))
+    if path_consumers:
+        reasons.append("path-included storage text: include theme consumers")
+    affected = set(changed) | path_consumers
     while True:
         next_affected = affected | {p["name"] for p in inventory
                                    if any(d["name"] in affected for d in p["dependencies"])}
@@ -392,6 +400,12 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
         package = next(p for p in inventory if p["name"] == owner)
         directory = (root / Path(package["manifest"]).parent).resolve()
         file = (root / path).resolve()
+        if owner == "hex-storage" and path == "crates/hex-storage/src/text.rs":
+            if file.is_file() and (directory / "src" / "text_tests.rs").is_file():
+                filters.setdefault(owner, set()).add("text_tests::")
+            else:
+                whole.add(owner)
+            continue
         if owner == "hex-ui":
             unit_modules = {module for module, target in UI_UNIT_TARGETS.items()
                             if file == directory / "tests" / f"{target}.rs"}
@@ -421,6 +435,11 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
             whole.add(owner)
         else:
             filters.setdefault(owner, set()).add(module + "::")
+    # The theme source is compiled by path in each consumer. Run its own text
+    # contract alongside storage's test, without widening other storage edits.
+    if "crates/hex-storage/src/text.rs" in executable:
+        for consumer in PATH_RUNTIME_CONSUMERS["crates/hex-storage/src/text.rs"] & set(tested):
+            filters.setdefault(consumer, set()).add("theme::tests::")
     selected = {}
     for owner, names in filters.items():
         if owner in whole:
@@ -496,6 +515,10 @@ def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affe
     missing = {consumer for owner in affected for consumer in RUNTIME_CONSUMERS.get(owner, set())} - names
     if missing:
         raise ValueError("reviewed runtime consumers missing from Cargo inventory: " + ", ".join(sorted(missing)))
+    path_consumers = set().union(*(PATH_RUNTIME_CONSUMERS.get(path, set()) for path in executable))
+    missing = path_consumers - (names & set(affected))
+    if missing:
+        raise ValueError("reviewed path consumers missing from affected packages: " + ", ".join(sorted(missing)))
     compressor = {"crates/hex-devices/src/compressor.rs", "crates/hex-devices/src/compressor/tests.rs"}
     # hex-sandbox (design tool over hex-engine/hex-widgets) has no compressor
     # code, fixtures or tests; it is linted with every other Cargo consumer.
@@ -511,7 +534,7 @@ def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affe
                          # One-shot verified-WAV read fault injection; it does not
                          # change compressor processing or its host contract.
                          "hex-media": {"test-support"},
-                         "hex-sandbox": {"ui-test-support"}}
+                         "hex-sandbox": {"ui-test-support", "ui-unit-tier"}}
     narrow = bool(executable) and set(executable) <= compressor and set(affected) <= known_consumers
     narrow = narrow and all(set(p["features"]) <= reviewed_features.get(p["name"], set())
                             for p in inventory if p["name"] in affected)
@@ -565,6 +588,7 @@ def owner_test_packages(paths: list[str], inventory: list[dict], affected: list[
         return sorted(affected)
     owners = {owner for p in executable if (owner := owner_package(p, inventory))}
     owners |= {consumer for owner in set(owners) for consumer in RUNTIME_CONSUMERS.get(owner, set())}
+    owners |= set().union(*(PATH_RUNTIME_CONSUMERS.get(path, set()) for path in executable))
     tested = sorted(owners & set(affected))
     return tested or sorted(affected)
 

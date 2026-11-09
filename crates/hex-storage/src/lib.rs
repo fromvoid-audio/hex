@@ -17,6 +17,8 @@ pub mod preset;
 pub mod project_name;
 mod publication;
 pub mod text;
+#[cfg(test)]
+mod text_tests;
 pub mod tuning_library;
 pub use journal::{
     Journal, JournalRestartOutcome, JournalRestartToken, MAX_UNTITLED_SLOTS, UntitledSlotClaim,
