@@ -664,7 +664,7 @@ fn macro_four_routes_each_output_and_applies_an_incoming_signal_per_sample() {
 #[test]
 fn saved_math_inputs_drive_native_gain_in_ordinary_and_closed_graphs() {
     use hex_devices::modulation::math;
-    check_saved_composition(
+    check_saved_routed_source(
         math::Settings {
             operation: math::Operation::Subtract,
             inputs: [0.0, 0.25],
@@ -672,14 +672,14 @@ fn saved_math_inputs_drive_native_gain_in_ordinary_and_closed_graphs() {
         .encode()
         .unwrap(),
         &[(0.0, math::INPUT_A, 0.25), (0.25, math::INPUT_B, 0.125)],
-        [1.0, 1.125, 0.875, 0.75],
+        &[1.0, 1.125, 0.875, 0.75],
     );
 }
 
 #[test]
 fn saved_mix_blends_three_independent_signals_in_ordinary_and_closed_graphs() {
     use hex_devices::modulation::mix;
-    check_saved_composition(
+    check_saved_routed_source(
         mix::Settings {
             inputs: [-0.25, 0.5],
             blend: 0.5,
@@ -691,14 +691,31 @@ fn saved_mix_blends_three_independent_signals_in_ordinary_and_closed_graphs() {
             (0.25, mix::INPUT_B, 0.25),
             (0.5, mix::BLEND, 0.25),
         ],
-        [1.203125, 1.140625, 0.9375, 1.125],
+        &[1.203125, 1.140625, 0.9375, 1.125],
     );
 }
 
-fn check_saved_composition(
+#[test]
+fn saved_steps_reaches_utility_gain_at_the_same_sample_in_ordinary_and_closed_graphs() {
+    use hex_devices::modulation::steps;
+
+    check_saved_routed_source(
+        steps::Settings {
+            duration_micros: 125,
+            direction: steps::Direction::Forward,
+            pattern: vec![-32767, 32767],
+        }
+        .encode()
+        .unwrap(),
+        &[],
+        &[0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 1.25, 1.25],
+    );
+}
+
+fn check_saved_routed_source(
     settings: hex_lattice_contract::NativeDeviceState,
     inputs: &[(f64, hex_lattice_contract::ParameterId, f32)],
-    gains: [f32; 4],
+    gains: &[f32],
 ) {
     use hex_devices::modulation::lfo;
 
@@ -795,11 +812,13 @@ fn check_saved_composition(
     let (_, revision) = editor
         .execute_prepared(edit(routes.clone()), prepare)
         .unwrap();
-    let stable = editor.project().clone();
-    let mut invalid = routes;
-    invalid[0].destination = input(hex_lattice_contract::ParameterId::from_static(100));
-    assert!(editor.execute_prepared(edit(invalid), prepare).is_err());
-    assert_eq!(*editor.project(), stable);
+    if !inputs.is_empty() {
+        let stable = editor.project().clone();
+        let mut invalid = routes;
+        invalid[0].destination = input(hex_lattice_contract::ParameterId::from_static(100));
+        assert!(editor.execute_prepared(edit(invalid), prepare).is_err());
+        assert_eq!(*editor.project(), stable);
+    }
     assert_eq!(editor.project().device(device).unwrap().state(), &base);
     let mut playback = Playback::try_from_prepared_with_session(Arc::new(revision)).unwrap();
     playback
