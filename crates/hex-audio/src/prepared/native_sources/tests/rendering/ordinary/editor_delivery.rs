@@ -23,7 +23,11 @@ fn verify_editor_delivery(reading: bool) {
             std::env::temp_dir().join(format!("hex-editor-main-{}", std::process::id()));
         std::fs::create_dir(&temporary).unwrap();
         let name = std::thread::current().name().unwrap().to_owned();
-        let result = std::process::Command::new(std::env::current_exe().unwrap())
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        if reading {
+            child.env("HEX_ORIGINAL_EDITOR_END_RELEASE", temporary.join("end"));
+        }
+        let result = child
             .args(["--exact", &name, "--ignored", "--test-threads=1"])
             .env(CHILD, "1")
             .env(
@@ -114,30 +118,23 @@ fn verify_editor_delivery(reading: bool) {
     )
     .unwrap();
     let mut ordered = Vec::new();
-    let mut poll = |f: &mut OrdinaryFixture, stage| {
+    let mut poll = |f: &mut OrdinaryFixture, kind| {
         match f
             .control
             .poll_native_source_parameter_edits_on_control(f.binding)
         {
             Ok(Some(batch)) => {
                 ordered.extend_from_slice(batch.as_slice());
-                if stage && batch.ready >= if reading { 2 } else { 1 } {
+                if kind == ParameterEditKind::Begin && batch.ready >= 1 {
                     return true;
                 }
             }
             Ok(None) | Err("native preparation is busy" | "native edit observation is busy") => {}
             Err(reason) => panic!("{reason}"),
         }
-        !stage
-            && ordered
-                .iter()
-                .any(|point| point.kind == ParameterEditKind::Perform)
-            && (!reading
-                || ordered
-                    .iter()
-                    .any(|point| point.kind == ParameterEditKind::End))
+        kind != ParameterEditKind::Begin && ordered.iter().any(|point| point.kind == kind)
     };
-    while !poll(&mut f, true) {
+    while !poll(&mut f, ParameterEditKind::Begin) {
         assert!(
             Instant::now() < until,
             "signed editor input never entered the worker queue"
@@ -147,7 +144,7 @@ fn verify_editor_delivery(reading: bool) {
     physical_block::<5>(&mut f);
     physical_block::<3>(&mut f);
     replacement::wait_for_blocks(&root, f.binding, 3);
-    while !poll(&mut f, false) {
+    while !poll(&mut f, ParameterEditKind::Perform) {
         assert!(Instant::now() < until);
         std::thread::yield_now();
     }
@@ -156,6 +153,19 @@ fn verify_editor_delivery(reading: bool) {
             .try_native_source_editor_delivery_on_control()
             .is_none()
     );
+    if reading {
+        // A real mouse release can happen after the last Perform has already
+        // been processed. The existing ordered reader may see End before PCM.
+        std::fs::write(
+            std::env::var_os("HEX_ORIGINAL_EDITOR_END_RELEASE").unwrap(),
+            b"end",
+        )
+        .unwrap();
+        while !poll(&mut f, ParameterEditKind::End) {
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        }
+    }
     physical_block::<6>(&mut f);
     physical_block::<5>(&mut f);
     replacement::wait_for_blocks(&root, f.binding, 4);
