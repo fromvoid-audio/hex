@@ -1227,143 +1227,92 @@ fn note_event_reader_floors_preserve_settings_and_instrument_routes() {
     let (opened, token) = crate::load_with_token(&previous).unwrap();
     assert_eq!(opened, *editor.project());
     let original = std::fs::read(&previous).unwrap();
-    let next = editor.project().next_identity();
-    let source = ModulationSourceId::new(next).unwrap();
-    let slot = Modulator {
-        id: source,
-        color: ElementColor::Cyan,
-        enabled: true,
-        state: NativeDeviceState::new(
-            DeviceTypeId::from_static("hex.modulator.note-counter"),
-            1,
-            vec![12, 0, 5, 0, 1],
-        )
-        .unwrap(),
-    };
-    let route = DeviceModulationRoute {
-        id: ModulationRouteId::new(next + 1).unwrap(),
-        source,
-        output: ModulationOutputId::MAIN,
-        destination: ModulationDestination::Device {
-            device_type: instrument_type,
-            target: DeviceAutomationTarget::Parameter(ParameterId::from_static(29)),
-            vst3_class: None,
-        },
-        amount: ModulationAmount::new(0.25).unwrap(),
-        range: ModulationRange::default(),
-        enabled: true,
-    };
-    editor
-        .execute(Command::ReplaceDeviceModulation {
-            device,
-            modulation: DeviceModulation::new(vec![slot], vec![route]).unwrap(),
-        })
-        .unwrap();
-    let project = editor.project();
-    assert_eq!(
-        crate::schema_version_for(project),
-        crate::NOTE_COUNTER_MODULATOR_SCHEMA_VERSION
-    );
-    assert!(token.requires_save_confirmation(project).unwrap());
-    let path = root.join("counter.hex");
-    crate::save_new(&path, project).unwrap();
-    assert_eq!(crate::load(&path).unwrap(), *project);
-    assert_eq!(std::fs::read(&previous).unwrap(), original);
-    let mut wrong: serde_json::Value =
-        serde_json::from_slice(&crate::encode(project).unwrap()).unwrap();
-    wrong["version"] = crate::MIX_MODULATOR_SCHEMA_VERSION.into();
-    assert!(crate::decode(&serde_json::to_vec(&wrong).unwrap()).is_err());
-    let counter_bytes = std::fs::read(&path).unwrap();
-    let counter_token = crate::load_with_token(&path).unwrap().1;
-    let bank = project.device(device).unwrap().modulation();
-    let ramp_id = ModulationSourceId::new(project.next_identity()).unwrap();
-    let mut ramp_payload = 50_000_u32.to_le_bytes().to_vec();
-    ramp_payload.extend_from_slice(&[2, 1, 0]);
-    let ramp = Modulator {
-        id: ramp_id,
-        color: ElementColor::Cyan,
-        enabled: true,
-        state: NativeDeviceState::new(
-            DeviceTypeId::from_static("hex.modulator.ramp"),
-            1,
-            ramp_payload,
-        )
-        .unwrap(),
-    };
-    let mut sources = bank.sources().to_vec();
-    sources.push(ramp);
-    let mut routes = bank.routes().to_vec();
-    routes.push(DeviceModulationRoute {
-        id: ModulationRouteId::new(project.next_identity() + 1).unwrap(),
-        source: ramp_id,
-        ..route
-    });
-    editor
-        .execute(Command::ReplaceDeviceModulation {
-            device,
-            modulation: DeviceModulation::new(sources, routes).unwrap(),
-        })
-        .unwrap();
-    let project = editor.project();
-    assert_eq!(
-        crate::schema_version_for(project),
-        crate::RAMP_MODULATOR_SCHEMA_VERSION
-    );
-    assert!(counter_token.requires_save_confirmation(project).unwrap());
-    let ramp_path = root.join("counter-and-ramp.hex");
-    crate::save_new(&ramp_path, project).unwrap();
-    assert_eq!(crate::load(&ramp_path).unwrap(), *project);
-    assert_eq!(std::fs::read(&path).unwrap(), counter_bytes);
-    let mut wrong: serde_json::Value =
-        serde_json::from_slice(&crate::encode(project).unwrap()).unwrap();
-    wrong["version"] = crate::NOTE_COUNTER_MODULATOR_SCHEMA_VERSION.into();
-    assert!(crate::decode(&serde_json::to_vec(&wrong).unwrap()).is_err());
-    let ramp_bytes = std::fs::read(&ramp_path).unwrap();
-    let ramp_token = crate::load_with_token(&ramp_path).unwrap().1;
-    let bank = project.device(device).unwrap().modulation();
-    let ahd_id = ModulationSourceId::new(project.next_identity()).unwrap();
-    let mut payload: Vec<_> = [0_u32, 125, 250]
+    let mut ramp = 50_000_u32.to_le_bytes().to_vec();
+    ramp.extend_from_slice(&[2, 1, 0]);
+    let mut ahd: Vec<_> = [0_u32, 125, 250]
         .into_iter()
         .flat_map(u32::to_le_bytes)
         .collect();
-    payload.extend_from_slice(&[0, 2, 1]);
-    let mut sources = bank.sources().to_vec();
-    sources.push(Modulator {
-        id: ahd_id,
-        color: ElementColor::Cyan,
-        enabled: true,
-        state: NativeDeviceState::new(
-            DeviceTypeId::from_static("hex.modulator.ahd-release"),
-            1,
-            payload,
-        )
-        .unwrap(),
-    });
-    let mut routes = bank.routes().to_vec();
-    routes.push(DeviceModulationRoute {
-        id: ModulationRouteId::new(project.next_identity() + 1).unwrap(),
-        source: ahd_id,
-        ..route
-    });
-    editor
-        .execute(Command::ReplaceDeviceModulation {
-            device,
-            modulation: DeviceModulation::new(sources, routes).unwrap(),
-        })
-        .unwrap();
-    let project = editor.project();
-    assert_eq!(
-        crate::schema_version_for(project),
-        crate::AHD_RELEASE_MODULATOR_SCHEMA_VERSION
-    );
-    assert!(ramp_token.requires_save_confirmation(project).unwrap());
-    let ahd_path = root.join("note-event-sources.hex");
-    crate::save_new(&ahd_path, project).unwrap();
-    assert_eq!(crate::load(&ahd_path).unwrap(), *project);
-    assert_eq!(std::fs::read(&ramp_path).unwrap(), ramp_bytes);
-    let mut wrong: serde_json::Value =
-        serde_json::from_slice(&crate::encode(project).unwrap()).unwrap();
-    wrong["version"] = crate::RAMP_MODULATOR_SCHEMA_VERSION.into();
-    assert!(crate::decode(&serde_json::to_vec(&wrong).unwrap()).is_err());
+    ahd.extend_from_slice(&[0, 2, 1]);
+    let mut adsr: Vec<_> = [0_u32, 125, 250]
+        .into_iter()
+        .flat_map(u32::to_le_bytes)
+        .collect();
+    adsr.extend_from_slice(&0.375_f32.to_le_bytes());
+    adsr.push(1);
+    let mut prior_path = previous;
+    let mut prior_bytes = original;
+    let mut prior_token = token;
+    let mut prior_schema = crate::MIX_MODULATOR_SCHEMA_VERSION;
+    for (name, payload, schema) in [
+        (
+            "hex.modulator.note-counter",
+            vec![12, 0, 5, 0, 1],
+            crate::NOTE_COUNTER_MODULATOR_SCHEMA_VERSION,
+        ),
+        (
+            "hex.modulator.ramp",
+            ramp,
+            crate::RAMP_MODULATOR_SCHEMA_VERSION,
+        ),
+        (
+            "hex.modulator.ahd-release",
+            ahd,
+            crate::AHD_RELEASE_MODULATOR_SCHEMA_VERSION,
+        ),
+        (
+            "hex.modulator.adsr",
+            adsr,
+            crate::ADSR_MODULATOR_SCHEMA_VERSION,
+        ),
+    ] {
+        let project = editor.project();
+        let next = project.next_identity();
+        let source = ModulationSourceId::new(next).unwrap();
+        let bank = project.device(device).unwrap().modulation();
+        let mut sources = bank.sources().to_vec();
+        sources.push(Modulator {
+            id: source,
+            color: ElementColor::Cyan,
+            enabled: true,
+            state: NativeDeviceState::new(DeviceTypeId::from_static(name), 1, payload).unwrap(),
+        });
+        let mut routes = bank.routes().to_vec();
+        routes.push(DeviceModulationRoute {
+            id: ModulationRouteId::new(next + 1).unwrap(),
+            source,
+            output: ModulationOutputId::MAIN,
+            destination: ModulationDestination::Device {
+                device_type: instrument_type,
+                target: DeviceAutomationTarget::Parameter(ParameterId::from_static(29)),
+                vst3_class: None,
+            },
+            amount: ModulationAmount::new(0.25).unwrap(),
+            range: ModulationRange::default(),
+            enabled: true,
+        });
+        editor
+            .execute(Command::ReplaceDeviceModulation {
+                device,
+                modulation: DeviceModulation::new(sources, routes).unwrap(),
+            })
+            .unwrap();
+        let project = editor.project();
+        assert_eq!(crate::schema_version_for(project), schema);
+        assert!(prior_token.requires_save_confirmation(project).unwrap());
+        let path = root.join(format!("note-event-{schema}.hex"));
+        crate::save_new(&path, project).unwrap();
+        let (opened, next_token) = crate::load_with_token(&path).unwrap();
+        assert_eq!(opened, *project);
+        assert_eq!(std::fs::read(&prior_path).unwrap(), prior_bytes);
+        let bytes = std::fs::read(&path).unwrap();
+        let mut wrong: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        wrong["version"] = prior_schema.into();
+        assert!(crate::decode(&serde_json::to_vec(&wrong).unwrap()).is_err());
+        prior_path = path;
+        prior_bytes = bytes;
+        prior_token = next_token;
+        prior_schema = schema;
+    }
     std::fs::remove_dir_all(root).unwrap();
 }
