@@ -42,6 +42,7 @@ fn prepared() -> ModulationRuntime {
             source: 0,
             target: id,
             amount: 0.1,
+            range: [-1.0, 1.0],
         }],
         1,
     )
@@ -122,6 +123,7 @@ fn utility_graph_modulation_transactions_do_not_allocate_or_free() {
                 source: 0,
                 target: id,
                 amount: 0.01,
+                range: [-1.0, 1.0],
             }],
             1,
         )

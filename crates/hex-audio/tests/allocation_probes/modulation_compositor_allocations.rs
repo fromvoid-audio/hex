@@ -41,6 +41,7 @@ fn borrowed_source_composition_has_no_allocations_or_frees() {
             source: 0,
             target: id,
             amount: 0.5,
+            range: [-1.0, 1.0],
         }],
         1,
     )
