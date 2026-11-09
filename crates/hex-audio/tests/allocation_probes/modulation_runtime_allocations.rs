@@ -11,11 +11,10 @@ use hex_lattice_contract::{
 };
 use std::hint::black_box;
 
-fn prepared() -> ModulationRuntime {
-    let id = ParameterId::from_static(1);
-    let target = ModulationTarget {
+fn gain_target() -> ModulationTarget {
+    ModulationTarget {
         descriptor: ParameterDescriptor {
-            id,
+            id: ParameterId::from_static(1),
             label: "gain",
             kind: ParameterKind::Float {
                 min: 0.0,
@@ -35,7 +34,11 @@ fn prepared() -> ModulationRuntime {
             change_impact: ParameterChangeImpact::ValueOnly,
         },
         base: ParameterValue::Float(0.5),
-    };
+    }
+}
+fn prepared() -> ModulationRuntime {
+    let target = gain_target();
+    let id = target.descriptor.id;
     let program = PreparedModulation::new(
         &[target],
         &[ModulationRoute {
@@ -82,6 +85,77 @@ fn chunk_transactions_do_not_allocate_or_free() {
                 .is_err()
             );
             next.rollback();
+        }
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+}
+
+#[test]
+fn math_with_two_incoming_signals_does_not_allocate_or_free() {
+    use hex_lattice::{ModulationMathOperation, PreparedModulationState, SourceModulationRoute};
+    let id = |value| ModulationSourceId::new(value).unwrap();
+    let sources = vec![
+        PreparedModulationSource::free(id(1), 48_000.0, 7.0, 0.0).unwrap(),
+        PreparedModulationSource::free(id(2), 48_000.0, 11.0, 0.25).unwrap(),
+        PreparedModulationSource::math(
+            id(3),
+            48_000,
+            [0.125, 0.75],
+            ModulationMathOperation::Multiply,
+        )
+        .unwrap(),
+    ];
+    let target = gain_target();
+    let program = PreparedModulation::new(
+        &[target],
+        &[ModulationRoute {
+            source: 2,
+            target: target.descriptor.id,
+            amount: 0.25,
+            range: [-1.0, 1.0],
+        }],
+        sources.len(),
+    )
+    .unwrap();
+    let incoming = [
+        (0, SourceModulationParameter::MathA),
+        (1, SourceModulationParameter::MathB),
+    ]
+    .map(|(source, parameter)| SourceModulationRoute {
+        source,
+        target: 2,
+        parameter,
+        amount: 0.25,
+        range: [-1.0, 1.0],
+    });
+    let prepared =
+        PreparedModulationState::with_source_routes(sources, program, 128, &incoming).unwrap();
+    let mut runtime = prepared.prepare().unwrap();
+    let mut successor = prepared.prepare().unwrap();
+    let counts = allocation_counter::measure(|| {
+        for _ in 0..8 {
+            runtime.begin();
+            runtime
+                .render_chunk(128, None, |block| {
+                    for frame in 0..128 {
+                        black_box(block.value_at(target.descriptor.id, frame));
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            runtime.commit().unwrap();
+            successor.inherit_committed(&runtime).unwrap();
+            successor.begin();
+            successor.render_chunk(128, None, |_| Ok(())).unwrap();
+            successor.rollback();
         }
     });
     assert_eq!(
