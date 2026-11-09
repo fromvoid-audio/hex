@@ -6231,3 +6231,76 @@ fn open_operator_options(visual: &mut VisualTestContext, device: DeviceId) {
     }
     assert!(visual.debug_bounds(panel).is_some());
 }
+
+#[gpui::test]
+fn modulation_panel_adds_and_maps_an_lfo_without_editing_base_values(cx: &mut TestAppContext) {
+    use hex_devices::utility::parameter;
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let original = state.project.device(device).unwrap().state().clone();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let click = |visual: &mut VisualTestContext, selector: String| {
+        let selector: &'static str = Box::leak(selector.into_boxed_str());
+        let bounds = visual
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("missing {selector}"));
+        visual.simulate_click(bounds.center(), Modifiers::default());
+        visual.run_until_parked();
+    };
+    click(&mut visual, "device-modulator-toggle".into());
+    click(&mut visual, format!("add-lfo-{}", device.value()));
+    let source = |view: &EditorView| {
+        view.state
+            .as_ref()?
+            .project
+            .device(device)?
+            .modulation()
+            .sources()
+            .first()
+            .map(|source| source.id)
+    };
+    pump_until(&editor, cx, |view| source(view).is_some());
+    let source_id = editor.read_with(cx, |view, _| source(view).unwrap());
+    visual.run_until_parked();
+    click(&mut visual, format!("lfo-{}-map", source_id.value()));
+    for (count, parameter) in [parameter::GAIN, parameter::WIDTH].into_iter().enumerate() {
+        click(
+            &mut visual,
+            format!("map-target-{}-{}", device.value(), parameter.value()),
+        );
+        pump_until(&editor, cx, |view| {
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .unwrap()
+                .modulation()
+                .routes()
+                .len()
+                == count + 1
+        });
+        visual.run_until_parked();
+    }
+    editor.read_with(cx, |view, _| {
+        let device = view.state.as_ref().unwrap().project.device(device).unwrap();
+        assert_eq!(device.state(), &original);
+        assert!(
+            device
+                .modulation()
+                .routes()
+                .iter()
+                .all(|route| route.source == source_id)
+        );
+    });
+    click(&mut visual, format!("lfo-{}-map", source_id.value()));
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("map-target-{}-{}", device.value(), parameter::GAIN.value())
+                    .into_boxed_str()
+            ))
+            .is_none()
+    );
+}
