@@ -277,6 +277,7 @@ enum AdsrEdit {
 #[derive(Clone, Copy)]
 enum StepsEdit {
     Time { longer: bool },
+    ToggleTiming,
     Length { add: bool },
     Value { index: usize, delta: i16 },
     CycleDirection,
@@ -544,7 +545,7 @@ pub(super) fn panel(
     cx: &mut Context<EditorView>,
     device: &Device,
     view_data: &NativeDeviceView,
-    allow_audio_input: bool,
+    is_effect: bool,
 ) -> Option<AnyElement> {
     let state = view.state.as_ref()?;
     let id = device.id();
@@ -621,14 +622,7 @@ pub(super) fn panel(
         .on_click(
             cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
                 cx.stop_propagation();
-                open_add_menu(
-                    view,
-                    target,
-                    allow_audio_input,
-                    event.position(),
-                    window,
-                    cx,
-                );
+                open_add_menu(view, target, is_effect, event.position(), window, cx);
             }),
         );
         body = body.child(add_button);
@@ -1060,18 +1054,43 @@ pub(super) fn panel(
                 steps::Direction::Backward => "backward",
                 steps::Direction::PingPong => "ping pong",
             };
-            let timing = match settings.timing {
-                steps::Timing::FreeMicros(micros) => envelope_time(
+            if is_effect {
+                let mode = match settings.timing {
+                    steps::Timing::FreeMicros(_) => "free",
+                    steps::Timing::Arrangement { .. } => "arrangement",
+                };
+                row = row.child(button(
                     cx,
-                    "step time",
-                    micros,
-                    [false, true].map(|longer| Edit::Steps(source_id, StepsEdit::Time { longer })),
-                ),
+                    source_key("timing-mode"),
+                    theme::text(mode),
+                    Edit::Steps(source_id, StepsEdit::ToggleTiming),
+                ));
+            }
+            let time_edit = |longer| Edit::Steps(source_id, StepsEdit::Time { longer });
+            let timing = match settings.timing {
+                steps::Timing::FreeMicros(micros) => {
+                    envelope_time(cx, "step time", micros, [false, true].map(time_edit))
+                }
                 steps::Timing::Arrangement { steps_per_beat } => {
                     let timing = source_key("arrangement-time");
                     div()
                         .debug_selector(move || timing.clone())
-                        .child(theme::text(format!("arrangement 1/{}", 4 * steps_per_beat)))
+                        .flex()
+                        .items_center()
+                        .gap(px(2.0))
+                        .child(button(
+                            cx,
+                            source_key("division-shorter"),
+                            theme::text("−"),
+                            time_edit(false),
+                        ))
+                        .child(theme::text(format!("1/{}", 4 * steps_per_beat)))
+                        .child(button(
+                            cx,
+                            source_key("division-longer"),
+                            theme::text("+"),
+                            time_edit(true),
+                        ))
                 }
             };
             row = row
@@ -1874,12 +1893,25 @@ fn apply(
             let mut settings = steps::Settings::decode(&source.state).map_err(unsupported)?;
             match edit {
                 StepsEdit::Time { longer } => {
-                    let steps::Timing::FreeMicros(micros) = settings.timing else {
-                        return Err(Invalid("free-running step time is unavailable"));
+                    settings.timing = match settings.timing {
+                        steps::Timing::FreeMicros(micros) => steps::Timing::FreeMicros(
+                            duration_step(micros, longer).max(ramp::MIN_MICROS),
+                        ),
+                        steps::Timing::Arrangement { steps_per_beat } => {
+                            let steps_per_beat = if longer {
+                                (steps_per_beat / 2).max(1)
+                            } else {
+                                (steps_per_beat * 2).min(steps::MAX_STEPS_PER_BEAT)
+                            };
+                            steps::Timing::Arrangement { steps_per_beat }
+                        }
                     };
-                    settings.timing = steps::Timing::FreeMicros(
-                        duration_step(micros, longer).max(ramp::MIN_MICROS),
-                    );
+                }
+                StepsEdit::ToggleTiming => {
+                    settings.timing = match settings.timing {
+                        steps::Timing::FreeMicros(_) => steps::Timing::DEFAULT_ARRANGEMENT,
+                        steps::Timing::Arrangement { .. } => steps::Timing::DEFAULT_FREE,
+                    };
                 }
                 StepsEdit::Length { add } => {
                     let count = settings.pattern.len();
