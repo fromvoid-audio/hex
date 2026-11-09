@@ -183,6 +183,7 @@ mod midi_velocity_randomize;
 mod midi_velocity_ui;
 mod midi_wheel;
 mod mixer;
+mod mode;
 mod musical_audio_controls;
 mod musical_time;
 mod musical_time_controls;
@@ -292,12 +293,7 @@ pub(super) const UI_REQUEST_CAPACITY: usize = 32;
 pub(super) const UI_EVENT_BUDGET: usize = 2;
 const PLAYBACK_CANDIDATE_CAPACITY: usize = 32;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) enum EditorMode {
-    #[default]
-    Arrangement,
-    Session,
-}
+pub(super) use mode::EditorMode;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PendingPlaybackAction {
