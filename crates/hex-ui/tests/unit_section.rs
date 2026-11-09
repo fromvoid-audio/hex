@@ -7,5 +7,11 @@ mod section_appearance;
 #[path = "../src/section_hit.rs"]
 mod section_hit;
 #[allow(dead_code)]
+#[path = "../src/section_input.rs"]
+mod section_input;
+#[allow(dead_code)]
 #[path = "../src/section_reorder.rs"]
 mod section_reorder;
+#[allow(dead_code)]
+#[path = "../src/section_selection.rs"]
+mod section_selection;
