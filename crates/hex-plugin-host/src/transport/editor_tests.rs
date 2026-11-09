@@ -136,7 +136,7 @@ fn refused_or_ended_editor_scope_never_delivers_a_processed_reply() {
 
 #[test]
 fn unarmed_worker_cannot_publish_editor_facts() {
-    let (_, mut callback, mut worker) = fixture();
+    let (_control, mut callback, mut worker) = fixture();
     stage(&mut callback, 0, 8, true);
     let request = worker.receive_request().unwrap().unwrap();
     assert_eq!(

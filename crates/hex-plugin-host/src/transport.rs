@@ -505,7 +505,7 @@ impl Control {
         }
         let value = serial.get().checked_mul(2).ok_or(Fault::Exhausted)? | 1;
         let previous = self.revoked.editor_scope.load(Acquire);
-        if previous & 1 != 0 || value <= previous {
+        if previous & 1 != 0 || serial.get() <= previous >> 1 {
             return Err(Fault::Protocol);
         }
         self.revoked
