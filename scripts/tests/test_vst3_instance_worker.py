@@ -232,18 +232,18 @@ class NativeInstanceTests(unittest.TestCase):
         self.terminal(session, 0, message=session.stop())
 
     def test_full_slice_input_lane_preserves_each_authored_parameter_sample(self):
-        session = self.session(variant=37)
+        session = self.session(variant=80)
         self.ready(session, controller=True)
         values = tuple(.125 if frame % 2 else .75 for frame in range(64))
-        points = [(frame, 7, value) for frame, value in enumerate(values)]
+        points = [(frame, 0, value) for frame, value in enumerate(values)]
         inputs, (magic, reply) = session.render_parameters(64, points, authored_steps=0)
-        self.assertEqual(magic, b"HXVB")
+        self.assertEqual(magic, b"HXVB", reply)
         self.assertEqual(struct.unpack_from("<HHHH", reply, 4), (2, 64, 0, 1))
         output = struct.unpack_from("<128f", reply, 64)
         self.assertEqual(output, tuple(sample * values[index // 2] * 2
                                        for index, sample in enumerate(inputs)))
         self.assertEqual(struct.unpack_from("<HHId", reply, 64 + 64 * 8),
-                         (63, 0, 7, values[-1]))
+                         (63, 0, 0, values[-1]))
         self.terminal(session, 0, message=session.stop())
 
     def test_invalid_output_parameter_values_leave_valid_feedback_and_pcm_intact(self):
