@@ -720,12 +720,17 @@ impl EditorView {
         );
         (supported
             && self.state.as_ref().is_some_and(|state| {
-                hex_engine::native_parameter_input_target(
-                    &state.project,
-                    target.device,
-                    target.kind,
-                )
-                .is_ok()
+                !state
+                    .project
+                    .native_sources()
+                    .iter()
+                    .any(|source| source.instrument().id() == target.device)
+                    && hex_engine::native_parameter_input_target(
+                        &state.project,
+                        target.device,
+                        target.kind,
+                    )
+                    .is_ok()
             }))
         .then(|| {
             let label = if self.native_automation_arm_selected(target.device, target.kind) {

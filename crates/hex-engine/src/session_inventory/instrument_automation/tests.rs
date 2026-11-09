@@ -236,7 +236,8 @@ fn shared_contributors_compile_only_the_receiver_and_unbound_tracks_compile_noth
     let mut programs = Vec::new();
     for track in editor.project().tracks() {
         if let Some(program) =
-            prepare_for_receiver(track, Some(factory.as_ref()), &registry, &mut bytes).unwrap()
+            prepare_for_receiver(track, Some(factory.as_ref()), &registry, None, &mut bytes)
+                .unwrap()
         {
             programs.push(program);
         }
@@ -259,7 +260,7 @@ fn shared_contributors_compile_only_the_receiver_and_unbound_tracks_compile_noth
     let mut bytes = 0;
     for track in editor.project().tracks() {
         assert!(
-            prepare_for_receiver(track, Some(factory.as_ref()), &registry, &mut bytes)
+            prepare_for_receiver(track, Some(factory.as_ref()), &registry, None, &mut bytes)
                 .unwrap()
                 .is_none()
         );
@@ -304,7 +305,7 @@ fn ordinary_construction_quote_counts_shared_receiving_program_once() {
                 .unwrap()
                 .source_id()
                 .unwrap();
-            let expected = construction_bytes(editor.project()).unwrap();
+            let expected = construction_bytes(editor.project(), None).unwrap();
             let full = crate::PreparedRevision::device_handoff_metadata_construction_bytes(
                 editor.project(),
             )
@@ -335,7 +336,10 @@ fn ordinary_construction_quote_counts_shared_receiving_program_once() {
                     source: Some(source),
                 })
                 .unwrap();
-            assert_eq!(construction_bytes(editor.project()).unwrap(), expected);
+            assert_eq!(
+                construction_bytes(editor.project(), None).unwrap(),
+                expected
+            );
             let shared = prepare(&editor);
             assert_eq!(
                 shared.session().instrument_automation_storage_bytes(),
@@ -417,5 +421,5 @@ fn native_quote_does_not_charge_opaque_foreign_source_programs() {
             points: vec![point(BeatTime::ZERO, 0.5)],
         })
         .unwrap();
-    assert_eq!(construction_bytes(editor.project()).unwrap(), 0);
+    assert_eq!(construction_bytes(editor.project(), None).unwrap(), 0);
 }
