@@ -122,9 +122,11 @@ pub fn native_parameter_input_target(
             .receiver()
             .ok_or(Invalid("native source has no receiver"))?;
         let instrument = source.instrument();
+        let registry = hex_devices::native_registry()
+            .map_err(|_| Invalid("native effect registry is invalid"))?;
         let (state, source_effect_receiver) = if instrument.id() == device {
             if instrument.bypassed()
-                || source.devices().count() != 1
+                || !instrument_automation_chain_supported(source, &registry)
                 || !instrument_target_supported(instrument.state(), target)
             {
                 return Err(Invalid(
@@ -140,8 +142,6 @@ pub fn native_parameter_input_target(
                 .ok_or(Invalid(
                     "native source effect is not in the post-instrument stage",
                 ))?;
-            let registry = hex_devices::native_registry()
-                .map_err(|_| Invalid("native effect registry is invalid"))?;
             if instrument.bypassed()
                 || effect.bypassed()
                 || !source_effect_target_supported(source, effect, target, &registry)
@@ -248,10 +248,10 @@ pub fn native_device_automation_target_supported(
     };
     target_supported(&registry, state, target)
 }
-/// Actual-owner query for supported effects and FM4 provider lanes at a
-/// single-device receiving source. A supported post-instrument
-/// effect uses one bound source program for all contributors. Unbinding the
-/// receiver leaves existing lanes dormant until a new receiver is bound.
+/// Actual-owner query for supported effects and FM4 provider lanes. A receiving
+/// FM4 can retain an admitted native effect suffix. The generator program runs
+/// before that suffix, which processes the shared sum once for all contributors.
+/// Unbinding the receiver leaves lanes dormant until a new receiver is bound.
 /// This metadata query grants no runtime/resource custody; preparation validates
 /// the actual factory grants and bounded program storage before publication.
 pub fn project_device_automation_target_supported(
@@ -259,19 +259,19 @@ pub fn project_device_automation_target_supported(
     device: hex_project::DeviceId,
     target: DeviceAutomationTarget,
 ) -> bool {
+    let Ok(registry) = hex_devices::native_registry() else {
+        return false;
+    };
     if let Some(source) = project
         .native_sources()
         .iter()
         .find(|source| source.instrument().id() == device)
     {
         return source.receiver().is_some()
-            && source.devices().count() == 1
+            && instrument_automation_chain_supported(source, &registry)
             && instrument_target_supported(source.instrument().state(), target);
     }
     let Some(location) = project.device_location(device) else {
-        return false;
-    };
-    let Ok(registry) = hex_devices::native_registry() else {
         return false;
     };
     match location.owner {
@@ -283,6 +283,20 @@ pub fn project_device_automation_target_supported(
         }
         _ => target_supported(&registry, location.device.state(), target),
     }
+}
+
+/// The source recipe still validates the actual provider factory, zero latency
+/// and graph budget. This query shares its authored suffix eligibility without
+/// opening a second processor or granting any callback custody.
+fn instrument_automation_chain_supported(
+    source: &hex_project::NativeSource,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+) -> bool {
+    source.instrument_index() == 0
+        && source.post_instrument_effects().iter().all(|effect| {
+            crate::source_effect_stage::metadata::validate_authored(effect.state(), registry)
+                .is_ok()
+        })
 }
 
 fn source_effect_target_supported(
@@ -390,7 +404,7 @@ pub(crate) fn validate_project_with_registry(
                 if device.id() == source.instrument().id() {
                     !(crate::compile::is_vst3_instrument(device)
                         && matches!(lane.target, DeviceAutomationTarget::Vst3 { .. })
-                        || source.devices().count() == 1
+                        || instrument_automation_chain_supported(source, registry)
                             && instrument_target_supported(device.state(), lane.target))
                 } else {
                     !source_effect_target_supported(source, device, lane.target, registry)
