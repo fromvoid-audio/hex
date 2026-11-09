@@ -255,12 +255,26 @@ fn callbacks_borrow_actual_native_bank_scopes_without_allocations_or_frees() {
 fn resident_sampler_occurrence_gains_allocate_and_free_nothing_in_the_actual_pair() {
     use hex_devices::sampler::{
         GateMode, Mode, PreparedSamplerPlan, Region, SampleChannels, SampleShape, Settings,
+        catalog::GAIN,
     };
     use hex_lattice::{
         NativeInstrumentEvent, NativeInstrumentOccurrenceGain, NativeInstrumentRuntimeError,
-        NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair,
+        NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair, NativeParameterAutomation,
         PreparedMutableInstrumentRuntime,
     };
+    use hex_lattice_contract::{ParameterId, ParameterValue};
+    struct Gain;
+    impl NativeParameterAutomation for Gain {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            &[GAIN]
+        }
+        fn value_at(&self, id: ParameterId, _: usize) -> Option<ParameterValue> {
+            (id == GAIN).then_some(ParameterValue::Float(1.0))
+        }
+        fn has_sample_rate_modulation(&self, id: ParameterId) -> bool {
+            id == GAIN
+        }
+    }
     let pcm = [1.0; 32];
     let views = [DeviceResourceView {
         slot: DeviceAssetSlot::new(1).unwrap(),
@@ -350,11 +364,12 @@ fn resident_sampler_occurrence_gains_allocate_and_free_nothing_in_the_actual_pai
                 observe(&runtime, &mut ids, &[])?;
                 runtime.begin_block();
                 frames.fill([0.0; 2]);
-                runtime.process_block_with_clock_and_occurrence_gains(
+                runtime.process_block_with_clock_and_automation(
                     std::hint::black_box(&events),
                     &mut frames,
                     None,
                     std::hint::black_box(&gains),
+                    std::hint::black_box(&Gain),
                     std::hint::black_box(&resources),
                 )?;
                 observe(&runtime, &mut ids, &[1, 2])?;
