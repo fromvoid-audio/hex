@@ -504,6 +504,7 @@ pub struct SessionPlayback {
     route_scratch: Vec<TrackRoute>,
     track_faders: [track_fader::TrackFader; MAX_TRACKS],
     track_fader_scratch: [track_fader::TrackFader; MAX_TRACKS],
+    source_effects: crate::source_effect_stage::SourceEffectStages,
     device_chains: Vec<hex_lattice::NativeRuntimeChain>,
     return_chains: Vec<hex_lattice::NativeRuntimeChain>,
     main_chain: hex_lattice::NativeRuntimeChain,
@@ -917,6 +918,7 @@ impl SessionPlayback {
             route_scratch: _,
             track_faders: _,
             track_fader_scratch: _,
+            source_effects: _, // retained by the Session container, not separately transferred
             device_chains,
             return_chains,
             main_chain,
@@ -1024,6 +1026,7 @@ impl SessionPlayback {
         for chain in self
             .device_chains
             .iter_mut()
+            .chain(self.source_effects.chains_mut())
             .chain(self.return_chains.iter_mut())
             .chain(std::iter::once(&mut self.main_chain))
         {
@@ -1102,6 +1105,7 @@ impl SessionPlayback {
     ) -> bool {
         let project = self.revision.arrangement();
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Source(_) => false,
             hex_lattice::ProcessorChainOwner::Main => self.main_chain.select_processor_audition(
                 identity.owner,
                 identity.device_id,
@@ -1195,6 +1199,7 @@ impl SessionPlayback {
     ) -> bool {
         let project = self.revision.arrangement();
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Source(_) => false,
             hex_lattice::ProcessorChainOwner::Main => self.main_chain.processor_audition_is_active(
                 identity.owner,
                 identity.device_id,
@@ -1233,6 +1238,7 @@ impl SessionPlayback {
     pub(crate) fn cancel_processor_audition(&mut self, identity: crate::PostNodeIdentity) -> bool {
         let project = self.revision.arrangement();
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Source(_) => false,
             hex_lattice::ProcessorChainOwner::Main => {
                 self.main_chain.cancel_processor_audition_for_identity(
                     identity.owner,
@@ -1554,8 +1560,46 @@ impl SessionPlayback {
         resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
         transient_loop: Option<hex_project::LoopRegion>,
     ) -> Result<Self, SessionPlaybackError> {
+        Self::new_with_render_policy_and_source_effects(
+            revision,
+            policy,
+            resources,
+            transient_loop,
+            &[],
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_with_source_effects(
+        revision: Arc<PreparedRevision>,
+        recipes: &[crate::source_effect_stage::PreparedSourceEffects<'_>],
+    ) -> Result<Self, SessionPlaybackError> {
+        Self::new_with_render_policy_and_source_effects(
+            revision,
+            RenderConstruction::Interactive,
+            None,
+            None,
+            recipes,
+        )
+    }
+
+    fn new_with_render_policy_and_source_effects(
+        revision: Arc<PreparedRevision>,
+        policy: RenderConstruction,
+        resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
+        transient_loop: Option<hex_project::LoopRegion>,
+        recipes: &[crate::source_effect_stage::PreparedSourceEffects<'_>],
+    ) -> Result<Self, SessionPlaybackError> {
         let arrangement = revision.arrangement();
         let linear_arrangement_export = policy != RenderConstruction::Interactive;
+        // Source effects are staged only for interactive playing verification.
+        // Export quotes and live publication have separate ownership contracts.
+        if linear_arrangement_export && !recipes.is_empty() {
+            return Err(SessionPlaybackError::DeviceRuntime);
+        }
+        let source_effects =
+            crate::source_effect_stage::SourceEffectStages::prepare(arrangement, recipes)
+                .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
         let chain_has_foreign_automation = arrangement
             .tracks
             .iter()
@@ -2096,6 +2140,7 @@ impl SessionPlayback {
             route_scratch,
             track_faders,
             track_fader_scratch: track_faders,
+            source_effects,
             device_chains,
             return_chains,
             main_chain,

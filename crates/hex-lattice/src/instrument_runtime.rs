@@ -308,6 +308,14 @@ pub trait MutableInstrumentRuntime: Any + Send {
         None
     }
 
+    /// Optional read-only view of the same parameter owner for complete canonical
+    /// target snapshots. Both twins must opt in with immutable factory-matching
+    /// grants and support bounded copying throughout reset/history transfer.
+    /// No voice history, resource custody or future program evaluation is added.
+    fn parameter_automation_readonly(&self) -> Option<&dyn InstrumentParameterRuntime> {
+        None
+    }
+
     /// Must agree with the prepared factory and remain invariant for this runtime.
     fn supports_active_occurrence_ids(&self) -> bool {
         false
@@ -561,6 +569,7 @@ impl NativeInstrumentRuntimePair {
         {
             return Err(NativeInstrumentRuntimeError::IncompatibleTwins);
         }
+        automation::validate_target_views(primary.as_ref(), scratch.as_ref(), descriptors)?;
         if !primary.can_copy_history_from(scratch.as_ref())
             || !scratch.can_copy_history_from(primary.as_ref())
             || primary.supports_active_occurrence_ids() != active_occurrence_ids

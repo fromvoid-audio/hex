@@ -950,6 +950,7 @@ pub(super) struct EditorView {
     group_selection_history: group_selection::SelectionHistory,
     pending_clip_move: Option<pending_clip_move::Pending>,
     close_prompt_open: bool,
+    automation_close_preflight: close::AutomationClosePreflight,
     export_pending: bool,
     bounce_control: Option<hex_session::service::ExportControl>,
     /// `b` is held during the active Arrangement clip drag; release bounces.
@@ -1728,6 +1729,7 @@ impl EditorView {
             group_selection_history: group_selection::SelectionHistory::default(),
             pending_clip_move: None,
             close_prompt_open: false,
+            automation_close_preflight: Default::default(),
             export_pending: false,
             bounce_control: None,
             drag_bounce_held: false,

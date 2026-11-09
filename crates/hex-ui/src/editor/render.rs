@@ -896,7 +896,9 @@ impl Render for EditorView {
                     return;
                 }
                 if event.keystroke.key == "escape"
-                    && (view.cancel_trim_gesture(cx) | view.cancel_active_native_device_drag())
+                    && (view.cancel_trim_gesture(cx)
+                        | view.cancel_active_native_device_drag()
+                        | view.device_panel.mapping_source.take().is_some())
                 {
                     cx.stop_active_drag(window);
                     cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);

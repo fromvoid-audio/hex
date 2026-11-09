@@ -45,6 +45,8 @@ pub(crate) fn validate_constructor_project_with_effects(
     project: &hex_project::Project,
     effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
 ) -> Result<(), AudioStorageError> {
+    crate::device_modulation::validate_source_owners(project)
+        .map_err(|_| AudioStorageError::UnsupportedGraph)?;
     let supported = |d: &hex_project::Device| {
         d.state().asset_references().is_empty()
             && (d.state().type_id() == hex_devices::utility::UTILITY_TYPE_ID

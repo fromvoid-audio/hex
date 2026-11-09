@@ -25,6 +25,7 @@ use std::{collections::BTreeMap, sync::Arc};
 #[derive(Clone, PartialEq, Eq)]
 struct PreparedDeviceIdentity {
     id: DeviceId,
+    parent: Option<DeviceId>,
     state: hex_lattice_contract::NativeDeviceState,
     bypassed: bool,
 }
@@ -33,6 +34,7 @@ impl From<&Device> for PreparedDeviceIdentity {
     fn from(device: &Device) -> Self {
         Self {
             id: device.id(),
+            parent: device.parent(),
             state: device.state().clone().without_host_gains(),
             bypassed: device.bypassed(),
         }
@@ -1507,8 +1509,9 @@ impl PreparedRevision {
     /// Preallocation quote for ordinary compilation's complete predecessor evidence. Counts
     /// canonical source/state backing conservatively, including shared duplicates. One additional
     /// same-project descriptor set is reserved for tuning-continuation validation scratch; this
-    /// construction-only allowance does not multiply retained inventory. Actual Vec capacities
-    /// are checked again after construction. Legacy closed compilation is unchanged.
+    /// construction-only allowance does not multiply retained inventory. Native source program
+    /// construction is separately quoted once, including retained/temporary overlap. Actual Vec
+    /// capacities are checked after construction. Legacy closed compilation is unchanged.
     pub fn device_handoff_metadata_construction_bytes(project: &Project) -> Result<usize, Invalid> {
         let bytes = (|| {
             let mut bytes = project
@@ -1550,8 +1553,11 @@ impl PreparedRevision {
         // descriptors. It may coexist with the candidate; reserve that finite worst case even
         // when this generic preparation call does not know whether validation will be requested.
         let predecessor_validation_scratch = candidate;
+        let native_programs =
+            PreparedSessionInventory::instrument_automation_construction_bytes(project)?;
         candidate
             .checked_add(predecessor_validation_scratch)
+            .and_then(|bytes| bytes.checked_add(native_programs))
             .ok_or(Invalid("device handoff construction byte count overflow"))
     }
 
@@ -1951,3 +1957,7 @@ fn keyboard_source_facts_match(source: &PreparedRevision, target: &PreparedRevis
 
 #[cfg(test)]
 mod ordinary_streaming_tests;
+
+#[cfg(test)]
+#[path = "prepared_revision/serial_unit_tests.rs"]
+mod serial_unit_tests;

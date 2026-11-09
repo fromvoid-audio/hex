@@ -5,6 +5,45 @@ use shared_sources::SharedSourceHandoff;
 
 /// Retained-path creation/removal needs the stopped bounce fence and a fresh
 /// graph. Do not let an ordinary handoff preserve voices or tails across it.
+/// Compare the actual prepared receiver. Pure analytic providers need not
+/// retain the mutable revision descriptor; a contributor may not own one.
+fn prepared_source_generator_matches(
+    previous: &PreparedRevision,
+    candidate: &PreparedRevision,
+    source: hex_project::SourceId,
+) -> bool {
+    fn receiver(
+        revision: &PreparedRevision,
+        source: hex_project::SourceId,
+    ) -> Option<&crate::Track> {
+        revision
+            .arrangement()
+            .tracks()
+            .iter()
+            .find(|track| track.source_id() == Some(source) && track.receives_source_audio())
+    }
+    previous.arrangement().shared_contexts().tuning_identity()
+        == candidate.arrangement().shared_contexts().tuning_identity()
+        && receiver(previous, source)
+            .zip(receiver(candidate, source))
+            .is_some_and(|(old, new)| {
+                old.instrument_id.is_some()
+                    && old.instrument_id == new.instrument_id
+                    && old.instrument_bypassed == new.instrument_bypassed
+                    && old.foreign_instrument.is_none()
+                    && new.foreign_instrument.is_none()
+                    && old
+                        .instrument_state
+                        .as_ref()
+                        .zip(new.instrument_state.as_ref())
+                        .is_some_and(|(old, new)| {
+                            old.asset_references().is_empty()
+                                && new.asset_references().is_empty()
+                                && old.processing_eq_on_callback(new)
+                        })
+            })
+}
+
 fn retained_path_roles_match(old: &PreparedRevision, new: &PreparedRevision) -> bool {
     let retained = |revision: &PreparedRevision, index: usize| {
         revision.source_routing().source(index).is_some()
@@ -393,6 +432,27 @@ impl SessionPlayback {
         live: bool,
         fenced_restart: bool,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        let source_effect_handoff =
+            !self.source_effects.is_empty() || !previous.source_effects.is_empty();
+        if source_effect_handoff
+            && (live
+                || groups.is_some()
+                || self.loop_region() != previous.loop_region()
+                || self.revision.arrangement().tempo_map
+                    != previous.revision.arrangement().tempo_map
+                || !self
+                    .source_effects
+                    .can_continue_from(&previous.source_effects)
+                || !self.source_effects.sources().all(|source| {
+                    prepared_source_generator_matches(&previous.revision, &self.revision, source)
+                }))
+        {
+            // This staged continuation has no live custody, restart or
+            // recipe replacement contract yet.
+            return Err(SessionPlaybackError::Arrangement(
+                "source effect handoff requires the same prepared source configuration",
+            ));
+        }
         if !(retained_path_roles_match(&previous.revision, &self.revision)
             || fenced_restart && live && self.live_restart && self.candidate_admission_open)
         {
@@ -406,26 +466,32 @@ impl SessionPlayback {
         if live && self.live_restart && self.candidate_admission_open {
             return self.inherit_state_planned_once(previous, None, demand, true);
         }
-        match self.inherit_state_planned_once(previous, groups, demand.as_deref_mut(), false) {
-            // An open admission proves the refusal came from the pure
-            // preflight: neither runtime changed, so the reset handoff may
-            // run instead (Pulse #3770, #3774).
-            Err(SessionPlaybackError::MutableInstrumentActive)
-                if live
-                    && previous.playing
-                    && self.candidate_admission_open
-                    && shared_sources::short_source_release_blocks_reenable(
-                        &self.revision,
-                        previous,
-                    ) =>
-            {
-                Err(SessionPlaybackError::DeviceTransitionBusy)
-            }
-            Err(error) if live && self.candidate_admission_open && restartable(error) => {
-                self.inherit_state_planned_once(previous, None, demand, true)
-            }
-            result => result,
+        let result =
+            match self.inherit_state_planned_once(previous, groups, demand.as_deref_mut(), false) {
+                // An open admission proves the refusal came from the pure
+                // preflight: neither runtime changed, so the reset handoff may
+                // run instead (Pulse #3770, #3774).
+                Err(SessionPlaybackError::MutableInstrumentActive)
+                    if live
+                        && previous.playing
+                        && self.candidate_admission_open
+                        && shared_sources::short_source_release_blocks_reenable(
+                            &self.revision,
+                            previous,
+                        ) =>
+                {
+                    Err(SessionPlaybackError::DeviceTransitionBusy)
+                }
+                Err(error) if live && self.candidate_admission_open && restartable(error) => {
+                    self.inherit_state_planned_once(previous, None, demand, true)
+                }
+                result => result,
+            };
+        if source_effect_handoff && result.is_ok() {
+            self.source_effects
+                .continue_from(&mut previous.source_effects);
         }
+        result
     }
     /// Whether any same-identity device chain must defer this handoff until
     /// the predecessor's committed live transitions drain (Pulse #4178).
@@ -3419,11 +3485,17 @@ impl SessionPlayback {
             if release.location.tail_group().is_some() {
                 continue;
             }
+            let source_effects_continue = release.source_origin.is_some_and(|origin| {
+                self.source_effects
+                    .sources()
+                    .any(|source| source == origin.source)
+            });
             let audio_plan = shared_sources::plan_release_audio_owner(
                 release,
                 previous,
                 self.revision.as_ref(),
                 &analytic_owner_matches,
+                source_effects_continue,
             )?;
             if let Some(current) = audio_plan.current_receiver {
                 release.location = ReleaseLocation::new(current, None)?;
@@ -3754,6 +3826,9 @@ impl SessionPlayback {
             {
                 return Err(SessionPlaybackError::ReleaseBankFull);
             }
+            runtime
+                .preflight_tail_parameters()
+                .map_err(|error| error.render_error())?;
             old_track_mutable_tail_slots[old_index] = Some(slot);
         }
         self.release_scratch.sort_unstable_by_key(|entry| {
@@ -4346,8 +4421,23 @@ impl SessionPlayback {
             &previous.return_chains,
             previous.revision.arrangement().return_buses(),
         )?;
+        // Capture THEN-current committed targets before any owned transfer.
+        // These donor buffers are inactive staging while attached; an earlier
+        // successful capture changes no audio/history/ownership if a later one
+        // refuses. Existing detached tails keep their already-frozen values.
+        for (old_index, slot) in old_track_mutable_tail_slots.iter().enumerate() {
+            if slot.is_some() {
+                previous
+                    .mutable_instruments
+                    .get_mut(old_index)
+                    .and_then(Option::as_mut)
+                    .ok_or(SessionPlaybackError::MutableInstrumentRuntime)?
+                    .capture_tail_parameters()
+                    .map_err(|error| error.render_error())?;
+            }
+        }
         // All admission/storage and source-lease checks precede destructive
-        // owned-history transfers. The donor remains untouched on refusal.
+        // owned-history transfers. The donor remains audibly untouched on refusal.
         for (new_index, bus) in self
             .revision
             .arrangement()

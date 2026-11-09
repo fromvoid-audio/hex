@@ -1,8 +1,13 @@
 //! GPUI owns one pointer gesture and a bounded delivery batch. Session owns
 //! the draft and history. The callback owns actual application and restoration.
+//! Refused submissions leave the original batch and any unread endpoint or
+//! retired receipts with this recorder. Cancel stops new input; neither a
+//! callback terminal nor an unavailable worker resolves that recovery custody.
 use super::EditorView;
 use hex_audio::{
-    native_parameter_input::{AbortReason, Receipt, Target},
+    native_parameter_input::{
+        AbortReason, MAX_PENDING_RECEIPTS, MAX_PENDING_VALUE_RECEIPTS, Receipt, Target,
+    },
     prepared::{Client, RetiredScalarReceiptBatch, RetiredScalarReceipts, ScalarReceipt},
 };
 use hex_engine::{NativeParameterApplication, NativeTransientValue};
@@ -12,12 +17,19 @@ use hex_session::{
     device_gesture::{GestureKey, GestureTarget},
     service::{
         DeviceAutomationTakeAction as Action, DeviceAutomationTakeProgress as Progress,
-        DeviceAutomationTakeScope, Event, Request,
+        DeviceAutomationTakeScope, Event, MAX_NATIVE_RECOVERY_CONTINUATION_EVENTS, Request,
         automation_draft::{DraftProvenance, EVENTS_PER_BATCH},
     },
 };
 use hex_widgets::NumericEventPhase;
 use std::sync::{Arc, atomic::Ordering::Acquire};
+
+// A refused writer batch can coexist with an entire endpoint window. Reserve
+// room to read the terminal even when both sets of applied values are full.
+const RETAINED_BATCH_CAPACITY: usize = EVENTS_PER_BATCH + MAX_PENDING_RECEIPTS;
+const _: () = assert!(
+    EVENTS_PER_BATCH + MAX_PENDING_VALUE_RECEIPTS <= MAX_NATIVE_RECOVERY_CONTINUATION_EVENTS
+);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Arm {
@@ -41,6 +53,7 @@ enum Phase {
     Delivering,
     Sealing,
     Orphaned,
+    Retained,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -95,9 +108,7 @@ impl Touch {
                 ..
             } => {
                 self.delivered_sequence = self.delivered_sequence.max(sequence);
-                if self.phase != Phase::Orphaned {
-                    self.batch.push((sequence, application));
-                }
+                self.batch.push((sequence, application));
             }
             Receipt::Superseded { .. } => {}
             Receipt::Finished { application, .. } => {
@@ -109,6 +120,27 @@ impl Touch {
         }
     }
 
+    /// Drain one bounded source window. Return true only if the source had
+    /// no further receipt before the current work or storage limit.
+    fn drain_receipts(&mut self, mut next: impl FnMut() -> Option<ScalarReceipt>) -> bool {
+        let (capacity, steps) = if self.phase == Phase::Orphaned {
+            (RETAINED_BATCH_CAPACITY, MAX_PENDING_RECEIPTS)
+        } else {
+            (EVENTS_PER_BATCH, EVENTS_PER_BATCH)
+        };
+        for _ in 0..steps {
+            if self.batch.len() >= capacity || self.terminal.is_some() {
+                break;
+            }
+            match next() {
+                Some(ScalarReceipt::NativeParameter(receipt)) => self.receipt(receipt),
+                Some(ScalarReceipt::Gain(_)) => {}
+                None => return true,
+            }
+        }
+        false
+    }
+
     fn drain(&mut self, client: Option<&mut Client>) {
         if self.terminal.is_some()
             || self
@@ -118,17 +150,11 @@ impl Touch {
             return;
         }
         if let Some(client) = client {
-            // Normal credits and terminal receipts have bounded callback
-            // capacity. Stop at the batch bound, including across retries.
-            for _ in 0..EVENTS_PER_BATCH {
-                if self.batch.len() == EVENTS_PER_BATCH || self.terminal.is_some() {
-                    break;
-                }
-                let Some(receipt) = client.native_parameter_receipt() else {
-                    break;
-                };
-                self.receipt(receipt);
-            }
+            self.drain_receipts(|| {
+                client
+                    .native_parameter_receipt()
+                    .map(ScalarReceipt::NativeParameter)
+            });
             return;
         }
         if self.retired_batch.is_none()
@@ -144,18 +170,18 @@ impl Touch {
             }
         }
         if let Some(batch) = self.retired_batch.take() {
-            {
+            let mut read = 0;
+            let exhausted = {
                 let mut receipts = batch.receipts().skip(self.retired_read);
-                while self.batch.len() < EVENTS_PER_BATCH && self.terminal.is_none() {
-                    let Some(receipt) = receipts.next() else {
-                        self.terminal = Some(Action::Interrupt);
-                        return;
-                    };
-                    self.retired_read += 1;
-                    if let ScalarReceipt::NativeParameter(receipt) = receipt {
-                        self.receipt(receipt);
-                    }
-                }
+                self.drain_receipts(|| {
+                    let receipt = receipts.next()?;
+                    read += 1;
+                    Some(receipt)
+                })
+            };
+            self.retired_read += read;
+            if exhausted && self.terminal.is_none() {
+                self.terminal = Some(Action::Interrupt);
             }
             if self.terminal.is_none() {
                 self.retired_batch = Some(batch);
@@ -170,7 +196,7 @@ impl Touch {
             return None;
         }
         match self.phase {
-            Phase::Starting | Phase::Orphaned => None,
+            Phase::Starting | Phase::Orphaned | Phase::Retained => None,
             Phase::Delivering if !self.batch.is_empty() => Some((
                 Submission::Append,
                 Action::Append(Arc::from(self.batch.as_slice())),
@@ -187,6 +213,16 @@ impl Touch {
             }),
             Phase::Sealing => Some((Submission::Poll, Action::Poll)),
         }
+    }
+
+    fn retain_after_refusal(&mut self) {
+        self.phase = if self.terminal.is_some() {
+            Phase::Retained
+        } else {
+            Phase::Orphaned
+        };
+        self.end = Some(End::Cancel);
+        self.in_flight = None;
     }
 
     fn release_ready(&self) -> bool {
@@ -279,6 +315,13 @@ fn abort_reason(reason: AbortReason) -> hex_session::service::automation_draft::
 }
 
 impl Recorder {
+    pub(super) fn reserve_request(&mut self) -> Result<u64, &'static str> {
+        self.request = self
+            .request
+            .checked_add(1)
+            .ok_or("automation request limit reached")?;
+        Ok(self.request)
+    }
     pub(super) fn busy(&self) -> bool {
         self.touch.is_some()
     }
@@ -364,6 +407,9 @@ impl EditorView {
         gesture: GestureTarget,
         value: ParameterValue,
     ) -> Result<Option<GestureKey>, &'static str> {
+        if self.automation_close_preflight.frozen() {
+            return Err("close is pending · automation recording is unavailable");
+        }
         if self.native_automation_recorder.busy() {
             return Err("finish the current automation touch first");
         }
@@ -460,7 +506,7 @@ impl EditorView {
             issued_sequence: 0,
             delivered_sequence: 0,
             in_flight: Some((request, Submission::Begin)),
-            batch: Vec::with_capacity(EVENTS_PER_BATCH),
+            batch: Vec::with_capacity(RETAINED_BATCH_CAPACITY),
             terminal: None,
             retired: None,
             retired_batch: None,
@@ -566,16 +612,12 @@ impl EditorView {
             (Submission::Begin, _) => return,
             (Submission::Append, Progress::Appended) => touch.batch.clear(),
             (Submission::Append, Progress::Backpressured) => {}
-            (Submission::Append, _) => {
-                // A permanent refusal cannot be retried into another take.
-                // Session preserves its durable prefix and reports failure.
-                touch.batch.clear();
-                touch.end = Some(End::Cancel);
-            }
-            (Submission::Terminal, _) => {
+            (Submission::Append, _) => touch.retain_after_refusal(),
+            (Submission::Terminal, Progress::Sealing) => {
                 touch.terminal = None;
                 touch.phase = Phase::Sealing;
             }
+            (Submission::Terminal, _) => touch.retain_after_refusal(),
             (Submission::Poll, Progress::Pending) => {}
             (Submission::Poll, Progress::Committed) => {
                 if let Some(arm) = self.native_automation_recorder.arm.as_mut()
@@ -588,6 +630,18 @@ impl EditorView {
                     arm.revision = event.state.revision;
                 }
                 return;
+            }
+            (Submission::Poll, Progress::NativeWriterRetained { path, reason }) => {
+                // Sealing already retired the endpoint. The writer owns the
+                // admitted terminal; there are no more caller receipts.
+                touch.phase = Phase::Retained;
+                self.error = Some(
+                    format!(
+                        "{reason} · automation take retained at {}",
+                        hex_session::service::text::verbatim(path.display())
+                    )
+                    .into(),
+                );
             }
             (Submission::Poll, Progress::Retained(path)) => {
                 if event.error.is_none() {
@@ -606,7 +660,11 @@ impl EditorView {
         self.native_automation_recorder.touch = Some(touch);
     }
 
-    pub(super) fn native_automation_request_not_submitted(&mut self, request: &Request) {
+    pub(super) fn native_automation_request_not_submitted(
+        &mut self,
+        request: &Request,
+        worker_closed: bool,
+    ) {
         let Request::DeviceAutomationTake { request_id, .. } = request else {
             return;
         };
@@ -618,15 +676,16 @@ impl EditorView {
         else {
             return;
         };
-        if matches!(touch.phase, Phase::Starting | Phase::Sealing) || touch.terminal.is_some() {
+        if touch.phase == Phase::Starting {
             self.native_automation_recorder.touch = None;
+        } else if worker_closed {
+            // Submission refusal is not a writer receipt. Retain originals
+            // while releasing the actual endpoint and awaiting recovery.
+            touch.retain_after_refusal();
         } else {
-            // No worker terminal will arrive. Release the audio endpoint's
-            // real credit and preserve the draft prefix already in Session.
-            touch.phase = Phase::Orphaned;
-            touch.end = Some(End::Cancel);
+            // The request never reached the worker. Retry the exact batch or
+            // terminal at normal poll cadence when queue pressure clears.
             touch.in_flight = None;
-            touch.batch.clear();
         }
     }
 
@@ -660,7 +719,8 @@ impl EditorView {
             }
         }
         if touch.phase == Phase::Orphaned && touch.terminal.is_some() {
-            return true;
+            touch.phase = Phase::Retained;
+            changed = true;
         }
         let proposal = touch.next_submission();
         let scope = touch.scope;
@@ -750,7 +810,7 @@ mod tests {
             issued_sequence: 0,
             delivered_sequence: 0,
             in_flight: Some((1, Submission::Begin)),
-            batch: Vec::with_capacity(EVENTS_PER_BATCH),
+            batch: Vec::with_capacity(RETAINED_BATCH_CAPACITY),
             terminal: None,
             retired: None,
             retired_batch: None,
@@ -820,5 +880,206 @@ mod tests {
         assert!(
             matches!(touch.next_submission(), Some((Submission::Terminal, Action::Finish(value))) if value == restored)
         );
+    }
+
+    #[test]
+    fn full_refused_batch_retains_entire_endpoint_window_and_restoration() {
+        let mut touch = touch();
+        touch.phase = Phase::Delivering;
+        touch.in_flight = None;
+        let target = touch.audio;
+        let applied = |sequence| NativeParameterApplication {
+            identity: target.input.identity(),
+            operation: NativeTransientOperation::Set(NativeTransientValue::HostOutputGain(
+                HostGain::ZERO,
+            )),
+            arrangement_frame: sequence + 1,
+            performance_frame: sequence + 5,
+            loop_pass: 2,
+            remaining_latency_frames: 4,
+        };
+        let end = (EVENTS_PER_BATCH + MAX_PENDING_VALUE_RECEIPTS) as u64;
+        let restored = NativeParameterApplication {
+            operation: NativeTransientOperation::Clear(DeviceAutomationTarget::HostOutputGain),
+            ..applied(end + 1)
+        };
+        let mut waiting = (1..=end)
+            .map(|sequence| Receipt::Applied {
+                target,
+                sequence,
+                application: applied(sequence),
+            })
+            .chain(std::iter::once(Receipt::Finished {
+                target,
+                application: restored,
+            }))
+            .map(ScalarReceipt::NativeParameter);
+
+        touch.drain_receipts(|| waiting.next());
+        assert_eq!(touch.batch.len(), EVENTS_PER_BATCH);
+        assert!(touch.terminal.is_none());
+        touch.in_flight = Some((2, Submission::Append));
+        touch.retain_after_refusal();
+        touch.drain_receipts(|| waiting.next());
+        assert_eq!(touch.batch.len(), end as usize);
+        assert_eq!(
+            touch.batch,
+            (1..=end).map(|seq| (seq, applied(seq))).collect::<Vec<_>>()
+        );
+        assert!(matches!(
+            touch.terminal,
+            Some(Action::Finish(application))
+                if application == restored
+        ));
+        assert!(waiting.next().is_none());
+        assert!(touch.next_submission().is_none());
+    }
+
+    #[cfg(feature = "ui-test-support")]
+    #[gpui::test]
+    fn refused_and_lost_submissions_keep_delivered_receipts_until_recovery(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::{AnyWindowHandle, AppContext, Empty};
+        use hex_session::service::{DeviceAutomationTakeCompletion, Service};
+        use std::time::Instant;
+
+        let service = Service::new(48_000, 32, 8_000_000).unwrap();
+        let deadline = crate::test_wait::hang_deadline();
+        let mut event = loop {
+            if let Ok(event) = service.try_event() {
+                break event;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        };
+        event.device_automation_take_complete = Some(DeviceAutomationTakeCompletion {
+            request_id: 2,
+            progress: Progress::Refused,
+        });
+        let visual = cx.add_window(|_, _| Empty);
+        let handle: AnyWindowHandle = *visual;
+        cx.update_window(handle, |_, window, cx| {
+            let editor = window.replace_root(cx, |window, cx| {
+                EditorView::new(window, cx, service, Err("offline fixture".into()))
+            });
+            for worker_closed in [false, true] {
+                editor.update(cx, |view, cx| {
+                    let mut capture = touch();
+                    let application = NativeParameterApplication {
+                        identity: capture.audio.input.identity(),
+                        operation: NativeTransientOperation::Set(
+                            NativeTransientValue::HostOutputGain(HostGain::ZERO),
+                        ),
+                        arrangement_frame: 19,
+                        performance_frame: 23,
+                        loop_pass: 0,
+                        remaining_latency_frames: 4,
+                    };
+                    capture.phase = Phase::Delivering;
+                    capture.in_flight = Some((2, Submission::Append));
+                    capture.receipt(Receipt::Applied {
+                        target: capture.audio,
+                        sequence: 1,
+                        application,
+                    });
+                    view.native_automation_recorder.touch = Some(capture);
+                    if worker_closed {
+                        let capture = view.native_automation_recorder.touch.as_ref().unwrap();
+                        let request = Request::DeviceAutomationTake {
+                            request_id: 2,
+                            scope: capture.scope,
+                            action: Action::Append(Arc::from(capture.batch.as_slice())),
+                        };
+                        view.native_automation_request_not_submitted(&request, false);
+                        let capture = view.native_automation_recorder.touch.as_mut().unwrap();
+                        let Some((Submission::Append, Action::Append(retry))) =
+                            capture.next_submission()
+                        else {
+                            panic!("temporary pressure must retry the original batch");
+                        };
+                        assert_eq!(retry.as_ref(), &[(1, application)]);
+                        capture.in_flight = Some((2, Submission::Append));
+                        view.native_automation_request_not_submitted(&request, true);
+                    } else {
+                        view.native_automation_take_completion(&event);
+                    }
+                    let capture = view.native_automation_recorder.touch.as_mut().unwrap();
+                    assert_eq!(capture.batch, [(1, application)]);
+                    assert!(capture.end == Some(End::Cancel));
+                    let late = NativeParameterApplication {
+                        arrangement_frame: 27,
+                        performance_frame: 31,
+                        ..application
+                    };
+                    capture.receipt(Receipt::Applied {
+                        target: capture.audio,
+                        sequence: 2,
+                        application: late,
+                    });
+                    assert_eq!(capture.batch, [(1, application), (2, late)]);
+                    capture.receipt(Receipt::Aborted {
+                        target: capture.audio,
+                        reason: AbortReason::Cancelled,
+                    });
+                    view.tick_native_automation_recording();
+                    assert!(view.native_automation_recorder.busy());
+                    let capture = view.native_automation_recorder.touch.as_ref().unwrap();
+                    assert_eq!(capture.batch.len(), 2);
+                    assert!(capture.terminal.is_some());
+                    assert!(capture.next_submission().is_none());
+                    let (gesture, latest) = (capture.gesture, capture.latest);
+                    assert!(view.begin_native_automation_touch(gesture, latest).is_err());
+                    view.request_window_close(window, cx);
+                    assert!(view.error.as_ref().unwrap().contains("recover"));
+                });
+            }
+            editor.update(cx, |view, _| {
+                let mut capture = touch();
+                let terminal = Action::Abort(
+                    hex_session::service::automation_draft::DraftAbortReason::Cancelled,
+                );
+                capture.phase = Phase::Delivering;
+                capture.in_flight = Some((2, Submission::Terminal));
+                capture.terminal = Some(terminal);
+                view.native_automation_recorder.touch = Some(capture);
+                view.native_automation_take_completion(&event);
+                assert!(view.native_automation_recorder.busy());
+                let capture = view.native_automation_recorder.touch.as_ref().unwrap();
+                assert!(matches!(capture.terminal, Some(Action::Abort(_))));
+                assert!(capture.next_submission().is_none());
+            });
+            editor.update(cx, |view, _| {
+                let mut capture = touch();
+                let scope = capture.scope;
+                capture.phase = Phase::Sealing;
+                capture.in_flight = Some((3, Submission::Poll));
+                view.native_automation_recorder.touch = Some(capture);
+                event.device_automation_take_complete = Some(DeviceAutomationTakeCompletion {
+                    request_id: 4,
+                    progress: Progress::NativeWriterRetained {
+                        path: "/fixture/original.hex-automation-draft".into(),
+                        reason: "writer refused".into(),
+                    },
+                });
+                view.native_automation_take_completion(&event);
+                let capture = view.native_automation_recorder.touch.as_ref().unwrap();
+                assert!(capture.phase == Phase::Sealing && capture.in_flight.is_some());
+                event
+                    .device_automation_take_complete
+                    .as_mut()
+                    .unwrap()
+                    .request_id = 3;
+                view.native_automation_take_completion(&event);
+                let capture = view.native_automation_recorder.touch.as_ref().unwrap();
+                assert_eq!(capture.scope, scope);
+                assert!(capture.phase == Phase::Retained);
+                assert!(capture.in_flight.is_none());
+                assert!(view.native_automation_recorder.busy());
+                assert!(view.error.as_ref().unwrap().contains("writer refused"));
+            });
+            window.remove_window();
+        })
+        .unwrap();
     }
 }
