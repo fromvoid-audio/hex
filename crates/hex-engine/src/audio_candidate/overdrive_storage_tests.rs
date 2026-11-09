@@ -140,5 +140,27 @@ fn overdrive_sealed_storage_and_compensated_render_match_the_ordinary_graph() {
             state: malformed,
         })
         .unwrap();
-    assert!(effects.quote(editor.project(), 1).is_err());
+    let project = editor.project();
+    let quote = effects.quote(project, 1).unwrap();
+    let limits = quote.storage_reservation(FRAMES * 8).unwrap();
+    let mut candidate = AudioCandidatePreparation::try_new_on_control(1, limits).unwrap();
+    candidate
+        .copy_resident_source_on_control(asset, &audio)
+        .unwrap();
+    let rejected = effects.prepare(
+        &mut candidate,
+        project,
+        3,
+        AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 9,
+        },
+        None,
+    );
+    assert!(matches!(
+        rejected,
+        Err(crate::AudioStorageError::UnsupportedGraph)
+    ));
+    assert!(candidate.owner_on_control().is_none());
+    candidate.cleanup_on_control().unwrap();
 }
