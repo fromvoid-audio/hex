@@ -2,6 +2,7 @@
 //! belong to the prepared graph.
 pub mod audio_rate;
 pub mod button;
+pub mod buttons;
 pub mod envelope_follower;
 pub mod lfo;
 pub mod macro_four;
