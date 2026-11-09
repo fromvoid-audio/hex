@@ -668,3 +668,90 @@ fn session_playing_paths_run_source_effects_once_before_mixing_receiver_clips() 
         }
     }
 }
+
+/// The quote tests must refuse before asking even one valid factory to build.
+struct BudgetFactory(usize);
+
+impl hex_lattice::PreparedOwnedProcessorRuntime for BudgetFactory {
+    fn runtime_version(&self) -> u32 {
+        1
+    }
+    fn declared_pair_bytes(&self) -> usize {
+        self.0
+    }
+    fn create_runtime(
+        &self,
+    ) -> Result<
+        Box<dyn hex_lattice::OwnedProcessorRuntime>,
+        hex_lattice_contract::DeviceContractError,
+    > {
+        panic!("over-budget source runtime must not be constructed")
+    }
+    fn output_tail(&self) -> hex_lattice::OutputTail {
+        hex_lattice::OutputTail::Finite { max_tail_frames: 0 }
+    }
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+}
+
+#[test]
+fn aggregate_track_return_main_and_source_budgets_refuse_before_runtime_creation() {
+    let mut project = fixture(1, false);
+    let source = project.tracks[0].source_id().unwrap();
+    let instance = |owner, id, bytes| {
+        let mut instance = recipe(source, Some(0));
+        instance.owner = owner;
+        instance.device_id = id;
+        instance.definition = Some(PreparedProcessorFactory::Owned(Arc::new(BudgetFactory(
+            bytes,
+        ))));
+        instance
+    };
+    let devices = |owner, count, bytes| {
+        Arc::from(
+            (1..=count as u64)
+                .map(|id| instance(owner, id, bytes))
+                .collect::<Vec<_>>(),
+        )
+    };
+    let source_instances = [instance(
+        ProcessorChainOwner::Source(source.value()),
+        999,
+        1,
+    )];
+    let recipes = [PreparedSourceEffects {
+        source,
+        receiver: 0,
+        instances: &source_instances,
+    }];
+    let slots = hex_project::MAX_DEVICES_PER_TRACK;
+    assert_eq!(slots * 4, hex_lattice::MAX_STATEFUL_PROCESSORS);
+    for track in &mut project.tracks {
+        let owner = ProcessorChainOwner::Track(track.canonical_track_id().unwrap().value());
+        track.device_chain = devices(owner, slots, 1);
+    }
+    project.return_buses[0].device_chain = devices(
+        ProcessorChainOwner::Return(project.return_buses[0].id.value()),
+        slots,
+        1,
+    );
+    project.main_device_chain = devices(ProcessorChainOwner::Main, slots, 1);
+    assert!(matches!(
+        SourceEffectStages::prepare(&project, &recipes),
+        Err(Invalid(
+            "source effects exceed the aggregate graph runtime budget"
+        ))
+    ));
+
+    let mut project = fixture(0, false);
+    let bytes = hex_lattice::MAX_OWNED_PROCESSOR_PAIR_BYTES;
+    project.main_device_chain = devices(ProcessorChainOwner::Main, 2, bytes);
+    // A refused offline graph must not instantiate Main either.
+    let mut renderer = with_recipe(&project, 0, &source_instances);
+    renderer.play();
+    assert_eq!(
+        renderer.render(&mut [[0.0; 2]]).unwrap_err(),
+        Invalid("source effects exceed the aggregate graph runtime budget")
+    );
+}
