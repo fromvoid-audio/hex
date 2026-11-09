@@ -6875,6 +6875,41 @@ fn assert_modulation_mapping(
             ))
             .is_none()
     );
+    if type_id == hex_engine::audio_rate_modulator::TYPE_ID {
+        use hex_project::ModulationAmount;
+        let route = |view: &EditorView| {
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .unwrap()
+                .modulation()
+                .routes()[0]
+        };
+        let mut adjusted = editor.read_with(cx, |view, _| route(view));
+        let key = format!("modulation-route-{}-less", adjusted.id.value());
+        for _ in 0..3 {
+            click_modulator_control(&mut visual, key.clone(), true);
+            adjusted.amount = ModulationAmount::new(adjusted.amount.get() - 0.05).unwrap();
+            pump_until(&editor, cx, |view| route(view) == adjusted);
+            visual.run_until_parked();
+        }
+        assert!(adjusted.amount.get() < 0.0);
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |view| route(view).amount.get() == 0.0);
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+        pump_until(&editor, cx, |view| route(view) == adjusted);
+        editor.read_with(cx, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            let loaded = hex_storage::decode(&hex_storage::encode(project).unwrap()).unwrap();
+            assert_eq!(
+                loaded.device(device).unwrap().modulation().routes(),
+                [adjusted]
+            );
+            assert_eq!(loaded.device(device).unwrap().state(), &original);
+        });
+    }
     if type_id == hex_engine::lfo_modulator::TYPE_ID {
         use hex_project::{ModulationAmount, ModulationRange};
         let routes = |view: &EditorView| {
