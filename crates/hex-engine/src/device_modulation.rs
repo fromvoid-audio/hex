@@ -45,10 +45,10 @@ pub fn project_device_modulation_target_supported(
             .unwrap_or(false)
 }
 
-/// Control-side mapping eligibility for the native post-processor trim.
+/// Control-side mapping eligibility for both native host gain stages.
 /// The closed provider's actual factory supplies the latency. No render
 /// runtime or audio resources are constructed by this query.
-pub fn project_device_output_gain_modulation_supported(
+pub fn project_device_host_gain_modulation_supported(
     project: &Project,
     device: hex_project::DeviceId,
 ) -> bool {
