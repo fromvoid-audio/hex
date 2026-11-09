@@ -1593,14 +1593,6 @@ impl SessionPlayback {
         let arrangement = revision.arrangement();
         let recipes = recipe_override.unwrap_or(&arrangement.source_effects);
         let linear_arrangement_export = policy != RenderConstruction::Interactive;
-        // Export and live publication require separate source runtime quotes.
-        // The ordinary Session kernel already consumes the compiled recipe.
-        if linear_arrangement_export && !recipes.is_empty() {
-            return Err(SessionPlaybackError::DeviceRuntime);
-        }
-        let source_effects =
-            crate::source_effect_stage::SourceEffectStages::prepare(arrangement, recipes)
-                .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
         let chain_has_foreign_automation = arrangement
             .tracks
             .iter()
@@ -1646,9 +1638,10 @@ impl SessionPlayback {
                 "device resource set differs from prepared revision",
             ));
         }
-        // Scoped linear export and every finite bounce reserve before allocation,
-        // then check the actual runtime below. Interactive budgets stay unchanged.
-        let linear_resource_allowance = if (linear_arrangement_export && resources.is_some())
+        // Linear export with scoped resources or source effects, and every finite bounce,
+        // reserve before allocation and check actual runtime storage below.
+        let linear_resource_allowance = if (linear_arrangement_export
+            && (resources.is_some() || !recipes.is_empty()))
             || matches!(
                 policy,
                 RenderConstruction::FiniteBounce | RenderConstruction::FiniteForeignBounce
@@ -1657,6 +1650,9 @@ impl SessionPlayback {
         } else {
             None
         };
+        let source_effects =
+            crate::source_effect_stage::SourceEffectStages::prepare(arrangement, recipes)
+                .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
         let arrangement_tracks = revision.arrangement().tracks();
         let session_tracks = revision.session().tracks();
         if arrangement_tracks.len() != session_tracks.len()
