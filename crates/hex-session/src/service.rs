@@ -6770,6 +6770,19 @@ fn run_worker(
                                 )
                             })
                             .transpose()?;
+                        // Source input can render, but recording must not start
+                        // until the instrument take has canonical adoption.
+                        if input.is_some_and(|input| {
+                            session
+                                .project()
+                                .native_sources()
+                                .iter()
+                                .any(|source| source.instrument().id() == input.device())
+                        }) {
+                            return Err(SessionError::Invalid(
+                                "instrument automation recording is not available",
+                            ));
+                        }
                         session.prepare_resident_native_parameter_recording(
                             input,
                             hex_engine::AudioSourceContext {

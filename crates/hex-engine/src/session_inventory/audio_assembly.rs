@@ -325,7 +325,8 @@ impl SessionAssembly {
                 || i.midi_source_roots.capacity() != 0
                 || i.mutable_history_retarget_storage_bytes != 0
                 || i.instrument_automation_storage_bytes != 0
-                || i.instrument_automation_indices.iter().any(Option::is_some))
+                || i.instrument_automation_indices.iter().any(Option::is_some)
+                || i.armed_instrument_index.is_some())
         {
             return Err(AudioStorageError::UnknownStorage);
         }
@@ -648,6 +649,7 @@ impl SessionAssembly {
                 mutable_history_retarget_storage_bytes: 0,
                 instrument_automation_storage_bytes: 0,
                 instrument_automation_indices: [None; hex_project::MAX_TRACKS],
+                armed_instrument_index: None,
                 audio_clips: mem::take(&mut self.audio),
                 work: midi_work,
                 contains_streamed_sources,
@@ -966,6 +968,7 @@ impl SessionAssembly {
                 mutable_history_retarget_storage_bytes: _,
                 instrument_automation_storage_bytes: _,
                 instrument_automation_indices: _,
+                armed_instrument_index: _,
                 audio_clips,
                 work: _,
                 contains_streamed_sources: _,

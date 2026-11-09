@@ -12,7 +12,7 @@ pub const DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED: &str = "device parameter autom
 /// Maximum recorded targets admitted into one prepared binding union.
 pub(crate) const MAX_EXTERNAL_PARAMETER_TARGETS: usize = 256;
 
-/// Canonical control-side arm description for one supported native effect.
+/// Canonical control-side arm description for one supported native processor.
 /// This Copy identity grants neither publication nor a runtime/source lease.
 /// Runtime factory/twin admission and source fencing remain with preparation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,36 +57,73 @@ impl NativeParameterInputTarget {
         let device = project
             .device(self.device)
             .ok_or(Invalid("native parameter input device no longer exists"))?;
-        let registry = hex_devices::native_registry()
-            .map_err(|_| Invalid("native effect registry is invalid"))?;
         if let NativeTransientValue::Parameter { id, value } = value {
-            let definition = registry
-                .definition(self.device_type)
-                .ok_or(Invalid("native parameter input device is unsupported"))?;
-            hex_lattice_contract::validate_parameter_write(definition, device.state(), id, value)
-                .map_err(|_| {
+            let checked = if matches!(self.identity.owner(), ProcessorChainOwner::Source(_)) {
+                let registry = hex_devices::native_instrument_registry()
+                    .map_err(|_| Invalid("native instrument registry is invalid"))?;
+                let definition = registry
+                    .definition(self.device_type)
+                    .ok_or(Invalid("native parameter input instrument is unsupported"))?;
+                hex_lattice_contract::validate_parameter_write(
+                    definition,
+                    device.state(),
+                    id,
+                    value,
+                )
+            } else {
+                let registry = hex_devices::native_registry()
+                    .map_err(|_| Invalid("native effect registry is invalid"))?;
+                let definition = registry
+                    .definition(self.device_type)
+                    .ok_or(Invalid("native parameter input device is unsupported"))?;
+                hex_lattice_contract::validate_parameter_write(
+                    definition,
+                    device.state(),
+                    id,
+                    value,
+                )
+            };
+            checked.map_err(|_| {
                 Invalid("native parameter input value is invalid for the current state")
             })?;
         }
         Ok(value)
     }
 }
-/// Resolve exactly one canonical Track/Main/Return native effect. Source-owned
-/// devices and foreign providers are excluded even when they expose metadata.
+/// Resolve one canonical Track/Main/Return native effect or one supported
+/// receiving instrument. Foreign and source effect controls are excluded.
 /// Current provider capability is explicit; controls alone never grant it.
 pub fn native_parameter_input_target(
     project: &hex_project::Project,
     device: hex_project::DeviceId,
     target: DeviceAutomationTarget,
 ) -> Result<NativeParameterInputTarget, Invalid> {
-    if project
+    if let Some(source) = project
         .native_sources()
         .iter()
-        .any(|source| source.devices().any(|candidate| candidate.id() == device))
+        .find(|source| source.devices().any(|candidate| candidate.id() == device))
     {
-        return Err(Invalid(
-            "source-owned native parameter input is unsupported",
-        ));
+        let instrument = source.instrument();
+        if instrument.id() != device
+            || instrument.bypassed()
+            || source.receiver().is_none()
+            || source.devices().count() != 1
+            || !instrument_target_supported(instrument.state(), target)
+        {
+            return Err(Invalid(
+                "receiving instrument parameter input is unsupported",
+            ));
+        }
+        return Ok(NativeParameterInputTarget {
+            device,
+            target,
+            identity: ProcessorInstanceIdentity::new(
+                ProcessorChainOwner::Source(source.id().value()),
+                device.value(),
+            )
+            .map_err(|_| Invalid("native instrument input identity is invalid"))?,
+            device_type: instrument.state().type_id(),
+        });
     }
     let mut matching =
         effect_device_owners(project).filter(|(candidate, _)| candidate.id() == device);
