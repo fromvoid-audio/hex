@@ -182,6 +182,11 @@ pub struct PreparedModulation {
     source_count: usize,
 }
 impl PreparedModulation {
+    /// Authored host output trim only when this program supplies that stage.
+    pub fn host_output_gain_base(&self) -> Option<HostGain> {
+        self.output.map(|target| target.base)
+    }
+
     /// Copy a prepared program on control, reporting allocation failure.
     /// Runtime publication must account the copy as separately owned storage.
     pub fn try_clone(&self) -> Result<Self, Error> {
@@ -453,6 +458,12 @@ pub struct ModulationBlock<'a> {
     frames: usize,
 }
 impl ModulationBlock<'_> {
+    /// Read the composed post-instrument host trim from the borrowed block.
+    /// The instrument owner supplies no separate authored host automation lane.
+    pub fn instrument_output_gain_at(&self, offset: usize) -> Result<HostGain, Error> {
+        self.host_output_gain_at(offset, None)
+    }
+
     pub(crate) fn host_input_gain_at(
         &self,
         offset: usize,

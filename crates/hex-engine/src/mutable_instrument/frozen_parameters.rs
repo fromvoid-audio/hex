@@ -188,34 +188,48 @@ impl MutableInstrumentTrackRuntime {
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
         values: Option<&dyn NativeParameterAutomation>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
-        if values.is_none() {
-            return self.process_segment_inner(
-                track,
-                performance,
-                performance,
+        let gain = self.output_trim.map(|trim| trim.committed.linear());
+        let mut render = |frames: &mut [[f32; 2]]| {
+            if values.is_none() {
+                self.process_segment_inner(
+                    track,
+                    performance,
+                    performance,
+                    frames,
+                    onsets,
+                    &[],
+                    events,
+                    clock,
+                    &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                    None,
+                    None,
+                )
+            } else {
+                self.process_volume_scope(
+                    track,
+                    performance,
+                    performance,
+                    frames,
+                    onsets,
+                    &[],
+                    events,
+                    clock,
+                    &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                    None,
+                    values,
+                )
+            }
+        };
+        if let Some(gain) = gain {
+            super::output_trim::render_contribution(
                 frames,
-                onsets,
-                &[],
-                events,
-                clock,
-                &hex_lattice::EMPTY_DEVICE_RESOURCES,
-                None,
-                None,
-            );
+                |_| gain,
+                MutableInstrumentRuntimeError::Budget,
+                render,
+            )
+        } else {
+            render(frames)
         }
-        self.process_volume_scope(
-            track,
-            performance,
-            performance,
-            frames,
-            onsets,
-            &[],
-            events,
-            clock,
-            &hex_lattice::EMPTY_DEVICE_RESOURCES,
-            None,
-            values,
-        )
     }
 }
 

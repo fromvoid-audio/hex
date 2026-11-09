@@ -187,6 +187,15 @@ fn detached_fm4_freezes_latest_target_across_pause_bypass_removal_and_revision()
 
 #[test]
 fn detached_fm4_keeps_the_last_modulated_sample_for_its_release() {
+    exercise_modulated_fm4_release(false);
+}
+
+#[test]
+fn fm4_output_trim_is_sample_accurate_through_live_handoff_and_detached_release() {
+    exercise_modulated_fm4_release(true);
+}
+
+fn exercise_modulated_fm4_release(output_trim: bool) {
     use hex_devices::{
         fm4::device::{FM4_DEFINITION, FM4_TYPE_ID, parameter},
         modulation::lfo::{Rate, Settings, Waveform},
@@ -194,7 +203,7 @@ fn detached_fm4_keeps_the_last_modulated_sample_for_its_release() {
     use hex_lattice::{
         DevicePreparationContext, EMPTY_DEVICE_RESOURCES, NativeInstrumentDefinition,
     };
-    use hex_lattice_contract::ParameterValue;
+    use hex_lattice_contract::{HostGain, ParameterValue};
     use hex_project::{
         DeviceAutomationTarget, DeviceModulation, DeviceModulationRoute, ModulationAmount,
         ModulationDestination, ModulationOutputId, ModulationRange, ModulationRouteId,
@@ -203,6 +212,11 @@ fn detached_fm4_keeps_the_last_modulated_sample_for_its_release() {
 
     let (mut editor, track, device) = fixture();
     let carrier = parameter::carrier(1);
+    let target = if output_trim {
+        DeviceAutomationTarget::HostOutputGain
+    } else {
+        DeviceAutomationTarget::Parameter(carrier)
+    };
     editor
         .execute(Command::ReplaceDeviceAutomation {
             device,
@@ -234,10 +248,11 @@ fn detached_fm4_keeps_the_last_modulated_sample_for_its_release() {
                     output: ModulationOutputId::MAIN,
                     destination: ModulationDestination::Device {
                         device_type: FM4_TYPE_ID,
-                        target: DeviceAutomationTarget::Parameter(carrier),
+                        target,
                         vst3_class: None,
                     },
-                    amount: ModulationAmount::new(0.125).unwrap(),
+                    amount: ModulationAmount::new(if output_trim { 6.0 / 84.0 } else { 0.125 })
+                        .unwrap(),
                     range: ModulationRange::default(),
                     enabled: true,
                 }],
@@ -246,9 +261,21 @@ fn detached_fm4_keeps_the_last_modulated_sample_for_its_release() {
         })
         .unwrap();
     let mut old = playback(&editor);
+    if output_trim {
+        old.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+    }
     old.apply(SessionPlaybackCommand::Play).unwrap();
     const DETACH: u64 = 53;
-    render(&mut old, DETACH as usize, 13);
+    let attached = if output_trim {
+        let mut first = render(&mut old, 13, 5);
+        let mut successor = playback(&editor);
+        successor.try_inherit_state_live_from(&mut old).unwrap();
+        first.extend(render(&mut successor, DETACH as usize - 13, 11));
+        old = successor;
+        first
+    } else {
+        render(&mut old, DETACH as usize, 13)
+    };
     editor.execute(Command::RemoveTrack(track)).unwrap();
     let mut detached = playback(&editor);
     detached.try_inherit_state_from(&mut old).unwrap();
@@ -259,7 +286,7 @@ fn detached_fm4_keeps_the_last_modulated_sample_for_its_release() {
         .patch_parameter(
             &FM4_DEFINITION.default_state().unwrap(),
             carrier,
-            ParameterValue::Float(0.25),
+            ParameterValue::Float(if output_trim { 0.5 } else { 0.25 }),
         )
         .unwrap();
     let note = FM4_DEFINITION
@@ -274,8 +301,23 @@ fn detached_fm4_keeps_the_last_modulated_sample_for_its_release() {
         .unwrap()
         .prepare_note(60, 120)
         .unwrap();
+    let gain = |millidb| HostGain::from_millidb(millidb).unwrap().linear();
+    if output_trim {
+        let expected = (0..DETACH)
+            .map(|age| {
+                let level = gain(if age % 8 < 4 { 6_000 } else { -6_000 });
+                note.sample(age, u64::MAX, &EMPTY_DEVICE_RESOURCES)
+                    .map(|sample| sample * level)
+            })
+            .collect();
+        assert_signal_eq(attached, expected);
+    }
+    let release_gain = if output_trim { gain(-6_000) } else { 1.0 };
     let expected = (DETACH..DETACH + 113)
-        .map(|age| note.sample(age, DETACH, &EMPTY_DEVICE_RESOURCES))
+        .map(|age| {
+            note.sample(age, DETACH, &EMPTY_DEVICE_RESOURCES)
+                .map(|sample| sample * release_gain)
+        })
         .collect();
     assert_signal_eq(render(&mut detached, 113, 11), expected);
 }

@@ -22,6 +22,7 @@ use hex_project::{
 
 /// Small chunks keep device-local scratch independent of the host callback size.
 const CHUNK_FRAMES: usize = 128;
+pub(crate) const INSTRUMENT_MODULATION_CHUNK_FRAMES: usize = 256;
 
 fn mapping_effect(project: &Project, device: DeviceId) -> Option<DeviceLocation<'_>> {
     let location = project.device_location(device)?;
@@ -763,7 +764,6 @@ impl EffectModulation {
         factory: &dyn PreparedMutableInstrumentRuntime,
     ) -> Result<PreparedModulationState, Invalid> {
         if !self.host_input_routes.is_empty()
-            || !self.host_output_routes.is_empty()
             || self
                 .sources
                 .iter()
@@ -783,11 +783,33 @@ impl EffectModulation {
                 factory.parameter_modulation_semantics(parameter),
             ))
         })?;
-        let program = PreparedModulation::new(&targets, &self.routes, self.sources.len())
-            .map_err(|_| Invalid("instrument modulation program is invalid"))?;
-        // Session source generation splits at the existing 256-frame boundary.
-        PreparedModulationState::with_source_routes(self.sources, program, 256, &self.source_routes)
-            .map_err(|_| Invalid("instrument modulation exceeds its bounded storage"))
+        let output = if self.host_output_routes.is_empty() {
+            None
+        } else {
+            if state.type_id() != hex_devices::fm4::device::FM4_TYPE_ID
+                || state.output_gain_millidb() != 0
+            {
+                return Err(Invalid(
+                    "instrument output modulation requires an fm4 unity trim",
+                ));
+            }
+            Some((HostGain::ZERO, self.host_output_routes.as_slice()))
+        };
+        let program = PreparedModulation::with_host_gains(
+            &targets,
+            &self.routes,
+            self.sources.len(),
+            None,
+            output,
+        )
+        .map_err(|_| Invalid("instrument modulation program is invalid"))?;
+        PreparedModulationState::with_source_routes(
+            self.sources,
+            program,
+            INSTRUMENT_MODULATION_CHUNK_FRAMES,
+            &self.source_routes,
+        )
+        .map_err(|_| Invalid("instrument modulation exceeds its bounded storage"))
     }
 
     fn prepare_targets(
