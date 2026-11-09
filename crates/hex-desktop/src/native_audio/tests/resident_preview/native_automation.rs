@@ -5,8 +5,8 @@ use super::*;
 fn native_fm4_recorded_touch_adopts_and_replays_the_actual_delivered_frames() {
     use hex_audio::native_parameter_input::{Receipt, Target};
     use hex_engine::{NativeDeviceClass, NativeTransientValue};
-    use hex_lattice_contract::{ParameterId, ParameterValue};
     use hex_project::{BeatTime, Command, Created, DeviceAutomationTarget, TrackDeviceSlot};
+    use hex_session::device_gesture::{ParameterId, ParameterValue};
     use hex_session::service::{
         DeviceAutomationTakeAction as Action, DeviceAutomationTakeProgress as Progress,
         DeviceAutomationTakeScope,
