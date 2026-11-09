@@ -74,7 +74,7 @@ fn recipe(source: hex_project::SourceId, latency: Option<u32>) -> PreparedRuntim
     }
 }
 
-fn fixture(route: usize, move_receiver: bool) -> Project {
+fn authored_fixture(route: usize, move_receiver: bool) -> (Editor, hex_project::AssetId) {
     let mut editor = Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
     let Created::Track(receiver) = editor
         .execute(Command::InsertTrackWithDevice {
@@ -187,6 +187,11 @@ fn fixture(route: usize, move_receiver: bool) -> Project {
         }
         _ => {}
     }
+    (editor, asset)
+}
+
+fn fixture(route: usize, move_receiver: bool) -> Project {
+    let (editor, asset) = authored_fixture(route, move_receiver);
     crate::compile::project(
         editor.project(),
         &BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]),
@@ -331,4 +336,163 @@ fn the_same_source_effect_recipe_follows_the_explicit_receiver() {
     previous.render(&mut old).unwrap();
     current.render(&mut new).unwrap();
     assert_eq!(old, new);
+}
+
+fn prepare_suffix(
+    project: &hex_project::Project,
+    source: hex_project::SourceId,
+) -> Result<Vec<PreparedRuntimeInstance>, Invalid> {
+    crate::compile::prepare_source_effect_suffix(
+        project,
+        source,
+        &hex_devices::native_registry().unwrap(),
+        &hex_lattice::DevicePreparationContext {
+            sample_rate: project.sample_rate(),
+            tuning: &hex_lattice::TuningTable::default(),
+            resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        },
+    )
+}
+
+#[test]
+fn registry_suffix_respects_order_and_power_without_processing_receiver_clips() {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+    let (mut editor, asset) = authored_fixture(0, false);
+    let model = editor.project();
+    let receiver = model.tracks()[0].id();
+    let contributor = model.tracks()[1].id();
+    let source = model.tracks()[0].source_id().unwrap();
+    let instrument = model.native_source(source).unwrap().instrument().id();
+    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
+    let compiled = crate::compile::project(model, &media).unwrap();
+    assert!(prepare_suffix(model, source).unwrap().is_empty());
+
+    // Render the bound singleton separately. Author the same source's suffix
+    // while detached; production cannot bind a source with effects yet.
+    for track in [receiver, contributor] {
+        editor
+            .execute(Command::BindTrackSource {
+                track,
+                source: None,
+            })
+            .unwrap();
+    }
+    let utility = UTILITY_DEFINITION.default_state().unwrap();
+    let invert = UTILITY_DEFINITION
+        .patch_parameter(&utility, parameter::INVERT_LEFT, ParameterValue::Bool(true))
+        .unwrap();
+    let swap = UTILITY_DEFINITION
+        .patch_parameter(&utility, parameter::CHANNEL, ParameterValue::Choice(3))
+        .unwrap();
+    let Created::Device(invert_id) = editor
+        .execute(Command::InsertNestedDevice {
+            parent: instrument,
+            state: invert,
+        })
+        .unwrap()
+    else {
+        panic!("inverting child")
+    };
+    let Created::Device(swap_id) = editor
+        .execute(Command::InsertNestedDevice {
+            parent: instrument,
+            state: swap,
+        })
+        .unwrap()
+    else {
+        panic!("swapping sibling")
+    };
+    editor
+        .execute(Command::ReparentDevice {
+            device: swap_id,
+            parent: None,
+        })
+        .unwrap();
+
+    let suffix = prepare_suffix(editor.project(), source).unwrap();
+    assert_eq!(suffix.len(), 2);
+    for (entry, id) in suffix.iter().zip([invert_id, swap_id]) {
+        assert_eq!(entry.owner, ProcessorChainOwner::Source(source.value()));
+        assert_eq!(entry.device_id, id.value());
+        assert!(!entry.bypassed);
+    }
+    let mut renderer = with_recipe(&compiled, 0, &suffix);
+    renderer.play();
+    let mut rendered = [[0.0; 2]; WIDTH];
+    renderer.render(&mut rendered).unwrap();
+    let mut source_audio = [[0.0; 2]; WIDTH];
+    crate::render_source_generators(&compiled, 0, 0, WIDTH as u64, &mut source_audio, None)
+        .unwrap();
+    assert!(source_audio.iter().any(|frame| frame[0].abs() > 0.001));
+    for (wet, [left, right]) in rendered.iter().zip(source_audio) {
+        assert!((wet[0] - (CLIP[0] + right)).abs() < 1e-6);
+        assert!((wet[1] - (CLIP[1] - left)).abs() < 1e-6);
+    }
+
+    editor
+        .execute(Command::SetDeviceBypass {
+            device: instrument,
+            bypassed: true,
+        })
+        .unwrap();
+    let bypassed = prepare_suffix(editor.project(), source).unwrap();
+    assert!(bypassed[0].bypassed);
+    assert!(!bypassed[1].bypassed);
+    assert!(!editor.project().device(invert_id).unwrap().bypassed());
+}
+
+#[test]
+fn registry_suffix_refuses_prefix_latency_foreign_and_unknown_effects() {
+    use hex_lattice_contract::{NativeDeviceMetadata, NativeDeviceState};
+
+    let utility = hex_devices::utility::UTILITY_DEFINITION
+        .default_state()
+        .unwrap();
+    let limiter = hex_devices::limiter::DEFINITION.default_state().unwrap();
+    let foreign = NativeDeviceState::new(DeviceTypeId::from_static("hex.vst3"), 1, vec![]).unwrap();
+    let unknown =
+        NativeDeviceState::new(DeviceTypeId::from_static("test.unknown"), 1, vec![]).unwrap();
+    let instrument = hex_project::default_instrument_state().unwrap();
+    let mut editor = Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+    for (states, instrument_index, expected) in [
+        (
+            vec![utility, instrument.clone()],
+            1,
+            "source effects before the instrument are not supported",
+        ),
+        (
+            vec![instrument.clone(), limiter],
+            0,
+            "source effects require native zero-latency processors",
+        ),
+        (
+            vec![instrument.clone(), foreign],
+            0,
+            "foreign source effects are not supported",
+        ),
+        (
+            vec![instrument, unknown],
+            0,
+            "native device state is unsupported or malformed",
+        ),
+    ] {
+        let Created::NativeSource(source) = editor
+            .execute(Command::CreateNativeSource {
+                name: "retained".into(),
+                devices: states,
+                instrument_index,
+            })
+            .unwrap()
+        else {
+            panic!("retained source")
+        };
+        assert_eq!(
+            prepare_suffix(editor.project(), source).err(),
+            Some(Invalid(expected))
+        );
+    }
+    // Retaining definitions alone must not prepare or admit any of these devices.
+    assert!(crate::compile::project(editor.project(), &BTreeMap::new()).is_ok());
 }
