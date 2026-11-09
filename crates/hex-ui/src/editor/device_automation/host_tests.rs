@@ -1959,6 +1959,27 @@ fn vst3_reading_lane_menu_arms_and_disarms_the_raw_zero_knob(cx: &mut TestAppCon
         visual.run_until_parked();
     };
     menu(&mut visual);
+    editor.read_with(&visual, |view, _| {
+        use crate::editor::context_menu::EditorContextAction;
+        let (target, revision) = view
+            .context_menu
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .find_map(|item| match &item.action {
+                EditorContextAction::Automation(Action::ToggleVst3Arm { target, revision }) => {
+                    Some((*target, *revision))
+                }
+                _ => None,
+            })
+            .expect("the exact live row offers an arm action");
+        assert!(!view.automation_action_stale(&Action::ToggleVst3Arm { target, revision }));
+        assert!(view.automation_action_stale(&Action::ToggleVst3Arm {
+            target,
+            revision: revision.checked_add(1).unwrap(),
+        }));
+    });
     choose_label(&mut visual, &editor, "arm automation recording");
     editor.update(&mut visual, |view, _| {
         assert!(view.vst3_automation_arm_selected(device, [2; 16], 0));

@@ -112,7 +112,10 @@ pub(super) enum Action {
     Reenable(Target),
     Override(Target),
     ToggleNativeArm(Target),
-    ToggleVst3Arm(Target),
+    ToggleVst3Arm {
+        target: Target,
+        revision: u64,
+    },
     Shape(Target, AutomationInterpolation),
 }
 
@@ -748,8 +751,9 @@ impl EditorView {
         let Some(owner) = self.device_panel.owner else {
             return false;
         };
-        let Some(entry) = self.state.as_ref().and_then(|state| {
+        let Some((entry, revision)) = self.state.as_ref().and_then(|state| {
             Entry::vst3(&state.project, self.project_generation, owner, device, row)
+                .map(|entry| (entry, state.revision))
         }) else {
             return false;
         };
@@ -772,7 +776,7 @@ impl EditorView {
             } else {
                 "arm automation recording"
             };
-            actions.push((label, Action::ToggleVst3Arm(target)));
+            actions.push((label, Action::ToggleVst3Arm { target, revision }));
         }
         self.open_automation_menu(position, actions, window, cx);
         true
@@ -872,11 +876,16 @@ impl EditorView {
             | Action::Reenable(target)
             | Action::Override(target)
             | Action::ToggleNativeArm(target)
-            | Action::ToggleVst3Arm(target)
             | Action::Shape(target, _) => self.state.as_ref().is_none_or(|state| {
                 target
                     .identity_current(&state.project, self.project_generation)
                     .is_none()
+            }),
+            Action::ToggleVst3Arm { target, revision } => self.state.as_ref().is_none_or(|state| {
+                state.revision != *revision
+                    || target
+                        .identity_current(&state.project, self.project_generation)
+                        .is_none()
             }),
             Action::Pick { generation, owner }
             | Action::Reveal {
@@ -1144,7 +1153,7 @@ impl EditorView {
             Action::ToggleNativeArm(target) => {
                 self.toggle_native_automation_arm(target.device, target.kind);
             }
-            Action::ToggleVst3Arm(target) => {
+            Action::ToggleVst3Arm { target, .. } => {
                 if let (Some(class), DeviceAutomationTarget::Vst3 { parameter }) =
                     (target.vst3_class, target.kind)
                     && self.device_automation_read_selection(target)
