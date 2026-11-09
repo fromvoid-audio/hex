@@ -1,6 +1,8 @@
 //! Persistent host bindings shared by specialized and descriptor-driven panels.
 //! Session gestures, canonical edits and app lifecycle remain with their owners.
-use super::super::native_automation_recording::automation_target;
+use super::super::{
+    device_action_owner::device_in_panel, native_automation_recording::automation_target,
+};
 use super::gesture_adapter::{
     NumericGestureLease, dispatch_bound_numeric_gesture, owns_native_automation,
     owns_numeric_gesture,
@@ -47,39 +49,9 @@ impl CapturedBinding {
         let Some(state) = view.state.as_ref() else {
             return false;
         };
-        let device = match (self.owner, self.identity.class) {
-            (Some(DevicePanelOwner::Track(id)), NativeDeviceClass::Instrument) => state
-                .project
-                .track(id)
-                .and_then(|track| track.instrument())
-                .filter(|device| device.id() == self.key.device),
-            (Some(DevicePanelOwner::Track(id)), NativeDeviceClass::Effect) => {
-                state.project.track(id).and_then(|track| {
-                    track
-                        .devices()
-                        .iter()
-                        .find(|device| device.id() == self.key.device)
-                })
-            }
-            (Some(DevicePanelOwner::Return(id)), NativeDeviceClass::Effect) => state
-                .project
-                .return_tracks()
-                .iter()
-                .find(|track| track.id() == id)
-                .and_then(|track| {
-                    track
-                        .devices()
-                        .iter()
-                        .find(|device| device.id() == self.key.device)
-                }),
-            (Some(DevicePanelOwner::Main), NativeDeviceClass::Effect) => state
-                .project
-                .main_devices()
-                .iter()
-                .find(|device| device.id() == self.key.device),
-            _ => None,
-        };
-        let Some(device) = device else {
+        let Some(device) = self.owner.and_then(|owner| {
+            device_in_panel(owner, &state.project, self.key.device, self.identity.class)
+        }) else {
             return false;
         };
         if device.state().type_id() != self.identity.type_id {

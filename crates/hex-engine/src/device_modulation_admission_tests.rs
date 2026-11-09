@@ -160,7 +160,13 @@ fn saved_lfos_modulate_automation_per_sample_in_arrangement_session_and_sealed_p
         color: Default::default(),
         id: ModulationSourceId::new(next + offset).unwrap(),
         enabled: true,
-        state: Settings { rate, phase }.encode().unwrap(),
+        state: Settings {
+            rate,
+            phase,
+            ..Settings::default()
+        }
+        .encode()
+        .unwrap(),
     };
     let first = source(0, Rate::Hertz(12_000.0), 0.0);
     let second = source(1, Rate::Hertz(0.0), 0.25);
@@ -420,6 +426,89 @@ fn envelope_follower_samples_the_owning_effect_input_before_processing() {
     for ((actual, input), peak) in output.into_iter().zip(inputs).zip(levels) {
         for (output, dry) in actual.into_iter().zip(input) {
             assert!((output - dry * (1.0 + peak)).abs() < 1e-6, "{output}");
+        }
+    }
+}
+
+#[test]
+fn saved_square_lfo_uses_its_shape_at_each_utility_sample() {
+    use crate::{Audio, Renderer};
+    use hex_devices::{
+        modulation::lfo::{Rate, Settings, Waveform},
+        utility::{MAX_UTILITY_GAIN, UTILITY_DEFINITION, UTILITY_TYPE_ID, parameter},
+    };
+    use hex_project::{
+        DeviceAutomationTarget, DeviceModulationRoute, ModulationAmount, ModulationDestination,
+        ModulationOutputId, ModulationRange, ModulationRouteId,
+    };
+    use std::collections::BTreeMap;
+
+    let mut editor = Editor::new(crate::audio_preparation::candidate_test_project(), 4).unwrap();
+    let track = editor.project().tracks()[0].id();
+    let asset = editor.project().assets().next().unwrap().id();
+    let state = UTILITY_DEFINITION.default_state().unwrap();
+    let Created::Device(device) = editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: state.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("utility fixture");
+    };
+    let next = editor.project().next_identity();
+    let source = ModulationSourceId::new(next).unwrap();
+    let saved = Settings {
+        waveform: Waveform::Square,
+        rate: Rate::Hertz(12_000.0),
+        phase: 0.0,
+    }
+    .encode()
+    .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device,
+            modulation: DeviceModulation::new(
+                vec![Modulator {
+                    id: source,
+                    color: Default::default(),
+                    enabled: true,
+                    state: saved,
+                }],
+                vec![DeviceModulationRoute {
+                    id: ModulationRouteId::new(next + 1).unwrap(),
+                    source,
+                    output: ModulationOutputId::MAIN,
+                    destination: ModulationDestination::Device {
+                        device_type: UTILITY_TYPE_ID,
+                        target: DeviceAutomationTarget::Parameter(parameter::GAIN),
+                        vst3_class: None,
+                    },
+                    amount: ModulationAmount::new(0.5 / MAX_UTILITY_GAIN).unwrap(),
+                    range: ModulationRange::default(),
+                    enabled: true,
+                }],
+            )
+            .unwrap(),
+        })
+        .unwrap();
+
+    let project = editor.project();
+    assert_eq!(project.device(device).unwrap().state(), &state);
+    let dry = [0.125, -0.25];
+    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![dry; 8]).unwrap())]);
+    let graph = crate::compile::project(project, &media).unwrap();
+    let mut render = Renderer::new(&graph);
+    render.play();
+    let mut output = [[0.0; 2]; 8];
+    for block in output.chunks_mut(3) {
+        render.render(block).unwrap();
+    }
+    for (i, frame) in output.into_iter().enumerate() {
+        let gain = [1.5, 1.5, 0.5, 0.5][i % 4];
+        for (actual, input) in frame.into_iter().zip(dry) {
+            assert!((actual - input * gain).abs() < 1e-6);
         }
     }
 }

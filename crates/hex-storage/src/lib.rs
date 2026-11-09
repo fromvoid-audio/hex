@@ -78,7 +78,7 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = BOUND_SOURCE_EFFECT_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = LFO_SHAPE_SCHEMA_VERSION;
 
 /// Schema70 stores an independent original source span for signed musical event placement.
 pub const MUSICAL_EVENT_SOURCE_SCHEMA_VERSION: u32 = 70;
@@ -111,6 +111,8 @@ pub const DEVICE_MODULATION_SCHEMA_VERSION: u32 = 81;
 pub const MODULATION_SLOT_COLOR_SCHEMA_VERSION: u32 = 82;
 /// Schema83 opts in to bound source units with serial native effects.
 pub const BOUND_SOURCE_EFFECT_SCHEMA_VERSION: u32 = 83;
+/// Schema84 admits newer LFO payloads and retains full slot colors and bound units.
+pub const LFO_SHAPE_SCHEMA_VERSION: u32 = 84;
 
 fn contains_larger_device_state(project: &Project) -> bool {
     schema::device_assets::authored_states(project)
@@ -166,8 +168,11 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// [`CURRENT_SCHEMA_VERSION`].
 /// Serial membership uses schema80 over its exact compatible flat envelope.
 /// Bound source effects use schema83 over their existing membership and state codecs.
+/// Non-sine LFOs use schema84 with complete slot colors and any bound source effects.
 pub fn schema_version_for(project: &Project) -> u32 {
-    if schema::bound_source_effects::contains(project) {
+    if schema::device_modulation::contains_newer_lfo(project) {
+        LFO_SHAPE_SCHEMA_VERSION
+    } else if schema::bound_source_effects::contains(project) {
         BOUND_SOURCE_EFFECT_SCHEMA_VERSION
     } else if schema::device_modulation::contains_colors(project) {
         MODULATION_SLOT_COLOR_SCHEMA_VERSION
@@ -385,7 +390,9 @@ impl From<serde_json::Error> for StorageError {
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 /// Nonempty serial units use schema80; flat projects retain their prior layout.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    if schema::bound_source_effects::contains(project) {
+    if schema::device_modulation::contains_newer_lfo(project) {
+        encode_document(&schema::device_modulation::encode(project)?)
+    } else if schema::bound_source_effects::contains(project) {
         encode_document(&schema::bound_source_effects::encode(project)?)
     } else {
         encode_base(project)
@@ -644,7 +651,7 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
 /// From schema30 through79 the migration chain parses the bytes once (after one
 /// duplicate-field check) and each frozen layer adapts that single value in
 /// place; those layers never re-serialize the document for the next one.
-/// Schemas80 through83 materialize a compatible predecessor envelope before using that chain.
+/// Schemas80 through84 materialize a compatible predecessor envelope before using that chain.
 pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     decode_impl(bytes, false)
 }
@@ -668,9 +675,9 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
         BOUND_SOURCE_EFFECT_SCHEMA_VERSION if !inside_envelope => {
             schema::bound_source_effects::decode(bytes)
         }
-        DEVICE_MODULATION_SCHEMA_VERSION | MODULATION_SLOT_COLOR_SCHEMA_VERSION => {
-            schema::device_modulation::decode(bytes, header.version)
-        }
+        DEVICE_MODULATION_SCHEMA_VERSION
+        | MODULATION_SLOT_COLOR_SCHEMA_VERSION
+        | LFO_SHAPE_SCHEMA_VERSION => schema::device_modulation::decode(bytes, header.version),
         SERIAL_DEVICE_SCHEMA_VERSION => schema::serial_units::decode(bytes),
         DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION | VST3_AUTOMATION_TOUCH_SCHEMA_VERSION => {
             schema::device_automation_touch::decode(bytes, header.version)
@@ -798,7 +805,7 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
         ));
     }
     if !inside_envelope
-        && header.version != BOUND_SOURCE_EFFECT_SCHEMA_VERSION
+        && header.version < BOUND_SOURCE_EFFECT_SCHEMA_VERSION
         && schema::bound_source_effects::contains(&project)
     {
         return Err(StorageError::Invalid(
