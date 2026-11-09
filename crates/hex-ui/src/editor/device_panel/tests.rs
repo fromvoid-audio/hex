@@ -6351,12 +6351,25 @@ fn assert_modulation_mapping(
             hex_engine::random_modulator::Settings::decode(&slot.state).ok()
         };
         let initial = editor.read_with(cx, |view, _| settings(view).unwrap());
+        let pending = |view: &EditorView| {
+            view.worker_requests_pending > 0 || !view.pending_requests.is_empty()
+        };
         click(&mut visual, format!("random-{}-faster", source_id.value()));
+        assert!(
+            editor.read_with(cx, |view, _| pending(view)
+                || settings(view).is_some_and(|s| s.rate_hz == 2.0)),
+            "random rate edit did not dispatch"
+        );
         pump_until(&editor, cx, |view| {
             settings(view).is_some_and(|value| value.rate_hz == 2.0)
         });
         visual.run_until_parked();
         click(&mut visual, format!("random-{}-reseed", source_id.value()));
+        assert!(
+            editor.read_with(cx, |view, _| pending(view)
+                || settings(view).is_some_and(|s| s.seed != initial.seed)),
+            "random seed edit did not dispatch"
+        );
         pump_until(&editor, cx, |view| {
             settings(view).is_some_and(|value| value.seed != initial.seed)
         });

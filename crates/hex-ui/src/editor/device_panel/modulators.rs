@@ -98,12 +98,7 @@ pub(super) fn panel(
             cx.notify();
         }))
     };
-    let mut header = div()
-        .flex()
-        .flex_wrap()
-        .items_center()
-        .gap(px(4.0))
-        .child(theme::text("modulators"));
+    let mut header = div().flex().flex_wrap().items_center().gap(px(4.0));
     if bank.sources().len() < hex_project::MAX_MODULATORS_PER_DEVICE {
         for kind in SourceKind::ALL {
             let name = kind.label();
