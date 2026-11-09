@@ -220,7 +220,7 @@ fn note_counter_reads_the_borrowed_events_without_allocating_or_freeing() {
         true,
     )
     .unwrap();
-    probe_instrument_event_source(source);
+    probe_instrument_event_source(source, false);
 }
 
 #[test]
@@ -234,10 +234,26 @@ fn note_ramp_reads_the_borrowed_events_without_allocating_or_freeing() {
         true,
     )
     .unwrap();
-    probe_instrument_event_source(source);
+    probe_instrument_event_source(source, false);
 }
 
-fn probe_instrument_event_source(source: PreparedModulationSource) {
+#[test]
+fn ahd_release_borrows_note_offs_without_allocating_or_freeing() {
+    let source = PreparedModulationSource::ahd_on_release(
+        ModulationSourceId::new(1).unwrap(),
+        48_000,
+        [16, 17, 32],
+        [
+            hex_lattice::ModulationRampCurve::EaseIn,
+            hex_lattice::ModulationRampCurve::EaseOut,
+        ],
+        true,
+    )
+    .unwrap();
+    probe_instrument_event_source(source, true);
+}
+
+fn probe_instrument_event_source(source: PreparedModulationSource, release: bool) {
     use hex_lattice::{NativeInstrumentEvent, PreparedModulationState};
 
     let target = gain_target();
@@ -255,13 +271,23 @@ fn probe_instrument_event_source(source: PreparedModulationSource) {
     .unwrap();
     let declaration = PreparedModulationState::new(vec![source], program, 128).unwrap();
     let mut runtime = declaration.prepare().unwrap();
-    let events: [NativeInstrumentEvent; 128] =
-        std::array::from_fn(|offset| NativeInstrumentEvent::NoteOn {
-            frame_offset: offset / 2,
-            occurrence_id: offset as u64 + 1,
-            pitch: 60,
-            velocity: 100,
-        });
+    let events: [NativeInstrumentEvent; 128] = std::array::from_fn(|offset| {
+        let frame_offset = offset / 2;
+        let occurrence_id = offset as u64 + 1;
+        if release {
+            NativeInstrumentEvent::NoteOff {
+                frame_offset,
+                occurrence_id,
+            }
+        } else {
+            NativeInstrumentEvent::NoteOn {
+                frame_offset,
+                occurrence_id,
+                pitch: 60,
+                velocity: 100,
+            }
+        }
+    });
     let counts = allocation_counter::measure(|| {
         runtime.begin();
         runtime

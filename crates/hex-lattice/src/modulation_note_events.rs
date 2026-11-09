@@ -33,3 +33,12 @@ pub(crate) fn note_on_offsets(
         _ => None,
     })
 }
+
+pub(crate) fn note_off_offsets(
+    events: &[NativeInstrumentEvent],
+) -> impl Iterator<Item = usize> + '_ {
+    events.iter().filter_map(|event| match event {
+        NativeInstrumentEvent::NoteOff { frame_offset, .. } => Some(*frame_offset),
+        _ => None,
+    })
+}

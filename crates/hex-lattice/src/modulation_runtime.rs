@@ -862,6 +862,81 @@ mod tests {
     }
 
     #[test]
+    fn ahd_release_keeps_its_envelope_across_graph_transactions() {
+        use crate::ModulationRampCurve::Linear;
+
+        let fixture = prepared(6_000.0);
+        let id = ParameterId::from_static(1);
+        let target = ModulationTarget {
+            descriptor: fixture.program().descriptor(id).unwrap(),
+            semantics: fixture.program().semantics(id).unwrap(),
+            base: ParameterValue::Float(0.5),
+        };
+        let program = PreparedModulation::new(
+            &[target],
+            &[ModulationRoute {
+                source: 0,
+                target: id,
+                amount: 0.5,
+                range: [-1.0, 1.0],
+            }],
+            1,
+        )
+        .unwrap();
+        let source = ModulationSourceId::new(1).unwrap();
+        for durations in [[0; 3], [60 * 48_000 + 1, 1, 0]] {
+            assert!(
+                PreparedModulationSource::ahd_on_release(
+                    source,
+                    48_000,
+                    durations,
+                    [Linear; 2],
+                    true
+                )
+                .is_err()
+            );
+        }
+        let ahd =
+            PreparedModulationSource::ahd_on_release(source, 48_000, [2, 1, 2], [Linear; 2], true)
+                .unwrap();
+        let declaration = crate::PreparedModulationState::new(vec![ahd], program, 8).unwrap();
+        let mut runtime = declaration.prepare().unwrap();
+        let first = [NativeInstrumentEvent::NoteOff {
+            frame_offset: 1,
+            occurrence_id: 1,
+        }];
+        let check = |runtime: &mut ModulationRuntime, events, expected: &[f32]| {
+            runtime
+                .render_instrument_chunk(expected.len(), None, None, events, |block| {
+                    for (offset, &sample) in expected.iter().enumerate() {
+                        assert_eq!(
+                            block.value_at(id, offset),
+                            Some(ParameterValue::Float(sample))
+                        );
+                    }
+                    Ok(())
+                })
+                .unwrap();
+        };
+        runtime.begin();
+        check(&mut runtime, &first, &[0.5, 0.5, 0.75]);
+        runtime.rollback();
+        runtime.begin();
+        check(&mut runtime, &first, &[0.5, 0.5, 0.75]);
+        runtime.commit().unwrap();
+        let mut next = declaration.prepare().unwrap();
+        next.inherit_committed(&runtime).unwrap();
+        next.begin();
+        check(&mut next, &[], &[1.0, 1.0, 0.75, 0.5]);
+        next.commit().unwrap();
+        next.reset_all();
+        next.begin();
+        check(&mut next, &[], &[0.5; 2]);
+        check(&mut next, &first, &[0.5, 0.5, 0.75, 1.0, 1.0, 0.75, 0.5]);
+        next.commit().unwrap();
+    }
+
+    #[test]
     fn oversized_chunks_and_mismatched_inventory_are_refused() {
         let mut current = runtime(6_000.0);
         assert_eq!(current.chunk_frames(), 8);
