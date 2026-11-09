@@ -206,6 +206,44 @@ impl DenseEffectCallback {
         self.callback.finish(host_accepted)
     }
 
+    pub fn fault(&self) -> Option<Fault> {
+        self.callback.fault()
+    }
+
+    pub fn reject(&mut self, fault: Fault) {
+        self.callback.reject(fault);
+    }
+
+    pub fn has_complete_staged_callback(&self) -> bool {
+        self.callback.has_complete_staged_callback()
+    }
+
+    pub fn end_staging_at_pause(&mut self, frame: usize) {
+        self.callback.end_staging_at_pause(frame);
+    }
+
+    pub fn take_accepted_editor_quantum(&mut self) -> Option<AcceptedEditorQuantum> {
+        self.callback.take_accepted_editor_quantum()
+    }
+
+    pub fn take_accepted_manual_parameter(&mut self) -> Option<AcceptedManualParameter> {
+        self.callback.take_accepted_manual_parameter()
+    }
+
+    pub fn dispatched_blocks_on_control(&self) -> u64 {
+        self.callback.dispatched_blocks_on_control()
+    }
+
+    #[cfg(any(test, feature = "test-support", feature = "allocation-probe"))]
+    pub fn committed_position_for_test(&self) -> u64 {
+        self.callback.committed_position_for_test()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn pending_requests_for_test(&self) -> usize {
+        self.callback.pending_requests_for_test()
+    }
+
     pub fn is_revoked(&self) -> bool {
         self.callback.is_revoked()
     }

@@ -72,10 +72,15 @@ impl NativeWorker {
         if instance.configuration().input_channels != 2 {
             return None;
         }
-        Self::preconstruction_with_channel(
+        Self::preconstruction_dense_effect_for_source_on_control(
             instance.retained_storage_on_control()?,
-            dense_channel_storage_bound()?,
         )
+    }
+
+    pub(crate) fn preconstruction_dense_effect_for_source_on_control(
+        source: hex_plugin_host::native::PreparedStorage,
+    ) -> Option<usize> {
+        Self::preconstruction_with_channel(source, dense_channel_storage_bound()?)
     }
 
     fn preconstruction_with_channel(
