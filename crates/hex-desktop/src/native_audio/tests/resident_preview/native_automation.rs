@@ -3,9 +3,21 @@ use super::*;
 
 #[test]
 fn native_fm4_recorded_touch_adopts_and_replays_the_actual_delivered_frames() {
+    verify_native_fm4_take(false);
+}
+
+#[test]
+fn native_fm4_recorded_touch_replays_through_a_source_effect() {
+    verify_native_fm4_take(true);
+}
+
+fn verify_native_fm4_take(with_source_effect: bool) {
     use hex_audio::native_parameter_input::{Receipt, Target};
     use hex_engine::{NativeDeviceClass, NativeTransientValue};
-    use hex_project::{BeatTime, Command, Created, DeviceAutomationTarget, TrackDeviceSlot};
+    use hex_project::{
+        AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, Command, Created,
+        DeviceAutomationTarget, TrackDeviceSlot,
+    };
     use hex_session::device_gesture::{ParameterId, ParameterValue};
     use hex_session::service::{
         DeviceAutomationTakeAction as Action, DeviceAutomationTakeProgress as Progress,
@@ -18,6 +30,19 @@ fn native_fm4_recorded_touch_adopts_and_replays_the_actual_delivered_frames() {
     let mut h = ResidentHarness::with_recovery(8192, files.0.join("fm4.hex-journal"));
     h.next();
     let mut applied = h.applied(0).0;
+    let receiver = with_source_effect.then(|| {
+        let wave = files.constant_wav("fm4-local.wav", 48_000, 8192, &[8192, -4096]);
+        let imported = h.run(Request::Import(wave));
+        applied = h.applied(applied).0;
+        imported.state.project.tracks()[0].id()
+    });
+    let dry = if with_source_effect {
+        [0.25, -0.125]
+    } else {
+        [0.0; 2]
+    };
+    let heard_instrument =
+        |frame: &[f32; 2]| *frame != [0.0; 2] && (frame[0] - dry[0]).abs() > 0.001;
     let state = hex_engine::default_native_device_state_for_class(
         NativeDeviceClass::Instrument,
         hex_engine::DeviceTypeId::from_static("hex.instrument.fm4"),
@@ -33,6 +58,53 @@ fn native_fm4_recorded_touch_adopts_and_replays_the_actual_delivered_frames() {
         panic!("source track")
     };
     applied = h.applied(applied).0;
+    let inserted_track = inserted.state.project.track(track).unwrap();
+    let device = inserted_track.instrument().unwrap().id();
+    let source_id = inserted_track.source_id().unwrap();
+    if let Some(receiver) = receiver {
+        let mut edit = |command| {
+            let event = h.run(Request::Edit(command));
+            applied = h.applied(applied).0;
+            event
+        };
+        edit(Command::BindTrackSource {
+            track,
+            source: None,
+        });
+        let utility = hex_engine::default_native_device_state(
+            hex_engine::DeviceTypeId::from_static("hex.utility"),
+        )
+        .unwrap();
+        // Invert only the right channel of the shared generator, not the
+        // local stereo clip on the receiver.
+        let utility = hex_engine::patch_native_device_parameter(
+            &utility,
+            ParameterId::new(6).unwrap(),
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+        edit(Command::InsertNestedDevice {
+            parent: device,
+            state: utility,
+        });
+        edit(Command::BindTrackSource {
+            track: receiver,
+            source: Some(source_id),
+        });
+        let bound = edit(Command::BindTrackSource {
+            track,
+            source: Some(source_id),
+        });
+        assert_eq!(
+            bound
+                .state
+                .project
+                .native_source(source_id)
+                .unwrap()
+                .receiver(),
+            Some(receiver)
+        );
+    }
     let duration = BeatTime::from_quarters(4).unwrap();
     let placed = h.run(Request::Edit(Command::PlaceMidiClip {
         track,
@@ -43,7 +115,7 @@ fn native_fm4_recorded_touch_adopts_and_replays_the_actual_delivered_frames() {
         panic!("midi clip")
     };
     applied = h.applied(applied).0;
-    let base = h.run(Request::Edit(Command::AddMidiNote {
+    let mut base = h.run(Request::Edit(Command::AddMidiNote {
         clip,
         start: BeatTime::ZERO,
         duration,
@@ -52,17 +124,27 @@ fn native_fm4_recorded_touch_adopts_and_replays_the_actual_delivered_frames() {
         velocity: 96,
     }));
     applied = h.applied(applied).0;
-    let instrument = base
-        .state
-        .project
-        .track(track)
-        .unwrap()
-        .instrument()
-        .unwrap();
-    assert!(instrument.automation().is_empty());
-    let device = instrument.id();
     let id = ParameterId::new(29).unwrap();
     let kind = DeviceAutomationTarget::Parameter(id);
+    let authored = with_source_effect.then(|| AutomationPoint {
+        beat: BeatTime::ZERO,
+        value: AutomationValue::new(0.875).unwrap(),
+        outgoing: AutomationInterpolation::Step,
+    });
+    if let Some(point) = authored {
+        assert!(hex_engine::project_device_automation_target_supported(
+            &base.state.project,
+            device,
+            kind
+        ));
+        base = h.run(Request::Edit(Command::ReplaceDeviceAutomationTarget {
+            device,
+            target: kind,
+            points: vec![point],
+        }));
+        applied = h.applied(applied).0;
+    }
+    let instrument = base.state.project.device(device).unwrap();
     let context = h.submitted.unwrap().1.context;
     h.run(Request::ArmNativeParameterRecording {
         project_generation: context.project_generation,
@@ -80,10 +162,21 @@ fn native_fm4_recorded_touch_adopts_and_replays_the_actual_delivered_frames() {
         let mut pcm = [[0.0; 2]; 64];
         let mut host = [0.0; 128];
         let mut slot = h.callback.lock().unwrap();
-        slot.as_mut()
-            .unwrap()
-            .render_direct(&mut pcm, &mut host)
-            .unwrap();
+        let counts = allocation_counter::measure(|| {
+            slot.as_mut()
+                .unwrap()
+                .render_direct(&mut pcm, &mut host)
+                .unwrap();
+        });
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
         assert!(
             host.chunks_exact(2)
                 .zip(&pcm)
@@ -91,8 +184,39 @@ fn native_fm4_recorded_touch_adopts_and_replays_the_actual_delivered_frames() {
         );
         pcm
     };
-    let baseline: Vec<_> = (0..4).flat_map(|_| delivered(&h)).collect();
-    assert!(baseline.iter().any(|frame| frame[0].abs() > 0.001));
+    let render_playing = |h: &ResidentHarness, frames: usize| {
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        let start = status.performance_frame.load(Acquire);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut pcm = Vec::with_capacity(frames.next_multiple_of(64));
+        while pcm.len() < frames {
+            let block = delivered(h);
+            if status.stream_buffering.load(Acquire) {
+                assert_eq!(block, [[0.0; 2]; 64]);
+                assert!(
+                    Instant::now() < deadline,
+                    "FM4 receiver file remained buffered"
+                );
+                std::thread::yield_now();
+            } else {
+                pcm.extend(block);
+            }
+            assert_eq!(
+                status.performance_frame.load(Acquire),
+                start + pcm.len() as u64
+            );
+        }
+        pcm
+    };
+    let baseline = render_playing(&h, 256);
+    assert!(baseline.iter().any(heard_instrument));
+    if with_source_effect {
+        assert!(
+            baseline
+                .iter()
+                .all(|frame| (frame[0] + frame[1] - dry[0] - dry[1]).abs() < 1e-6)
+        );
+    }
     let status = h.audio.as_ref().unwrap().status().unwrap();
     let source = status.recording_source().unwrap();
     let transport_epoch = status.transport_epoch.load(Acquire);
@@ -189,7 +313,7 @@ fn native_fm4_recorded_touch_adopts_and_replays_the_actual_delivered_frames() {
     for _ in 0..5 {
         touch_pcm.extend(delivered(&h));
     }
-    assert!(touch_pcm[256..].iter().all(|frame| *frame == [0.0; 2]));
+    assert!(touch_pcm[256..].iter().all(|frame| *frame == dry));
     h.audio
         .as_mut()
         .unwrap()
@@ -208,11 +332,7 @@ fn native_fm4_recorded_touch_adopts_and_replays_the_actual_delivered_frames() {
     for _ in 0..4 {
         restored_pcm.extend(delivered(&h));
     }
-    assert!(
-        restored_pcm[256..]
-            .iter()
-            .any(|frame| frame[0].abs() > 0.001)
-    );
+    assert!(restored_pcm[256..].iter().any(heard_instrument));
     assert_eq!(
         send(&mut h, &mut serial, Action::Finish(restoration)).0,
         Progress::Sealing
@@ -244,7 +364,7 @@ fn native_fm4_recorded_touch_adopts_and_replays_the_actual_delivered_frames() {
         touch.end,
         map.frame_to_beat(restoration.arrangement_frame).unwrap()
     );
-    assert!(lane.points.is_empty());
+    assert_eq!(lane.points.as_slice(), authored.as_slice());
     assert_eq!(touch.steps[0].value.get(), 0.5);
     h.audio.as_ref().unwrap().control.stop();
     h.render();
@@ -268,10 +388,8 @@ fn native_fm4_recorded_touch_adopts_and_replays_the_actual_delivered_frames() {
     let end = usize::try_from(restoration.arrangement_frame).unwrap();
     assert!((64..8192).contains(&start) && (start + 64..8192).contains(&end));
     assert_eq!(end - start, touch_pcm.len());
-    let pcm: Vec<_> = (0..(end + restored_pcm.len()).div_ceil(64))
-        .flat_map(|_| delivered(&h))
-        .collect();
-    assert!(pcm[..start].iter().any(|frame| frame[0].abs() > 0.001));
+    let pcm = render_playing(&h, end + restored_pcm.len());
+    assert!(pcm[..start].iter().any(heard_instrument));
     let error = pcm[start..end + restored_pcm.len()]
         .iter()
         .flatten()
