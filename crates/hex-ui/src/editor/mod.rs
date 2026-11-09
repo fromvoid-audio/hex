@@ -127,6 +127,7 @@ mod external_audio_drop;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod external_audio_drop_ui_test;
 mod fade_calculation;
+mod fade_handle_geometry;
 mod fade_handles;
 mod fades;
 mod gain_lane;
