@@ -261,7 +261,10 @@ int main(int argc,char** argv) {
     // preflight. The caller must observe normal direct reap before loading code.
     if(argc==2 && !std::strcmp(argv[1],"--child-custody-probe")) return 0;
     const bool offline=argc==3 && !std::strcmp(argv[2],"--offline");
-    const bool supervised=(argc==2 || offline) && !std::strcmp(argv[1],"--supervised");
+    // Explicit source-bound qualification mode. Production launchers do not
+    // advertise SDK groups before the grouped recorder is ready.
+    const bool editor_groups=argc==3 && !std::strcmp(argv[2],"--test-grouped-editor");
+    const bool supervised=(argc==2 || offline || editor_groups) && !std::strcmp(argv[1],"--supervised");
     if(argc!=1 && !supervised) return Configuration;
     const auto process_mode=offline?kOffline:kRealtime;
     // Static lifetime keeps cancellation live through main-thread TLS/atexit
@@ -288,7 +291,7 @@ int main(int argc,char** argv) {
             failure=ClassFailure;if(!module.has_class(*config)) throw Refusal{};
             TUID cid{};std::memcpy(cid,config->cid.data(),16);
             failure=InstanceOpen;
-            if(!instance.open(module.factory,cid,trace_messages)) throw Refusal{};
+            if(!instance.open(module.factory,cid,trace_messages,editor_groups)) throw Refusal{};
             // State synchronization can issue kLatencyChanged even before
             // processing. Fold it into the facts we already validate here.
             instance.observe_latency_restarts();
@@ -405,6 +408,17 @@ int main(int argc,char** argv) {
                         // before the next real PCM call. Only PCM can restore sound.
                         hex_instance::EditEvent event{};
                         while(completed_edit_count<completed_edits.size() && instance.peek_parameter_edit(event) && event.kind!=hex_instance::Perform) {
+                            if(event.cohort) {
+                                if(event.batch_remaining>completed_edits.size()-completed_edit_count) break;
+                                bool boundary_only=true;
+                                for(size_t n=0;n<event.batch_remaining;++n) {
+                                    hex_instance::EditEvent next{};
+                                    if(!instance.peek_parameter_edit(next,n) || next.kind==hex_instance::Perform) {
+                                        boundary_only=false;break;
+                                    }
+                                }
+                                if(!boundary_only) break;
+                            }
                             editor_touch.applied(event);
                             instance.consume_parameter_edit();complete_edit(event);
                         }
@@ -437,11 +451,65 @@ int main(int argc,char** argv) {
                         const auto index=last_editor_edit(id);
                         return index<applying_edit_count?applying_edits[index].sequence:0;
                     };
+                    enum class BatchFit { Ready, Wait, Invalid };
+                    const auto preflight_group=[&](const hex_instance::EditEvent& first,size_t later_points,
+                            const hex_instance::ParameterPoint* later,const hex_instance::EditorTouch* touch) {
+                        constexpr auto maximum=hex_instance::PARAMETER_POINT_COUNT;
+                        std::array<hex_instance::ParameterPoint,maximum> points{};
+                        auto count=parameter_input.size();
+                        if(count>points.size()) return BatchFit::Invalid;
+                        for(size_t n=0;n<count;++n) if(!parameter_input.point(n,points[n])) return BatchFit::Invalid;
+                        auto preview=touch?std::optional{*touch}:std::nullopt;
+                        for(size_t n=0;n<first.batch_remaining;++n) {
+                            hex_instance::EditEvent event{};
+                            if(!instance.peek_parameter_edit(event,n) || event.cohort!=first.cohort ||
+                                    event.batch_remaining!=first.batch_remaining-n)
+                                return BatchFit::Invalid;
+                            if(preview && !preview->can_stage(event)) return BatchFit::Wait;
+                            if(event.kind==hex_instance::Perform) {
+                                const auto* info=processing_parameters.find(event.id);
+                                if(!info || (info->flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden)))
+                                    return BatchFit::Invalid;
+                                const bool takes=preview && preview->would_capture(event) && !preview->masks(event.id);
+                                bool duplicate=false;
+                                size_t kept=0;
+                                for(size_t i=0;i<count;++i) {
+                                    const auto point=points[i];
+                                    if(takes && point.id==event.id) continue;
+                                    if(point.id==event.id && point.offset==0) duplicate=true;
+                                    points[kept++]=point;
+                                }
+                                count=kept;
+                                size_t projected=count+later_points;
+                                if(preview && later) for(size_t i=0;i<later_points;++i)
+                                    if(preview->masks(later[i].id) || (takes && later[i].id==event.id)) --projected;
+                                if(!duplicate) {
+                                    if(projected>=maximum || count>=points.size()) return BatchFit::Wait;
+                                    points[count++]={0,event.id,event.normalized};
+                                }
+                            }
+                            if(preview) preview->applied(event);
+                        }
+                        return BatchFit::Ready;
+                    };
                     const auto stage_edits=[&](size_t later_points=0,
                             const hex_instance::ParameterPoint* later=nullptr,hex_instance::EditorTouch* touch=nullptr) {
                         applying_edit_count=0;hex_instance::EditEvent event{};
+                        size_t remaining_group=0;
                         while(completed_edit_count+applying_edit_count<completed_edits.size() && instance.peek_parameter_edit(event)) {
-                            if(touch && !touch->can_stage(event)) break;
+                            if(!remaining_group && event.cohort) {
+                                const auto available=completed_edits.size()-completed_edit_count-applying_edit_count;
+                                if(event.batch_remaining>available) break;
+                                switch(preflight_group(event,later_points,later,touch)) {
+                                    case BatchFit::Wait: return true;
+                                    case BatchFit::Invalid: return false;
+                                    case BatchFit::Ready: remaining_group=event.batch_remaining;break;
+                                }
+                            }
+                            if(touch && !touch->can_stage(event)) {
+                                if(remaining_group) return false;
+                                break;
+                            }
                             if(event.kind==hex_instance::Perform) {
                                 const auto* info=processing_parameters.find(event.id);
                                 if(!info || (info->flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden))) return false;
@@ -457,14 +525,18 @@ int main(int argc,char** argv) {
                                 }
                                 if(touch && later) for(size_t n=0;n<later_points;++n)
                                     if(touch->masks(later[n].id) || (takes && later[n].id==event.id)) --projected;
-                                if(projected>=hex_instance::PARAMETER_POINT_COUNT && !duplicate) break;
+                                if(projected>=hex_instance::PARAMETER_POINT_COUNT && !duplicate) {
+                                    if(remaining_group) return false;
+                                    break;
+                                }
                                 if(takes && !parameter_input.erase_input(event.id)) return false;
                                 if(!parameter_input.input(event.id,0,event.normalized)) return false;
                             }
                             if(touch) touch->applied(event);
                             applying_edits[applying_edit_count++]=event;instance.consume_parameter_edit();
+                            if(remaining_group) --remaining_group;
                         }
-                        return true;
+                        return !remaining_group;
                     };
                     const auto flush_idle_editor=[&] {
                         // Leave a full receipt batch for its reader to consume.

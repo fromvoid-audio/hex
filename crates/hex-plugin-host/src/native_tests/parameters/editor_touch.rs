@@ -199,3 +199,140 @@ fn actual_editor_takeover_restores_reading_and_unlaned_values_without_cutting_no
         );
     }
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn sdk_group_performs_wait_together_for_real_physical_capacity() {
+    for pattern in ["held", "split"] {
+        let case = Case::new();
+        let setup = case.setup_restore(148);
+        let end = case.root.join("group-end");
+        let mut opts = options();
+        opts.preparation.quantum = 64;
+        let mut instance = Prepared::prepare(
+            &build(),
+            source(),
+            opts,
+            PreparationCancellation::new_on_control().unwrap(),
+            |command| {
+                setup(command);
+                command
+                    .arg("--test-grouped-editor")
+                    .env("HEX_ORIGINAL_GROUPED_EDITOR_PATTERN", pattern)
+                    .env("HEX_ORIGINAL_EDITOR_END_RELEASE", &end);
+            },
+        )
+        .unwrap();
+        let metadata = instance
+            .read_authored_parameter_metadata_on_control(class(), &[0, 11])
+            .unwrap();
+        instance
+            .arm_authored_parameter_metadata_on_control(metadata)
+            .unwrap();
+        fs::write(case.release(), b"admit the paired editor move").unwrap();
+        let mut ordered = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let batch = instance.poll_parameter_edits_on_worker().unwrap();
+            ordered.extend_from_slice(batch.as_slice());
+            if batch.ready >= 4 {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "group had no complete worker batch"
+            );
+            thread::yield_now();
+        }
+        let input = [0.125, -0.25];
+        let mut dense = request(instance.configuration(), 0);
+        dense.pcm[..64].fill(input);
+        for frame in 1..64 {
+            dense
+                .parameters
+                .push(ParameterPoint {
+                    frame,
+                    id: 0,
+                    normalized: 0.25,
+                })
+                .unwrap();
+        }
+        let deferred = instance
+            .exchange_armed_authored_with_editor_on_worker(dense, None)
+            .unwrap();
+        assert!(
+            deferred.performs.as_slice().is_empty(),
+            "no partial group: {pattern}"
+        );
+        assert_eq!(deferred.block.pcm[63], input);
+        let mut free = request(instance.configuration(), 1);
+        free.pcm[..64].fill(input);
+        let actual = instance
+            .exchange_armed_authored_with_editor_on_worker(free, None)
+            .unwrap();
+        let [first, second] = actual.performs.as_slice() else {
+            panic!("both actual group performs")
+        };
+        assert_eq!((first.id, first.normalized), (0, 0.75));
+        assert_eq!((second.id, second.normalized), (11, 0.5));
+        assert_eq!(actual.block.pcm[..64], [[0.75, -1.5]; 64]);
+
+        fs::write(&end, b"admit the real late mouse-up").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while ordered
+            .iter()
+            .filter(|edit| edit.kind == ParameterEditKind::End)
+            .count()
+            < 2
+        {
+            ordered.extend_from_slice(
+                instance
+                    .poll_parameter_edits_on_worker()
+                    .unwrap()
+                    .as_slice(),
+            );
+            assert!(
+                Instant::now() < deadline,
+                "group did not return both exact ends"
+            );
+            thread::yield_now();
+        }
+        let performs: Vec<_> = ordered
+            .iter()
+            .filter(|edit| edit.kind == ParameterEditKind::Perform)
+            .collect();
+        assert_eq!(performs.len(), 2);
+        assert!(performs.iter().all(|edit| edit.first_frame == 64));
+        let ends: Vec<_> = ordered
+            .iter()
+            .filter(|edit| edit.kind == ParameterEditKind::End)
+            .collect();
+        assert!(ends.iter().all(|edit| edit.first_frame == 128));
+        assert_eq!(
+            (performs[0].gesture, performs[1].gesture),
+            (ends[0].gesture, ends[1].gesture)
+        );
+        let cohort_count = if pattern == "split" { 3 } else { 1 };
+        assert_eq!(
+            ordered
+                .iter()
+                .filter(|edit| edit.kind == ParameterEditKind::GroupBegin)
+                .count(),
+            cohort_count
+        );
+        assert_eq!(
+            ordered
+                .iter()
+                .filter(|edit| edit.kind == ParameterEditKind::GroupEnd)
+                .count(),
+            cohort_count
+        );
+        assert!(
+            instance
+                .stop_and_reap_on_control()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+}

@@ -100,12 +100,17 @@ static void arm_main_thread_tail(){static thread_local MainThreadTail tail;tail.
 const TUID restore_controller_id={0x48,0x45,0x58,0x43,1,2,3,4,5,6,7,8,9,10,11,12};
 // Original one-parameter SDK fixtures preserve the same opaque state shape.
 // Distinct variants exercise actual metadata and processing, not host guesses.
-static ParamID parameter_id(int variant) { return variant==80 || variant==89 || variant==92?0u:7u; }
+constexpr int grouped_effect_variant=148;
+static ParamID parameter_id(int variant) {
+    return variant==80 || variant==89 || variant==92 || variant==grouped_effect_variant?0u:7u;
+}
 constexpr int authored_instrument_variant=145, held_instrument_variant=146;
 // Original GUI callback + automatable controller fixture for desktop follow/lane
 // integration. It permits live-worker zero-frame flushes while transport is idle.
 constexpr int touched_automation_variant=147;
-static bool held_parameter_input(int variant) { return variant==144 || variant==held_instrument_variant; }
+static bool held_parameter_input(int variant) {
+    return variant==144 || variant==held_instrument_variant || variant==grouped_effect_variant;
+}
 constexpr ParamID drag_axis_id=11;
 constexpr int mixed_input_fixture=143;
 static bool mixed_parameter_input(int variant) { return variant==mixed_input_fixture || held_parameter_input(variant); }
@@ -135,10 +140,40 @@ class RestoreController final : public IEditController {
     float component_gain=0;uint32 scroll=7;
     ParamValue drag_axis=0.25;
     CFRunLoopTimerRef edit_timer=nullptr;bool edits_sent=false;
+    void grouped_edit_tick() {
+        const auto* pattern=std::getenv("HEX_ORIGINAL_GROUPED_EDITOR_PATTERN");
+        const bool split=pattern && !std::strcmp(pattern,"split");
+        const auto* end=std::getenv("HEX_ORIGINAL_EDITOR_END_RELEASE");
+        if(edits_sent && (!end || std::strlen(end)>4096 || ::access(end,F_OK)!=0)) return;
+        void* queried=nullptr;
+        if(handler->queryInterface(INLINE_UID_OF(IComponentHandler2),&queried)!=kResultOk || !queried) {
+            ++observed.violations;CFRunLoopTimerInvalidate(edit_timer);return;
+        }
+        auto* group=static_cast<IComponentHandler2*>(queried);
+        bool ok=true;
+        const auto check=[&](tresult result) { if(result!=kResultOk) ok=false; };
+        if(!edits_sent) {
+            edits_sent=true;
+            check(group->startGroupEdit());
+            check(handler->beginEdit(0));check(handler->beginEdit(drag_axis_id));
+            if(split) {check(group->finishGroupEdit());check(group->startGroupEdit());}
+            check(handler->performEdit(0,0.75));
+            check(handler->performEdit(drag_axis_id,0.5));
+            if(split) check(group->finishGroupEdit());
+        } else {
+            if(split) check(group->startGroupEdit());
+            check(handler->endEdit(0));check(handler->endEdit(drag_axis_id));
+            check(group->finishGroupEdit());
+            CFRunLoopTimerInvalidate(edit_timer);
+        }
+        group->release();
+        if(!ok) ++observed.violations;
+    }
     static void edit_tick(CFRunLoopTimerRef,void* context) {
         auto* self=static_cast<RestoreController*>(context);
         const auto* release=std::getenv("HEX_ORIGINAL_INSTANCE_RELEASE");
         if(!self || !release || std::strlen(release)>4096 || ::access(release,F_OK)!=0) return;
+        if(self->fault==grouped_effect_variant) {self->grouped_edit_tick();return;}
         const auto* end_release=(self->fault==touched_automation_variant || self->fault==held_instrument_variant)
             ?std::getenv("HEX_ORIGINAL_EDITOR_END_RELEASE"):nullptr;
         if(self->edits_sent) {
@@ -239,7 +274,7 @@ public:
         if (!control() || !context || (value && handler)) return kResultFalse;
         if(value)value->addRef();if(handler)handler->release();handler=value;
         if(fault==104 || fault==105 || fault==118 || fault==119) latency_handler=handler;
-        if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116 || (fault>=131 && fault<=135) || fault==141 || fault==142 || fault==touched_automation_variant ||
+        if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116 || (fault>=131 && fault<=135) || fault==141 || fault==142 || fault==touched_automation_variant || fault==grouped_effect_variant ||
             (fault==held_instrument_variant && std::getenv("HEX_ORIGINAL_EDITOR_TOUCH")))) {
             CFRunLoopTimerContext timer_context{};timer_context.info=this;
             edit_timer=CFRunLoopTimerCreate(nullptr,CFAbsoluteTimeGetCurrent(),0.001,0,0,edit_tick,&timer_context);
