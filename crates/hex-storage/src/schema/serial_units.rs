@@ -76,19 +76,35 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
     Ok(value)
 }
 
-pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
+pub(crate) fn decode(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageError> {
     let mut value = super::audio_events::parse_unique(bytes)?;
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid serial device document"))?;
-    let base = object
+    let stamped_base = object
         .remove("serial_base_version")
         .and_then(|version| version.as_u64())
-        .filter(|version| {
-            (crate::CURRENT_SCHEMA_VERSION as u64..crate::SERIAL_DEVICE_SCHEMA_VERSION as u64)
-                .contains(version)
-        })
         .ok_or(StorageError::Invalid("invalid serial base schema"))?;
+    // Older writers queried the complete project version while encoding the
+    // nested touch leaf. A bound source selected 83 in this field even when
+    // the serial layer was nested inside an enclosing modulation document.
+    let legacy_bound_touch =
+        inside_envelope && stamped_base == u64::from(crate::BOUND_SOURCE_EFFECT_SCHEMA_VERSION);
+    let base = if legacy_bound_touch {
+        let rows = object
+            .get("device_automation_touch")
+            .ok_or(StorageError::Invalid(
+                "invalid legacy bound source touch leaf",
+            ))?;
+        u64::from(super::device_automation_touch::mislabeled_bound_serial_leaf(rows)?)
+    } else if (u64::from(crate::CURRENT_SCHEMA_VERSION)
+        ..u64::from(crate::SERIAL_DEVICE_SCHEMA_VERSION))
+        .contains(&stamped_base)
+    {
+        stamped_base
+    } else {
+        return Err(StorageError::Invalid("invalid serial base schema"));
+    };
     let Rows(rows) = serde_json::from_value(
         object
             .remove("serial_devices")
@@ -119,7 +135,14 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             "serial membership references a missing device",
         ));
     }
-    Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
+    let project =
+        Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))?;
+    if legacy_bound_touch && !super::bound_source_effects::contains(&project) {
+        return Err(StorageError::Invalid(
+            "legacy touch leaf requires a bound source",
+        ));
+    }
+    Ok(project)
 }
 
 #[cfg(test)]
