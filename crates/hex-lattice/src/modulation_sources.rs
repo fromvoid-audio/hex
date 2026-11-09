@@ -432,6 +432,10 @@ impl ModulationSourceBank {
         self.render_chunk_with_input(frames, clock, None)
     }
 
+    pub(crate) fn follows_input(&self) -> bool {
+        self.follows_input
+    }
+
     pub(crate) fn render_chunk_with_input(
         &mut self,
         frames: usize,

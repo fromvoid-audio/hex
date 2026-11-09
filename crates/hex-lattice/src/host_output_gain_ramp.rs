@@ -191,9 +191,7 @@ pub(super) fn apply_modulated(
                 offset + frame_offset,
             )
         });
-        let gain = values
-            .host_output_gain_at(frame_offset, upstream)?
-            .ok_or(DeviceContractError::InvalidDescriptor)?;
+        let gain = values.host_output_gain_at(frame_offset, upstream)?;
         let gain = ramp.next(gain.linear());
         frame[0] *= gain;
         frame[1] *= gain;
