@@ -1094,6 +1094,19 @@ class SingleRunFeatureTests(unittest.TestCase):
             (root / "crates/hex-ui/src").mkdir(parents=True)
             self.assertEqual(plan.single_run_packages(root, ["hex-ui", "hex-session"], inventory),
                              {"hex-ui": "ui-test-support"})
+            inventory[0]["features"]["ui-unit-tier"] = []
+            self.assertEqual(plan.single_run_packages(root, ["hex-ui", "hex-session"], inventory),
+                             {"hex-ui": "ui-test-support"})
+            ui_source = root / "crates/hex-ui/src/lib.rs"
+            ui_source.write_text('#[cfg(all(test, feature = "ui-unit-tier"))]\nmod tests {}\n')
+            self.assertEqual(plan.single_run_packages(root, ["hex-ui", "hex-session"], inventory),
+                             {"hex-ui": "ui-test-support"})
+            ui_source.write_text('#[cfg(feature = "ui-unit-tier")]\nfn runtime() {}\n')
+            self.assertEqual(plan.single_run_packages(root, ["hex-ui", "hex-session"], inventory), {})
+            ui_source.write_text("")
+            inventory[0]["features"]["unknown"] = []
+            self.assertEqual(plan.single_run_packages(root, ["hex-ui", "hex-session"], inventory), {})
+            del inventory[0]["features"]["unknown"]
             (root / "crates/hex-ui/src/lib.rs").write_text('#[cfg(not(feature = "ui-test-support"))]\nfn f() {}\n')
             self.assertEqual(plan.single_run_packages(root, ["hex-ui", "hex-session"], inventory), {})
 
@@ -1626,7 +1639,7 @@ class ModuleScopeTests(unittest.TestCase):
         root = SCRIPTS.parent
         owner = "hex-ui"
         inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
-                      "features": {"ui-test-support": []}, "dependencies": [],
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
                       "targets": [{"kind": ["lib"]}]}]
         path = "crates/hex-ui/src/editor/pending_edit.rs"
         filters = plan.module_test_filters(root, [path], inventory, [owner])
@@ -1713,6 +1726,39 @@ class ModuleScopeTests(unittest.TestCase):
         feature = next(step for step in steps if step.step_id == "ui-feature-tests")
         self.assertNotIn("--lib", feature.argv)
         self.assertNotIn("--test", feature.argv)
+        self.assertTrue(any(step.step_id == "ui-piano-unit-tests" for step in steps))
+
+    def test_piano_unit_target_follows_owners_and_runs_once(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        piano = ["editor::midi_drag::", "editor::midi_scene::", "editor::midi_viewport_grid::"]
+        for path in ("midi_drag.rs", "midi_scene.rs", "midi_viewport_grid.rs"):
+            self.assertEqual(plan.module_test_filters(
+                root, ["crates/hex-ui/src/editor/" + path], inventory, [owner]), {owner: piano})
+        self.assertEqual(plan.module_test_filters(
+            root, ["crates/hex-ui/tests/unit_piano_roll.rs"], inventory, [owner]), {owner: piano})
+        for names, expected in (([piano[0]], True), (piano, True), (["editor::"], True),
+                                (["editor::save::"], False)):
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": {owner: names}}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                      "boundary": boundary, "cargo_inventory": inventory,
+                                      "paths": []})
+            units = [step for step in steps if "unit_piano_roll" in step.argv]
+            self.assertEqual(len(units), int(expected))
+            if units:
+                self.assertIn("ui-unit-tier", units[0].argv)
+                for name in names:
+                    self.assertIn(name, units[0].argv)
+                self.assertTrue(ci.module_scoped(units[0].argv))
+        full = ci.planned_steps({"scope": "full"})
+        self.assertTrue(any(step.step_id == "ui-piano-unit-tests" for step in full))
+        health = ci.planned_steps({"scope": "rust", "health": {"python": False, "workspace_inputs": True, "packages": []}})
+        self.assertTrue(any(step.step_id == "health-ui-piano-unit" for step in health))
 
     def crate(self, root: Path) -> list[dict]:
         files = {

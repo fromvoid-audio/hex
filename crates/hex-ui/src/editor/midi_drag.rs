@@ -331,7 +331,7 @@ pub(super) fn begin(start: GestureStart) -> Option<NoteGesture> {
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 pub(super) fn update(gesture: &mut NoteGesture, pointer_x: f32, pointer_y: f32) -> bool {
     update_with_modifier(gesture, pointer_x, pointer_y, false)
 }
@@ -547,7 +547,7 @@ fn snap_clamped(raw: i128, min: u64, max: u64, step: u64) -> u64 {
     snapped.clamp(i128::from(min), i128::from(max)) as u64
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::{
         HitKind, MidiGrid, NotePreview, begin, default_gate_raw, effective_grid, hit_kind, is_noop,
@@ -1304,7 +1304,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod creation_geometry_tests {
     use super::*;
     #[test]
