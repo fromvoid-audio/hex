@@ -212,7 +212,7 @@ mod tests {
         assert!(
             Settings {
                 rate: Rate::Hertz(f64::NAN),
-                phase: 0.0
+                ..Settings::default()
             }
             .encode()
             .is_err()
