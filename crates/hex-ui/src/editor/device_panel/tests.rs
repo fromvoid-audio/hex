@@ -6264,6 +6264,39 @@ fn modulation_panel_adds_and_maps_a_manual_macro(cx: &mut TestAppContext) {
     );
 }
 
+fn click_modulator_control(visual: &mut VisualTestContext, key: String, in_strip: bool) {
+    let key = Box::leak(key.into_boxed_str());
+    if in_strip {
+        for _ in 0..3 {
+            let target = visual
+                .debug_bounds(key)
+                .unwrap_or_else(|| panic!("missing {key}"));
+            let strip = visual.debug_bounds("device-modulator-scroll").unwrap();
+            if strip.contains(&target.center()) {
+                break;
+            }
+            visual.simulate_event(gpui::ScrollWheelEvent {
+                position: strip.center(),
+                delta: gpui::ScrollDelta::Pixels(point(
+                    px(0.0),
+                    strip.center().y - target.center().y,
+                )),
+                ..Default::default()
+            });
+            visual.run_until_parked();
+        }
+        let target = visual.debug_bounds(key).unwrap();
+        let strip = visual.debug_bounds("device-modulator-scroll").unwrap();
+        assert!(
+            strip.contains(&target.center()),
+            "{key} at {target:?} outside {strip:?}"
+        );
+    }
+    let target = visual.debug_bounds(key).unwrap();
+    visual.simulate_click(target.center(), Modifiers::default());
+    visual.run_until_parked();
+}
+
 #[gpui::test]
 fn modulation_panel_maps_an_lfo_into_a_macro_and_then_a_device_parameter(cx: &mut TestAppContext) {
     use hex_devices::utility::parameter;
@@ -6282,56 +6315,24 @@ fn modulation_panel_maps_an_lfo_into_a_macro_and_then_a_device_parameter(cx: &mu
             .modulation()
             .clone()
     };
-    let click = |visual: &mut VisualTestContext, key: String, in_strip: bool| {
-        let key = Box::leak(key.into_boxed_str());
-        if in_strip {
-            for _ in 0..3 {
-                let target = visual
-                    .debug_bounds(key)
-                    .unwrap_or_else(|| panic!("missing {key}"));
-                let strip = visual.debug_bounds("device-modulator-scroll").unwrap();
-                if strip.contains(&target.center()) {
-                    break;
-                }
-                visual.simulate_event(gpui::ScrollWheelEvent {
-                    position: strip.center(),
-                    delta: gpui::ScrollDelta::Pixels(point(
-                        px(0.0),
-                        strip.center().y - target.center().y,
-                    )),
-                    ..Default::default()
-                });
-                visual.run_until_parked();
-            }
-            let target = visual.debug_bounds(key).unwrap();
-            let strip = visual.debug_bounds("device-modulator-scroll").unwrap();
-            assert!(
-                strip.contains(&target.center()),
-                "{key} at {target:?} outside {strip:?}"
-            );
-        }
-        let target = visual.debug_bounds(key).unwrap();
-        visual.simulate_click(target.center(), Modifiers::default());
-        visual.run_until_parked();
-    };
-    click(&mut visual, "device-modulator-toggle".into(), false);
+    click_modulator_control(&mut visual, "device-modulator-toggle".into(), false);
     for (index, kind) in ["lfo", "macro"].into_iter().enumerate() {
-        click(&mut visual, format!("add-{kind}-{}", device.value()), true);
+        click_modulator_control(&mut visual, format!("add-{kind}-{}", device.value()), true);
         pump_until(&editor, cx, |view| bank(view).sources().len() == index + 1);
         visual.run_until_parked();
     }
     let slots = editor.read_with(cx, |view, _| bank(view));
     let lfo = slots.sources()[0].id;
     let manual = slots.sources()[1].id;
-    click(&mut visual, format!("lfo-{}-map", lfo.value()), true);
-    click(
+    click_modulator_control(&mut visual, format!("lfo-{}-map", lfo.value()), true);
+    click_modulator_control(
         &mut visual,
         format!("map-macro-{}-{}", device.value(), manual.value()),
         true,
     );
     pump_until(&editor, cx, |view| bank(view).routes().len() == 1);
     visual.run_until_parked();
-    click(&mut visual, format!("macro-{}-map", manual.value()), true);
+    click_modulator_control(&mut visual, format!("macro-{}-map", manual.value()), true);
     assert!(
         visual
             .debug_bounds(Box::leak(
@@ -6339,7 +6340,7 @@ fn modulation_panel_maps_an_lfo_into_a_macro_and_then_a_device_parameter(cx: &mu
             ))
             .is_none()
     );
-    click(
+    click_modulator_control(
         &mut visual,
         format!("map-target-{}-{}", device.value(), parameter::GAIN.value()),
         false,
@@ -6370,11 +6371,142 @@ fn modulation_panel_maps_an_lfo_into_a_macro_and_then_a_device_parameter(cx: &mu
     editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
     pump_until(&editor, cx, |view| bank(view) == mapped);
     visual.run_until_parked();
-    click(&mut visual, format!("lfo-{}-remove", lfo.value()), true);
+    click_modulator_control(&mut visual, format!("lfo-{}-remove", lfo.value()), true);
     pump_until(&editor, cx, |view| {
         let bank = bank(view);
         bank.sources() == &mapped.sources()[1..] && bank.routes() == &mapped.routes()[1..]
     });
+}
+
+#[gpui::test]
+fn modulation_panel_maps_a_free_lfo_rate_and_refuses_ineligible_targets(cx: &mut TestAppContext) {
+    use hex_devices::utility::parameter;
+    use hex_engine::lfo_modulator as lfo;
+    use hex_project::{DeviceModulation, ModulationDestination};
+
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let bank = |view: &EditorView| -> DeviceModulation {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .modulation()
+            .clone()
+    };
+    let click = click_modulator_control;
+    click(&mut visual, "device-modulator-toggle".into(), false);
+    for (index, kind) in ["lfo", "lfo", "macro"].into_iter().enumerate() {
+        click(&mut visual, format!("add-{kind}-{}", device.value()), true);
+        pump_until(&editor, cx, |view| bank(view).sources().len() == index + 1);
+        visual.run_until_parked();
+    }
+    let slots = editor.read_with(cx, |view, _| bank(view));
+    let [free, synced, manual] = std::array::from_fn(|index| slots.sources()[index].id);
+    let rate_key = |source: hex_project::ModulationSourceId| {
+        format!("map-lfo-rate-{}-{}", device.value(), source.value())
+    };
+    click(&mut visual, format!("lfo-{}-sync", synced.value()), true);
+    pump_until(&editor, cx, |view| {
+        matches!(
+            lfo::Settings::decode(&bank(view).sources()[1].state)
+                .unwrap()
+                .rate,
+            lfo::Rate::BeatsPerCycle(_)
+        )
+    });
+    visual.run_until_parked();
+
+    click(&mut visual, format!("macro-{}-map", manual.value()), true);
+    assert!(
+        visual
+            .debug_bounds(Box::leak(rate_key(synced).into_boxed_str()))
+            .is_none()
+    );
+    click(&mut visual, rate_key(free), true);
+    pump_until(&editor, cx, |view| bank(view).routes().len() == 1);
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(Box::leak(rate_key(free).into_boxed_str()))
+            .is_none(),
+        "duplicate"
+    );
+    click(&mut visual, format!("macro-{}-map", manual.value()), true);
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("lfo-{}-sync", free.value()).into_boxed_str()
+            ))
+            .is_none(),
+        "assigned lfo stays free-running"
+    );
+    let rate_route = editor.read_with(cx, |view, _| bank(view).routes()[0]);
+    assert_eq!(rate_route.source, manual);
+    assert_eq!(
+        rate_route.destination,
+        ModulationDestination::Modulator {
+            source: free,
+            module_type: lfo::TYPE_ID,
+            parameter: lfo::RATE_PARAMETER,
+        }
+    );
+    for expected in [0.05, 0.0, -0.05] {
+        click(
+            &mut visual,
+            format!("modulation-route-{}-less", rate_route.id.value()),
+            true,
+        );
+        pump_until(&editor, cx, |view| {
+            (bank(view).routes()[0].amount.get() - expected).abs() < 1e-6
+        });
+        visual.run_until_parked();
+    }
+
+    click(&mut visual, format!("lfo-{}-map", free.value()), true);
+    assert!(
+        visual
+            .debug_bounds(Box::leak(rate_key(free).into_boxed_str()))
+            .is_none(),
+        "self-route"
+    );
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("map-macro-{}-{}", device.value(), manual.value()).into_boxed_str()
+            ))
+            .is_none(),
+        "cycle"
+    );
+    click(
+        &mut visual,
+        format!("map-target-{}-{}", device.value(), parameter::GAIN.value()),
+        false,
+    );
+    pump_until(&editor, cx, |view| bank(view).routes().len() == 2);
+    let mapped = editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        let mapped = bank(view);
+        assert_eq!(mapped.routes()[1].source, free);
+        assert_eq!(mapped.sources()[0], slots.sources()[0]);
+        assert_eq!(
+            hex_storage::schema_version_for(project),
+            hex_storage::LFO_RATE_ROUTE_SCHEMA_VERSION
+        );
+        let loaded = hex_storage::decode(&hex_storage::encode(project).unwrap()).unwrap();
+        assert_eq!(loaded.device(device).unwrap().modulation(), &mapped);
+        mapped
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        bank(view).routes() == &mapped.routes()[..1]
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+    pump_until(&editor, cx, |view| bank(view) == mapped);
 }
 
 #[gpui::test]
