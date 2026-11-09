@@ -2258,7 +2258,8 @@ fn midi_recording_wire_and_physical_input_deliver_then_commit_one_native_history
 #[test]
 fn sealed_native_take_recovery_uses_canonical_publication_and_one_undo() {
     use hex_session::service::{
-        DeviceAutomationTakeProgress, DeviceAutomationTakeScope, DeviceCaptureTarget,
+        AutomationRecoveryFileIdentity, DeviceAutomationTakeProgress, DeviceAutomationTakeScope,
+        DeviceCaptureTarget,
     };
     use hex_storage::automation_draft::{
         AppliedEvent, CaptureClock, DraftClock, DraftProvenance, DraftTarget, DraftTerminal,
@@ -2332,15 +2333,25 @@ fn sealed_native_take_recovery_uses_canonical_publication_and_one_undo() {
         .unwrap();
     drop(writer);
     let bytes = std::fs::read(&path).unwrap();
-    let recovered = h.run(Request::RecoverDeviceAutomationTake {
+    let inspected = h.run(Request::InspectSealedAutomationRecovery {
         request_id: 41,
-        target: DraftTarget::Device {
-            device,
-            target: target.target(),
-        },
-        expected: scope.stamp,
         path: path.clone(),
+    });
+    assert!(inspected.error.is_none(), "{:?}", inspected.error);
+    assert_eq!(inspected.state.project, inserted.state.project);
+    assert_eq!(inspected.state.revision, inserted.state.revision);
+    let DeviceAutomationTakeProgress::SealedFile(selected) =
+        inspected.device_automation_take_complete.unwrap().progress
+    else {
+        panic!("finished recovery file did not produce an exact selection");
+    };
+    let recovered = h.run(Request::RecoverDeviceAutomationTake {
+        request_id: 42,
+        target: selected.target,
+        expected: selected.provenance,
+        path: selected.path,
         context,
+        identity: AutomationRecoveryFileIdentity::Sealed(selected.identity),
     });
     assert_eq!(
         recovered.device_automation_take_complete.unwrap().progress,

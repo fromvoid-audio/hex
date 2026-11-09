@@ -1,10 +1,11 @@
-//! Editor intent for a single retained device take. Session owns the writer,
-//! verifies the selected copy, and alone authorizes releasing the original.
+//! Editor recovery intent for a retained take or a user-selected finished file.
+//! Session verifies content, owns writer custody and performs canonical adoption.
 use super::EditorView;
-use gpui::Context;
+use gpui::{Context, PathPromptOptions};
 use hex_session::service::{
-    DeviceAutomationTakeAction as Action, DeviceAutomationTakeProgress as Progress,
-    DeviceAutomationTakeScope as Scope, Event, Request, automation_draft::RecoveryCopyReceipt,
+    AutomationRecoveryFileIdentity, DeviceAutomationTakeAction as Action,
+    DeviceAutomationTakeProgress as Progress, DeviceAutomationTakeScope as Scope, Event, Request,
+    automation_draft::{DraftProvenance, DraftTarget, DraftTerminal, RecoveryCopyReceipt},
 };
 use std::{
     path::{Path, PathBuf},
@@ -17,6 +18,7 @@ const MAX_EVENTS: u64 = hex_project::MAX_DEVICE_AUTOMATION_POINTS as u64;
 pub(super) struct Recovery {
     phase: Phase,
     request: Option<u64>,
+    saved: Option<ReadyApplication>,
 }
 
 #[derive(Default)]
@@ -51,6 +53,27 @@ enum Phase {
         scope: Scope,
         copy: Verified,
     },
+    ChoosingFile {
+        picker: u64,
+    },
+    InspectingFile {
+        path: PathBuf,
+    },
+    Applying(ReadyApplication),
+}
+
+struct ReadyApplication {
+    path: PathBuf,
+    target: DraftTarget,
+    provenance: DraftProvenance,
+    identity: AutomationRecoveryFileIdentity,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Resolution {
+    Kept(Box<Scope>),
+    Selected,
+    Applied,
 }
 
 struct Verified {
@@ -60,7 +83,13 @@ struct Verified {
 
 impl Phase {
     fn unresolved(&self) -> bool {
-        !matches!(self, Self::Idle | Self::Discover { .. })
+        !matches!(
+            self,
+            Self::Idle
+                | Self::Discover { .. }
+                | Self::ChoosingFile { .. }
+                | Self::InspectingFile { .. }
+        )
     }
 
     fn is_work(&self) -> bool {
@@ -71,6 +100,8 @@ impl Phase {
                 | Self::Copying { .. }
                 | Self::Verifying { .. }
                 | Self::Keeping { .. }
+                | Self::InspectingFile { .. }
+                | Self::Applying(_)
         )
     }
 
@@ -116,12 +147,27 @@ impl Recovery {
         };
     }
 
-    fn settle(&mut self, id: u64, progress: &Progress) -> Option<Scope> {
+    fn retry_choice(&mut self, phase: Phase) -> Phase {
+        match phase {
+            Phase::Applying(selected) => {
+                self.saved = Some(selected);
+                Phase::Idle
+            }
+            phase => phase.retry_choice(),
+        }
+    }
+
+    fn retry_current(&mut self) {
+        let phase = std::mem::take(&mut self.phase);
+        self.phase = self.retry_choice(phase);
+    }
+
+    fn settle(&mut self, id: u64, progress: &Progress) -> Option<Resolution> {
         if !self.matches_request(id) {
             return None;
         }
         self.request = None;
-        let mut kept = None;
+        let mut resolution = None;
         self.phase = match (std::mem::take(&mut self.phase), progress) {
             (Phase::Discover { .. }, Progress::FailedPluginCustody { scope, .. }) => {
                 Phase::NeedsCopy(**scope)
@@ -148,12 +194,36 @@ impl Recovery {
                 }
             }
             (Phase::Keeping { scope, copy }, Progress::CopyKept(path)) if copy.path == *path => {
-                kept = Some(scope);
+                self.saved = (copy.receipt.events() != 0
+                    && matches!(copy.receipt.terminal(), DraftTerminal::Finished(_)))
+                .then_some(ReadyApplication {
+                    path: copy.path,
+                    target: scope.target.draft_target(),
+                    provenance: scope.stamp,
+                    identity: AutomationRecoveryFileIdentity::Copy(copy.receipt),
+                });
+                resolution = Some(Resolution::Kept(Box::new(scope)));
                 Phase::Idle
             }
-            (phase, _) => phase.retry_choice(),
+            (Phase::InspectingFile { path }, Progress::SealedFile(selected))
+                if path == selected.path =>
+            {
+                self.saved = Some(ReadyApplication {
+                    path,
+                    target: selected.target,
+                    provenance: selected.provenance,
+                    identity: AutomationRecoveryFileIdentity::Sealed(selected.identity),
+                });
+                resolution = Some(Resolution::Selected);
+                Phase::Idle
+            }
+            (Phase::Applying(_), Progress::Committed) => {
+                resolution = Some(Resolution::Applied);
+                Phase::Idle
+            }
+            (phase, _) => self.retry_choice(phase),
         };
-        kept
+        resolution
     }
 }
 
@@ -163,6 +233,9 @@ impl EditorView {
             Phase::Idle if self.retained_native_recovery_scope().is_some() => {
                 Some(("save automation recovery copy", true))
             }
+            Phase::Idle if self.saved_automation_take_available() => {
+                Some(("apply recovered automation", true))
+            }
             Phase::NeedsCopy(_) => Some(("save automation recovery copy", true)),
             Phase::Verified { .. } => Some(("keep automation recovery copy", true)),
             Phase::Choosing { .. } => Some(("choose a location for the recovery copy", false)),
@@ -170,8 +243,19 @@ impl EditorView {
                 Some(("saving automation recovery copy", false))
             }
             Phase::Keeping { .. } => Some(("checking automation recovery copy", false)),
+            Phase::ChoosingFile { .. } | Phase::InspectingFile { .. } => {
+                Some(("reading automation recovery file", false))
+            }
+            Phase::Applying(_) => Some(("applying recovered automation", false)),
             Phase::Idle | Phase::Discover { .. } => None,
         }
+    }
+
+    fn saved_automation_take_available(&self) -> bool {
+        self.automation_take_recovery.saved.is_some()
+            && self.state.is_some()
+            && !self.native_automation_recorder.busy()
+            && !self.device_gesture_pending()
     }
 
     pub(super) fn start_automation_recovery(&mut self, cx: &mut Context<Self>) {
@@ -179,6 +263,15 @@ impl EditorView {
             return;
         }
         let phase = std::mem::take(&mut self.automation_take_recovery.phase);
+        if matches!(phase, Phase::Idle)
+            && self.saved_automation_take_available()
+            && let Some(selected) = self.automation_take_recovery.saved.take()
+        {
+            self.automation_take_recovery.phase = Phase::Applying(selected);
+            self.wake_poll();
+            cx.notify();
+            return;
+        }
         let scope = match phase {
             Phase::Idle => self.retained_native_recovery_scope(),
             Phase::NeedsCopy(scope) => Some(scope),
@@ -242,6 +335,67 @@ impl EditorView {
         });
     }
 
+    pub(super) fn open_automation_recovery_file(&mut self, cx: &mut Context<Self>) {
+        if self.automation_close_preflight.frozen()
+            || self.update_preparing()
+            || self.project_open.busy()
+            || self.save_dialog_open
+            || self.close_prompt_open
+            || self.native_automation_recorder.busy()
+            || self.device_gesture_pending()
+            || !matches!(self.automation_take_recovery.phase, Phase::Idle)
+        {
+            self.error = Some("finish the current action before opening a recovery take".into());
+            cx.notify();
+            return;
+        }
+        let Ok(picker) = self.native_automation_recorder.reserve_request() else {
+            self.error = Some("automation request limit reached".into());
+            cx.notify();
+            return;
+        };
+        self.automation_take_recovery.phase = Phase::ChoosingFile { picker };
+        let directory = hex_session::service::automation_draft::default_directory().ok();
+        let response = cx.prompt_for_paths_with_directory(
+            PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: false,
+                prompt: Some("open automation recovery file".into()),
+            },
+            directory.as_deref(),
+        );
+        cx.spawn(async move |this, cx| {
+            let result = response.await;
+            let _ = this.update(cx, |view, cx| {
+                if !matches!(view.automation_take_recovery.phase, Phase::ChoosingFile { picker: id } if id == picker) {
+                    return;
+                }
+                view.automation_take_recovery.phase = match result {
+                    Ok(Ok(Some(paths))) if !view.automation_close_preflight.frozen() => {
+                        if let [path] = paths.as_slice() {
+                            // An explicit new file replaces the former choice,
+                            // even if inspection later refuses its contents.
+                            view.automation_take_recovery.saved = None;
+                            Phase::InspectingFile { path: path.clone() }
+                        } else {
+                            view.error = Some("select one automation recovery file".into());
+                            Phase::Idle
+                        }
+                    }
+                    Ok(Err(error)) => {
+                        view.error = Some(error.to_string().into());
+                        Phase::Idle
+                    }
+                    _ => Phase::Idle,
+                };
+                view.wake_poll();
+                cx.notify();
+            });
+        }).detach();
+        cx.notify();
+    }
+
     pub(super) fn probe_failed_plugin_automation(&mut self) {
         if self.automation_take_recovery.request.is_none()
             && matches!(self.automation_take_recovery.phase, Phase::Idle)
@@ -270,8 +424,7 @@ impl EditorView {
         }
         let Ok(request_id) = self.native_automation_recorder.reserve_request() else {
             self.error = Some("automation request limit reached".into());
-            self.automation_take_recovery.phase =
-                std::mem::take(&mut self.automation_take_recovery.phase).retry_choice();
+            self.automation_take_recovery.retry_current();
             return true;
         };
         let take = |scope, action| Request::DeviceAutomationTake {
@@ -321,13 +474,33 @@ impl EditorView {
                     max_events: MAX_EVENTS,
                 },
             ),
+            Phase::InspectingFile { path } => Request::InspectSealedAutomationRecovery {
+                request_id,
+                path: path.clone(),
+            },
+            Phase::Applying(selected) => {
+                let Some(state) = self.state.as_ref() else {
+                    self.automation_take_recovery.retry_current();
+                    return true;
+                };
+                Request::RecoverDeviceAutomationTake {
+                    request_id,
+                    context: hex_engine::AudioSourceContext {
+                        project_generation: self.project_generation,
+                        editor_revision: state.revision,
+                    },
+                    target: selected.target,
+                    expected: selected.provenance,
+                    path: selected.path.clone(),
+                    identity: selected.identity,
+                }
+            }
             _ => return false,
         };
         self.automation_take_recovery.request = Some(request_id);
         if !self.enqueue(request) && self.automation_take_recovery.matches_request(request_id) {
             self.automation_take_recovery.request = None;
-            self.automation_take_recovery.phase =
-                std::mem::take(&mut self.automation_take_recovery.phase).retry_choice();
+            self.automation_take_recovery.retry_current();
         }
         true
     }
@@ -338,15 +511,16 @@ impl EditorView {
         closed: bool,
     ) {
         let (Request::DeviceAutomationTake { request_id, .. }
-        | Request::QueryFailedPluginAutomation { request_id }) = request
+        | Request::QueryFailedPluginAutomation { request_id }
+        | Request::RecoverDeviceAutomationTake { request_id, .. }
+        | Request::InspectSealedAutomationRecovery { request_id, .. }) = request
         else {
             return;
         };
         if self.automation_take_recovery.matches_request(*request_id) {
             self.automation_take_recovery.request = None;
             if closed {
-                self.automation_take_recovery.phase =
-                    std::mem::take(&mut self.automation_take_recovery.phase).retry_choice();
+                self.automation_take_recovery.retry_current();
             }
         }
     }
@@ -355,13 +529,29 @@ impl EditorView {
         let Some(completion) = event.device_automation_take_complete.as_ref() else {
             return;
         };
-        if let Some(scope) = self
+        match self
             .automation_take_recovery
             .settle(completion.request_id, &completion.progress)
         {
-            self.release_native_recovery(scope);
-            self.error = None;
-            self.status = "automation recovery copy kept".into();
+            Some(Resolution::Kept(scope)) => {
+                self.release_native_recovery(*scope);
+                self.error = None;
+                self.status = "automation recovery copy kept".into();
+            }
+            Some(Resolution::Selected) => {
+                self.error = None;
+                if let Some(selected) = self.automation_take_recovery.saved.as_ref() {
+                    self.status = format!(
+                        "automation recovery file selected · {}",
+                        hex_session::service::text::verbatim(selected.path.display())
+                    );
+                }
+            }
+            Some(Resolution::Applied) => {
+                self.error = None;
+                self.status = "recovered automation applied".into();
+            }
+            None => {}
         }
     }
 }

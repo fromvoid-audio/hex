@@ -9,17 +9,6 @@ impl Project {
             .map(super::NativeSource::id)
     }
 
-    fn require_unbound_source(&self, source: SourceId) -> Result<(), Invalid> {
-        if self
-            .tracks()
-            .iter()
-            .any(|track| track.source_id() == Some(source))
-        {
-            return Err(Invalid("editing bound source chains is not supported yet"));
-        }
-        Ok(())
-    }
-
     /// Preserve the designated instrument while editing one bounded flat chain.
     /// The registry publishes its new immutable definition and binding views only
     /// after the edit succeeds; the Editor validates/prepares before committing.
@@ -28,7 +17,6 @@ impl Project {
         source: SourceId,
         edit: impl FnOnce(&mut Vec<Device>) -> Result<(), Invalid>,
     ) -> Result<(), Invalid> {
-        self.require_unbound_source(source)?;
         self.edit_native_source(source, |definition| {
             let instrument = definition.instrument.id();
             let mut chain = std::mem::take(&mut definition.effects);
@@ -106,7 +94,6 @@ impl Project {
         parent: DeviceId,
         state: hex_lattice_contract::NativeDeviceState,
     ) -> Result<Created, Invalid> {
-        self.require_unbound_source(source)?;
         let count = self
             .native_source(source)
             .ok_or(Invalid("native source no longer exists"))?

@@ -35,12 +35,13 @@ pub mod automation_draft;
 pub mod automation_take;
 mod native_automation_recording;
 pub use native_automation_recording::{
-    DeviceAutomationSource, DeviceAutomationTakeAction, DeviceAutomationTakeCompletion,
-    DeviceAutomationTakeProgress, DeviceAutomationTakeScope, DeviceCaptureTarget,
-    FailedPluginContinuation, MAX_NATIVE_RECOVERY_CONTINUATION_EVENTS, NativeRecoveryContinuation,
-    NativeRecoveryTerminal, copy_failed_plugin_on_control,
-    copy_failed_plugin_with_receipt_on_control, copy_native_recovery_on_control,
-    prepare_failed_plugin_continuation, prepare_verified_vst3_recovery_on_control,
+    AutomationRecoveryFileIdentity, DeviceAutomationSource, DeviceAutomationTakeAction,
+    DeviceAutomationTakeCompletion, DeviceAutomationTakeProgress, DeviceAutomationTakeScope,
+    DeviceCaptureTarget, FailedPluginContinuation, MAX_NATIVE_RECOVERY_CONTINUATION_EVENTS,
+    NativeRecoveryContinuation, NativeRecoveryTerminal, SealedAutomationRecoveryFile,
+    copy_failed_plugin_on_control, copy_failed_plugin_with_receipt_on_control,
+    copy_native_recovery_on_control, prepare_failed_plugin_continuation,
+    prepare_verified_vst3_recovery_on_control,
 };
 #[cfg(test)]
 mod busy_reason_tests;
@@ -689,6 +690,11 @@ pub enum Request {
     QueryFailedPluginAutomation {
         request_id: u64,
     },
+    /// Inspect one selected, completed automation draft without changing history.
+    InspectSealedAutomationRecovery {
+        request_id: u64,
+        path: PathBuf,
+    },
     /// Observe earlier device-automation custody in worker order. The caller
     /// must prevent later admissions until it acts on this response.
     QueryDeviceAutomationCloseSafety {
@@ -696,13 +702,15 @@ pub enum Request {
     },
     /// Recover one completed device take without reconstructing its old worker.
     /// Current context fences publication; expected target/provenance bind only
-    /// the immutable file. Every path echoes request_id through take completion.
+    /// the immutable file. A selected verified copy is revalidated under
+    /// the same reader used for adoption. Every path echoes request_id.
     RecoverDeviceAutomationTake {
         request_id: u64,
         context: hex_engine::AudioSourceContext,
         target: hex_storage::automation_draft::DraftTarget,
         expected: automation_draft::DraftProvenance,
         path: PathBuf,
+        identity: AutomationRecoveryFileIdentity,
     },
     ArmNativeParameterRecording {
         project_generation: u64,
@@ -986,6 +994,7 @@ impl Request {
             Self::QueryPluginParameters(_)
                 | Self::ContinuePluginParameters
                 | Self::QueryFailedPluginAutomation { .. }
+                | Self::InspectSealedAutomationRecovery { .. }
                 | Self::QueryDeviceAutomationCloseSafety { .. }
         )
     }
@@ -2911,12 +2920,29 @@ fn run_worker(
                 device_automation_take_complete = Some(completion);
                 resolved
             }
+            Request::InspectSealedAutomationRecovery { request_id, path } => {
+                let mut completion = DeviceAutomationTakeCompletion {
+                    request_id: *request_id,
+                    progress: DeviceAutomationTakeProgress::Refused,
+                };
+                let resolved = match native_automation_recording::inspect_sealed_file(path) {
+                    Ok(file) => {
+                        completion.progress =
+                            DeviceAutomationTakeProgress::SealedFile(Box::new(file));
+                        None
+                    }
+                    Err(reason) => Some(Err(reason)),
+                };
+                device_automation_take_complete = Some(completion);
+                resolved
+            }
             Request::RecoverDeviceAutomationTake {
                 request_id,
                 context,
                 target,
                 expected,
                 path,
+                identity,
             } => {
                 let current = hex_engine::AudioSourceContext {
                     project_generation,
@@ -2941,6 +2967,7 @@ fn run_worker(
                         *target,
                         *expected,
                         path,
+                        *identity,
                     )
                 };
                 device_automation_take_complete = Some(DeviceAutomationTakeCompletion {
@@ -3920,6 +3947,7 @@ fn run_worker(
                     | Request::ContinueSamplerEdit
                     | Request::DeviceAutomationTake { .. }
                     | Request::QueryFailedPluginAutomation { .. }
+                    | Request::InspectSealedAutomationRecovery { .. }
                     | Request::QueryDeviceAutomationCloseSafety { .. }
                     | Request::RecoverDeviceAutomationTake { .. }
                     | Request::InsertPluginEffect(_)
@@ -6530,6 +6558,7 @@ fn run_worker(
                 }
                 Request::DeviceAutomationTake { .. }
                 | Request::QueryFailedPluginAutomation { .. }
+                | Request::InspectSealedAutomationRecovery { .. }
                 | Request::QueryDeviceAutomationCloseSafety { .. }
                 | Request::RecoverDeviceAutomationTake { .. } => {}
                 Request::ArmNativeParameterRecording {
