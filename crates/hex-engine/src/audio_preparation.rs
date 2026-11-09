@@ -47,6 +47,17 @@ pub(crate) fn validate_constructor_project_with_effects(
 ) -> Result<(), AudioStorageError> {
     crate::device_modulation::validate_source_owners(project)
         .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+    // Bound suffixes use the ordinary receiver publication, whose recipe owns
+    // the source program. The sealed root does not retain these recipes.
+    if project.native_sources().iter().any(|source| {
+        source.receiver().is_some()
+            && source
+                .post_instrument_effects()
+                .iter()
+                .any(|effect| !effect.modulation().is_empty())
+    }) {
+        return Err(AudioStorageError::UnsupportedGraph);
+    }
     let supported = |d: &hex_project::Device| {
         d.state().asset_references().is_empty()
             && (d.state().type_id() == hex_devices::utility::UTILITY_TYPE_ID

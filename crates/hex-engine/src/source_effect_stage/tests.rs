@@ -1272,3 +1272,143 @@ fn attaching_a_second_source_effect_keeps_the_first_sources_wet_history() {
     reference.render(&mut b).unwrap();
     assert_eq!(a, b);
 }
+
+#[test]
+fn a_bound_native_suffix_modulates_only_generator_audio_and_preserves_phase_on_handoff() {
+    use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
+    use hex_devices::{
+        modulation::lfo::{Rate, Settings, Waveform},
+        utility::{MAX_UTILITY_GAIN, UTILITY_DEFINITION, UTILITY_TYPE_ID, parameter},
+    };
+    use hex_lattice_contract::NativeDeviceMetadata;
+    use hex_project::{
+        DeviceAutomationTarget, DeviceModulation, DeviceModulationRoute, ElementColor,
+        ModulationAmount, ModulationDestination, ModulationOutputId, ModulationRange,
+        ModulationRouteId, ModulationSourceId, Modulator,
+    };
+
+    let (mut editor, asset) = authored_fixture(0, false);
+    let receiver = editor.project().tracks()[0].id();
+    let contributor = editor.project().tracks()[1].id();
+    let source = editor.project().tracks()[0].source_id().unwrap();
+    let instrument = editor
+        .project()
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    for track in [receiver, contributor] {
+        editor
+            .execute(Command::BindTrackSource {
+                track,
+                source: None,
+            })
+            .unwrap();
+    }
+    let Created::Device(device) = editor
+        .execute(Command::InsertNestedDevice {
+            parent: instrument,
+            state: UTILITY_DEFINITION.default_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("source effect");
+    };
+    let next = editor.project().next_identity();
+    let modulator = ModulationSourceId::new(next).unwrap();
+    let bank = DeviceModulation::new(
+        vec![Modulator {
+            id: modulator,
+            enabled: true,
+            color: ElementColor::default(),
+            state: Settings {
+                waveform: Waveform::Square,
+                phase: 0.0,
+                rate: Rate::Hertz(12_000.0),
+            }
+            .encode()
+            .unwrap(),
+        }],
+        vec![DeviceModulationRoute {
+            id: ModulationRouteId::new(next + 1).unwrap(),
+            source: modulator,
+            output: ModulationOutputId::MAIN,
+            destination: ModulationDestination::Device {
+                device_type: UTILITY_TYPE_ID,
+                target: DeviceAutomationTarget::Parameter(parameter::GAIN),
+                vst3_class: None,
+            },
+            amount: ModulationAmount::new(0.5 / MAX_UTILITY_GAIN).unwrap(),
+            range: ModulationRange::default(),
+            enabled: true,
+        }],
+    )
+    .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device,
+            modulation: bank,
+        })
+        .unwrap();
+    assert_eq!(metadata::construction_bytes(editor.project()), Some(0));
+    for track in [receiver, contributor] {
+        editor
+            .execute(Command::BindTrackSource {
+                track,
+                source: Some(source),
+            })
+            .unwrap();
+    }
+    let model = editor.project();
+    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
+    let revision = Arc::new(
+        PreparedRevision::prepare(model, &media, Arc::new(crate::SineTable::new()), None).unwrap(),
+    );
+    let arrangement = revision.arrangement();
+    let recipes = &arrangement.source_effects;
+    assert_eq!(recipes.len(), 1);
+    assert_eq!(recipes[0].receiver, 0);
+    assert!(recipes[0].instances[0].modulation.is_some());
+    assert!(
+        metadata::construction_bytes(model).unwrap() >= metadata::retained_bytes(recipes).unwrap()
+    );
+
+    let mut dry = [[0.0; 2]; WIDTH];
+    crate::render_source_generators(arrangement, 0, 0, WIDTH as u64, &mut dry, None).unwrap();
+    assert!(dry.iter().any(|frame| frame[0].abs() > 0.001));
+    let compare = |frames: &[[f32; 2]; WIDTH]| {
+        for (index, (actual, source)) in frames.iter().zip(dry).enumerate() {
+            let gain = if index % 4 < 2 { 1.5 } else { 0.5 };
+            let expected = [CLIP[0] + source[0] * gain, CLIP[1] + source[1] * gain];
+            for (sample, expected) in actual.iter().zip(expected) {
+                assert!(
+                    (sample - expected).abs() < 1e-6,
+                    "frame {index}: {sample} != {expected}"
+                );
+            }
+        }
+    };
+    let mut offline = Renderer::new(arrangement);
+    offline.play();
+    let mut pcm = [[0.0; 2]; WIDTH];
+    for block in pcm.chunks_mut(143) {
+        offline.render(block).unwrap();
+    }
+    compare(&pcm);
+
+    let mut donor = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    assert!(
+        SessionPlayback::interactive_runtime_allowance(&revision).unwrap()
+            >= donor.accounted_runtime_storage_bytes().unwrap()
+    );
+    donor.apply(SessionPlaybackCommand::Play).unwrap();
+    let (before, after) = pcm.split_at_mut(97);
+    donor.render(before).unwrap();
+    let mut successor = SessionPlayback::new(revision).unwrap();
+    successor.try_inherit_state_live_from(&mut donor).unwrap();
+    assert_eq!(successor.performance_frame(), 97);
+    for block in after.chunks_mut(37) {
+        successor.render(block).unwrap();
+    }
+    compare(&pcm);
+}

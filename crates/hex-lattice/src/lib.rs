@@ -1106,17 +1106,55 @@ impl NativeRuntimeChain {
     }
 
     pub fn new(instances: Vec<PreparedProcessorInstance>) -> Result<Self, DeviceContractError> {
-        Self::from_prepared(instances.into_iter().map(PreparedRuntimeInstance::from))
+        Self::new_prepared_iter(instances.into_iter().map(PreparedRuntimeInstance::from))
     }
 
     pub fn new_prepared(
         instances: Vec<PreparedRuntimeInstance>,
     ) -> Result<Self, DeviceContractError> {
-        Self::from_prepared(instances.into_iter())
+        Self::new_prepared_iter(instances.into_iter())
     }
 
-    fn from_prepared(
+    fn new_prepared_iter(
         instances: impl ExactSizeIterator<Item = PreparedRuntimeInstance>,
+    ) -> Result<Self, DeviceContractError> {
+        Self::from_prepared(instances.map(|instance| (instance, None)))
+    }
+
+    /// Build a source receiver's runtime on control from its retained native
+    /// recipe. The recipe keeps its immutable declaration. Only the runtime
+    /// allocates private modulation history. Source recipes have no automation.
+    pub fn new_from_source_recipe(
+        instances: &[PreparedRuntimeInstance],
+    ) -> Result<Self, DeviceContractError> {
+        if instances.iter().any(|instance| {
+            !matches!(instance.owner, ProcessorChainOwner::Source(_))
+                || !instance.automation.is_empty()
+        }) {
+            return Err(DeviceContractError::UnsupportedProcessingClass);
+        }
+        Self::from_prepared(instances.iter().map(|instance| {
+            let entry = PreparedRuntimeInstance {
+                modulation: None,
+                automation: Default::default(),
+                meter: std::sync::Arc::clone(&instance.meter),
+                owner: instance.owner,
+                device_id: instance.device_id,
+                device_type: instance.device_type,
+                matrix: instance.matrix,
+                bypassed: instance.bypassed,
+                sample_rate: instance.sample_rate,
+                configuration: instance.configuration.clone(),
+                definition: instance.definition.clone(),
+            };
+            (entry, instance.modulation.as_ref())
+        }))
+    }
+
+    fn from_prepared<'a>(
+        instances: impl ExactSizeIterator<
+            Item = (PreparedRuntimeInstance, Option<&'a PreparedModulationState>),
+        >,
     ) -> Result<Self, DeviceContractError> {
         let mut entries = Vec::new();
         entries
@@ -1125,8 +1163,9 @@ impl NativeRuntimeChain {
         let mut declared_pair_bytes = 0_usize;
         let mut stateful_count = 0_usize;
         let mut automation_bytes = 0usize;
-        for instance in instances {
-            if let Some(prepared) = &instance.modulation {
+        for (instance, borrowed_modulation) in instances {
+            let prepared_modulation = borrowed_modulation.or(instance.modulation.as_ref());
+            if let Some(prepared) = prepared_modulation {
                 prepared.validate_sample_rate(instance.sample_rate)?;
             }
             automation_bytes = automation_bytes
@@ -1250,9 +1289,7 @@ impl NativeRuntimeChain {
                 (None, None)
             };
             let runtime = RuntimeOwnership::prepare(instance.definition.as_ref())?;
-            let modulation = instance
-                .modulation
-                .as_ref()
+            let modulation = prepared_modulation
                 .map(PreparedModulationState::prepare)
                 .transpose()?;
             if let Some(modulation) = &modulation {
@@ -1725,7 +1762,9 @@ impl NativeRuntimeChain {
 
     /// Preflight a retiring-donor transfer for unchanged native controls and
     /// topology. Unlike general reconfiguration, this admits no new device,
-    /// changed trim or bypass, provider program, or graph modulation.
+    /// changed trim or bypass, automation program, or changed modulation.
+    /// The bounded modulation declaration is compared independently of its
+    /// committed history, which moves only after successful preflight.
     pub fn can_transfer_unchanged_native_history_from(&self, previous: &Self) -> bool {
         self.len() == previous.len()
             && self.configuration_matches_range(previous, 0..self.len())
@@ -1743,8 +1782,11 @@ impl NativeRuntimeChain {
                         && left.output_tail == right.output_tail
                         && left.automation.is_empty()
                         && right.automation.is_empty()
-                        && left.modulation.is_none()
-                        && right.modulation.is_none()
+                        && match (&left.modulation, &right.modulation) {
+                            (None, None) => true,
+                            (Some(left), Some(right)) => left.same_declaration(right),
+                            _ => false,
+                        }
                 })
             && !self.transition_busy_from(previous)
             && self.can_inherit_from(previous)
