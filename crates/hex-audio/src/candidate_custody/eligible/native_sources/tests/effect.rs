@@ -238,3 +238,91 @@ fn actual_root_effect_constructor_refusal_retains_the_source_until_observed_disp
     assert!(returned.error.unwrap().to_string().contains("component"));
     assert!(root.complete());
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_root_reserves_and_reports_the_exact_dense_raw_parameter() {
+    const CHILD: &str = "HEX_AUDIO_ROOT_DENSE_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let name = std::thread::current().name().unwrap().to_owned();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--ignored", "--nocapture"])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "80")
+            .env("RUST_MIN_STACK", "8388608")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr),
+        );
+        return;
+    }
+    for valid_class in [true, false] {
+        let root = root();
+        root.configure_native_sources(1, source_reservation())
+            .unwrap();
+        let binding = start(&root);
+        root.complete_native_source(
+            binding,
+            Some(hex_plugin_host::protocol::PresentationLatency {
+                input_frames: 77,
+                output_frames: 91,
+            }),
+        )
+        .unwrap();
+        let state = root.native_source_prepared_state(binding).unwrap();
+        let class = if valid_class {
+            crate::plugin_effects::Hosting::saved_identity_on_control(&state)
+                .unwrap()
+                .class
+                .bytes()
+        } else {
+            [9; 16]
+        };
+        let selected =
+            crate::plugin_effects::AuthoredSelection::from_targets_and_dense([], Some((0, class)))
+                .unwrap()
+                .unwrap();
+        root.start_native_effect_with_selection(binding, Some(&selected))
+            .unwrap();
+        if valid_class {
+            let metadata = root.native_source_metadata(binding).unwrap();
+            assert_eq!(metadata.dense_parameter(), Some(0));
+            assert_eq!(metadata.authored_base_values().next().unwrap().0, 0);
+            assert!(matches!(
+                root.begin_native_parameter_change(binding, 0, 0.75, false),
+                Err("vst3 parameter is owned by its dense modulation lane")
+            ));
+            {
+                let work = root.work.try_lock().unwrap();
+                let Some(Owner::Effect(effect)) = work.sources.cells[0].owner.as_ref() else {
+                    panic!("actual reserved effect");
+                };
+                assert_eq!(
+                    effect.transport_storage_on_control(),
+                    hex_plugin_host::transport::dense_channel_storage_bound(),
+                );
+            }
+            assert!(root.actual_control_backing_bytes().is_some());
+            assert!(root.retire_native_source(binding));
+        } else {
+            assert_eq!(
+                root.native_source_progress(binding),
+                Some(NativeSourcePreparationProgress::Retiring),
+            );
+            let work = root.work.try_lock().unwrap();
+            let Some(Owner::WorkerRefused(failure)) = work.sources.cells[0].owner.as_ref() else {
+                panic!("the original refused effect must remain in custody");
+            };
+            assert_eq!(failure.binding(), binding);
+        }
+        dispose(&root, binding);
+        let returned = root.recover_native_source(binding).unwrap();
+        assert!(matches!(returned.disposal, PreparationDisposal::Reaped(_)));
+        assert_eq!(returned.error.is_none(), valid_class);
+        assert!(root.complete());
+    }
+}

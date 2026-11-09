@@ -232,7 +232,14 @@ impl NativeEffect {
         max_data_bytes: usize,
         authored: Option<(hex_plugin_state::ClassId, &[u32])>,
     ) -> Result<Self, NativeWorkerStartFailure> {
-        Self::prepare_with_renewal_on_control(identity, instance, max_data_bytes, authored, None)
+        Self::prepare_with_renewal_on_control(
+            identity,
+            instance,
+            max_data_bytes,
+            authored,
+            None,
+            None,
+        )
     }
 
     #[allow(clippy::result_large_err)] // Refusal retains the actual source.
@@ -242,8 +249,16 @@ impl NativeEffect {
         max_data_bytes: usize,
         authored: Option<(hex_plugin_state::ClassId, &[u32])>,
         renewal: Option<NativeEffectRenewal>,
+        requested_dense: Option<u32>,
     ) -> Result<Self, NativeWorkerStartFailure> {
-        let dense_raw_id = renewal.as_ref().and_then(|old| old.dense_raw_id);
+        let previous_dense = renewal.as_ref().and_then(|old| old.dense_raw_id);
+        if previous_dense.is_some_and(|previous| requested_dense.is_some_and(|id| id != previous)) {
+            return Err(NativeWorkerStartFailure::retain_source_on_control(
+                Error::Protocol("native renewal dense parameter differs"),
+                instance,
+            ));
+        }
+        let dense_raw_id = requested_dense.or(previous_dense);
         Self::prepare_with_transport_on_control(
             identity,
             instance,
@@ -422,6 +437,7 @@ impl NativeEffect {
                 }
             };
         source_metadata.authored_bases = authored_bases;
+        source_metadata.dense_parameter = dense_raw_id;
         let mut dry = Vec::new();
         if dry.try_reserve_exact(dry_frames).is_err() || dry.capacity() != dry_frames {
             return Err(NativeWorkerStartFailure::retain_source_on_control(

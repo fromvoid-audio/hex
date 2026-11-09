@@ -55,6 +55,7 @@ pub struct AuthoredSelection {
     class: hex_plugin_state::ClassId,
     ids: [u32; MAX_PARAMETER_POINTS],
     len: usize,
+    dense_parameter: Option<u32>,
 }
 impl AuthoredSelection {
     pub fn from_targets(
@@ -70,6 +71,7 @@ impl AuthoredSelection {
             class,
             ids: [0; MAX_PARAMETER_POINTS],
             len: 0,
+            dense_parameter: None,
         };
         for (id, candidate) in std::iter::once((first, Some(class.bytes()))).chain(targets) {
             if candidate != Some(class.bytes()) || id > i32::MAX as u32 {
@@ -88,6 +90,41 @@ impl AuthoredSelection {
             return Err("duplicate authored vst3 parameter target");
         }
         Ok(Some(selected))
+    }
+
+    /// Merge the reserved raw ID with authored metadata selection. An
+    /// existing lane in Base mode may already name the same class and ID.
+    /// The worker and graph independently admit the actual continuous target.
+    pub fn from_targets_and_dense(
+        targets: impl IntoIterator<Item = (u32, Option<[u8; 16]>)>,
+        dense: Option<(u32, [u8; 16])>,
+    ) -> Result<Option<Self>, &'static str> {
+        let selected = Self::from_targets(targets)?;
+        let Some((id, class)) = dense else {
+            return Ok(selected);
+        };
+        let mut selected = match selected {
+            Some(selected) => selected,
+            None => Self::from_targets([(id, Some(class))])?
+                .ok_or("dense vst3 parameter selection missing")?,
+        };
+        if selected.class.bytes() != class || id > i32::MAX as u32 {
+            return Err("dense vst3 parameter identity differs");
+        }
+        if let Err(index) = selected.ids[..selected.len].binary_search(&id) {
+            if selected.len == MAX_PARAMETER_POINTS {
+                return Err("dense vst3 target count exceeds its point budget");
+            }
+            selected.ids.copy_within(index..selected.len, index + 1);
+            selected.ids[index] = id;
+            selected.len += 1;
+        }
+        selected.dense_parameter = Some(id);
+        Ok(Some(selected))
+    }
+
+    pub fn dense_parameter(&self) -> Option<u32> {
+        self.dense_parameter
     }
 
     /// Selection membership only; actual SDK/source admission stays with Root.
@@ -271,6 +308,7 @@ impl SourceCapabilities {
             class: self.class?.bytes(),
             sample_rate,
             quantum_frames,
+            dense_parameter: None,
             parameters: &self.parameters[..self.len],
         })
     }
@@ -279,6 +317,36 @@ impl SourceCapabilities {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dense_selection_merges_one_exact_raw_id_without_discarding_sparse_targets() {
+        let class = [4; 16];
+        let selected =
+            AuthoredSelection::from_targets_and_dense([(7, Some(class))], Some((0, class)))
+                .unwrap()
+                .unwrap();
+        assert_eq!(selected.dense_parameter(), Some(0));
+        assert_eq!(selected.parameters().1, &[0, 7]);
+        assert_eq!(
+            AuthoredSelection::from_targets_and_dense(
+                [(0, Some(class)), (7, Some(class))],
+                Some((0, class)),
+            )
+            .unwrap(),
+            Some(selected),
+        );
+        assert!(
+            AuthoredSelection::from_targets_and_dense([(7, Some(class))], Some((0, [3; 16])))
+                .is_err()
+        );
+        assert!(
+            AuthoredSelection::from_targets_and_dense(
+                (0..MAX_PARAMETER_POINTS as u32).map(|id| (id, Some(class))),
+                Some((MAX_PARAMETER_POINTS as u32, class)),
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn canonical_metadata_keeps_exact_bases_and_requires_complete_ordered_values() {
