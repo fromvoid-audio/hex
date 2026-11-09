@@ -14,6 +14,7 @@ use hex_lattice_contract::{
 pub(super) struct FrozenParameters {
     ids: Vec<ParameterId>,
     values: Vec<Option<ParameterValue>>,
+    unclamped_target: Option<(ParameterId, f64)>,
     ready: bool,
 }
 impl FrozenParameters {
@@ -81,6 +82,9 @@ impl FrozenParameters {
             .get_mut(..self.ids.len())
             .ok_or(MutableInstrumentRuntimeError::Budget)?;
         pair.copy_committed_parameter_targets(&self.ids, output)
+            .map_err(map_runtime_error)?;
+        pair.committed_unclamped_modulation_target()
+            .map(|_| ())
             .map_err(map_runtime_error)
     }
     fn capture(
@@ -90,17 +94,28 @@ impl FrozenParameters {
         if self.ids.is_empty() {
             return Ok(());
         }
+        let unclamped_target = pair
+            .committed_unclamped_modulation_target()
+            .map_err(map_runtime_error)?;
         pair.copy_committed_parameter_targets(&self.ids, &mut self.values)
             .map_err(map_runtime_error)?;
+        self.unclamped_target = unclamped_target;
         self.ready = true;
         Ok(())
     }
     pub(super) fn reset(&mut self) {
         self.values.fill(None);
+        self.unclamped_target = None;
         self.ready = false;
     }
 }
 impl NativeParameterAutomation for FrozenParameters {
+    fn normalized_before_clamp(&self, parameter: ParameterId, _: usize) -> Option<f64> {
+        self.unclamped_target
+            .filter(|(id, _)| *id == parameter)
+            .map(|(_, value)| value)
+    }
+
     fn parameter_ids(&self) -> &[ParameterId] {
         &self.ids
     }
