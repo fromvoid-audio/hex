@@ -137,6 +137,19 @@ impl ChainCustody {
                         hex_devices::overdrive::PreparedOverdrive,
                     >::declared_parts())?),
                 )
+            } else if state.type_id() == hex_devices::compressor::COMPRESSOR_TYPE_ID {
+                let migrated = hex_devices::compressor::COMPRESSOR_DEFINITION
+                    .migrate_state(state)
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                hex_devices::compressor::CompressorDefinition::prepare_owned(&migrated, rate, &[])
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                largest_copy = largest_copy.max(migrated.payload().len());
+                (
+                    migrated.payload().len(),
+                    Some(parts(OwnedShared::<
+                        hex_devices::compressor::PreparedCompressor,
+                    >::declared_parts())?),
+                )
             } else if state.type_id() == hex_devices::gate::GATE_TYPE_ID {
                 let migrated = hex_devices::gate::GATE_DEFINITION
                     .migrate_state(state)
@@ -356,10 +369,13 @@ impl ChainCustody {
             let auto_pan = device.state().type_id() == hex_devices::auto_pan::AUTO_PAN_TYPE_ID;
             let overdrive = device.state().type_id() == hex_devices::overdrive::OVERDRIVE_TYPE_ID;
             let gate = device.state().type_id() == hex_devices::gate::GATE_TYPE_ID;
-            let native = utility || reverb || saturator || auto_pan || overdrive || gate;
+            let compressor =
+                device.state().type_id() == hex_devices::compressor::COMPRESSOR_TYPE_ID;
+            let native =
+                utility || reverb || saturator || auto_pan || overdrive || gate || compressor;
             let definition = &hex_devices::utility::UTILITY_DEFINITION;
             // Never adopt a provider's state/processor owner. The Utility,
-            // Reverb, Saturator, Auto Pan, Overdrive and Gate constructors are closed.
+            // Reverb, Saturator, Auto Pan, Overdrive, Gate and Compressor constructors are closed.
             // Foreign factories return scalar facts matched to the original source.
             let foreign_definition = if native {
                 None
@@ -370,7 +386,12 @@ impl ChainCustody {
                         .ok_or(AudioStorageError::UnsupportedGraph)?,
                 )
             };
-            let migrated = if gate {
+            let migrated = if compressor {
+                hex_devices::compressor::COMPRESSOR_DEFINITION
+                    .migrate_state(device.state())
+                    .and_then(|state| state.with_host_metadata_from(device.state()))
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?
+            } else if gate {
                 hex_devices::gate::GATE_DEFINITION
                     .migrate_state(device.state())
                     .and_then(|state| state.with_host_metadata_from(device.state()))
@@ -459,6 +480,7 @@ impl ChainCustody {
                 || auto_pan
                 || overdrive
                 || gate
+                || compressor
             {
                 StereoMatrix::identity()
             } else if reverb {
@@ -481,7 +503,17 @@ impl ChainCustody {
                     .then(trim)
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?;
             }
-            let processor = if gate {
+            let processor = if compressor {
+                Some(
+                    OwnedShared::new_owned(
+                        hex_devices::compressor::CompressorDefinition::prepare_owned(
+                            &migrated, rate, parameters,
+                        )
+                        .map_err(|_| AudioStorageError::UnsupportedGraph)?,
+                    )
+                    .into_processor_parts_on_control(),
+                )
+            } else if gate {
                 Some(
                     OwnedShared::new_owned(
                         hex_devices::gate::GateDefinition::prepare_owned(
@@ -576,6 +608,8 @@ impl ChainCustody {
                         &hex_devices::auto_pan::AUTO_PAN_DEFINITION
                     } else if overdrive {
                         &hex_devices::overdrive::OVERDRIVE_DEFINITION
+                    } else if compressor {
+                        &hex_devices::compressor::COMPRESSOR_DEFINITION
                     } else if gate {
                         &hex_devices::gate::GATE_DEFINITION
                     } else if reverb {
