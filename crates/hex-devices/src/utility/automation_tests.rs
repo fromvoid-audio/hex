@@ -626,11 +626,13 @@ fn shared_lfo_drives_two_utility_controls_on_each_sample() {
                 source: 0,
                 target: ids[0],
                 amount: 0.01,
+                range: [-1.0, 1.0],
             },
             ModulationRoute {
                 source: 0,
                 target: ids[1],
                 amount: 0.2,
+                range: [-1.0, 1.0],
             },
         ],
         1,
@@ -668,7 +670,17 @@ fn shared_lfo_drives_two_utility_controls_on_each_sample() {
     undeclared.modulation = Some(
         hex_lattice::PreparedModulationState::new(
             vec![source],
-            PreparedModulation::new(&invalid_targets, &[], 1).unwrap(),
+            PreparedModulation::new(
+                &invalid_targets,
+                &[ModulationRoute {
+                    source: 0,
+                    target: invalid_targets[0].descriptor.id,
+                    amount: 0.1,
+                    range: [-1.0, 1.0],
+                }],
+                1,
+            )
+            .unwrap(),
             2,
         )
         .unwrap(),

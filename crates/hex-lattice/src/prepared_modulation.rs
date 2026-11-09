@@ -34,8 +34,8 @@ impl PreparedModulationState {
         {
             return Err(Error::RuntimeBudgetExceeded);
         }
-        let bank = ModulationLfoBank::new(&prepared.sources, chunk_frames)?;
-        if bank.source_count() != prepared.program.source_count() {
+        ModulationLfoBank::validate_sources(&prepared.sources, chunk_frames)?;
+        if prepared.sources.len() != prepared.program.source_count() {
             return Err(Error::InvalidDescriptor);
         }
         Ok(prepared)
@@ -74,6 +74,15 @@ impl PreparedModulationState {
 
     pub(crate) fn matches_runtime(&self, runtime: &ModulationRuntime) -> bool {
         runtime.matches_prepared(&self.sources, &self.program, self.chunk_frames)
+    }
+
+    /// Requested declaration backing before allocating vectors on control.
+    pub fn quoted_heap_bytes(sources: usize, targets: usize, routes: usize) -> Option<usize> {
+        sources
+            .checked_mul(std::mem::size_of::<PreparedLfoSource>())?
+            .checked_add(PreparedModulation::quoted_storage_bytes(
+                targets, targets, routes,
+            )?)
     }
 
     /// Actual reserved declaration backing, excluding its inline header.
