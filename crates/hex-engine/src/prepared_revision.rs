@@ -165,6 +165,16 @@ impl std::fmt::Debug for PreparedRevision {
 
 impl PreparedRevision {
     #[cfg(test)]
+    pub(crate) fn test_install_source_effect_recipes(
+        &mut self,
+        recipes: Vec<crate::source_effect_stage::PreparedSourceEffects>,
+    ) {
+        let mut arrangement = self.arrangement().as_ref().clone();
+        arrangement.source_effects = recipes;
+        self.arrangement = crate::owned_shared::OwnedShared::new_owned(arrangement);
+    }
+
+    #[cfg(test)]
     pub(crate) fn test_install_retained_receiver(
         &mut self,
         canonical: &Project,

@@ -1,14 +1,15 @@
 //! Receiver-only, zero-latency effects on isolated shared generator audio.
 use crate::{Frame, Invalid, Project, effect_clock::ArrangementEffectClock};
 use hex_lattice::{NativeInstrumentClock, NativeRuntimeChain};
-use std::ops::Range;
+use std::{ops::Range, sync::Arc};
 
-/// Borrowed control-side recipe. Placement is validated against the compiled
-/// receiver; the renderer takes custody only of its prepared runtime.
-pub(crate) struct PreparedSourceEffects<'a> {
+/// Control-prepared recipe retained once per source by the compiled project.
+/// Renderers borrow this immutable configuration to build their runtime.
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedSourceEffects {
     pub(crate) source: hex_project::SourceId,
     pub(crate) receiver: usize,
-    pub(crate) instances: &'a [hex_lattice::PreparedRuntimeInstance],
+    pub(crate) instances: Arc<[hex_lattice::PreparedRuntimeInstance]>,
 }
 
 pub(crate) fn native_zero_latency(instance: &hex_lattice::PreparedRuntimeInstance) -> bool {
@@ -19,16 +20,13 @@ pub(crate) fn native_zero_latency(instance: &hex_lattice::PreparedRuntimeInstanc
         )
 }
 
-fn validate_recipes(
-    project: &Project,
-    recipes: &[PreparedSourceEffects<'_>],
-) -> Result<(), Invalid> {
+fn validate_recipes(project: &Project, recipes: &[PreparedSourceEffects]) -> Result<(), Invalid> {
     if recipes.len() > project.tracks.len() {
         return Err(Invalid("source effect recipe count exceeds receiver count"));
     }
     for (ordinal, recipe) in recipes.iter().enumerate() {
         let index = recipe.receiver;
-        let instances = recipe.instances;
+        let instances = recipe.instances.as_ref();
         let track = project
             .tracks
             .get(index)
@@ -73,7 +71,7 @@ fn validate_recipes(
 /// recipes in a batch with a later invalid or over-budget source.
 fn validate_runtime_budget(
     project: &Project,
-    recipes: &[PreparedSourceEffects<'_>],
+    recipes: &[PreparedSourceEffects],
 ) -> Result<(), Invalid> {
     let effects = project
         .tracks
@@ -86,7 +84,7 @@ fn validate_runtime_budget(
                 .flat_map(|bus| bus.device_chain.iter()),
         )
         .chain(project.main_device_chain.iter())
-        .chain(recipes.iter().flat_map(|recipe| recipe.instances));
+        .chain(recipes.iter().flat_map(|recipe| recipe.instances.iter()));
     const OVER_BUDGET: Invalid =
         Invalid("source effects exceed the aggregate graph runtime budget");
     let mut pair_bytes = 0usize;
@@ -117,22 +115,32 @@ pub(crate) struct SourceEffectStages {
 }
 
 impl SourceEffectStages {
+    pub(crate) fn validate_preparation(
+        project: &Project,
+        recipes: &[PreparedSourceEffects],
+    ) -> Result<(), Invalid> {
+        if !recipes.is_empty() {
+            validate_recipes(project, recipes)?;
+            validate_runtime_budget(project, recipes)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn prepare(
         project: &Project,
-        recipes: &[PreparedSourceEffects<'_>],
+        recipes: &[PreparedSourceEffects],
     ) -> Result<Self, Invalid> {
         if recipes.is_empty() {
             return Ok(Self::default());
         }
-        validate_recipes(project, recipes)?;
-        validate_runtime_budget(project, recipes)?;
+        Self::validate_preparation(project, recipes)?;
         let mut chains = Vec::new();
         chains
             .try_reserve_exact(project.tracks.len())
             .map_err(|_| Invalid("source effect runtime allocation failed"))?;
         chains.resize_with(project.tracks.len(), || None);
         for recipe in recipes {
-            let instances = recipe.instances;
+            let instances = recipe.instances.as_ref();
             let mut prepared = Vec::new();
             prepared
                 .try_reserve_exact(instances.len())
