@@ -26,7 +26,11 @@ impl NativeParameterAutomation for DriveFrames {
     }
 
     fn value_at(&self, id: ParameterId, frame: usize) -> Option<ParameterValue> {
-        (id == DRIVE).then(|| ParameterValue::Float(if frame % 16 < 8 { 0.65 } else { 0.15 }))
+        (id == DRIVE).then_some(ParameterValue::Float(if frame % 16 < 8 {
+            0.65
+        } else {
+            0.15
+        }))
     }
 }
 
