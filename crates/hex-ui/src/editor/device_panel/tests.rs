@@ -7108,12 +7108,21 @@ fn modulation_panel_maps_a_bound_source_effect_on_its_receiver(cx: &mut TestAppC
             .routes()
             .len()
     };
+    let dispatched = |cx: &mut TestAppContext, expected| {
+        editor.read_with(cx, |view, _| {
+            view.worker_requests_pending > 0
+                || !view.pending_requests.is_empty()
+                || route_count(view) == expected
+        })
+    };
+    assert!(dispatched(cx, 1), "source output trim did not dispatch");
     pump_until(&editor, cx, |view| route_count(view) == 1);
     visual.run_until_parked();
     click(
         &mut visual,
         format!("map-target-{}-{}", device.value(), gain.value()),
     );
+    assert!(dispatched(cx, 2), "source provider gain did not dispatch");
     pump_until(&editor, cx, |view| route_count(view) == 2);
     editor.read_with(cx, |view, _| {
         let project = &view.state.as_ref().unwrap().project;
