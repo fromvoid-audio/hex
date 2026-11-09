@@ -6238,6 +6238,18 @@ fn open_operator_options(visual: &mut VisualTestContext, device: DeviceId) {
 }
 
 #[gpui::test]
+fn modulation_panel_maps_limiter_input_gain(cx: &mut TestAppContext) {
+    use hex_devices::limiter::{TYPE_ID, parameter::GAIN};
+    assert_modulation_mapping(
+        cx,
+        TYPE_ID,
+        "lfo",
+        hex_engine::lfo_modulator::TYPE_ID,
+        &[GAIN],
+    );
+}
+
+#[gpui::test]
 fn modulation_panel_maps_sparse_eq_output_gain(cx: &mut TestAppContext) {
     use hex_engine::eq::{EQ_TYPE_ID, OUTPUT_GAIN};
     assert_modulation_mapping(

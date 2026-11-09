@@ -18,6 +18,7 @@ mod host_output_modulation_allocations;
 mod limiter_allocations;
 mod limiter_bypass;
 mod limiter_lookahead_allocations;
+mod limiter_modulation;
 mod live_release_receiver;
 mod main_chain_allocations;
 mod manual_host_gain_allocations;
