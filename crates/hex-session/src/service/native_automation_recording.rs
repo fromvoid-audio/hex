@@ -338,8 +338,11 @@ impl Lane {
     }
     pub(super) fn failed_plugin_identity(&self) -> Option<(DeviceAutomationTakeScope, &Path)> {
         let failed = self.failed.as_ref()?;
-        matches!(failed.scope.target, DeviceCaptureTarget::Vst3(_))
-            .then_some((failed.scope, failed.outcome.path.as_path()))
+        matches!(
+            failed.scope.target,
+            DeviceCaptureTarget::Vst3(_) | DeviceCaptureTarget::Vst3Group(_)
+        )
+        .then_some((failed.scope, failed.outcome.path.as_path()))
     }
 
     pub(super) fn failed_source(
@@ -375,8 +378,10 @@ impl Lane {
         observations: Vec<super::PluginParameterObservation>,
     ) -> Result<Step, String> {
         let source = self.failed_source(scope)?;
-        if !matches!(scope.target, DeviceCaptureTarget::Vst3(_))
-            || max_events > hex_project::MAX_DEVICE_AUTOMATION_POINTS as u64
+        if !matches!(
+            scope.target,
+            DeviceCaptureTarget::Vst3(_) | DeviceCaptureTarget::Vst3Group(_)
+        ) || max_events > hex_project::MAX_DEVICE_AUTOMATION_POINTS as u64
             || observations.len() > MAX_FAILED_PLUGIN_EDITOR_OBSERVATIONS
         {
             return Err("invalid VST3 recovery target or budget".into());

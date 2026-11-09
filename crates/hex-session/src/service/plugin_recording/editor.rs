@@ -75,7 +75,30 @@ impl Preparation<'_> {
             return Err("recover or finish the previous automation take first".into());
         }
         let observation = sink.prepare_plugin_editor_recording(input)?;
-        if let Err(reason) = self.admit_ready(session, input.context, input.key, observation) {
+        let admitted = (|| {
+            let scope = DeviceAutomationTakeScope::from_plugin_ready(input.context, &observation)?;
+            let matches = match (input.target, scope.target) {
+                (
+                    PluginEditorRecordingTarget::Single {
+                        device,
+                        class,
+                        parameter,
+                        ..
+                    },
+                    DeviceCaptureTarget::Vst3(actual),
+                ) => (device, class, parameter) == (actual.device, actual.class, actual.parameter),
+                (
+                    PluginEditorRecordingTarget::Group(group),
+                    DeviceCaptureTarget::Vst3Group(actual),
+                ) => group == actual.draft,
+                _ => false,
+            };
+            if !matches {
+                return Err("vst3 editor ready belongs to another target".into());
+            }
+            self.admit_ready(session, input.context, input.key, observation)
+        })();
+        if let Err(reason) = admitted {
             sink.cancel_plugin_editor_recording(input.key);
             return Err(reason);
         }

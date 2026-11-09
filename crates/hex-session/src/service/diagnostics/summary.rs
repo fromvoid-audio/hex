@@ -1529,9 +1529,16 @@ pub(super) fn request(value: &Request) -> Description {
         } => {
             describe!("device_automation_take"; ["request_id" => request_id, "gesture_serial" => scope.stamp.gesture_serial]; omitted="delivery data")
         }
-        Request::StartPluginEditorRecording { request_id, input } => {
-            describe!("start_plugin_editor_recording"; ["request_id" => request_id, "project_generation" => input.context.project_generation, "revision" => input.context.editor_revision, "device" => input.device.value(), "parameter" => input.parameter]; omitted="binding")
-        }
+        Request::StartPluginEditorRecording { request_id, input } => match input.target {
+            crate::service::PluginEditorRecordingTarget::Single {
+                device, parameter, ..
+            } => {
+                describe!("start_plugin_editor_recording"; ["request_id" => request_id, "project_generation" => input.context.project_generation, "revision" => input.context.editor_revision, "device" => device.value(), "parameter" => parameter]; omitted="binding")
+            }
+            crate::service::PluginEditorRecordingTarget::Group(target) => {
+                describe!("start_plugin_editor_group_recording"; ["request_id" => request_id, "project_generation" => input.context.project_generation, "revision" => input.context.editor_revision, "device" => target.device().value(), "parameters" => target.ids().len()]; omitted="binding")
+            }
+        },
         Request::StopPluginEditorRecording { request_id, .. } => {
             describe!("stop_plugin_editor_recording"; ["request_id" => request_id]; omitted="gesture")
         }
