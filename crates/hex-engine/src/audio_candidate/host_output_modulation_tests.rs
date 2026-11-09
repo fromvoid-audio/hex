@@ -156,7 +156,7 @@ fn host_output_modulation_uses_output_automation_and_preserves_bypass() {
     }
 }
 
-fn compare_native_and_sealed_pcm<const FRAMES: usize>(
+pub(super) fn compare_native_and_sealed_pcm<const FRAMES: usize>(
     project: &Project,
     asset: AssetId,
     audio: &Audio,
