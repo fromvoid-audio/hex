@@ -54,6 +54,9 @@ impl NativeProcessorRuntime for MemorySquare {
     fn reset(&mut self) {
         self.0 = [0.0; 2];
     }
+    fn is_quiescent(&self) -> bool {
+        !self.1 && self.0 == [0.0; 2]
+    }
     fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
         previous.as_any().is::<Self>()
     }
@@ -1146,4 +1149,126 @@ fn registered_source_effect_factory_bounds_cover_each_supported_factory() {
         metadata::construction_for([definitions.len()].into_iter()).unwrap()
             >= metadata::retained_bytes(&recipes).unwrap()
     );
+}
+
+#[test]
+fn ordinary_live_source_attachment_starts_empty_and_retirement_requires_a_quiet_stop() {
+    use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
+    let (editor, asset) = authored_fixture(0, false);
+    let source = editor.project().tracks()[0].source_id().unwrap();
+    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
+    let prepare = || {
+        PreparedRevision::prepare(
+            editor.project(),
+            &media,
+            Arc::new(crate::SineTable::new()),
+            None,
+        )
+        .unwrap()
+    };
+    let dry = Arc::new(prepare());
+    let mut wet = prepare();
+    wet.test_install_source_effect_recipes(vec![PreparedSourceEffects {
+        source,
+        receiver: 0,
+        instances: Arc::from([recipe(source, Some(0))]),
+        factory_bytes: 0,
+    }]);
+    let wet = Arc::new(wet);
+    let playback = |revision| SessionPlayback::new(revision).unwrap();
+    let mut previous = playback(Arc::clone(&dry));
+    previous.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut dry_prefix = [[0.0; 2]; 98];
+    previous.render(&mut dry_prefix[..97]).unwrap();
+    let mut independent = playback(Arc::clone(&dry));
+    independent.apply(SessionPlaybackCommand::Play).unwrap();
+    independent.render(&mut dry_prefix).unwrap();
+
+    let mut added = playback(Arc::clone(&wet));
+    added.try_inherit_state_live_from(&mut previous).unwrap();
+    assert_eq!(added.performance_frame(), 97);
+    let mut sample = [[0.0; 2]];
+    added.render(&mut sample).unwrap();
+    for (channel, clip) in CLIP.into_iter().enumerate() {
+        let generator = dry_prefix[97][channel] - clip;
+        assert!(generator.abs() > 1e-5);
+        assert!((sample[0][channel] - (clip + generator * generator)).abs() < 1e-6);
+    }
+
+    let mut removed = playback(Arc::clone(&dry));
+    assert!(removed.try_inherit_state_live_from(&mut added).is_err());
+    added.apply(SessionPlaybackCommand::Pause).unwrap();
+    assert!(removed.try_inherit_state_live_from(&mut added).is_err());
+    assert_eq!(added.performance_frame(), 98);
+    assert_eq!(removed.performance_frame(), 0);
+    added.apply(SessionPlaybackCommand::Stop).unwrap();
+    removed.try_inherit_state_live_from(&mut added).unwrap();
+
+    let mut restored = playback(Arc::clone(&wet));
+    restored.try_inherit_state_live_from(&mut removed).unwrap();
+    restored.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut clean = playback(wet);
+    clean.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut a = [[0.0; 2]; 19];
+    let mut b = a;
+    restored.render(&mut a).unwrap();
+    clean.render(&mut b).unwrap();
+    assert_eq!(a, b);
+}
+
+#[test]
+fn attaching_a_second_source_effect_keeps_the_first_sources_wet_history() {
+    use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
+    let (mut editor, asset) = authored_fixture(0, false);
+    let Created::Track(second) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "independent source".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("second source track");
+    };
+    let project = editor.project();
+    let first = project.tracks()[0].source_id().unwrap();
+    let second = project.track(second).unwrap().source_id().unwrap();
+    let instance = |source, receiver| {
+        let mut effect = recipe(source, Some(0));
+        effect.configuration = Some(Arc::new(
+            hex_lattice_contract::NativeDeviceState::new(effect.device_type, 1, vec![1]).unwrap(),
+        ));
+        PreparedSourceEffects {
+            source,
+            receiver,
+            instances: Arc::from([effect]),
+            factory_bytes: 0,
+        }
+    };
+    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
+    let prepare = |include_second| {
+        let mut revision =
+            PreparedRevision::prepare(project, &media, Arc::new(crate::SineTable::new()), None)
+                .unwrap();
+        let mut stages = vec![instance(first, 0)];
+        if include_second {
+            stages.push(instance(second, 2));
+        }
+        revision.test_install_source_effect_recipes(stages);
+        SessionPlayback::new(Arc::new(revision)).unwrap()
+    };
+    let mut donor = prepare(false);
+    let mut reference = prepare(false);
+    for session in [&mut donor, &mut reference] {
+        session.apply(SessionPlaybackCommand::Play).unwrap();
+        session.render(&mut [[0.0; 2]; 97]).unwrap();
+    }
+    let mut candidate = prepare(true);
+    candidate.try_inherit_state_live_from(&mut donor).unwrap();
+    let mut a = [[0.0; 2]; 173];
+    let mut b = a;
+    candidate.render(&mut a).unwrap();
+    reference.render(&mut b).unwrap();
+    assert_eq!(a, b);
 }
