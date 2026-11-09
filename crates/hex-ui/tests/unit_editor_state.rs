@@ -10,6 +10,8 @@ mod disk_overload_state;
 mod midi_thumbnail_state;
 #[path = "../src/editor/pending_edit.rs"]
 mod receipt;
+#[path = "../src/editor/track_meters/scale.rs"]
+mod track_meter_scale_state;
 #[path = "../src/editor/viewport.rs"]
 mod viewport_state;
 
@@ -420,6 +422,57 @@ mod editor {
                 assert_eq!(note_shape(10, 10, 60, 0, 20), None);
                 assert_eq!(note_shape(0, 10, 128, 0, 20), None);
                 assert_eq!(note_shape(0, 10, 60, 10, 10), None);
+            }
+        }
+    }
+    mod track_meters {
+        mod scale {
+            use crate::track_meter_scale_state::*;
+
+            mod tests {
+                use super::*;
+
+                #[test]
+                fn silence_floor_unity_and_headroom_use_the_display_scale() {
+                    for (amplitude, expected) in [
+                        (0.0, 0.0),
+                        (FLOOR_AMPLITUDE, 0.0),
+                        (0.001, 0.0565),
+                        (10_f32.powf(-48.0 / 20.0), 0.1713),
+                        (10_f32.powf(-30.0 / 20.0), 0.4009),
+                        (10_f32.powf(-24.0 / 20.0), 0.5),
+                        (10_f32.powf(-12.0 / 20.0), 0.6991),
+                        (1.0, 0.8972),
+                        (10_f32.powf(6.0 / 20.0), 1.0),
+                        (100.0, 1.0),
+                    ] {
+                        assert!(
+                            (fraction(amplitude) - expected).abs() < 0.0001,
+                            "amplitude={amplitude}, expected={expected}, actual={}",
+                            fraction(amplitude)
+                        );
+                    }
+                    assert_eq!(readout(0.0), "−∞ dbfs");
+                    assert_eq!(readout(FLOOR_AMPLITUDE / 2.0), "<−70 dbfs");
+                    assert_eq!(readout(FLOOR_AMPLITUDE), "-70.0 dbfs");
+                    assert_eq!(readout(1.0), "0.0 dbfs");
+                    assert!((fraction(1.0) - UNITY_FRACTION).abs() < 0.0001);
+                    assert_eq!(readout(10_f32.powf(6.0 / 20.0)), "+6.0 dbfs");
+                    assert_eq!(readout(100.0), "+40.0 dbfs");
+                    // An intermediate value stays between the adjacent labeled ticks.
+                    assert!((0.5..0.5991).contains(&fraction(10_f32.powf(-21.0 / 20.0))));
+                }
+
+                #[test]
+                fn malformed_and_extreme_inputs_have_bounded_display_geometry() {
+                    for amplitude in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0] {
+                        assert_eq!(fraction(amplitude), 0.0);
+                        assert_eq!(readout(amplitude), "invalid");
+                    }
+                    assert_eq!(fraction(f32::MAX), 1.0);
+                    assert_eq!(fraction(f32::MIN_POSITIVE), 0.0);
+                    assert_eq!(readout(-0.0), "−∞ dbfs");
+                }
             }
         }
     }
