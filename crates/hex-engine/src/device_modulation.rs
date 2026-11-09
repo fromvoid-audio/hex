@@ -270,18 +270,30 @@ impl EffectModulation {
                     module_type,
                     parameter,
                 } => {
+                    let target = ids.binary_search(&target).ok();
+                    let target_source = target.and_then(|index| sources.get(index));
                     let parameter = match (module_type, parameter) {
                         (macro_value::TYPE_ID, macro_value::VALUE_PARAMETER) => {
                             SourceModulationParameter::MacroValue
                         }
                         (lfo::TYPE_ID, lfo::RATE_PARAMETER) => {
-                            SourceModulationParameter::FreeLfoRate
+                            if target_source.is_some_and(|source| {
+                                source.supports_modulation_parameter(
+                                    SourceModulationParameter::TempoLfoRate,
+                                )
+                            }) {
+                                SourceModulationParameter::TempoLfoRate
+                            } else {
+                                SourceModulationParameter::FreeLfoRate
+                            }
                         }
                         _ => return Err(Invalid("modulation destination is unsupported")),
                     };
-                    if let Ok(target) = ids.binary_search(&target) {
-                        if !sources[target].supports_modulation_parameter(parameter) {
-                            return Err(Invalid("lfo rate modulation requires a free-running lfo"));
+                    if let Some(target) = target {
+                        if !target_source
+                            .is_some_and(|source| source.supports_modulation_parameter(parameter))
+                        {
+                            return Err(Invalid("modulation destination is unsupported"));
                         }
                         source_routes.push(SourceModulationRoute {
                             source,
