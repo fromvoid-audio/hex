@@ -162,6 +162,17 @@ impl RuntimeOwnership {
             Self::Foreign(value) => value.scratch_drained,
         }
     }
+    pub(super) fn permits_memoryless_modulation_handoff_from(&self, old: &Self) -> bool {
+        match (self, old) {
+            (Self::Memoryless, Self::Legacy { primary, scratch })
+            | (Self::Legacy { primary, scratch }, Self::Memoryless) => {
+                primary.permits_memoryless_modulation_handoff()
+                    && scratch.permits_memoryless_modulation_handoff()
+            }
+            _ => false,
+        }
+    }
+
     pub(super) fn can_inherit_from(&self, old: &Self) -> bool {
         match (self, old) {
             (Self::Memoryless, Self::Memoryless) => true,
