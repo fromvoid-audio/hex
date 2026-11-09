@@ -148,12 +148,15 @@ fn native_toggle_and_choice_take_keeps_only_the_delivered_step() {
         assert!(restored.arrangement_frame > application.arrangement_frame);
         assert_eq!(sound, base);
         let deadline = Instant::now() + Duration::from_secs(3);
-        let (mut committed, mut progress) = send(&mut h, Action::Finish(restored));
-        while progress == Progress::Pending {
-            assert!(Instant::now() < deadline);
-            (committed, progress) = send(&mut h, Action::Poll);
-        }
-        assert_eq!(progress, Progress::Committed);
+        assert_eq!(send(&mut h, Action::Finish(restored)).1, Progress::Sealing);
+        let committed = loop {
+            let (event, progress) = send(&mut h, Action::Poll);
+            match progress {
+                Progress::Committed => break event,
+                Progress::Pending => assert!(Instant::now() < deadline),
+                other => panic!("unexpected recording terminal: {other:?}"),
+            }
+        };
         let applied = h.applied(applied).0;
         let lane = committed
             .state
