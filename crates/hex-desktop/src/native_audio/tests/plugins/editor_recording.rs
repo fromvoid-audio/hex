@@ -7,7 +7,8 @@ use hex_project::{
 use hex_session::device_gesture::GestureKey;
 use hex_session::service::{
     PluginEditorRecordingInput, PluginEditorRecordingTarget,
-    PluginParameterObservation as Observation, automation_draft::Vst3ApplicationValue,
+    PluginParameterObservation as Observation, Vst3EditorGroupReceipt,
+    automation_draft::{GroupApplication, Vst3ApplicationValue, Vst3GroupTarget},
 };
 
 #[test]
@@ -15,7 +16,14 @@ use hex_session::service::{
 fn original_instrument_editor_joins_actual_main_take_and_late_restoration() {
     const CHILD: &str = "HEX_DESKTOP_ORIGINAL_EDITOR_RECORDING_CHILD";
     if std::env::var_os(CHILD).is_none() {
-        for case in ["release", "stop", "session"] {
+        for case in [
+            "release",
+            "stop",
+            "session",
+            "group-held",
+            "group-split",
+            "group-stop",
+        ] {
             let files = Files::new();
             let result = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
@@ -25,10 +33,29 @@ fn original_instrument_editor_joins_actual_main_take_and_late_restoration() {
                     "--test-threads=1",
                 ])
                 .env(CHILD, case)
-                .env("HEX_ORIGINAL_INSTANCE_VARIANT", "146")
+                .env(
+                    "HEX_ORIGINAL_INSTANCE_VARIANT",
+                    if case.starts_with("group-") {
+                        "149"
+                    } else {
+                        "146"
+                    },
+                )
+                .env(
+                    "HEX_ORIGINAL_GROUPED_EDITOR_PATTERN",
+                    if case == "group-split" {
+                        "staggered"
+                    } else {
+                        "held"
+                    },
+                )
                 .env("HEX_ORIGINAL_EDITOR_TOUCH", "1")
                 .env("HEX_ORIGINAL_INSTANCE_RELEASE", files.0.join("perform"))
                 .env("HEX_ORIGINAL_EDITOR_END_RELEASE", files.0.join("end"))
+                .env(
+                    "HEX_ORIGINAL_EDITOR_SECOND_END_RELEASE",
+                    files.0.join("second-end"),
+                )
                 .output()
                 .unwrap();
             assert!(
@@ -42,7 +69,9 @@ fn original_instrument_editor_joins_actual_main_take_and_late_restoration() {
         return;
     }
     let _native = native_fixture();
-    let session_recording = std::env::var(CHILD).as_deref() == Ok("session");
+    let case = std::env::var(CHILD).unwrap();
+    let grouped = case.starts_with("group-");
+    let session_recording = case == "session" || grouped;
     let files = Files::new();
     let presentation = Some(EffectPresentation {
         input_frames: 0,
@@ -56,7 +85,11 @@ fn original_instrument_editor_joins_actual_main_take_and_late_restoration() {
         selected.module = module;
         hex_ui::write_plugin_effect_test_catalog(&root, &selected, "Instrument|Synth", 0).unwrap();
         ResidentHarness::with_plugins_at_rate_and_catalog_recovery(
-            host(),
+            if grouped {
+                host().with_grouped_editor_callbacks()
+            } else {
+                host()
+            },
             presentation,
             48_000,
             8192,
@@ -113,7 +146,12 @@ fn original_instrument_editor_joins_actual_main_take_and_late_restoration() {
     let class = selection().cid;
     applied = h.applied(applied).0;
     let mut before = Arc::clone(&inserted.state.project);
-    for (parameter, value) in [(7, 0.25), (11, 0.5)] {
+    let lanes: &[(u32, f32)] = if grouped {
+        &[(0, 0.25), (11, 0.25), (23, 0.25)]
+    } else {
+        &[(7, 0.25), (11, 0.5)]
+    };
+    for &(parameter, value) in lanes {
         let context = h.submitted.unwrap().1.context;
         let edited = automation::edit_with_running_callback(
             &mut h,
@@ -142,11 +180,17 @@ fn original_instrument_editor_joins_actual_main_take_and_late_restoration() {
     let input = PluginEditorRecordingInput {
         key,
         context,
-        target: PluginEditorRecordingTarget::Single {
-            device: instrument,
-            class,
-            parameter: 7,
-            reading: true,
+        target: if grouped {
+            PluginEditorRecordingTarget::Group(
+                Vst3GroupTarget::new(instrument, class, &[0, 11]).unwrap(),
+            )
+        } else {
+            PluginEditorRecordingTarget::Single {
+                device: instrument,
+                class,
+                parameter: 7,
+                reading: true,
+            }
         },
     };
     assert!(probe(&h, |reply| EditorRecordingProbe::Prepare(input, reply)).is_err());
@@ -161,6 +205,10 @@ fn original_instrument_editor_joins_actual_main_take_and_late_restoration() {
     }
     let baseline = instruments::render_completed_block(&h)[0];
     assert!(baseline[0] > 0.0);
+    if grouped {
+        verify_group_recording(&mut h, input, before, applied, &files.0, baseline[0], &case);
+        return;
+    }
     if session_recording {
         verify_session_recording(&mut h, input, before, applied, &files.0, baseline[0]);
         return;
@@ -452,4 +500,261 @@ fn render_until_observation(h: &ResidentHarness, expected: [f32; 2]) -> Observat
         return observation;
     }
     panic!("signed editor input did not reach the recording reader");
+}
+
+fn verify_group_recording(
+    h: &mut ResidentHarness,
+    input: PluginEditorRecordingInput,
+    before: Arc<hex_project::Project>,
+    mut applied: u64,
+    directory: &std::path::Path,
+    baseline: f32,
+    case: &str,
+) {
+    use crate::native_audio::tests::resident_preview::SESSION_RECORDING_OBSERVATIONS as OBSERVATIONS;
+    use hex_session::service::DeviceAutomationTakeProgress as Progress;
+    use hex_session::service::automation_draft::GroupDraftEvent;
+
+    let device = input.target.device();
+    const ID: u64 = 23;
+    let started = h.run(Request::StartPluginEditorRecording {
+        request_id: ID,
+        input,
+    });
+    assert!(started.error.is_none(), "{:?}", started.error);
+    assert_eq!(
+        started.device_automation_take_complete.unwrap().progress,
+        Progress::Started
+    );
+    let close = h.run(Request::QueryDeviceAutomationCloseSafety { request_id: 27 });
+    assert_eq!(
+        close.device_automation_take_complete.unwrap().progress,
+        Progress::CloseBlocked
+    );
+    let gate = |name: &str| PathBuf::from(std::env::var_os(name).unwrap());
+    let perform_gate = gate("HEX_ORIGINAL_INSTANCE_RELEASE");
+    let end_gate = gate("HEX_ORIGINAL_EDITOR_END_RELEASE");
+    let second_gate = gate("HEX_ORIGINAL_EDITOR_SECOND_END_RELEASE");
+    std::fs::write(&perform_gate, b"perform group").unwrap();
+    let actual_rows = || {
+        OBSERVATIONS
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|observation| {
+                let Observation::Grouped(group) = *observation else {
+                    panic!("group session consumed a single-target observation");
+                };
+                assert_eq!((group.key, group.context), (input.key, input.context));
+                match group.receipt {
+                    Vst3EditorGroupReceipt::Applied(rows) => {
+                        let rows: Vec<_> = rows.rows().collect();
+                        Some(rows)
+                    }
+                    _ => None,
+                }
+            })
+            .flatten()
+            .collect::<Vec<GroupDraftEvent>>()
+    };
+    let until = Instant::now() + Duration::from_secs(4);
+    while actual_rows().len() < 2 {
+        instruments::render_completed_block(h);
+        assert!(
+            Instant::now() < until,
+            "paired editor values did not reach Main"
+        );
+    }
+    let captured = actual_rows();
+    assert_eq!(captured.len(), 2);
+    assert_eq!(
+        captured[0].clock, captured[1].clock,
+        "split cohort changed its timestamp"
+    );
+    assert_eq!((captured[0].parameter, captured[1].parameter), (0, 11));
+    assert_eq!(captured[0].application, GroupApplication::Value(0.75));
+    assert_eq!(captured[1].application, GroupApplication::Value(0.5));
+    let wet = instruments::render_completed_block(h);
+    assert!(
+        wet.iter()
+            .all(|frame| (frame[0] - 6.0 * baseline).abs() < 1.0e-6)
+    );
+
+    if case == "group-stop" {
+        use hex_storage::automation_draft::{DraftOutcome, DraftReadLimits, DraftReader};
+        h.audio.as_mut().unwrap().control.stop();
+        let retained = loop {
+            h.pump();
+            h.render_worker_step();
+            if let Ok(event) = h.service.try_event()
+                && let Some(completion) = event.device_automation_take_complete.as_ref()
+                && completion.request_id == ID
+            {
+                let Progress::Retained(path) = &completion.progress else {
+                    panic!(
+                        "priority Stop must keep the original prefix: {:?} {:?}",
+                        completion.progress, event.error
+                    );
+                };
+                assert_eq!(event.state.project, before);
+                break path.clone();
+            }
+            assert!(
+                Instant::now() < until,
+                "priority Stop did not seal its group prefix"
+            );
+        };
+        std::fs::remove_file(perform_gate).unwrap();
+        let mut draft = DraftReader::open(
+            retained,
+            DraftReadLimits {
+                max_source_bytes: hex_storage::MAX_PROJECT_DOCUMENT_BYTES as u64,
+            },
+        )
+        .unwrap();
+        let mut copied = [None; 3];
+        assert_eq!(draft.read_group_events(0, &mut copied).unwrap(), 2);
+        assert_eq!(copied, [Some(captured[0]), Some(captured[1]), None]);
+        assert_eq!(draft.outcome(), DraftOutcome::Interrupted);
+        let close = h.run(Request::QueryDeviceAutomationCloseSafety { request_id: 28 });
+        assert_eq!(
+            close.device_automation_take_complete.unwrap().progress,
+            Progress::CloseSafe
+        );
+        return;
+    }
+    let staggered = case == "group-split";
+    std::fs::write(&end_gate, b"restore first group member").unwrap();
+    if staggered {
+        while actual_rows().len() < 3 {
+            instruments::render_completed_block(h);
+            assert!(
+                Instant::now() < until,
+                "first group release did not reach Main"
+            );
+        }
+        let partially_held = instruments::render_completed_block(h);
+        assert!(
+            partially_held
+                .iter()
+                .all(|frame| (frame[0] - 2.0 * baseline).abs() < 1.0e-6)
+        );
+        std::fs::write(&second_gate, b"restore second group member").unwrap();
+    }
+    let committed = loop {
+        h.pump();
+        h.render_worker_step();
+        if let Ok(event) = h.service.try_event()
+            && let Some(completion) = event.device_automation_take_complete.as_ref()
+            && completion.request_id == ID
+        {
+            assert!(event.error.is_none(), "{:?}", event.error);
+            assert_eq!(completion.progress, Progress::Committed);
+            break event;
+        }
+        assert!(
+            Instant::now() < until,
+            "complete grouped editor take did not publish"
+        );
+    };
+    std::fs::remove_file(perform_gate).unwrap();
+    std::fs::remove_file(end_gate).unwrap();
+    if staggered {
+        std::fs::remove_file(second_gate).unwrap();
+    }
+
+    let rows = actual_rows();
+    let [first, second, restore_first, restore_second] = rows.as_slice() else {
+        panic!("exact paired values and real restorations: {rows:?}");
+    };
+    assert_eq!((restore_first.parameter, restore_second.parameter), (0, 11));
+    assert_eq!(restore_first.sdk_gesture, first.sdk_gesture);
+    assert_eq!(restore_second.sdk_gesture, second.sdk_gesture);
+    assert_eq!(restore_first.application, GroupApplication::Restored);
+    assert_eq!(restore_second.application, GroupApplication::Restored);
+    assert_eq!(restore_first.clock != restore_second.clock, staggered);
+    let project = &committed.state.project;
+    let original = before.device(device).unwrap();
+    let current = project.device(device).unwrap();
+    assert_eq!(original.state(), current.state());
+    assert_eq!(
+        original.automation_target(DeviceAutomationTarget::Vst3 { parameter: 23 }),
+        current.automation_target(DeviceAutomationTarget::Vst3 { parameter: 23 }),
+    );
+    let clock =
+        hex_engine::PreparedTempoMap::prepare(project.tempo_map().clone(), project.sample_rate())
+            .unwrap();
+    let step = |frame, value| AutomationPoint {
+        beat: clock.frame_to_beat(frame).unwrap(),
+        value: AutomationValue::new(value).unwrap(),
+        outgoing: AutomationInterpolation::Step,
+    };
+    let mut reference = hex_project::Editor::new((*before).clone(), 8).unwrap();
+    for (value, restore, normalized) in
+        [(first, restore_first, 0.75), (second, restore_second, 0.5)]
+    {
+        let target = DeviceAutomationTarget::Vst3 {
+            parameter: value.parameter,
+        };
+        let lane = current.automation_target(target).unwrap();
+        assert_eq!(
+            lane.points,
+            original.automation_target(target).unwrap().points
+        );
+        let [span] = lane.touch.as_slice() else {
+            panic!("one independent take span");
+        };
+        assert_eq!(span.start, step(value.clock.content_frame, normalized).beat);
+        assert_eq!(span.end, step(restore.clock.content_frame, 0.25).beat);
+        assert_eq!(span.steps.len(), 1);
+        assert_eq!(span.steps[0].value.get(), normalized);
+        reference
+            .execute(Command::ReplaceDeviceAutomationTarget {
+                device,
+                target,
+                points: vec![
+                    step(0, 0.25),
+                    step(value.clock.content_frame, normalized),
+                    step(restore.clock.content_frame, 0.25),
+                ],
+            })
+            .unwrap();
+    }
+    applied = h.applied(applied).0;
+    let undone = automation::edit_with_running_callback(h, Request::Undo);
+    assert_eq!(undone.state.project, before);
+    applied = h.applied(applied).0;
+    let redone = automation::edit_with_running_callback(h, Request::Redo);
+    assert_eq!(&redone.state.project, project);
+    h.applied(applied);
+    let close = h.run(Request::QueryDeviceAutomationCloseSafety { request_id: 28 });
+    assert_eq!(
+        close.device_automation_take_complete.unwrap().progress,
+        Progress::CloseSafe
+    );
+
+    let path = directory.join("recorded-editor-group.hex");
+    h.service.submit(Request::SaveNew(path.clone())).unwrap();
+    let saved = h.next();
+    assert!(
+        saved.save_complete && saved.error.is_none(),
+        "grouped save: {:?}",
+        saved.error
+    );
+    assert_eq!(hex_storage::load(&path).unwrap(), *saved.state.project);
+    let oracle = directory.join("group-delivered-steps.hex");
+    hex_storage::save_new(&oracle, reference.project()).unwrap();
+    let blocks = usize::try_from(restore_second.clock.content_frame / 256 + 8).unwrap();
+    assert!(blocks < 128);
+    let expected = instruments::replay_reopened_instrument(h, &oracle, device, blocks);
+    let actual = instruments::replay_reopened_instrument(h, &path, device, blocks);
+    assert_eq!(expected.len(), actual.len());
+    assert!(actual.iter().any(|frame| frame[0] > 5.9 * baseline));
+    assert!(
+        expected
+            .iter()
+            .flatten()
+            .zip(actual.iter().flatten())
+            .all(|(a, b)| (a - b).abs() < 1.0e-6)
+    );
 }

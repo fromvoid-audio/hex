@@ -1069,3 +1069,289 @@ fn native_source_program_bytes_remain_charged_through_refusal_and_matching_retir
         .join()
         .unwrap();
 }
+
+#[test]
+fn ordinary_registered_sampler_delivers_saved_gain_in_arrangement_and_session() {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(ordinary_sampler_gain_on_control)
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+fn ordinary_sampler_gain_on_control() {
+    use crate::{LaunchQuantization, PlaybackAction, PlaybackCommand};
+    use hex_devices::modulation::lfo;
+    use hex_devices::sampler::{catalog::GAIN, state::TYPE_ID};
+    use hex_project::{
+        DeviceAutomationTarget, DeviceModulation, DeviceModulationRoute, ModulationAmount,
+        ModulationDestination, ModulationOutputId, ModulationRange, ModulationRouteId,
+        ModulationSourceId, Modulator,
+    };
+
+    const RATE: u32 = 48_000;
+    let pcm = [
+        [0.125, -0.25],
+        [0.25, -0.125],
+        [0.375, 0.125],
+        [0.5, 0.25],
+        [0.625, -0.125],
+        [0.75, -0.25],
+        [0.875, 0.25],
+        [1.0, 0.125],
+    ];
+    let cancel = AtomicBool::new(false);
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
+    let Created::Asset(asset) = editor
+        .execute(Command::ImportDeviceAsset {
+            path: "source.wav".into(),
+            sample_rate: RATE,
+            frames: pcm.len() as u64,
+        })
+        .unwrap()
+    else {
+        panic!("asset");
+    };
+    let mut authored =
+        hex_devices::sampler::state::SamplerState::for_source_frames(pcm.len()).unwrap();
+    authored.mode = hex_devices::sampler::state::AuthoredMode::OneShot {
+        gate: hex_devices::sampler::GateMode::Trigger,
+    };
+    authored.gain = 0.0;
+    let original = authored
+        .to_native()
+        .unwrap()
+        .with_asset_references(vec![DeviceAssetReference {
+            slot: DeviceAssetSlot::new(1).unwrap(),
+            asset: DeviceAssetKey::new(asset.value()).unwrap(),
+        }])
+        .unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "sampler".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: original.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    let device = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let Created::Clip(arrangement) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("arrangement clip");
+    };
+    let Created::Scene(scene) = editor
+        .execute(Command::AddScene { name: "a".into() })
+        .unwrap()
+    else {
+        panic!("scene");
+    };
+    let Created::SessionClip(session) = editor
+        .execute(Command::CreateSessionMidiClip {
+            track,
+            scene,
+            name: "session".into(),
+            source_length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("session clip");
+    };
+    for clip in [arrangement, session] {
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 60,
+                channel: 0,
+                velocity: 127,
+            })
+            .unwrap();
+    }
+    assert_eq!(
+        super::super::current_sampler::validate_project(editor.project()),
+        Ok(true)
+    );
+
+    let mut store = ResidentDeviceAssets::default();
+    store
+        .insert_on_control(
+            (
+                asset,
+                crate::OwnedAudioSource::try_resident(RATE, pcm.to_vec())
+                    .ok()
+                    .unwrap(),
+            ),
+            0,
+            AudioStorageLedgerReservation {
+                data_rows: 256,
+                handle_rows: 64,
+                root_rows: 32,
+                max_retained_bytes: 20_000_000,
+                max_construction_peak_bytes: 20_000_000,
+            },
+            pcm.len() as u64,
+            &cancel,
+            || Ok::<_, ResourcePreparationError>(()),
+        )
+        .unwrap();
+    let resources =
+        PreparedDeviceResources::prepare_on_control(&store, editor.project(), 20_000_000, &cancel)
+            .unwrap();
+    let table = Arc::new(SineTable::new());
+    let prepare = |project: &Project| {
+        PreparedRevision::prepare_with_device_resources(
+            project,
+            &BTreeMap::new(),
+            Arc::clone(&table),
+            None,
+            &crate::audio_transform::AudioTransformPreparation::default(),
+            &resources,
+            8 * pcm.len() as u64,
+            &cancel,
+        )
+        .map(Arc::new)
+    };
+    let next = editor.project().next_identity();
+    let source = ModulationSourceId::new(next).unwrap();
+    let slot = Modulator {
+        id: source,
+        enabled: true,
+        color: Default::default(),
+        state: lfo::Settings {
+            rate: lfo::Rate::Hertz(12_000.0),
+            phase: 0.0,
+            waveform: lfo::Waveform::Square,
+        }
+        .encode()
+        .unwrap(),
+    };
+    let edit = |target, amount| Command::ReplaceDeviceModulation {
+        device,
+        modulation: DeviceModulation::new(
+            vec![slot.clone()],
+            vec![DeviceModulationRoute {
+                id: ModulationRouteId::new(next + 1).unwrap(),
+                source,
+                output: ModulationOutputId::MAIN,
+                destination: ModulationDestination::Device {
+                    device_type: TYPE_ID,
+                    target: DeviceAutomationTarget::Parameter(target),
+                    vst3_class: None,
+                },
+                amount: ModulationAmount::new(amount).unwrap(),
+                range: ModulationRange::default(),
+                enabled: true,
+            }],
+        )
+        .unwrap(),
+    };
+    let (_, first) = editor.execute_prepared(edit(GAIN, 0.125), prepare).unwrap();
+    assert_eq!(
+        super::super::current_sampler::validate_project(editor.project()),
+        Err(AudioStorageError::UnsupportedGraph),
+    );
+    let (_, second) = editor.execute_prepared(edit(GAIN, 0.25), prepare).unwrap();
+    let stable = editor.project().clone();
+    assert!(
+        editor
+            .execute_prepared(
+                edit(hex_lattice_contract::ParameterId::from_static(2), 0.25),
+                prepare
+            )
+            .is_err()
+    );
+    assert_eq!(*editor.project(), stable);
+    assert_eq!(stable.device(device).unwrap().state(), &original);
+    assert!(first.session().instrument_modulation(track).is_some());
+
+    let mut previous = crate::playback::Playback::try_from_prepared_with_device_resources(
+        Arc::clone(&first),
+        &resources,
+    )
+    .unwrap();
+    let mut current =
+        crate::playback::Playback::try_from_prepared_with_device_resources(second, &resources)
+            .unwrap();
+    previous
+        .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
+        .unwrap();
+    let mut actual = [[0.0; 2]; 8];
+    previous.render(&mut actual[..3]).unwrap();
+    current.try_inherit_runtime_from(&mut previous).unwrap();
+    current.render(&mut actual[3..]).unwrap();
+    let expected = std::array::from_fn(|index| {
+        let gain = if index % 4 >= 2 {
+            0.0
+        } else if index < 3 {
+            0.5
+        } else {
+            1.0
+        };
+        pcm[index].map(|sample| sample * gain)
+    });
+    assert_eq!(actual, expected);
+
+    let mut console = SessionPlayback::new_with_device_resources(first, &resources).unwrap();
+    console
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip: session,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    console.apply(SessionPlaybackCommand::Play).unwrap();
+    console.render(&mut actual[..1]).unwrap();
+    console.render(&mut actual[1..]).unwrap();
+    assert_eq!(
+        actual,
+        std::array::from_fn(|index| {
+            pcm[index].map(|sample| if index % 4 < 2 { sample * 0.5 } else { 0.0 })
+        })
+    );
+    assert_eq!(console.device_resource_leases().count(), 1);
+
+    let offline_sources = ControlSamplerSources::prepare_on_control(
+        &store,
+        &stable,
+        20_000_000,
+        8 * pcm.len() as u64,
+        &cancel,
+    )
+    .unwrap();
+    let offline = Arc::new(
+        PreparedRevision::prepare_control_sampler_export(
+            &stable,
+            &BTreeMap::new(),
+            table,
+            &crate::audio_transform::AudioTransformPreparation::default(),
+            &offline_sources,
+        )
+        .unwrap(),
+    );
+    let mut offline =
+        SessionPlayback::new_control_sampler_export(offline, &offline_sources).unwrap();
+    offline.apply(SessionPlaybackCommand::Play).unwrap();
+    offline
+        .render_control_sampler_export(&mut actual, &offline_sources)
+        .unwrap();
+    assert_eq!(
+        actual,
+        std::array::from_fn(|index| { if index % 4 < 2 { pcm[index] } else { [0.0; 2] } })
+    );
+}

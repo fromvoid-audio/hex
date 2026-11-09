@@ -120,6 +120,14 @@ pub(super) enum Action {
         target: Target,
         revision: u64,
     },
+    ToggleVst3EditorGroupMember {
+        target: Target,
+        revision: u64,
+    },
+    ToggleVst3EditorGroupArm {
+        target: Target,
+        revision: u64,
+    },
     Shape(Target, AutomationInterpolation),
 }
 
@@ -781,6 +789,15 @@ impl EditorView {
                 editor_label,
                 Action::ToggleVst3EditorArm { target, revision },
             ));
+            if let Some((member, arm)) = self.vst3_editor_group_menu(device, class, parameter) {
+                actions.push((
+                    member,
+                    Action::ToggleVst3EditorGroupMember { target, revision },
+                ));
+                if let Some(label) = arm {
+                    actions.push((label, Action::ToggleVst3EditorGroupArm { target, revision }));
+                }
+            }
         }
         self.open_automation_menu(position, actions, window, cx);
         true
@@ -886,7 +903,9 @@ impl EditorView {
                     .is_none()
             }),
             Action::ToggleVst3Arm { target, revision }
-            | Action::ToggleVst3EditorArm { target, revision } => {
+            | Action::ToggleVst3EditorArm { target, revision }
+            | Action::ToggleVst3EditorGroupMember { target, revision }
+            | Action::ToggleVst3EditorGroupArm { target, revision } => {
                 self.state.as_ref().is_none_or(|state| {
                     state.revision != *revision
                         || target
@@ -1172,6 +1191,18 @@ impl EditorView {
                     (target.vst3_class, target.kind)
                 {
                     self.toggle_vst3_editor_arm(target.device, class, parameter);
+                }
+            }
+            Action::ToggleVst3EditorGroupMember { target, .. } => {
+                if let (Some(class), DeviceAutomationTarget::Vst3 { parameter }) =
+                    (target.vst3_class, target.kind)
+                {
+                    self.toggle_vst3_editor_group_member(target.device, class, parameter);
+                }
+            }
+            Action::ToggleVst3EditorGroupArm { target, .. } => {
+                if let Some(class) = target.vst3_class {
+                    self.toggle_vst3_editor_group_arm(target.device, class);
                 }
             }
             Action::Clear(target) => {

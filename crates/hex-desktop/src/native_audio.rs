@@ -1515,9 +1515,15 @@ impl WorkerAudioSink for NativeAudioSink {
             {
                 return Ok(None);
             }
-            // No live group query until the original editor correlation
-            // owns and can attest this exact grouped scope.
-            hex_session::service::DeviceCaptureTarget::Vst3Group(_) => return Ok(None),
+            hex_session::service::DeviceCaptureTarget::Vst3Group(group)
+                if !self.plugins.matches_capture_binding(
+                    context,
+                    group.draft.device().value(),
+                    group.binding,
+                ) =>
+            {
+                return Ok(None);
+            }
             hex_session::service::DeviceCaptureTarget::Vst3(foreign)
                 if !self.plugins.matches_capture_source(context, foreign) =>
             {

@@ -288,6 +288,7 @@ pub(crate) fn validate_project_with_effects(
         };
         let state = device.state();
         if state.type_id() != hex_devices::sampler::state::TYPE_ID
+            || !device.modulation().is_empty()
             || device.bypassed()
             || track.instrument_position() != Some(0)
             || state.asset_references().len() != 1

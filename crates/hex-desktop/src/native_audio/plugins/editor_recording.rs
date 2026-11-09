@@ -4,19 +4,22 @@
 //! values and clocks. One unmatched quantum and one observation bound custody.
 use super::*;
 use hex_audio::foreign_parameter_delivery::editor::{
-    ConfirmedQuantum, Receipt, Retired, TouchPlan,
+    ConfirmedQuantum, GroupTouchTarget, Receipt, Retired, Target, TouchPlan,
 };
 use hex_audio::plugin_worker::ParameterEdit;
 use hex_audio::prepared::{AppliedAudioSource, PublicationControl};
 use hex_session::device_gesture::GestureKey;
-use hex_session::service::automation_draft::Vst3CaptureTarget;
+use hex_session::service::automation_draft::{Vst3CaptureTarget, Vst3GroupCaptureTarget};
 use hex_session::service::{
-    DeviceAutomationSource, DeviceCaptureTarget, PluginEditorRecordingInput,
-    PluginEditorRecordingTarget, PluginParameterObservation as Observation, RequestCancellation,
-    ResidentRuntimeLoop,
+    DeviceAutomationSource, DeviceCaptureTarget, MAX_VST3_EDITOR_GROUP_MEMBERS as MEMBERS,
+    PluginEditorRecordingInput, PluginEditorRecordingTarget,
+    PluginParameterObservation as Observation, RequestCancellation, ResidentRuntimeLoop,
+    Vst3EditorGroupObservation, Vst3EditorGroupReceipt, Vst3EditorGroupRows,
 };
 mod correlation;
+mod group;
 use correlation::{Correlation, Match};
+use group::{GroupCorrelation, Quantum};
 
 // Audio can leave its whole confirmed queue behind. One Desktop observation,
 // one Session action and one racing final callback are separate credits.
@@ -26,12 +29,20 @@ const _: () = assert!(
 );
 
 #[derive(Clone, Copy)]
+enum Plan {
+    Single(TouchPlan),
+    Group {
+        plans: [GroupTouchTarget; MEMBERS],
+        len: usize,
+    },
+}
+
+#[derive(Clone, Copy)]
 pub(super) struct Prepared {
     key: GestureKey,
     applied: AppliedAudioSource,
-    target: Vst3CaptureTarget,
     source: DeviceAutomationSource,
-    plan: TouchPlan,
+    plan: Plan,
 }
 
 pub(super) enum Recording {
@@ -40,7 +51,7 @@ pub(super) enum Recording {
 }
 
 pub(super) struct Active {
-    correlation: Correlation,
+    correlation: ActiveCorrelation,
     pending: Option<ConfirmedQuantum>,
     observation: Option<Observation>,
     retired: Option<Retired>,
@@ -68,15 +79,8 @@ impl Plugins {
         {
             return Err("finish the previous vst3 operation first".into());
         }
-        let PluginEditorRecordingTarget::Single {
-            device,
-            class,
-            parameter,
-            reading,
-        } = input.target
-        else {
-            return Err("grouped vst3 editor recording is unavailable on this output".into());
-        };
+        let device = input.target.device();
+        let class = input.target.class();
         let (applied, transport_epoch) = control
             .status
             .live_native_parameter_source()
@@ -106,41 +110,82 @@ impl Plugins {
             })
             .map(|source| source.binding)
             .ok_or("the selected vst3 editor source is unavailable on this output")?;
-        let read_base = |control: &mut PublicationControl| {
-            let metadata = edits::source_metadata(control, binding, cancellation)?;
-            if metadata.selection().cid != class {
-                return Err("vst3 editor class changed".into());
+        let (target, plan) = match input.target {
+            PluginEditorRecordingTarget::Single {
+                parameter, reading, ..
+            } => {
+                let read_base = |control: &mut PublicationControl| {
+                    let metadata = edits::source_metadata(control, binding, cancellation)?;
+                    if metadata.selection().cid != class {
+                        return Err("vst3 editor class changed".into());
+                    }
+                    Ok::<_, String>(
+                        metadata
+                            .authored_base_values()
+                            .find_map(|(id, value)| (id == parameter).then_some(value)),
+                    )
+                };
+                let base = match read_base(control)? {
+                    Some(base) => base,
+                    None => {
+                        let host = self.host.as_ref().ok_or("vst3 host is unavailable")?;
+                        parameter_gesture::metadata::extend_authored(
+                            host,
+                            control,
+                            binding,
+                            class,
+                            parameter,
+                            None,
+                            cancellation,
+                        )?;
+                        read_base(control)?.ok_or("vst3 editor parameter has no exact base")?
+                    }
+                };
+                (
+                    DeviceCaptureTarget::Vst3(Vst3CaptureTarget {
+                        device,
+                        class,
+                        parameter,
+                        binding,
+                    }),
+                    Plan::Single(TouchPlan {
+                        parameter,
+                        base,
+                        reading,
+                    }),
+                )
             }
-            Ok::<_, String>(
-                metadata
-                    .authored_base_values()
-                    .find_map(|(id, value)| (id == parameter).then_some(value)),
-            )
-        };
-        let base = match read_base(control)? {
-            Some(base) => base,
-            None => {
-                let host = self.host.as_ref().ok_or("vst3 host is unavailable")?;
-                parameter_gesture::metadata::extend_authored(
-                    host,
-                    control,
-                    binding,
-                    class,
-                    parameter,
-                    None,
-                    cancellation,
-                )?;
-                read_base(control)?.ok_or("vst3 editor parameter has no exact base")?
+            PluginEditorRecordingTarget::Group(group) => {
+                let metadata = edits::source_metadata(control, binding, cancellation)?;
+                if metadata.selection().cid != class {
+                    return Err("vst3 editor class changed".into());
+                }
+                let mut plans = [GroupTouchTarget::default(); MEMBERS];
+                for (slot, &parameter) in plans.iter_mut().zip(group.ids()) {
+                    let base = metadata
+                        .authored_base_values()
+                        .find_map(|(id, value)| (id == parameter).then_some(value))
+                        .ok_or("vst3 group parameter has no prepared restoration")?;
+                    *slot = GroupTouchTarget {
+                        parameter,
+                        base,
+                        reading: true,
+                    };
+                }
+                (
+                    DeviceCaptureTarget::Vst3Group(Vst3GroupCaptureTarget {
+                        draft: group,
+                        binding,
+                    }),
+                    Plan::Group {
+                        plans,
+                        len: group.ids().len(),
+                    },
+                )
             }
-        };
-        let target = Vst3CaptureTarget {
-            device,
-            class,
-            parameter,
-            binding,
         };
         let source = DeviceAutomationSource {
-            target: DeviceCaptureTarget::Vst3(target),
+            target,
             sample_rate,
             output_identity: applied.output_identity,
             audio_revision: applied.audio_revision,
@@ -150,21 +195,28 @@ impl Plugins {
         let prepared = Prepared {
             key: input.key,
             applied,
-            target,
             source,
-            plan: TouchPlan {
-                parameter,
-                base,
-                reading,
+            plan,
+        };
+        let ready = match target {
+            DeviceCaptureTarget::Vst3(target) => Observation::Ready {
+                key: prepared.key,
+                context: applied.context,
+                target,
+                source,
             },
+            DeviceCaptureTarget::Vst3Group(_) => Observation::Grouped(Vst3EditorGroupObservation {
+                key: prepared.key,
+                context: applied.context,
+                source,
+                receipt: Vst3EditorGroupReceipt::Ready,
+            }),
+            DeviceCaptureTarget::Native(_) => {
+                return Err("vst3 editor scope requires a plug-in".into());
+            }
         };
         self.editor_recording = Some(Recording::Prepared(Box::new(prepared)));
-        Ok(Observation::Ready {
-            key: prepared.key,
-            context: applied.context,
-            target,
-            source,
-        })
+        Ok(ready)
     }
 
     pub(in crate::native_audio) fn start_editor_recording(
@@ -181,20 +233,54 @@ impl Plugins {
         }
         if control.status.live_native_parameter_source()
             != Some((prepared.applied, prepared.source.transport_epoch))
-            || !self.matches_capture_source(prepared.applied.context, prepared.target)
         {
             return Err("vst3 editor recording source changed".into());
         }
-        let scope = control.arm_native_source_editor_touch_delivery_on_control(
-            prepared.applied,
-            prepared.source.transport_epoch,
-            prepared.target.binding,
-            prepared.plan,
-        )?;
-        let correlation = Correlation::new(scope, key, prepared.target, prepared.source)
-            .inspect_err(|_| {
-                control.cancel_native_source_editor_delivery_on_control(scope);
-            })?;
+        let epoch = prepared.source.transport_epoch;
+        let correlation = match (prepared.source.target, prepared.plan) {
+            (DeviceCaptureTarget::Vst3(target), Plan::Single(plan)) => {
+                if !self.matches_capture_source(prepared.applied.context, target) {
+                    return Err("vst3 editor recording source changed".into());
+                }
+                let scope = control.arm_native_source_editor_touch_delivery_on_control(
+                    prepared.applied,
+                    epoch,
+                    target.binding,
+                    plan,
+                )?;
+                ActiveCorrelation::Single(
+                    Correlation::new(scope, key, target, prepared.source).inspect_err(|_| {
+                        control.cancel_native_source_editor_delivery_on_control(scope);
+                    })?,
+                )
+            }
+            (DeviceCaptureTarget::Vst3Group(target), Plan::Group { plans, len }) => {
+                if !self.matches_capture_binding(
+                    prepared.applied.context,
+                    target.draft.device().value(),
+                    target.binding,
+                ) {
+                    return Err("vst3 editor group source changed".into());
+                }
+                let scope = control.arm_native_source_editor_group_delivery_on_control(
+                    prepared.applied,
+                    epoch,
+                    target.binding,
+                    &plans[..len],
+                )?;
+                ActiveCorrelation::Group(Box::new(GroupControl {
+                    correlation: GroupCorrelation::new(scope, target.draft),
+                    identity: Vst3EditorGroupObservation {
+                        key,
+                        context: prepared.applied.context,
+                        source: prepared.source,
+                        receipt: Vst3EditorGroupReceipt::Ready,
+                    },
+                    terminal_sent: false,
+                }))
+            }
+            _ => return Err("vst3 editor recording plan differs from its source".into()),
+        };
         self.editor_recording = Some(Recording::Active(Box::new(Active {
             correlation,
             pending: None,
@@ -259,7 +345,9 @@ impl Plugins {
             for &edit in edits {
                 if active.correlation.ordered(edit).is_err() {
                     active.cancel = true;
-                    break;
+                    if matches!(active.correlation, ActiveCorrelation::Single(_)) {
+                        break;
+                    }
                 }
             }
         }
@@ -291,6 +379,11 @@ impl Plugins {
 impl Active {
     fn poll(&mut self, mut control: Option<&mut PublicationControl>) {
         if self.drained || self.observation.is_some() {
+            return;
+        }
+        if let Some(observation) = self.correlation.take_completion() {
+            self.observation = Some(observation);
+            self.cancel = true;
             return;
         }
         let target = self.correlation.target();
@@ -353,5 +446,90 @@ impl Active {
     fn finish(&mut self) {
         self.observation = self.correlation.abort();
         self.drained = true;
+    }
+}
+
+#[allow(clippy::large_enum_variant)] // The existing Active already owns its allocation.
+enum ActiveCorrelation {
+    Single(Correlation),
+    Group(Box<GroupControl>),
+}
+
+struct GroupControl {
+    correlation: GroupCorrelation,
+    identity: Vst3EditorGroupObservation,
+    terminal_sent: bool,
+}
+
+impl GroupControl {
+    fn observation(&self, receipt: Vst3EditorGroupReceipt) -> Observation {
+        Observation::Grouped(Vst3EditorGroupObservation {
+            receipt,
+            ..self.identity
+        })
+    }
+}
+
+impl ActiveCorrelation {
+    fn target(&self) -> Target {
+        match self {
+            Self::Single(correlation) => correlation.target(),
+            Self::Group(group) => group.correlation.target(),
+        }
+    }
+
+    fn key(&self) -> GestureKey {
+        match self {
+            Self::Single(correlation) => correlation.key(),
+            Self::Group(group) => group.identity.key,
+        }
+    }
+
+    fn ordered(&mut self, edit: ParameterEdit) -> Result<(), &'static str> {
+        match self {
+            Self::Single(correlation) => correlation.ordered(edit),
+            Self::Group(group) => group
+                .correlation
+                .ordered(edit)
+                .then_some(())
+                .ok_or("vst3 group order requires interruption"),
+        }
+    }
+
+    fn confirmed(&mut self, main: ConfirmedQuantum, closed: bool) -> Result<Match, &'static str> {
+        match self {
+            Self::Single(correlation) => correlation.confirmed(main, closed),
+            Self::Group(group) if group.terminal_sent => Ok(Match::Unrelated),
+            Self::Group(group) => match group.correlation.confirmed(main, closed)? {
+                Quantum::Unrelated => Ok(Match::Unrelated),
+                Quantum::WaitingForOrder => Ok(Match::WaitingForOrder),
+                Quantum::Applied(rows) => Ok(Match::Observed(group.observation(
+                    Vst3EditorGroupReceipt::Applied(Vst3EditorGroupRows::new(
+                        rows,
+                        main.main_performance_frame,
+                    )?),
+                ))),
+            },
+        }
+    }
+
+    fn take_completion(&mut self) -> Option<Observation> {
+        let Self::Group(group) = self else {
+            return None;
+        };
+        if group.terminal_sent {
+            return None;
+        }
+        let clock = group.correlation.completed()?;
+        group.terminal_sent = true;
+        Some(group.observation(Vst3EditorGroupReceipt::Finished(clock)))
+    }
+
+    fn abort(&self) -> Option<Observation> {
+        match self {
+            Self::Single(correlation) => correlation.abort(),
+            Self::Group(group) => (!group.terminal_sent)
+                .then(|| group.observation(Vst3EditorGroupReceipt::Interrupted)),
+        }
     }
 }

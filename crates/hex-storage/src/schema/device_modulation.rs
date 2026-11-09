@@ -375,6 +375,18 @@ pub(crate) fn contains_instrument_modulation(project: &Project) -> bool {
     fm4_banks(project).any(|bank| !bank.is_empty())
 }
 
+/// Historical codecs could retain opaque Sampler banks. New writes use the
+/// higher reader floor for a loaded Sampler with an authored bank.
+pub(crate) fn contains_sampler_modulation(project: &Project) -> bool {
+    const SAMPLER: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.sampler");
+    project.native_sources().iter().any(|source| {
+        let device = source.instrument();
+        device.state().type_id() == SAMPLER
+            && device.state().asset_references().len() == 1
+            && !device.modulation().is_empty()
+    })
+}
+
 pub(crate) fn contains_macro_four(project: &Project) -> bool {
     contains_source(
         project,
@@ -471,7 +483,9 @@ pub(crate) fn refuse_legacy(project: &Project) -> Result<(), StorageError> {
     Ok(())
 }
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
-    let version = if contains_macro_four(project) {
+    let version = if contains_sampler_modulation(project) {
+        crate::SAMPLER_MODULATION_SCHEMA_VERSION
+    } else if contains_macro_four(project) {
         crate::MACRO_FOUR_MODULATOR_SCHEMA_VERSION
     } else if contains_button(project) {
         crate::BUTTON_MODULATOR_SCHEMA_VERSION
@@ -569,6 +583,14 @@ pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError
         return Err(StorageError::Invalid(
             "modulation inventory must be nonempty",
         ));
+    }
+    if version == crate::SAMPLER_MODULATION_SCHEMA_VERSION {
+        if !contains_sampler_modulation(&project) {
+            return Err(StorageError::Invalid(
+                "sampler modulation requires its matching project schema",
+            ));
+        }
+        return Ok(project);
     }
     let macro_four_schema = version == crate::MACRO_FOUR_MODULATOR_SCHEMA_VERSION;
     if contains_macro_four(&project) != macro_four_schema {
