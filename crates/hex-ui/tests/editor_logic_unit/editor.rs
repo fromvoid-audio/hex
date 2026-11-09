@@ -11,3 +11,6 @@ mod mode;
 pub(super) use mode::EditorMode;
 #[path = "../../src/editor/session_navigation.rs"]
 mod session_navigation;
+
+#[path = "controller.rs"]
+mod controller;
