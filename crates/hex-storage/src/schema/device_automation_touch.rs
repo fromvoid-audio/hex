@@ -6,6 +6,9 @@
 //! The native-instrument-touch schema adds only those lanes as a wrapper over
 //! the exact previous codec. Historical readers never admitted native source
 //! touches; the frozen 78/79 decoder continues to refuse them.
+//! The extended touch schema wraps the prior format only when a lane's
+//! base plus recorded steps exceeds the historical combined bound. It
+//! preserves all steps and keeps the historical bound on every older layer.
 use super::{automation_read::Selection, device_automation};
 #[cfg(test)]
 use crate::DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION;

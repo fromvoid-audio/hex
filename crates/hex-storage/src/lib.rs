@@ -182,6 +182,8 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// Free LFO rate assignments require schema85 and tempo-synced rate assignments
 /// require schema86 regardless of oscillator shape. Audio Rate uses schema87.
 /// Native instrument touches use schema88 over the exact prior codec.
+/// Long touch lanes use the extended schema, preserving their exact steps;
+/// shorter lanes and the inner project retain their compatible format.
 pub fn schema_version_for(project: &Project) -> u32 {
     if schema::device_automation_touch::contains_extended(project) {
         EXTENDED_AUTOMATION_TOUCH_SCHEMA_VERSION
