@@ -9,7 +9,7 @@ pub use native_recovery::{
 };
 mod plugin_observation;
 pub use plugin_observation::{
-    FailedPluginContinuation, copy_failed_plugin_on_control,
+    FailedPluginContinuation, MAX_FAILED_PLUGIN_EDITOR_OBSERVATIONS, copy_failed_plugin_on_control,
     copy_failed_plugin_with_receipt_on_control, prepare_failed_plugin_continuation,
 };
 mod recovery;
@@ -364,7 +364,7 @@ impl Lane {
         let source = self.failed_source(scope)?;
         if !matches!(scope.target, DeviceCaptureTarget::Vst3(_))
             || max_events > hex_project::MAX_DEVICE_AUTOMATION_POINTS as u64
-            || observations.len() > 3
+            || observations.len() > MAX_FAILED_PLUGIN_EDITOR_OBSERVATIONS
         {
             return Err("invalid VST3 recovery target or budget".into());
         }

@@ -17,6 +17,13 @@ use hex_session::service::{
 mod correlation;
 use correlation::{Correlation, Match};
 
+// Audio can leave its whole confirmed queue behind. One Desktop observation,
+// one Session action and one racing final callback are separate credits.
+const _: () = assert!(
+    hex_session::service::MAX_FAILED_PLUGIN_EDITOR_OBSERVATIONS
+        >= hex_audio::foreign_parameter_delivery::editor::MAX_EDITOR_MAIN_RECEIPTS + 3
+);
+
 #[derive(Clone, Copy)]
 pub(super) struct Prepared {
     key: GestureKey,
