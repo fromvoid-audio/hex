@@ -96,12 +96,14 @@ impl EffectModulation {
         let mut sources = reserved(ordered.len())?;
         let mut ids = reserved(ordered.len())?;
         for source in ordered {
-            use hex_devices::modulation::{envelope_follower, lfo, random_hold};
+            use hex_devices::modulation::{envelope_follower, lfo, macro_value, random_hold};
             let prepared = match source.state.type_id() {
                 lfo::TYPE_ID => lfo::Settings::decode(&source.state).and_then(|settings| {
                     settings.prepare(source.id, sample_rate, fallback_bpm, maximum_bpm)
                 }),
                 envelope_follower::TYPE_ID => envelope_follower::Settings::decode(&source.state)
+                    .and_then(|settings| settings.prepare(source.id, sample_rate)),
+                macro_value::TYPE_ID => macro_value::Settings::decode(&source.state)
                     .and_then(|settings| settings.prepare(source.id, sample_rate)),
                 random_hold::TYPE_ID => random_hold::Settings::decode(&source.state)
                     .and_then(|settings| settings.prepare(source.id, sample_rate)),
@@ -246,6 +248,9 @@ fn reserved<T>(count: usize) -> Result<Vec<T>, Invalid> {
         .map_err(|_| Invalid("could not reserve modulation preparation storage"))?;
     Ok(values)
 }
+
+#[cfg(test)]
+mod macro_tests;
 
 #[cfg(test)]
 mod random_tests;

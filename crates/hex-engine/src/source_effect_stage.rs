@@ -156,6 +156,44 @@ impl SourceEffectStages {
         Ok(Self { chains })
     }
 
+    /// Ordinary construction quote. The compiled recipes are retained by the
+    /// revision; this charges only the exclusive runtime backings.
+    pub(crate) fn requested_runtime_bytes(
+        receiver_slots: usize,
+        recipes: &[PreparedSourceEffects],
+    ) -> Option<usize> {
+        if recipes.is_empty() {
+            return Some(0);
+        }
+        Self::runtime_bytes(
+            receiver_slots,
+            recipes.iter().map(|recipe| {
+                NativeRuntimeChain::declared_storage_preflight_bytes_for_prepared(&recipe.instances)
+            }),
+        )
+    }
+
+    pub(crate) fn accounted_runtime_bytes(&self) -> Option<usize> {
+        Self::runtime_bytes(
+            self.chains.capacity(),
+            self.chains
+                .iter()
+                .flatten()
+                .map(|stage| stage.chain.accounted_storage_bytes()),
+        )
+    }
+
+    fn runtime_bytes(
+        slots: usize,
+        mut chains: impl Iterator<Item = Option<usize>>,
+    ) -> Option<usize> {
+        let stage_table = slots.checked_mul(std::mem::size_of::<Option<SourceEffectStage>>())?;
+        chains.try_fold(stage_table, |total, chain| {
+            // Chain headers are already inline in the receiver slots.
+            total.checked_add(chain?.checked_sub(std::mem::size_of::<NativeRuntimeChain>())?)
+        })
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.chains.is_empty()
     }

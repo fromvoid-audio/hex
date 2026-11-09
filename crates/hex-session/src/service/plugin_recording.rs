@@ -144,6 +144,8 @@ pub(super) fn keep_failed_copy(
     state: &mut State,
     lane: &mut Lane,
     scope: DeviceAutomationTakeScope,
+    selected: &Path,
+    selected_receipt: automation_draft::RecoveryCopyReceipt,
     max_events: u64,
     gesture_active: bool,
 ) -> Result<Step, String> {
@@ -163,6 +165,9 @@ pub(super) fn keep_failed_copy(
     else {
         return Err("verified VST3 recovery copy is unavailable".into());
     };
+    if selected != path.as_path() || selected_receipt != receipt {
+        return Err("verified vst3 recovery copy changed".into());
+    }
     let outcome = Arc::clone(lane.failed_outcome(scope)?);
     receipt.with_verified_on_control(
         &path,

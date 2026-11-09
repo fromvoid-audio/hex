@@ -850,3 +850,39 @@ fn receiver_move_continues_the_source_effect_and_incompatible_recipe_leaves_dono
         );
     }
 }
+
+#[test]
+fn ordinary_runtime_quote_covers_the_constructed_source_effect_stage() {
+    use crate::{PreparedRevision, SessionPlayback};
+
+    let (editor, asset) = authored_fixture(0, false);
+    let source = editor.project().tracks()[0].source_id().unwrap();
+    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
+    let revision = Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &media,
+            Arc::new(crate::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let plain_quote = SessionPlayback::interactive_runtime_allowance(&revision).unwrap();
+    let plain_actual = {
+        let playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        playback.accounted_runtime_storage_bytes().unwrap()
+    };
+
+    let mut revision = Arc::try_unwrap(revision).unwrap();
+    revision.test_install_source_effect_recipes(vec![PreparedSourceEffects {
+        source,
+        receiver: 0,
+        instances: Arc::from([recipe(source, Some(0))]),
+    }]);
+    let effect_quote = SessionPlayback::interactive_runtime_allowance(&revision).unwrap();
+    let playback = SessionPlayback::new(Arc::new(revision)).unwrap();
+    let effect_actual = playback.accounted_runtime_storage_bytes().unwrap();
+    assert!(effect_actual > plain_actual);
+    assert_eq!(effect_quote - plain_quote, effect_actual - plain_actual);
+    assert!(effect_quote >= effect_actual);
+}
