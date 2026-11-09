@@ -6,8 +6,16 @@ use hex_lattice_contract::{ForeignProcessorBinding as Binding, NativeDeviceState
 use hex_plugin_state::{Identity, STATE_VERSION, TYPE_ID};
 use std::io::Cursor;
 mod capture;
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+mod editor_pcm;
 mod edits;
 mod parameter_page;
+#[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(test, unix)))]
+pub(crate) use editor_pcm::pcm_packet_extent;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) use editor_pcm::{EDITOR_PCM_BIT, editor_pcm};
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+pub use editor_pcm::{EditorPcm, EditorPerform, EditorPerforms};
 pub use edits::{
     MAX_PARAMETER_EDITS, ParameterEdit, ParameterEditKind, ParameterEdits, RecoveryEdits,
     edit_request, idle_editor_edit_request, parameter_edits, recovery_edit_request, recovery_edits,
@@ -673,12 +681,18 @@ pub fn resumed(
     Ok(result)
 }
 pub fn pcm(bytes: &[u8], config: &Configuration, sequence: u64) -> Result<Block> {
+    read_pcm(Cursor::new(bytes), config, sequence)
+}
+fn read_pcm(
+    mut reader: impl std::io::Read,
+    config: &Configuration,
+    sequence: u64,
+) -> Result<Block> {
     config.validate()?;
-    let mut cursor = Cursor::new(bytes);
-    let block = crate::transport::wire::read(&mut cursor)
+    let block = crate::transport::wire::read(&mut reader)
         .map_err(Error::Io)?
         .ok_or(Error::Protocol("missing instance PCM reply"))?;
-    if cursor.position() != bytes.len() as u64
+    if reader.read(&mut [0]).map_err(Error::Io)? != 0
         || block.binding != config.binding
         || block.sequence != sequence
         || block.frames != config.quantum

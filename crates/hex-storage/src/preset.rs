@@ -42,6 +42,15 @@ pub enum DeviceClass {
     Effect,
 }
 
+impl From<hex_project::DeviceUnitClass> for DeviceClass {
+    fn from(value: hex_project::DeviceUnitClass) -> Self {
+        match value {
+            hex_project::DeviceUnitClass::Instrument => Self::Instrument,
+            hex_project::DeviceUnitClass::Effect => Self::Effect,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Preset {
     pub class: DeviceClass,
