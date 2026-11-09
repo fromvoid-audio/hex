@@ -155,6 +155,7 @@ FULL_STEPS = (
     Step("prepared-export-instrument-tests", ("cargo", "test", "-p", "hex-export", "--features", "instrument-test-support", "--locked")),
     Step("ui-feature-tests", ("cargo", "test", "-p", "hex-ui", "--features", "ui-test-support", "--locked")),
     *UI_UNIT_STEPS,
+    Step("sandbox-unit-tests", ("cargo", "test", "-p", "hex-sandbox", "--features", "ui-unit-tier", "--locked", "theme::"), requires_tests=True),
     Step("device-gallery-tests", ("cargo", "test", "-p", "hex-ui", "--example", "layout_review", "--features", "ui-test-support", "--locked")),
     Step("audio-allocation-probe", ("cargo", "test", "-p", "hex-audio", "-p", "hex-plugin-host", "--features", "allocation-probe", "--locked")),
     # Native fixtures serialize on hex-desktop's process-wide output lease;
@@ -166,6 +167,7 @@ FULL_STEPS = (
     Step("prepared-export-instrument-clippy", ("cargo", "clippy", "-p", "hex-export", "--all-targets", "--features", "instrument-test-support", "--locked", "--", "-D", "warnings")),
     Step("ui-feature-clippy", ("cargo", "clippy", "-p", "hex-ui", "--all-targets", "--features", "ui-test-support", "--locked", "--", "-D", "warnings")),
     Step("ui-unit-clippy", ("cargo", "clippy", "-p", "hex-ui", "--all-targets", "--features", "ui-unit-tier", "--locked", "--", "-D", "warnings")),
+    Step("sandbox-unit-clippy", ("cargo", "clippy", "-p", "hex-sandbox", "--all-targets", "--features", "ui-unit-tier", "--locked", "--", "-D", "warnings")),
     Step("audio-feature-clippy", ("cargo", "clippy", "-p", "hex-audio", "-p", "hex-desktop", "-p", "hex-plugin-host", "--all-targets", "--features", "allocation-probe", "--locked", "--", "-D", "warnings")),
     Step("stream-feature-clippy", ("cargo", "clippy", "-p", "hex-stream", "--all-targets", "--features", "allocation-probe", "--locked", "--", "-D", "warnings")),
     Step("desktop-build", ("cargo", "build", "-p", "hex-desktop", "--locked")),
@@ -346,6 +348,7 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
     # Keep separate default/feature configurations, including feature-gated
     # examples and allocation probes. Do not deduplicate by overlapping names.
     covered_features = {"hex-plugin-host": {"allocation-probe"}, "hex-ui": {"ui-test-support", "ui-unit-tier"}, "hex-export": {"instrument-test-support"},
+                        "hex-sandbox": {"ui-unit-tier"},
                         "hex-audio": {"allocation-probe"}, "hex-stream": {"allocation-probe"},
                         "hex-desktop": {"allocation-probe"}}
     # Every consumer's reviewed feature configurations lint in ONE invocation:
@@ -382,7 +385,14 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
         for owner in set(owners) - set(selected):
             index = argv.index(owner)
             del argv[index - 1:index + 1]
-        steps.append(Step(step.step_id, scoped(tuple(argv))))
+        if step.step_id == "sandbox-unit-tests" and "hex-sandbox" in module_filters:
+            # Scoped changes use the owning module filters in place of the
+            # full/health theme filter, not both filters together.
+            argv.remove("theme::")
+        sandbox_theme = (step.step_id == "sandbox-unit-tests" and
+                         ("hex-sandbox" not in module_filters or
+                          any(name.startswith("theme::") for name in module_filters["hex-sandbox"])))
+        steps.append(Step(step.step_id, scoped(tuple(argv)), requires_tests=sandbox_theme))
     for package in inventory:
         if package["name"] not in affected:
             continue
@@ -412,7 +422,8 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
         feature = ci_plan.UI_UNIT_FEATURES.get(target)
         feature_args = ("--features", feature) if feature else ()
         steps.append(Step(f"ui-unit-{target}", ("cargo", "test", "-p", "hex-ui", *feature_args,
-                                                  "--test", target, "--locked", "--", *sorted(names))))
+                                                  "--test", target, "--locked", "--", *sorted(names)),
+                          requires_tests=True))
     if lint_features:
         lint_packages = sorted({feature.split("/")[0] for feature in lint_features})
         steps.append(Step("affected-feature-clippy",
@@ -448,6 +459,9 @@ def planned_steps(plan: dict) -> tuple[Step, ...]:
         if health["workspace_inputs"] or "hex-ui" in health["packages"]:
             steps.extend(Step("health-" + step.step_id.removesuffix("-tests"), step.argv, requires_tests=True)
                          for step in UI_UNIT_STEPS)
+        if health["workspace_inputs"] or "hex-sandbox" in health["packages"]:
+            step = next(s for s in FULL_STEPS if s.step_id == "sandbox-unit-tests")
+            steps.append(Step("health-sandbox-unit", step.argv, requires_tests=True))
         if len(steps) == 1:
             steps.append(Step("metadata", ("python3", "scripts/ci_plan.py", "--check-metadata",
                                            "--base", plan["base"], "--source", plan["source"])))
@@ -484,7 +498,7 @@ def planned_steps(plan: dict) -> tuple[Step, ...]:
                       ci_plan.python_tests.argv(plan["python_tests"])
                       if s.step_id == "runner-tests" and "python_tests" in plan else s.argv,
                       s.uses_cargo_target,
-                      (runs_rust_tests(s.argv) and "--doc" not in s.argv and not module_scoped(s.argv))
+                      s.requires_tests or (runs_rust_tests(s.argv) and "--doc" not in s.argv and not module_scoped(s.argv))
                       or s.step_id == "runner-tests") for s in steps)
 
 

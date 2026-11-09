@@ -17,13 +17,15 @@ if _PYTHON_SPEC is None or _PYTHON_SPEC.loader is None:
 python_tests = importlib.util.module_from_spec(_PYTHON_SPEC)
 _PYTHON_SPEC.loader.exec_module(python_tests)
 
-POLICY_VERSION = 48
+POLICY_VERSION = 49
 UI_PACKAGES = {"hex-ui", "hex-widgets"}
 # Opaque state reaches storage through runtime type IDs, not a Cargo dependency.
 # Changes here must be reviewed with the real registration/codec consumers.
 RUNTIME_CONSUMERS = {"hex-devices": {"hex-storage"}}
 # Both consumers compile this exact storage source through theme.rs by path.
-PATH_RUNTIME_CONSUMERS = {"crates/hex-storage/src/text.rs": {"hex-ui", "hex-sandbox"}}
+PATH_RUNTIME_CONSUMERS = {"crates/hex-storage/src/text.rs": {"hex-ui", "hex-sandbox"},
+                          "crates/hex-ui/src/theme.rs": {"hex-sandbox"},
+                          "crates/hex-ui/src/theme/device.rs": {"hex-sandbox"}}
 RUNTIME_CONSUMER_NAMES = {name for names in RUNTIME_CONSUMERS.values() for name in names}
 TOOLING = {
     "launch", "scripts/launch-restart.py", "scripts/hex-test-build.py",
@@ -136,7 +138,7 @@ def classify(paths: list[str], inventory: list[dict]) -> tuple[str, list[str], l
     if missing:
         raise ValueError("reviewed path consumers missing from Cargo inventory: " + ", ".join(sorted(missing)))
     if path_consumers:
-        reasons.append("path-included storage text: include theme consumers")
+        reasons.append("path-included source: include reviewed theme consumers")
     affected = set(changed) | path_consumers
     while True:
         next_affected = affected | {p["name"] for p in inventory
@@ -297,7 +299,8 @@ UI_UNIT_TARGETS = {"editor::audio_admission::": "unit_editor_state",
                    "section_input::": "unit_section",
                    "section_reorder::": "unit_section",
                    "section_resize::": "unit_section",
-                   "section_selection::": "unit_section"}
+                   "section_selection::": "unit_section",
+                   "theme::": "unit_editor_logic"}
 UI_UNIT_FEATURES = {"unit_piano_roll": "ui-unit-tier", "unit_timeline": "ui-unit-tier", "unit_automation": "ui-unit-tier", "unit_device": "ui-unit-tier", "unit_section": "ui-unit-tier", "unit_editor_logic": "ui-unit-tier"}
 # These geometry modules call one another; a change to one must exercise the
 # complete pure boundary rather than only its own test-name prefix.
@@ -318,7 +321,8 @@ UI_INTEGRATION_PAIRS = {"editor::recovery_state::": "editor::recovery_state_inte
                         "editor::session_navigation::": "editor::session_navigation_ui_test::",
                         "editor::track_meters::selection::": "editor::track_meters::tests::",
                         "editor::track_meters::decay::": "editor::track_meters::tests::",
-                        "editor::track_meters::follower::": "editor::track_meters::main_output::tests::"}
+                        "editor::track_meters::follower::": "editor::track_meters::main_output::tests::",
+                        "theme::": "editor::theme_settings::tests::"}
 MOD_LINE = re.compile(r"(pub(\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")
 PATH_ATTRIBUTE = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
 
@@ -440,6 +444,11 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
     if "crates/hex-storage/src/text.rs" in executable:
         for consumer in PATH_RUNTIME_CONSUMERS["crates/hex-storage/src/text.rs"] & set(tested):
             filters.setdefault(consumer, set()).add("theme::tests::")
+    if "hex-sandbox" in tested:
+        if "crates/hex-ui/src/theme.rs" in executable:
+            filters.setdefault("hex-sandbox", set()).add("theme::")
+        if "crates/hex-ui/src/theme/device.rs" in executable:
+            filters.setdefault("hex-sandbox", set()).add("theme::device::")
     selected = {}
     for owner, names in filters.items():
         if owner in whole:
@@ -451,7 +460,9 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                 before = len(names)
                 for module, integration in UI_INTEGRATION_PAIRS.items():
                     if any(module.startswith(name) or name.startswith(module)
-                           or integration.startswith(name) or name.startswith(integration)
+                           or (integration.startswith(name) and
+                               (module.startswith(name) or name.count("::") > 1))
+                           or name.startswith(integration)
                            for name in names):
                         names.update((module, integration))
                 for cohort in UI_UNIT_COHORTS:
@@ -609,6 +620,7 @@ def health_selection(paths: list[str], inventory: list[dict]) -> dict:
             python = True
         elif scope in {"rust", "ui"} and owner_package(path, inventory):
             owners.add(owner_package(path, inventory))
+            owners.update(PATH_RUNTIME_CONSUMERS.get(path, set()))
         else:
             workspace.append(path)
     return {"packages": sorted(owners), "python": python, "workspace_inputs": workspace}
