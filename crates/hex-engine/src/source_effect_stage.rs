@@ -1,14 +1,18 @@
-//! Receiver-only, zero-latency source FX for the existing linear renderer.
+//! Receiver-only, zero-latency effects on isolated shared generator audio.
 use crate::{Frame, Invalid, Project, effect_clock::ArrangementEffectClock};
-use hex_lattice::NativeRuntimeChain;
-use std::ops::Range;
+use hex_lattice::{NativeInstrumentClock, NativeRuntimeChain};
+use std::{ops::Range, sync::Arc};
 
-/// Borrowed control-side recipe. Placement is validated against the compiled
-/// receiver; the renderer takes custody only of its prepared runtime.
-pub(crate) struct PreparedSourceEffects<'a> {
+pub(crate) mod metadata;
+
+/// Control-prepared recipe retained once per source by the compiled project.
+/// Renderers borrow this immutable configuration to build their runtime.
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedSourceEffects {
     pub(crate) source: hex_project::SourceId,
     pub(crate) receiver: usize,
-    pub(crate) instances: &'a [hex_lattice::PreparedRuntimeInstance],
+    pub(crate) instances: Arc<[hex_lattice::PreparedRuntimeInstance]>,
+    pub(crate) factory_bytes: usize,
 }
 
 pub(crate) fn native_zero_latency(instance: &hex_lattice::PreparedRuntimeInstance) -> bool {
@@ -19,65 +23,132 @@ pub(crate) fn native_zero_latency(instance: &hex_lattice::PreparedRuntimeInstanc
         )
 }
 
+fn validate_recipes(project: &Project, recipes: &[PreparedSourceEffects]) -> Result<(), Invalid> {
+    if recipes.len() > project.tracks.len() {
+        return Err(Invalid("source effect recipe count exceeds receiver count"));
+    }
+    for (ordinal, recipe) in recipes.iter().enumerate() {
+        let index = recipe.receiver;
+        let instances = recipe.instances.as_ref();
+        let track = project
+            .tracks
+            .get(index)
+            .ok_or(Invalid("source effect receiver is missing"))?;
+        if track.source_id() != Some(recipe.source)
+            || !track.receives_source_audio()
+            || track.source_receiver_index() != Some(index)
+        {
+            return Err(Invalid("source effects require the explicit receiver"));
+        }
+        if recipes[..ordinal]
+            .iter()
+            .any(|prior| prior.source == recipe.source)
+        {
+            return Err(Invalid("source effects already have a receiver stage"));
+        }
+        if instances.is_empty() || instances.len() > hex_project::MAX_DEVICES_PER_TRACK {
+            return Err(Invalid("source effect count is outside the bounded chain"));
+        }
+        let owner = hex_lattice::ProcessorChainOwner::Source(recipe.source.value());
+        if instances.iter().any(|instance| instance.owner != owner) {
+            return Err(Invalid("source effect processor belongs to another owner"));
+        }
+        if track.instrument_input_gain != 1.0 || track.instrument_output_gain != 1.0 {
+            return Err(Invalid(
+                "source effect recipes require neutral instrument trims",
+            ));
+        }
+        if instances.iter().any(|instance| {
+            instance.sample_rate != project.sample_rate() || !native_zero_latency(instance)
+        }) {
+            return Err(Invalid(
+                "source effects require native zero-latency processors at the project rate",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Source-owned pairs share the existing aggregate effect limits. Complete this
+/// control-side check before constructing any runtime, including earlier valid
+/// recipes in a batch with a later invalid or over-budget source.
+fn validate_runtime_budget(
+    project: &Project,
+    recipes: &[PreparedSourceEffects],
+) -> Result<(), Invalid> {
+    let effects = project
+        .tracks
+        .iter()
+        .flat_map(|track| track.device_chain.iter())
+        .chain(
+            project
+                .return_buses
+                .iter()
+                .flat_map(|bus| bus.device_chain.iter()),
+        )
+        .chain(project.main_device_chain.iter())
+        .chain(recipes.iter().flat_map(|recipe| recipe.instances.iter()));
+    const OVER_BUDGET: Invalid =
+        Invalid("source effects exceed the aggregate graph runtime budget");
+    let mut pair_bytes = 0usize;
+    for (index, factory) in effects
+        .filter_map(|device| device.definition.as_ref())
+        .enumerate()
+    {
+        pair_bytes = pair_bytes
+            .checked_add(factory.declared_pair_bytes().ok_or(OVER_BUDGET)?)
+            .ok_or(OVER_BUDGET)?;
+        if index >= hex_lattice::MAX_STATEFUL_PROCESSORS
+            || pair_bytes > hex_lattice::MAX_PROCESSOR_BANK_RUNTIME_BYTES * 2
+        {
+            return Err(OVER_BUDGET);
+        }
+    }
+    Ok(())
+}
+
+struct SourceEffectStage {
+    source: hex_project::SourceId,
+    chain: NativeRuntimeChain,
+}
+
+/// Bounded receiver-to-donor indices, prepared before any history is moved.
+pub(crate) struct SourceEffectTransfer {
+    donors: [Option<usize>; hex_project::MAX_TRACKS],
+}
+
 #[derive(Default)]
 pub(crate) struct SourceEffectStages {
-    chains: Vec<Option<NativeRuntimeChain>>,
+    chains: Vec<Option<SourceEffectStage>>,
 }
 
 impl SourceEffectStages {
+    pub(crate) fn validate_preparation(
+        project: &Project,
+        recipes: &[PreparedSourceEffects],
+    ) -> Result<(), Invalid> {
+        if !recipes.is_empty() {
+            validate_recipes(project, recipes)?;
+            validate_runtime_budget(project, recipes)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn prepare(
         project: &Project,
-        recipes: &[PreparedSourceEffects<'_>],
+        recipes: &[PreparedSourceEffects],
     ) -> Result<Self, Invalid> {
         if recipes.is_empty() {
             return Ok(Self::default());
         }
-        if recipes.len() > project.tracks.len() {
-            return Err(Invalid("source effect recipe count exceeds receiver count"));
-        }
+        Self::validate_preparation(project, recipes)?;
         let mut chains = Vec::new();
         chains
             .try_reserve_exact(project.tracks.len())
             .map_err(|_| Invalid("source effect runtime allocation failed"))?;
         chains.resize_with(project.tracks.len(), || None);
-        for (ordinal, recipe) in recipes.iter().enumerate() {
-            let index = recipe.receiver;
-            let instances = recipe.instances;
-            let track = project
-                .tracks
-                .get(index)
-                .ok_or(Invalid("source effect receiver is missing"))?;
-            if track.source_id() != Some(recipe.source)
-                || !track.receives_source_audio()
-                || track.source_receiver_index() != Some(index)
-            {
-                return Err(Invalid("source effects require the explicit receiver"));
-            }
-            if recipes[..ordinal]
-                .iter()
-                .any(|prior| prior.source == recipe.source)
-            {
-                return Err(Invalid("source effects already have a receiver stage"));
-            }
-            if instances.is_empty() || instances.len() > hex_project::MAX_DEVICES_PER_TRACK {
-                return Err(Invalid("source effect count is outside the bounded chain"));
-            }
-            let owner = hex_lattice::ProcessorChainOwner::Source(recipe.source.value());
-            if instances.iter().any(|instance| instance.owner != owner) {
-                return Err(Invalid("source effect processor belongs to another owner"));
-            }
-            if track.instrument_input_gain != 1.0 || track.instrument_output_gain != 1.0 {
-                return Err(Invalid(
-                    "source effect recipes require neutral instrument trims",
-                ));
-            }
-            if instances.iter().any(|instance| {
-                instance.sample_rate != project.sample_rate() || !native_zero_latency(instance)
-            }) {
-                return Err(Invalid(
-                    "source effects require native zero-latency processors at the project rate",
-                ));
-            }
+        for recipe in recipes {
+            let instances = recipe.instances.as_ref();
             let mut prepared = Vec::new();
             prepared
                 .try_reserve_exact(instances.len())
@@ -85,9 +156,142 @@ impl SourceEffectStages {
             prepared.extend(instances.iter().cloned());
             let chain = NativeRuntimeChain::new_prepared(prepared)
                 .map_err(|_| Invalid("source effect runtime preparation failed"))?;
-            chains[index] = Some(chain);
+            chains[recipe.receiver] = Some(SourceEffectStage {
+                source: recipe.source,
+                chain,
+            });
         }
         Ok(Self { chains })
+    }
+
+    /// Ordinary construction quote. The compiled recipes are retained by the
+    /// revision; this charges only the exclusive runtime backings.
+    pub(crate) fn requested_runtime_bytes(
+        receiver_slots: usize,
+        recipes: &[PreparedSourceEffects],
+    ) -> Option<usize> {
+        if recipes.is_empty() {
+            return Some(0);
+        }
+        Self::runtime_bytes(
+            receiver_slots,
+            recipes.iter().map(|recipe| {
+                NativeRuntimeChain::declared_storage_preflight_bytes_for_prepared(&recipe.instances)
+            }),
+        )
+    }
+
+    pub(crate) fn accounted_runtime_bytes(&self) -> Option<usize> {
+        Self::runtime_bytes(
+            self.chains.capacity(),
+            self.chains
+                .iter()
+                .flatten()
+                .map(|stage| stage.chain.accounted_storage_bytes()),
+        )
+    }
+
+    fn runtime_bytes(
+        slots: usize,
+        mut chains: impl Iterator<Item = Option<usize>>,
+    ) -> Option<usize> {
+        let stage_table = slots.checked_mul(std::mem::size_of::<Option<SourceEffectStage>>())?;
+        chains.try_fold(stage_table, |total, chain| {
+            // Chain headers are already inline in the receiver slots.
+            total.checked_add(chain?.checked_sub(std::mem::size_of::<NativeRuntimeChain>())?)
+        })
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.chains.is_empty()
+    }
+
+    /// Match by source identity, independently of the current receiver index.
+    /// New stages have no donor. An unmatched old stage may retire only when
+    /// its host is stopped and the processor proves its committed state quiet.
+    pub(crate) fn plan_continuation(
+        &self,
+        previous: &Self,
+        allow_new: bool,
+        allow_quiet_retirement: bool,
+        generator_matches: impl Fn(hex_project::SourceId) -> bool,
+    ) -> Option<SourceEffectTransfer> {
+        let mut donors = [None; hex_project::MAX_TRACKS];
+        for (index, old) in previous.chains.iter().enumerate() {
+            let Some(old) = old else { continue };
+            let matching = self
+                .chains
+                .iter()
+                .enumerate()
+                .find(|(_, next)| next.as_ref().is_some_and(|next| next.source == old.source));
+            if let Some((receiver, Some(next))) = matching
+                && next
+                    .chain
+                    .can_transfer_unchanged_native_history_from(&old.chain)
+                && generator_matches(old.source)
+            {
+                *donors.get_mut(receiver)? = Some(index);
+            } else if !allow_quiet_retirement
+                || !old.chain.committed_range_is_quiescent(0..old.chain.len())
+            {
+                return None;
+            }
+        }
+        if !allow_new
+            && self
+                .chains
+                .iter()
+                .zip(&donors)
+                .any(|(stage, donor)| stage.is_some() && donor.is_none())
+        {
+            return None;
+        }
+        Some(SourceEffectTransfer { donors })
+    }
+
+    pub(crate) fn has_continued_source(
+        &self,
+        transfer: &SourceEffectTransfer,
+        source: hex_project::SourceId,
+    ) -> bool {
+        self.chains
+            .iter()
+            .zip(&transfer.donors)
+            .any(|(stage, donor)| {
+                donor.is_some() && stage.as_ref().is_some_and(|stage| stage.source == source)
+            })
+    }
+
+    /// Processors exchange or copy existing backing; the caller still retires
+    /// the old graph on control. An unpaired candidate keeps its fresh history.
+    pub(crate) fn continue_from(&mut self, previous: &mut Self, transfer: SourceEffectTransfer) {
+        for (stage, donor) in self.chains.iter_mut().zip(transfer.donors) {
+            if let (Some(stage), Some(index)) = (stage, donor) {
+                let old = previous.chains[index]
+                    .as_mut()
+                    .expect("source effect handoff preflight matched this donor");
+                stage.chain.transfer_history_from(&mut old.chain);
+            }
+        }
+    }
+
+    pub(crate) fn has_monitor_tail(&self) -> bool {
+        self.chains.iter().flatten().any(|stage| {
+            !stage
+                .chain
+                .committed_range_is_quiescent(0..stage.chain.len())
+        })
+    }
+
+    pub(crate) fn has_tail(&self, index: usize) -> bool {
+        self.chains
+            .get(index)
+            .and_then(Option::as_ref)
+            .is_some_and(|stage| {
+                !stage
+                    .chain
+                    .committed_range_is_quiescent(0..stage.chain.len())
+            })
     }
 
     pub(crate) fn has_chain(&self, index: usize) -> bool {
@@ -95,14 +299,17 @@ impl SourceEffectStages {
     }
 
     pub(crate) fn chains_mut(&mut self) -> impl Iterator<Item = &mut NativeRuntimeChain> {
-        self.chains.iter_mut().flatten()
+        self.chains
+            .iter_mut()
+            .flatten()
+            .map(|stage| &mut stage.chain)
     }
 
     pub(crate) fn has_stateful_processors(&self) -> bool {
         self.chains
             .iter()
             .flatten()
-            .any(NativeRuntimeChain::has_stateful_processors)
+            .any(|stage| stage.chain.has_stateful_processors())
     }
 
     pub(crate) fn process_isolated(
@@ -112,10 +319,20 @@ impl SourceEffectStages {
         start: u64,
         frames: &mut [Frame],
     ) -> Result<(), Invalid> {
-        if let Some(chain) = self.chains.get_mut(index).and_then(Option::as_mut) {
-            let clock = ArrangementEffectClock::canonical(project.tempo_map.as_ref(), start);
+        let clock = ArrangementEffectClock::canonical(project.tempo_map.as_ref(), start);
+        self.process_with_clock(index, frames, &clock)
+    }
+
+    pub(crate) fn process_with_clock(
+        &mut self,
+        index: usize,
+        frames: &mut [Frame],
+        clock: &dyn NativeInstrumentClock,
+    ) -> Result<(), Invalid> {
+        if let Some(stage) = self.chains.get_mut(index).and_then(Option::as_mut) {
+            let chain = &mut stage.chain;
             chain
-                .process_range_with_clock(0..chain.len(), frames, Some(&clock), Some(&clock))
+                .process_range_with_clock(0..chain.len(), frames, Some(clock), Some(clock))
                 .map_err(|_| Invalid("prepared source effect segment is invalid"))?;
         }
         Ok(())

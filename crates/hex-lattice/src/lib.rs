@@ -22,6 +22,7 @@ mod modulation;
 #[cfg(test)]
 mod modulation_graph_tests;
 mod modulation_runtime;
+mod modulation_source_routes;
 mod modulation_sources;
 mod owned_processor;
 mod parameter_automation;
@@ -58,7 +59,8 @@ pub use modulation::{
     ModulationRoute, ModulationTarget, PreparedModulation,
 };
 pub use modulation_runtime::ModulationRuntime;
-pub use modulation_sources::{ModulationLfoBank, PreparedLfoSource};
+pub use modulation_source_routes::SourceModulationRoute;
+pub use modulation_sources::{ModulationSourceBank, PreparedModulationSource};
 pub use owned_processor::{
     MAX_RESERVED_BYPASS_FRAMES, OwnedProcessorRuntime, PreparedOwnedProcessorRuntime,
     PreparedProcessorFactory, PreparedRuntimeDevice, PreparedRuntimeInstance,
@@ -81,6 +83,13 @@ pub use analytic_continuation::{
 /// A registered memoryless linear effect definition. Implementations own their
 /// parameter codec in the contract trait and prepare a validated matrix here.
 pub trait NativeDeviceDefinition: NativeDeviceMetadata {
+    /// Bound for the immutable factory of an asset-free source effect with no
+    /// host automation or modulation. Include its Arc backing and owned/shared
+    /// children, but not the separately charged state, meter or runtime.
+    /// Unknown providers cannot publish as compiled source effects.
+    fn source_effect_factory_bytes(&self) -> Option<usize> {
+        None
+    }
     /// Control-only explicit shared-envelope capability, independent of older
     /// device-local envelope metadata. Default providers do not opt in.
     fn supports_parameter_automation(
@@ -1237,21 +1246,19 @@ impl NativeRuntimeChain {
                     return Err(DeviceContractError::UnsupportedProcessingClass);
                 }
                 for &parameter in modulation.program().parameter_ids() {
-                    if modulation
-                        .program()
-                        .semantics(parameter)
-                        .is_none_or(|semantics| {
-                            semantics.modulation
-                                != hex_lattice_contract::ParameterModulation::SampleRate
-                        })
-                        || instance.definition.as_ref().is_none_or(|factory| {
-                            !factory.supports_parameter_automation(parameter)
-                                || factory.parameter_automation_descriptor(parameter)
-                                    != modulation.program().descriptor(parameter)
-                                || factory.parameter_modulation_semantics(parameter)
-                                    != modulation.program().semantics(parameter)
-                        })
-                        || !runtime.supports_parameter_automation(parameter)
+                    let program = modulation.program();
+                    if instance.definition.as_ref().is_none_or(|factory| {
+                        !factory.supports_parameter_automation(parameter)
+                            || factory.parameter_automation_descriptor(parameter)
+                                != program.descriptor(parameter)
+                            || (program.has_routes(parameter)
+                                && factory.parameter_modulation_semantics(parameter).filter(
+                                    |semantics| {
+                                        semantics.modulation
+                                            == hex_lattice_contract::ParameterModulation::SampleRate
+                                    },
+                                ) != program.semantics(parameter))
+                    }) || !runtime.supports_parameter_automation(parameter)
                     {
                         return Err(DeviceContractError::UnsupportedProcessingClass);
                     }
@@ -1681,6 +1688,33 @@ impl NativeRuntimeChain {
                         _ => false,
                     }
             })
+    }
+
+    /// Preflight a retiring-donor transfer for unchanged native controls and
+    /// topology. Unlike general reconfiguration, this admits no new device,
+    /// changed trim or bypass, provider program, or graph modulation.
+    pub fn can_transfer_unchanged_native_history_from(&self, previous: &Self) -> bool {
+        self.len() == previous.len()
+            && self.configuration_matches_range(previous, 0..self.len())
+            && self
+                .entries
+                .iter()
+                .zip(&previous.entries)
+                .all(|(left, right)| {
+                    !matches!(left.runtime, RuntimeOwnership::Foreign(_))
+                        && !matches!(right.runtime, RuntimeOwnership::Foreign(_))
+                        && left.bypassed == right.bypassed
+                        && left.input_gain == right.input_gain
+                        && left.output_gain == right.output_gain
+                        && left.algorithmic_latency_frames == right.algorithmic_latency_frames
+                        && left.output_tail == right.output_tail
+                        && left.automation.is_empty()
+                        && right.automation.is_empty()
+                        && left.modulation.is_none()
+                        && right.modulation.is_none()
+                })
+            && !self.transition_busy_from(previous)
+            && self.can_inherit_from(previous)
     }
 
     /// Whether a same-position processor range can keep history across an
@@ -3290,11 +3324,11 @@ impl NativeRuntimeChain {
                             .ok_or(DeviceContractError::InvalidDescriptor)
                     })
                     .transpose()?;
-                modulation.render_chunk_with_clock(
-                    chunk.len(),
+                modulation.render_audio_chunk(
+                    chunk,
                     chunk_values,
                     chunk_clock,
-                    |values| {
+                    |chunk, values| {
                         if let Some(key) = chunk_key {
                             runtime.process_auxiliary(
                                 StereoAuxiliaryBlock::paired(chunk, key),

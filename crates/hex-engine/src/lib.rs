@@ -115,6 +115,17 @@ pub use native_device_view::{
 pub use sparse_audio::SparseFrameMap;
 
 mod device_automation;
+mod device_modulation;
+pub use device_modulation::project_device_modulation_target_supported;
+/// Versioned, control-side settings for the built-in envelope follower.
+pub use hex_devices::modulation::envelope_follower as follower_modulator;
+/// Versioned, control-side settings for the built-in LFO modulator.
+pub use hex_devices::modulation::lfo as lfo_modulator;
+/// Versioned control-side settings for the built-in manual macro source.
+pub use hex_devices::modulation::macro_value as macro_modulator;
+/// The authored reusable random sample-and-hold source codec.
+pub use hex_devices::modulation::random_hold as random_modulator;
+
 mod native_parameter_input;
 pub use device_automation::{
     DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED, NativeParameterInputTarget,
@@ -2461,6 +2472,7 @@ pub struct Project {
     loop_region: Option<hex_project::LoopRegion>,
     master_gain: PreparedMasterGain,
     main_device_chain: Arc<[hex_lattice::PreparedRuntimeInstance]>,
+    source_effects: Vec<source_effect_stage::PreparedSourceEffects>,
     // Final causal arrival after Main, separate from the pre-Main summing graph.
     main_output_latency_frames: u32,
     audible_end_frame: Option<u64>,
@@ -2567,6 +2579,7 @@ impl Project {
         Ok(Self {
             project_track_ids: project_output::ProjectTrackIds::prepare(&tracks),
             audio_clip_views: Vec::new(),
+            source_effects: Vec::new(),
             audible_end_frame: tracks
                 .iter()
                 .flat_map(|track| track.clips.iter().map(|clip| clip.end))
@@ -2832,14 +2845,14 @@ pub(crate) struct RendererRuntime {
 }
 impl RendererRuntime {
     pub(crate) fn new(project: &Project) -> Self {
-        Self::with_prepared_source_effects(project, &[])
+        Self::with_prepared_source_effects(project, &project.source_effects)
     }
 
-    /// Offline control-side stage construction. The live linear owner still
-    /// uses `new` with an empty suffix until source handoff is supported.
+    /// Offline control-side stage construction from the same source recipe
+    /// retained for Session playback.
     fn with_prepared_source_effects(
         project: &Project,
-        recipes: &[source_effect_stage::PreparedSourceEffects<'_>],
+        recipes: &[source_effect_stage::PreparedSourceEffects],
     ) -> Self {
         let mut device_chains = Vec::new();
         let mut return_chains = Vec::new();
@@ -2849,8 +2862,15 @@ impl RendererRuntime {
             match source_effect_stage::SourceEffectStages::prepare(project, recipes) {
                 Ok(stages) => stages,
                 Err(error) => {
-                    runtime_error = Some(error.0);
-                    source_effect_stage::SourceEffectStages::default()
+                    return Self {
+                        device_chains,
+                        source_effects: source_effect_stage::SourceEffectStages::default(),
+                        return_chains,
+                        main_chain: hex_lattice::NativeRuntimeChain::empty(),
+                        return_scratch,
+                        runtime_error: Some(error.0),
+                        compensation: None,
+                    };
                 }
             };
         let main_chain = match project.new_main_device_runtime() {

@@ -67,7 +67,12 @@ impl Project {
                     .iter()
                     .flat_map(|clip| clip.referenced_assets()),
             );
-            for device in track.devices().iter().chain(track.instrument()) {
+            for device in track.devices().iter().chain(
+                track
+                    .instrument
+                    .iter()
+                    .flat_map(|binding| binding.devices()),
+            ) {
                 asset_ids.extend(
                     device
                         .authored_states()

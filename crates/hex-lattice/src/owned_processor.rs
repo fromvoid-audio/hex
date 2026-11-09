@@ -277,6 +277,25 @@ impl PreparedProcessorFactory {
             Self::Foreign(_) => None,
         }
     }
+    /// Outer allocation only. A definition's control-storage bound must also
+    /// cover any objects the native factory itself retains.
+    pub fn native_factory_arc_bytes(&self) -> Option<usize> {
+        use std::alloc::Layout;
+        let payload = match self {
+            Self::Legacy(factory) => Layout::for_value(factory.as_ref()),
+            Self::Owned(factory) => Layout::for_value(factory.as_ref()),
+            Self::Foreign(_) => return None,
+        };
+        Some(
+            Layout::new::<[usize; 2]>()
+                .extend(payload)
+                .ok()?
+                .0
+                .pad_to_align()
+                .size(),
+        )
+    }
+
     pub fn runtime_version(&self) -> u32 {
         match self {
             Self::Legacy(v) => v.runtime_version(),

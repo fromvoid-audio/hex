@@ -68,7 +68,7 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
         })
         .collect::<Vec<_>>();
     let flat = Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))?;
-    let mut value: serde_json::Value = serde_json::from_slice(&crate::encode(&flat)?)?;
+    let mut value: serde_json::Value = serde_json::from_slice(&crate::encode_base(&flat)?)?;
     let base = value["version"].clone();
     value["version"] = crate::SERIAL_DEVICE_SCHEMA_VERSION.into();
     value["serial_base_version"] = base;
@@ -100,7 +100,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         ));
     }
     object.insert("version".into(), base.into());
-    let flat = crate::decode(&serde_json::to_vec(&value)?)?;
+    let flat = crate::decode_base(&serde_json::to_vec(&value)?)?;
     let mut snapshot = flat.snapshot();
     let mut rows = rows.into_iter();
     for device in super::device_automation::devices(&mut snapshot) {

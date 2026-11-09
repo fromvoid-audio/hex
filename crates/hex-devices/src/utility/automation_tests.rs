@@ -608,8 +608,8 @@ fn bypass_advances_the_same_filter_and_automated_control_history() {
 #[test]
 fn shared_lfo_drives_two_utility_controls_on_each_sample() {
     use hex_lattice::{
-        ModulationRoute, ModulationSourceId, ModulationTarget, PreparedLfoSource,
-        PreparedModulation,
+        ModulationRoute, ModulationSourceId, ModulationTarget, PreparedModulation,
+        PreparedModulationSource,
     };
     let base = UTILITY_DEFINITION.default_state().unwrap();
     let factory = UtilityDefinition::prepare_owned_automated_filter(&base, 48_000).unwrap();
@@ -626,18 +626,21 @@ fn shared_lfo_drives_two_utility_controls_on_each_sample() {
                 source: 0,
                 target: ids[0],
                 amount: 0.01,
+                range: [-1.0, 1.0],
             },
             ModulationRoute {
                 source: 0,
                 target: ids[1],
                 amount: 0.2,
+                range: [-1.0, 1.0],
             },
         ],
         1,
     )
     .unwrap();
     let source_id = ModulationSourceId::new(1).unwrap();
-    let source = PreparedLfoSource::tempo(source_id, 48_000.0, 120.0, 1.0 / 6_000.0, 0.0).unwrap();
+    let source =
+        PreparedModulationSource::tempo(source_id, 48_000.0, 120.0, 1.0 / 6_000.0, 0.0).unwrap();
 
     let declaration = hex_lattice::PreparedModulationState::new(vec![source], program, 2).unwrap();
     let instance = hex_lattice::PreparedRuntimeInstance {
@@ -668,7 +671,17 @@ fn shared_lfo_drives_two_utility_controls_on_each_sample() {
     undeclared.modulation = Some(
         hex_lattice::PreparedModulationState::new(
             vec![source],
-            PreparedModulation::new(&invalid_targets, &[], 1).unwrap(),
+            PreparedModulation::new(
+                &invalid_targets,
+                &[ModulationRoute {
+                    source: 0,
+                    target: invalid_targets[0].descriptor.id,
+                    amount: 0.1,
+                    range: [-1.0, 1.0],
+                }],
+                1,
+            )
+            .unwrap(),
             2,
         )
         .unwrap(),

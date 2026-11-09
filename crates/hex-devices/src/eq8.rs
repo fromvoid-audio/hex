@@ -335,6 +335,12 @@ fn decode_parameter_id(id: ParameterId) -> Result<(usize, usize), DeviceContract
 }
 
 impl NativeDeviceDefinition for Eq8Definition {
+    fn source_effect_factory_bytes(&self) -> Option<usize> {
+        Some(
+            crate::source_effect_arc_bytes::<PreparedEq8>()
+                + crate::source_effect_arc_bytes::<[[[Coefficients; 4]; BAND_COUNT]; 2]>(),
+        )
+    }
     fn supports_parameter_automation(
         &self,
         state: &NativeDeviceState,

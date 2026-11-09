@@ -165,6 +165,16 @@ impl std::fmt::Debug for PreparedRevision {
 
 impl PreparedRevision {
     #[cfg(test)]
+    pub(crate) fn test_install_source_effect_recipes(
+        &mut self,
+        recipes: Vec<crate::source_effect_stage::PreparedSourceEffects>,
+    ) {
+        let mut arrangement = self.arrangement().as_ref().clone();
+        arrangement.source_effects = recipes;
+        self.arrangement = crate::owned_shared::OwnedShared::new_owned(arrangement);
+    }
+
+    #[cfg(test)]
     pub(crate) fn test_install_retained_receiver(
         &mut self,
         canonical: &Project,
@@ -1542,7 +1552,10 @@ impl PreparedRevision {
             }
             bytes
                 .checked_add(authored_midi::construction_bytes(project).ok()?)?
-                .checked_add(crate::PreparedSourceRouting::construction_bytes(project))
+                .checked_add(crate::PreparedSourceRouting::construction_bytes(project))?
+                .checked_add(crate::source_effect_stage::metadata::construction_bytes(
+                    project,
+                )?)
         })();
         let programs = crate::foreign_automation::candidate::quote_instruments(project)
             .map_err(|_| Invalid("vst3 instrument automation reservation overflow"))?;
@@ -1604,7 +1617,10 @@ impl PreparedRevision {
             }
             bytes
                 .checked_add(authored_midi::retained_bytes(&self.authored_midi_sources)?)?
-                .checked_add(self.source_routing.retained_bytes())
+                .checked_add(self.source_routing.retained_bytes())?
+                .checked_add(crate::source_effect_stage::metadata::retained_bytes(
+                    &self.arrangement().source_effects,
+                )?)
         })();
         bytes.ok_or(crate::AudioStorageError::Overflow)
     }

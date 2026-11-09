@@ -3,6 +3,7 @@
 use crate::{
     AudioStorageError,
     audio_only_inputs::handle,
+    device_modulation::EffectModulation,
     owned_shared::{OwnedShared, SharedDeclaration},
 };
 use hex_lattice::{
@@ -15,6 +16,7 @@ use std::sync::Arc;
 
 struct Entry {
     automation_bytes: usize,
+    modulation_bytes: Option<usize>,
     authored: bool,
     device_id: u64,
     owner: ProcessorChainOwner,
@@ -56,7 +58,14 @@ impl ChainCustody {
             )?)
             .ok_or(AudioStorageError::Overflow)?;
         let mut largest_copy = 0;
+        let mut modulation_overlap = 0;
         for device in devices {
+            let (modulation, staging) =
+                EffectModulation::quote(device).ok_or(AudioStorageError::Overflow)?;
+            retained = retained
+                .checked_add(modulation)
+                .ok_or(AudioStorageError::Overflow)?;
+            modulation_overlap = modulation_overlap.max(staging);
             retained = retained
                 .checked_add(crate::device_automation::quote_with_input(
                     device,
@@ -71,10 +80,11 @@ impl ChainCustody {
                 let migrated = hex_devices::utility::UTILITY_DEFINITION
                     .migrate_state(state)
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?;
-                let processor = if !device
-                    .automation()
-                    .iter()
-                    .any(|lane| lane.target.provider_parameter().is_some())
+                let processor = if device.modulation().routes().is_empty()
+                    && !device
+                        .automation()
+                        .iter()
+                        .any(|lane| lane.target.provider_parameter().is_some())
                     && !native_input.is_some_and(|input| {
                         input.device() == device.id()
                             && input.target().provider_parameter().is_some()
@@ -108,6 +118,19 @@ impl ChainCustody {
                     migrated.payload().len(),
                     Some(parts(OwnedShared::<
                         hex_devices::saturator::PreparedSaturator,
+                    >::declared_parts())?),
+                )
+            } else if state.type_id() == hex_devices::overdrive::OVERDRIVE_TYPE_ID {
+                let migrated = hex_devices::overdrive::OVERDRIVE_DEFINITION
+                    .migrate_state(state)
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                hex_devices::overdrive::OverdriveDefinition::prepare_owned(&migrated, rate, &[])
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                largest_copy = largest_copy.max(migrated.payload().len());
+                (
+                    migrated.payload().len(),
+                    Some(parts(OwnedShared::<
+                        hex_devices::overdrive::PreparedOverdrive,
                     >::declared_parts())?),
                 )
             } else if state.type_id() == hex_devices::auto_pan::AUTO_PAN_TYPE_ID {
@@ -186,6 +209,7 @@ impl ChainCustody {
             .and_then(|n| n.checked_add(largest_copy))
             .and_then(|n| n.checked_add(automation_overlap))
             .and_then(|n| n.checked_add(automation_staging))
+            .and_then(|n| n.checked_add(modulation_overlap))
             .ok_or(AudioStorageError::Overflow)?;
         Ok((retained, overlap))
     }
@@ -270,9 +294,15 @@ impl ChainCustody {
                 )
             })
             .ok_or(AudioStorageError::Overflow)?;
+        let modulation_overlap = devices.iter().try_fold(0usize, |largest, device| {
+            let (_, staging) =
+                EffectModulation::quote(device).ok_or(AudioStorageError::Overflow)?;
+            Ok(largest.max(staging))
+        })?;
         self.construction_overlap = self
             .construction_overlap
-            .checked_add(automation_staging)
+            .checked_add(modulation_overlap)
+            .and_then(|bytes| bytes.checked_add(automation_staging))
             .ok_or(AudioStorageError::Overflow)?;
         if prepared.capacity() != devices.len() {
             return Err(AudioStorageError::UnknownStorage);
@@ -296,6 +326,9 @@ impl ChainCustody {
                 crate::device_automation::prepare(device)
             }
             .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+            let modulation =
+                EffectModulation::plan(device, project, rate, automation.parameter_ids())
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
             device
                 .state()
                 .require_asset_free_processing()
@@ -304,11 +337,12 @@ impl ChainCustody {
             let reverb = device.state().type_id() == hex_devices::reverb::REVERB_TYPE_ID;
             let saturator = device.state().type_id() == hex_devices::saturator::SATURATOR_TYPE_ID;
             let auto_pan = device.state().type_id() == hex_devices::auto_pan::AUTO_PAN_TYPE_ID;
-            let native = utility || reverb || saturator || auto_pan;
+            let overdrive = device.state().type_id() == hex_devices::overdrive::OVERDRIVE_TYPE_ID;
+            let native = utility || reverb || saturator || auto_pan || overdrive;
             let definition = &hex_devices::utility::UTILITY_DEFINITION;
             // Never adopt a provider's state/processor owner. The Utility,
-            // Reverb, Saturator and Auto Pan constructors are closed; foreign factories return scalar facts
-            // only, matched later to the audio owner's original source.
+            // Reverb, Saturator, Auto Pan and Overdrive constructors are closed.
+            // Foreign factories return scalar facts matched to the original source.
             let foreign_definition = if native {
                 None
             } else {
@@ -318,7 +352,12 @@ impl ChainCustody {
                         .ok_or(AudioStorageError::UnsupportedGraph)?,
                 )
             };
-            let migrated = if auto_pan {
+            let migrated = if overdrive {
+                hex_devices::overdrive::OVERDRIVE_DEFINITION
+                    .migrate_state(device.state())
+                    .and_then(|state| state.with_host_metadata_from(device.state()))
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?
+            } else if auto_pan {
                 hex_devices::auto_pan::AUTO_PAN_DEFINITION
                     .migrate_state(device.state())
                     .and_then(|state| state.with_host_metadata_from(device.state()))
@@ -386,11 +425,16 @@ impl ChainCustody {
             let automation_bytes = automation
                 .storage_bytes()
                 .ok_or(AudioStorageError::Overflow)?;
+            let parameters = modulation.as_ref().map_or_else(
+                || automation.parameter_ids(),
+                EffectModulation::parameter_ids,
+            );
             let matrix = if bypassed
                 || !native
-                || !automation.parameter_ids().is_empty()
+                || !parameters.is_empty()
                 || saturator
                 || auto_pan
+                || overdrive
             {
                 StereoMatrix::identity()
             } else if reverb {
@@ -413,13 +457,21 @@ impl ChainCustody {
                     .then(trim)
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?;
             }
-            let processor = if auto_pan {
+            let processor = if overdrive {
+                Some(
+                    OwnedShared::new_owned(
+                        hex_devices::overdrive::OverdriveDefinition::prepare_owned(
+                            &migrated, rate, parameters,
+                        )
+                        .map_err(|_| AudioStorageError::UnsupportedGraph)?,
+                    )
+                    .into_processor_parts_on_control(),
+                )
+            } else if auto_pan {
                 Some(
                     OwnedShared::new_owned(
                         hex_devices::auto_pan::AutoPanDefinition::prepare_owned(
-                            &migrated,
-                            rate,
-                            automation.parameter_ids(),
+                            &migrated, rate, parameters,
                         )
                         .map_err(|_| AudioStorageError::UnsupportedGraph)?,
                     )
@@ -429,20 +481,18 @@ impl ChainCustody {
                 Some(
                     OwnedShared::new_owned(
                         hex_devices::saturator::SaturatorDefinition::prepare_owned(
-                            &migrated,
-                            rate,
-                            automation.parameter_ids(),
+                            &migrated, rate, parameters,
                         )
                         .map_err(|_| AudioStorageError::UnsupportedGraph)?,
                     )
                     .into_processor_parts_on_control(),
                 )
             } else if utility {
-                (if automation.parameter_ids().is_empty() {
+                (if parameters.is_empty() {
                     hex_devices::utility::UtilityDefinition::prepare_owned_filter(&migrated, rate)
                 } else {
                     hex_devices::utility::UtilityDefinition::prepare_owned_automated_filter_for_parameters(
-                        &migrated, rate, automation.parameter_ids(),
+                        &migrated, rate, parameters,
                     )
                     .map(Some)
                 })
@@ -452,9 +502,7 @@ impl ChainCustody {
                 Some(
                     OwnedShared::new_owned(
                         hex_devices::reverb::ReverbDefinition::prepare_owned_room_for_parameters(
-                            &migrated,
-                            rate,
-                            automation.parameter_ids(),
+                            &migrated, rate, parameters,
                         )
                         .map_err(|_| AudioStorageError::UnsupportedGraph)?,
                     )
@@ -481,12 +529,43 @@ impl ChainCustody {
             } else {
                 (None, None)
             };
+            let factory = foreign
+                .map(PreparedProcessorFactory::Foreign)
+                .or_else(|| processor.map(PreparedProcessorFactory::Legacy));
+            let modulation = modulation
+                .map(|plan| {
+                    let metadata: &dyn NativeDeviceMetadata = if utility {
+                        definition
+                    } else if saturator {
+                        &hex_devices::saturator::SATURATOR_DEFINITION
+                    } else if auto_pan {
+                        &hex_devices::auto_pan::AUTO_PAN_DEFINITION
+                    } else if overdrive {
+                        &hex_devices::overdrive::OVERDRIVE_DEFINITION
+                    } else if reverb {
+                        &hex_devices::reverb::REVERB_DEFINITION
+                    } else {
+                        return Err(AudioStorageError::UnsupportedGraph);
+                    };
+                    plan.prepare(&configuration, metadata, factory.as_ref())
+                        .map_err(|_| AudioStorageError::UnsupportedGraph)
+                })
+                .transpose()?;
+            let modulation_bytes = modulation
+                .as_ref()
+                .map(|value| {
+                    value
+                        .heap_storage_bytes()
+                        .ok_or(AudioStorageError::Overflow)
+                })
+                .transpose()?;
             let meter = OwnedShared::new_owned(hex_lattice::DeviceMeter::default());
             meter.parts().ok_or(AudioStorageError::UnknownStorage)?;
             let (meter, meter_declaration) = meter.into_paired_parts_on_control();
             let handles = [handle()?, handle()?, handle()?, handle()?];
             self.entries.push(Entry {
                 automation_bytes,
+                modulation_bytes,
                 authored,
                 device_id: device.id().value(),
                 owner,
@@ -499,7 +578,7 @@ impl ChainCustody {
                 handles,
             });
             prepared.push(PreparedRuntimeInstance {
-                modulation: None,
+                modulation,
                 automation,
                 meter,
                 owner,
@@ -509,9 +588,7 @@ impl ChainCustody {
                 bypassed,
                 sample_rate: rate,
                 configuration: Some(configuration),
-                definition: foreign
-                    .map(PreparedProcessorFactory::Foreign)
-                    .or_else(|| processor.map(PreparedProcessorFactory::Legacy)),
+                definition: factory,
             });
         }
         Ok(if prepared.is_empty() {
@@ -525,7 +602,16 @@ impl ChainCustody {
             return Err(AudioStorageError::SourceMismatch);
         }
         for (value, pair) in chain.iter().zip(&self.entries) {
-            if value.modulation.is_some()
+            let modulation_bytes = value
+                .modulation
+                .as_ref()
+                .map(|modulation| {
+                    modulation
+                        .heap_storage_bytes()
+                        .ok_or(AudioStorageError::Overflow)
+                })
+                .transpose()?;
+            if modulation_bytes != pair.modulation_bytes
                 || value.automation.storage_bytes() != Some(pair.automation_bytes)
                 || value.device_id != pair.device_id
                 || value.owner != pair.owner
@@ -568,6 +654,7 @@ impl ChainCustody {
         for (value, pair) in chain.iter().zip(&self.entries) {
             bytes = bytes
                 .checked_add(pair.automation_bytes)
+                .and_then(|bytes| bytes.checked_add(pair.modulation_bytes.unwrap_or(0)))
                 .ok_or(AudioStorageError::Overflow)?;
             let state = value
                 .configuration

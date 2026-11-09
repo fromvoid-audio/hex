@@ -7,9 +7,13 @@
 //!
 //! # Does not own
 //! Does not own device registration, projects, UI, threads, audio I/O or media storage.
+mod envelope_follower;
 mod gain;
 mod modulation_lfo;
+mod random_hold;
 mod stereo;
+pub use envelope_follower::{EnvelopeFollower, InvalidEnvelopeFollower};
 pub use gain::{Decibels, InvalidGain, LinearAmplitude};
 pub use modulation_lfo::{InvalidLfo, LfoRate, ModulationLfo};
+pub use random_hold::{InvalidRandomHold, RandomHold};
 pub use stereo::{InvalidMatrix, StereoFrame, StereoMatrix};

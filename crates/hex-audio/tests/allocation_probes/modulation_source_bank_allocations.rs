@@ -1,18 +1,21 @@
 //! Isolated source-bank transactions, not native callback integration.
-use hex_lattice::{ModulationLfoBank, ModulationSourceId, PreparedLfoSource};
+use hex_lattice::{ModulationSourceBank, ModulationSourceId, PreparedModulationSource};
 use std::hint::black_box;
 
 #[test]
 fn source_bank_render_commit_rollback_and_inherit_do_not_allocate() {
     let id = ModulationSourceId::new(1).unwrap();
-    let source = PreparedLfoSource::free(id, 48_000.0, 7.0, 0.0).unwrap();
-    let mut first = ModulationLfoBank::new(&[source], 128).unwrap();
-    let mut second = ModulationLfoBank::new(&[source], 128).unwrap();
+    let source = PreparedModulationSource::free(id, 48_000.0, 7.0, 0.0).unwrap();
+    let random_id = ModulationSourceId::new(2).unwrap();
+    let random = PreparedModulationSource::random_hold(random_id, 48_000, 1, 3_000.0).unwrap();
+    let mut first = ModulationSourceBank::new(&[source, random], 128).unwrap();
+    let mut second = ModulationSourceBank::new(&[source, random], 128).unwrap();
     let info = allocation_counter::measure(|| {
         for _ in 0..32 {
             first.begin();
             first.render_chunk(128).unwrap();
             black_box(first.samples(id).unwrap());
+            black_box(first.samples(random_id).unwrap());
             first.rollback();
             first.begin();
             first.render_chunk(128).unwrap();

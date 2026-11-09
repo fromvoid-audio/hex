@@ -4,6 +4,7 @@ mod arrangement_sections;
 mod audio_alias_projection;
 pub(crate) mod audio_events;
 pub(crate) mod automation_read;
+pub(crate) mod bound_source_effects;
 pub(crate) mod branch_audio;
 pub(crate) mod clip_activation;
 pub(crate) mod clip_aliases;

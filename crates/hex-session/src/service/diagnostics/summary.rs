@@ -1304,6 +1304,14 @@ pub(super) fn command(value: &Command) -> Description {
 
 pub(super) fn request(value: &Request) -> Description {
     match value {
+        Request::ReplaceDeviceModulation {
+            project_generation,
+            revision,
+            device,
+            modulation,
+        } => {
+            describe!("replace_device_modulation"; ["project_generation" => project_generation, "revision" => revision, "device" => device.value(), "sources" => modulation.sources().len(), "routes" => modulation.routes().len()]; omitted="modulator payloads")
+        }
         Request::PaintMidiClip(intent) => {
             describe!("paint_midi_clip"; ["project_generation" => intent.project_generation, "revision" => intent.revision, "track" => intent.track.value(), "start" => intent.start.raw(), "length" => intent.length.raw()]; omitted="")
         }
@@ -1511,6 +1519,9 @@ pub(super) fn request(value: &Request) -> Description {
             action: _,
         } => {
             describe!("device_automation_take"; ["request_id" => request_id, "gesture_serial" => scope.stamp.gesture_serial]; omitted="delivery data")
+        }
+        Request::InspectSealedAutomationRecovery { request_id, .. } => {
+            describe!("inspect_sealed_automation_recovery"; ["request_id" => request_id]; omitted="path")
         }
         Request::QueryFailedPluginAutomation { request_id } => {
             describe!("query_failed_plugin_automation"; ["request_id" => request_id]; omitted="none")

@@ -307,6 +307,10 @@ impl NativeDeviceMetadata for GateDefinition {
 }
 
 impl NativeDeviceDefinition for GateDefinition {
+    fn source_effect_factory_bytes(&self) -> Option<usize> {
+        // The prepared factory contains only inline settings and coefficients.
+        Some(crate::source_effect_arc_bytes::<PreparedGate>())
+    }
     fn supports_parameter_automation(
         &self,
         state: &NativeDeviceState,
