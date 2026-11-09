@@ -490,12 +490,6 @@ impl SessionPlayback {
             ));
         }
         output.fill([0.0; 2]);
-        if !output.is_empty() && !self.playing && !self.source_effects.is_empty() {
-            self.fail_midi_capture_render();
-            return Err(SessionPlaybackError::Arrangement(
-                "paused source effect monitoring is not supported yet",
-            ));
-        }
         let stopped_edit_tails = self.stopped_edit_tails();
         if output.is_empty()
             || self.renders_no_device_chains()
@@ -516,6 +510,7 @@ impl SessionPlayback {
                     .flatten()
                     .all(|runtime| runtime.committed_is_quiescent())
                 && !self.has_analytic_release_output()
+                && !self.source_effects.has_monitor_tail()
                 && self
                     .device_chains
                     .iter()
