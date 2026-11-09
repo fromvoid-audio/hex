@@ -19,7 +19,7 @@ pub const MAX_MODULATION_ROUTES: usize = 512;
 pub const MAX_MODULATION_BLOCK_FRAMES: usize = 8192;
 
 /// One real provider target and its immutable authored base value.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModulationTarget {
     pub descriptor: ParameterDescriptor,
     pub semantics: ParameterSemantics,
@@ -29,14 +29,14 @@ pub struct ModulationTarget {
 /// A bipolar source contributes `sample * amount` in normalized target units.
 /// The source index is local to this prepared program; it is not a persistent
 /// identity and must be resolved from the canonical route by the host.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModulationRoute {
     pub source: usize,
     pub target: ParameterId,
     pub amount: f32,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Target {
     authored: ModulationTarget,
     normalized_base: f32,
@@ -44,7 +44,7 @@ struct Target {
     route_start: usize,
     route_end: usize,
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Route {
     source: usize,
     target_index: usize,
@@ -53,7 +53,7 @@ struct Route {
 }
 
 /// Control-prepared target and route inventory. IDs are stable and sorted.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PreparedModulation {
     ids: Vec<ParameterId>,
     targets: Vec<Target>,
@@ -61,6 +61,24 @@ pub struct PreparedModulation {
     source_count: usize,
 }
 impl PreparedModulation {
+    /// Copy a prepared program on control, reporting allocation failure.
+    /// Runtime publication must account the copy as separately owned storage.
+    pub fn try_clone(&self) -> Result<Self, Error> {
+        fn copy<T: Copy>(input: &[T]) -> Result<Vec<T>, Error> {
+            let mut output = Vec::new();
+            output
+                .try_reserve_exact(input.len())
+                .map_err(|_| Error::RuntimeAllocation)?;
+            output.extend_from_slice(input);
+            Ok(output)
+        }
+        Ok(Self {
+            ids: copy(&self.ids)?,
+            targets: copy(&self.targets)?,
+            routes: copy(&self.routes)?,
+            source_count: self.source_count,
+        })
+    }
     /// Rejects invalid targets, routes and capacities before constructing a program.
     /// Callers remain responsible for state-aware runtime admission.
     pub fn new(

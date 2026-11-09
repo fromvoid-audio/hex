@@ -422,6 +422,7 @@ fn plugin_bypass_keeps_host_output_trim_on_the_wet_side_only() {
     let identity = endpoints[0].facts.identity;
     let make = |bypassed| {
         NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+            modulation: None,
             automation: Default::default(),
             meter: Default::default(),
             owner: identity.owner(),
@@ -561,6 +562,7 @@ fn actual_chain_receives_post_trim_once_and_untrimmed_aligned_bypass() {
     let identity = endpoints[0].facts.identity;
     let make = |bypassed| {
         NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+            modulation: None,
             automation: Default::default(),
             meter: Default::default(),
             owner: identity.owner(),

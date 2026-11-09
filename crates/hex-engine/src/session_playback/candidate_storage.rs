@@ -5,6 +5,7 @@ use crate::{
     AudioRootStorageLedger, AudioStorageError,
     audio_storage::{Location, Owner},
 };
+mod modulation;
 impl SessionPlayback {
     pub(crate) fn visit_fresh_candidate_storage<'a>(
         &'a self,
@@ -256,6 +257,7 @@ fn chain_storage<'a>(
         {
             return Err(AudioStorageError::UnsupportedGraph);
         }
+        modulation::visit(&entry, prepared, chain, index, l)?;
         if let Some((primary, scratch)) = entry.runtime_pair::<hex_devices::reverb::ReverbRuntime>()
         {
             for (runtime, object_tag, ring_tag) in [
