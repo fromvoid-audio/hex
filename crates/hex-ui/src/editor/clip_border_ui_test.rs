@@ -936,3 +936,117 @@ fn corner_geometry_is_bounded_and_resolves_again_after_resize() {
     ));
     assert_eq!(cropped.extent(), 0.0);
 }
+
+#[gpui::test]
+fn resolved_clip_canvas_can_paint_a_distinct_edge_in_the_parent_scene(cx: &mut TestAppContext) {
+    use gpui::{
+        Context, Render, Window, canvas, div, fill, point, prelude::*, px, relative, rgb, size,
+    };
+    use std::{cell::Cell, rc::Rc};
+    struct Fixture(Rc<Cell<usize>>, Rc<Cell<usize>>);
+    impl Render for Fixture {
+        fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl gpui::IntoElement {
+            let stroke = 1.0 / window.scale_factor();
+            let clicks = self.0.clone();
+            let lane_clicks = self.1.clone();
+            div()
+                .relative()
+                .w(px(240.0))
+                .h(px(80.0))
+                .debug_selector(|| "edge-oracle-lane".into())
+                .on_mouse_down(MouseButton::Left, move |_, _, _| {
+                    lane_clicks.set(lane_clicks.get() + 1)
+                })
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(13.25))
+                        .top(px(10.25))
+                        .w(px(43.75))
+                        .h(px(32.0))
+                        .debug_selector(|| "edge-oracle-body".into())
+                        .group("edge-oracle")
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            clicks.set(clicks.get() + 1);
+                            cx.stop_propagation();
+                        })
+                        .child(
+                            div()
+                                .absolute()
+                                .left(relative(1.0))
+                                .top_0()
+                                .bottom_0()
+                                .w(px(stroke))
+                                .debug_selector(|| "edge-oracle-nested-layout".into()),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .text_color(rgb(0xf003a7))
+                                .group_hover("edge-oracle", |style| style.text_color(rgb(0x03f0a7)))
+                                .child(
+                                    canvas(
+                                        |_, _, _| (),
+                                        move |bounds, _, window, _| {
+                                            let color = window.text_style().color;
+                                            window.paint_quad(fill(
+                                                gpui::Bounds::new(
+                                                    point(bounds.right(), bounds.top()),
+                                                    size(px(stroke), bounds.size.height),
+                                                ),
+                                                color,
+                                            ));
+                                        },
+                                    )
+                                    .absolute()
+                                    .inset_0(),
+                                ),
+                        ),
+                )
+        }
+    }
+    let clicks = Rc::new(Cell::new(0));
+    let lane_clicks = Rc::new(Cell::new(0));
+    let handle = *cx.add_window(|_, _| Fixture(clicks.clone(), lane_clicks.clone()));
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let body = visual.debug_bounds("edge-oracle-body").unwrap();
+    let scale = visual.update(|window, _| window.scale_factor());
+    assert_eq!(scale, 2.0, "GPUI's test platform uses a fixed 2× scale");
+    let nested = visual.debug_bounds("edge-oracle-nested-layout").unwrap();
+    assert_ne!(
+        nested.left(),
+        body.right(),
+        "reproduce nested layout rounding"
+    );
+    let edge = visual
+        .rendered_filled_quads("edge-oracle-lane")
+        .into_iter()
+        .filter(|(_, color)| *color == gpui::Background::from(rgb(0xf003a7)))
+        .collect::<Vec<_>>();
+    assert_eq!(edge.len(), 1, "distinct edge paint inside lane");
+    assert_eq!(edge[0].0.left(), body.right().scale(scale));
+    assert_eq!(f64::from(edge[0].0.size.width), 1.0);
+    visual.simulate_mouse_move(body.center(), None, Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual
+            .rendered_filled_quads("edge-oracle-lane")
+            .iter()
+            .any(|(bounds, color)| bounds.left() == body.right().scale(scale)
+                && *color == gpui::Background::from(rgb(0x03f0a7)))
+    );
+    visual.simulate_click(body.center(), Modifiers::default());
+    assert_eq!(clicks.get(), 1, "the body still receives its pointer input");
+    visual.simulate_click(
+        point(body.right() + px(0.25), body.center().y),
+        Modifiers::default(),
+    );
+    assert_eq!(
+        lane_clicks.get(),
+        1,
+        "the painted edge does not intercept input"
+    );
+    assert_eq!(clicks.get(), 1);
+}
