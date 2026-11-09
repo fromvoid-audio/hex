@@ -57,9 +57,7 @@ fn loaded_sampler_modulation_supported(state: &NativeDeviceState) -> bool {
 }
 
 fn instrument_note_events_supported(source: &hex_project::NativeSource) -> bool {
-    fm4_modulation_supported(source)
-        || source.receiver().is_some()
-            && loaded_sampler_modulation_supported(source.instrument().state())
+    source.receiver().is_some() && instrument_modulation_supported(source.instrument().state())
 }
 
 /// Instrument owners whose current prepared runtime supplies ordered note events.
@@ -191,12 +189,9 @@ fn instrument_modulation_supported(state: &NativeDeviceState) -> bool {
         || operator_modulation_supported(state)
 }
 
-fn instrument_unity_output_modulation_supported(state: &NativeDeviceState) -> bool {
-    state.output_gain_millidb() == 0 && instrument_modulation_supported(state)
-}
-
 /// A receiving FM4, loaded resident Sampler or Operator using global voice
-/// settings can modulate its unity trim after its voices mix.
+/// settings can modulate its authored output trim after its voices mix.
+/// Source-owned effect recipes still require neutral authored trims.
 pub fn project_device_instrument_output_modulation_supported(
     project: &Project,
     device: DeviceId,
@@ -210,8 +205,11 @@ pub fn project_device_instrument_output_modulation_supported(
         return false;
     };
     project.native_source(source).is_some_and(|source| {
+        let state = source.instrument().state();
         source.receiver().is_some()
-            && instrument_unity_output_modulation_supported(source.instrument().state())
+            && instrument_modulation_supported(state)
+            && (state.output_gain_millidb() == 0
+                || (source.instrument_index() == 0 && source.post_instrument_effects().is_empty()))
     })
 }
 
@@ -527,13 +525,8 @@ impl EffectModulation {
                 _ => return Err(Invalid("modulator state or rate is unsupported")),
             }
             .map_err(invalid_source)?;
-            if prepared.reads_note_events()
-                && (!instrument_events
-                    || device.state().type_id() == hex_devices::operator_state::OPERATOR_TYPE_ID)
-            {
-                return Err(Invalid(
-                    "this modulator requires a supported note-event provider",
-                ));
+            if prepared.reads_note_events() && !instrument_events {
+                return Err(Invalid("this modulator requires instrument note events"));
             }
             retain(ModulationOutputId::MAIN, prepared);
         }
@@ -833,12 +826,14 @@ impl EffectModulation {
         let output = if self.host_output_routes.is_empty() {
             None
         } else {
-            if !instrument_unity_output_modulation_supported(state) {
+            if !instrument_modulation_supported(state) {
                 return Err(Invalid(
-                    "instrument output modulation requires a supported provider with unity trim",
+                    "instrument output modulation requires a supported provider",
                 ));
             }
-            Some((HostGain::ZERO, self.host_output_routes.as_slice()))
+            let base = HostGain::from_millidb(state.output_gain_millidb())
+                .map_err(|_| Invalid("instrument output modulation base gain is invalid"))?;
+            Some((base, self.host_output_routes.as_slice()))
         };
         let program = PreparedModulation::with_host_gains(
             &targets,

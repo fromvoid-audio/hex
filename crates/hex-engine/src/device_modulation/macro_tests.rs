@@ -17,7 +17,7 @@ use hex_project::{
 use std::{collections::BTreeMap, sync::Arc};
 
 #[test]
-fn vector_output_trim_refuses_legacy_non_unity_and_input_routes() {
+fn vector_output_trim_refuses_legacy_and_input_routes() {
     use hex_devices::operator_state::{OPERATOR_METADATA, OPERATOR_TYPE_ID, parameter};
     use hex_lattice_contract::ParameterValue;
     use hex_project::{Project, TrackDeviceSlot};
@@ -26,10 +26,8 @@ fn vector_output_trim_refuses_legacy_non_unity_and_input_routes() {
     let legacy = OPERATOR_METADATA
         .patch_parameter(&current, parameter::GLOBAL_MODE, ParameterValue::Choice(0))
         .unwrap();
-    let attenuated = current.clone().with_output_gain_millidb(-3000).unwrap();
     for (state, target, output_available) in [
         (legacy, DeviceAutomationTarget::HostOutputGain, false),
-        (attenuated, DeviceAutomationTarget::HostOutputGain, false),
         (current, DeviceAutomationTarget::HostInputGain, true),
     ] {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();

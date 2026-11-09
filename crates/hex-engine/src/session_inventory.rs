@@ -1440,13 +1440,19 @@ impl PreparedSessionInventory {
             .map(|program| &program.values)
     }
 
-    /// Constant-time receiving-track view for per-frame compensated generation.
-    /// The fixed index owns no program and is populated only on control.
-    pub(crate) fn instrument_automation_at(
+    /// The receiver's prepared program is the authority for stage ownership.
+    pub(crate) fn has_instrument_output_modulation_at(
         &self,
         index: usize,
         device: DeviceId,
-    ) -> Option<&hex_lattice::PreparedParameterAutomation> {
+    ) -> bool {
+        self.instrument_program_at(index)
+            .filter(|program| program.device == device)
+            .and_then(|program| program.modulation.as_ref())
+            .is_some_and(|modulation| modulation.program().host_output_gain_base().is_some())
+    }
+
+    fn instrument_program_at(&self, index: usize) -> Option<&instrument_automation::Program> {
         let slot = self
             .instrument_automation_indices
             .get(index)
@@ -1456,9 +1462,17 @@ impl PreparedSessionInventory {
         if self.tracks.get(index)?.id != entry.track {
             return None;
         }
-        entry
-            .automation
-            .as_ref()
+        entry.automation.as_ref()
+    }
+
+    /// Constant-time receiving-track view for per-frame compensated generation.
+    /// The fixed index owns no program and is populated only on control.
+    pub(crate) fn instrument_automation_at(
+        &self,
+        index: usize,
+        device: DeviceId,
+    ) -> Option<&hex_lattice::PreparedParameterAutomation> {
+        self.instrument_program_at(index)
             .filter(|program| program.device == device)
             .map(|program| &program.values)
     }
