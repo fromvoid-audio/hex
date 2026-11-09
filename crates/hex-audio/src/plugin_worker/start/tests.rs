@@ -111,65 +111,85 @@ fn native_start_refusal_retains_original_source_and_any_queue_pair_until_observe
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn dense_start_refusal_retains_the_exact_reserved_effect_or_instrument_source() {
+    const CHILD: &str = "HEX_AUDIO_DENSE_START_REFUSAL_INPUTS";
+    let inputs: u8 = match std::env::var(CHILD) {
+        Ok(inputs) => inputs.parse().unwrap(),
+        Err(_) => {
+            let name = std::thread::current().name().unwrap().to_owned();
+            for (inputs, variant) in [("0", "127"), ("2", "80")] {
+                let result = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", &name, "--ignored", "--nocapture"])
+                    .env(CHILD, inputs)
+                    .env("HEX_ORIGINAL_INSTANCE_VARIANT", variant)
+                    .output()
+                    .unwrap();
+                assert!(
+                    result.status.success(),
+                    "{}\n{}",
+                    String::from_utf8_lossy(&result.stdout),
+                    String::from_utf8_lossy(&result.stderr),
+                );
+            }
+            return;
+        }
+    };
     let binding = Binding {
         root: 41,
         instance: 2,
         graph: 12,
         epoch: 1,
     };
-    for inputs in [0, 2] {
-        let instance = super::super::native_tests::original_instance_with_inputs(binding, inputs);
-        let child = instance.child_id_on_control().unwrap();
-        let spawned = std::cell::Cell::new(false);
-        let result = NativeWorker::start_retained_dense_with(instance, |guard, _| {
-            spawned.set(true);
-            drop(guard);
-            Err(std::io::Error::other(
-                "reserved effect worker creation refused",
-            ))
-        });
-        let mut failure = match result {
-            Err(failure) => failure,
-            Ok(_) => panic!("invalid profile or failed thread must refuse"),
-        };
-        assert_eq!(spawned.get(), inputs == 2);
-        assert_eq!(failure.binding(), binding);
-        match &mut failure.custody {
-            Custody::Source(_) if inputs == 0 => {
-                assert!(matches!(failure.cause(), Error::Protocol(_)));
-            }
-            Custody::Pair {
-                reaper,
-                _callback: RetainedCallback::Dense(callback),
-                native,
-            } if inputs == 2 => {
-                assert!(native.is_none());
-                assert!(callback.matches_control(&reaper.control));
-                assert_eq!(
-                    callback.constructor_storage_on_control(&reaper.control),
-                    dense_channel_storage_bound()
-                );
-                assert!(callback.is_revoked());
-                let _ = reaper.join_on_control();
-                let Some(Processor::Native(original)) = reaper
-                    .worker
-                    .as_ref()
-                    .and_then(|state| state.processor.as_ref())
-                else {
-                    panic!("actual original native effect must be retained");
-                };
-                assert_eq!(original.child_id_on_control(), Some(child));
-            }
-            _ => panic!("wrong native refusal custody"),
+    let instance = super::super::native_tests::original_instance_with_inputs(binding, inputs);
+    let child = instance.child_id_on_control().unwrap();
+    let spawned = std::cell::Cell::new(false);
+    let result = NativeWorker::start_retained_dense_with(instance, |guard, _| {
+        spawned.set(true);
+        drop(guard);
+        Err(std::io::Error::other(
+            "reserved effect worker creation refused",
+        ))
+    });
+    let mut failure = match result {
+        Err(failure) => failure,
+        Ok(_) => panic!("invalid profile or failed thread must refuse"),
+    };
+    assert_eq!(spawned.get(), inputs == 2);
+    assert_eq!(failure.binding(), binding);
+    match &mut failure.custody {
+        Custody::Source(_) if inputs == 0 => {
+            assert!(matches!(failure.cause(), Error::Protocol(_)));
         }
-        let deadline = Instant::now() + Duration::from_secs(3);
-        loop {
-            if let Some(disposal) = failure.poll_disposal_on_control().unwrap() {
-                assert!(matches!(disposal, PreparationDisposal::Reaped(_)));
-                break;
-            }
-            assert!(Instant::now() < deadline);
-            std::thread::yield_now();
+        Custody::Pair {
+            reaper,
+            _callback: RetainedCallback::Dense(callback),
+            native,
+        } if inputs == 2 => {
+            assert!(native.is_none());
+            assert!(callback.matches_control(&reaper.control));
+            assert_eq!(
+                callback.constructor_storage_on_control(&reaper.control),
+                dense_channel_storage_bound()
+            );
+            assert!(callback.is_revoked());
+            let _ = reaper.join_on_control();
+            let Some(Processor::Native(original)) = reaper
+                .worker
+                .as_ref()
+                .and_then(|state| state.processor.as_ref())
+            else {
+                panic!("actual original native effect must be retained");
+            };
+            assert_eq!(original.child_id_on_control(), Some(child));
         }
+        _ => panic!("wrong native refusal custody"),
+    }
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        if let Some(disposal) = failure.poll_disposal_on_control().unwrap() {
+            assert!(matches!(disposal, PreparationDisposal::Reaped(_)));
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
     }
 }
