@@ -2,6 +2,7 @@
 //! substituted. Session transactions, prospective admission, publication and callback stay real.
 use super::*;
 mod native_automation;
+mod native_source_effect;
 use hex_engine::{
     PreparedPlaybackObservation,
     native_device_resources::{DeviceResourceAdmission, PreparedDeviceResources},
@@ -433,6 +434,22 @@ impl WorkerAudioSink for ResidentSink {
     ) -> Result<(), hex_session::service::PluginParameterGestureError> {
         self.inner
             .confirm_plugin_parameter_publication(context, acceptance)
+    }
+    fn confirm_source_effect_publication(
+        &mut self,
+        context: AudioSourceContext,
+        acceptance: ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        // A headless fixture must pump the real callback while the service
+        // waits for the source graph's exact publication acknowledgement.
+        self.file_publication_waiting
+            .store(true, std::sync::atomic::Ordering::Release);
+        let result = self
+            .inner
+            .confirm_source_effect_publication(context, acceptance);
+        self.file_publication_waiting
+            .store(false, std::sync::atomic::Ordering::Release);
+        result
     }
     fn finish_plugin_parameter_commit(
         &mut self,

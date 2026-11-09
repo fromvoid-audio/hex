@@ -915,7 +915,15 @@ impl SessionPlayback {
                         let clock =
                             crate::signal_graph::OriginClock(compensation.delays.stamp_at_delay(0));
                         self.source_effects
-                            .process_with_clock(index, &mut generator, &clock)
+                            .process_with_live_input(
+                                index,
+                                &mut generator,
+                                &clock,
+                                frame_offset,
+                                self.native_parameter_state
+                                    .as_deref_mut()
+                                    .and_then(|state| state.processing.as_mut()),
+                            )
                             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     }
                     let processed = compensation

@@ -1058,7 +1058,7 @@ fn compile_project_inner<'a>(
             tuning: project.shared_contexts().tuning(),
             resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
         };
-        prepare_source_effect_recipes(&project, snapshot, registry, &context)?
+        prepare_source_effect_recipes(&project, snapshot, registry, &context, native_input)?
     };
     project.signal_graph = crate::signal_graph::SignalGraph::prepare(&project, &feeds, snapshot)?;
     project.main_output_latency_frames = crate::main_chain::output_latency(
@@ -1197,6 +1197,7 @@ pub(crate) fn prepare_source_effect_recipes(
     arrangement: &hex_project::Project,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     context: &hex_lattice::DevicePreparationContext<'_>,
+    native_input: Option<crate::NativeParameterInputTarget>,
 ) -> Result<Vec<crate::source_effect_stage::PreparedSourceEffects>, Invalid> {
     let count = compiled
         .tracks
@@ -1228,7 +1229,15 @@ pub(crate) fn prepare_source_effect_recipes(
         for device in suffix {
             metadata::validate_authored(device.state(), registry)?;
         }
-        let instances = prepare_source_effect_suffix(arrangement, source, registry, context)?;
+        let input = native_input.filter(|input| {
+            input.source_effect_receiver().is_some_and(|receiver| {
+                definition
+                    .receiver()
+                    .is_some_and(|bound| bound.value() == receiver.get())
+            })
+        });
+        let instances =
+            prepare_source_effect_suffix_with_input(arrangement, source, registry, context, input)?;
         let factory_bytes = instances.iter().try_fold(0usize, |bytes, instance| {
             bytes
                 .checked_add(metadata::factory_bytes(instance, registry)?)
@@ -1253,6 +1262,16 @@ pub fn prepare_source_effect_suffix(
     source_id: hex_project::SourceId,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     context: &hex_lattice::DevicePreparationContext<'_>,
+) -> Result<Vec<hex_lattice::PreparedRuntimeInstance>, Invalid> {
+    prepare_source_effect_suffix_with_input(arrangement, source_id, registry, context, None)
+}
+
+fn prepare_source_effect_suffix_with_input(
+    arrangement: &hex_project::Project,
+    source_id: hex_project::SourceId,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+    context: &hex_lattice::DevicePreparationContext<'_>,
+    native_input: Option<crate::NativeParameterInputTarget>,
 ) -> Result<Vec<hex_lattice::PreparedRuntimeInstance>, Invalid> {
     let source = arrangement
         .native_source(source_id)
@@ -1282,7 +1301,7 @@ pub fn prepare_source_effect_suffix(
         arrangement,
         context,
         registry,
-        None,
+        native_input,
         &[],
     )?;
     if !plan

@@ -98,10 +98,7 @@ fn armed_parameter(
     native_input
         .filter(|input| {
             input.device() == device.id()
-                && matches!(
-                    input.identity().owner(),
-                    hex_lattice::ProcessorChainOwner::Source(_)
-                )
+                && input.device_class() == crate::NativeDeviceClass::Instrument
         })
         .and_then(|input| input.target().provider_parameter())
 }
