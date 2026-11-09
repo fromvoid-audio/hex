@@ -766,6 +766,102 @@ mod tests {
     }
 
     #[test]
+    fn note_ramp_loops_at_the_declared_period_and_preserves_transaction_history() {
+        use crate::ModulationRampCurve;
+
+        let fixture = prepared(6_000.0);
+        let id = ParameterId::from_static(1);
+        let target = ModulationTarget {
+            descriptor: fixture.program().descriptor(id).unwrap(),
+            semantics: fixture.program().semantics(id).unwrap(),
+            base: ParameterValue::Float(0.5),
+        };
+        let program = PreparedModulation::new(
+            &[target],
+            &[ModulationRoute {
+                source: 0,
+                target: id,
+                amount: 0.5,
+                range: [-1.0, 1.0],
+            }],
+            1,
+        )
+        .unwrap();
+        let source = ModulationSourceId::new(1).unwrap();
+        for frames in [0, 60 * 48_000 + 1] {
+            assert!(
+                PreparedModulationSource::note_ramp(
+                    source,
+                    48_000,
+                    frames,
+                    ModulationRampCurve::Linear,
+                    false,
+                    false,
+                )
+                .is_err()
+            );
+        }
+        let ramp = PreparedModulationSource::note_ramp(
+            source,
+            48_000,
+            4,
+            ModulationRampCurve::EaseIn,
+            true,
+            true,
+        )
+        .unwrap();
+        let declaration = crate::PreparedModulationState::new(vec![ramp], program, 8).unwrap();
+        let mut runtime = declaration.prepare().unwrap();
+        let onset = |occurrence_id| NativeInstrumentEvent::NoteOn {
+            frame_offset: 1,
+            occurrence_id,
+            pitch: 60,
+            velocity: 100,
+        };
+        let first = [
+            onset(1),
+            onset(2),
+            NativeInstrumentEvent::NoteOff {
+                frame_offset: 2,
+                occurrence_id: 1,
+            },
+        ];
+        let check = |runtime: &mut ModulationRuntime, events, expected: &[f32]| {
+            runtime
+                .render_instrument_chunk(expected.len(), None, None, events, |block| {
+                    for (offset, &sample) in expected.iter().enumerate() {
+                        assert_eq!(
+                            block.value_at(id, offset),
+                            Some(ParameterValue::Float(sample))
+                        );
+                    }
+                    Ok(())
+                })
+                .unwrap();
+        };
+        runtime.begin();
+        check(&mut runtime, &first, &[0.5, 1.0, 0.96875, 0.875]);
+        runtime.rollback();
+        runtime.begin();
+        check(&mut runtime, &first, &[0.5, 1.0, 0.96875, 0.875]);
+        runtime.commit().unwrap();
+        let mut next = declaration.prepare().unwrap();
+        next.inherit_committed(&runtime).unwrap();
+        next.begin();
+        check(&mut next, &[], &[0.71875, 1.0, 0.96875]);
+        next.commit().unwrap();
+        next.reset_all();
+        next.begin();
+        check(&mut next, &[], &[0.5; 2]);
+        check(
+            &mut next,
+            &first,
+            &[0.5, 1.0, 0.96875, 0.875, 0.71875, 1.0, 0.96875],
+        );
+        next.commit().unwrap();
+    }
+
+    #[test]
     fn oversized_chunks_and_mismatched_inventory_are_refused() {
         let mut current = runtime(6_000.0);
         assert_eq!(current.chunk_frames(), 8);
