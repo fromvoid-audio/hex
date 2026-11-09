@@ -11,24 +11,50 @@ use hex_lattice_contract::{
     DeviceAutomationTarget, HostGain, NativeDeviceMetadata, NativeDeviceState, ParameterId,
     ParameterModulation,
 };
-use hex_project::{Device, Invalid, ModulationDestination, ModulationOutputId, Project};
+use hex_project::{
+    Device, DeviceId, DeviceLocation, DeviceOwner, DeviceUnitClass, Invalid, ModulationDestination,
+    ModulationOutputId, Project,
+};
 
 /// Small chunks keep device-local scratch independent of the host callback size.
 const CHUNK_FRAMES: usize = 128;
+
+fn mapping_effect(project: &Project, device: DeviceId) -> Option<DeviceLocation<'_>> {
+    let location = project.device_location(device)?;
+    if location.class != DeviceUnitClass::Effect {
+        return None;
+    }
+    if let DeviceOwner::Source(source) = location.owner {
+        let source = project.native_source(source)?;
+        source.receiver()?;
+        if !source
+            .post_instrument_effects()
+            .iter()
+            .any(|effect| effect.id() == device)
+        {
+            return None;
+        }
+    }
+    Some(location)
+}
 
 /// State-aware eligibility for native device-panel mapping. Ownership is
 /// resolved from the current project. Preparation independently validates the
 /// actual factory, runtime binding and source program before publication.
 pub fn project_device_modulation_target_supported(
     project: &Project,
-    device: hex_project::DeviceId,
+    device: DeviceId,
     parameter: ParameterId,
 ) -> bool {
-    let Some(device) = crate::device_automation::effect_devices(project)
-        .find(|candidate| candidate.id() == device)
-    else {
+    let Some(location) = mapping_effect(project, device) else {
         return false;
     };
+    let device = location.device;
+    if matches!(location.owner, DeviceOwner::Source(_))
+        && !source_provider_mapping_supported(device.state().type_id())
+    {
+        return false;
+    }
     let Ok(registry) = hex_devices::native_registry() else {
         return false;
     };
@@ -48,15 +74,11 @@ pub fn project_device_modulation_target_supported(
 /// Control-side mapping eligibility for both native host gain stages.
 /// The closed provider's actual factory supplies the latency. No render
 /// runtime or audio resources are constructed by this query.
-pub fn project_device_host_gain_modulation_supported(
-    project: &Project,
-    device: hex_project::DeviceId,
-) -> bool {
-    let Some(device) = crate::device_automation::effect_devices(project)
-        .find(|candidate| candidate.id() == device)
-    else {
+pub fn project_device_host_gain_modulation_supported(project: &Project, device: DeviceId) -> bool {
+    let Some(location) = mapping_effect(project, device) else {
         return false;
     };
+    let device = location.device;
     let state = device.state();
     if !crate::native_effect_storage::is_closed_type(state.type_id()) {
         return false;
@@ -64,6 +86,11 @@ pub fn project_device_host_gain_modulation_supported(
     let Ok(registry) = hex_devices::native_registry() else {
         return false;
     };
+    if matches!(location.owner, DeviceOwner::Source(_))
+        && crate::source_effect_stage::metadata::validate_authored(state, &registry).is_err()
+    {
+        return false;
+    }
     let context = hex_lattice::DevicePreparationContext {
         sample_rate: project.sample_rate(),
         tuning: &hex_lattice::TuningTable::default(),
@@ -74,6 +101,14 @@ pub fn project_device_host_gain_modulation_supported(
         .is_ok_and(|factory| {
             factory.is_none_or(|factory| factory.algorithmic_latency_frames() == Some(0))
         })
+}
+
+/// These source providers keep a zero-latency processor and identity host
+/// matrix when the first provider route is added or the last is removed.
+fn source_provider_mapping_supported(id: hex_lattice_contract::DeviceTypeId) -> bool {
+    id == hex_devices::auto_pan::AUTO_PAN_TYPE_ID
+        || id == hex_devices::gate::GATE_TYPE_ID
+        || id == hex_devices::reverb::REVERB_TYPE_ID
 }
 
 pub(super) fn validate_source_owners(project: &Project) -> Result<(), Invalid> {

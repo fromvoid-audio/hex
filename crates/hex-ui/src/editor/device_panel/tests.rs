@@ -6732,3 +6732,149 @@ fn assert_modulation_mapping(
         }
     }
 }
+
+#[gpui::test]
+fn modulation_panel_maps_a_bound_source_effect_on_its_receiver(cx: &mut TestAppContext) {
+    use hex_project::{DeviceAutomationTarget, DeviceOwner, ModulationDestination};
+
+    let service = Service::new(48_000, 8, 8_000_000).unwrap();
+    receive_service_event(&service);
+    let edit = |command| {
+        service.submit(Request::Edit(command)).unwrap();
+        let event = receive_service_event(&service);
+        assert!(event.error.is_none(), "{:?}", event.error);
+        event
+    };
+    let add_track = |name: &str| {
+        let Some(Created::Track(track)) = edit(Command::AddMidiTrack { name: name.into() }).created
+        else {
+            panic!("track fixture");
+        };
+        track
+    };
+    let receiver = add_track("receiver");
+    let contributor = add_track("contributor");
+    let device_type = hex_lattice_contract::DeviceTypeId::from_static("hex.utility");
+    let base = hex_engine::default_native_device_state(device_type).unwrap();
+    let created = edit(Command::CreateNativeSource {
+        name: "shared".into(),
+        devices: vec![
+            hex_project::default_instrument_state().unwrap(),
+            base.clone(),
+        ],
+        instrument_index: 0,
+    });
+    let Some(Created::NativeSource(source)) = created.created else {
+        panic!("source fixture");
+    };
+    let device = created
+        .state
+        .project
+        .native_source(source)
+        .unwrap()
+        .post_instrument_effects()[0]
+        .id();
+    assert!(!hex_engine::project_device_host_gain_modulation_supported(
+        &created.state.project,
+        device
+    ));
+    edit(Command::BindTrackSource {
+        track: receiver,
+        source: Some(source),
+    });
+    let bound = edit(Command::BindTrackSource {
+        track: contributor,
+        source: Some(source),
+    });
+    assert!(hex_engine::project_device_host_gain_modulation_supported(
+        &bound.state.project,
+        device
+    ));
+    assert!(!hex_engine::project_device_modulation_target_supported(
+        &bound.state.project,
+        device,
+        hex_lattice_contract::ParameterId::from_static(1),
+    ));
+
+    let (handle, editor) = actor_editor_window(cx, service, bound.state, receiver);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let selector: &'static str =
+        Box::leak(format!("source-effect-modulation-{}", device.value()).into_boxed_str());
+    let bounds = visual
+        .debug_bounds(selector)
+        .expect("source effect on its receiver");
+    let click = |visual: &mut VisualTestContext, key: String| {
+        let key = Box::leak(key.into_boxed_str());
+        let element = visual
+            .debug_bounds(key)
+            .unwrap_or_else(|| panic!("missing {key}"));
+        assert!(
+            bounds.contains(&element.center()),
+            "{key} belongs to another card"
+        );
+        visual.simulate_click(element.center(), Modifiers::default());
+        visual.run_until_parked();
+    };
+    click(&mut visual, "device-modulator-toggle".into());
+    click(&mut visual, format!("add-lfo-{}", device.value()));
+    let source_slot = |view: &EditorView| {
+        view.state
+            .as_ref()?
+            .project
+            .device(device)?
+            .modulation()
+            .sources()
+            .first()
+            .map(|slot| slot.id)
+    };
+    pump_until(&editor, cx, |view| source_slot(view).is_some());
+    let slot = editor.read_with(cx, |view, _| source_slot(view).unwrap());
+    visual.run_until_parked();
+    click(&mut visual, format!("lfo-{}-map", slot.value()));
+    click(&mut visual, format!("map-output-gain-{}", device.value()));
+
+    let route_count = |view: &EditorView| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .modulation()
+            .routes()
+            .len()
+    };
+    pump_until(&editor, cx, |view| route_count(view) == 1);
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        let location = project.device_location(device).unwrap();
+        assert_eq!(location.owner, DeviceOwner::Source(source));
+        assert_eq!(location.device.state(), &base);
+        let route = location.device.modulation().routes()[0];
+        assert_eq!(route.source, slot);
+        assert!(matches!(
+            route.destination,
+            ModulationDestination::Device {
+                target: DeviceAutomationTarget::HostOutputGain,
+                ..
+            }
+        ));
+        let reopened = hex_storage::decode(&hex_storage::encode(project).unwrap()).unwrap();
+        assert_eq!(
+            reopened.device(device).unwrap().modulation().routes(),
+            &[route]
+        );
+    });
+
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| route_count(view) == 0);
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+    pump_until(&editor, cx, |view| route_count(view) == 1);
+    editor.update(cx, |view, cx| {
+        view.selected_track = Some(contributor);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds(selector).is_none());
+}
