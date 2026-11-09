@@ -284,6 +284,16 @@ fn render_sealed(
     audio: &Audio,
     output: &mut [[f32; 2]],
 ) -> bool {
+    render_sealed_from(project, asset, audio, output, 0)
+}
+
+fn render_sealed_from(
+    project: &hex_project::Project,
+    asset: hex_project::AssetId,
+    audio: &Audio,
+    output: &mut [[f32; 2]],
+    start: u64,
+) -> bool {
     if !crate::audio_storage_constructor_layout_supported() {
         eprintln!("sealed modulation playback requires the supported constructor layout");
         return false;
@@ -324,7 +334,7 @@ fn render_sealed(
         0,
     );
     owner
-        .test_apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
+        .test_apply_action(PlaybackAction::Transport(PlaybackCommand::PlayFrom(start)))
         .unwrap();
     owner.test_render(&mut output[..5]).unwrap();
     owner.test_render(&mut output[5..]).unwrap();
@@ -784,7 +794,7 @@ fn saved_steps_reaches_utility_gain_at_the_same_sample_in_ordinary_and_closed_gr
 
     check_saved_routed_source(
         steps::Settings {
-            duration_micros: 125,
+            timing: steps::Timing::FreeMicros(125),
             direction: steps::Direction::Forward,
             pattern: vec![-32767, 32767],
         }
@@ -795,16 +805,56 @@ fn saved_steps_reaches_utility_gain_at_the_same_sample_in_ordinary_and_closed_gr
     );
 }
 
+#[test]
+fn saved_arrangement_steps_crosses_the_utility_boundary_after_seek() {
+    use hex_devices::modulation::steps;
+
+    check_saved_routed_source_from(
+        steps::Settings {
+            timing: steps::Timing::Arrangement { steps_per_beat: 16 },
+            direction: steps::Direction::Forward,
+            pattern: vec![-32767, 32767],
+        }
+        .encode()
+        .unwrap(),
+        &[],
+        &[0.75, 0.75, 1.25, 1.25, 1.25, 1.25, 1.25, 1.25],
+        1498,
+    );
+}
+
 fn check_saved_routed_source(
     settings: hex_lattice_contract::NativeDeviceState,
     inputs: &[(f64, hex_lattice_contract::ParameterId, f32)],
     gains: &[f32],
+) {
+    check_saved_routed_source_from(settings, inputs, gains, 0);
+}
+
+fn check_saved_routed_source_from(
+    settings: hex_lattice_contract::NativeDeviceState,
+    inputs: &[(f64, hex_lattice_contract::ParameterId, f32)],
+    gains: &[f32],
+    start: u64,
 ) {
     use hex_devices::modulation::lfo;
 
     let mut editor = Editor::new(crate::audio_preparation::candidate_test_project(), 4).unwrap();
     let track = editor.project().tracks()[0].id();
     let asset = editor.project().assets().next().unwrap().id();
+    if start != 0 {
+        editor
+            .execute(Command::PlaceClip {
+                track,
+                asset,
+                start,
+                duration: 8,
+                source_offset: 0,
+                source_length: 8,
+                looping: false,
+            })
+            .unwrap();
+    }
     let base = UTILITY_DEFINITION.default_state().unwrap();
     let Created::Device(device) = editor
         .execute(Command::InsertDevice {
@@ -905,7 +955,7 @@ fn check_saved_routed_source(
     assert_eq!(editor.project().device(device).unwrap().state(), &base);
     let mut playback = Playback::try_from_prepared_with_session(Arc::new(revision)).unwrap();
     playback
-        .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
+        .try_apply_action(PlaybackAction::Transport(PlaybackCommand::PlayFrom(start)))
         .unwrap();
     let mut output = [[0.0; 2]; 8];
     playback.render(&mut output[..3]).unwrap();
@@ -918,7 +968,14 @@ fn check_saved_routed_source(
         }
     };
     check(&output);
-    if render_sealed(editor.project(), asset, &audio, &mut output) {
+    if start != 0 {
+        playback
+            .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Seek(start)))
+            .unwrap();
+        playback.render(&mut output).unwrap();
+        check(&output);
+    }
+    if render_sealed_from(editor.project(), asset, &audio, &mut output, start) {
         check(&output);
     }
 }
