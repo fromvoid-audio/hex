@@ -109,6 +109,7 @@ fn source_provider_mapping_supported(state: &NativeDeviceState, parameter: Param
     let id = state.type_id();
     id == hex_devices::auto_pan::AUTO_PAN_TYPE_ID
         || id == hex_devices::gate::GATE_TYPE_ID
+        || id == hex_devices::compressor::COMPRESSOR_TYPE_ID
         || id == hex_devices::reverb::REVERB_TYPE_ID
         || id == hex_devices::utility::UTILITY_TYPE_ID
             && hex_devices::utility::UtilityDefinition::supports_source_matrix_modulation(
