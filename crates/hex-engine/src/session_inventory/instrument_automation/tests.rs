@@ -626,9 +626,16 @@ fn saved_fm4_routes_compose_with_authored_curves_and_keep_phase_at_live_handoff(
     }
     assert_eq!(actual, expected);
 
-    current.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+    assert_eq!(
+        current.apply(SessionPlaybackCommand::Seek(0)),
+        Err(crate::SessionPlaybackError::MutableInstrumentActive),
+    );
+    let preroll = current
+        .prepare_arrangement_preroll(0, 0, true, &std::sync::atomic::AtomicBool::new(false))
+        .unwrap();
+    let mut seek = crate::playback::Playback::from_arrangement_preroll(preroll).unwrap();
     let mut restarted = [[0.0; 2]; 31];
-    current.render(&mut restarted).unwrap();
+    seek.render(&mut restarted).unwrap();
     for (index, frame) in restarted.iter().enumerate() {
         let expected = after[usize::from(index % 4 >= 2)].sample(
             index as u64,
