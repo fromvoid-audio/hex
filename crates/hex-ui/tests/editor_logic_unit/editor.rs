@@ -21,3 +21,7 @@ mod audio_import_settings;
 #[allow(dead_code)]
 #[path = "../../src/editor/refresh_state.rs"]
 mod refresh_state;
+
+#[allow(dead_code)]
+#[path = "../../src/editor/fade_calculation.rs"]
+mod fade_calculation;
