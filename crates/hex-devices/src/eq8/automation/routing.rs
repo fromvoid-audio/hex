@@ -56,17 +56,31 @@ impl RoutingAutomation {
     pub(super) fn stage(
         &self,
         values: ControlValues,
+        previous: Option<&ControlValues>,
         current: ChannelMode,
         rate: u32,
     ) -> Result<Option<PendingRouting>, DeviceContractError> {
         if values.mode == current {
-            Ok(None)
-        } else {
-            Ok(Some(PendingRouting::new(
-                values,
-                design(&values.banks, values.mode, rate)?,
-            )))
+            return Ok(None);
         }
+        let banks = selected(values.mode);
+        let target = if let Some(old) = previous.filter(|old| old.mode == values.mode)
+            && let Some(pending) = self
+                .pending
+                .as_ref()
+                .filter(|pending| pending.mode == values.mode)
+        {
+            if banks
+                .into_iter()
+                .all(|bank| old.banks[bank] == values.banks[bank])
+            {
+                return Ok(self.pending);
+            }
+            redesign_changed(channels(&pending.target), old, &values, banks, rate)?
+        } else {
+            design(&values.banks, values.mode, rate)?
+        };
+        Ok(Some(PendingRouting::new(values, target)))
     }
     pub(super) fn install(&mut self, pending: Option<PendingRouting>) {
         self.pending = pending;
