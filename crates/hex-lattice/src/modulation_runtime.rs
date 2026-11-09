@@ -55,6 +55,12 @@ impl ModulationRuntime {
             && self.bank.matches_prepared(sources, chunk_frames)
     }
 
+    pub(crate) fn same_declaration(&self, other: &Self) -> bool {
+        self.program == other.program
+            && self.source_routes == other.source_routes
+            && self.bank.same_declaration(&other.bank)
+    }
+
     /// Physical inline and reserved owned storage, excluding allocator metadata.
     pub fn storage_bytes(&self) -> Option<usize> {
         std::mem::size_of::<Self>().checked_add(self.heap_storage_bytes()?)

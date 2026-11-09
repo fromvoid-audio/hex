@@ -3,8 +3,8 @@
 use crate::Session;
 use hex_engine::NativeDeviceClass;
 use hex_lattice_contract::DeviceTypeId;
-use hex_project::{Command, DeviceId};
-use hex_storage::preset::{DeviceClass, Preset};
+use hex_project::{Command, DeviceId, DeviceInitialization, PortableDeviceUnit};
+use hex_storage::preset::{DeviceClass, Preset, PresetContents};
 use std::path::Path;
 
 pub mod originals;
@@ -83,6 +83,91 @@ pub(super) fn save(
     .map_err(|error| error.to_string())
 }
 
+pub(super) enum CompleteDestination<'a> {
+    Preset(&'a Path),
+    Default(&'a Path),
+}
+
+fn validate_unit(class: NativeDeviceClass, unit: &PortableDeviceUnit) -> Result<(), String> {
+    if DeviceClass::from(unit.class()) != storage_class(class) {
+        return Err("complete preset does not match the device slot".into());
+    }
+    if !unit.assets().is_empty() {
+        return Err("complete presets with original audio are not available here yet".into());
+    }
+    for (index, node) in unit.nodes().iter().enumerate() {
+        let class = if index == 0 {
+            class
+        } else {
+            NativeDeviceClass::Effect
+        };
+        crate::device_comparison::validate_states(class, &node.state, node.comparison.as_ref())
+            .map_err(|error| format!("complete device preset refused · {error}"))?;
+    }
+    Ok(())
+}
+
+pub(super) fn save_complete(
+    session: &Session,
+    generation: u64,
+    revision: u64,
+    owner: Owner,
+    destination: CompleteDestination<'_>,
+) -> Result<(), String> {
+    validate_owner(session, generation, revision, owner)?;
+    let unit = session
+        .project()
+        .capture_portable_device_unit(owner.device)
+        .map_err(|error| error.to_string())?;
+    validate_unit(owner.class, &unit)?;
+    match destination {
+        CompleteDestination::Preset(path) => {
+            if path.as_os_str().len() > 4096 {
+                return Err("device preset path exceeds the 4096-byte limit".into());
+            }
+            hex_storage::preset::save_unit_new(path, &unit).map_err(|error| error.to_string())
+        }
+        CompleteDestination::Default(root) => {
+            // Understand the previously saved provider state before replacing it.
+            load_default_contents(root, owner.class, owner.type_id)?;
+            hex_storage::preset::defaults::save_unit(root, &unit).map_err(|error| error.to_string())
+        }
+    }
+}
+
+pub(super) fn load_default_contents(
+    root: &Path,
+    class: NativeDeviceClass,
+    type_id: DeviceTypeId,
+) -> Result<Option<PresetContents>, String> {
+    validate_default_root(root)?;
+    let contents =
+        hex_storage::preset::defaults::load_contents(root, storage_class(class), type_id)
+            .map_err(|error| error.to_string())?;
+    match &contents {
+        Some(PresetContents::State(preset)) => {
+            crate::device_comparison::validate_states(
+                class,
+                &preset.state,
+                preset.comparison.as_ref(),
+            )
+            .map_err(|error| format!("device default refused · {error}"))?;
+        }
+        Some(PresetContents::Unit(unit)) => validate_unit(class, unit)?,
+        None => {}
+    }
+    Ok(contents)
+}
+
+pub(super) fn initialize_complete(
+    command: Command,
+    unit: PortableDeviceUnit,
+) -> Result<Command, String> {
+    DeviceInitialization::new_unit(command, unit, Vec::new())
+        .map(|initialization| Command::InitializeDevice(Box::new(initialization)))
+        .map_err(|error| error.to_string())
+}
+
 /// Read only on the worker. Both active and inactive native payloads must be
 /// understood by this application before a default can be consumed/replaced.
 pub(super) fn load_default(
@@ -148,12 +233,25 @@ pub(super) fn load_command(
         return Err("device preset path exceeds the 4096-byte limit".into());
     }
     validate_owner(session, generation, revision, owner)?;
-    let preset = hex_storage::preset::load(path).map_err(|error| error.to_string())?;
-    if preset.class != storage_class(owner.class) || preset.state.type_id() != owner.type_id {
+    let contents = hex_storage::preset::load_contents(path).map_err(|error| error.to_string())?;
+    if contents.identity() != (storage_class(owner.class), owner.type_id) {
         return Err(
             "incompatible device preset · choose a preset for this device type and class".into(),
         );
     }
+    let preset = match contents {
+        PresetContents::State(preset) => preset,
+        PresetContents::Unit(unit) => {
+            validate_unit(owner.class, &unit)?;
+            return initialize_complete(
+                Command::ReplaceDeviceState {
+                    device: owner.device,
+                    state: unit.nodes()[0].state.clone(),
+                },
+                unit,
+            );
+        }
+    };
     // Both opaque variants must be valid for this actual device class before
     // any prepared candidate or publication; retain original authored bytes.
     crate::device_comparison::validate_states(
