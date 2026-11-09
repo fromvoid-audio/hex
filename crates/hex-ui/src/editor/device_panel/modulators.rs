@@ -15,6 +15,7 @@ use hex_engine::{
     macro_four_modulator as macro_four, macro_modulator as manual, math_modulator as math,
     mix_modulator as mix, note_counter_modulator as note_counter,
     note_pressure_modulator as pressure, ramp_modulator as ramp, random_modulator as random,
+    steps_modulator as steps,
 };
 use hex_lattice_contract::{ParameterId, ParameterModulation};
 use hex_project::{
@@ -42,10 +43,11 @@ enum SourceKind {
     Ramp,
     AhdRelease,
     Adsr,
+    Steps,
 }
 
 impl SourceKind {
-    const ALL: [Self; 15] = [
+    const ALL: [Self; 16] = [
         Self::Lfo,
         Self::Follower,
         Self::Macro,
@@ -61,6 +63,7 @@ impl SourceKind {
         Self::Ramp,
         Self::AhdRelease,
         Self::Adsr,
+        Self::Steps,
     ];
 
     fn label(self) -> &'static str {
@@ -80,6 +83,7 @@ impl SourceKind {
             Self::Ramp => "ramp",
             Self::AhdRelease => "ahd on release",
             Self::Adsr => "adsr",
+            Self::Steps => "steps",
         }
     }
 
@@ -109,6 +113,7 @@ impl SourceKind {
             Self::Ramp => ramp::Settings::default().encode(),
             Self::AhdRelease => ahd_release::Settings::default().encode(),
             Self::Adsr => adsr::Settings::default().encode(),
+            Self::Steps => steps::Settings::default().encode(),
             Self::Macro => manual::Settings::default().encode(),
             Self::MacroFour => macro_four::Settings::default().encode(),
             Self::Random => random::Settings {
@@ -269,6 +274,14 @@ enum AdsrEdit {
     ToggleSingleTrigger,
 }
 
+#[derive(Clone, Copy)]
+enum StepsEdit {
+    Time { longer: bool },
+    Length { add: bool },
+    Value { index: usize, delta: i16 },
+    CycleDirection,
+}
+
 fn duration_text(micros: u32) -> String {
     if micros < 1000 {
         format!("{micros} µs")
@@ -307,6 +320,7 @@ enum Edit {
     Ramp(ModulationSourceId, RampEdit),
     AhdRelease(ModulationSourceId, AhdEdit),
     Adsr(ModulationSourceId, AdsrEdit),
+    Steps(ModulationSourceId, StepsEdit),
     DuplicateSource(ModulationSourceId),
     RemoveSource(ModulationSourceId),
     Rate(ModulationSourceId, f64),
@@ -702,6 +716,7 @@ pub(super) fn panel(
             ramp::TYPE_ID => SourceKind::Ramp,
             ahd_release::TYPE_ID => SourceKind::AhdRelease,
             adsr::TYPE_ID => SourceKind::Adsr,
+            steps::TYPE_ID => SourceKind::Steps,
             _ => continue,
         };
         let label = kind.label();
@@ -1010,6 +1025,79 @@ pub(super) fn panel(
                     }),
                     Edit::Adsr(source_id, AdsrEdit::ToggleSingleTrigger),
                 ));
+        }
+        if let SourceKind::Steps = kind
+            && let Ok(settings) = steps::Settings::decode(&source.state)
+        {
+            let direction = match settings.direction {
+                steps::Direction::Forward => "forward",
+                steps::Direction::Backward => "backward",
+                steps::Direction::PingPong => "ping pong",
+            };
+            let time = envelope_time(
+                cx,
+                "step time",
+                settings.duration_micros,
+                [false, true].map(|longer| Edit::Steps(source_id, StepsEdit::Time { longer })),
+            );
+            row = row
+                .children([time])
+                .child(button(
+                    cx,
+                    source_key("direction"),
+                    theme::text(direction),
+                    Edit::Steps(source_id, StepsEdit::CycleDirection),
+                ))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(2.0))
+                        .child(theme::text(format!("{} steps", settings.pattern.len())))
+                        .child(button(
+                            cx,
+                            source_key("length-less"),
+                            theme::text("−"),
+                            Edit::Steps(source_id, StepsEdit::Length { add: false }),
+                        ))
+                        .child(button(
+                            cx,
+                            source_key("length-more"),
+                            theme::text("+"),
+                            Edit::Steps(source_id, StepsEdit::Length { add: true }),
+                        )),
+                );
+            let mut pattern = div().w_full().flex().flex_wrap().gap(px(3.0));
+            for (index, value) in settings.pattern.into_iter().enumerate() {
+                let number = index + 1;
+                let amount = f32::from(value) / f32::from(i16::MAX) * 100.0;
+                pattern = pattern.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(2.0))
+                        .child(theme::text(format!("{number} {amount:+.0}%")))
+                        .child(button(
+                            cx,
+                            source_key(&format!("step-{number}-less")),
+                            theme::text("−"),
+                            Edit::Steps(
+                                source_id,
+                                StepsEdit::Value {
+                                    index,
+                                    delta: -3277,
+                                },
+                            ),
+                        ))
+                        .child(button(
+                            cx,
+                            source_key(&format!("step-{number}-more")),
+                            theme::text("+"),
+                            Edit::Steps(source_id, StepsEdit::Value { index, delta: 3277 }),
+                        )),
+                );
+            }
+            row = row.children([pattern]);
         }
         if matches!(kind, SourceKind::NotePressure) {
             row = row.child(theme::text("one carrier"));
@@ -1744,6 +1832,38 @@ fn apply(
                     settings.sustain = (settings.sustain + delta).clamp(0.0, 1.0);
                 }
                 AdsrEdit::ToggleSingleTrigger => settings.single_trigger = !settings.single_trigger,
+            }
+            source.state = settings.encode().map_err(unsupported)?;
+        }
+        Edit::Steps(id, edit) => {
+            let source = find_source(&mut sources, id)?;
+            let mut settings = steps::Settings::decode(&source.state).map_err(unsupported)?;
+            match edit {
+                StepsEdit::Time { longer } => {
+                    settings.duration_micros =
+                        duration_step(settings.duration_micros, longer).max(ramp::MIN_MICROS);
+                }
+                StepsEdit::Length { add } => {
+                    let count = settings.pattern.len();
+                    let count = if add { count + 1 } else { count - 1 };
+                    settings
+                        .pattern
+                        .resize(count.clamp(1, steps::MAX_MODULATION_STEPS), 0);
+                }
+                StepsEdit::Value { index, delta } => {
+                    let value = settings
+                        .pattern
+                        .get_mut(index)
+                        .ok_or(Invalid("step is unsupported"))?;
+                    *value = value.saturating_add(delta).max(-i16::MAX);
+                }
+                StepsEdit::CycleDirection => {
+                    settings.direction = match settings.direction {
+                        steps::Direction::Forward => steps::Direction::Backward,
+                        steps::Direction::Backward => steps::Direction::PingPong,
+                        steps::Direction::PingPong => steps::Direction::Forward,
+                    };
+                }
             }
             source.state = settings.encode().map_err(unsupported)?;
         }
