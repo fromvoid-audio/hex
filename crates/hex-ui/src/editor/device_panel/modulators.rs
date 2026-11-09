@@ -647,7 +647,13 @@ pub(super) fn panel(
             mapping,
         };
         Some(mapping_button(
-            view, cx, key, label, target, route, revision,
+            view,
+            cx,
+            key,
+            theme::text(label),
+            target,
+            route,
+            revision,
         ))
     };
     let multiple_macros = bank
