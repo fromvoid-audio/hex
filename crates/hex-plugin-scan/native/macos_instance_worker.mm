@@ -902,6 +902,10 @@ int main(int argc,char** argv) {
                             if(!info || (info->flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden)) ||
                                 (authored && !info->accepts_authored(packet.authored_steps[n]))) valid=false;
                         }
+                        if(packet.dense_parameter) {
+                            const auto* info=processing_parameters.find(packet.dense_id);
+                            if(!info || !info->accepts_authored(packet.dense_steps)) valid=false;
+                        }
                         if(!valid || (event_channels && !held_notes.stage(packet.notes,packet.note_count))) {
                             worker_failure.store(ProtocolFailure);break;
                         }
@@ -954,6 +958,11 @@ int main(int argc,char** argv) {
                             }
                             if(!valid || (!slice && !stage_edits(packet.parameter_count-next_parameter,
                                 packet.parameters.data()+next_parameter,touch))) {
+                                worker_failure.store(ProtocolFailure);break;
+                            }
+                            if(packet.dense_parameter &&
+                                !parameter_input.input_dense(packet.dense_id,packet.dense_values.data()+first,
+                                    static_cast<size_t>(width))) {
                                 worker_failure.store(ProtocolFailure);break;
                             }
                             const size_t first_note=next_note;
