@@ -17,7 +17,7 @@ if _PYTHON_SPEC is None or _PYTHON_SPEC.loader is None:
 python_tests = importlib.util.module_from_spec(_PYTHON_SPEC)
 _PYTHON_SPEC.loader.exec_module(python_tests)
 
-POLICY_VERSION = 37
+POLICY_VERSION = 38
 UI_PACKAGES = {"hex-ui", "hex-widgets"}
 # Opaque state reaches storage through runtime type IDs, not a Cargo dependency.
 # Changes here must be reviewed with the real registration/codec consumers.

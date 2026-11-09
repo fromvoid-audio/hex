@@ -31,6 +31,24 @@ ci = module("runner_scope_fixture", "local-ci.py")
 
 
 class ScopeTests(unittest.TestCase):
+    def test_all_feature_gated_ui_unit_targets_are_scheduled_once(self):
+        targets = set(ci.ci_plan.UI_UNIT_FEATURES)
+        health = {"python": False, "workspace_inputs": True, "packages": []}
+        for selected in (ci.planned_steps({"scope": "full"}),
+                         ci.planned_steps({"scope": "ui"}),
+                         ci.planned_steps({"scope": "rust", "health": health})):
+            with self.subTest(scope=selected[0].step_id):
+                unit_steps = [step for step in selected
+                              if "--test" in step.argv and
+                              step.argv[step.argv.index("--test") + 1] in targets]
+                self.assertEqual(len(unit_steps), len(targets))
+                self.assertEqual({step.argv[step.argv.index("--test") + 1]
+                                  for step in unit_steps}, targets)
+                for step in unit_steps:
+                    target = step.argv[step.argv.index("--test") + 1]
+                    self.assertEqual(step.argv[step.argv.index("--features") + 1],
+                                     ci.ci_plan.UI_UNIT_FEATURES[target])
+
     def test_copied_host_transport_probe_runs_at_its_owning_package(self):
         inventory = [{"name": "hex-plugin-host", "features": {"allocation-probe": [], "test-support": []}}]
         selected = ci.boundary_steps({
