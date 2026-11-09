@@ -138,10 +138,10 @@ impl ModulationRuntime {
         upstream: Option<&dyn NativeParameterAutomation>,
         clock: Option<&dyn crate::NativeInstrumentClock>,
         events: &[NativeInstrumentEvent],
-        consume: impl FnOnce(&dyn NativeParameterAutomation) -> Result<(), Error>,
+        consume: impl FnOnce(&ModulationBlock<'_>) -> Result<(), Error>,
     ) -> Result<(), Error> {
         self.render_sources(frames, upstream, clock, None, Some(events))?;
-        self.consume_values(frames, upstream, |values| consume(values))
+        self.consume_values(frames, upstream, consume)
     }
 
     /// Render against the owning device's input tap. A modulated input gain
