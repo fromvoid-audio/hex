@@ -17,7 +17,7 @@ if _PYTHON_SPEC is None or _PYTHON_SPEC.loader is None:
 python_tests = importlib.util.module_from_spec(_PYTHON_SPEC)
 _PYTHON_SPEC.loader.exec_module(python_tests)
 
-POLICY_VERSION = 33
+POLICY_VERSION = 34
 UI_PACKAGES = {"hex-ui", "hex-widgets"}
 # Opaque state reaches storage through runtime type IDs, not a Cargo dependency.
 # Changes here must be reviewed with the real registration/codec consumers.
@@ -248,6 +248,7 @@ UI_UNIT_TARGETS = {"editor::audio_admission::": "unit_editor_state",
                    "editor::clip_content_cache::profile::navigation::selection::": "unit_editor_state",
                    "editor::cpu_meter::": "unit_editor_state",
                    "editor::device_automation::plot_geometry::": "unit_automation",
+                   "editor::device_panel::eq_panel::state_edit::": "unit_device",
                    "editor::device_panel::numeric_display::": "unit_device",
                    "editor::disk_overload::": "unit_editor_state",
                    "editor::midi_drag::": "unit_piano_roll",
