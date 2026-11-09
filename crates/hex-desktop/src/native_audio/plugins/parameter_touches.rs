@@ -5,12 +5,14 @@
 use super::*;
 use hex_audio::plugin_worker::{ParameterEdit, ParameterEditKind, RecoveryEdits};
 use hex_audio::prepared::AppliedAudioSource;
+use hex_session::device_gesture::PluginParameterValue;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Touch {
     source: AppliedAudioSource,
     parameter: u32,
     sequence: u64,
+    value: Option<PluginParameterValue>,
 }
 
 fn latest_touch(source: AppliedAudioSource, edits: &[ParameterEdit]) -> Option<Touch> {
@@ -23,6 +25,9 @@ fn latest_touch(source: AppliedAudioSource, edits: &[ParameterEdit]) -> Option<T
             source,
             parameter: edit.id,
             sequence: edit.sequence,
+            value: (edit.kind == ParameterEditKind::Perform)
+                .then(|| PluginParameterValue::new(edit.normalized).ok())
+                .flatten(),
         })
     })
 }
@@ -147,6 +152,7 @@ impl Plugins {
                     device: source.device,
                     parameter: touch.parameter,
                     sequence: touch.sequence,
+                    value: touch.value,
                 },
             )
         })
@@ -180,6 +186,7 @@ mod tests {
                 source: active,
                 parameter,
                 sequence: 8,
+                value: None,
             }),
             #[cfg(feature = "allocation-probe")]
             observed_latency_receipt: false,
@@ -205,6 +212,7 @@ mod tests {
             source: active,
             parameter: 43,
             sequence: 9,
+            value: None,
         });
         assert!(matches!(
             plugins.take_parameter_touch(),
@@ -229,6 +237,7 @@ mod tests {
             source: active,
             parameter: 43,
             sequence: 10,
+            value: None,
         });
         plugins.sources[0].retiring = true;
         assert!(plugins.take_parameter_touch().is_none());
@@ -237,6 +246,7 @@ mod tests {
             source: active,
             parameter: 43,
             sequence: 11,
+            value: None,
         });
         plugins.output_closed();
         assert!(plugins.take_parameter_touch().is_none());
@@ -255,6 +265,7 @@ mod tests {
             sequence,
             id,
             kind,
+            normalized: 0.625,
             ..Default::default()
         };
         let edits = [
@@ -267,9 +278,14 @@ mod tests {
             Some(Touch {
                 source,
                 parameter: 88,
-                sequence: 2
+                sequence: 2,
+                value: None,
             })
         );
         assert_eq!(latest_touch(source, &edits[2..]), None);
+        assert_eq!(
+            latest_touch(source, &edits[..1]).unwrap().value,
+            Some(PluginParameterValue::new(0.625).unwrap())
+        );
     }
 }
