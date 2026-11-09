@@ -1,6 +1,6 @@
 //! Version 1 saves a timing tag, a little-endian rate and a little-endian
 //! initial phase. Rates use hertz or quarter-note beats per cycle.
-use hex_lattice::{ModulationSourceId, PreparedLfoSource};
+use hex_lattice::{ModulationSourceId, PreparedModulationSource};
 use hex_lattice_contract::{DeviceContractError as Error, DeviceTypeId, NativeDeviceState};
 
 pub const TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.modulator.lfo");
@@ -90,14 +90,14 @@ impl Settings {
         sample_rate: u32,
         fallback_bpm: f64,
         maximum_bpm: f64,
-    ) -> Result<PreparedLfoSource, Error> {
+    ) -> Result<PreparedModulationSource, Error> {
         self.validate()?;
         let rate = f64::from(sample_rate);
         match self.rate {
-            Rate::Hertz(hz) => PreparedLfoSource::free(id, rate, hz, self.phase),
+            Rate::Hertz(hz) => PreparedModulationSource::free(id, rate, hz, self.phase),
             Rate::BeatsPerCycle(beats) => {
-                PreparedLfoSource::tempo(id, rate, maximum_bpm, beats, self.phase)?;
-                PreparedLfoSource::tempo(id, rate, fallback_bpm, beats, self.phase)
+                PreparedModulationSource::tempo(id, rate, maximum_bpm, beats, self.phase)?;
+                PreparedModulationSource::tempo(id, rate, fallback_bpm, beats, self.phase)
             }
         }
     }
