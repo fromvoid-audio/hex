@@ -674,5 +674,34 @@ fn lfo_rate_route_upgrades_the_exact_previous_format_and_preserves_the_complete_
     assert_eq!(migrated, *instrument_project);
     assert!(token.requires_save_confirmation(&migrated).unwrap());
     assert_eq!(std::fs::read(&legacy_instrument).unwrap(), bytes);
+    editor
+        .execute(Command::SpliceDeviceAutomationTouch {
+            device: instrument_id,
+            target: DeviceAutomationTarget::Parameter(ParameterId::from_static(29)),
+            vst3_class: None,
+            spans: vec![hex_project::DeviceAutomationTouchSpan {
+                start: BeatTime::ZERO,
+                end: BeatTime::ONE,
+                steps: vec![hex_project::DeviceAutomationTouchStep {
+                    beat: BeatTime::ZERO,
+                    value: hex_project::AutomationValue::new(0.75).unwrap(),
+                }],
+            }],
+        })
+        .unwrap();
+    let combined = editor.project();
+    assert_eq!(
+        crate::schema_version_for(combined),
+        crate::INSTRUMENT_MODULATION_SCHEMA_VERSION
+    );
+    let combined_path = dir.join("instrument-modulation-and-touch.hex");
+    crate::save_new(&combined_path, combined).unwrap();
+    let bytes = std::fs::read(&combined_path).unwrap();
+    let document: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        document["modulation_base_version"],
+        crate::NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION
+    );
+    assert_eq!(crate::load(&combined_path).unwrap(), *combined);
     std::fs::remove_dir_all(dir).unwrap();
 }
