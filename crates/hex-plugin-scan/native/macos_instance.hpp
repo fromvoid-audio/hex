@@ -83,13 +83,13 @@ public:
     // the caller must also retain its module rather than unload live objects.
     ~Instance() = default;
 
-    bool open(IPluginFactory* admitted_factory, const TUID class_id,bool trace_messages=false) {
+    bool open(IPluginFactory* admitted_factory,const TUID class_id,bool trace_messages=false,bool editor_groups=false) {
         if (![NSThread isMainThread] || used || !admitted_factory || quarantined.load())
             return false;
         used = true;
         factory = admitted_factory;
         factory->addRef();
-        host = new(std::nothrow) Host(trace_messages);
+        host = new(std::nothrow) Host(trace_messages,editor_groups);
         if (!host) return false;
         if (factory->createInstance(class_id, INLINE_UID_OF(IComponent),
                                     reinterpret_cast<void**>(&component)) != kResultOk || !component)
@@ -520,7 +520,7 @@ public:
     bool synchronize_parameter_feedback_on_control() {
         return opened && host && !quarantined.load() && host->synchronize_parameter_feedback(controller);
     }
-    bool peek_parameter_edit(EditEvent& result) const { return host && host->peek_edit(result); }
+    bool peek_parameter_edit(EditEvent& result,size_t offset=0) const { return host && host->peek_edit(result,offset); }
     void consume_parameter_edit() { if(host) host->consume_edit(); }
     uint32 ready_parameter_edits() const { return host?host->ready_parameter_edits():0; }
     uint32 pending_parameter_edits() const { return host?host->pending_parameter_edits():0; }

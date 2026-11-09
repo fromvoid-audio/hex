@@ -115,7 +115,8 @@ impl Correlation {
             return Err("vst3 editor observations are out of order");
         }
         self.ordered_through = edit.sequence;
-        if edit.id != self.target.parameter
+        if edit.kind.is_group_marker()
+            || edit.id != self.target.parameter
             || self.selected.is_some_and(|begin| begin != edit.gesture)
         {
             return Ok(());
