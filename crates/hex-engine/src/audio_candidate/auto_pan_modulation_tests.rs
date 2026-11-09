@@ -89,6 +89,7 @@ fn auto_pan_modulation_matches_independent_sample_frames_in_both_compilers() {
     let source = ModulationSourceId::new(next).unwrap();
     let bank = DeviceModulation::new(
         vec![Modulator {
+            color: Default::default(),
             id: source,
             enabled: true,
             state: Settings {

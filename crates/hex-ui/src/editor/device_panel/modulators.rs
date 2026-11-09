@@ -367,6 +367,7 @@ fn apply(
             }
             .map_err(unsupported)?;
             sources.push(Modulator {
+                color: Default::default(),
                 id: ModulationSourceId::new(project.next_identity()).map_err(unsupported)?,
                 enabled: true,
                 state,
