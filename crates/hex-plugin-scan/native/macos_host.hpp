@@ -110,6 +110,9 @@ struct EditEvent {
     uint64 cohort=0;
     // Inclusive unread width in the atomically published worker batch.
     size_t batch_remaining=1;
+    // Main stamps the exact gesture's original Begin, even when a later
+    // move belongs to a different cohort or Begin is already read on control.
+    bool grouped_gesture=false;
 };
 enum class HostDisposition { Idle, Refreshed, InvalidMetadata, NoController, Recursive, Retiring, WrongThread, Capacity, Pending, EditQueued };
 struct HostDispatch {
@@ -147,6 +150,7 @@ class Host final : public IHostApplication, public IComponentHandler, public ICo
     std::atomic<uint64> pending_latency_restart{0};
     std::array<ParamID,HOST_EDIT_COUNT> active_ids{};
     std::array<uint64,HOST_EDIT_COUNT> active_tokens{};
+    std::array<bool,HOST_EDIT_COUNT> active_grouped{};
     size_t first=0, count=0, restart_count=0, active_count=0;
     uint64 sequence=0;
     const bool advertises_editor_groups;
@@ -490,7 +494,8 @@ private:
         if(sequence>=std::numeric_limits<uint64>::max()-(cohort?1:0)) {refuse_editor_edit(QueueFull);return kResultFalse;}
         const auto next=sequence+1;
         const auto gesture=kind==Begin?next:active_tokens[active];
-        const EditEvent event{next,gesture,value,id,kind,false,cohort};
+        const bool grouped=kind==Begin?cohort!=0:active_grouped[active];
+        const EditEvent event{next,gesture,value,id,kind,false,cohort,1,grouped};
         // Reserve one slot for each admitted gesture's End. A new Begin
         // consumes a record and adds a reservation. End spends its own.
         const auto available=requests.size()-count-end_reservations();
@@ -510,7 +515,9 @@ private:
         requests[(first+count)%requests.size()]=event;
         ++count;sequence=next;pending_edits.fetch_add(1,std::memory_order_release);
         if(kind==Perform) info->editor_sequence=next;
-        if(kind==Begin) {active_ids[vacant]=id;active_tokens[vacant]=gesture;++active_count;}
+        if(kind==Begin) {
+            active_ids[vacant]=id;active_tokens[vacant]=gesture;active_grouped[vacant]=grouped;++active_count;
+        }
         if(kind==End) {active_tokens[active]=0;--active_count;}
         return kResultOk;
     }
