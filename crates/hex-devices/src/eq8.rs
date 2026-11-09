@@ -334,12 +334,25 @@ fn decode_parameter_id(id: ParameterId) -> Result<(usize, usize), DeviceContract
     Ok(((zero / 40) as usize, (zero % 40) as usize))
 }
 
+impl Eq8Definition {
+    /// Asset-free fixed-inline factory used by the sealed native constructor.
+    pub fn prepare_owned(
+        state: &NativeDeviceState,
+        sample_rate: u32,
+        parameters: &[ParameterId],
+    ) -> Result<PreparedEq8, DeviceContractError> {
+        if parameters.is_empty() {
+            state.require_asset_free_processing()?;
+            PreparedEq8::new(decode(state)?, sample_rate)
+        } else {
+            automation::prepare(state, sample_rate, parameters)
+        }
+    }
+}
+
 impl NativeDeviceDefinition for Eq8Definition {
     fn source_effect_factory_bytes(&self) -> Option<usize> {
-        Some(
-            crate::source_effect_arc_bytes::<PreparedEq8>()
-                + crate::source_effect_arc_bytes::<[[[Coefficients; 4]; BAND_COUNT]; 2]>(),
-        )
+        Some(crate::source_effect_arc_bytes::<PreparedEq8>())
     }
     fn supports_parameter_automation(
         &self,
@@ -411,16 +424,23 @@ impl Coefficients {
 }
 
 type BandStages = [Coefficients; 4];
+type CoefficientBank = [BandStages; BAND_COUNT];
+type CoefficientTarget = [CoefficientBank; 2];
 
+fn channels(target: &CoefficientTarget) -> [&CoefficientBank; 2] {
+    let [left, right] = target;
+    [left, right]
+}
+
+/// Prepared coefficients and admitted bindings for a closed EQ8 instance.
 #[derive(Clone)]
-struct PreparedEq8 {
+pub struct PreparedEq8 {
     admitted: [bool; automation::COUNT],
     control_values: automation::ControlValues,
-    canonical_banks: [[BandStages; BAND_COUNT]; 5],
+    canonical_banks: [CoefficientBank; 5],
     sample_rate: u32,
     mode: ChannelMode,
     output_gain: f64,
-    target: Arc<[[[Coefficients; 4]; BAND_COUNT]; 2]>,
     enabled_bands: [[bool; BAND_COUNT]; 2],
 }
 
@@ -438,15 +458,9 @@ impl PreparedEq8 {
                 }
             }
         }
-        let selected = match settings.mode {
-            ChannelMode::Stereo => [0, 0],
-            ChannelMode::LeftRight => [1, 2],
-            ChannelMode::MidSide => [3, 4],
-        };
-        let mut target = [[[Coefficients::IDENTITY; 4]; BAND_COUNT]; 2];
+        let selected = automation::selected(settings.mode);
         let mut enabled_bands = [[false; BAND_COUNT]; 2];
         for (channel, bank_index) in selected.into_iter().enumerate() {
-            target[channel] = banks[bank_index];
             for (band, enabled) in enabled_bands[channel].iter_mut().enumerate() {
                 *enabled = settings.banks[bank_index][band].enabled;
             }
@@ -458,17 +472,16 @@ impl PreparedEq8 {
             sample_rate,
             mode: settings.mode,
             output_gain: f64::from(settings.output_gain),
-            target: Arc::new(target),
             enabled_bands,
         })
     }
 
     fn runtime(&self) -> Eq8Runtime {
+        let coefficients = automation::selected(self.mode).map(|bank| self.canonical_banks[bank]);
         Eq8Runtime {
             controls: crate::parameter_binding::Controls::new(self.control_values, self.admitted),
             tail_controls_frozen: false,
-            routing: self.admitted[automation::MODE_SLOT]
-                .then(|| automation::routing::RoutingAutomation::new(self.canonical_banks)),
+            routing: automation::routing::RoutingAutomation::new(self.canonical_banks),
             automated_target: None,
             band_automation_admitted: self.admitted[..automation::GAIN_SLOT].iter().any(|&v| v),
             band_targets_pending: self.admitted[..automation::GAIN_SLOT].iter().any(|&v| v),
@@ -476,10 +489,9 @@ impl PreparedEq8 {
             mode: self.mode,
             current_gain: self.output_gain,
             target_gain: self.output_gain,
-            coefficients: *self.target,
-            target: Arc::clone(&self.target),
+            coefficients,
             smooth_remaining: 0,
-            active_bands: active_band_flags(&self.target),
+            active_bands: active_band_flags(&coefficients),
             history: [[[[0.0; 2]; 4]; BAND_COUNT]; 2],
             enabled_bands: self.enabled_bands,
             audition_selection: None,
@@ -522,12 +534,13 @@ impl PreparedNativeProcessor for PreparedEq8 {
         {
             return None;
         }
+        let selected = automation::selected(self.mode);
         let response = std::array::from_fn(|channel| {
             let mut magnitude = self.output_gain;
             for band in 0..BAND_COUNT {
                 for stage in 0..4 {
                     magnitude *= response_magnitude(
-                        self.target[channel][band][stage],
+                        self.canonical_banks[selected[channel]][band][stage],
                         f64::from(frequency_hz),
                         f64::from(self.sample_rate),
                     );
@@ -546,8 +559,10 @@ impl PreparedNativeProcessor for PreparedEq8 {
 pub struct Eq8Runtime {
     controls: crate::parameter_binding::Controls<automation::ControlValues, { automation::COUNT }>,
     tail_controls_frozen: bool,
-    routing: Option<automation::routing::RoutingAutomation>,
-    automated_target: Option<[[[Coefficients; 4]; BAND_COUNT]; 2]>,
+    // One fixed canonical bank inventory serves both normal playback and
+    // mode changes. The primary and scratch runtime boxes own their storage.
+    routing: automation::routing::RoutingAutomation,
+    automated_target: Option<CoefficientTarget>,
     band_automation_admitted: bool,
     band_targets_pending: bool,
     sample_rate: u32,
@@ -555,7 +570,6 @@ pub struct Eq8Runtime {
     current_gain: f64,
     target_gain: f64,
     coefficients: [[[Coefficients; 4]; BAND_COUNT]; 2],
-    target: Arc<[[[Coefficients; 4]; BAND_COUNT]; 2]>,
     smooth_remaining: u16,
     active_bands: [[bool; BAND_COUNT]; 2],
     history: [[[[f64; 2]; 4]; BAND_COUNT]; 2],
@@ -779,7 +793,10 @@ impl Eq8Runtime {
         self.advance_audition();
         let source = route_input(self.mode, input);
         let mut filtered = source;
-        for (channel, filtered_channel) in filtered.iter_mut().enumerate() {
+        let targets = self
+            .routing
+            .effective_target(self.automated_target.as_ref(), self.controls.base().mode);
+        for (channel, (filtered_channel, target)) in filtered.iter_mut().zip(targets).enumerate() {
             for band in 0..BAND_COUNT {
                 if !self.active_bands[channel][band] {
                     continue;
@@ -791,7 +808,7 @@ impl Eq8Runtime {
                 );
                 self.active_bands[channel][band] = (0..4).any(|stage| {
                     self.coefficients[channel][band][stage] != Coefficients::IDENTITY
-                        || self.current_target()[channel][band][stage] != Coefficients::IDENTITY
+                        || target[band][stage] != Coefficients::IDENTITY
                         || self.history[channel][band][stage]
                             .iter()
                             .any(|value| *value != 0.0)
@@ -832,10 +849,10 @@ impl Eq8Runtime {
         self.tail_controls_frozen = false;
         self.history = [[[[0.0; 2]; 4]; BAND_COUNT]; 2];
         self.audition_history = [[[0.0; 2]; 4]; 2];
-        self.coefficients = *self.target;
+        self.coefficients = self.routing.canonical_target(self.mode).map(|bank| *bank);
         self.current_gain = self.target_gain;
         self.smooth_remaining = 0;
-        self.active_bands = active_band_flags(&self.target);
+        self.active_bands = active_band_flags(&self.coefficients);
         self.audition_selection = None;
         self.audition_request = None;
         self.audition_mix = 0.0;
@@ -860,7 +877,7 @@ impl Eq8Runtime {
                 self.target_gain = previous.target_gain;
             }
             if self.band_automation_admitted {
-                self.automated_target = Some(*previous.current_target());
+                self.automated_target = Some(previous.current_target().map(|bank| *bank));
                 self.band_targets_pending = true;
             }
         }
@@ -884,7 +901,7 @@ impl Eq8Runtime {
                 self.mode_fade.remaining = 0;
             }
             self.current_gain = previous.current_gain;
-            let same_target = *previous.current_target() == *self.current_target()
+            let same_target = previous.current_target() == self.current_target()
                 && previous.target_gain == self.target_gain;
             self.smooth_remaining = if same_target {
                 previous.smooth_remaining
@@ -958,15 +975,14 @@ impl Eq8Runtime {
         }
         let divisor = f64::from(self.smooth_remaining);
         let targets = self
-            .automated_target
-            .as_ref()
-            .unwrap_or(self.target.as_ref());
+            .routing
+            .effective_target(self.automated_target.as_ref(), self.controls.base().mode);
         for (current, target) in self
             .coefficients
             .iter_mut()
             .flatten()
             .flatten()
-            .zip(targets.iter().flatten().flatten())
+            .zip(targets.into_iter().flatten().flatten())
         {
             current.b0 += (target.b0 - current.b0) / divisor;
             current.b1 += (target.b1 - current.b1) / divisor;
@@ -976,7 +992,7 @@ impl Eq8Runtime {
         }
         self.smooth_remaining -= 1;
         if self.smooth_remaining == 0 {
-            self.coefficients = *targets;
+            self.coefficients = targets.map(|bank| *bank);
             self.current_gain = self.target_gain;
             self.refresh_active_bands();
         } else {
@@ -985,11 +1001,14 @@ impl Eq8Runtime {
     }
 
     fn refresh_active_bands(&mut self) {
-        for channel in 0..2 {
+        let targets = self
+            .routing
+            .effective_target(self.automated_target.as_ref(), self.controls.base().mode);
+        for (channel, target) in targets.into_iter().enumerate() {
             for band in 0..BAND_COUNT {
                 self.active_bands[channel][band] = (0..4).any(|stage| {
                     self.coefficients[channel][band][stage] != Coefficients::IDENTITY
-                        || self.current_target()[channel][band][stage] != Coefficients::IDENTITY
+                        || target[band][stage] != Coefficients::IDENTITY
                         || self.history[channel][band][stage]
                             .iter()
                             .any(|value| *value != 0.0)
