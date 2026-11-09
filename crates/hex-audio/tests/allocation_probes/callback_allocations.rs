@@ -1446,10 +1446,21 @@ fn hybrid_arrangement_audio_and_midi_callback_is_allocation_free_and_exact()
 
 #[test]
 fn reverb_automation_publication_and_render_are_allocation_free() -> Result<(), Box<dyn Error>> {
+    reverb_parameter_publication(false)
+}
+
+#[test]
+fn reverb_modulation_publication_and_render_are_allocation_free() -> Result<(), Box<dyn Error>> {
+    reverb_parameter_publication(true)
+}
+
+fn reverb_parameter_publication(with_modulation: bool) -> Result<(), Box<dyn Error>> {
     use hex_devices::reverb::{REVERB_TYPE_ID, parameter};
     use hex_project::{
         AutomationInterpolation, AutomationPoint, AutomationValue, DeviceAutomationTarget,
-        DeviceAutomationTouchSpan, DeviceAutomationTouchStep,
+        DeviceAutomationTouchSpan, DeviceAutomationTouchStep, DeviceModulation,
+        DeviceModulationRoute, ElementColor, ModulationAmount, ModulationDestination,
+        ModulationOutputId, ModulationRange, ModulationRouteId, ModulationSourceId, Modulator,
     };
     let mut editor = Editor::new(Project::new(RATE)?, 8)?;
     let Created::Imported { track, asset, .. } =
@@ -1523,8 +1534,42 @@ fn reverb_automation_publication_and_render_are_allocation_free() -> Result<(), 
             }],
         }],
     })?;
-    let path =
-        std::env::temp_dir().join(format!("hex-reverb-automation-{}.hex", std::process::id()));
+    if with_modulation {
+        let next = editor.project().next_identity();
+        let source = ModulationSourceId::new(next)?;
+        editor.execute(Command::ReplaceDeviceModulation {
+            device,
+            modulation: DeviceModulation::new(
+                vec![Modulator {
+                    id: source,
+                    enabled: true,
+                    color: ElementColor::default(),
+                    state: hex_engine::lfo_modulator::Settings {
+                        rate: hex_engine::lfo_modulator::Rate::Hertz(f64::from(RATE) * 0.125),
+                        phase: 0.0,
+                    }
+                    .encode()?,
+                }],
+                vec![DeviceModulationRoute {
+                    id: ModulationRouteId::new(next + 1)?,
+                    source,
+                    output: ModulationOutputId::MAIN,
+                    destination: ModulationDestination::Device {
+                        device_type: REVERB_TYPE_ID,
+                        target: DeviceAutomationTarget::Parameter(parameter::DRY_WET),
+                        vst3_class: None,
+                    },
+                    amount: ModulationAmount::new(0.25)?,
+                    range: ModulationRange::default(),
+                    enabled: true,
+                }],
+            )?,
+        })?;
+    }
+    let path = std::env::temp_dir().join(format!(
+        "hex-reverb-automation-{}-{with_modulation}.hex",
+        std::process::id(),
+    ));
     hex_storage::save_new(&path, editor.project())?;
     let reopened = hex_storage::load(&path);
     std::fs::remove_file(path)?;
