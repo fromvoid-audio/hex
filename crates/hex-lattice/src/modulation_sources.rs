@@ -13,7 +13,9 @@
 //! the prepared tempo. Rate/mode retargeting follows the same block transaction
 //! as phase, and graph inheritance retains the new graph's prepared timing mode.
 use crate::{
-    NativeInstrumentClock, SourceModulationParameter, modulation_source_routes::PreparedSourceRoute,
+    NativeInstrumentClock, NativeInstrumentEvent, SourceModulationParameter,
+    modulation_note_counter::{NoteCounter, validate_events},
+    modulation_source_routes::PreparedSourceRoute,
 };
 use hex_dsp::{EnvelopeFollower, LfoRate, LfoWaveform, ModulationLfo, RandomHold, StereoFrame};
 use hex_lattice_contract::{DeviceContractError as Error, ModulationOutputId, ModulationSourceId};
@@ -131,6 +133,7 @@ enum SourceState {
     Macro(f32),
     Math(MathControls),
     Mix(MixControls),
+    NoteCounter(NoteCounter),
     Random(RandomHold),
 }
 
@@ -160,6 +163,7 @@ impl SourceState {
             | (Self::Math(_), Self::Math(_))
             | (Self::Mix(_), Self::Mix(_)) => {}
             (Self::AudioRate, Self::AudioRate) => {}
+            (Self::NoteCounter(counter), Self::NoteCounter(old)) => counter.inherit(old),
             (Self::Random(random), Self::Random(old)) => random.inherit_history(&old),
             _ => return false,
         }
@@ -225,6 +229,11 @@ impl PreparedModulationSource {
             self.initial,
             SourceState::Follower(_) | SourceState::AudioRate
         )
+    }
+
+    /// True when rendering needs the instrument owner's ordered note events.
+    pub fn reads_note_events(&self) -> bool {
+        matches!(self.initial, SourceState::NoteCounter(_))
     }
 
     pub fn sample_rate(&self) -> f64 {
@@ -401,6 +410,27 @@ impl PreparedModulationSource {
         })
     }
 
+    /// Advance by a positive increment at each Note On and wrap after
+    /// `steps`. The first onset advances from step zero; note releases
+    /// do not change the held step.
+    pub fn note_counter(
+        id: ModulationSourceId,
+        sample_rate: u32,
+        steps: u16,
+        increment: u16,
+        bipolar: bool,
+    ) -> Result<Self, Error> {
+        if !(8_000..=192_000).contains(&sample_rate) {
+            return Err(Error::InvalidParameterValue);
+        }
+        Ok(Self {
+            id,
+            output: ModulationOutputId::MAIN,
+            initial: SourceState::NoteCounter(NoteCounter::new(steps, increment, bipolar)?),
+            sample_rate: f64::from(sample_rate),
+        })
+    }
+
     /// Prepare a free-running, seeded sample-and-hold source.
     pub fn random_hold(
         id: ModulationSourceId,
@@ -436,6 +466,7 @@ pub struct ModulationSourceBank {
     last_frames: usize,
     active: bool,
     follows_input: bool,
+    follows_notes: bool,
 }
 impl ModulationSourceBank {
     pub(crate) fn quoted_heap_bytes(sources: usize, frames: usize) -> Option<usize> {
@@ -544,6 +575,9 @@ impl ModulationSourceBank {
             follows_input: sources
                 .iter()
                 .any(PreparedModulationSource::reads_audio_input),
+            follows_notes: sources
+                .iter()
+                .any(PreparedModulationSource::reads_note_events),
         };
         if bank
             .storage_bytes()?
@@ -639,7 +673,7 @@ impl ModulationSourceBank {
         clock: Option<&dyn NativeInstrumentClock>,
         input: Option<&[StereoFrame]>,
     ) -> Result<(), Error> {
-        self.render_chunk_with_routes(frames, clock, input, &[], 0)
+        self.render_chunk_with_routes(frames, clock, input, None, &[], 0)
     }
 
     pub(crate) fn render_chunk_with_routes(
@@ -647,6 +681,7 @@ impl ModulationSourceBank {
         frames: usize,
         clock: Option<&dyn NativeInstrumentClock>,
         input: Option<&[StereoFrame]>,
+        note_events: Option<&[NativeInstrumentEvent]>,
         routes: &[PreparedSourceRoute],
         target_mask: u32,
     ) -> Result<(), Error> {
@@ -666,6 +701,9 @@ impl ModulationSourceBank {
             })
         {
             return Err(Error::InvalidParameterValue);
+        }
+        if self.follows_notes {
+            validate_events(note_events.ok_or(Error::InvalidParameterValue)?, frames)?;
         }
         let follows_tempo = self
             .sources
@@ -730,6 +768,9 @@ impl ModulationSourceBank {
                 SourceState::Macro(value) => output.fill(*value),
                 SourceState::Math(controls) => output.fill(controls.sample([0.0; 2])),
                 SourceState::Mix(controls) => output.fill(controls.sample([0.0; 3])),
+                SourceState::NoteCounter(counter) => {
+                    counter.render(note_events.ok_or(Error::InvalidParameterValue)?, output);
+                }
                 SourceState::Random(random) => random.render(output),
             }
         }
@@ -1415,7 +1456,7 @@ mod tests {
         let mut bank = ModulationSourceBank::new(&sources, 13).unwrap();
         let whole_clock = clock(0, false);
         bank.begin();
-        bank.render_chunk_with_routes(13, Some(&whole_clock), None, &routes, mask)
+        bank.render_chunk_with_routes(13, Some(&whole_clock), None, None, &routes, mask)
             .unwrap();
         assert_eq!(whole_clock.queries.get(), expected.len());
         assert_eq!(bank.samples(id).unwrap(), expected);
@@ -1423,13 +1464,20 @@ mod tests {
 
         bank.begin();
         assert!(
-            bank.render_chunk_with_routes(13, Some(&clock(0, true)), None, &routes, mask)
+            bank.render_chunk_with_routes(13, Some(&clock(0, true)), None, None, &routes, mask)
                 .is_err()
         );
         let mut offset = 0;
         for count in [3, 1, 9] {
-            bank.render_chunk_with_routes(count, Some(&clock(offset, false)), None, &routes, mask)
-                .unwrap();
+            bank.render_chunk_with_routes(
+                count,
+                Some(&clock(offset, false)),
+                None,
+                None,
+                &routes,
+                mask,
+            )
+            .unwrap();
             assert_eq!(bank.samples(id).unwrap(), &expected[offset..offset + count]);
             offset += count;
         }
