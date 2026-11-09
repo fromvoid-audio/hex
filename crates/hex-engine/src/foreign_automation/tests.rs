@@ -675,7 +675,7 @@ fn a_dense_raw_id_has_no_sparse_base_and_refuses_an_active_envelope() {
     let mut output = [ForeignParameterPoint::default(); 8];
     let used = hex_lattice::ForeignAutomationProgram::render_quantum(
         &program,
-        &[Some(0); 8],
+        &std::array::from_fn::<_, 8, _>(|frame| Some(frame as u64)),
         &[],
         &mut output,
     )
