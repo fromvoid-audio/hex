@@ -746,3 +746,118 @@ fn foreign_dense_chunk_transactions_do_not_allocate_or_free() {
         (0, 0, 0, 0)
     );
 }
+
+#[test]
+fn foreign_effect_graph_delivers_dense_values_without_allocating_or_freeing() {
+    use hex_lattice::{
+        ForeignModulationRoute, ForeignModulationSamples, ForeignProcessorNode, ForeignProcessors,
+        NativeInstrumentClock, NativeRuntimeChain, PreparedForeignModulation,
+        PreparedForeignProcessor, PreparedProcessorFactory, PreparedRuntimeInstance,
+        ProcessorChainOwner, StereoFrame, StereoMatrix,
+    };
+    use hex_lattice_contract::{DeviceTypeId, ForeignProcessorBinding, NativeDeviceState};
+
+    #[derive(Default)]
+    struct Endpoint(usize);
+    impl ForeignProcessors for Endpoint {
+        fn process_segment(
+            &mut self,
+            _: ForeignProcessorNode<'_>,
+            _: usize,
+            _: &mut [StereoFrame],
+            _: Option<&dyn NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            Err(DeviceContractError::ForeignProcessingUnavailable)
+        }
+        fn process_segment_with_modulation(
+            &mut self,
+            _: ForeignProcessorNode<'_>,
+            offset: usize,
+            frames: &mut [StereoFrame],
+            lane: ForeignModulationSamples<'_>,
+            _: Option<&dyn NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            assert_eq!(offset, self.0);
+            assert_eq!(lane.id, 0);
+            assert_eq!(lane.normalized.len(), frames.len());
+            self.0 += frames.len();
+            black_box(lane.normalized);
+            Ok(())
+        }
+        fn reject_callback(&mut self) {}
+    }
+
+    let binding = ForeignProcessorBinding {
+        root: 1,
+        instance: 17,
+        graph: 2,
+        epoch: 3,
+    };
+    let kind = DeviceTypeId::from_static("test.foreign");
+    let modulation = PreparedForeignModulation::new(
+        0,
+        0.5,
+        vec![
+            PreparedModulationSource::free(ModulationSourceId::new(1).unwrap(), 48_000.0, 7.0, 0.0)
+                .unwrap(),
+        ],
+        &[ForeignModulationRoute {
+            source: 0,
+            amount: 0.25,
+            range: [-1.0, 1.0],
+        }],
+        &[],
+        64,
+    )
+    .unwrap()
+    .into_effect_modulation(binding)
+    .unwrap();
+    let mut chain = NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+        modulation: Some(modulation),
+        automation: Default::default(),
+        meter: Default::default(),
+        owner: ProcessorChainOwner::Main,
+        device_id: 17,
+        device_type: kind,
+        matrix: StereoMatrix::identity(),
+        bypassed: false,
+        sample_rate: 48_000,
+        configuration: Some(std::sync::Arc::new(
+            NativeDeviceState::new(kind, 1, vec![]).unwrap(),
+        )),
+        definition: Some(PreparedProcessorFactory::Foreign(
+            PreparedForeignProcessor::new(256, 0, 512)
+                .unwrap()
+                .with_binding(binding)
+                .unwrap(),
+        )),
+    }])
+    .unwrap();
+    let mut endpoint = Endpoint::default();
+    let mut pcm = [[0.25, -0.25]; 256];
+    let counts = allocation_counter::measure(|| {
+        chain.begin_block();
+        chain
+            .process_range_with_foreign(0..1, &mut pcm, 0, None, None, &mut endpoint)
+            .unwrap();
+        chain.commit_block();
+        assert_eq!(endpoint.0, 256);
+        endpoint.0 = 0;
+        chain.begin_output_tail();
+        chain.begin_block();
+        chain
+            .process_range_with_foreign(0..1, &mut pcm, 0, None, None, &mut endpoint)
+            .unwrap();
+        chain.rollback_block();
+    });
+    assert_eq!(endpoint.0, 256);
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+}

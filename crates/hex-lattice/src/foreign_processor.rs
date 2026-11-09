@@ -1,7 +1,7 @@
 //! Borrowed, fallible foreign graph processing, separate from rollbackable DSP.
 //! The host retains actual source/endpoint/worker custody and performs final
 //! host-format acceptance. A scalar declaration or state equality grants none.
-use crate::{NativeInstrumentClock, ProcessorChainOwner, StereoFrame};
+use crate::{ForeignModulationSamples, NativeInstrumentClock, ProcessorChainOwner, StereoFrame};
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, ForeignParameterPoint, ForeignProcessorBinding,
     NativeDeviceState,
@@ -573,6 +573,21 @@ pub trait ForeignProcessors {
             frames.fill([0.0; 2]);
             Err(DeviceContractError::ForeignProcessingUnavailable)
         }
+    }
+    /// Stage a dense value lane through the same endpoint and host acceptance
+    /// as PCM. Values are normalized f64 at the supplied segment's offsets.
+    /// Hosts without the exact reservation must refuse before dispatch.
+    fn process_segment_with_modulation(
+        &mut self,
+        _node: ForeignProcessorNode<'_>,
+        _frame_offset: usize,
+        frames: &mut [StereoFrame],
+        _lane: ForeignModulationSamples<'_>,
+        _clock: Option<&dyn NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        self.reject_callback();
+        frames.fill([0.0; 2]);
+        Err(DeviceContractError::ForeignProcessingUnavailable)
     }
     /// Stage ordered note events along with the segment. Like PCM, staged
     /// events become visible to the worker only after host acceptance.
