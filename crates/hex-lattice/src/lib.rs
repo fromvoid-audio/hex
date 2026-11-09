@@ -1032,6 +1032,16 @@ impl<'a> NativeRuntimeEntryStorage<'a> {
     pub fn is_owned_transaction(&self) -> bool {
         matches!(self.entry.runtime, RuntimeOwnership::Owned(_))
     }
+    /// Read-only typed view of the actual owned transaction. The caller retains
+    /// the closed constructor's independent factory and storage custody proofs.
+    pub fn owned_runtime<T: OwnedProcessorRuntime>(&self) -> Option<&T> {
+        let RuntimeOwnership::Owned(runtime) = &self.entry.runtime else {
+            return None;
+        };
+        let concrete: &dyn std::any::Any = runtime.as_ref();
+        concrete.downcast_ref()
+    }
+
     /// Borrow only actual scalar foreign facts. This transfers no endpoint or
     /// source custody and cannot classify another runtime family as foreign.
     pub fn foreign_processor(&self) -> Option<PreparedForeignProcessor> {

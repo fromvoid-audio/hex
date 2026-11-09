@@ -71,6 +71,27 @@ impl<'a> SourceAutomation<'a> {
             frames,
         }
     }
+    pub(super) fn block_with_input(
+        &self,
+        input: Option<hex_lattice::NativeTransientInput>,
+    ) -> Result<Option<hex_lattice::ParameterAutomationBlock<'_>>, SessionPlaybackError> {
+        let Some(input) = input else {
+            return Ok(self.block());
+        };
+        let program = self
+            .program
+            .filter(|program| program.input_target() == Some(input.operation.target()))
+            .ok_or(SessionPlaybackError::DeviceRuntime)?;
+        let clock = self
+            .clock
+            .as_ref()
+            .ok_or(SessionPlaybackError::DeviceRuntime)?;
+        program
+            .block_with_input(Some(clock), self.frames, input.operation.value())
+            .map(Some)
+            .map_err(|_| SessionPlaybackError::DeviceRuntime)
+    }
+
     pub(super) fn block(&self) -> Option<hex_lattice::ParameterAutomationBlock<'_>> {
         self.program.map(|program| {
             program.block(

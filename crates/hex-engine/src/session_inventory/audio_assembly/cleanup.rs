@@ -49,6 +49,7 @@ impl SessionAssembly {
             mutable_history_retarget_storage_bytes: _,
             instrument_automation_storage_bytes: _,
             instrument_automation_indices: _,
+            armed_instrument_index: _,
             audio_clips,
             work: _,
             contains_streamed_sources: _,

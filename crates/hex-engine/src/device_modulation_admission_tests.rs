@@ -347,10 +347,26 @@ fn saved_lfos_modulate_automation_per_sample_in_arrangement_session_and_sealed_p
 
 #[test]
 fn envelope_follower_samples_the_owning_effect_input_before_processing() {
-    use hex_devices::{
-        modulation::envelope_follower::Settings,
-        utility::{MAX_UTILITY_GAIN, UTILITY_DEFINITION, UTILITY_TYPE_ID, parameter},
-    };
+    let state = hex_devices::modulation::envelope_follower::Settings {
+        attack_seconds: 0.0,
+        release_seconds: 0.0,
+    }
+    .encode()
+    .unwrap();
+    assert_utility_input_modulation(state, [0.0, 0.25, 0.5, 0.2, 0.0, 0.8, 0.25, 0.125]);
+}
+
+#[test]
+fn audio_rate_provider_preserves_bipolar_sample_depth_through_the_engine() {
+    let state = hex_devices::modulation::audio_rate::default_state().unwrap();
+    assert_utility_input_modulation(state, [0.0, -0.0625, -0.2, 0.1, 0.0, 0.55, -0.125, -0.0125]);
+}
+
+fn assert_utility_input_modulation(
+    state: hex_lattice_contract::NativeDeviceState,
+    levels: [f32; 8],
+) {
+    use hex_devices::utility::{MAX_UTILITY_GAIN, UTILITY_DEFINITION, UTILITY_TYPE_ID, parameter};
     use hex_project::{
         DeviceModulationRoute, ModulationAmount, ModulationDestination, ModulationOutputId,
         ModulationRange, ModulationRouteId,
@@ -377,12 +393,7 @@ fn envelope_follower_samples_the_owning_effect_input_before_processing() {
             color: Default::default(),
             id: source,
             enabled: true,
-            state: Settings {
-                attack_seconds: 0.0,
-                release_seconds: 0.0,
-            }
-            .encode()
-            .unwrap(),
+            state,
         }],
         vec![DeviceModulationRoute {
             id: ModulationRouteId::new(next + 1).unwrap(),
@@ -422,10 +433,9 @@ fn envelope_follower_samples_the_owning_effect_input_before_processing() {
     let mut output = [[0.0; 2]; 8];
     renderer.render(&mut output[..3]).unwrap();
     renderer.render(&mut output[3..]).unwrap();
-    let levels = [0.0, 0.25, 0.5, 0.2, 0.0, 0.8, 0.25, 0.125];
-    for ((actual, input), peak) in output.into_iter().zip(inputs).zip(levels) {
+    for ((actual, input), level) in output.into_iter().zip(inputs).zip(levels) {
         for (output, dry) in actual.into_iter().zip(input) {
-            assert!((output - dry * (1.0 + peak)).abs() < 1e-6, "{output}");
+            assert!((output - dry * (1.0 + level)).abs() < 1e-6, "{output}");
         }
     }
 }

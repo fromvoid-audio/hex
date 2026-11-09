@@ -17,7 +17,7 @@
 use super::*;
 use super::{filter::BandPass, lfo::Lfo};
 pub(super) const MAX_SECONDS: usize = 16;
-pub(super) struct Factory {
+pub struct Factory {
     pub(super) settings: Settings,
     pub(super) rate: u32,
     pub(super) admitted: [bool; automation::COUNT],
@@ -191,7 +191,7 @@ fn lfo_increment(s: automation::LfoControls, rate: u32, tempo: u32) -> f64 {
     };
     hz / f64::from(rate)
 }
-pub(super) struct Runtime {
+pub struct Runtime {
     settings: Settings,
     rate: u32,
     committed: Vec<StereoFrame>,
@@ -540,6 +540,21 @@ struct BlockSettings {
     alpha: f64,
     fade_frames: u32,
 }
+impl Runtime {
+    /// Actual exclusive box and both independently reserved ring capacities.
+    /// This read-only accounting view exposes no ring contents or custody.
+    pub fn control_storage(&self) -> Option<(usize, [usize; 2])> {
+        let bytes = |ring: &Vec<StereoFrame>| {
+            ring.capacity()
+                .checked_mul(std::mem::size_of::<StereoFrame>())
+        };
+        Some((
+            std::mem::size_of::<Self>(),
+            [bytes(&self.committed)?, bytes(&self.scratch)?],
+        ))
+    }
+}
+
 impl OwnedProcessorRuntime for Runtime {
     fn supports_parameter_automation(&self, id: hex_lattice_contract::ParameterId) -> bool {
         self.primary.controls.supports(&automation::BINDINGS, id)
@@ -564,12 +579,8 @@ impl OwnedProcessorRuntime for Runtime {
     }
 
     fn fixed_storage_pair_bytes(&self) -> Option<usize> {
-        std::mem::size_of::<Self>().checked_add(
-            self.committed
-                .capacity()
-                .checked_add(self.scratch.capacity())?
-                .checked_mul(std::mem::size_of::<StereoFrame>())?,
-        )
+        let (inline, [committed, scratch]) = self.control_storage()?;
+        inline.checked_add(committed)?.checked_add(scratch)
     }
     fn begin_block(&mut self) {
         if self.open {
