@@ -7064,6 +7064,84 @@ fn modulation_panel_maps_authored_fm4_connection_depths(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
+fn modulation_panel_maps_vector_output_and_preserves_the_authored_state(cx: &mut TestAppContext) {
+    use hex_devices::operator_state::{OPERATOR_METADATA, OPERATOR_TYPE_ID};
+    use hex_lattice_contract::NativeDeviceMetadata;
+    use hex_project::{DeviceAutomationTarget, ModulationDestination};
+
+    let service = Service::new(48_000, 8, 8_000_000).unwrap();
+    receive_service_event(&service);
+    let original = OPERATOR_METADATA.default_state().unwrap();
+    service
+        .submit(Request::Edit(Command::InsertTrackWithDevice {
+            name: "vector".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: original.clone(),
+        }))
+        .unwrap();
+    let event = receive_service_event(&service);
+    let Some(Created::Track(track)) = event.created else {
+        panic!("vector fixture: {:?}", event.error);
+    };
+    let device = event
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let (handle, editor) = actor_editor_window(cx, service, event.state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1600.0), px(650.0)));
+    visual.run_until_parked();
+    let bank = |view: &EditorView| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .modulation()
+            .clone()
+    };
+    click_modulator_control(&mut visual, "device-modulator-toggle".into(), false);
+    add_modulator_from_menu(&mut visual, device, "lfo");
+    pump_until(&editor, cx, |view| bank(view).sources().len() == 1);
+    visual.run_until_parked();
+    let source = editor.read_with(cx, |view, _| bank(view).sources()[0].id);
+    click_modulator_control(&mut visual, format!("lfo-{}-map", source.value()), true);
+    let input = Box::leak(format!("map-input-gain-{}", device.value()).into_boxed_str());
+    assert!(visual.debug_bounds(input).is_none());
+    click_modulator_control(
+        &mut visual,
+        format!("map-output-gain-{}", device.value()),
+        true,
+    );
+    pump_until(&editor, cx, |view| bank(view).routes().len() == 1);
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        let current = project.device(device).unwrap();
+        let route = current.modulation().routes()[0];
+        assert_eq!(route.source, source);
+        assert_eq!(
+            route.destination,
+            ModulationDestination::Device {
+                device_type: OPERATOR_TYPE_ID,
+                target: DeviceAutomationTarget::HostOutputGain,
+                vst3_class: None,
+            }
+        );
+        assert_eq!(current.state(), &original);
+        let reopened = hex_storage::decode(&hex_storage::encode(project).unwrap()).unwrap();
+        assert_eq!(&reopened, project.as_ref());
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| bank(view).routes().is_empty());
+}
+
+#[gpui::test]
 fn modulation_panel_maps_only_the_fm4_host_output_stage(cx: &mut TestAppContext) {
     exercise_fm4_modulation_mapper(cx, Fm4MappingFixture::HostOutput);
 }
