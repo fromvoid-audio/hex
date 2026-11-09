@@ -7293,6 +7293,9 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
     let service = Service::new(48_000, 8, 8_000_000).unwrap();
     receive_service_event(&service);
     let mut original = FM4_DEFINITION.default_state().unwrap();
+    if output_trim {
+        original = original.with_output_gain_millidb(-6_000).unwrap();
+    }
     if edges {
         for id in edge_targets {
             original = FM4_DEFINITION

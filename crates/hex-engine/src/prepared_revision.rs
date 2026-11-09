@@ -163,6 +163,23 @@ impl std::fmt::Debug for PreparedRevision {
     }
 }
 
+/// Prepare the authored and resource-backed graphs independently, then let
+/// the admitted instrument program take sole ownership of its output trim.
+fn assign_prepared_instrument_output_trims(
+    arrangement: &mut PlaybackProject,
+    session: &PreparedSessionInventory,
+) {
+    for (index, track) in arrangement.tracks.iter_mut().enumerate() {
+        if track.instrument_output_gain != 1.0
+            && track
+                .instrument_id
+                .is_some_and(|device| session.has_instrument_output_modulation_at(index, device))
+        {
+            track.instrument_output_gain = 1.0;
+        }
+    }
+}
+
 impl PreparedRevision {
     #[cfg(test)]
     pub(crate) fn test_install_source_effect_recipes(
@@ -775,7 +792,7 @@ impl PreparedRevision {
                     "shared instrument context revision budget exceeded",
                 ));
             }
-            let (arrangement, midi_preview) = crate::compile::project_with_source_bank(
+            let (mut arrangement, midi_preview) = crate::compile::project_with_source_bank(
                 project,
                 sources,
                 Some(Arc::clone(&sine_table)),
@@ -797,6 +814,7 @@ impl PreparedRevision {
                 samplers,
                 native_input,
             )?;
+            assign_prepared_instrument_output_trims(&mut arrangement, &session);
             session.validate_shared_source_capacity(project, &arrangement)?;
             let source_routing = crate::PreparedSourceRouting::prepare_for_playback(
                 project,
@@ -1100,7 +1118,7 @@ impl PreparedRevision {
                 "shared instrument context revision budget exceeded",
             ));
         }
-        let (arrangement, midi_preview) =
+        let (mut arrangement, midi_preview) =
             crate::compile::project_with_prepared_audio_sources_and_midi_preview_and_contexts(
                 project,
                 sources,
@@ -1119,6 +1137,7 @@ impl PreparedRevision {
                 &instruments,
                 shared_contexts,
             )?;
+        assign_prepared_instrument_output_trims(&mut arrangement, &session);
         session.validate_shared_source_capacity(project, &arrangement)?;
         let source_routing =
             crate::PreparedSourceRouting::prepare_for_playback(project, &arrangement, &session)?;
