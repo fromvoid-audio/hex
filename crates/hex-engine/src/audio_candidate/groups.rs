@@ -101,6 +101,7 @@ impl<'a> Transfer<'a> {
         for entry in view.entries() {
             bytes = bytes
                 .checked_add(entry.automation().storage_bytes().ok_or(invalid)?)
+                .and_then(|bytes| bytes.checked_add(entry.modulation_storage_bytes()?))
                 .ok_or(invalid)?;
             if let Some((a, b)) =
                 crate::native_effect_storage::pair_bytes(&entry).map_err(|_| invalid)?

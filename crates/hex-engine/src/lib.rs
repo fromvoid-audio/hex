@@ -115,6 +115,13 @@ pub use native_device_view::{
 pub use sparse_audio::SparseFrameMap;
 
 mod device_automation;
+mod device_modulation;
+pub use device_modulation::project_device_modulation_target_supported;
+/// Versioned, control-side settings for the built-in envelope follower.
+pub use hex_devices::modulation::envelope_follower as follower_modulator;
+/// Versioned, control-side settings for the built-in LFO modulator.
+pub use hex_devices::modulation::lfo as lfo_modulator;
+
 mod native_parameter_input;
 pub use device_automation::{
     DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED, NativeParameterInputTarget,
@@ -2849,8 +2856,15 @@ impl RendererRuntime {
             match source_effect_stage::SourceEffectStages::prepare(project, recipes) {
                 Ok(stages) => stages,
                 Err(error) => {
-                    runtime_error = Some(error.0);
-                    source_effect_stage::SourceEffectStages::default()
+                    return Self {
+                        device_chains,
+                        source_effects: source_effect_stage::SourceEffectStages::default(),
+                        return_chains,
+                        main_chain: hex_lattice::NativeRuntimeChain::empty(),
+                        return_scratch,
+                        runtime_error: Some(error.0),
+                        compensation: None,
+                    };
                 }
             };
         let main_chain = match project.new_main_device_runtime() {

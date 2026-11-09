@@ -1,5 +1,7 @@
 use crate::{ControlStyle, DEVICE_CORNER_RADIUS, DeviceFrameStyle};
-use gpui::{Div, IntoElement, SharedString, TextRun, canvas, div, point, prelude::*, px, rgb};
+use gpui::{
+    AnyElement, Div, IntoElement, SharedString, TextRun, canvas, div, point, prelude::*, px, rgb,
+};
 
 /// Canonical compact shell geometry, in logical pixels, for every device.
 pub const DEVICE_FRAME_HEADER_WIDTH: f32 = 24.0;
@@ -194,8 +196,8 @@ pub fn device_display(style: ControlStyle) -> Div {
 /// header and surround use the same surface, without an intervening border.
 /// The left header keeps its controls above a flexible vertical title slot.
 /// The caller owns device commands and supplies a stable parent element identity.
-/// Shared housing toggles own only transient macro/modulator placeholder visibility;
-/// they never alter device state. Open panels share a scroll region with the body.
+/// Shared housing toggles own transient panel visibility. Open panels share
+/// a scroll region with the body.
 /// Use `device_body` for rounded body/content containment.
 pub fn device_frame(
     title: impl IntoElement,
@@ -203,6 +205,19 @@ pub fn device_frame(
     leading_control: impl IntoElement,
     header_actions: impl IntoElement,
     body: impl IntoElement,
+) -> Div {
+    device_frame_with_modulators(title, style, leading_control, header_actions, body, None)
+}
+
+/// Shared housing with production modulator contents. The caller owns every
+/// edit and binding. The housing only manages the disclosure and its focus.
+pub fn device_frame_with_modulators(
+    title: impl IntoElement,
+    style: impl Into<DeviceFrameStyle>,
+    leading_control: impl IntoElement,
+    header_actions: impl IntoElement,
+    body: impl IntoElement,
+    modulator_panel: Option<AnyElement>,
 ) -> Div {
     let style = style.into();
     let radius = DEVICE_CORNER_RADIUS;
@@ -218,6 +233,7 @@ pub fn device_frame(
         .overflow_hidden()
         .child(crate::device_housing::Housing {
             body: body.into_any_element(),
+            modulator_panel,
             title: title.into_any_element(),
             leading: leading_control.into_any_element(),
             actions: header_actions.into_any_element(),

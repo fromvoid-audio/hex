@@ -5,7 +5,9 @@
 //! callback terminal nor an unavailable worker resolves that recovery custody.
 use super::EditorView;
 use hex_audio::{
-    native_parameter_input::{AbortReason, Receipt, Target},
+    native_parameter_input::{
+        AbortReason, MAX_PENDING_RECEIPTS, MAX_PENDING_VALUE_RECEIPTS, Receipt, Target,
+    },
     prepared::{Client, RetiredScalarReceiptBatch, RetiredScalarReceipts, ScalarReceipt},
 };
 use hex_engine::{NativeParameterApplication, NativeTransientValue};
@@ -15,12 +17,19 @@ use hex_session::{
     device_gesture::{GestureKey, GestureTarget},
     service::{
         DeviceAutomationTakeAction as Action, DeviceAutomationTakeProgress as Progress,
-        DeviceAutomationTakeScope, Event, Request,
+        DeviceAutomationTakeScope, Event, MAX_NATIVE_RECOVERY_CONTINUATION_EVENTS, Request,
         automation_draft::{DraftProvenance, EVENTS_PER_BATCH},
     },
 };
 use hex_widgets::NumericEventPhase;
 use std::sync::{Arc, atomic::Ordering::Acquire};
+
+// A refused writer batch can coexist with an entire endpoint window. Reserve
+// room to read the terminal even when both sets of applied values are full.
+const RETAINED_BATCH_CAPACITY: usize = EVENTS_PER_BATCH + MAX_PENDING_RECEIPTS;
+const _: () = assert!(
+    EVENTS_PER_BATCH + MAX_PENDING_VALUE_RECEIPTS <= MAX_NATIVE_RECOVERY_CONTINUATION_EVENTS
+);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Arm {
@@ -111,6 +120,27 @@ impl Touch {
         }
     }
 
+    /// Drain one bounded source window. Return true only if the source had
+    /// no further receipt before the current work or storage limit.
+    fn drain_receipts(&mut self, mut next: impl FnMut() -> Option<ScalarReceipt>) -> bool {
+        let (capacity, steps) = if self.phase == Phase::Orphaned {
+            (RETAINED_BATCH_CAPACITY, MAX_PENDING_RECEIPTS)
+        } else {
+            (EVENTS_PER_BATCH, EVENTS_PER_BATCH)
+        };
+        for _ in 0..steps {
+            if self.batch.len() >= capacity || self.terminal.is_some() {
+                break;
+            }
+            match next() {
+                Some(ScalarReceipt::NativeParameter(receipt)) => self.receipt(receipt),
+                Some(ScalarReceipt::Gain(_)) => {}
+                None => return true,
+            }
+        }
+        false
+    }
+
     fn drain(&mut self, client: Option<&mut Client>) {
         if self.terminal.is_some()
             || self
@@ -120,17 +150,11 @@ impl Touch {
             return;
         }
         if let Some(client) = client {
-            // Normal credits and terminal receipts have bounded callback
-            // capacity. Stop at the batch bound, including across retries.
-            for _ in 0..EVENTS_PER_BATCH {
-                if self.batch.len() == EVENTS_PER_BATCH || self.terminal.is_some() {
-                    break;
-                }
-                let Some(receipt) = client.native_parameter_receipt() else {
-                    break;
-                };
-                self.receipt(receipt);
-            }
+            self.drain_receipts(|| {
+                client
+                    .native_parameter_receipt()
+                    .map(ScalarReceipt::NativeParameter)
+            });
             return;
         }
         if self.retired_batch.is_none()
@@ -146,18 +170,18 @@ impl Touch {
             }
         }
         if let Some(batch) = self.retired_batch.take() {
-            {
+            let mut read = 0;
+            let exhausted = {
                 let mut receipts = batch.receipts().skip(self.retired_read);
-                while self.batch.len() < EVENTS_PER_BATCH && self.terminal.is_none() {
-                    let Some(receipt) = receipts.next() else {
-                        self.terminal = Some(Action::Interrupt);
-                        return;
-                    };
-                    self.retired_read += 1;
-                    if let ScalarReceipt::NativeParameter(receipt) = receipt {
-                        self.receipt(receipt);
-                    }
-                }
+                self.drain_receipts(|| {
+                    let receipt = receipts.next()?;
+                    read += 1;
+                    Some(receipt)
+                })
+            };
+            self.retired_read += read;
+            if exhausted && self.terminal.is_none() {
+                self.terminal = Some(Action::Interrupt);
             }
             if self.terminal.is_none() {
                 self.retired_batch = Some(batch);
@@ -482,7 +506,7 @@ impl EditorView {
             issued_sequence: 0,
             delivered_sequence: 0,
             in_flight: Some((request, Submission::Begin)),
-            batch: Vec::with_capacity(EVENTS_PER_BATCH),
+            batch: Vec::with_capacity(RETAINED_BATCH_CAPACITY),
             terminal: None,
             retired: None,
             retired_batch: None,
@@ -606,6 +630,18 @@ impl EditorView {
                     arm.revision = event.state.revision;
                 }
                 return;
+            }
+            (Submission::Poll, Progress::NativeWriterRetained { path, reason }) => {
+                // Sealing already retired the endpoint. The writer owns the
+                // admitted terminal; there are no more caller receipts.
+                touch.phase = Phase::Retained;
+                self.error = Some(
+                    format!(
+                        "{reason} · automation take retained at {}",
+                        hex_session::service::text::verbatim(path.display())
+                    )
+                    .into(),
+                );
             }
             (Submission::Poll, Progress::Retained(path)) => {
                 if event.error.is_none() {
@@ -774,7 +810,7 @@ mod tests {
             issued_sequence: 0,
             delivered_sequence: 0,
             in_flight: Some((1, Submission::Begin)),
-            batch: Vec::with_capacity(EVENTS_PER_BATCH),
+            batch: Vec::with_capacity(RETAINED_BATCH_CAPACITY),
             terminal: None,
             retired: None,
             retired_batch: None,
@@ -844,6 +880,59 @@ mod tests {
         assert!(
             matches!(touch.next_submission(), Some((Submission::Terminal, Action::Finish(value))) if value == restored)
         );
+    }
+
+    #[test]
+    fn full_refused_batch_retains_entire_endpoint_window_and_restoration() {
+        let mut touch = touch();
+        touch.phase = Phase::Delivering;
+        touch.in_flight = None;
+        let target = touch.audio;
+        let applied = |sequence| NativeParameterApplication {
+            identity: target.input.identity(),
+            operation: NativeTransientOperation::Set(NativeTransientValue::HostOutputGain(
+                HostGain::ZERO,
+            )),
+            arrangement_frame: sequence + 1,
+            performance_frame: sequence + 5,
+            loop_pass: 2,
+            remaining_latency_frames: 4,
+        };
+        let end = (EVENTS_PER_BATCH + MAX_PENDING_VALUE_RECEIPTS) as u64;
+        let restored = NativeParameterApplication {
+            operation: NativeTransientOperation::Clear(DeviceAutomationTarget::HostOutputGain),
+            ..applied(end + 1)
+        };
+        let mut waiting = (1..=end)
+            .map(|sequence| Receipt::Applied {
+                target,
+                sequence,
+                application: applied(sequence),
+            })
+            .chain(std::iter::once(Receipt::Finished {
+                target,
+                application: restored,
+            }))
+            .map(ScalarReceipt::NativeParameter);
+
+        touch.drain_receipts(|| waiting.next());
+        assert_eq!(touch.batch.len(), EVENTS_PER_BATCH);
+        assert!(touch.terminal.is_none());
+        touch.in_flight = Some((2, Submission::Append));
+        touch.retain_after_refusal();
+        touch.drain_receipts(|| waiting.next());
+        assert_eq!(touch.batch.len(), end as usize);
+        assert_eq!(
+            touch.batch,
+            (1..=end).map(|seq| (seq, applied(seq))).collect::<Vec<_>>()
+        );
+        assert!(matches!(
+            touch.terminal,
+            Some(Action::Finish(application))
+                if application == restored
+        ));
+        assert!(waiting.next().is_none());
+        assert!(touch.next_submission().is_none());
     }
 
     #[cfg(feature = "ui-test-support")]
@@ -959,6 +1048,35 @@ mod tests {
                 let capture = view.native_automation_recorder.touch.as_ref().unwrap();
                 assert!(matches!(capture.terminal, Some(Action::Abort(_))));
                 assert!(capture.next_submission().is_none());
+            });
+            editor.update(cx, |view, _| {
+                let mut capture = touch();
+                let scope = capture.scope;
+                capture.phase = Phase::Sealing;
+                capture.in_flight = Some((3, Submission::Poll));
+                view.native_automation_recorder.touch = Some(capture);
+                event.device_automation_take_complete = Some(DeviceAutomationTakeCompletion {
+                    request_id: 4,
+                    progress: Progress::NativeWriterRetained {
+                        path: "/fixture/original.hex-automation-draft".into(),
+                        reason: "writer refused".into(),
+                    },
+                });
+                view.native_automation_take_completion(&event);
+                let capture = view.native_automation_recorder.touch.as_ref().unwrap();
+                assert!(capture.phase == Phase::Sealing && capture.in_flight.is_some());
+                event
+                    .device_automation_take_complete
+                    .as_mut()
+                    .unwrap()
+                    .request_id = 3;
+                view.native_automation_take_completion(&event);
+                let capture = view.native_automation_recorder.touch.as_ref().unwrap();
+                assert_eq!(capture.scope, scope);
+                assert!(capture.phase == Phase::Retained);
+                assert!(capture.in_flight.is_none());
+                assert!(view.native_automation_recorder.busy());
+                assert!(view.error.as_ref().unwrap().contains("writer refused"));
             });
             window.remove_window();
         })

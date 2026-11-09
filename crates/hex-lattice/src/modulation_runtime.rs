@@ -5,21 +5,21 @@
 //! A failed consumer abandons the entire source transaction; later host failures
 //! must call `rollback` before beginning the next block.
 use crate::{
-    MAX_MODULATION_BLOCK_FRAMES, MAX_MODULATION_SOURCES, ModulationLfoBank, ModulationSourceId,
-    NativeParameterAutomation, PreparedLfoSource, PreparedModulation,
+    MAX_MODULATION_BLOCK_FRAMES, MAX_MODULATION_SOURCES, ModulationSourceBank, ModulationSourceId,
+    NativeParameterAutomation, PreparedModulation, PreparedModulationSource,
 };
 use hex_lattice_contract::DeviceContractError as Error;
 
 /// A device-local bank and program. Route indices refer to the bank's sorted
 /// source IDs; the preparing host must resolve and validate those identities.
 pub struct ModulationRuntime {
-    bank: ModulationLfoBank,
+    bank: ModulationSourceBank,
     program: PreparedModulation,
 }
 
 impl ModulationRuntime {
     /// Refuse incompatible inventories before either prepared object is used.
-    pub fn new(bank: ModulationLfoBank, program: PreparedModulation) -> Result<Self, Error> {
+    pub fn new(bank: ModulationSourceBank, program: PreparedModulation) -> Result<Self, Error> {
         if bank.source_count() != program.source_count()
             || bank.source_count() > MAX_MODULATION_SOURCES
             || bank.chunk_frames() > MAX_MODULATION_BLOCK_FRAMES
@@ -29,10 +29,24 @@ impl ModulationRuntime {
         Ok(Self { bank, program })
     }
 
+    pub(crate) fn matches_prepared(
+        &self,
+        sources: &[PreparedModulationSource],
+        program: &PreparedModulation,
+        chunk_frames: usize,
+    ) -> bool {
+        self.program == *program && self.bank.matches_prepared(sources, chunk_frames)
+    }
+
     /// Physical inline and reserved owned storage, excluding allocator metadata.
     pub fn storage_bytes(&self) -> Option<usize> {
-        std::mem::size_of::<Self>()
-            .checked_add(self.bank.storage_bytes().ok()?)?
+        std::mem::size_of::<Self>().checked_add(self.heap_storage_bytes()?)
+    }
+
+    pub fn heap_storage_bytes(&self) -> Option<usize> {
+        self.bank
+            .storage_bytes()
+            .ok()?
             .checked_add(self.program.storage_bytes()?)
     }
 
@@ -63,6 +77,48 @@ impl ModulationRuntime {
         upstream: Option<&dyn NativeParameterAutomation>,
         consume: impl FnOnce(&dyn NativeParameterAutomation) -> Result<(), Error>,
     ) -> Result<(), Error> {
+        self.render_chunk_with_clock(frames, upstream, None, consume)
+    }
+
+    /// Render with the host's sample-local tempo; unavailable tempo uses each
+    /// source's prepared fallback. The clock is borrowed only during this call.
+    /// Refused tempo leaves the bank unchanged so the host can retry or roll back.
+    pub fn render_chunk_with_clock(
+        &mut self,
+        frames: usize,
+        upstream: Option<&dyn NativeParameterAutomation>,
+        clock: Option<&dyn crate::NativeInstrumentClock>,
+        consume: impl FnOnce(&dyn NativeParameterAutomation) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        self.render_sources(frames, upstream, clock, None)?;
+        self.consume_values(frames, upstream, consume)
+    }
+
+    /// Render against the input immediately before the owning device consumes
+    /// it. The same mutable borrow is handed to the provider after all source
+    /// reads complete. No additional PCM copy or ownership is needed.
+    pub(crate) fn render_audio_chunk(
+        &mut self,
+        input: &mut [crate::StereoFrame],
+        upstream: Option<&dyn NativeParameterAutomation>,
+        clock: Option<&dyn crate::NativeInstrumentClock>,
+        consume: impl FnOnce(
+            &mut [crate::StereoFrame],
+            &dyn NativeParameterAutomation,
+        ) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let frames = input.len();
+        self.render_sources(frames, upstream, clock, Some(input))?;
+        self.consume_values(frames, upstream, |values| consume(input, values))
+    }
+
+    fn render_sources(
+        &mut self,
+        frames: usize,
+        upstream: Option<&dyn NativeParameterAutomation>,
+        clock: Option<&dyn crate::NativeInstrumentClock>,
+        input: Option<&[crate::StereoFrame]>,
+    ) -> Result<(), Error> {
         if frames > self.bank.chunk_frames() || frames > MAX_MODULATION_BLOCK_FRAMES {
             return Err(Error::RuntimeBudgetExceeded);
         }
@@ -76,7 +132,15 @@ impl ModulationRuntime {
                 return Err(Error::UnknownParameter);
             }
         }
-        self.bank.render_chunk(frames)?;
+        self.bank.render_chunk_with_input(frames, clock, input)
+    }
+
+    fn consume_values(
+        &mut self,
+        frames: usize,
+        upstream: Option<&dyn NativeParameterAutomation>,
+        consume: impl FnOnce(&dyn NativeParameterAutomation) -> Result<(), Error>,
+    ) -> Result<(), Error> {
         let result = (|| {
             let mut sources: [&[f32]; MAX_MODULATION_SOURCES] = [&[]; MAX_MODULATION_SOURCES];
             for (index, slot) in sources
@@ -107,14 +171,22 @@ impl ModulationRuntime {
         self.bank.rollback();
     }
 
-    /// Retarget an active transaction without resetting its speculative phase.
-    pub fn retarget(&mut self, source: PreparedLfoSource) -> Result<(), Error> {
+    pub(crate) fn reset_all(&mut self) {
+        self.bank.reset_all();
+    }
+
+    /// Retarget an active source without resetting its speculative history.
+    pub fn retarget(&mut self, source: PreparedModulationSource) -> Result<(), Error> {
         self.bank.retarget(source)
     }
 
-    /// Explicitly reset a source outside a transaction.
+    /// Explicitly reset an oscillator phase outside a transaction.
     pub fn reset(&mut self, id: ModulationSourceId, phase: f64) -> Result<(), Error> {
         self.bank.reset(id, phase)
+    }
+
+    pub(crate) fn inherit_graph_committed(&mut self, previous: &Self) {
+        self.bank.inherit_graph_committed(&previous.bank);
     }
 
     /// The host establishes matching device ownership before calling this.
@@ -126,7 +198,7 @@ impl ModulationRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ModulationRoute, ModulationSourceId, ModulationTarget, PreparedLfoSource};
+    use crate::{ModulationRoute, ModulationSourceId, ModulationTarget, PreparedModulationSource};
     use hex_lattice_contract::{
         ParameterAccess, ParameterAutomation, ParameterChangeImpact, ParameterDescriptor,
         ParameterId, ParameterKind, ParameterModulation, ParameterNormalization,
@@ -134,7 +206,7 @@ mod tests {
         ParameterValue,
     };
 
-    fn runtime(second_rate: f64) -> ModulationRuntime {
+    fn prepared(second_rate: f64) -> crate::PreparedModulationState {
         let id = ParameterId::from_static(1);
         let target = ModulationTarget {
             descriptor: ParameterDescriptor {
@@ -164,18 +236,25 @@ mod tests {
                 source: 0,
                 target: id,
                 amount: 0.1,
+                range: [-1.0, 1.0],
             },
             ModulationRoute {
                 source: 1,
                 target: id,
                 amount: 0.1,
+                range: [-1.0, 1.0],
             },
         ];
         let program = PreparedModulation::new(&[target], &routes, 2).unwrap();
         let sources = [
-            PreparedLfoSource::free(ModulationSourceId::new(1).unwrap(), 48_000.0, 12_000.0, 0.0)
-                .unwrap(),
-            PreparedLfoSource::free(
+            PreparedModulationSource::free(
+                ModulationSourceId::new(1).unwrap(),
+                48_000.0,
+                12_000.0,
+                0.0,
+            )
+            .unwrap(),
+            PreparedModulationSource::free(
                 ModulationSourceId::new(2).unwrap(),
                 48_000.0,
                 second_rate,
@@ -183,7 +262,11 @@ mod tests {
             )
             .unwrap(),
         ];
-        ModulationRuntime::new(ModulationLfoBank::new(&sources, 8).unwrap(), program).unwrap()
+        crate::PreparedModulationState::new(sources.to_vec(), program, 8).unwrap()
+    }
+
+    fn runtime(second_rate: f64) -> ModulationRuntime {
+        prepared(second_rate).prepare().unwrap()
     }
 
     fn read(runtime: &mut ModulationRuntime, output: &mut [f32]) -> Result<(), Error> {
@@ -239,7 +322,7 @@ mod tests {
         read(&mut current, &mut output).unwrap();
         assert_eq!(output[0], 0.5);
         let second = ModulationSourceId::new(2).unwrap();
-        let faster = PreparedLfoSource::free(second, 48_000.0, 12_000.0, 0.0).unwrap();
+        let faster = PreparedModulationSource::free(second, 48_000.0, 12_000.0, 0.0).unwrap();
         current.retarget(faster).unwrap();
         read(&mut current, &mut output).unwrap();
         assert!((output[0] - (0.6 + 0.1 * std::f32::consts::FRAC_1_SQRT_2)).abs() < 1e-6);
@@ -250,7 +333,7 @@ mod tests {
         current.begin();
         read(&mut current, &mut output).unwrap();
         assert!((output[0] - 0.6).abs() < 1e-6);
-        let empty = ModulationLfoBank::new(&[], 8).unwrap();
+        let empty = ModulationSourceBank::new(&[], 8).unwrap();
         let two_sources = PreparedModulation::new(&[], &[], 2).unwrap();
         assert!(ModulationRuntime::new(empty, two_sources).is_err());
     }
@@ -270,5 +353,44 @@ mod tests {
             let expected = 0.5 + 0.1 * ((phase / 4.0).sin() + (phase / 8.0).sin());
             assert!((actual - expected).abs() < 1e-6);
         }
+    }
+    #[test]
+    fn one_prepared_declaration_builds_independent_source_transactions() {
+        let prepared = prepared(6_000.0);
+        let mut first = prepared.prepare().unwrap();
+        let mut second = prepared.prepare().unwrap();
+        assert!(prepared.storage_bytes().unwrap() > std::mem::size_of_val(&prepared));
+        assert_eq!(
+            prepared.program().parameter_ids(),
+            &[ParameterId::from_static(1)]
+        );
+        first.begin();
+        let mut advanced = [0.0; 3];
+        read(&mut first, &mut advanced).unwrap();
+        first.commit().unwrap();
+        second.begin();
+        let mut fresh = [0.0; 3];
+        read(&mut second, &mut fresh).unwrap();
+        assert_eq!(advanced, fresh);
+        assert!(
+            crate::PreparedModulationState::new(
+                Vec::new(),
+                PreparedModulation::new(&[], &[], 1).unwrap(),
+                8
+            )
+            .is_err()
+        );
+        let retained_capacity = crate::prepared_modulation::MAX_PREPARED_MODULATION_BYTES
+            / std::mem::size_of::<PreparedModulationSource>()
+            + 1;
+        let empty_with_capacity = Vec::with_capacity(retained_capacity);
+        assert!(
+            crate::PreparedModulationState::new(
+                empty_with_capacity,
+                PreparedModulation::new(&[], &[], 0).unwrap(),
+                8
+            )
+            .is_err()
+        );
     }
 }

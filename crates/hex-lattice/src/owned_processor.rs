@@ -36,6 +36,13 @@ pub trait PreparedOwnedProcessorRuntime: Send + Sync {
     fn supports_parameter_automation(&self, _parameter: hex_lattice_contract::ParameterId) -> bool {
         false
     }
+    /// Prepared, state-aware opt-in to sample-rate modulation delivery.
+    fn parameter_modulation_semantics(
+        &self,
+        _parameter: hex_lattice_contract::ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        None
+    }
     fn runtime_version(&self) -> u32;
     /// Entire owner plus both histories, all buffers and reserved capacities.
     /// Shared prepared configuration is accounted by its separate control owner.
@@ -260,6 +267,16 @@ impl PreparedProcessorFactory {
             Self::Foreign(_) => false,
         }
     }
+    pub fn parameter_modulation_semantics(
+        &self,
+        parameter: hex_lattice_contract::ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        match self {
+            Self::Legacy(value) => value.parameter_modulation_semantics(parameter),
+            Self::Owned(value) => value.parameter_modulation_semantics(parameter),
+            Self::Foreign(_) => None,
+        }
+    }
     pub fn runtime_version(&self) -> u32 {
         match self {
             Self::Legacy(v) => v.runtime_version(),
@@ -334,6 +351,7 @@ impl PreparedProcessorFactory {
 /// and convert once on control; there is no positional factory sidecar.
 #[derive(Clone)]
 pub struct PreparedRuntimeInstance {
+    pub modulation: Option<crate::PreparedModulationState>,
     pub automation: crate::PreparedParameterAutomation,
     pub meter: Arc<DeviceMeter>,
     pub owner: ProcessorChainOwner,
@@ -365,6 +383,7 @@ impl PreparedRuntimeInstance {
 impl From<PreparedProcessorInstance> for PreparedRuntimeInstance {
     fn from(value: PreparedProcessorInstance) -> Self {
         Self {
+            modulation: None,
             automation: Default::default(),
             meter: value.meter,
             owner: value.owner,
@@ -512,6 +531,7 @@ mod tests {
         let make = |frames: u32, bypassed| {
             let kind = DeviceTypeId::from_static("test.reserved.bypass");
             crate::NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+                modulation: None,
                 automation: Default::default(),
                 meter: Default::default(),
                 owner: ProcessorChainOwner::Track(1),

@@ -165,6 +165,22 @@ pub enum DeviceAutomationTakeAction {
     KeepFailedPluginCopy {
         max_events: u64,
     },
+    /// Quiesce an exact native writer after its caller has retired the input.
+    /// Repeat while Pending; this never adopts the outcome or drops custody.
+    PrepareNativeRecovery,
+    /// Copy the retained writer and the caller's bounded, quiescent continuation.
+    CopyNativeRecovery {
+        destination: PathBuf,
+        max_events: u64,
+        continuation: NativeRecoveryContinuation,
+    },
+    /// Resolve only the exact verified copy selected by the caller. Both files
+    /// remain durable; no canonical edit is made.
+    KeepNativeRecoveryCopy {
+        path: PathBuf,
+        receipt: RecoveryCopyReceipt,
+        max_events: u64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -191,6 +207,12 @@ pub enum DeviceAutomationTakeProgress {
     /// Device automation custody is active, retained or being copied.
     CloseBlocked,
     Retained(PathBuf),
+    /// Poll found a failed native writer that still owns original observations.
+    /// Retain the caller's exact take scope for explicit recovery.
+    NativeWriterRetained {
+        path: PathBuf,
+        reason: String,
+    },
     VerifiedCopy {
         path: PathBuf,
         receipt: RecoveryCopyReceipt,
@@ -208,12 +230,13 @@ pub struct DeviceAutomationTakeCompletion {
 #[derive(Default)]
 pub(super) struct Lane {
     active: Option<Active>,
-    // A failed writer can still own unsynced original batches. Keep these
-    // with their original source and refuse new takes until recovery.
+    // Failed writers own unsynced batches; explicitly interrupted native
+    // writers keep their prefix while the caller retains its continuation.
     failed: Option<Failed>,
     failed_copy: RecoveryCopyWorker,
     copy_destination: Option<PendingCopy>,
     verified_plugin_copy: Option<VerifiedPluginCopy>,
+    verified_native_copy: Option<(PathBuf, RecoveryCopyReceipt)>,
 }
 
 struct Failed {
@@ -224,6 +247,7 @@ struct Failed {
 
 enum PendingCopy {
     Checkpoint(PathBuf),
+    Native(PathBuf),
     Plugin {
         path: PathBuf,
         observations: Vec<super::PluginParameterObservation>,
@@ -263,6 +287,7 @@ struct Active {
     source: DeviceAutomationSource,
     input: DeviceDraftInput,
     worker: DraftWorker,
+    preparing_native_recovery: bool,
 }
 
 pub(super) enum Step {
@@ -454,6 +479,7 @@ impl Lane {
             source,
             input,
             worker,
+            preparing_native_recovery: false,
         });
         Ok(Step::Progress(DeviceAutomationTakeProgress::Started))
     }
@@ -467,6 +493,31 @@ impl Lane {
         action: &DeviceAutomationTakeAction,
     ) -> Result<Step, String> {
         use DeviceAutomationTakeProgress as Progress;
+        match action {
+            DeviceAutomationTakeAction::PrepareNativeRecovery => {
+                return self.prepare_native_recovery(scope);
+            }
+            DeviceAutomationTakeAction::CopyNativeRecovery {
+                destination,
+                max_events,
+                continuation,
+            } => {
+                return self.start_native_recovery_copy(
+                    scope,
+                    destination,
+                    *max_events,
+                    continuation,
+                );
+            }
+            DeviceAutomationTakeAction::KeepNativeRecoveryCopy {
+                path,
+                receipt,
+                max_events,
+            } => {
+                return self.keep_native_recovery_copy(scope, path, *receipt, *max_events);
+            }
+            _ => {}
+        }
         if matches!(
             action,
             DeviceAutomationTakeAction::CopyFailed { .. }
@@ -518,6 +569,10 @@ impl Lane {
                         (PendingCopy::Checkpoint(destination), None) => {
                             Ok(Step::Progress(Progress::Retained(destination)))
                         }
+                        (PendingCopy::Native(path), Some(receipt)) => {
+                            self.verified_native_copy = Some((path.clone(), receipt));
+                            Ok(Step::Progress(Progress::VerifiedCopy { path, receipt }))
+                        }
                         (
                             PendingCopy::Plugin {
                                 path: destination,
@@ -548,6 +603,9 @@ impl Lane {
         if active.scope != scope {
             return Err("device automation receipt belongs to another take".into());
         }
+        if active.preparing_native_recovery {
+            return Err("native recovery owns the original writer".into());
+        }
         let translated;
         let action = if let DeviceAutomationTakeAction::PluginObservation(observation) = action {
             translated = active.plugin_action(observation)?;
@@ -559,9 +617,6 @@ impl Lane {
         let progress = match action {
             #[cfg(feature = "recording-fault-test-support")]
             DeviceAutomationTakeAction::InjectWriterFailure => {
-                if !matches!(scope.target, DeviceCaptureTarget::Vst3(_)) {
-                    return Err("writer failure fixture requires a vst3 take".into());
-                }
                 active.input.inject_next_append_failure()?;
                 Progress::Appended
             }
@@ -570,7 +625,10 @@ impl Lane {
             | DeviceAutomationTakeAction::PollFailedCopy
             | DeviceAutomationTakeAction::InspectFailedPluginCopy
             | DeviceAutomationTakeAction::AdoptFailedPluginCopy { .. }
-            | DeviceAutomationTakeAction::KeepFailedPluginCopy { .. } => {
+            | DeviceAutomationTakeAction::KeepFailedPluginCopy { .. }
+            | DeviceAutomationTakeAction::PrepareNativeRecovery
+            | DeviceAutomationTakeAction::CopyNativeRecovery { .. }
+            | DeviceAutomationTakeAction::KeepNativeRecoveryCopy { .. } => {
                 return Err("invalid active automation recovery action".into());
             }
             DeviceAutomationTakeAction::Begin => {
@@ -685,13 +743,19 @@ impl Lane {
         outcome: DraftWorkerOutcome,
     ) -> Result<Step, String> {
         if let Some(reason) = outcome.failure.as_deref() {
-            let error = retained_error(&outcome.path, reason);
+            let path = outcome.path.clone();
+            let reason = reason.to_owned();
             self.failed = Some(Failed {
                 scope,
                 source,
                 outcome: Arc::new(outcome),
             });
-            return Err(error);
+            if scope.target.native().is_some() {
+                return Ok(Step::Progress(
+                    DeviceAutomationTakeProgress::NativeWriterRetained { path, reason },
+                ));
+            }
+            return Err(retained_error(&path, &reason));
         }
         if !matches!(outcome.requested_terminal, DraftTerminal::Finished(_))
             || outcome.admitted_events == 0
