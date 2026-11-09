@@ -57,13 +57,11 @@ impl PreparedNativeProcessor for SquareRecipe {
     }
 }
 
-fn recipe(latency: Option<u32>) -> PreparedRuntimeInstance {
+fn recipe(source: hex_project::SourceId, latency: Option<u32>) -> PreparedRuntimeInstance {
     PreparedRuntimeInstance {
         automation: Default::default(),
         meter: Default::default(),
-        // A synthetic processor identity in an internal prepared fixture.
-        // The production source-identity constructor is a later boundary.
-        owner: ProcessorChainOwner::Main,
+        owner: ProcessorChainOwner::Source(source.value()),
         device_id: 99,
         device_type: DeviceTypeId::from_static("test.source.square"),
         matrix: StereoMatrix::identity(),
@@ -76,7 +74,7 @@ fn recipe(latency: Option<u32>) -> PreparedRuntimeInstance {
     }
 }
 
-fn fixture(route: usize) -> Project {
+fn fixture(route: usize, move_receiver: bool) -> Project {
     let mut editor = Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
     let Created::Track(receiver) = editor
         .execute(Command::InsertTrackWithDevice {
@@ -152,6 +150,14 @@ fn fixture(route: usize) -> Project {
             looping: false,
         })
         .unwrap();
+    if move_receiver {
+        editor
+            .execute(Command::SetNativeSourceReceiver {
+                source,
+                track: Some(contributor),
+            })
+            .unwrap();
+    }
     match route {
         1 => {
             let Created::ReturnTrack(bus) = editor
@@ -209,7 +215,7 @@ fn with_recipe<'a>(
 #[test]
 fn source_suffix_processes_shared_sum_without_touching_receiver_clips() {
     for route in 0..3 {
-        let project = fixture(route);
+        let project = fixture(route, false);
         assert_eq!(project.tracks[0].source_id(), project.tracks[1].source_id());
         assert!(project.tracks[0].receives_source_audio());
         assert!(!project.tracks[1].receives_source_audio());
@@ -217,7 +223,11 @@ fn source_suffix_processes_shared_sum_without_touching_receiver_clips() {
         crate::render_source_generators(&project, 0, 0, WIDTH as u64, &mut generated, None)
             .unwrap();
         assert!(generated.iter().any(|frame| frame[0].abs() > 0.001));
-        let mut renderer = with_recipe(&project, 0, &[recipe(Some(0))]);
+        let mut renderer = with_recipe(
+            &project,
+            0,
+            &[recipe(project.tracks[0].source_id().unwrap(), Some(0))],
+        );
         assert_eq!(renderer.runtime.compensation.is_some(), route == 2);
         renderer.play();
         let mut whole = [[0.0; 2]; WIDTH];
@@ -263,14 +273,18 @@ fn invalid_prepared_source_recipes_refuse_before_rendering() {
             "source effects require native zero-latency processors at the project rate",
         ),
     ] {
-        let project = fixture(0);
-        let mut renderer = with_recipe(&project, index, &[recipe(latency)]);
+        let project = fixture(0, false);
+        let mut renderer = with_recipe(
+            &project,
+            index,
+            &[recipe(project.tracks[0].source_id().unwrap(), latency)],
+        );
         renderer.play();
         assert_eq!(renderer.render(&mut [[0.0; 2]; 1]).unwrap_err().0, expected);
     }
-    let project = fixture(0);
+    let project = fixture(0, false);
     let source = project.tracks[0].source_id().unwrap();
-    let instances = [recipe(Some(0))];
+    let instances = [recipe(project.tracks[0].source_id().unwrap(), Some(0))];
     let duplicates = [0, 0].map(|receiver| PreparedSourceEffects {
         source,
         receiver,
@@ -280,4 +294,41 @@ fn invalid_prepared_source_recipes_refuse_before_rendering() {
         SourceEffectStages::prepare(&project, &duplicates),
         Err(Invalid("source effects already have a receiver stage"))
     ));
+    for wrong_owner in [
+        ProcessorChainOwner::Track(source.value()),
+        ProcessorChainOwner::Source(source.value() + 1),
+    ] {
+        let mut wrong = recipe(source, Some(0));
+        wrong.owner = wrong_owner;
+        let mut renderer = with_recipe(&project, 0, &[wrong]);
+        renderer.play();
+        assert_eq!(
+            renderer.render(&mut [[0.0; 2]; 1]).unwrap_err().0,
+            "source effect processor belongs to another owner"
+        );
+    }
+}
+
+#[test]
+fn the_same_source_effect_recipe_follows_the_explicit_receiver() {
+    let first = fixture(0, false);
+    let moved = fixture(0, true);
+    let source = first.tracks[0].source_id().unwrap();
+    assert_eq!(moved.tracks[1].source_id(), Some(source));
+    assert_ne!(
+        first.tracks[0].canonical_track_id(),
+        moved.tracks[1].canonical_track_id()
+    );
+    assert!(first.tracks[0].receives_source_audio());
+    assert!(moved.tracks[1].receives_source_audio());
+    let prepared = [recipe(source, Some(0))];
+    let mut previous = with_recipe(&first, 0, &prepared);
+    let mut current = with_recipe(&moved, 1, &prepared);
+    previous.play();
+    current.play();
+    let mut old = [[0.0; 2]; WIDTH];
+    let mut new = [[0.0; 2]; WIDTH];
+    previous.render(&mut old).unwrap();
+    current.render(&mut new).unwrap();
+    assert_eq!(old, new);
 }
