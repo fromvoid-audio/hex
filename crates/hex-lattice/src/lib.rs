@@ -1164,21 +1164,21 @@ impl NativeRuntimeChain {
     }
 
     /// Build a source receiver's runtime on control from its retained native
-    /// recipe. The recipe keeps its immutable declaration. Only the runtime
-    /// allocates private modulation history. Source recipes have no automation.
+    /// recipe. The recipe keeps its declaration; the exclusive runtime
+    /// owns its automation program and any mutable modulation history.
     pub fn new_from_source_recipe(
         instances: &[PreparedRuntimeInstance],
     ) -> Result<Self, DeviceContractError> {
         if instances.iter().any(|instance| {
             !matches!(instance.owner, ProcessorChainOwner::Source(_))
-                || !instance.automation.is_empty()
+                || instance.automation.foreign().is_some()
         }) {
             return Err(DeviceContractError::UnsupportedProcessingClass);
         }
         Self::from_prepared(instances.iter().map(|instance| {
             let entry = PreparedRuntimeInstance {
                 modulation: None,
-                automation: Default::default(),
+                automation: instance.automation.clone(),
                 meter: std::sync::Arc::clone(&instance.meter),
                 owner: instance.owner,
                 device_id: instance.device_id,
@@ -1805,12 +1805,13 @@ impl NativeRuntimeChain {
     /// Preflight a retiring-donor transfer for a source effect recipe. The
     /// native provider, trims and topology must still match. A live edit may
     /// replace a static matrix with a provider that explicitly proves it has
-    /// no signal history to carry. Other live edits preserve committed DSP
-    /// history. Strict continuation also compares the prepared declaration.
+    /// no signal history to carry. Compatible automation changes keep the
+    /// existing DSP history under the same configuration and tail bound.
+    /// Strict continuation compares the entire prepared declaration.
     pub fn can_transfer_source_recipe_history_from(
         &self,
         previous: &Self,
-        edit_modulation: bool,
+        allow_control_edit: bool,
     ) -> bool {
         self.len() == previous.len()
             && self.entries.iter().zip(&previous.entries).enumerate().all(
@@ -1821,12 +1822,24 @@ impl NativeRuntimeChain {
                         && left.input_gain == right.input_gain
                         && left.output_gain == right.output_gain
                         && left.algorithmic_latency_frames == right.algorithmic_latency_frames
-                        && left.automation.is_empty()
-                        && right.automation.is_empty()
                         && ((left.output_tail == right.output_tail
                             && self.configuration_matches_range(previous, index..index + 1))
-                            || edit_modulation && left.matches_memoryless_modulation_handoff(right))
-                        && (edit_modulation
+                            || allow_control_edit
+                                && left.matches_memoryless_modulation_handoff(right)
+                            || allow_control_edit
+                                && left.output_tail == right.output_tail
+                                && left.matrix == right.matrix
+                                && left
+                                    .configuration
+                                    .as_ref()
+                                    .zip(right.configuration.as_ref())
+                                    .is_some_and(|(new, old)| {
+                                        std::sync::Arc::ptr_eq(new, old)
+                                            || new.processing_eq_on_callback(old)
+                                    })
+                                && self
+                                    .can_retarget_parameters_from_range(previous, index..index + 1))
+                        && (allow_control_edit
                             || match (&left.modulation, &right.modulation) {
                                 (None, None) => true,
                                 (Some(left), Some(right)) => left.same_declaration(right),
