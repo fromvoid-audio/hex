@@ -163,6 +163,8 @@ pub enum DeviceAutomationTakeAction {
     /// Explicitly keep the verified copy instead of adopting its trajectory.
     /// Release original memory custody only after revalidation; keep both files.
     KeepFailedPluginCopy {
+        path: PathBuf,
+        receipt: RecoveryCopyReceipt,
         max_events: u64,
     },
     /// Quiesce an exact native writer after its caller has retired the input.
