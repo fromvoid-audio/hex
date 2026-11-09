@@ -545,5 +545,61 @@ fn lfo_rate_route_upgrades_the_exact_previous_format_and_preserves_the_complete_
         serde_json::from_slice(&std::fs::read(&synced_path).unwrap()).unwrap();
     wrong_version["version"] = crate::LFO_RATE_ROUTE_SCHEMA_VERSION.into();
     assert!(crate::decode(&serde_json::to_vec(&wrong_version).unwrap()).is_err());
+    let legacy_bytes = std::fs::read(&synced_path).unwrap();
+    let (previous, previous_token) = crate::load_with_token(&synced_path).unwrap();
+    assert!(
+        !previous_token
+            .requires_save_confirmation(&previous)
+            .unwrap()
+    );
+    let mut wrong_version: serde_json::Value = serde_json::from_slice(&legacy_bytes).unwrap();
+    wrong_version["version"] = crate::AUDIO_RATE_MODULATOR_SCHEMA_VERSION.into();
+    assert!(crate::decode(&serde_json::to_vec(&wrong_version).unwrap()).is_err());
+
+    let next = previous.next_identity();
+    let audio_rate = ModulationSourceId::new(next).unwrap();
+    let bank = previous.device(id).unwrap().modulation();
+    let mut slots = bank.sources().to_vec();
+    let mut routes = bank.routes().to_vec();
+    slots.push(Modulator {
+        id: audio_rate,
+        color: ElementColor::Cyan,
+        enabled: false,
+        state: NativeDeviceState::new(AUDIO_RATE, 1, vec![]).unwrap(),
+    });
+    routes.push(DeviceModulationRoute {
+        id: ModulationRouteId::new(next + 1).unwrap(),
+        source: audio_rate,
+        output: ModulationOutputId::MAIN,
+        destination: ModulationDestination::Modulator {
+            source: lfo,
+            module_type: LFO,
+            parameter: ParameterId::from_static(1),
+        },
+        amount: ModulationAmount::new(-0.25).unwrap(),
+        range: ModulationRange::default(),
+        enabled: true,
+    });
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device: id,
+            modulation: DeviceModulation::new(slots, routes).unwrap(),
+        })
+        .unwrap();
+    let upgraded = editor.project();
+    assert_eq!(
+        crate::schema_version_for(upgraded),
+        crate::AUDIO_RATE_MODULATOR_SCHEMA_VERSION
+    );
+    assert!(previous_token.requires_save_confirmation(upgraded).unwrap());
+    let audio_path = dir.join("audio-rate.hex");
+    crate::save_new(&audio_path, upgraded).unwrap();
+    assert_eq!(crate::load(&audio_path).unwrap(), *upgraded);
+    assert_eq!(std::fs::read(&synced_path).unwrap(), legacy_bytes);
+
+    let mut wrong_version: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&audio_path).unwrap()).unwrap();
+    wrong_version["version"] = crate::TEMPO_LFO_RATE_ROUTE_SCHEMA_VERSION.into();
+    assert!(crate::decode(&serde_json::to_vec(&wrong_version).unwrap()).is_err());
     std::fs::remove_dir_all(dir).unwrap();
 }
