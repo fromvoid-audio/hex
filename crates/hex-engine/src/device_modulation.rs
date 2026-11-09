@@ -216,12 +216,16 @@ pub(super) fn validate_source_owners(project: &Project) -> Result<(), Invalid> {
         let instrument = source.instrument();
         // An unbound instrument stays in the retained source inventory. Keep
         // its bank for a later binding and compile it only for a real receiver.
-        if !instrument.modulation().is_empty()
-            && instrument.state().type_id() != hex_devices::fm4::device::FM4_TYPE_ID
-        {
-            return Err(Invalid(
-                "instrument modulation requires a supported provider",
-            ));
+        if !instrument.modulation().is_empty() {
+            let state = instrument.state();
+            let loaded_sampler = state.type_id() == hex_devices::sampler::state::TYPE_ID
+                && state.asset_references().len() == 1
+                && !hex_devices::sampler::state::is_empty_state(state);
+            if !loaded_sampler && state.type_id() != hex_devices::fm4::device::FM4_TYPE_ID {
+                return Err(Invalid(
+                    "instrument modulation requires a supported provider",
+                ));
+            }
         }
         for device in source.post_instrument_effects() {
             EffectModulation::validate(device, project)?;

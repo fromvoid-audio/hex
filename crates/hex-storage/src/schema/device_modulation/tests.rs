@@ -917,3 +917,78 @@ fn macro_four_schema_preserves_values_outputs_and_prior_reader_consent() {
     assert!(crate::decode(&serde_json::to_vec(&wrong).unwrap()).is_err());
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn loaded_sampler_bank_migrates_opaque_inventory_and_saves_with_its_new_reader_floor() {
+    const HISTORICAL: &[u8] =
+        include_bytes!("../../../tests/fixtures/sampler-crossfade/schema66.json");
+    let mut editor = Editor::new(crate::decode(HISTORICAL).unwrap(), 8).unwrap();
+    let loaded = editor
+        .project()
+        .tracks()
+        .iter()
+        .filter_map(|track| track.instrument())
+        .find(|instrument| !instrument.state().asset_references().is_empty())
+        .unwrap();
+    let device = loaded.id();
+    let device_type = loaded.state().type_id();
+    let next = editor.project().next_identity();
+    let source = ModulationSourceId::new(next).unwrap();
+    let modulation = DeviceModulation::new(
+        vec![Modulator {
+            id: source,
+            enabled: true,
+            color: ElementColor::Cyan,
+            state: NativeDeviceState::new(
+                DeviceTypeId::from_static("hex.modulator.macro"),
+                1,
+                0.25_f32.to_le_bytes().to_vec(),
+            )
+            .unwrap(),
+        }],
+        vec![DeviceModulationRoute {
+            id: ModulationRouteId::new(next + 1).unwrap(),
+            source,
+            output: ModulationOutputId::MAIN,
+            destination: ModulationDestination::Device {
+                device_type,
+                target: DeviceAutomationTarget::Parameter(ParameterId::from_static(1)),
+                vst3_class: None,
+            },
+            amount: ModulationAmount::new(0.5).unwrap(),
+            range: ModulationRange::default(),
+            enabled: true,
+        }],
+    )
+    .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceModulation { device, modulation })
+        .unwrap();
+    let project = editor.project();
+    assert_eq!(
+        crate::schema_version_for(project),
+        crate::SAMPLER_MODULATION_SCHEMA_VERSION
+    );
+
+    let mut old_document: serde_json::Value =
+        serde_json::from_slice(&crate::encode(project).unwrap()).unwrap();
+    // The old colored-bank wrapper admitted this opaque provider without a
+    // playback grant. Its layout and embedded schema66 stay identical.
+    old_document["version"] = crate::MODULATION_SLOT_COLOR_SCHEMA_VERSION.into();
+    let old_bytes = serde_json::to_vec(&old_document).unwrap();
+    let root = temp_dir();
+    let old_path = root.join("legacy-sampler-bank.hex");
+    std::fs::write(&old_path, &old_bytes).unwrap();
+    let (opened, token) = crate::load_with_token(&old_path).unwrap();
+    assert_eq!(&opened, project);
+    assert!(token.requires_save_confirmation(&opened).unwrap());
+    let new_path = root.join("sampler-modulation.hex");
+    crate::save_new(&new_path, &opened).unwrap();
+    assert_eq!(crate::load(&new_path).unwrap(), opened);
+    assert_eq!(std::fs::read(&old_path).unwrap(), old_bytes);
+
+    let mut missing_bank: serde_json::Value = serde_json::from_slice(HISTORICAL).unwrap();
+    missing_bank["version"] = crate::SAMPLER_MODULATION_SCHEMA_VERSION.into();
+    assert!(crate::decode(&serde_json::to_vec(&missing_bank).unwrap()).is_err());
+    std::fs::remove_dir_all(root).unwrap();
+}
