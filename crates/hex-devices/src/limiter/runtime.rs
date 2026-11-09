@@ -472,6 +472,15 @@ impl PreparedOwnedProcessorRuntime for Factory {
     fn reserved_bypass_latency_frames(&self) -> Option<u32> {
         Some(self.config.latency())
     }
+    fn parameter_modulation_semantics(
+        &self,
+        id: hex_lattice_contract::ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        self.supports_parameter_automation(id)
+            .then(|| automation::modulation_semantics(id))
+            .flatten()
+    }
+
     fn runtime_version(&self) -> u32 {
         2
     }
