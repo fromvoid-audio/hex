@@ -27,7 +27,7 @@ pub(super) struct Prepared {
 }
 
 pub(super) enum Recording {
-    Prepared(Prepared),
+    Prepared(Box<Prepared>),
     Active(Box<Active>),
 }
 
@@ -141,7 +141,7 @@ impl Plugins {
                 reading: input.reading,
             },
         };
-        self.editor_recording = Some(Recording::Prepared(prepared));
+        self.editor_recording = Some(Recording::Prepared(Box::new(prepared)));
         Ok(Observation::Ready {
             key: prepared.key,
             context: applied.context,
@@ -158,7 +158,7 @@ impl Plugins {
         let Some(Recording::Prepared(prepared)) = self.editor_recording.as_ref() else {
             return Err("vst3 editor recording was not prepared".into());
         };
-        let prepared = *prepared;
+        let prepared = **prepared;
         if prepared.key != key {
             return Err("vst3 editor recording belongs to another take".into());
         }

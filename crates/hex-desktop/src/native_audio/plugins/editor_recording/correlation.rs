@@ -32,6 +32,9 @@ struct Fact {
     main_frame: u64,
 }
 
+// This single, copied control result feeds the inline observation slot.
+// Boxing it would allocate once per confirmed SDK value.
+#[allow(clippy::large_enum_variant)]
 pub(super) enum Match {
     Unrelated,
     WaitingForOrder,
@@ -250,7 +253,7 @@ impl Correlation {
         }
         match value {
             Vst3ApplicationValue::Value(value)
-                if (!gesture.performed && !(order_closed && unread))
+                if !(gesture.performed || order_closed && unread)
                     || gesture.end.is_some_and(|end| sequence >= end)
                     || !(0.0..=1.0).contains(&value) =>
             {
