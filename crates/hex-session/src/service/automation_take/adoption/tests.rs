@@ -446,3 +446,144 @@ fn looped_vst3_take_keeps_last_pass_overlap_and_older_uncovered_tail_in_one_hist
     assert_eq!(session.project(), &recorded);
     assert_eq!(fs::read(&path).unwrap(), original);
 }
+
+#[test]
+fn complete_group_splices_independent_looped_lanes_and_undoes_together() {
+    use hex_storage::automation_draft::{
+        CompletedGroupedDraft, GroupApplication, GroupDraftEvent, Vst3GroupTarget,
+    };
+    let files = Files::new();
+    let path = files.path();
+    let (mut session, device, stamp) = fixture(AutomationInterpolation::Linear);
+    for (parameter, value) in [(11, 0.33), (23, 0.625)] {
+        session
+            .editor
+            .execute(Command::ReplaceDeviceAutomationTarget {
+                device,
+                target: DeviceAutomationTarget::Vst3 { parameter },
+                points: vec![AutomationPoint {
+                    beat: BeatTime::ZERO,
+                    value: AutomationValue::new(value).unwrap(),
+                    outgoing: AutomationInterpolation::Step,
+                }],
+            })
+            .unwrap();
+    }
+    let before = session.project().clone();
+    let target = Vst3GroupTarget::new(device, [9; 16], &[0, 11]).unwrap();
+    let capture = CaptureClock {
+        sample_rate: 48_000,
+        loop_region: Some(hex_project::LoopRegion::new(8, 16, true).unwrap()),
+    };
+    let rows = [
+        (0, 10, 20, 0, 12, GroupApplication::Value(0.25)),
+        (11, 11, 21, 2, 14, GroupApplication::Value(0.75)),
+        (0, 10, 22, 4, 8, GroupApplication::Value(0.5)),
+        (0, 10, 23, 6, 10, GroupApplication::Restored),
+        (11, 11, 24, 7, 11, GroupApplication::Value(0.125)),
+        (11, 11, 25, 9, 13, GroupApplication::Restored),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(
+        |(
+            index,
+            (parameter, sdk_gesture, sdk_sequence, performance_frame, content_frame, application),
+        )| {
+            GroupDraftEvent {
+                ordinal: index as u64 + 1,
+                parameter,
+                sdk_sequence,
+                sdk_gesture,
+                clock: DraftClock {
+                    performance_frame,
+                    content_frame,
+                    loop_pass: u64::from(performance_frame >= 4),
+                },
+                application,
+            }
+        },
+    )
+    .collect::<Vec<_>>();
+    let mut writer = DraftWriter::create_with_clock(
+        &path,
+        &before,
+        DraftTarget::Vst3Group(target),
+        stamp,
+        capture,
+    )
+    .unwrap();
+    writer.append_group(&rows).unwrap();
+    writer
+        .finish(DraftTerminal::Finished(rows[5].clock))
+        .unwrap();
+    drop(writer);
+    let original = fs::read(&path).unwrap();
+    let mut take = CompletedGroupedDraft::open(
+        &path,
+        DraftReadLimits {
+            max_source_bytes: hex_storage::MAX_PROJECT_DOCUMENT_BYTES as u64,
+        },
+        16,
+    )
+    .unwrap();
+    let wrong = DraftProvenance {
+        transport_epoch: stamp.transport_epoch + 1,
+        ..stamp
+    };
+    assert!(prepare_group_take_adoption_on_control(&session, None, &mut take, wrong).is_err());
+    let command = prepare_group_take_adoption_on_control(&session, None, &mut take, stamp).unwrap();
+    assert!(
+        matches!(&command, Command::SpliceVst3AutomationTouchGroup { class, lanes, .. }
+        if *class == [9;16] && lanes.iter().map(|(parameter, _)| *parameter).eq([0, 11]))
+    );
+    assert_eq!(session.project(), &before);
+    let refused = session.editor.execute_prepared(command.clone(), |_| {
+        Err::<(), _>(hex_project::Invalid("graph refused"))
+    });
+    assert!(refused.is_err());
+    assert_eq!(session.project(), &before);
+    session.editor.execute(command).unwrap();
+    let recorded = session.project().clone();
+    let original_device = before.device(device).unwrap();
+    let edited_device = recorded.device(device).unwrap();
+    let unrelated = DeviceAutomationTarget::Vst3 { parameter: 23 };
+    assert_eq!(
+        edited_device.automation_target(unrelated),
+        original_device.automation_target(unrelated)
+    );
+    for parameter in [0, 11] {
+        let kind = DeviceAutomationTarget::Vst3 { parameter };
+        let base = original_device.automation_target(kind).unwrap();
+        let lane = edited_device.automation_target(kind).unwrap();
+        assert_eq!(lane.vst3_class, Some([9; 16]));
+        assert_eq!(lane.points, base.points);
+        for frame in 0..18 {
+            let beat = before.tempo_map().frame_to_beat(frame).unwrap();
+            let step = match (parameter, frame) {
+                (0, 8..=9) => Some(0.5),
+                (0, 12..=15) => Some(0.25),
+                (11, 8..=10 | 14..=15) => Some(0.75),
+                (11, 11..=12) => Some(0.125),
+                _ => None,
+            };
+            let expected = step
+                .map(|value| AutomationValue::new(value).unwrap())
+                .or_else(|| base.value_at(beat));
+            assert_eq!(
+                lane.value_at(beat),
+                expected,
+                "raw {parameter}, frame {frame}"
+            );
+        }
+    }
+    assert!(prepare_group_take_adoption_on_control(&session, None, &mut take, stamp).is_err());
+    let saved = files.0.join("group.hex");
+    hex_storage::save_new(&saved, &recorded).unwrap();
+    assert_eq!(hex_storage::load(&saved).unwrap(), recorded);
+    assert!(session.editor.undo());
+    assert_eq!(session.project(), &before);
+    assert!(session.editor.redo());
+    assert_eq!(session.project(), &recorded);
+    assert_eq!(fs::read(&path).unwrap(), original);
+}
