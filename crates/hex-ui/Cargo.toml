@@ -35,6 +35,11 @@ name = "unit_device"
 path = "tests/unit_device.rs"
 required-features = ["ui-unit-tier"]
 
+[[test]]
+name = "unit_section"
+path = "tests/unit_section.rs"
+required-features = ["ui-unit-tier"]
+
 [dependencies]
 # UI-only random result selection; already pinned in the workspace lock graph.
 fastrand = "=2.5.0"
