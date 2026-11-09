@@ -37,19 +37,21 @@ pub struct ModulationRoute {
     pub range: [f32; 2],
 }
 
-/// A device-local source route to the host's post-processor gain stage.
+/// A device-local source route to one of the two host gain stages.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct HostOutputModulationRoute {
+pub struct HostGainModulationRoute {
     pub source: usize,
     pub amount: f32,
     pub range: [f32; 2],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct HostOutputTarget {
+struct HostGainTarget {
     base: HostGain,
     route_start: usize,
+    route_end: usize,
 }
+type HostGainRoutes<'a> = Option<(HostGain, &'a [HostGainModulationRoute])>;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Target {
@@ -98,7 +100,8 @@ pub struct PreparedModulation {
     ids: Vec<ParameterId>,
     targets: Vec<Target>,
     routes: Vec<Route>,
-    output: Option<HostOutputTarget>,
+    input: Option<HostGainTarget>,
+    output: Option<HostGainTarget>,
     source_count: usize,
 }
 impl PreparedModulation {
@@ -117,6 +120,7 @@ impl PreparedModulation {
             ids: copy(&self.ids)?,
             targets: copy(&self.targets)?,
             routes: copy(&self.routes)?,
+            input: self.input,
             output: self.output,
             source_count: self.source_count,
         })
@@ -128,19 +132,21 @@ impl PreparedModulation {
         routes: &[ModulationRoute],
         source_count: usize,
     ) -> Result<Self, Error> {
-        Self::with_host_output(targets, routes, source_count, None)
+        Self::with_host_gains(targets, routes, source_count, None, None)
     }
 
-    /// Compile provider and host output routes into the same bounded source
-    /// program. The host stage has no provider parameter identity.
-    pub fn with_host_output(
+    /// Compile provider, host input and host output routes into one bounded
+    /// program. Neither host stage has a provider parameter identity.
+    pub fn with_host_gains(
         targets: &[ModulationTarget],
         routes: &[ModulationRoute],
         source_count: usize,
-        output: Option<(HostGain, &[HostOutputModulationRoute])>,
+        input: HostGainRoutes<'_>,
+        output: HostGainRoutes<'_>,
     ) -> Result<Self, Error> {
         let route_count = routes
             .len()
+            .saturating_add(input.map_or(0, |(_, routes)| routes.len()))
             .saturating_add(output.map_or(0, |(_, routes)| routes.len()));
         if targets.len() > hex_lattice_contract::MAX_PARAMETERS_PER_DEVICE
             || route_count > MAX_MODULATION_ROUTES
@@ -214,7 +220,10 @@ impl PreparedModulation {
             }
             target.route_end = next;
         }
-        let output = if let Some((base, routes)) = output.filter(|(_, routes)| !routes.is_empty()) {
+        let mut append_host_routes = |stage: HostGainRoutes<'_>| -> Result<_, Error> {
+            let Some((base, routes)) = stage.filter(|(_, routes)| !routes.is_empty()) else {
+                return Ok(None);
+            };
             let route_start = prepared_routes.len();
             for (order, route) in routes.iter().enumerate() {
                 if route.source >= source_count {
@@ -227,14 +236,19 @@ impl PreparedModulation {
                     contribution: RangeContribution::prepare(route.amount, route.range)?,
                 });
             }
-            Some(HostOutputTarget { base, route_start })
-        } else {
-            None
+            Ok(Some(HostGainTarget {
+                base,
+                route_start,
+                route_end: prepared_routes.len(),
+            }))
         };
+        let input = append_host_routes(input)?;
+        let output = append_host_routes(output)?;
         Ok(Self {
             ids,
             targets: prepared_targets,
             routes: prepared_routes,
+            input,
             output,
             source_count,
         })
@@ -289,9 +303,8 @@ impl PreparedModulation {
         })
     }
 
-    /// Whether the host must apply modulated gain after the native processor.
-    pub fn has_host_output_routes(&self) -> bool {
-        self.output.is_some()
+    pub(crate) fn host_input_base(&self) -> Option<HostGain> {
+        self.input.map(|target| target.base)
     }
 
     pub(crate) fn host_output_base(&self) -> Option<HostGain> {
@@ -350,22 +363,37 @@ pub struct ModulationBlock<'a> {
     frames: usize,
 }
 impl ModulationBlock<'_> {
+    pub(crate) fn host_input_gain_at(
+        &self,
+        offset: usize,
+        upstream: Option<NormalizedAutomationValue>,
+    ) -> Result<HostGain, Error> {
+        self.host_gain_at(self.program.input, offset, upstream)
+    }
+
     pub(crate) fn host_output_gain_at(
         &self,
         offset: usize,
         upstream: Option<NormalizedAutomationValue>,
-    ) -> Result<Option<HostGain>, Error> {
+    ) -> Result<HostGain, Error> {
+        self.host_gain_at(self.program.output, offset, upstream)
+    }
+
+    fn host_gain_at(
+        &self,
+        target: Option<HostGainTarget>,
+        offset: usize,
+        upstream: Option<NormalizedAutomationValue>,
+    ) -> Result<HostGain, Error> {
         if offset >= self.frames {
             return Err(Error::InvalidParameterValue);
         }
-        let Some(target) = self.program.output else {
-            return Ok(None);
-        };
+        let target = target.ok_or(Error::InvalidDescriptor)?;
         let base =
             upstream.map_or_else(|| target.base.normalized(), NormalizedAutomationValue::get);
-        let sum = self.sum_routes(target.route_start..self.program.routes.len(), offset)?;
+        let sum = self.sum_routes(target.route_start..target.route_end, offset)?;
         let final_value = (f64::from(base) + sum).clamp(0.0, 1.0) as f32;
-        HostGain::from_normalized(final_value).map(Some)
+        HostGain::from_normalized(final_value)
     }
 
     fn sum_routes(&self, routes: std::ops::Range<usize>, offset: usize) -> Result<f64, Error> {
