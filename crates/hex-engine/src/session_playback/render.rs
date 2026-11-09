@@ -1611,6 +1611,7 @@ impl SessionPlayback {
                             performance_frame,
                             arrangement_frame,
                             arrangement_loop_pass,
+                            transient: None,
                             chase_at_start: self.interactive_start_frame == Some(performance_frame),
                             loop_region: if self.linear_arrangement_export {
                                 None
@@ -1621,6 +1622,9 @@ impl SessionPlayback {
                         },
                         index,
                         generator,
+                        self.native_parameter_state
+                            .as_deref_mut()
+                            .and_then(|state| state.processing.as_mut()),
                     )?;
                     if let Some(keyboard) = self.computer_keyboard.as_mut().filter(|keyboard| {
                         !keyboard.is_source_input()
@@ -2568,6 +2572,7 @@ struct MutableInstrumentChunkContext<'a, T: ?Sized> {
     performance_frame: u64,
     arrangement_frame: u64,
     arrangement_loop_pass: u64,
+    transient: Option<hex_lattice::NativeTransientInput>,
     chase_at_start: bool,
     loop_region: Option<hex_project::LoopRegion>,
     timing: &'a T,
@@ -2624,6 +2629,41 @@ pub(super) fn collect_console_midi_onsets<T: MidiTiming + ?Sized>(
 }
 
 fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?Sized>(
+    mut context: MutableInstrumentChunkContext<'_, T>,
+    index: usize,
+    output: &mut [Frame],
+    processing: Option<&mut crate::native_parameter_input::Processing>,
+) -> Result<(), SessionPlaybackError> {
+    let origin = (
+        context.arrangement_frame,
+        context.arrangement_loop_pass,
+        context.performance_frame,
+    );
+    context.transient = processing.as_deref().and_then(|processing| {
+        let track = context.revision.arrangement().tracks().get(index)?;
+        if output.is_empty()
+            || !track.receives_source_audio()
+            || context
+                .runtimes
+                .get(index)
+                .and_then(Option::as_ref)
+                .is_none()
+        {
+            return None;
+        }
+        processing.for_source(track.source_id(), track.instrument_id)
+    });
+    let applied = context.transient.is_some();
+    render_mutable_instrument_inner(context, index, output)?;
+    if applied && let Some(processing) = processing {
+        processing
+            .source_applied(origin.0, origin.1, origin.2)
+            .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+    }
+    Ok(())
+}
+
+fn render_mutable_instrument_inner<T: crate::prepared_tempo::MidiTempoBreaks + ?Sized>(
     context: MutableInstrumentChunkContext<'_, T>,
     index: usize,
     output: &mut [Frame],
@@ -2644,6 +2684,7 @@ fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?
         performance_frame,
         arrangement_frame,
         arrangement_loop_pass,
+        transient,
         chase_at_start,
         loop_region,
         timing,
@@ -2789,7 +2830,7 @@ fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?
         },
         output.len(),
     )?;
-    let parameter_block = parameter_context.block();
+    let parameter_block = parameter_context.block_with_input(transient)?;
     let parameter_values = parameter_block
         .as_ref()
         .map(|values| values as &dyn hex_lattice::NativeParameterAutomation);

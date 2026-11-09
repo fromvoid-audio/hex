@@ -183,6 +183,7 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
         performance_frame,
         arrangement_frame,
         arrangement_loop_pass,
+        transient,
         chase_at_start,
         loop_region,
         timing,
@@ -349,7 +350,7 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
         },
         output.len(),
     )?;
-    let parameter_block = parameter_context.block();
+    let parameter_block = parameter_context.block_with_input(transient)?;
     let parameter_values = parameter_block
         .as_ref()
         .map(|values| values as &dyn hex_lattice::NativeParameterAutomation);
