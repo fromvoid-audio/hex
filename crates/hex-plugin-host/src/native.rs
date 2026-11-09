@@ -212,6 +212,7 @@ pub struct Prepared {
     parameter_page: Option<parameter_page::PendingPage>,
     parameter_page_sequence: u64,
     authored_parameter_metadata: Option<AuthoredParameterMetadata>,
+    grouped_editor_callbacks: bool,
 }
 /// Source-bound configured component awaiting actual graph presentation facts.
 /// No processing/state capture or canonical/audio acceptance has occurred. Keep
@@ -616,6 +617,7 @@ impl Pending {
             parameter_page: None,
             parameter_page_sequence: 0,
             authored_parameter_metadata: None,
+            grouped_editor_callbacks: self.source.grouped_editor_callbacks,
         })
     }
 }
@@ -653,7 +655,7 @@ impl Prepared {
         self.sequence
     }
     pub fn grouped_editor_callbacks_enabled(&self) -> bool {
-        self.source.grouped_editor_callbacks
+        self.grouped_editor_callbacks
     }
     pub fn ready(&self) -> &Ready {
         &self.ready

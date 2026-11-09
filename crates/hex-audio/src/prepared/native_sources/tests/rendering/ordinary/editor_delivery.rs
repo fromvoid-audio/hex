@@ -326,48 +326,67 @@ fn paired_editor_values_and_independent_restores_are_confirmed_only_at_main() {
     use hex_plugin_host::protocol::EditorTouchTarget;
     const CHILD: &str = "HEX_ORDINARY_GROUP_EDITOR_MAIN_DRIVER";
     if std::env::var_os(CHILD).is_none() {
-        let temporary = std::env::temp_dir().join(format!("hex-group-main-{}", std::process::id()));
-        std::fs::create_dir(&temporary).unwrap();
-        let result = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                std::thread::current().name().unwrap(),
-                "--ignored",
-            ])
-            .env(CHILD, &temporary)
-            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "148")
-            .env("HEX_ORIGINAL_GROUPED_EDITOR_PATTERN", "staggered")
-            .env("HEX_ORIGINAL_INSTANCE_RELEASE", temporary.join("perform"))
-            .env("HEX_ORIGINAL_EDITOR_END_RELEASE", temporary.join("end"))
-            .env(
-                "HEX_ORIGINAL_EDITOR_SECOND_END_RELEASE",
-                temporary.join("second"),
-            )
-            .output()
-            .unwrap();
-        std::fs::remove_dir_all(temporary).unwrap();
-        assert!(
-            result.status.success() && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
-            "{}\n{}",
-            String::from_utf8_lossy(&result.stdout),
-            String::from_utf8_lossy(&result.stderr)
-        );
+        for (name, variant) in [("effect", "148"), ("instrument", "149")] {
+            let temporary =
+                std::env::temp_dir().join(format!("hex-group-main-{}-{name}", std::process::id()));
+            std::fs::create_dir(&temporary).unwrap();
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    std::thread::current().name().unwrap(),
+                    "--ignored",
+                ])
+                .env(CHILD, &temporary)
+                .env("HEX_ORIGINAL_INSTANCE_VARIANT", variant)
+                .env("HEX_ORIGINAL_GROUPED_EDITOR_PATTERN", "staggered")
+                .env("HEX_ORIGINAL_INSTANCE_RELEASE", temporary.join("perform"))
+                .env("HEX_ORIGINAL_EDITOR_END_RELEASE", temporary.join("end"))
+                .env(
+                    "HEX_ORIGINAL_EDITOR_SECOND_END_RELEASE",
+                    temporary.join("second"),
+                )
+                .output()
+                .unwrap();
+            std::fs::remove_dir_all(temporary).unwrap();
+            assert!(
+                result.status.success()
+                    && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+                "{name}: {}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
         return;
     }
     let _serial = serial();
     let gate = std::path::PathBuf::from(std::env::var_os(CHILD).unwrap());
-    let mut f = fixture_with_authored("processing", 2, 8, &[0, 11]);
-    let device = f.editor.project().main_devices()[0].id();
-    for id in [0, 11] {
+    let instrument = std::env::var("HEX_ORIGINAL_INSTANCE_VARIANT").as_deref() == Ok("149");
+    let mut f = fixture_with_authored_mode(
+        "processing",
+        2,
+        8,
+        if instrument { &[0, 11, 23] } else { &[0, 11] },
+        instrument,
+    );
+    let device = if instrument {
+        f.editor.project().tracks()[0].instrument().unwrap().id()
+    } else {
+        f.editor.project().main_devices()[0].id()
+    };
+    let ids: &[u32] = if instrument { &[0, 11, 23] } else { &[0, 11] };
+    for &id in ids {
         f.editor
             .execute(Command::ReplaceDeviceAutomationTarget {
                 device,
                 target: hex_project::DeviceAutomationTarget::Vst3 { parameter: id },
-                points: vec![hex_project::AutomationPoint {
-                    beat: hex_project::BeatTime::ZERO,
-                    value: hex_project::AutomationValue::new(0.25).unwrap(),
-                    outgoing: hex_project::AutomationInterpolation::Step,
-                }],
+                points: [(0, 0.25), (20, 0.5)][..if id == 23 { 2 } else { 1 }]
+                    .iter()
+                    .map(|&(frame, value)| hex_project::AutomationPoint {
+                        beat: hex_project::BeatTime::from_ratio(frame, 24_000).unwrap(),
+                        value: hex_project::AutomationValue::new(value).unwrap(),
+                        outgoing: hex_project::AutomationInterpolation::Step,
+                    })
+                    .collect(),
             })
             .unwrap();
     }
@@ -379,7 +398,7 @@ fn paired_editor_values_and_independent_restores_are_confirmed_only_at_main() {
             ParameterValue::Float(0.0),
         )
         .unwrap();
-    for before in [Some(device), None] {
+    for before in [(!instrument).then_some(device), None] {
         f.editor
             .execute(Command::InsertMainDevice {
                 before,
@@ -421,7 +440,9 @@ fn paired_editor_values_and_independent_restores_are_confirmed_only_at_main() {
     let mut ordered = Vec::new();
     let mut confirmed = Vec::new();
     let mut samples = Vec::new();
-    for block in 2..8 {
+    let origin = if instrument { 16 } else { 5 };
+    let due = [origin + 38, origin + 46, origin + 54];
+    for block in 2..if instrument { 11 } else { 8 } {
         if let Some(name) = match block {
             2 => Some("perform"),
             3 => Some("end"),
@@ -471,7 +492,10 @@ fn paired_editor_values_and_independent_restores_are_confirmed_only_at_main() {
             assert_eq!(quantum.main_performance_frame / 8, block);
             confirmed.push(quantum);
         }
-        assert_eq!(confirmed.len(), block.saturating_sub(4) as usize);
+        assert_eq!(
+            confirmed.len(),
+            due.iter().filter(|&&frame| frame / 8 <= block).count()
+        );
     }
     let [held, first, second] = confirmed.as_slice() else {
         panic!("one paired value and two individual restores");
@@ -482,12 +506,12 @@ fn paired_editor_values_and_independent_restores_are_confirmed_only_at_main() {
             first.main_performance_frame,
             second.main_performance_frame
         ],
-        [43, 51, 59]
+        due
     );
     assert_eq!(
         [held.input, first.input, second.input]
             .map(|input| input.origin.unwrap().arrangement_frame),
-        [5, 13, 21]
+        [origin, origin + 8, origin + 16]
     );
     let [gain, axis] = held.input.performs.as_slice() else {
         panic!("paired effective values");
@@ -510,14 +534,30 @@ fn paired_editor_values_and_independent_restores_are_confirmed_only_at_main() {
             }]
         );
     }
-    for (frame, value) in [
-        (42, [0.25, -0.5]),
-        (43, [1.5, -3.0]),
-        (50, [1.5, -3.0]),
-        (51, [0.5, -1.0]),
-        (58, [0.5, -1.0]),
-        (59, [0.25, -0.5]),
-    ] {
+    let expected: &[(usize, Frame)] = if instrument {
+        &[
+            (53, [1.0; 2]),
+            (54, [6.0; 2]),
+            (57, [6.0; 2]),
+            (58, [12.0; 2]),
+            (61, [12.0; 2]),
+            (62, [4.0; 2]),
+            (69, [4.0; 2]),
+            (70, [2.0; 2]),
+            (81, [2.0; 2]),
+            (82, [0.0; 2]),
+        ]
+    } else {
+        &[
+            (42, [0.25, -0.5]),
+            (43, [1.5, -3.0]),
+            (50, [1.5, -3.0]),
+            (51, [0.5, -1.0]),
+            (58, [0.5, -1.0]),
+            (59, [0.25, -0.5]),
+        ]
+    };
+    for &(frame, value) in expected {
         assert_eq!(samples[frame - 16], value, "exact Main frame {frame}");
     }
     f.control.command(PlaybackCommand::Stop).unwrap();
