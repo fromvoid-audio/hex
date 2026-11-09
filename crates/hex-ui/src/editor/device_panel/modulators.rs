@@ -356,25 +356,24 @@ pub(super) fn panel(
             owner: view.device_panel.owner,
             device: id,
         };
-        body = body.child(
-            action(
-                format!("add-modulator-{}", id.value()),
-                theme::text("+ modulator"),
-            )
-            .on_click(cx.listener(
-                move |view, event: &gpui::ClickEvent, window, cx| {
-                    cx.stop_propagation();
-                    open_add_menu(
-                        view,
-                        target,
-                        allow_audio_input,
-                        event.position(),
-                        window,
-                        cx,
-                    );
-                },
-            )),
-        );
+        let add_button = action(
+            format!("add-modulator-{}", id.value()),
+            theme::text("+ modulator"),
+        )
+        .on_click(cx.listener(
+            move |view, event: &gpui::ClickEvent, window, cx| {
+                cx.stop_propagation();
+                open_add_menu(
+                    view,
+                    target,
+                    allow_audio_input,
+                    event.position(),
+                    window,
+                    cx,
+                );
+            },
+        ));
+        body = body.child(add_button);
     }
     if let Some(source) = selected
         && host_gain_available
