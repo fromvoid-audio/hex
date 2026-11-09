@@ -136,7 +136,7 @@ fn oscillator_level_reveals_an_fm_ancestor_even_with_a_pressure_revealed_carrier
 
         fn value_at(&self, id: ParameterId, offset: usize) -> Option<ParameterValue> {
             (id == parameter::oscillator_level(2)).then_some(ParameterValue::Float(
-                if offset % 2 == 0 { 0.0 } else { 0.5 },
+                if offset.is_multiple_of(2) { 0.0 } else { 0.5 },
             ))
         }
 
