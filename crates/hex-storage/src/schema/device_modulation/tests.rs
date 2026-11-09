@@ -143,8 +143,9 @@ fn schema81_keeps_gray_slots_and_schema82_round_trips_complete_colored_slots() {
     let dir = temp_dir();
     let path = dir.join("schema81.hex");
     std::fs::write(&path, &bytes).unwrap();
-    let loaded = crate::load(&path).unwrap();
+    let (loaded, old_token) = crate::load_with_token(&path).unwrap();
     assert_eq!(loaded.snapshot(), gray.snapshot());
+    assert!(!old_token.requires_save_confirmation(&loaded).unwrap());
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
 
     let device = loaded.devices().next().unwrap();
@@ -161,6 +162,7 @@ fn schema81_keeps_gray_slots_and_schema82_round_trips_complete_colored_slots() {
     editor.execute(edit).unwrap();
     let colored = editor.project();
     assert_eq!(crate::schema_version_for(colored), 82);
+    assert!(old_token.requires_save_confirmation(colored).unwrap());
     let path = dir.join("schema82.hex");
     crate::save_new(&path, colored).unwrap();
     assert_eq!(crate::load(&path).unwrap().snapshot(), colored.snapshot());
