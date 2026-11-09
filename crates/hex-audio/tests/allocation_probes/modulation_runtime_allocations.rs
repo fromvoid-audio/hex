@@ -1,7 +1,7 @@
 //! Isolated modulation transaction probe, not native callback integration.
 use hex_lattice::{
     ModulationRoute, ModulationRuntime, ModulationSourceBank, ModulationSourceId, ModulationTarget,
-    PreparedModulation, PreparedModulationSource,
+    PreparedModulation, PreparedModulationSource, SourceModulationParameter,
 };
 use hex_lattice_contract::{
     DeviceContractError, ParameterAccess, ParameterAutomation, ParameterChangeImpact,
@@ -97,21 +97,25 @@ fn chunk_transactions_do_not_allocate_or_free() {
 
 #[test]
 fn utility_graph_modulation_transactions_do_not_allocate_or_free() {
-    probe_utility_graph(false);
+    probe_utility_graph(None);
 }
 
 #[test]
 fn utility_graph_with_lfo_rate_modulation_does_not_allocate_or_free() {
-    probe_utility_graph(true);
+    probe_utility_graph(Some(SourceModulationParameter::FreeLfoRate));
 }
 
-fn probe_utility_graph(routed_rate: bool) {
+#[test]
+fn utility_graph_with_tempo_lfo_rate_modulation_does_not_allocate_or_free() {
+    probe_utility_graph(Some(SourceModulationParameter::TempoLfoRate));
+}
+
+fn probe_utility_graph(rate_route: Option<SourceModulationParameter>) {
     use hex_devices::utility::{UTILITY_DEFINITION, UTILITY_TYPE_ID, UtilityDefinition, parameter};
     use hex_lattice::PreparedNativeProcessor;
     use hex_lattice::{
         LfoWaveform, NativeRuntimeChain, PreparedModulationState, PreparedProcessorFactory,
-        PreparedRuntimeInstance, ProcessorChainOwner, SourceModulationParameter,
-        SourceModulationRoute, StereoMatrix,
+        PreparedRuntimeInstance, ProcessorChainOwner, SourceModulationRoute, StereoMatrix,
     };
     use hex_lattice_contract::NativeDeviceMetadata;
     use std::sync::Arc;
@@ -140,7 +144,7 @@ fn probe_utility_graph(routed_rate: bool) {
         )
         .unwrap();
         let oscillator = ModulationSourceId::new(1).unwrap();
-        let source = if routed_rate {
+        let source = if rate_route == Some(SourceModulationParameter::FreeLfoRate) {
             PreparedModulationSource::free_with_waveform(
                 oscillator, 48_000.0, 12_000.0, 0.0, waveform,
             )
@@ -171,11 +175,11 @@ fn probe_utility_graph(routed_rate: bool) {
             amount: 0.2,
             range: [0.0, 1.0],
         }];
-        if routed_rate {
+        if let Some(parameter) = rate_route {
             source_routes.push(SourceModulationRoute {
                 source: 1,
                 target: 0,
-                parameter: SourceModulationParameter::FreeLfoRate,
+                parameter,
                 amount: 0.2,
                 range: [-1.0, 1.0],
             });

@@ -31,26 +31,47 @@ enum Timing {
     },
 }
 impl Timing {
-    fn rate(self, sample_rate: f64, tempo_micro_bpm: u32) -> Result<Option<LfoRate>, Error> {
+    fn rate(self, sample_rate: f64, tempo_micro_bpm: u32) -> Result<LfoRate, Error> {
         match self {
-            Self::Free(_) => Ok(None),
+            Self::Free(rate) => Ok(rate),
             Self::Tempo {
                 beats_per_cycle,
                 fallback,
             } => {
                 if tempo_micro_bpm == 0 {
-                    return Ok(Some(fallback));
+                    return Ok(fallback);
                 }
                 LfoRate::tempo(
                     sample_rate,
                     f64::from(tempo_micro_bpm) / 1_000_000.0,
                     beats_per_cycle,
                 )
-                .map(Some)
                 .map_err(|_| Error::InvalidParameterValue)
             }
         }
     }
+}
+
+fn render_rate_route(
+    oscillator: &mut ModulationLfo,
+    output: &mut [f32],
+    base_rate: impl Fn(usize) -> Result<LfoRate, Error>,
+    contribution: impl Fn(usize) -> f64,
+) -> Result<(), Error> {
+    for (frame, sample) in output.iter_mut().enumerate() {
+        let base_rate = base_rate(frame)?;
+        let depth = contribution(frame).clamp(-1.0, 1.0);
+        let rate = if depth == 0.0 {
+            base_rate
+        } else {
+            base_rate
+                .scaled((4.0 * depth).exp2())
+                .map_err(|_| Error::InvalidParameterValue)?
+        };
+        oscillator.set_rate(rate);
+        *sample = oscillator.next_sample();
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -111,6 +132,13 @@ impl PreparedModulationSource {
                     SourceModulationParameter::FreeLfoRate,
                     SourceState::Lfo {
                         timing: Timing::Free(_),
+                        ..
+                    }
+                )
+                | (
+                    SourceModulationParameter::TempoLfoRate,
+                    SourceState::Lfo {
+                        timing: Timing::Tempo { .. },
                         ..
                     }
                 )
@@ -529,9 +557,7 @@ impl ModulationSourceBank {
                         .get(..frames)
                         .ok_or(Error::RuntimeBudgetExceeded)?;
                     for (sample, &tempo) in output.iter_mut().zip(tempos) {
-                        if let Some(rate) = timing.rate(source.sample_rate, tempo)? {
-                            oscillator.set_rate(rate);
-                        }
+                        oscillator.set_rate(timing.rate(source.sample_rate, tempo)?);
                         *sample = oscillator.next_sample();
                     }
                 }
@@ -603,18 +629,25 @@ impl ModulationSourceBank {
                         timing: Timing::Free(authored),
                     },
                 ) => {
-                    for (frame, sample) in output.iter_mut().enumerate() {
-                        let depth = sum_at(frame).clamp(-1.0, 1.0);
-                        let rate = if depth == 0.0 {
-                            *authored
-                        } else {
-                            authored
-                                .scaled((4.0 * depth).exp2())
-                                .map_err(|_| Error::InvalidParameterValue)?
-                        };
-                        oscillator.set_rate(rate);
-                        *sample = oscillator.next_sample();
-                    }
+                    render_rate_route(oscillator, output, |_| Ok(*authored), sum_at)?;
+                }
+                (
+                    SourceModulationParameter::TempoLfoRate,
+                    SourceState::Lfo {
+                        oscillator,
+                        timing: timing @ Timing::Tempo { .. },
+                    },
+                ) => {
+                    let tempos = self
+                        .tempo_cache
+                        .get(..frames)
+                        .ok_or(Error::RuntimeBudgetExceeded)?;
+                    render_rate_route(
+                        oscillator,
+                        output,
+                        |frame| timing.rate(target.sample_rate, tempos[frame]),
+                        sum_at,
+                    )?;
                 }
                 _ => return Err(Error::UnsupportedProcessingClass),
             }
@@ -1048,6 +1081,66 @@ mod tests {
             .render_chunk_with_clock(8, Some(&self::clock(8, false)))
             .unwrap();
         assert_eq!(whole.samples(id), partitioned.samples(id));
+    }
+
+    #[test]
+    fn tempo_rate_route_uses_sample_tempo_with_fallback_and_saturates_at_nyquist() {
+        use crate::{SourceModulationRoute, modulation_source_routes};
+        let id = ModulationSourceId::new(1).unwrap();
+        let sources = [
+            PreparedModulationSource::tempo_with_waveform(
+                id,
+                8.0,
+                90.0,
+                1.0,
+                0.125,
+                LfoWaveform::RisingRamp,
+            )
+            .unwrap(),
+            PreparedModulationSource::macro_value(ModulationSourceId::new(2).unwrap(), 8, 0.3125)
+                .unwrap(),
+        ];
+        let route = SourceModulationRoute {
+            source: 1,
+            target: 0,
+            parameter: SourceModulationParameter::TempoLfoRate,
+            amount: 1.0,
+            range: [-1.0, 1.0],
+        };
+        let mut wrong_mode = sources;
+        wrong_mode[0] = PreparedModulationSource::free(id, 8.0, 2.0, 0.0).unwrap();
+        assert!(modulation_source_routes::prepare(&wrong_mode, &[route]).is_err());
+        let routes = modulation_source_routes::prepare(&sources, &[route]).unwrap();
+        let mask = modulation_source_routes::target_mask(&routes);
+        let mut phase = 0.125_f64;
+        let expected: [f32; 13] = std::array::from_fn(|frame| {
+            let sample = (2.0 * phase - 1.0) as f32;
+            let bpm: f64 = [120.0, 120.0, 120.0, 60.0, 90.0][frame % 5];
+            phase = (phase + (1.25_f64.exp2() * bpm / (60.0 * 8.0)).min(0.5)).fract();
+            sample
+        });
+        let mut bank = ModulationSourceBank::new(&sources, 13).unwrap();
+        let whole_clock = clock(0, false);
+        bank.begin();
+        bank.render_chunk_with_routes(13, Some(&whole_clock), None, &routes, mask)
+            .unwrap();
+        assert_eq!(whole_clock.queries.get(), expected.len());
+        assert_eq!(bank.samples(id).unwrap(), expected);
+        bank.rollback();
+
+        bank.begin();
+        assert!(
+            bank.render_chunk_with_routes(13, Some(&clock(0, true)), None, &routes, mask)
+                .is_err()
+        );
+        let mut offset = 0;
+        for count in [3, 1, 9] {
+            bank.render_chunk_with_routes(count, Some(&clock(offset, false)), None, &routes, mask)
+                .unwrap();
+            assert_eq!(bank.samples(id).unwrap(), &expected[offset..offset + count]);
+            offset += count;
+        }
+        bank.commit().unwrap();
     }
 
     #[test]
