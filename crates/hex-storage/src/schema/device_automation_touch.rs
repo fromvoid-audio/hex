@@ -6,14 +6,21 @@
 //! The native-instrument-touch schema adds only those lanes as a wrapper over
 //! the exact previous codec. Historical readers never admitted native source
 //! touches; the frozen 78/79 decoder continues to refuse them.
+//! The extended touch schema wraps the prior format only when a lane's
+//! base plus recorded steps exceeds the historical combined bound. It
+//! preserves all steps and keeps the historical bound on every older layer.
 use super::{automation_read::Selection, device_automation};
 #[cfg(test)]
 use crate::DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION;
-use crate::{NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION, Project, StorageError};
+use crate::{
+    EXTENDED_AUTOMATION_TOUCH_SCHEMA_VERSION, NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION, Project,
+    StorageError,
+};
 use hex_lattice_contract::ParameterId;
 use hex_project::{
     AutomationValue, BeatTime, DeviceAutomation, DeviceAutomationTarget, DeviceAutomationTouchSpan,
-    DeviceAutomationTouchStep,
+    DeviceAutomationTouchStep, MAX_DEVICE_AUTOMATION_POINTS_PER_LANE,
+    MAX_DEVICE_AUTOMATION_TOUCH_STEPS_PER_LANE,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -47,7 +54,13 @@ impl Target {
         version: u32,
     ) -> Result<(DeviceAutomationTarget, Option<[u8; 16]>), StorageError> {
         let class = match self {
-            Self::Vst3 { class, .. } if version == crate::VST3_AUTOMATION_TOUCH_SCHEMA_VERSION => {
+            Self::Vst3 { class, .. }
+                if matches!(
+                    version,
+                    crate::VST3_AUTOMATION_TOUCH_SCHEMA_VERSION
+                        | EXTENDED_AUTOMATION_TOUCH_SCHEMA_VERSION
+                ) =>
+            {
                 Some(*class)
             }
             Self::Vst3 { .. } => {
@@ -108,6 +121,7 @@ impl Lane {
         self,
         target: DeviceAutomationTarget,
         vst3_class: Option<[u8; 16]>,
+        step_limit: usize,
     ) -> Result<DeviceAutomation, StorageError> {
         let mut points = 0usize;
         let touch = self
@@ -116,7 +130,7 @@ impl Lane {
             .map(|span| {
                 points = points
                     .checked_add(span.steps.len())
-                    .filter(|&n| n <= hex_project::MAX_DEVICE_AUTOMATION_POINTS_PER_LANE)
+                    .filter(|&n| n <= step_limit)
                     .ok_or(StorageError::Invalid(
                         "device automation touch points exceed the lane budget",
                     ))?;
@@ -240,10 +254,11 @@ pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError
             ));
         }
         previous = Some(key);
-        by_device
-            .entry(row.device)
-            .or_default()
-            .push(row.into_lane(target, vst3_class)?);
+        by_device.entry(row.device).or_default().push(row.into_lane(
+            target,
+            vst3_class,
+            MAX_DEVICE_AUTOMATION_POINTS_PER_LANE,
+        )?);
     }
     for source in &snapshot.native_sources {
         if source.devices.iter().any(|device| {
@@ -263,7 +278,7 @@ pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError
             continue;
         };
         for row in lanes {
-            restore_lane(&mut device.automation, row)?;
+            restore_lane(&mut device.automation, row, false)?;
         }
     }
     if !by_device.is_empty() {
@@ -277,8 +292,17 @@ pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError
 fn restore_lane(
     lanes: &mut Vec<DeviceAutomation>,
     row: DeviceAutomation,
+    extended: bool,
 ) -> Result<(), StorageError> {
-    match lanes.binary_search_by_key(&row.target, |lane| lane.target) {
+    let slot = lanes.binary_search_by_key(&row.target, |lane| lane.target);
+    let base_points = slot.ok().map_or(0, |index| lanes[index].points.len());
+    let exceeds_old = base_points + row.point_count() > MAX_DEVICE_AUTOMATION_POINTS_PER_LANE;
+    if exceeds_old != extended {
+        return Err(StorageError::Invalid(
+            "device automation touch length disagrees with project format",
+        ));
+    }
+    match slot {
         Ok(index) => {
             let base = &mut lanes[index];
             if base.read_selection != row.read_selection
@@ -304,20 +328,76 @@ pub(crate) fn contains_native_instrument(project: &Project) -> bool {
     })
 }
 
+#[derive(Clone, Copy)]
+enum Envelope {
+    NativeInstrument,
+    Extended,
+}
+
+impl Envelope {
+    const fn version(self) -> u32 {
+        match self {
+            Self::NativeInstrument => NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION,
+            Self::Extended => EXTENDED_AUTOMATION_TOUCH_SCHEMA_VERSION,
+        }
+    }
+    const fn fields(self) -> (&'static str, &'static str) {
+        match self {
+            Self::NativeInstrument => (
+                "native_instrument_touch_base_version",
+                "native_instrument_touch",
+            ),
+            Self::Extended => (
+                "extended_automation_touch_base_version",
+                "extended_automation_touch",
+            ),
+        }
+    }
+    const fn step_limit(self) -> usize {
+        match self {
+            Self::NativeInstrument => MAX_DEVICE_AUTOMATION_POINTS_PER_LANE,
+            Self::Extended => MAX_DEVICE_AUTOMATION_TOUCH_STEPS_PER_LANE,
+        }
+    }
+}
+
+fn extended_lane(lane: &DeviceAutomation) -> bool {
+    !lane.touch.is_empty() && lane.point_count() > MAX_DEVICE_AUTOMATION_POINTS_PER_LANE
+}
+
+pub(crate) fn contains_extended(project: &Project) -> bool {
+    project
+        .automation_devices()
+        .any(|device| device.automation().iter().any(extended_lane))
+}
+
 pub(crate) fn encode_native_instrument(project: &Project) -> Result<Value, StorageError> {
+    encode_envelope(project, Envelope::NativeInstrument)
+}
+
+pub(crate) fn encode_extended(project: &Project) -> Result<Value, StorageError> {
+    encode_envelope(project, Envelope::Extended)
+}
+
+fn encode_envelope(project: &Project, envelope: Envelope) -> Result<Value, StorageError> {
     let mut snapshot = project.snapshot();
     let mut rows = Vec::new();
-    for source in &mut snapshot.native_sources {
-        let device =
-            source
-                .devices
-                .get_mut(source.instrument_index)
-                .ok_or(StorageError::Invalid(
-                    "missing native instrument touch owner",
-                ))?;
+    let instrument_ids: std::collections::BTreeSet<_> = project
+        .native_sources()
+        .iter()
+        .map(|source| source.instrument().id().value())
+        .collect();
+    for device in device_automation::devices(&mut snapshot) {
         for lane in &mut device.automation {
-            if !lane.touch.is_empty() && matches!(lane.target, DeviceAutomationTarget::Parameter(_))
-            {
+            let include = match envelope {
+                Envelope::NativeInstrument => {
+                    instrument_ids.contains(&device.id)
+                        && matches!(lane.target, DeviceAutomationTarget::Parameter(_))
+                        && !lane.touch.is_empty()
+                }
+                Envelope::Extended => extended_lane(lane),
+            };
+            if include {
                 rows.push(((device.id, lane.target), Lane::take(device.id, lane)?));
             }
         }
@@ -329,83 +409,90 @@ pub(crate) fn encode_native_instrument(project: &Project) -> Result<Value, Stora
     let core = Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))?;
     let mut value: Value = serde_json::from_slice(&crate::encode(&core)?)?;
     let base = value["version"].clone();
-    value["version"] = NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION.into();
-    value["native_instrument_touch_base_version"] = base;
-    value["native_instrument_touch"] =
+    value["version"] = envelope.version().into();
+    let (base_field, row_field) = envelope.fields();
+    value[base_field] = base;
+    value[row_field] =
         serde_json::to_value(rows.into_iter().map(|(_, lane)| lane).collect::<Vec<_>>())?;
     Ok(value)
 }
 
 pub(crate) fn decode_native_instrument(bytes: &[u8]) -> Result<Project, StorageError> {
+    decode_envelope(bytes, Envelope::NativeInstrument)
+}
+
+pub(crate) fn decode_extended(bytes: &[u8]) -> Result<Project, StorageError> {
+    decode_envelope(bytes, Envelope::Extended)
+}
+
+fn decode_envelope(bytes: &[u8], envelope: Envelope) -> Result<Project, StorageError> {
     let mut value = super::audio_events::parse_unique(bytes)?;
-    let object = value.as_object_mut().ok_or(StorageError::Invalid(
-        "invalid native instrument touch project",
-    ))?;
+    let object = value
+        .as_object_mut()
+        .ok_or(StorageError::Invalid("invalid automation touch project"))?;
+    let (base_field, row_field) = envelope.fields();
     let base = object
-        .remove("native_instrument_touch_base_version")
+        .remove(base_field)
         .and_then(|base| base.as_u64())
         .filter(|base| {
-            (u64::from(crate::CURRENT_SCHEMA_VERSION)
-                ..u64::from(NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION))
-                .contains(base)
+            (u64::from(crate::CURRENT_SCHEMA_VERSION)..u64::from(envelope.version())).contains(base)
         })
         .ok_or(StorageError::Invalid(
-            "invalid native instrument touch base schema",
+            "invalid automation touch base schema",
         ))?;
-    let Rows(rows) = serde_json::from_value(object.remove("native_instrument_touch").ok_or(
-        StorageError::Invalid("native instrument touch inventory is missing"),
+    let Rows(rows) = serde_json::from_value(object.remove(row_field).ok_or(
+        StorageError::Invalid("automation touch inventory is missing"),
     )?)?;
     if rows.is_empty() {
-        return Err(StorageError::Invalid(
-            "native instrument touch inventory is empty",
-        ));
+        return Err(StorageError::Invalid("automation touch inventory is empty"));
     }
     object.insert("version".into(), base.into());
     let core = crate::decode(&serde_json::to_vec(&value)?)?;
+    let instruments: std::collections::BTreeSet<_> = core
+        .native_sources()
+        .iter()
+        .map(|source| source.instrument().id().value())
+        .collect();
     let mut snapshot = core.snapshot();
     let mut by_device = BTreeMap::<u64, Vec<DeviceAutomation>>::new();
     let mut previous = None;
     for row in rows {
-        if !matches!(row.target, Target::Parameter(_))
+        if matches!(envelope, Envelope::NativeInstrument)
+            && (!instruments.contains(&row.device) || !matches!(row.target, Target::Parameter(_)))
+        {
+            return Err(StorageError::Invalid(
+                "native instrument touch owner no longer exists",
+            ));
+        }
+        let (target, class) = row.target.decode_target(envelope.version())?;
+        let key = (row.device, target);
+        if previous.is_some_and(|previous| previous >= key)
             || row.spans.is_empty()
             || row.spans.len() > hex_project::MAX_DEVICE_AUTOMATION_TOUCH_SPANS
         {
-            return Err(StorageError::Invalid(
-                "invalid native instrument touch lane",
-            ));
-        }
-        let (target, _) = row
-            .target
-            .decode_target(NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION)?;
-        let key = (row.device, target);
-        if previous.is_some_and(|previous| previous >= key) {
-            return Err(StorageError::Invalid(
-                "unsorted native instrument touch lanes",
-            ));
+            return Err(StorageError::Invalid("invalid automation touch lane"));
         }
         previous = Some(key);
-        by_device
-            .entry(row.device)
-            .or_default()
-            .push(row.into_lane(target, None)?);
+        by_device.entry(row.device).or_default().push(row.into_lane(
+            target,
+            class,
+            envelope.step_limit(),
+        )?);
     }
-    for source in &mut snapshot.native_sources {
-        let device =
-            source
-                .devices
-                .get_mut(source.instrument_index)
-                .ok_or(StorageError::Invalid(
-                    "missing native instrument touch owner",
-                ))?;
+    for device in device_automation::devices(&mut snapshot) {
         if let Some(rows) = by_device.remove(&device.id) {
             for row in rows {
-                restore_lane(&mut device.automation, row)?;
+                restore_lane(
+                    &mut device.automation,
+                    row,
+                    matches!(envelope, Envelope::Extended),
+                )?;
             }
         }
     }
     if !by_device.is_empty() {
         return Err(StorageError::Invalid(
-            "native instrument touch owner no longer exists",
+            "device automation touch owner no longer exists",
         ));
     }
     Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
@@ -527,6 +614,93 @@ mod tests {
                 "native instrument touch owner no longer exists"
             ))
         ));
+    }
+
+    #[test]
+    fn extended_touch_format_keeps_the_original_combined_limit_strict() {
+        use hex_project::{AutomationInterpolation, AutomationPoint};
+
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Device(device) = editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: NativeDeviceState::new(DeviceTypeId::from_static("test.effect"), 1, vec![8])
+                    .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("effect")
+        };
+        let target = DeviceAutomationTarget::Parameter(ParameterId::new(1).unwrap());
+        let value = AutomationValue::new(0.75).unwrap();
+        editor
+            .execute(Command::ReplaceDeviceAutomationTarget {
+                device,
+                target,
+                points: (0..MAX_DEVICE_AUTOMATION_POINTS_PER_LANE - 1)
+                    .map(|index| AutomationPoint {
+                        beat: BeatTime::from_raw(index as u64),
+                        value,
+                        outgoing: AutomationInterpolation::Step,
+                    })
+                    .collect(),
+            })
+            .unwrap();
+        let mut span = DeviceAutomationTouchSpan {
+            start: BeatTime::ONE,
+            end: BeatTime::from_quarters(3).unwrap(),
+            steps: vec![DeviceAutomationTouchStep {
+                beat: BeatTime::ONE,
+                value,
+            }],
+        };
+        let splice = |span| Command::SpliceDeviceAutomationTouch {
+            device,
+            target,
+            vst3_class: None,
+            spans: vec![span],
+        };
+        editor.execute(splice(span.clone())).unwrap();
+        let prior = crate::encode(editor.project()).unwrap();
+        assert_eq!(
+            crate::schema_version_for(editor.project()),
+            DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION
+        );
+        assert_eq!(crate::decode(&prior).unwrap(), *editor.project());
+        let second = BeatTime::from_quarters(2).unwrap();
+        let mut malformed: Value = serde_json::from_slice(&prior).unwrap();
+        malformed["device_automation_touch"][0]["spans"][0]["steps"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "beat_raw": second.raw(),
+                "value": 0.25,
+            }));
+        assert!(matches!(
+            crate::decode(&serde_json::to_vec(&malformed).unwrap()),
+            Err(StorageError::Invalid(
+                "device automation touch length disagrees with project format"
+            ))
+        ));
+        span.steps.push(DeviceAutomationTouchStep {
+            beat: second,
+            value: AutomationValue::new(0.25).unwrap(),
+        });
+        editor.execute(splice(span)).unwrap();
+        let encoded = crate::encode(editor.project()).unwrap();
+        assert_eq!(
+            crate::schema_version_for(editor.project()),
+            EXTENDED_AUTOMATION_TOUCH_SCHEMA_VERSION
+        );
+        assert_eq!(crate::decode(&encoded).unwrap(), *editor.project());
+        let mut false_extension: Value = serde_json::from_slice(&encoded).unwrap();
+        false_extension["extended_automation_touch"][0]["spans"][0]["steps"]
+            .as_array_mut()
+            .unwrap()
+            .pop();
+        assert!(crate::decode(&serde_json::to_vec(&false_extension).unwrap()).is_err());
+        assert!(editor.undo());
+        assert_eq!(crate::encode(editor.project()).unwrap(), prior);
     }
 
     #[test]

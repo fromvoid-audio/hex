@@ -133,7 +133,8 @@ pub use device_automation::{
     DeviceAutomation, DeviceAutomationReplacement, DeviceAutomationTarget,
     DeviceAutomationTouchSpan, DeviceAutomationTouchStep, MAX_DEVICE_AUTOMATION_LANES,
     MAX_DEVICE_AUTOMATION_POINTS, MAX_DEVICE_AUTOMATION_POINTS_PER_LANE,
-    MAX_DEVICE_AUTOMATION_TOUCH_SPANS, validate_device_automation,
+    MAX_DEVICE_AUTOMATION_TOUCH_SPANS, MAX_DEVICE_AUTOMATION_TOUCH_STEPS_PER_LANE,
+    validate_device_automation,
 };
 pub use device_inventory::MAX_SERIAL_DEVICE_DEPTH;
 pub use device_unit_template::{

@@ -465,7 +465,8 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
         .collect::<Result<Vec<_>, StorageError>>()?;
     let flat = Project::from_snapshot(snapshot).map_err(invalid)?;
     let core = if version == crate::INSTRUMENT_MODULATION_SCHEMA_VERSION
-        && super::device_automation_touch::contains_native_instrument(&flat)
+        && (super::device_automation_touch::contains_native_instrument(&flat)
+            || super::device_automation_touch::contains_extended(&flat))
     {
         crate::encode(&flat)?
     } else {
@@ -492,7 +493,9 @@ pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError
                 ..u64::from(crate::DEVICE_MODULATION_SCHEMA_VERSION))
                 .contains(v)
                 || version == crate::INSTRUMENT_MODULATION_SCHEMA_VERSION
-                    && *v == u64::from(crate::NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION)
+                    && (u64::from(crate::NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION)
+                        ..u64::from(crate::INSTRUMENT_MODULATION_SCHEMA_VERSION))
+                        .contains(v)
         })
         .ok_or(StorageError::Invalid("invalid modulation base schema"))?;
     let Rows(rows) = serde_json::from_value(
@@ -502,8 +505,8 @@ pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError
     )?;
     object.insert("version".into(), base.into());
     let core = serde_json::to_vec(&value)?;
-    let flat = if base == u64::from(crate::NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION) {
-        super::device_automation_touch::decode_native_instrument(&core)?
+    let flat = if base >= u64::from(crate::NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION) {
+        crate::decode(&core)?
     } else {
         crate::decode_base(&core)?
     };

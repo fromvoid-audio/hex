@@ -121,8 +121,10 @@ pub const TEMPO_LFO_RATE_ROUTE_SCHEMA_VERSION: u32 = 86;
 pub const AUDIO_RATE_MODULATOR_SCHEMA_VERSION: u32 = 87;
 /// Native instrument touches retain their exact source role and base read mode.
 pub const NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION: u32 = 88;
-/// FM4 source banks use schema89 and can also retain the complete touch envelope.
-pub const INSTRUMENT_MODULATION_SCHEMA_VERSION: u32 = 89;
+/// A device touch lane may exceed the original combined point limit.
+pub const EXTENDED_AUTOMATION_TOUCH_SCHEMA_VERSION: u32 = 89;
+/// FM4 source banks retain their complete underlying automation envelope.
+pub const INSTRUMENT_MODULATION_SCHEMA_VERSION: u32 = 90;
 
 fn contains_larger_device_state(project: &Project) -> bool {
     schema::device_assets::authored_states(project)
@@ -182,10 +184,13 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// Free LFO rate assignments require schema85 and tempo-synced rate assignments
 /// require schema86 regardless of oscillator shape. Audio Rate uses schema87.
 /// Native instrument touches use schema88 over the exact prior codec.
-/// FM4 source banks use schema89, including any instrument touches.
+/// Long touch lanes use schema89. FM4 source banks use schema90 over the
+/// prior project codec, including any instrument or long touch envelope.
 pub fn schema_version_for(project: &Project) -> u32 {
     if schema::device_modulation::contains_instrument_modulation(project) {
         INSTRUMENT_MODULATION_SCHEMA_VERSION
+    } else if schema::device_automation_touch::contains_extended(project) {
+        EXTENDED_AUTOMATION_TOUCH_SCHEMA_VERSION
     } else if schema::device_automation_touch::contains_native_instrument(project) {
         NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION
     } else if schema::device_modulation::contains_audio_rate(project) {
@@ -414,6 +419,9 @@ impl From<serde_json::Error> for StorageError {
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
     if schema::device_modulation::contains_instrument_modulation(project) {
         return encode_document(&schema::device_modulation::encode(project)?);
+    }
+    if schema::device_automation_touch::contains_extended(project) {
+        return encode_document(&schema::device_automation_touch::encode_extended(project)?);
     }
     if schema::device_automation_touch::contains_native_instrument(project) {
         return encode_document(&schema::device_automation_touch::encode_native_instrument(
@@ -705,6 +713,9 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
         return Err(StorageError::Invalid("unsupported project format"));
     }
     let project = match header.version {
+        EXTENDED_AUTOMATION_TOUCH_SCHEMA_VERSION if !inside_envelope => {
+            schema::device_automation_touch::decode_extended(bytes)
+        }
         NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION if !inside_envelope => {
             schema::device_automation_touch::decode_native_instrument(bytes)
         }

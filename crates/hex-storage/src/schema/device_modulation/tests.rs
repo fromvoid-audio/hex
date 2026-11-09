@@ -704,5 +704,36 @@ fn lfo_rate_route_upgrades_the_exact_previous_format_and_preserves_the_complete_
         crate::NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION
     );
     assert_eq!(crate::load(&combined_path).unwrap(), *combined);
+    editor
+        .execute(Command::SpliceDeviceAutomationTouch {
+            device: instrument_id,
+            target: DeviceAutomationTarget::Parameter(ParameterId::from_static(29)),
+            vst3_class: None,
+            spans: vec![hex_project::DeviceAutomationTouchSpan {
+                start: BeatTime::ZERO,
+                end: BeatTime::ONE,
+                steps: (0..=hex_project::MAX_DEVICE_AUTOMATION_POINTS_PER_LANE)
+                    .map(|index| hex_project::DeviceAutomationTouchStep {
+                        beat: BeatTime::from_raw(index as u64),
+                        value: hex_project::AutomationValue::new((index % 8) as f32 / 8.0).unwrap(),
+                    })
+                    .collect(),
+            }],
+        })
+        .unwrap();
+    let extended = editor.project();
+    let extended_path = dir.join("instrument-modulation-and-long-touch.hex");
+    crate::save_new(&extended_path, extended).unwrap();
+    let document: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&extended_path).unwrap()).unwrap();
+    assert_eq!(
+        document["version"],
+        crate::INSTRUMENT_MODULATION_SCHEMA_VERSION
+    );
+    assert_eq!(
+        document["modulation_base_version"],
+        crate::EXTENDED_AUTOMATION_TOUCH_SCHEMA_VERSION
+    );
+    assert_eq!(crate::load(&extended_path).unwrap(), *extended);
     std::fs::remove_dir_all(dir).unwrap();
 }

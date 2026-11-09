@@ -14,7 +14,7 @@ pub fn prepare_device_take_adoption_on_control(
 ) -> Result<hex_project::Command, String> {
     use hex_project::{
         BeatTime, DeviceAutomationTouchSpan, DeviceAutomationTouchStep,
-        MAX_DEVICE_AUTOMATION_POINTS_PER_LANE, MAX_DEVICE_AUTOMATION_TOUCH_SPANS,
+        MAX_DEVICE_AUTOMATION_TOUCH_SPANS, MAX_DEVICE_AUTOMATION_TOUCH_STEPS_PER_LANE,
     };
     use hex_storage::automation_draft::{DraftTarget, MAX_APPEND_EVENTS};
     use std::sync::Arc;
@@ -99,7 +99,7 @@ pub fn prepare_device_take_adoption_on_control(
             let span = spans.last_mut().ok_or("missing prepared touch span")?;
             span.end = end;
             if span.steps.last().is_none_or(|step| step.value != row.value) {
-                if steps == MAX_DEVICE_AUTOMATION_POINTS_PER_LANE {
+                if steps == MAX_DEVICE_AUTOMATION_TOUCH_STEPS_PER_LANE {
                     return Err(
                         "sealed take exceeds the touch point budget; retain the draft".into(),
                     );
