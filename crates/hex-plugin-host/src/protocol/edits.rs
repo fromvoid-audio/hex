@@ -43,6 +43,40 @@ impl EditorPerforms {
 pub struct EditorPcm {
     pub block: Block,
     pub performs: EditorPerforms,
+    pub restoration: Option<EditorRestoration>,
+}
+
+/// The canonical restoration choice for one original worker target.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EditorTouchPlan {
+    pub scope: NonZeroU64,
+    pub parameter: u32,
+    pub base: f64,
+    pub reading: bool,
+}
+
+impl EditorTouchPlan {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn wire(self) -> Result<[u8; 24]> {
+        if self.parameter > i32::MAX as u32 || !(0.0..=1.0).contains(&self.base) {
+            return Err(Error::Protocol("invalid editor touch target or base"));
+        }
+        let mut bytes = [0; 24];
+        bytes[..8].copy_from_slice(&self.scope.get().to_le_bytes());
+        bytes[8..12].copy_from_slice(&self.parameter.to_le_bytes());
+        bytes[12] = u8::from(self.reading);
+        bytes[16..].copy_from_slice(&self.base.to_bits().to_le_bytes());
+        Ok(bytes)
+    }
+}
+
+/// An actual restored SDK sample following the exact ordered gesture End.
+/// The subsequent compensated Main delivery remains a separate witness.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EditorRestoration {
+    pub sequence: u64,
+    pub gesture: u64,
+    pub parameter: u32,
 }
 
 // Native main-thread FIFO plus the eight worker handoff slots. Completed

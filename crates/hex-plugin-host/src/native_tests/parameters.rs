@@ -1,6 +1,8 @@
 //! Actual source-bound SDK parameter processing through the production Rust
 //! reader. Direct worker exchanges are not Root/callback delivery acceptance.
 use super::*;
+#[path = "parameters/editor_touch.rs"]
+mod editor_touch;
 use crate::protocol::{ParameterPageProgress, ParameterPageQuery};
 use crate::transport::{ParameterPoint, Parameters};
 

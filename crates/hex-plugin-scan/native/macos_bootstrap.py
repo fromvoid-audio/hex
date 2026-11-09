@@ -22,7 +22,7 @@ INSTANCE_EXECUTABLE = INSTANCE_APP / "Contents/MacOS/hex-vst3-instance"
 SOURCES = ("macos_bootstrap.py", "macos_helper.mm", "macos_fixture.cpp", "build.py",
            "macos_scan.mm", "macos_scan_wire.hpp", "macos_factory_fixture.cpp", "launch_ignored.cpp",
            "macos_instance.hpp", "macos_lifecycle_fixture.cpp", "macos_lifecycle_case.hpp",
-           "macos_host_messages.hpp", "macos_host.hpp", "macos_parameters.hpp", "macos_parameter_page.hpp", "macos_host_case.hpp", "macos_stream_case.hpp",
+           "macos_host_messages.hpp", "macos_host.hpp", "macos_parameters.hpp", "macos_editor_touch.hpp", "macos_parameter_page.hpp", "macos_host_case.hpp", "macos_stream_case.hpp",
            "macos_processing.hpp", "macos_processing_fixture.cpp", "macos_processing_case.hpp", "macos_bundle.hpp", "macos_state_stream.hpp", "macos_instance_wire.hpp", "macos_input_notes.hpp", "macos_editor.hpp", "macos_instance_worker.mm")
 MAX_FILE = 16 * 1024 * 1024
 
