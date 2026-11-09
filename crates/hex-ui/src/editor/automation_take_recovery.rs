@@ -61,7 +61,7 @@ enum Phase {
 
 #[derive(Debug, PartialEq, Eq)]
 enum Resolution {
-    Kept(Scope),
+    Kept(Box<Scope>),
     Applied,
 }
 
@@ -181,7 +181,7 @@ impl Recovery {
                 {
                     self.saved = Some((scope, copy));
                 }
-                resolution = Some(Resolution::Kept(scope));
+                resolution = Some(Resolution::Kept(Box::new(scope)));
                 Phase::Idle
             }
             (Phase::Applying { .. }, Progress::Committed) => {
@@ -432,7 +432,7 @@ impl EditorView {
             .settle(completion.request_id, &completion.progress)
         {
             Some(Resolution::Kept(scope)) => {
-                self.release_native_recovery(scope);
+                self.release_native_recovery(*scope);
                 self.error = None;
                 self.status = "automation recovery copy kept".into();
             }

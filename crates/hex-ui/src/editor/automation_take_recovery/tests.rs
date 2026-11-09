@@ -137,7 +137,10 @@ fn cancelled_picker_and_stale_responses_cannot_release_the_original() {
     let kept = Progress::CopyKept(destination.clone());
     assert_eq!(flow.settle(10, &kept), None);
     assert!(flow.unresolved());
-    assert_eq!(flow.settle(11, &kept), Some(Resolution::Kept(scope)));
+    assert_eq!(
+        flow.settle(11, &kept),
+        Some(Resolution::Kept(Box::new(scope)))
+    );
     assert!(flow.saved.is_none(), "interrupted copies cannot be applied");
     assert_eq!(flow.settle(11, &kept), None);
     assert!(!flow.unresolved());
@@ -192,7 +195,7 @@ fn cancelled_picker_and_stale_responses_cannot_release_the_original() {
     flow.request = Some(12);
     assert_eq!(
         flow.settle(12, &Progress::CopyKept(path.clone())),
-        Some(Resolution::Kept(scope))
+        Some(Resolution::Kept(Box::new(scope)))
     );
     assert!(
         !flow.unresolved(),
