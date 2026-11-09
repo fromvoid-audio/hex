@@ -53,8 +53,31 @@ impl SourceKind {
 #[derive(Clone, Copy)]
 enum MappingTarget {
     Device(ParameterId),
-    HostOutput,
+    HostGain(HostGainTarget),
     Macro(ModulationSourceId),
+}
+
+#[derive(Clone, Copy)]
+enum HostGainTarget {
+    Input,
+    Output,
+}
+
+impl HostGainTarget {
+    fn mapping(self) -> (DeviceAutomationTarget, &'static str, &'static str) {
+        match self {
+            Self::Input => (
+                DeviceAutomationTarget::HostInputGain,
+                "input-gain",
+                hex_engine::DEVICE_INPUT_GAIN.label,
+            ),
+            Self::Output => (
+                DeviceAutomationTarget::HostOutputGain,
+                "output-gain",
+                hex_engine::DEVICE_OUTPUT_GAIN.label,
+            ),
+        }
+    }
 }
 
 fn macro_destination(source: ModulationSourceId) -> ModulationDestination {
@@ -88,11 +111,81 @@ enum Edit {
     RemoveRoute(ModulationRouteId),
 }
 
-pub(super) struct OutputMappingAvailability {
+pub(super) struct HostGainMappingAvailability {
     device: DeviceId,
     generation: u64,
     revision: u64,
     eligible: bool,
+}
+
+pub(super) const SOURCE_EFFECT_CARD_WIDTH: f32 = 172.0;
+
+/// The bound receiver owns these controls. The card reuses the ordinary
+/// modulator housing and deliberately has no track-chain drop geometry.
+pub(super) fn source_effect_card(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: &Device,
+) -> Stateful<Div> {
+    let id = device.id();
+    let selector = format!("source-effect-modulation-{}", id.value());
+    let outer = div()
+        .id(ElementId::Name(selector.clone().into()))
+        .debug_selector(move || selector.clone())
+        .w(px(SOURCE_EFFECT_CARD_WIDTH))
+        .h(px(DEVICE_FRAME_HEIGHT))
+        .flex()
+        .flex_col()
+        .flex_shrink_0();
+    let Some(state) = view.state.as_ref() else {
+        return outer;
+    };
+    let Some(mut metadata) = view
+        .device_panel
+        .views
+        .get(&id)
+        .and_then(|(_, _, metadata)| metadata.as_ref().ok())
+        .cloned()
+    else {
+        return outer.child(theme::text("source effect unavailable"));
+    };
+    let mut body = crate::device_composition::body()
+        .flex()
+        .flex_col()
+        .gap(px(3.0));
+    body = body.child(theme::text("source effect"));
+    metadata.parameters.retain(|row| {
+        row.enabled
+            && row
+                .semantics
+                .is_some_and(|semantics| semantics.modulation == ParameterModulation::SampleRate)
+            && hex_engine::project_device_modulation_target_supported(
+                &state.project,
+                id,
+                row.descriptor.id,
+            )
+    });
+    for row in &metadata.parameters {
+        body = body.child(
+            div()
+                .relative()
+                .px(px(4.0))
+                .h(px(15.0))
+                .child(theme::text(row.descriptor.label))
+                .children(target_overlay(view, cx, id, row)),
+        );
+    }
+    let modulation = panel(view, cx, device, &metadata);
+    let rendered = hex_widgets::device_frame_with_modulators(
+        theme::text(metadata.name),
+        theme::device_frame_style(false),
+        div(),
+        div(),
+        body,
+        modulation,
+    )
+    .h_full();
+    outer.child(rendered)
 }
 
 pub(super) fn panel(
@@ -112,7 +205,34 @@ pub(super) fn panel(
                 .semantics
                 .is_some_and(|semantics| semantics.modulation == ParameterModulation::SampleRate)
     });
-    if !has_target && bank.is_empty() {
+    let selected = view
+        .device_panel
+        .mapping_source
+        .filter(|(device, source)| {
+            *device == id && bank.sources().iter().any(|slot| slot.id == *source)
+        })
+        .map(|(_, source)| source);
+    let host_gain_available = if selected.is_some() || (!has_target && bank.is_empty()) {
+        let cache = &mut view.device_panel.host_gain_mapping_availability;
+        if let Some(cached) = cache.as_ref().filter(|entry| {
+            entry.device == id && entry.generation == generation && entry.revision == revision
+        }) {
+            cached.eligible
+        } else {
+            let eligible =
+                hex_engine::project_device_host_gain_modulation_supported(&state.project, id);
+            *cache = Some(HostGainMappingAvailability {
+                device: id,
+                generation,
+                revision,
+                eligible,
+            });
+            eligible
+        }
+    } else {
+        false
+    };
+    if !has_target && !host_gain_available && bank.is_empty() {
         return None;
     }
     let button = |cx: &mut Context<EditorView>, key: String, label: SharedString, edit| {
@@ -140,48 +260,26 @@ pub(super) fn panel(
         .flex_shrink_0()
         .gap(px(3.0))
         .child(header);
-    let selected = view
-        .device_panel
-        .mapping_source
-        .filter(|(device, _)| *device == id)
-        .map(|(_, source)| source);
     if let Some(source) = selected
+        && host_gain_available
         && bank.routes().len() < hex_project::MAX_MODULATION_ROUTES_PER_DEVICE
-        && !bank.routes().iter().any(|route| {
-            route.source == source
-                && matches!(
-                    route.destination,
-                    ModulationDestination::Device {
-                        target: DeviceAutomationTarget::HostOutputGain,
-                        ..
-                    }
-                )
-        })
     {
-        let cache = &mut view.device_panel.output_mapping_availability;
-        let available = if let Some(cached) = cache.as_ref().filter(|entry| {
-            entry.device == id && entry.generation == generation && entry.revision == revision
-        }) {
-            cached.eligible
-        } else {
-            let eligible =
-                hex_engine::project_device_output_gain_modulation_supported(&state.project, id);
-            *cache = Some(OutputMappingAvailability {
-                device: id,
-                generation,
-                revision,
-                eligible,
+        let targets = [HostGainTarget::Input, HostGainTarget::Output]
+            .into_iter()
+            .filter_map(|stage| {
+                let (target, key, label) = stage.mapping();
+                let assigned = bank.routes().iter().any(|route| {
+                    route.source == source
+                        && matches!(route.destination, ModulationDestination::Device { target: existing, .. } if existing == target)
+                });
+                (!assigned).then(|| button(
+                    cx,
+                    format!("map-{key}-{}", id.value()),
+                    theme::text(label),
+                    Edit::Map(source, MappingTarget::HostGain(stage)),
+                ))
             });
-            eligible
-        };
-        if available {
-            body = body.child(button(
-                cx,
-                format!("map-output-gain-{}", id.value()),
-                theme::text(hex_engine::DEVICE_OUTPUT_GAIN.label),
-                Edit::Map(source, MappingTarget::HostOutput),
-            ));
-        }
+        body = body.child(div().flex().flex_wrap().gap(px(4.0)).children(targets));
     }
     let blocked_targets: Vec<_> = selected
         .into_iter()
@@ -405,6 +503,10 @@ pub(super) fn panel(
                     .find(|row| row.descriptor.id == parameter)
                     .map_or("unavailable", |row| row.descriptor.label)
                     .to_owned(),
+                ModulationDestination::Device {
+                    target: DeviceAutomationTarget::HostInputGain,
+                    ..
+                } => hex_engine::DEVICE_INPUT_GAIN.label.to_owned(),
                 ModulationDestination::Device {
                     target: DeviceAutomationTarget::HostOutputGain,
                     ..
@@ -695,15 +797,13 @@ fn apply(
                         vst3_class: None,
                     }
                 }
-                MappingTarget::HostOutput => {
-                    if !hex_engine::project_device_output_gain_modulation_supported(project, id) {
-                        return Err(Invalid(
-                            "this device does not support output gain modulation",
-                        ));
+                MappingTarget::HostGain(stage) => {
+                    if !hex_engine::project_device_host_gain_modulation_supported(project, id) {
+                        return Err(Invalid("this device does not support host gain modulation"));
                     }
                     ModulationDestination::Device {
                         device_type: device.state().type_id(),
-                        target: DeviceAutomationTarget::HostOutputGain,
+                        target: stage.mapping().0,
                         vst3_class: None,
                     }
                 }
