@@ -21,7 +21,7 @@ use crate::{
     modulation_note_gate::NoteGate,
     modulation_ramp::{ModulationRampCurve, Ramp},
     modulation_source_routes::PreparedSourceRoute,
-    modulation_steps::{ModulationStepDirection, Steps},
+    modulation_steps::{ModulationStepDirection, Steps, TransportSteps},
 };
 use hex_dsp::{EnvelopeFollower, LfoRate, LfoWaveform, ModulationLfo, RandomHold, StereoFrame};
 use hex_lattice_contract::{DeviceContractError as Error, ModulationOutputId, ModulationSourceId};
@@ -145,6 +145,7 @@ enum SourceState {
     AhdRelease(AhdRelease),
     Random(RandomHold),
     Steps(Steps),
+    TransportSteps(TransportSteps),
 }
 
 impl SourceState {
@@ -179,6 +180,7 @@ impl SourceState {
             (Self::AhdRelease(envelope), Self::AhdRelease(old)) => envelope.inherit(old),
             (Self::Random(random), Self::Random(old)) => random.inherit_history(&old),
             (Self::Steps(steps), Self::Steps(old)) => steps.inherit(old),
+            (Self::TransportSteps(steps), Self::TransportSteps(old)) => steps.inherit(old),
             _ => return false,
         }
         true
@@ -544,6 +546,31 @@ impl PreparedModulationSource {
             id,
             output: ModulationOutputId::MAIN,
             initial: SourceState::Steps(Steps::new(pattern, duration, direction)?),
+            sample_rate: f64::from(sample_rate),
+        })
+    }
+
+    /// Prepare a signed step pattern indexed by the host Arrangement beat.
+    /// Duration is unsigned Q32.32 quarter-note beats. An unavailable
+    /// Arrangement position holds the current output.
+    pub fn transport_steps(
+        id: ModulationSourceId,
+        sample_rate: u32,
+        pattern: &[i16],
+        beats_per_step: u64,
+        direction: ModulationStepDirection,
+    ) -> Result<Self, Error> {
+        if !(8_000..=192_000).contains(&sample_rate) {
+            return Err(Error::InvalidParameterValue);
+        }
+        let duration =
+            std::num::NonZeroU64::new(beats_per_step).ok_or(Error::InvalidParameterValue)?;
+        Ok(Self {
+            id,
+            output: ModulationOutputId::MAIN,
+            initial: SourceState::TransportSteps(TransportSteps::new(
+                pattern, duration, direction,
+            )?),
             sample_rate: f64::from(sample_rate),
         })
     }
@@ -937,6 +964,7 @@ impl ModulationSourceBank {
                 }
                 SourceState::Random(random) => random.render(output),
                 SourceState::Steps(steps) => steps.render(output),
+                SourceState::TransportSteps(steps) => steps.render(clock, output),
             }
         }
         if let Err(error) = self.render_routed_sources(frames, routes) {
@@ -1307,6 +1335,71 @@ mod tests {
         new.begin();
         new.render_chunk(5).unwrap();
         assert_eq!(new.samples(id).unwrap(), [-1.0, 1.0, 1.0, -1.0, -1.0]);
+    }
+
+    #[test]
+    fn transport_steps_follow_arrangement_jumps_and_hold_unavailable_positions() {
+        use ModulationStepDirection::{Backward, Forward, PingPong};
+        struct Clock<'a>(&'a [Option<u64>]);
+        impl NativeInstrumentClock for Clock<'_> {
+            fn beat_at_offset(&self, _: usize) -> Option<u64> {
+                Some(u64::MAX)
+            }
+            fn arrangement_beat_at_offset(&self, offset: usize) -> Option<u64> {
+                self.0.get(offset).copied().flatten()
+            }
+        }
+        const STEP: u64 = 1 << 30;
+        let positions = [
+            Some(0),
+            Some(STEP - 1),
+            Some(STEP),
+            Some(2 * STEP),
+            None,
+            Some(3 * STEP),
+            Some(4 * STEP),
+            Some(STEP / 2),
+            None,
+        ];
+        let id = ModulationSourceId::new(1).unwrap();
+        let pattern = [-32767, 0, 32767];
+        for (direction, expected) in [
+            (Forward, [-1.0, -1.0, 0.0, 1.0, 1.0, -1.0, 0.0, -1.0, -1.0]),
+            (Backward, [1.0, 1.0, 0.0, -1.0, -1.0, 1.0, 0.0, 1.0, 1.0]),
+            (PingPong, [-1.0, -1.0, 0.0, 1.0, 1.0, 0.0, -1.0, -1.0, -1.0]),
+        ] {
+            let source =
+                PreparedModulationSource::transport_steps(id, 48_000, &pattern, STEP, direction)
+                    .unwrap();
+            let mut bank = ModulationSourceBank::new(&[source], 9).unwrap();
+            bank.begin();
+            bank.render_chunk_with_clock(9, Some(&Clock(&positions)))
+                .unwrap();
+            assert_eq!(bank.samples(id).unwrap(), expected);
+            bank.rollback();
+            bank.begin();
+            bank.render_chunk(1).unwrap();
+            assert_eq!(bank.samples(id).unwrap(), [expected[0]]);
+            bank.render_chunk_with_clock(4, Some(&Clock(&positions[..4])))
+                .unwrap();
+            assert_eq!(bank.samples(id).unwrap(), &expected[..4]);
+            bank.commit().unwrap();
+            let mut successor = ModulationSourceBank::new(&[source], 9).unwrap();
+            successor.inherit_committed(&bank).unwrap();
+            successor.begin();
+            successor
+                .render_chunk_with_clock(5, Some(&Clock(&positions[4..])))
+                .unwrap();
+            assert_eq!(successor.samples(id).unwrap(), &expected[4..]);
+            successor.commit().unwrap();
+            successor.reset_all();
+            successor.begin();
+            successor.render_chunk(1).unwrap();
+            assert_eq!(successor.samples(id).unwrap(), [expected[0]]);
+        }
+        assert!(
+            PreparedModulationSource::transport_steps(id, 48_000, &pattern, 0, Forward).is_err()
+        );
     }
 
     #[test]
