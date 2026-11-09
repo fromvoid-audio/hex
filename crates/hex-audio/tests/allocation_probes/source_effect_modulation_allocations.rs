@@ -14,6 +14,15 @@ use std::{collections::BTreeMap, hint::black_box, sync::Arc};
 
 #[test]
 fn native_source_receiver_modulation_renders_and_continues_without_allocating() {
+    probe_source_gain_handoff(false);
+}
+
+#[test]
+fn changed_native_source_modulation_installs_without_allocating() {
+    probe_source_gain_handoff(true);
+}
+
+fn probe_source_gain_handoff(retarget: bool) {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     let Created::Track(track) = editor
         .execute(Command::InsertTrackWithDevice {
@@ -107,24 +116,40 @@ fn native_source_receiver_modulation_renders_and_continues_without_allocating() 
             velocity: 100,
         })
         .unwrap();
-    let revision = Arc::new(
-        PreparedRevision::prepare(
-            editor.project(),
-            &BTreeMap::new(),
-            Arc::new(SineTable::new()),
-            None,
+    let table = Arc::new(SineTable::new());
+    let prepare = |editor: &Editor| {
+        Arc::new(
+            PreparedRevision::prepare(editor.project(), &BTreeMap::new(), Arc::clone(&table), None)
+                .unwrap(),
         )
-        .unwrap(),
-    );
-    let mut previous = SessionPlayback::new(Arc::clone(&revision)).unwrap();
-    let mut successor = SessionPlayback::new(Arc::clone(&revision)).unwrap();
-    let mut uninterrupted = SessionPlayback::new(revision).unwrap();
+    };
+    let old_revision = prepare(&editor);
+    let mut previous = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+    let new_revision = if retarget {
+        let old = editor.project().device(device).unwrap().modulation();
+        let mut route = old.routes()[0];
+        route.amount = ModulationAmount::new(-0.025).unwrap();
+        let modulation = DeviceModulation::new(old.sources().to_vec(), vec![route]).unwrap();
+        editor
+            .execute(Command::ReplaceDeviceModulation { device, modulation })
+            .unwrap();
+        prepare(&editor)
+    } else {
+        Arc::clone(&old_revision)
+    };
+    let mut successor = SessionPlayback::new(Arc::clone(&new_revision)).unwrap();
+    let mut uninterrupted = SessionPlayback::new(new_revision).unwrap();
     for playback in [&mut previous, &mut uninterrupted] {
         playback.apply(SessionPlaybackCommand::Play).unwrap();
     }
     let mut actual = [[0.0; 2]; 301];
     let mut expected = [[0.0; 2]; 301];
     uninterrupted.render(&mut expected).unwrap();
+    if retarget {
+        let mut before = SessionPlayback::new(old_revision).unwrap();
+        before.apply(SessionPlaybackCommand::Play).unwrap();
+        before.render(&mut expected[..97]).unwrap();
+    }
 
     let counts = allocation_counter::measure(|| {
         let (first, second) = actual.split_at_mut(97);
