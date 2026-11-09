@@ -213,7 +213,7 @@ pub(super) fn adjust(
     Ok((values != original).then_some(values))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::*;
 

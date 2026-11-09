@@ -1739,8 +1739,13 @@ class ModuleScopeTests(unittest.TestCase):
             self.assertEqual(plan.module_test_filters(
                 root, ["crates/hex-ui/src/editor/" + path], inventory, [owner]), {owner: piano})
         self.assertEqual(plan.module_test_filters(
-            root, ["crates/hex-ui/tests/unit_piano_roll.rs"], inventory, [owner]), {owner: piano})
-        for names, expected in (([piano[0]], True), (piano, True), (["editor::"], True),
+            root, ["crates/hex-ui/tests/unit_piano_roll.rs"], inventory, [owner]),
+            {owner: sorted(piano + ["editor::midi_source_controls::"])})
+        self.assertEqual(plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/midi_source_controls.rs"], inventory, [owner]),
+            {owner: ["editor::midi_source_controls::"]})
+        for names, expected in (([piano[0]], True), (piano, True),
+                                (["editor::midi_source_controls::"], True), (["editor::"], True),
                                 (["editor::save::"], False)):
             boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
                         "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
