@@ -124,7 +124,12 @@ fn records_first_raw_zero_effect_lane_without_mutating_the_base() {
                 Instant::now() < deadline,
                 "timed out waiting for {request:?}"
             );
-            instruments::render_completed_block(h);
+            // A gesture waits on the original SDK reply on the Session
+            // thread. Pace these 64-frame callbacks by their SDK completion
+            // and give that thread time to poll; do not wait for its outer
+            // control tick before sending the next physical block.
+            h.render_worker_step();
+            std::thread::sleep(Duration::from_millis(1));
         };
         assert!(event.error.is_none(), "{:?}", event.error);
         let ack = event.gesture_ack.as_ref().unwrap();
