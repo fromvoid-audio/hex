@@ -1862,9 +1862,9 @@ fn host_trim_lane_controls_edit_their_exact_stage_and_offer_record_arm(cx: &mut 
 }
 
 #[gpui::test]
-fn vst3_reading_lane_menu_arms_and_disarms_the_raw_zero_knob(cx: &mut TestAppContext) {
+fn vst3_first_lane_menu_arms_and_disarms_the_raw_zero_knob(cx: &mut TestAppContext) {
     use hex_session::device_gesture::{
-        GestureRequest, PluginParameterOrigin, PluginParameterValue,
+        GesturePhase, GestureRequest, PluginParameterOrigin, PluginParameterValue,
     };
     use std::sync::atomic::Ordering::Release;
 
@@ -1901,17 +1901,6 @@ fn vst3_reading_lane_menu_arms_and_disarms_the_raw_zero_knob(cx: &mut TestAppCon
     else {
         panic!("device");
     };
-    model
-        .execute(Command::ReplaceDeviceAutomationTarget {
-            device,
-            target: DeviceAutomationTarget::Vst3 { parameter: 0 },
-            points: vec![AutomationPoint {
-                beat: BeatTime::ZERO,
-                value: AutomationValue::new(0.25).unwrap(),
-                outgoing: AutomationInterpolation::Step,
-            }],
-        })
-        .unwrap();
     let (handle, editor) = crate::editor::clip_drag_ui_test::editor_window(
         cx,
         model.project().clone(),
@@ -1981,7 +1970,7 @@ fn vst3_reading_lane_menu_arms_and_disarms_the_raw_zero_knob(cx: &mut TestAppCon
         }));
     });
     choose_label(&mut visual, &editor, "arm automation recording");
-    editor.update(&mut visual, |view, _| {
+    editor.update(&mut visual, |view, cx| {
         assert!(view.vst3_automation_arm_selected(device, [2; 16], 0));
         let origin = PluginParameterOrigin {
             context: hex_engine::AudioSourceContext {
@@ -2010,8 +1999,20 @@ fn vst3_reading_lane_menu_arms_and_disarms_the_raw_zero_knob(cx: &mut TestAppCon
                 recording: true,
             })
         );
-        // No request was submitted to this view-only fixture.
-        view.device_gesture = Default::default();
+        // Simulate the view's terminal ACK; the signed fixture independently
+        // proves actual worker adoption. The final value must not become the
+        // preview's base simply because the take committed.
+        assert!(view.remember_touched_vst3(Owner::Track(track), device, &row, cx));
+        view.device_gesture.mark_submitted();
+        acknowledge_plugin(view, key, GesturePhase::Begin, 0);
+        view.device_gesture
+            .finish_plugin(PluginParameterValue::new(0.75).unwrap())
+            .unwrap();
+        let request = view.device_gesture.next_request().unwrap();
+        view.device_gesture.mark_submitted();
+        assert_eq!(request.phase(), GesturePhase::Commit);
+        acknowledge_plugin(view, key, GesturePhase::Commit, request.sequence());
+        assert_eq!(view.automation_view.devices.main[0].base, 0.25);
         view.audio
             .as_ref()
             .unwrap()

@@ -591,6 +591,12 @@ impl EditorView {
         )
     }
 
+    pub(super) fn owns_vst3_recording(&self, key: GestureKey) -> bool {
+        self.native_automation_recorder
+            .plugin_take
+            .is_some_and(|(recording, _)| recording == key)
+    }
+
     pub(super) fn observe_vst3_automation_arm(&mut self, event: &Event) {
         let Some((key, mut arm)) = self.native_automation_recorder.plugin_take else {
             return;

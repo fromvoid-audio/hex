@@ -163,7 +163,7 @@ fn native_vst3_instrument_bounces_to_new_track() {
     );
 }
 
-fn render_completed_block(harness: &ResidentHarness) -> [hex_engine::Frame; 256] {
+pub(super) fn render_completed_block(harness: &ResidentHarness) -> [hex_engine::Frame; 256] {
     let frames = harness.render_plugin_block();
     let deadline = Instant::now() + Duration::from_millis(800);
     // Session's optional diagnostic is sampled on a different control cadence.
@@ -803,6 +803,9 @@ fn recorded_session_gesture_commits_one_take_and_reopens() {
                 case.as_str(),
                 "session_record"
                     | "session_record_changed"
+                    | "session_first_lane"
+                    | "session_first_lane_with_other"
+                    | "session_first_lane_stop"
                     | "session_barriers"
                     | "session_save"
                     | "session_barrier_undo"
@@ -1981,7 +1984,12 @@ fn verify_instrument_takeover(
     use hex_session::service::{DeviceAutomationControlEdit, PluginParameterQuery};
     let case = std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").unwrap();
     let author = matches!(case.as_str(), "author" | "author_empty");
-    let reading = !matches!(case.as_str(), "unread" | "empty" | "renew");
+    let first_lane = matches!(
+        case.as_str(),
+        "session_first_lane" | "session_first_lane_with_other" | "session_first_lane_stop"
+    );
+    let stop_recording = matches!(case.as_str(), "session_stop" | "session_first_lane_stop");
+    let reading = !first_lane && !matches!(case.as_str(), "unread" | "empty" | "renew");
     let playing = case != "idle";
     let context = h.submitted.unwrap().1.context;
     let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
@@ -2010,8 +2018,10 @@ fn verify_instrument_takeover(
     let mut before = original.clone();
     let mut revision = context.editor_revision;
     for (id, value) in [(7, 0.25), (11, 0.5)] {
-        if matches!(case.as_str(), "empty" | "renew" | "author_empty")
-            || id == 7 && (!reading || author)
+        if matches!(
+            case.as_str(),
+            "empty" | "renew" | "author_empty" | "session_first_lane" | "session_first_lane_stop"
+        ) || id == 7 && (!reading || author)
         {
             continue;
         }
@@ -2189,10 +2199,7 @@ fn verify_instrument_takeover(
                     status.native_parameter_source(playing),
                     status.render_fault_snapshot()
                 );
-                assert!(
-                    !ack.source_lost || case == "session_stop",
-                    "{case}: {ack:?}"
-                );
+                assert!(!ack.source_lost || stop_recording, "{case}: {ack:?}");
                 assert!(client.acknowledge_with_snapshot(ack, event.active_device_gesture));
                 return event;
             }
@@ -2205,7 +2212,7 @@ fn verify_instrument_takeover(
                 [3, 5, 117, 1, 130][fragment % 5],
                 playing
                     && case != "delivery_retire"
-                    && case != "session_stop"
+                    && !stop_recording
                     && !case.starts_with("touch_close_"),
                 &case,
                 Some(&request),
@@ -2522,7 +2529,7 @@ fn verify_instrument_takeover(
             assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
             assert!((peak(h) - baseline * value as f32 / 0.25).abs() < 0.0001);
         }
-        if case == "session_stop" {
+        if stop_recording {
             let before_stop = h
                 .audio
                 .as_ref()
@@ -2747,7 +2754,7 @@ fn verify_instrument_takeover(
             assert!((peak(h) - baseline).abs() < 0.0001);
             return;
         }
-        let final_value = if case == "session_record_changed" {
+        let final_value = if case == "session_record_changed" || first_lane {
             PluginParameterValue::new(0.75).unwrap()
         } else {
             origin.initial
@@ -2864,7 +2871,16 @@ fn verify_instrument_takeover(
         let target = DeviceAutomationTarget::Vst3 { parameter: 7 };
         let lane = result.automation_target(target).unwrap();
         assert!(lane.is_reading());
-        assert_eq!(lane.points, prior.automation_target(target).unwrap().points);
+        if first_lane {
+            assert!(prior.automation_target(target).is_none());
+            assert!(
+                lane.points.is_empty(),
+                "a first take must not invent a base knot"
+            );
+        } else {
+            assert_eq!(lane.points, prior.automation_target(target).unwrap().points);
+        }
+        assert_eq!(lane.vst3_class, Some(class));
         assert_eq!(lane.touch.len(), 1);
         assert_eq!(
             lane.touch[0]
@@ -2880,7 +2896,7 @@ fn verify_instrument_takeover(
         );
         assert!(
             (peak(h) - baseline).abs() < 0.0001,
-            "release resumes reading with the held MIDI gate"
+            "release resumes the prior value with the held MIDI gate"
         );
         let undone = super::automation::edit_with_running_callback(h, Request::Undo);
         assert!(undone.error.is_none(), "{:?}", undone.error);
