@@ -368,24 +368,36 @@ pub(super) fn prepare(
     context: &hex_lattice::DevicePreparationContext<'_>,
     ids: &[ParameterId],
 ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
+    if ids.is_empty() {
+        return Err(DeviceContractError::UnsupportedProcessingClass);
+    }
+    let factory = prepare_factory(state, context.sample_rate, ids)?;
+    Ok(hex_lattice::PreparedRuntimeDevice {
+        matrix: StereoMatrix::identity(),
+        processor: Some(PreparedProcessorFactory::Owned(Arc::new(factory))),
+    })
+}
+
+pub(super) fn prepare_factory(
+    state: &NativeDeviceState,
+    sample_rate: u32,
+    ids: &[ParameterId],
+) -> Result<Factory, DeviceContractError> {
     state.require_asset_free_processing()?;
-    if !(8000..=192000).contains(&context.sample_rate) {
+    if !(8000..=192000).contains(&sample_rate) {
         return Err(DeviceContractError::InvalidParameterValue);
     }
-    if ids.is_empty() || ids.windows(2).any(|p| p[0] >= p[1]) {
+    if ids.windows(2).any(|p| p[0] >= p[1]) {
         return Err(DeviceContractError::UnsupportedProcessingClass);
     }
     let mut admitted = [false; COUNT];
     for &id in ids {
         admitted[slot(id).ok_or(DeviceContractError::UnsupportedProcessingClass)?] = true;
     }
-    Ok(hex_lattice::PreparedRuntimeDevice {
-        matrix: StereoMatrix::identity(),
-        processor: Some(PreparedProcessorFactory::Owned(Arc::new(Factory {
-            settings: decode(state)?,
-            rate: context.sample_rate,
-            admitted,
-        }))),
+    Ok(Factory {
+        settings: decode(state)?,
+        rate: sample_rate,
+        admitted,
     })
 }
 

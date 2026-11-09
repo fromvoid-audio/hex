@@ -6,6 +6,16 @@ use hex_lattice::NativeRuntimeEntryStorage;
 pub(crate) fn pair_bytes(
     entry: &NativeRuntimeEntryStorage<'_>,
 ) -> Result<Option<(usize, usize)>, AudioStorageError> {
+    if let Some(delay) = entry.owned_runtime::<hex_devices::delay::DelayRuntime>() {
+        let (inline, [committed, scratch]) =
+            delay.control_storage().ok_or(AudioStorageError::Overflow)?;
+        return Ok(Some((
+            inline
+                .checked_add(committed)
+                .ok_or(AudioStorageError::Overflow)?,
+            scratch,
+        )));
+    }
     if let Some((primary, scratch)) = entry.runtime_pair::<hex_devices::reverb::ReverbRuntime>() {
         return Ok(Some((
             primary
@@ -46,4 +56,5 @@ pub(crate) fn is_closed_type(id: hex_lattice_contract::DeviceTypeId) -> bool {
         || id == hex_devices::compressor::COMPRESSOR_TYPE_ID
         || id == hex_devices::eq8::EQ8_TYPE_ID
         || id == hex_devices::rattle::RATTLE_TYPE_ID
+        || id == hex_devices::delay::TYPE_ID
 }

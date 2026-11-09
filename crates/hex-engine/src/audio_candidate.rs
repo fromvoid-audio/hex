@@ -12,6 +12,8 @@ mod auto_pan_modulation_tests;
 mod claimed;
 #[cfg(test)]
 mod compressor_modulation_tests;
+#[cfg(test)]
+mod delay_storage_tests;
 mod draft;
 #[cfg(test)]
 mod eq8_storage_tests;
