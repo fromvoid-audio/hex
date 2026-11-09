@@ -147,6 +147,11 @@ impl Gates {
                 pitch,
                 velocity,
             } => (channel, pitch, velocity, false),
+            LiveNoteEvent::PolyPressure { .. } => {
+                // This foreign note-only port has no per-occurrence pressure grant.
+                batch.consumed += 1;
+                return Ok(());
+            }
             LiveNoteEvent::AllNotesOff => {
                 if self.release_all(events) {
                     batch.consumed += 1;
