@@ -2,8 +2,8 @@
 //! Control preparation resolves stable IDs and validates real factory bindings.
 //! Prepared declarations borrow no project data and never enter project history.
 use hex_devices::modulation::{
-    audio_rate, button, buttons, envelope_follower, lfo, macro_four, macro_value, math, mix,
-    note_counter, note_pressure, ramp, random_hold,
+    ahd_release, audio_rate, button, buttons, envelope_follower, lfo, macro_four, macro_value,
+    math, mix, note_counter, note_pressure, ramp, random_hold,
 };
 use hex_lattice::{
     HostGainModulationRoute, MAX_MODULATION_SOURCES, ModulationRoute, ModulationTarget,
@@ -472,6 +472,8 @@ impl EffectModulation {
                 note_counter::TYPE_ID => note_counter::Settings::decode(&source.state)
                     .and_then(|settings| settings.prepare(source.id, sample_rate)),
                 ramp::TYPE_ID => ramp::Settings::decode(&source.state)
+                    .and_then(|settings| settings.prepare(source.id, sample_rate)),
+                ahd_release::TYPE_ID => ahd_release::Settings::decode(&source.state)
                     .and_then(|settings| settings.prepare(source.id, sample_rate)),
                 random_hold::TYPE_ID => random_hold::Settings::decode(&source.state)
                     .and_then(|settings| settings.prepare(source.id, sample_rate)),

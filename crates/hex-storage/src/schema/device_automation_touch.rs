@@ -12,12 +12,15 @@
 //! Schema100 extracts native source effect touch rows before encoding the complete
 //! prior project. The exact stored source owner may be dormant; the codec grants
 //! no authority to arm or play a source without a receiver. Schema102 uses
-//! that envelope over a required schema101 Ramp bank.
+//! that envelope over a required schema101 Ramp bank. Schema104 requires a
+//! schema103 AHD release bank.
 use super::{automation_read::Selection, device_automation};
 use crate::{
-    DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION, EXTENDED_AUTOMATION_TOUCH_SCHEMA_VERSION,
-    NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION, NATIVE_SOURCE_EFFECT_TOUCH_SCHEMA_VERSION, Project,
-    RAMP_MODULATOR_SCHEMA_VERSION, SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION, StorageError,
+    AHD_RELEASE_MODULATOR_SCHEMA_VERSION, DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION,
+    EXTENDED_AUTOMATION_TOUCH_SCHEMA_VERSION, NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION,
+    NATIVE_SOURCE_EFFECT_TOUCH_SCHEMA_VERSION, Project, RAMP_MODULATOR_SCHEMA_VERSION,
+    SOURCE_EFFECT_TOUCH_WITH_AHD_RELEASE_SCHEMA_VERSION,
+    SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION, StorageError,
     VST3_AUTOMATION_TOUCH_SCHEMA_VERSION,
 };
 use hex_lattice_contract::ParameterId;
@@ -472,7 +475,9 @@ pub(crate) fn encode_extended(project: &Project) -> Result<Value, StorageError> 
 }
 
 pub(crate) fn source_effect_schema_version(project: &Project) -> u32 {
-    if super::device_modulation::contains_ramp(project) {
+    if super::device_modulation::contains_ahd_release(project) {
+        SOURCE_EFFECT_TOUCH_WITH_AHD_RELEASE_SCHEMA_VERSION
+    } else if super::device_modulation::contains_ramp(project) {
         SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION
     } else {
         NATIVE_SOURCE_EFFECT_TOUCH_SCHEMA_VERSION
@@ -539,12 +544,15 @@ fn decode_envelope(bytes: &[u8], envelope: Envelope) -> Result<Project, StorageE
     let base = object
         .remove(base_field)
         .and_then(|base| base.as_u64())
-        .filter(|base| {
-            if envelope.version() == SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION {
+        .filter(|base| match envelope.version() {
+            SOURCE_EFFECT_TOUCH_WITH_AHD_RELEASE_SCHEMA_VERSION => {
+                *base == u64::from(AHD_RELEASE_MODULATOR_SCHEMA_VERSION)
+            }
+            SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION => {
                 *base == u64::from(RAMP_MODULATOR_SCHEMA_VERSION)
-            } else {
-                (u64::from(crate::CURRENT_SCHEMA_VERSION)..u64::from(envelope.version()))
-                    .contains(base)
+            }
+            version => {
+                (u64::from(crate::CURRENT_SCHEMA_VERSION)..u64::from(version)).contains(base)
             }
         })
         .ok_or(StorageError::Invalid(
@@ -793,6 +801,48 @@ mod tests {
         let mut unsupported: Value = serde_json::from_slice(&with_counter).unwrap();
         unsupported["version"] = SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION.into();
         assert!(crate::decode(&serde_json::to_vec(&unsupported).unwrap()).is_err());
+        let mut slots = combined
+            .device(instrument)
+            .unwrap()
+            .modulation()
+            .sources()
+            .to_vec();
+        let mut ahd_payload: Vec<_> = [0_u32, 50_000, 125]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect();
+        ahd_payload.extend_from_slice(&[1, 2, 1]);
+        slots.push(Modulator {
+            id: ModulationSourceId::new(combined.next_identity()).unwrap(),
+            color: ElementColor::Cyan,
+            enabled: true,
+            state: NativeDeviceState::new(
+                DeviceTypeId::from_static("hex.modulator.ahd-release"),
+                1,
+                ahd_payload,
+            )
+            .unwrap(),
+        });
+        editor
+            .execute(Command::ReplaceDeviceModulation {
+                device: instrument,
+                modulation: DeviceModulation::new(slots, Vec::new()).unwrap(),
+            })
+            .unwrap();
+        let with_ahd = editor.project();
+        assert_eq!(
+            crate::schema_version_for(with_ahd),
+            SOURCE_EFFECT_TOUCH_WITH_AHD_RELEASE_SCHEMA_VERSION
+        );
+        let with_ahd_bytes = crate::encode(with_ahd).unwrap();
+        assert_eq!(crate::decode(&with_ahd_bytes).unwrap(), *with_ahd);
+        let mut document: Value = serde_json::from_slice(&with_ahd_bytes).unwrap();
+        assert_eq!(
+            document["native_source_effect_touch_base_version"],
+            AHD_RELEASE_MODULATOR_SCHEMA_VERSION
+        );
+        document["version"] = SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION.into();
+        assert!(crate::decode(&serde_json::to_vec(&document).unwrap()).is_err());
     }
 
     #[test]

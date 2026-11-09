@@ -724,6 +724,8 @@ fn exercise_saved_fm4_routes(oscillator_levels: bool) {
     }
 }
 
+const NOTE_EVENT_SECOND_ONSET: usize = 16;
+
 #[test]
 fn saved_note_counter_changes_a_real_fm4_carrier_at_each_onset_sample() {
     use hex_devices::modulation::note_counter;
@@ -732,8 +734,8 @@ fn saved_note_counter_changes_a_real_fm4_carrier_at_each_onset_sample() {
         increment: 1,
         bipolar: false,
     };
-    check_saved_fm4_note_event_source(settings.encode().unwrap(), &[0.5, 1.0], |_, second| {
-        usize::from(second)
+    check_saved_fm4_note_event_source(settings.encode().unwrap(), 120, &[0.5, 1.0], |frame| {
+        usize::from(frame >= NOTE_EVENT_SECOND_ONSET)
     });
 }
 
@@ -745,13 +747,46 @@ fn saved_ramp_restarts_a_real_fm4_carrier_on_the_onset_and_holds_its_endpoint() 
         ..ramp::Settings::default()
     };
     let steps: [f32; 7] = std::array::from_fn(|step| step as f32 * (1.0 / 6.0));
-    check_saved_fm4_note_event_source(settings.encode().unwrap(), &steps, |age, _| age.min(6));
+    check_saved_fm4_note_event_source(settings.encode().unwrap(), 120, &steps, |frame| {
+        let age = if frame >= NOTE_EVENT_SECOND_ONSET {
+            frame - NOTE_EVENT_SECOND_ONSET
+        } else {
+            frame
+        };
+        age.min(6)
+    });
+}
+
+#[test]
+fn saved_ahd_release_drives_a_real_fm4_carrier_from_each_note_off() {
+    use hex_devices::modulation::ahd_release;
+    const NOTE_LENGTH: usize = 8;
+    let settings = ahd_release::Settings {
+        durations_micros: [0, 125, 125],
+        ..ahd_release::Settings::default()
+    };
+    let levels = [0.0, 1.0, 5.0 / 6.0, 4.0 / 6.0, 0.5, 2.0 / 6.0, 1.0 / 6.0];
+    check_saved_fm4_note_event_source(settings.encode().unwrap(), NOTE_LENGTH, &levels, |frame| {
+        let elapsed = if frame >= NOTE_EVENT_SECOND_ONSET + NOTE_LENGTH {
+            frame - (NOTE_EVENT_SECOND_ONSET + NOTE_LENGTH)
+        } else if frame >= NOTE_LENGTH {
+            frame - NOTE_LENGTH
+        } else {
+            return 0;
+        };
+        match elapsed {
+            0..=5 => 1,
+            6..=11 => elapsed - 5,
+            _ => 0,
+        }
+    });
 }
 
 fn check_saved_fm4_note_event_source(
     settings: hex_lattice_contract::NativeDeviceState,
+    note_length: usize,
     levels: &[f32],
-    select: impl Fn(usize, bool) -> usize,
+    select: impl Fn(usize) -> usize,
 ) {
     use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
     use hex_devices::{
@@ -768,7 +803,7 @@ fn check_saved_fm4_note_event_source(
     use std::{collections::BTreeMap, sync::Arc};
 
     const RATE: u32 = 48_000;
-    const SECOND: usize = 16;
+    const SECOND: usize = NOTE_EVENT_SECOND_ONSET;
     let carrier = parameter::carrier(1);
     let state = |value| {
         FM4_DEFINITION
@@ -815,7 +850,7 @@ fn check_saved_fm4_note_event_source(
             .execute(Command::AddMidiNote {
                 clip,
                 start: beat(frame),
-                duration: beat(120),
+                duration: beat(note_length),
                 pitch,
                 channel: 0,
                 velocity: 127,
@@ -898,7 +933,7 @@ fn check_saved_fm4_note_event_source(
         .map(|&level| [note(level, 60), note(level, 64)])
         .collect();
     let render_note = |note: &hex_lattice::PreparedAnalyticNote, frame: usize| {
-        note.sample(frame as u64, u64::MAX, &EMPTY_DEVICE_RESOURCES)
+        note.sample(frame as u64, note_length as u64, &EMPTY_DEVICE_RESOURCES)
     };
     let mut playback = SessionPlayback::new(revision).unwrap();
     playback.apply(SessionPlaybackCommand::Play).unwrap();
@@ -909,7 +944,7 @@ fn check_saved_fm4_note_event_source(
     for (frame, actual) in output.into_iter().enumerate() {
         let second = frame >= SECOND;
         let age = if second { frame - SECOND } else { frame };
-        let oracle = &oracles[select(age, second)];
+        let oracle = &oracles[select(frame)];
         let mut expected = render_note(&oracle[0], frame);
         if second {
             let next = render_note(&oracle[1], age);
