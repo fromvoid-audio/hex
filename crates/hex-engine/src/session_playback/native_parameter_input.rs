@@ -48,6 +48,11 @@ impl crate::SessionPlayback {
             operation,
         };
         let chain = match input.identity.owner() {
+            hex_lattice::ProcessorChainOwner::Source(_) => {
+                return Err(Invalid(
+                    "live source effect parameter input is not prepared",
+                ));
+            }
             hex_lattice::ProcessorChainOwner::Main => Some(&self.main_chain),
             hex_lattice::ProcessorChainOwner::Track(id) => self
                 .revision
@@ -94,6 +99,7 @@ impl crate::SessionPlayback {
         {
             let identity = target.identity();
             let chain = match identity.owner() {
+                ProcessorChainOwner::Source(_) => None,
                 ProcessorChainOwner::Main => Some(&mut self.main_chain),
                 ProcessorChainOwner::Track(id) => self
                     .revision
