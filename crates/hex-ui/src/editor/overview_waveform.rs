@@ -52,7 +52,7 @@ impl Source {
             }
             Self::Browser(waveform) => Some((
                 Identity::Browser(Arc::clone(waveform)),
-                u64::try_from(waveform.source_frames).ok()?,
+                u64::try_from(waveform.source_frames()).ok()?,
             )),
         }
     }

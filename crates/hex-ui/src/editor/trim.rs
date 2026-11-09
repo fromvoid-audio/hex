@@ -1133,7 +1133,7 @@ impl EditorView {
                     }
                 });
                 payload.capture.set(capture);
-                let original_down_x = capture.map(|capture| capture.origin_x);
+                let original_down_x = capture.map(|capture| capture.origin_x());
                 let pointer_beat = original_down_x
                     .and_then(|x| midi_pointer_beat(&project_tempo, x, lane, viewport));
                 let delta =
@@ -1284,7 +1284,7 @@ impl EditorView {
                     }
                 });
                 payload.capture.set(capture);
-                let original_down_x = capture.map(|capture| capture.origin_x);
+                let original_down_x = capture.map(|capture| capture.origin_x());
                 let pointer_frame = original_down_x.and_then(|x| frame_at_x(x, lane, viewport));
                 let delta = pointer_frame
                     .zip(audio_grab_frame(payload, &project))
@@ -1424,7 +1424,7 @@ impl EditorView {
         pointer_x: f32,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(pointer_x) = hex_widgets::rectangle_pointer(&drag.capture, pointer_x) else {
+        let Some(pointer_x) = super::drag::PointerDown::pointer(&drag.capture, pointer_x) else {
             return false;
         };
         let Some(state) = self.state.as_ref() else {
@@ -1528,7 +1528,7 @@ impl EditorView {
         pointer_x: f32,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(pointer_x) = hex_widgets::rectangle_pointer(&drag.capture, pointer_x) else {
+        let Some(pointer_x) = super::drag::PointerDown::pointer(&drag.capture, pointer_x) else {
             return false;
         };
         let Some(state) = self.state.as_ref() else {

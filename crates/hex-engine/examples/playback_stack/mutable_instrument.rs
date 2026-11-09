@@ -159,7 +159,8 @@ impl MutableInstrumentRuntime for ProbeRuntime {
         for event in events.iter().copied() {
             let (offset, occurrence, note_on, pitch) = match event {
                 // This note-only stack fixture has no controller transfer law.
-                NativeInstrumentEvent::Expression { .. } => {
+                NativeInstrumentEvent::NotePressure { .. }
+                | NativeInstrumentEvent::Expression { .. } => {
                     return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
                 }
                 NativeInstrumentEvent::NoteOn {

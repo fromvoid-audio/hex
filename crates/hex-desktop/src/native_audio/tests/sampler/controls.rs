@@ -373,7 +373,7 @@ pub(super) fn exercise(
                     .and_then(|s| s.rendered_current(h))
                     .is_some_and(|a| {
                         a.context.project_generation == before.context.project_generation + 2
-                            && a.output_identity != before.output_identity
+                            && a.context.editor_revision > before.context.editor_revision
                     })
                 {
                     break;
@@ -536,14 +536,31 @@ pub(super) fn exercise(
                 expected.get(i).copied().unwrap_or([0.0; 2])
             }
         };
-        for (i, frame) in output.iter().enumerate() {
-            for (a, e) in frame.iter().zip(expected_at(i)) {
+        // Pitched-up voices are band-limited (#4089); their reconstruction is
+        // owned and tested in hex-devices. Here they keep the literal duration
+        // (no frames past the region), stay finite and bounded by the gained
+        // source peak with kernel overshoot, and sound.
+        let pitched_up = pitch > 0.0;
+        let check = |frames: &[[f32; 2]], label: &str| {
+            if pitched_up {
                 assert!(
-                    (*a - e * gain as f32).abs() < 1e-6,
-                    "gain {gain} pitch {pitch} frame{i}: {frame:?}"
+                    frames[..expected.len()].iter().flatten().any(|a| *a != 0.0),
+                    "{label} gain {gain} pitch {pitch}: {frames:?}"
                 );
             }
-        }
+            for (i, frame) in frames.iter().enumerate() {
+                for (a, e) in frame.iter().zip(expected_at(i)) {
+                    let in_note = i < expected.len();
+                    let ok = if pitched_up && in_note {
+                        a.is_finite() && a.abs() <= gain as f32
+                    } else {
+                        (*a - e * gain as f32).abs() < 1e-6
+                    };
+                    assert!(ok, "{label} gain {gain} pitch {pitch} frame{i}: {frame:?}");
+                }
+            }
+        };
+        check(&output, "keyboard");
         visual.simulate_event(gpui::KeyUpEvent {
             keystroke: gpui::Keystroke::parse("a").unwrap(),
         });
@@ -563,8 +580,18 @@ pub(super) fn exercise(
                 ),
                 (0, 0, 0, 0)
             );
+            // The looping voice declicks over the prepared release floor and
+            // then stops, without keyboard-toggle cancellation.
+            for (i, frame) in released.iter().enumerate() {
+                let bound = 0.5 * gain as f32 * super::floored_release_level(i, 0);
+                assert!(
+                    frame.iter().all(|sample| sample.abs() <= bound + 1e-6),
+                    "loop key release {i} exceeds its declick: {frame:?}"
+                );
+            }
             assert_eq!(
-                released, [[0.0; 2]; 64],
+                &released[super::RELEASE_FLOOR_FRAMES..],
+                &[[0.0; 2]; 64 - super::RELEASE_FLOOR_FRAMES],
                 "actual loop key release must stop without keyboard-toggle cancellation"
             );
         }
@@ -594,14 +621,7 @@ pub(super) fn exercise(
                 .playing
                 .load(std::sync::atomic::Ordering::Acquire)
         );
-        for (i, frame) in arranged.iter().enumerate() {
-            for (a, e) in frame.iter().zip(expected_at(i)) {
-                assert!(
-                    (*a - e * gain as f32).abs() < 1e-6,
-                    "arrangement gain {gain} pitch {pitch} frame{i}: {frame:?}"
-                );
-            }
-        }
+        check(&arranged, "arrangement");
         drop(slot);
         visual.simulate_keystrokes("escape");
         for _ in 0..4 {

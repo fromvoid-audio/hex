@@ -632,16 +632,19 @@ fn changed_key_paints_current_content_in_same_draw_then_reuses(cx: &mut TestAppC
     assert_eq!(
         visual.rendered_background(selector),
         Some(
-            gpui::rgb(theme::clip_fill(
-                editor.read_with(cx, |view, _| view
-                    .state
-                    .as_ref()
-                    .unwrap()
-                    .project
-                    .track(source)
-                    .unwrap()
-                    .color()),
-                hex_project::ClipFlavor::Muted,
+            gpui::rgb(theme::arrangement_clip_body_fill(
+                theme::clip_fill(
+                    editor.read_with(cx, |view, _| view
+                        .state
+                        .as_ref()
+                        .unwrap()
+                        .project
+                        .track(source)
+                        .unwrap()
+                        .color()),
+                    hex_project::ClipFlavor::Muted,
+                    false
+                ),
                 true
             ))
             .into()

@@ -36,6 +36,7 @@ impl SessionAssembly {
             .map_err(|_| AudioStorageError::Allocation)?;
         for config in metadata.configurations() {
             self.unused_mutable.push(PreparedMutableTrackInstrument {
+                automation: None,
                 resource_factory_inline_bound: None,
                 track: config.track,
                 factory: Box::new(config.prepared.clone()),
@@ -68,7 +69,8 @@ impl SessionAssembly {
             return Err(AudioStorageError::SourceMismatch);
         }
         for (value, binding) in values.iter().zip(&self.sampler_factories) {
-            if value.track != binding.track
+            if value.automation.is_some()
+                || value.track != binding.track
                 || value.history_retarget_target.is_some()
                 || value.history_retarget_requires_quiescence
                 || value.factory.as_ref() as *const dyn PreparedMutableInstrumentRuntime

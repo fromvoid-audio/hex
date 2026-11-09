@@ -124,7 +124,7 @@ fn matching_tracks_keep_nested_ancestors_and_revealed_track_context() {
         "a gap between selected subtrees remains a real move"
     );
     let ranges = [(48_000, 72_000)];
-    let visible = visibility::visible_tracks(project, &ranges, None);
+    let visible = visibility::visible_tracks(project, &ranges, None, None);
     assert_eq!(visible, BTreeSet::from([outer, inner, inside]));
     let ordered: Vec<_> = project
         .tracks()
@@ -134,11 +134,11 @@ fn matching_tracks_keep_nested_ancestors_and_revealed_track_context() {
         .collect();
     assert_eq!(ordered, [outer, inner, inside]);
     assert_eq!(
-        visibility::visible_tracks(project, &ranges, Some(outside)),
+        visibility::visible_tracks(project, &ranges, Some(outside), None),
         BTreeSet::from([outer, inner, inside, unrelated, outside])
     );
     assert!(
-        visibility::visible_tracks(project, &[], None).is_empty(),
+        visibility::visible_tracks(project, &[], None, None).is_empty(),
         "empty ranges use the caller's unfiltered path"
     );
     let mut projection = visibility::Projection::default();
@@ -378,4 +378,151 @@ fn section_projection_follows_canonical_tempo_range_and_removal() {
     state.rebuild(1, 4, f.model.project(), &f.sections[..1], None);
     assert!(state.enabled);
     assert_eq!(state.indices, [0, 1, 2, 3, 4]);
+}
+
+#[test]
+fn tag_and_section_filters_intersect_only_in_arrangement_and_never_change_project() {
+    let mut f = model();
+    let tag = hex_project::TrackTag::new("drums").unwrap();
+    for track in &f.tracks[..2] {
+        f.model
+            .execute(Command::SetTrackTags {
+                track: *track,
+                tags: vec![tag.clone()],
+            })
+            .unwrap();
+    }
+    let before = f.model.project().snapshot();
+    let mut projection = State::default();
+    projection.enabled = true;
+    projection.set_tag_filter(Some(tag));
+    projection.rebuild(1, 1, f.model.project(), &f.sections[..1], None);
+    assert_eq!(projection.indices, [1]);
+    assert_eq!(projection.console_indices, [0, 1]);
+    assert_eq!(f.model.project().snapshot(), before);
+    f.model
+        .execute(Command::SetTrackTags {
+            track: f.tracks[1],
+            tags: Vec::new(),
+        })
+        .unwrap();
+    projection.rebuild(1, 2, f.model.project(), &f.sections[..1], None);
+    assert!(projection.indices.is_empty());
+    assert_eq!(projection.console_indices, [0]);
+}
+
+#[test]
+fn gap_queries_preserve_group_closure_and_ignore_ordinary_fold_or_tag_filtering() {
+    let mut f = model();
+    let mut child = f.tracks[3];
+    let mut groups = Vec::new();
+    for _ in 0..2 {
+        let Created::Track(group) = f
+            .model
+            .execute(Command::GroupTracks {
+                tracks: hex_project::TrackSelectionIds::new(&[child]).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group")
+        };
+        groups.push(group);
+        child = group;
+    }
+    let project = f.model.project();
+    let index = |id| {
+        project
+            .tracks()
+            .iter()
+            .position(|track| track.id() == id)
+            .unwrap()
+    };
+    let mut state = State::default();
+    state.enabled = true;
+    state.rebuild(1, 1, project, &[f.sections[0]], None);
+    let p = &mut state;
+    assert_eq!(
+        p.indices
+            .iter()
+            .map(|index| project.tracks()[*index].id())
+            .collect::<Vec<_>>(),
+        [f.tracks[1], groups[1], groups[0], f.tracks[3]]
+    );
+    assert!(p.hidden_before(index(f.tracks[1])));
+    assert!(p.hidden_before(index(groups[1])));
+    assert!(!p.hidden_before(index(groups[0])));
+    assert!(!p.hidden_before(index(f.tracks[3])));
+    assert!(p.hidden_after(index(f.tracks[3])));
+    p.toggle_fold(groups[1]);
+    p.rebuild(1, 1, project, &[f.sections[0]], None);
+    assert_eq!(
+        p.indices
+            .iter()
+            .map(|index| project.tracks()[*index].id())
+            .collect::<Vec<_>>(),
+        [f.tracks[1], groups[1]]
+    );
+    assert!(p.hidden_after(index(groups[1])));
+    assert!(
+        !p.hidden_before(index(groups[0])),
+        "a hidden child has no rendered edge"
+    );
+    p.enabled = false;
+    p.rebuild(1, 1, project, &[f.sections[0]], None);
+    for i in 0..project.tracks().len() {
+        assert!(!p.hidden_before(i) && !p.hidden_after(i));
+    }
+    p.set_tag_filter(Some(hex_project::TrackTag::new("no matches").unwrap()));
+    p.rebuild(1, 1, project, &[], None);
+    assert!(p.indices.is_empty());
+    assert!(
+        !p.all_tracks_hidden(),
+        "tag-only hiding has no section-focus cue"
+    );
+    p.enabled = true;
+    p.rebuild(1, 1, project, &[], None);
+    assert!(
+        !p.all_tracks_hidden(),
+        "armed focus without a section has no cue"
+    );
+}
+
+#[test]
+fn gap_queries_deduplicate_adjacent_rows_and_handle_all_hidden_or_all_visible() {
+    let mut f = model();
+    f.model
+        .execute(Command::PlaceMidiClip {
+            track: f.tracks[2],
+            start: hex_project::BeatTime::from_quarters(2).unwrap(),
+            length: hex_project::BeatTime::ONE,
+        })
+        .unwrap();
+    let mut state = State::default();
+    state.enabled = true;
+    state.rebuild(1, 1, f.model.project(), &[f.sections[0]], None);
+    assert_eq!(state.indices, [1, 2, 3]);
+    assert!(state.hidden_before(1));
+    assert!(!state.hidden_before(2) && !state.hidden_before(3));
+    assert!(!state.hidden_after(1) && !state.hidden_after(2));
+    assert!(state.hidden_after(3));
+    for track in [f.tracks[0], f.tracks[4]] {
+        f.model
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: hex_project::BeatTime::from_quarters(2).unwrap(),
+                length: hex_project::BeatTime::ONE,
+            })
+            .unwrap();
+    }
+    state.rebuild(1, 2, f.model.project(), &[f.sections[0]], None);
+    assert_eq!(state.indices, [0, 1, 2, 3, 4]);
+    for i in 0..5 {
+        assert!(!state.hidden_before(i) && !state.hidden_after(i));
+    }
+    assert!(!state.all_tracks_hidden());
+    state.rebuild(1, 2, f.model.project(), &[f.sections[1]], None);
+    assert!(state.indices.is_empty());
+    assert!(state.all_tracks_hidden());
+    assert!(!state.hidden_before(usize::MAX) && !state.hidden_after(usize::MAX));
 }

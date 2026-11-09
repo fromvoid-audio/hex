@@ -9,6 +9,8 @@ publish.workspace = true
 ui-test-support = ["gpui/test-support", "hex-session/source-overview-test-support"]
 
 [dependencies]
+# UI-only random result selection; already pinned in the workspace lock graph.
+fastrand = "=2.5.0"
 hex-plugin-catalog = { path = "../hex-plugin-catalog" }
 hex-mts = { path = "../hex-mts" }
 hex-tuning = { path = "../hex-tuning" }
@@ -24,8 +26,13 @@ hex-lattice-contract = { path = "../hex-lattice-contract" }
 hex-widgets = { path = "../hex-widgets" }
 gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "macos-blade"] }
 serde_json = "=1.0.151"
+# Loop tile sprites (RenderImage frames); the version gpui 0.2.2 already uses.
+image = { version = "=0.25.9", default-features = false }
 
 [dev-dependencies]
+# Complete control-side EQ upgrade project save/reopen fixture only.
+hex-storage = { path = "../hex-storage" }
+hex-devices = { path = "../hex-devices" }
 hex-audio = { path = "../hex-audio", features = ["allocation-probe"] }
 hex-media = { path = "../hex-media" }
 resvg = { version = "=0.45.1", default-features = false }

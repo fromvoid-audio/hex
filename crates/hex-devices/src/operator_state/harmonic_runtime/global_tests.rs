@@ -757,6 +757,9 @@ fn global_pcm_and_expression_are_partition_independent() {
                             occurrence_id,
                         }
                     }
+                    NativeInstrumentEvent::NotePressure { .. } => {
+                        panic!("unexpected test note pressure")
+                    }
                     NativeInstrumentEvent::Expression { expression, .. } => {
                         NativeInstrumentEvent::Expression {
                             frame_offset: at - start,
@@ -895,7 +898,7 @@ fn filters_and_quality_are_finite_at_supported_sample_rate_extremes() {
 fn new_mutable_default_uses_serial_levels_as_the_fm_controls() {
     let baseline = OperatorSettings::defaults();
     assert!(baseline.global.active);
-    assert_eq!(baseline.global.capacity(), 32);
+    assert_eq!(baseline.global.capacity(), 8);
     let mut first = runtime(baseline);
     let dry = process(&mut first, &[on(1, 60)], 512);
     assert!(dry.iter().any(|f| f[0] != 0.0));
