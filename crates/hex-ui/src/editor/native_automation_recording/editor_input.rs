@@ -2,14 +2,58 @@
 //! plug-in editor custody and publication. The view never consumes SDK facts.
 use super::*;
 use hex_session::service::{
-    DeviceAutomationTakeCompletion, PluginEditorRecordingInput, PluginEditorRecordingTarget,
+    DeviceAutomationTakeCompletion, MAX_VST3_EDITOR_GROUP_MEMBERS as MEMBERS,
+    PluginEditorRecordingInput, PluginEditorRecordingTarget, automation_draft::Vst3GroupTarget,
 };
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct EditorArm {
+    generation: u64,
+    revision: u64,
+    target: PluginEditorRecordingTarget,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct EditorGroupSelection {
+    generation: u64,
+    revision: u64,
+    device: DeviceId,
+    class: [u8; 16],
+    parameters: [u32; MEMBERS],
+    len: usize,
+}
+
+impl EditorGroupSelection {
+    fn ids(&self) -> &[u32] {
+        &self.parameters[..self.len]
+    }
+
+    fn group(&self) -> Option<Vst3GroupTarget> {
+        Vst3GroupTarget::new(self.device, self.class, self.ids()).ok()
+    }
+
+    fn toggle(&mut self, parameter: u32) -> Result<(), &'static str> {
+        match self.ids().binary_search(&parameter) {
+            Ok(index) => {
+                self.parameters.copy_within(index + 1..self.len, index);
+                self.len -= 1;
+            }
+            Err(_) if self.len == MEMBERS => return Err("vst3 editor group is full"),
+            Err(index) => {
+                self.parameters.copy_within(index..self.len, index + 1);
+                self.parameters[index] = parameter;
+                self.len += 1;
+            }
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(super) struct EditorCapture {
     request_id: u64,
     key: GestureKey,
-    arm: Arm,
+    arm: EditorArm,
     cancelling: bool,
 }
 
@@ -23,8 +67,7 @@ impl Recorder {
             return false;
         };
         self.editor_take.is_some_and(|capture| {
-            capture.arm.generation == *project_generation
-                && matches!(capture.arm.target, ArmTarget::Vst3 { device: selected, .. } if selected == *device)
+            capture.arm.generation == *project_generation && capture.arm.target.device() == *device
         })
     }
 }
@@ -36,11 +79,15 @@ impl EditorView {
         class: [u8; 16],
         parameter: u32,
     ) -> bool {
-        let target = ArmTarget::Vst3 {
+        self.editor_arm_matches(PluginEditorRecordingTarget::Single {
             device,
             class,
             parameter,
-        };
+            reading: false,
+        })
+    }
+
+    fn editor_arm_matches(&self, target: PluginEditorRecordingTarget) -> bool {
         self.native_automation_recorder
             .editor_arm
             .is_some_and(|arm| {
@@ -59,10 +106,127 @@ impl EditorView {
         class: [u8; 16],
         parameter: u32,
     ) {
+        self.toggle_editor_arm(PluginEditorRecordingTarget::Single {
+            device,
+            class,
+            parameter,
+            reading: false,
+        });
+    }
+
+    fn editor_group_for(&self, device: DeviceId, class: [u8; 16]) -> Option<EditorGroupSelection> {
+        self.native_automation_recorder
+            .editor_group
+            .filter(|group| {
+                group.device == device
+                    && group.class == class
+                    && group.generation == self.project_generation
+                    && self
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.revision == group.revision)
+            })
+    }
+
+    pub(in crate::editor) fn vst3_editor_group_menu(
+        &self,
+        device: DeviceId,
+        class: [u8; 16],
+        parameter: u32,
+    ) -> Option<(&'static str, Option<&'static str>)> {
+        let assigned = self
+            .state
+            .as_ref()?
+            .project
+            .device(device)?
+            .automation_target(DeviceAutomationTarget::Vst3 { parameter })?;
+        if assigned.vst3_class != Some(class) {
+            return None;
+        }
+        let selection = self.editor_group_for(device, class);
+        let included = selection.is_some_and(|group| group.ids().binary_search(&parameter).is_ok());
+        let membership = if included {
+            "remove from plug-in editor group"
+        } else {
+            "add to plug-in editor group"
+        };
+        let arm = selection
+            .filter(|_| included)
+            .and_then(|group| group.group())
+            .map(|group| {
+                if self.editor_arm_matches(PluginEditorRecordingTarget::Group(group)) {
+                    "disarm plug-in editor group"
+                } else {
+                    "arm plug-in editor group"
+                }
+            });
+        Some((membership, arm))
+    }
+
+    pub(in crate::editor) fn toggle_vst3_editor_group_member(
+        &mut self,
+        device: DeviceId,
+        class: [u8; 16],
+        parameter: u32,
+    ) {
+        if self.automation_close_preflight.frozen()
+            || self
+                .vst3_editor_group_menu(device, class, parameter)
+                .is_none()
+        {
+            return;
+        }
+        if self.native_automation_recorder.busy() {
+            self.error =
+                Some("finish the current automation take before changing its group".into());
+            return;
+        }
+        let Some(revision) = self.state.as_ref().map(|state| state.revision) else {
+            return;
+        };
+        let mut group = self
+            .editor_group_for(device, class)
+            .unwrap_or(EditorGroupSelection {
+                generation: self.project_generation,
+                revision,
+                device,
+                class,
+                parameters: [0; MEMBERS],
+                len: 0,
+            });
+        if let Err(reason) = group.toggle(parameter) {
+            self.error = Some(reason.into());
+            return;
+        }
+        if self
+            .native_automation_recorder
+            .editor_arm
+            .is_some_and(|arm| matches!(arm.target, PluginEditorRecordingTarget::Group(_)))
+        {
+            self.native_automation_recorder.editor_arm = None;
+        }
+        self.native_automation_recorder.editor_group = (group.len != 0).then_some(group);
+        self.wake_poll();
+    }
+
+    pub(in crate::editor) fn toggle_vst3_editor_group_arm(
+        &mut self,
+        device: DeviceId,
+        class: [u8; 16],
+    ) {
+        if let Some(group) = self
+            .editor_group_for(device, class)
+            .and_then(|group| group.group())
+        {
+            self.toggle_editor_arm(PluginEditorRecordingTarget::Group(group));
+        }
+    }
+
+    fn toggle_editor_arm(&mut self, target: PluginEditorRecordingTarget) {
         if self.automation_close_preflight.frozen() {
             return;
         }
-        if self.vst3_editor_arm_selected(device, class, parameter) {
+        if self.editor_arm_matches(target) {
             self.native_automation_recorder.editor_arm = None;
             self.wake_poll();
             return;
@@ -86,14 +250,10 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return;
         };
-        let arm = Arm {
+        let arm = EditorArm {
             generation: self.project_generation,
             revision: state.revision,
-            target: ArmTarget::Vst3 {
-                device,
-                class,
-                parameter,
-            },
+            target,
         };
         if self.native_automation_recorder.arm.is_some_and(|armed| {
             matches!(armed.target, ArmTarget::Native { .. })
@@ -159,14 +319,6 @@ impl EditorView {
         if !playing || !self.play_intent.desired_playing(playing) {
             return false;
         }
-        let ArmTarget::Vst3 {
-            device,
-            class,
-            parameter,
-        } = arm.target
-        else {
-            return false;
-        };
         let Ok(key) = self
             .device_gesture
             .reserve_plugin_editor_key(arm.generation)
@@ -189,12 +341,7 @@ impl EditorView {
             input: PluginEditorRecordingInput {
                 key,
                 context,
-                target: PluginEditorRecordingTarget::Single {
-                    device,
-                    class,
-                    parameter,
-                    reading: false,
-                },
+                target: arm.target,
             },
         }) {
             self.native_automation_recorder.editor_take = None;
@@ -223,6 +370,15 @@ impl EditorView {
                     let mut next = capture.arm;
                     next.revision = event.state.revision;
                     self.native_automation_recorder.editor_arm = Some(next);
+                    if let Some(group) = self.native_automation_recorder.editor_group.as_mut()
+                        && group.generation == capture.arm.generation
+                        && group.revision == capture.arm.revision
+                        && group.group().is_some_and(|target| {
+                            next.target == PluginEditorRecordingTarget::Group(target)
+                        })
+                    {
+                        group.revision = next.revision;
+                    }
                 }
             }
             Progress::Unchanged => {
@@ -302,13 +458,14 @@ mod tests {
                     generation: 0,
                     token: 1,
                 },
-                arm: Arm {
+                arm: EditorArm {
                     generation: 0,
                     revision: 7,
-                    target: ArmTarget::Vst3 {
+                    target: PluginEditorRecordingTarget::Single {
                         device: selected,
                         class: [1; 16],
                         parameter: 0,
+                        reading: false,
                     },
                 },
                 cancelling: false,
@@ -328,5 +485,34 @@ mod tests {
             );
         }
         assert!(!recorder.permits_original_editor_window(&Request::Undo));
+
+        let mut recorder = recorder;
+        let capture = recorder.editor_take.as_mut().unwrap();
+        let mut selection = EditorGroupSelection {
+            generation: 0,
+            revision: 7,
+            device: selected,
+            class: [1; 16],
+            parameters: [0; MEMBERS],
+            len: 0,
+        };
+        selection.toggle(11).unwrap();
+        assert!(selection.group().is_none());
+        selection.toggle(0).unwrap();
+        let group = selection.group().unwrap();
+        assert_eq!(group.ids(), &[0, 11]);
+        capture.arm.target = PluginEditorRecordingTarget::Group(group);
+        assert!(
+            recorder.permits_original_editor_window(&Request::TogglePluginEditor {
+                project_generation: 0,
+                device: selected,
+            })
+        );
+        assert!(
+            !recorder.permits_original_editor_window(&Request::TogglePluginEditor {
+                project_generation: 0,
+                device: other,
+            })
+        );
     }
 }

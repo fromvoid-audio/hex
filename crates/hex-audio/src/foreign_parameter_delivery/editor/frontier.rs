@@ -10,7 +10,7 @@ use std::{collections::VecDeque, num::NonZeroU64};
 /// The normal 256-frame foreign quantum fits the full 65,536-frame delay
 /// in this queue. A smaller quantum or unserviced reader may exhaust credit;
 /// refuse explicitly and keep the already confirmed prefix.
-const MAX_PENDING: usize = 256;
+pub const MAX_EDITOR_COMPENSATED_INPUT_QUANTA: usize = 256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Target {
@@ -45,7 +45,7 @@ pub(super) struct Frontier {
 impl Frontier {
     pub(super) fn new() -> Self {
         Self {
-            pending: VecDeque::with_capacity(MAX_PENDING),
+            pending: VecDeque::with_capacity(MAX_EDITOR_COMPENSATED_INPUT_QUANTA),
             input_sequence: None,
             end: None,
         }
@@ -58,7 +58,7 @@ impl Frontier {
     }
 
     pub(super) fn storage_quote() -> Option<usize> {
-        MAX_PENDING.checked_mul(std::mem::size_of::<Pending>())
+        MAX_EDITOR_COMPENSATED_INPUT_QUANTA.checked_mul(std::mem::size_of::<Pending>())
     }
 
     pub(super) fn clear(&mut self) {
@@ -113,7 +113,7 @@ impl Frontier {
                 }
                 // A due predecessor releases one credit before this append.
                 // Do not otherwise extend an allocation from the callback.
-                if self.pending.len() == MAX_PENDING
+                if self.pending.len() == MAX_EDITOR_COMPENSATED_INPUT_QUANTA
                     && self
                         .pending
                         .front()
@@ -121,7 +121,7 @@ impl Frontier {
                 {
                     return Err(AbortReason::Saturated);
                 }
-                if self.pending.len() < MAX_PENDING {
+                if self.pending.len() < MAX_EDITOR_COMPENSATED_INPUT_QUANTA {
                     self.pending.push_back(Pending { input, due });
                 } else {
                     let confirmed = self.confirm(target, start, end)?;
@@ -262,7 +262,7 @@ mod tests {
         let mut frontier = Frontier::new();
         let target = target();
         let capacity = frontier.pending.capacity();
-        for sequence in 0..MAX_PENDING as u64 {
+        for sequence in 0..MAX_EDITOR_COMPENSATED_INPUT_QUANTA as u64 {
             assert_eq!(
                 frontier.finish(
                     target,
@@ -273,7 +273,7 @@ mod tests {
                 Ok(None)
             );
         }
-        let next = MAX_PENDING as u64;
+        let next = MAX_EDITOR_COMPENSATED_INPUT_QUANTA as u64;
         assert_eq!(
             frontier.finish(target, Some(marker(target, next)), 19 + next * 8, 4096),
             Err(AbortReason::Saturated)
