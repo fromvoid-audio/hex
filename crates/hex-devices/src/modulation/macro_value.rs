@@ -1,8 +1,12 @@
 //! Version 1 stores one normalized f32 macro value in little-endian bytes.
 use hex_lattice::{ModulationSourceId, PreparedModulationSource};
-use hex_lattice_contract::{DeviceContractError as Error, DeviceTypeId, NativeDeviceState};
+use hex_lattice_contract::{
+    DeviceContractError as Error, DeviceTypeId, NativeDeviceState, ParameterId,
+};
 
 pub const TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.modulator.macro");
+/// Stable identity for the macro’s normalized value input.
+pub const VALUE_PARAMETER: ParameterId = ParameterId::from_static(1);
 const VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
