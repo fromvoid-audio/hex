@@ -55,7 +55,7 @@ fn fm4_carriers_follow_sample_routes_and_retry_without_allocating() {
     let routes = std::array::from_fn::<_, 2, _>(|index| ModulationRoute {
         source: 0,
         target: ids[index],
-        amount: [0.25, -0.5][index],
+        amount: [0.125, -0.25][index],
         range: [-1.0, 1.0],
     });
     let source = PreparedModulationSource::free_with_waveform(
