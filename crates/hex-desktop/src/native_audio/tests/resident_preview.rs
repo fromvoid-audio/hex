@@ -1,6 +1,7 @@
 //! Exercise the production-default consumer, with only native output creation
 //! substituted. Session transactions, prospective admission, publication and callback stay real.
 use super::*;
+mod native_automation;
 use hex_engine::{
     PreparedPlaybackObservation,
     native_device_resources::{DeviceResourceAdmission, PreparedDeviceResources},
