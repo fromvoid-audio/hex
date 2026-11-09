@@ -88,12 +88,25 @@ pub enum ParameterEditKind {
     Begin,
     Perform,
     End,
+    /// The SDK began a timestamp cohort. This marker has no ParamID.
+    GroupBegin,
+    /// The SDK finished its cohort; per-parameter holds can outlive it.
+    GroupEnd,
+    /// The cohort was refused; callers must preserve any delivered prefix.
+    GroupAborted,
+}
+impl ParameterEditKind {
+    pub fn is_group_marker(self) -> bool {
+        matches!(self, Self::GroupBegin | Self::GroupEnd | Self::GroupAborted)
+    }
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ParameterEdit {
     pub sequence: u64,
+    /// Exact Begin sequence, or GroupBegin sequence for a group marker.
     pub gesture: u64,
     pub normalized: f64,
+    /// Raw SDK ParamID including zero. Group markers carry no parameter.
     pub id: u32,
     pub kind: ParameterEditKind,
     /// Actual cumulative input frame at which this callback was consumed.
@@ -211,14 +224,21 @@ pub fn parameter_edits(
             1 => ParameterEditKind::Begin,
             2 => ParameterEditKind::Perform,
             3 => ParameterEditKind::End,
+            4 => ParameterEditKind::GroupBegin,
+            5 => ParameterEditKind::GroupEnd,
+            6 => ParameterEditKind::GroupAborted,
             _ => return Err(Error::Protocol("invalid parameter edit kind")),
         };
         let first_frame = u64::from_le_bytes(reader.array()?);
         if sequence <= last
             || gesture == 0
             || gesture > sequence
-            || (kind == ParameterEditKind::Begin) != (gesture == sequence)
+            || matches!(
+                kind,
+                ParameterEditKind::Begin | ParameterEditKind::GroupBegin
+            ) != (gesture == sequence)
             || id > i32::MAX as u32
+            || (kind.is_group_marker() && id != 0)
             || !normalized.is_finite()
             || !(0.0..=1.0).contains(&normalized)
             || (kind != ParameterEditKind::Perform && normalized != 0.0)
