@@ -414,7 +414,12 @@ fn sdk_group_performs_wait_together_for_real_physical_capacity() {
 fn grouped_editor_touch_restores_each_target_on_its_actual_late_end() {
     use crate::protocol::{EditorRestoration, EditorTouchPlanSet, EditorTouchTarget};
 
-    for (pattern, instrument) in [("held", false), ("staggered", true), ("abort-held", false)] {
+    for (pattern, instrument) in [
+        ("held", false),
+        ("staggered", true),
+        ("abort-held", false),
+        ("invalidate", false),
+    ] {
         let case = Case::new();
         let setup = case.setup_restore(if instrument { 149 } else { 148 });
         let end = case.root.join("group-end");
@@ -466,9 +471,7 @@ fn grouped_editor_touch_restores_each_target_on_its_actual_late_end() {
         .unwrap();
         let pcm = |instance: &Prepared, sequence, note, reading, other| {
             let mut block = request(instance.configuration(), sequence);
-            if !instrument {
-                block.pcm[..64].fill([0.125, -0.25]);
-            }
+            block.pcm[..64].fill(if instrument { [0.0; 2] } else { [0.125, -0.25] });
             if let Some(status) = note {
                 block
                     .events
@@ -504,7 +507,7 @@ fn grouped_editor_touch_restores_each_target_on_its_actual_late_end() {
             let block = pcm(instance, sequence, note, reading, other);
             instance
                 .exchange_armed_authored_with_editor_group_touch_on_worker(block, &plan, None)
-                .unwrap()
+                .unwrap_or_else(|error| panic!("pattern={pattern}, quantum={sequence}: {error}"))
         };
         let expect = |actual: &EditorPcm, factor: f32| {
             let sample = if instrument {
@@ -575,6 +578,21 @@ fn grouped_editor_touch_restores_each_target_on_its_actual_late_end() {
         assert!(held.restorations.as_slice().is_empty());
         expect(&held, if instrument { 12.0 } else { 6.0 });
 
+        if pattern == "invalidate" {
+            let input = pcm(&instance, 2, None, 0.5, 0.25);
+            let cancelled = instance
+                .exchange_armed_authored_with_editor_on_worker(input, None)
+                .unwrap();
+            expect(&cancelled, 2.0);
+            assert!(cancelled.restorations.as_slice().is_empty());
+            let stale = pcm(&instance, 3, None, 0.5, 0.25);
+            assert!(matches!(
+                instance
+                    .exchange_armed_authored_with_editor_group_touch_on_worker(stale, &plan, None),
+                Err(crate::Error::Worker(8))
+            ));
+            continue;
+        }
         fs::write(&end, b"release first grouped target").unwrap();
         let wait_for = if pattern == "abort-held" {
             ParameterEditKind::GroupAborted
