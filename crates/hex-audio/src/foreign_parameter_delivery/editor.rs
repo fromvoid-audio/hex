@@ -1,6 +1,5 @@
 //! Output-side custody for passive exact editor observations. A separate
 //! terminal cell is reserved; a full reader never silently drops the prefix.
-use super::AbortReason;
 use crate::{
     native_callback_owner::ChannelStorage,
     prepared::{AppliedAudioSource, Status},
@@ -23,6 +22,19 @@ use frontier::Frontier;
 pub use frontier::{ConfirmedQuantum, Target};
 
 const RECEIPTS: usize = 65;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AbortReason {
+    Cancelled,
+    SourceChanged,
+    TransportChanged,
+    OutputFailed,
+    UnsupportedOutput,
+    MissingOrigin,
+    ClockExhausted,
+    MissedOperation,
+    Saturated,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Receipt {
@@ -133,7 +145,22 @@ impl Control {
     }
 
     pub(crate) fn try_receipt(&mut self) -> Option<Receipt> {
-        let receipt = self.receipts.pop().ok()?;
+        let receipt = match self.receipts.pop() {
+            Ok(receipt) => receipt,
+            Err(_) if self.receipts.is_abandoned() => {
+                // Preserve anything enqueued before callback return. An
+                // absent terminal never confirms a pending physical reply.
+                std::sync::atomic::fence(Acquire);
+                self.receipts.pop().ok().or_else(|| {
+                    let (target, _) = self.target.as_ref()?;
+                    Some(Receipt::Aborted {
+                        target: *target,
+                        reason: AbortReason::OutputFailed,
+                    })
+                })?
+            }
+            Err(_) => return None,
+        };
         if let Receipt::Aborted { target, .. } = receipt
             && self.target.as_ref().map(|(current, _)| *current) == Some(target)
         {
@@ -240,5 +267,88 @@ impl Callback {
                 shared_groups: 1,
                 shared_handles: 2,
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hex_plugin_host::transport::ManualParameterOrigin;
+
+    fn target() -> Target {
+        Target {
+            source: AppliedAudioSource {
+                context: hex_engine::AudioSourceContext {
+                    project_generation: 2,
+                    editor_revision: 3,
+                },
+                audio_revision: 5,
+                output_identity: 7,
+            },
+            binding: Binding {
+                root: 7,
+                instance: 11,
+                graph: 13,
+                epoch: 17,
+            },
+            transport_epoch: 19,
+            scope: NonZeroU64::MIN,
+            quantum_frames: 8,
+        }
+    }
+
+    #[test]
+    fn a_pending_physical_reply_cannot_survive_a_transport_or_output_change() {
+        let target = target();
+        for reason in [
+            AbortReason::SourceChanged,
+            AbortReason::TransportChanged,
+            AbortReason::OutputFailed,
+        ] {
+            let (mut control, mut callback) = channel();
+            control.commands.push(target).unwrap();
+            assert_eq!(callback.prepare_target(), Some(target));
+            callback.finish(
+                Some(AcceptedEditorQuantum {
+                    binding: target.binding,
+                    sequence: 1,
+                    first_frame: 8,
+                    callback_offset: 2,
+                    scope: target.scope,
+                    performs: Default::default(),
+                    origin: Some(ManualParameterOrigin {
+                        arrangement_frame: 2,
+                        performance_frame: 8,
+                        loop_pass: 1,
+                    }),
+                }),
+                Some((target.source, target.transport_epoch)),
+                26,
+                20,
+                true,
+                true,
+            );
+            assert!(control.try_receipt().is_none());
+            let source = match reason {
+                AbortReason::SourceChanged => None,
+                AbortReason::TransportChanged => Some((target.source, target.transport_epoch + 1)),
+                _ => Some((target.source, target.transport_epoch)),
+            };
+            callback.finish(
+                None,
+                source,
+                30,
+                20,
+                reason != AbortReason::OutputFailed,
+                true,
+            );
+            assert_eq!(
+                control.try_receipt(),
+                Some(Receipt::Aborted { target, reason })
+            );
+            assert_eq!(callback.prepare_target(), None);
+            assert_eq!(control.signals.frontier.load(Acquire), 0);
+            assert!(control.try_receipt().is_none());
+        }
     }
 }

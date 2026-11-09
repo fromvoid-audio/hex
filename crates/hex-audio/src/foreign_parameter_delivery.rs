@@ -3,6 +3,7 @@
 //! separate from an SDK input ACK, canonical edit, recording take or loudspeaker.
 //! One operation may be outstanding. Two one-cell SPSC rings are allocated at
 //! output construction. Priority cancellation uses its own atomic marker.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod editor;
 
 use crate::{
@@ -38,7 +39,6 @@ pub enum AbortReason {
     MissingOrigin,
     ClockExhausted,
     MissedOperation,
-    Saturated,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Receipt {

@@ -1243,6 +1243,7 @@ pub struct Control {
 /// The unique worker-side publication/return endpoint; never a UI command client.
 pub struct PublicationControl {
     foreign_parameter_delivery: Option<crate::foreign_parameter_delivery::Control>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     foreign_editor_delivery: crate::foreign_parameter_delivery::editor::Control,
     plugin_callback_quantum: Option<u16>,
     output_transport_reaper: Option<crate::plugin_worker::Reaper>,
@@ -1389,6 +1390,7 @@ pub struct Callback {
     gain_recording: crate::gain_recording::Callback,
     native_parameter_input: Box<crate::native_parameter_input::Callback>,
     foreign_parameter_delivery: crate::foreign_parameter_delivery::Callback,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     foreign_editor_delivery: crate::foreign_parameter_delivery::editor::Callback,
     midi_recording: crate::midi_recording::Callback,
     spectrum_capture: Option<SpectrumCapture>,
@@ -1479,6 +1481,7 @@ pub(crate) fn channel_with_interface(
         crate::native_parameter_input::channel();
     let (foreign_parameter_delivery, callback_foreign_parameter_delivery) =
         crate::foreign_parameter_delivery::channel();
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     let (foreign_editor_delivery, callback_foreign_editor_delivery) =
         crate::foreign_parameter_delivery::editor::channel();
     let (mut midi_recording, callback_midi_recording) = crate::midi_recording::channel();
@@ -1509,6 +1512,7 @@ pub(crate) fn channel_with_interface(
             command_ticket: 0,
             publication: PublicationControl {
                 foreign_parameter_delivery: Some(foreign_parameter_delivery),
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                 foreign_editor_delivery,
                 plugin_callback_quantum: None,
                 output_transport_reaper: None,
@@ -1558,6 +1562,7 @@ pub(crate) fn channel_with_interface(
             gain_recording: callback_gain_recording,
             native_parameter_input: callback_native_parameter_input,
             foreign_parameter_delivery: callback_foreign_parameter_delivery,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             foreign_editor_delivery: callback_foreign_editor_delivery,
             midi_recording: callback_midi_recording,
             spectrum_capture: capture,
@@ -2621,7 +2626,8 @@ impl Callback {
         } else {
             crate::native_callback_owner::ChannelStorage::default()
         };
-        self.sample_preview
+        let storage = self
+            .sample_preview
             .constructor_channel_storage()?
             .plus(crate::sample_recording::Control::callback_storage(
                 &self.sample_recording,
@@ -2632,7 +2638,6 @@ impl Callback {
                 self.foreign_parameter_delivery
                     .constructor_channel_storage()?,
             )?
-            .plus(self.foreign_editor_delivery.constructor_channel_storage()?)?
             .plus(self.midi_recording.constructor_channel_storage()?)?
             .plus(self.spectrum_target.constructor_channel_storage()?)?
             .plus(self.processor_audition.constructor_channel_storage()?)?
@@ -2641,7 +2646,10 @@ impl Callback {
                 data_bytes: self.spectrum_stages.heap_data_bytes()?,
                 shared_groups: 0,
                 shared_handles: 0,
-            })
+            })?;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let storage = storage.plus(self.foreign_editor_delivery.constructor_channel_storage()?)?;
+        Some(storage)
     }
 
     fn install_candidate(
@@ -5292,6 +5300,10 @@ impl Callback {
 
 /// Known channel payload/capacity quote for the pinned worker factory.
 pub(crate) fn worker_boundary_storage_quote() -> Option<usize> {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    let editor_bytes = crate::foreign_parameter_delivery::editor::constructor_storage_quote()?;
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    let editor_bytes = 0;
     std::mem::size_of::<Status>()
         .checked_add(action_outcomes::storage_bytes())?
         .checked_add(SESSION_ROUTE_CAPACITY.checked_mul(std::mem::size_of::<AtomicRouteSlot>())?)?
@@ -5300,7 +5312,7 @@ pub(crate) fn worker_boundary_storage_quote() -> Option<usize> {
         .checked_add(crate::gain_recording::constructor_storage_quote()?)?
         .checked_add(crate::native_parameter_input::constructor_storage_quote()?)?
         .checked_add(crate::foreign_parameter_delivery::constructor_storage_quote()?)?
-        .checked_add(crate::foreign_parameter_delivery::editor::constructor_storage_quote()?)?
+        .checked_add(editor_bytes)?
         .checked_add(crate::midi_recording::constructor_storage_quote()?)?
         .checked_add(spectrum_target::constructor_storage_quote()?)?
         .checked_add(processor_audition::constructor_storage_quote()?)?

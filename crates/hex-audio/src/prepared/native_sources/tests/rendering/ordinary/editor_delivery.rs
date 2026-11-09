@@ -1,6 +1,6 @@
 //! A signed editor input is witnessed only on the final compensated Main sample.
 use super::*;
-use crate::foreign_parameter_delivery::{AbortReason, editor::Receipt};
+use crate::foreign_parameter_delivery::editor::{AbortReason, Receipt};
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 use hex_plugin_host::{protocol::ParameterEditKind, transport::ManualParameterOrigin};
 
