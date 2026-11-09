@@ -1401,17 +1401,23 @@ fn exact_pcm_editor_performs_exclude_overwritten_values_without_consuming_receip
             );
             if let Some(point) = points.first() {
                 assert_eq!(point.id, raw_id);
-                let scale = 0.5 + sequence as f32 * 0.125;
-                let multiplier = point.normalized as f32 * 4.0 * scale;
+                let scale = 0.5 + sequence as f64 * 0.125;
                 for (offset, (sample, original)) in
                     reply.block.pcm[..8].iter().zip(input.pcm).enumerate()
                 {
-                    let gain = if authored && offset >= 4 {
-                        2.0 * scale
+                    // The fixture linearly interpolates from the actual
+                    // offset-zero editor point to the authored point at 4.
+                    let normalized = if authored {
+                        point.normalized + (0.5 - point.normalized) * offset.min(4) as f64 / 4.0
                     } else {
-                        multiplier
+                        point.normalized
                     };
-                    assert_eq!(*sample, original.map(|sample| sample * gain));
+                    assert_eq!(
+                        *sample,
+                        original
+                            .map(|sample| (f64::from(sample) * scale * 4.0 * normalized) as f32),
+                        "variant {variant}, quantum {sequence}, offset {offset}"
+                    );
                 }
                 effective.push((*point, reply.block.first_frame));
             }
