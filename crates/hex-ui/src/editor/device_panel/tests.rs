@@ -7147,7 +7147,9 @@ fn assert_modulation_mapping(
     };
     let scroll_to = |visual: &mut VisualTestContext, key: &str| {
         let key = Box::leak(key.to_string().into_boxed_str());
-        let target = visual.debug_bounds(key).unwrap();
+        let target = visual
+            .debug_bounds(key)
+            .unwrap_or_else(|| panic!("missing {key}"));
         let strip = visual.debug_bounds("device-modulator-scroll").unwrap();
         if !strip.contains(&target.center()) {
             visual.simulate_event(gpui::ScrollWheelEvent {
@@ -7160,7 +7162,9 @@ fn assert_modulation_mapping(
             });
             visual.run_until_parked();
         }
-        let target = visual.debug_bounds(key).unwrap();
+        let target = visual
+            .debug_bounds(key)
+            .unwrap_or_else(|| panic!("missing {key}"));
         let strip = visual.debug_bounds("device-modulator-scroll").unwrap();
         assert!(
             strip.contains(&target.center()),
@@ -7475,7 +7479,10 @@ fn assert_modulation_mapping(
         let map = format!("lfo-{}-map", source_id.value());
         scroll_to(&mut visual, &map);
         click(&mut visual, map);
-        if device_type == hex_engine::eq::EQ_TYPE_ID {
+        if matches!(
+            device_type,
+            hex_engine::eq::EQ_TYPE_ID | hex_devices::limiter::TYPE_ID
+        ) {
             for name in ["input-gain", "output-gain"] {
                 let selector = Box::leak(format!("map-{name}-{}", device.value()).into_boxed_str());
                 assert!(visual.debug_bounds(selector).is_none());
