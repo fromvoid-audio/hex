@@ -169,6 +169,9 @@ impl ScalarSourceDefinition {
                 hex_storage::automation_draft::DraftTarget::Device { device, target } => {
                     hex_engine::ScalarSourceTarget::Device { device, target }
                 }
+                hex_storage::automation_draft::DraftTarget::Vst3Group(_) => {
+                    return Err(StreamRuntimeError::InvalidConfiguration);
+                }
             },
             projection.sample_rate(),
             start,
