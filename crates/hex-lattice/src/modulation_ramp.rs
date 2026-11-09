@@ -9,6 +9,16 @@ pub enum ModulationRampCurve {
     EaseOut,
 }
 
+impl ModulationRampCurve {
+    pub(crate) fn at(self, t: f32) -> f32 {
+        match self {
+            Self::Linear => t,
+            Self::EaseIn => t * t,
+            Self::EaseOut => t * (2.0 - t),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Ramp {
     frames: NonZeroU32,
@@ -63,11 +73,7 @@ impl Ramp {
             } else {
                 elapsed as f32 * inverse
             };
-            let value = match self.curve {
-                ModulationRampCurve::Linear => t,
-                ModulationRampCurve::EaseIn => t * t,
-                ModulationRampCurve::EaseOut => t * (2.0 - t),
-            };
+            let value = self.curve.at(t);
             *sample = if self.falling { 1.0 - value } else { value };
             let next = elapsed + 1;
             self.elapsed = Some(if next < duration {
