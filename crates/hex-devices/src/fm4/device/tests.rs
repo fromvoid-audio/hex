@@ -386,7 +386,7 @@ fn registered_event_validation_matches_inline_pitch_and_velocity_domain() {
 }
 
 #[test]
-fn only_implemented_carriers_declare_arrangement_automation_semantics() {
+fn only_implemented_oscillator_levels_and_carriers_declare_arrangement_automation_semantics() {
     let state = FM4_DEFINITION.default_state().unwrap();
     for descriptor in PARAMETERS {
         let semantics = hex_lattice_contract::validated_parameter_semantics(
@@ -397,7 +397,7 @@ fn only_implemented_carriers_declare_arrangement_automation_semantics() {
         .unwrap();
         assert_eq!(
             semantics.is_some(),
-            (29..=32).contains(&descriptor.id.value())
+            matches!(descriptor.id.value(), 2 | 5 | 8 | 11 | 29..=32)
         );
         if let Some(semantics) = semantics {
             assert_eq!(
@@ -406,7 +406,11 @@ fn only_implemented_carriers_declare_arrangement_automation_semantics() {
             );
             assert_eq!(
                 semantics.smoothing,
-                hex_lattice_contract::ParameterSmoothing::DeviceManaged
+                if (29..=32).contains(&descriptor.id.value()) {
+                    hex_lattice_contract::ParameterSmoothing::DeviceManaged
+                } else {
+                    hex_lattice_contract::ParameterSmoothing::None
+                }
             );
         }
     }

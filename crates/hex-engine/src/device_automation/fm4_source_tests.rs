@@ -1,4 +1,4 @@
-//! Metadata/ownership admission for the implemented source carrier boundary.
+//! Metadata and ownership admission for FM4 source parameters.
 use super::*;
 use hex_lattice_contract::NativeDeviceMetadata;
 use hex_project::{
@@ -44,10 +44,10 @@ fn point(beat: BeatTime, value: f32) -> AutomationPoint {
     }
 }
 #[test]
-fn production_source_admission_allows_carriers_and_refuses_other_controls() {
+fn production_source_admission_allows_oscillator_levels_and_carriers() {
     let (mut editor, _, device) = fixture();
     crate::device_automation::validate_project(editor.project()).unwrap();
-    for id in 29..=32 {
+    for id in [2, 5, 8, 11, 29, 30, 31, 32] {
         assert!(crate::project_device_automation_target_supported(
             editor.project(),
             device,

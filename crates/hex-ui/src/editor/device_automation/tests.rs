@@ -740,7 +740,7 @@ mod native {
 }
 
 #[test]
-fn receiving_fm4_exposes_only_real_carrier_assignment_and_retires_unrouted_targets() {
+fn receiving_fm4_exposes_granted_assignments_and_retires_unrouted_targets() {
     let mut editor = Editor::new(Project::new(48000).unwrap(), 16).unwrap();
     let Created::Track(track) = editor
         .execute(Command::InsertTrackWithDevice {
@@ -767,7 +767,7 @@ fn receiving_fm4_exposes_only_real_carrier_assignment_and_retires_unrouted_targe
     let source = editor.project().track(track).unwrap().source_id().unwrap();
     let before = editor.project().clone();
     let mut targets = Vec::new();
-    for id in 29..=32 {
+    for id in [2, 5, 8, 11, 29, 30, 31, 32] {
         let entry = Entry::read(
             editor.project(),
             4,
