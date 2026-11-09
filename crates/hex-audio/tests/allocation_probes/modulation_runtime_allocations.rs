@@ -120,13 +120,13 @@ fn utility_graph_modulation_transactions_do_not_allocate_or_free() {
         };
         let program = PreparedModulation::new(
             &[target],
-            &[0, 1].map(|source| ModulationRoute {
+            &[0, 1, 2].map(|source| ModulationRoute {
                 source,
                 target: id,
                 amount: 0.01,
                 range: [-1.0, 1.0],
             }),
-            2,
+            3,
         )
         .unwrap();
         let source = PreparedModulationSource::tempo(
@@ -145,9 +145,15 @@ fn utility_graph_modulation_transactions_do_not_allocate_or_free() {
             0.05,
         )
         .unwrap();
+        let manual = PreparedModulationSource::macro_value(
+            ModulationSourceId::new(3).unwrap(),
+            48_000,
+            0.25,
+        )
+        .unwrap();
         let prepared = PreparedRuntimeInstance {
             modulation: Some(
-                PreparedModulationState::new(vec![source, follower], program, 17).unwrap(),
+                PreparedModulationState::new(vec![source, follower, manual], program, 17).unwrap(),
             ),
             automation: Default::default(),
             meter: Default::default(),
