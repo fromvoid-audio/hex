@@ -96,7 +96,7 @@ fn editor_scope_and_origin_are_frozen_at_the_original_quantum_start() {
             callback_offset: 2,
             scope,
             performs,
-            restoration: None,
+            restorations: Default::default(),
             lost_origin: false,
             origin: Some(ManualParameterOrigin {
                 arrangement_frame: 900,

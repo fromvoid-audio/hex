@@ -395,8 +395,48 @@ impl PublicationControl {
                 Some(transport_epoch),
                 Some(Arc::clone(&self.status)),
                 |scope| {
-                    self.candidate_root
-                        .arm_native_editor_pcm(binding, scope, Some(touch))
+                    self.candidate_root.arm_native_editor_pcm(
+                        binding,
+                        scope,
+                        Some(
+                            crate::foreign_parameter_delivery::editor::TouchAdmission::Single(
+                                touch,
+                            ),
+                        ),
+                    )
+                },
+            )
+    }
+
+    /// Arm the exact prepared group on its original source. Targets must
+    /// already have owned read/Base anchors, including unlaned Base values.
+    pub fn arm_native_source_editor_group_delivery_on_control(
+        &mut self,
+        source: AppliedAudioSource,
+        transport_epoch: u64,
+        binding: Binding,
+        targets: &[hex_plugin_host::protocol::EditorTouchTarget],
+    ) -> Result<crate::foreign_parameter_delivery::editor::Target, &'static str> {
+        self.require_parameter_delivery_source(source, binding)?;
+        self.foreign_editor_delivery
+            .as_mut()
+            .ok_or("vst3 editor delivery reader is retired")?
+            .begin(
+                &self.status,
+                source,
+                binding,
+                Some(transport_epoch),
+                Some(Arc::clone(&self.status)),
+                |scope| {
+                    self.candidate_root.arm_native_editor_pcm(
+                        binding,
+                        scope,
+                        Some(
+                            crate::foreign_parameter_delivery::editor::TouchAdmission::Group(
+                                targets,
+                            ),
+                        ),
+                    )
                 },
             )
     }

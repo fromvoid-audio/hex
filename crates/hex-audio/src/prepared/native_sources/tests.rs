@@ -170,6 +170,26 @@ fn source_for_profile_with_authored(
     restore: Option<hex_lattice_contract::NativeDeviceState>,
     ids: &[u32],
 ) -> Binding {
+    source_for_profile_with_authored_mode(
+        control,
+        identity,
+        fixture,
+        quantum,
+        restore,
+        ids,
+        crate::plugin_effects::PluginProfile::Effect,
+    )
+}
+
+fn source_for_profile_with_authored_mode(
+    control: &mut Control,
+    identity: hex_lattice::ProcessorInstanceIdentity,
+    fixture: &str,
+    quantum: u16,
+    restore: Option<hex_lattice_contract::NativeDeviceState>,
+    ids: &[u32],
+    mode: crate::plugin_effects::PluginProfile,
+) -> Binding {
     let (build, source, mut preparation) =
         crate::candidate_custody::native_source_test_fixture::input_for(
             fixture,
@@ -184,6 +204,11 @@ fn source_for_profile_with_authored(
     let info_digest = hex_digest(identity_bytes.binary.info_sha256);
     let path = fixture_path(fixture);
     let hosting = crate::plugin_effects::Hosting::from_test_build(build, preparation.limits);
+    let hosting = if std::env::var_os("HEX_ORDINARY_GROUP_EDITOR_MAIN_DRIVER").is_some() {
+        hosting.with_grouped_editor_callbacks()
+    } else {
+        hosting
+    };
     let binding = hosting
         .begin_on_control(
             control,
@@ -198,7 +223,7 @@ fn source_for_profile_with_authored(
             identity.device_id(),
             12,
             48_000,
-            crate::plugin_effects::PluginProfile::Effect,
+            mode,
             restore,
         )
         .unwrap();
