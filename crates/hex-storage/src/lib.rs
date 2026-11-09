@@ -78,7 +78,7 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = DEVICE_MODULATION_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = MODULATION_SLOT_COLOR_SCHEMA_VERSION;
 
 /// Schema70 stores an independent original source span for signed musical event placement.
 pub const MUSICAL_EVENT_SOURCE_SCHEMA_VERSION: u32 = 70;
@@ -107,6 +107,8 @@ pub const SERIAL_DEVICE_SCHEMA_VERSION: u32 = 80;
 /// Schema81 retains device-local module configuration and source/route identities
 /// over the complete prior envelope; older projects migrate with empty banks.
 pub const DEVICE_MODULATION_SCHEMA_VERSION: u32 = 81;
+/// Schema82 adds a required semantic color on every modulator slot.
+pub const MODULATION_SLOT_COLOR_SCHEMA_VERSION: u32 = 82;
 
 fn contains_larger_device_state(project: &Project) -> bool {
     schema::device_assets::authored_states(project)
@@ -162,7 +164,9 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// [`CURRENT_SCHEMA_VERSION`].
 /// Serial membership uses schema80 over its exact compatible flat envelope.
 pub fn schema_version_for(project: &Project) -> u32 {
-    if schema::device_modulation::contains(project) {
+    if schema::device_modulation::contains_colors(project) {
+        MODULATION_SLOT_COLOR_SCHEMA_VERSION
+    } else if schema::device_modulation::contains(project) {
         DEVICE_MODULATION_SCHEMA_VERSION
     } else if schema::serial_units::contains(project) {
         SERIAL_DEVICE_SCHEMA_VERSION
@@ -633,7 +637,9 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("unsupported project format"));
     }
     let project = match header.version {
-        DEVICE_MODULATION_SCHEMA_VERSION => schema::device_modulation::decode(bytes),
+        DEVICE_MODULATION_SCHEMA_VERSION | MODULATION_SLOT_COLOR_SCHEMA_VERSION => {
+            schema::device_modulation::decode(bytes, header.version)
+        }
         SERIAL_DEVICE_SCHEMA_VERSION => schema::serial_units::decode(bytes),
         DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION | VST3_AUTOMATION_TOUCH_SCHEMA_VERSION => {
             schema::device_automation_touch::decode(bytes, header.version)

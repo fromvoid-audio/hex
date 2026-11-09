@@ -403,6 +403,7 @@ fn apply(
     let maximum_hz = f64::from(project.sample_rate()) * 0.5;
     match edit {
         Edit::Add(kind) => sources.push(Modulator {
+            color: Default::default(),
             id: ModulationSourceId::new(project.next_identity()).map_err(unsupported)?,
             enabled: true,
             state: kind.default_state().map_err(unsupported)?,
