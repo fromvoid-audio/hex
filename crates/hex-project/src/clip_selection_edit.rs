@@ -582,6 +582,7 @@ impl Command {
             | Self::ReparentDevice { .. }
             | Self::InsertNestedDevice { .. }
             | Self::SpliceDeviceAutomationTouch { .. }
+            | Self::SpliceVst3AutomationTouchGroup { .. }
             | Self::ReplaceDeviceModulation { .. }
             | Self::ReplaceDeviceAutomationTarget { .. }
             | Self::ReplaceDeviceAutomation { .. }
