@@ -13,5 +13,8 @@ mod section_input;
 #[path = "../src/section_reorder.rs"]
 mod section_reorder;
 #[allow(dead_code)]
+#[path = "../src/section_resize.rs"]
+mod section_resize;
+#[allow(dead_code)]
 #[path = "../src/section_selection.rs"]
 mod section_selection;
