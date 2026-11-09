@@ -112,6 +112,7 @@ fn records_first_raw_zero_effect_lane_without_mutating_the_base() {
         let event = loop {
             h.pump();
             if let Ok(event) = h.service.try_event()
+                && event.gesture_protocol_ack
                 && event
                     .gesture_ack
                     .as_ref()
@@ -127,7 +128,19 @@ fn records_first_raw_zero_effect_lane_without_mutating_the_base() {
         };
         assert!(event.error.is_none(), "{:?}", event.error);
         let ack = event.gesture_ack.as_ref().unwrap();
-        assert!(ack.accepted && client.acknowledge_with_snapshot(ack, event.active_device_gesture));
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        assert!(
+            ack.accepted,
+            "{request:?} refused: {ack:?}; source={:?}, fault={:?}, position={}",
+            status.native_parameter_source(true),
+            status.render_fault_snapshot(),
+            status.position.load(Acquire),
+        );
+        assert!(
+            client.acknowledge_with_snapshot(ack, event.active_device_gesture),
+            "acknowledgment did not match {request:?}: {ack:?}, {:?}",
+            event.active_device_gesture
+        );
         event
     };
     let mut client = GestureClient::default();
