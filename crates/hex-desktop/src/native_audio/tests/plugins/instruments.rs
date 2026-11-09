@@ -2067,7 +2067,8 @@ fn verify_instrument_takeover(
         "session_first_lane" | "session_first_lane_with_other" | "session_first_lane_stop"
     );
     let stop_recording = matches!(case.as_str(), "session_stop" | "session_first_lane_stop");
-    let reading = !first_lane && !matches!(case.as_str(), "unread" | "empty" | "renew" | "idle_empty");
+    let reading =
+        !first_lane && !matches!(case.as_str(), "unread" | "empty" | "renew" | "idle_empty");
     let playing = !matches!(case.as_str(), "idle" | "idle_empty");
     let context = h.submitted.unwrap().1.context;
     let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
@@ -2101,7 +2102,12 @@ fn verify_instrument_takeover(
     for (id, value) in [(7, 0.25), (11, 0.5)] {
         if matches!(
             case.as_str(),
-            "empty" | "renew" | "author_empty" | "idle_empty" | "session_first_lane" | "session_first_lane_stop"
+            "empty"
+                | "renew"
+                | "author_empty"
+                | "idle_empty"
+                | "session_first_lane"
+                | "session_first_lane_stop"
         ) || id == 7 && (!reading || author)
         {
             continue;
@@ -3216,7 +3222,8 @@ fn verify_instrument_takeover(
                 .load(Acquire)
         );
         let source = h.submitted.unwrap().1.context;
-        let after = super::installed_edits::query(h, device, Some(0), &mut 17);
+        let mut serial = 17;
+        let after = super::installed_edits::query(h, device, Some(0), &mut serial);
         assert_eq!(after.query.context, source);
         assert_eq!(
             after
@@ -3229,10 +3236,15 @@ fn verify_instrument_takeover(
             0.5
         );
         assert!(original_binding.is_some());
-        assert_eq!(
+        assert_ne!(
             after.source, original_binding,
-            "stopped commit replaced the editor's original worker"
+            "fixture must replace the worker"
         );
+        assert!(after.source.is_some());
+        let undone = super::automation::edit_with_running_callback(h, Request::Undo);
+        assert!(undone.error.is_none(), "{:?}", undone.error);
+        assert_eq!(undone.state.project.as_ref(), &before);
+        h.applied(applied);
         return;
     }
     if playing {

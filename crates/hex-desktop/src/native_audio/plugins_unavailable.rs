@@ -63,7 +63,8 @@ impl Plugins {
         Err(UNAVAILABLE.into())
     }
     pub fn finish(&mut self, _: &Arc<PluginEffectControl>, _: bool) {}
-    pub fn poll(&mut self, _: &mut WorkerPreparedOutput, _: Option<AudioSourceContext>) {}
+    pub fn poll(&mut self, _: &mut WorkerPreparedOutput, _: Option<&CanonicalAudioSourceSnapshot>) {
+    }
     pub fn poll_parameter_edits(
         &mut self,
         _: &mut WorkerPreparedOutput,

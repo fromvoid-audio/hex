@@ -871,3 +871,49 @@ fn authored_quantum_partition_preserves_signed_pcm_after_pipeline_latency() {
         );
     }
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn replacement_editor_commands_report_closed_and_unavailable_without_opening_windows() {
+    use crate::protocol::{ControllerRequest, PluginEditorState};
+    let case = Case::new();
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup(0),
+    )
+    .unwrap();
+    for (request, expected) in [
+        (ControllerRequest::DetachEditor, PluginEditorState::Closed),
+        (
+            ControllerRequest::ReopenEditor,
+            PluginEditorState::Unavailable,
+        ),
+    ] {
+        instance
+            .begin_controller_request_on_worker(request)
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(2);
+        loop {
+            match instance.poll_parameter_page_on_worker().unwrap() {
+                ParameterPageProgress::Editor(state) => {
+                    assert_eq!(state, expected);
+                    break;
+                }
+                ParameterPageProgress::Pending => {}
+                _ => panic!("expected exact editor state"),
+            }
+            assert!(Instant::now() < until);
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+}
