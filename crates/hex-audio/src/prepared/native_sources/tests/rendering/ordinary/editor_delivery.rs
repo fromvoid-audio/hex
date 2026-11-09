@@ -215,7 +215,14 @@ fn verify_editor_delivery(reading: bool) {
     assert_eq!(actual_perform.first_frame, 16);
     assert_eq!(confirmed.input.restoration, None);
     assert!(!confirmed.input.lost_origin);
-    assert_eq!(sound, [0.5625, -1.125]);
+    // Starting the authored clock at physical frame 11 splits SDK quantum 1.
+    // The fixture's call-dependent gain therefore advances once more in reading mode.
+    let held = if reading {
+        [0.65625, -1.3125]
+    } else {
+        [0.5625, -1.125]
+    };
+    assert_eq!(sound, held);
     assert_ne!(before[2], sound);
     assert_eq!(
         f.control
@@ -227,17 +234,16 @@ fn verify_editor_delivery(reading: bool) {
             .try_native_source_editor_delivery_on_control()
             .is_none()
     );
-    if reading {
-        assert_eq!(physical_block::<7>(&mut f), [[0.5625, -1.125]; 7]);
-        assert!(
-            f.control
-                .try_native_source_editor_delivery_on_control()
-                .is_none()
-        );
-        assert_eq!(physical_block::<1>(&mut f), [[0.21875, -0.4375]; 1]);
-        let Some(Receipt::Confirmed(end)) =
-            f.control.try_native_source_editor_delivery_on_control()
-        else {
+    let mut retired = if reading {
+        let mut retired = f
+            .control
+            .retire_native_source_editor_delivery_on_control()
+            .unwrap();
+        assert_eq!(retired.target(), target);
+        assert_eq!(physical_block::<7>(&mut f), [held; 7]);
+        assert!(retired.try_receipt_on_control().is_none());
+        assert_eq!(physical_block::<1>(&mut f), [[0.25, -0.5]; 1]);
+        let Some(Receipt::Confirmed(end)) = retired.try_receipt_on_control() else {
             panic!("the first restored Main sample must carry its exact terminal");
         };
         assert_eq!(end.target, target);
@@ -264,29 +270,30 @@ fn verify_editor_delivery(reading: bool) {
                 parameter: 7,
             })
         );
-        assert!(
-            f.control
-                .try_native_source_editor_delivery_on_control()
-                .is_none()
-        );
-    }
-    assert!(
-        f.control
-            .cancel_native_source_editor_delivery_on_control(target)
-    );
+        assert!(retired.try_receipt_on_control().is_none());
+        Some(retired)
+    } else {
+        None
+    };
+    assert!(match retired.as_ref() {
+        Some(reader) => reader.cancel_on_control(),
+        None => f
+            .control
+            .cancel_native_source_editor_delivery_on_control(target),
+    });
     physical_block::<4>(&mut f);
+    let mut next = || match retired.as_mut() {
+        Some(reader) => reader.try_receipt_on_control(),
+        None => f.control.try_native_source_editor_delivery_on_control(),
+    };
     assert_eq!(
-        f.control.try_native_source_editor_delivery_on_control(),
+        next(),
         Some(Receipt::Aborted {
             target,
             reason: AbortReason::Cancelled
         })
     );
-    assert!(
-        f.control
-            .try_native_source_editor_delivery_on_control()
-            .is_none()
-    );
+    assert!(next().is_none());
     if reading {
         f.control.status.reserve_native_parameter_input().unwrap();
         f.control.status.native_parameter_input_end();

@@ -81,6 +81,36 @@ pub(crate) struct Control {
     serial: u64,
 }
 
+/// The original editor receipt queue after its publication control relinquishes
+/// the output. It retains signals and the bounded receipt prefix, never a
+/// Root, device, native worker, callback carrier or output lease.
+pub struct Retired {
+    control: Control,
+    target: Target,
+}
+
+impl Retired {
+    pub fn target(&self) -> Target {
+        self.target
+    }
+
+    pub fn cancel_on_control(&self) -> bool {
+        self.control.cancel(self.target)
+    }
+
+    pub fn try_receipt_on_control(&mut self) -> Option<Receipt> {
+        self.control.try_receipt()
+    }
+}
+
+impl Drop for Control {
+    fn drop(&mut self) {
+        if let Some(target) = self.target() {
+            self.cancel(target);
+        }
+    }
+}
+
 pub(crate) struct Callback {
     commands: Consumer<Target>,
     receipts: Producer<Receipt>,
@@ -119,6 +149,18 @@ pub(crate) fn constructor_storage_quote() -> Option<usize> {
 }
 
 impl Control {
+    pub(crate) fn target(&self) -> Option<Target> {
+        self.target.as_ref().map(|armed| armed.target)
+    }
+
+    pub(crate) fn retire(self) -> Option<Retired> {
+        let target = self.target()?;
+        Some(Retired {
+            control: self,
+            target,
+        })
+    }
+
     pub(crate) fn begin(
         &mut self,
         status: &Status,

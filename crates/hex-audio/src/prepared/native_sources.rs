@@ -366,6 +366,8 @@ impl PublicationControl {
     ) -> Result<crate::foreign_parameter_delivery::editor::Target, &'static str> {
         self.require_parameter_delivery_source(source, binding)?;
         self.foreign_editor_delivery
+            .as_mut()
+            .ok_or("vst3 editor delivery reader is retired")?
             .begin(&self.status, source, binding, None, |scope| {
                 self.candidate_root
                     .arm_native_editor_pcm(binding, scope, None)
@@ -382,36 +384,52 @@ impl PublicationControl {
         touch: crate::foreign_parameter_delivery::editor::TouchPlan,
     ) -> Result<crate::foreign_parameter_delivery::editor::Target, &'static str> {
         self.require_parameter_delivery_source(source, binding)?;
-        self.foreign_editor_delivery.begin(
-            &self.status,
-            source,
-            binding,
-            Some(Arc::clone(&self.status)),
-            |scope| {
-                self.candidate_root
-                    .arm_native_editor_pcm(binding, scope, Some(touch))
-            },
-        )
+        self.foreign_editor_delivery
+            .as_mut()
+            .ok_or("vst3 editor delivery reader is retired")?
+            .begin(
+                &self.status,
+                source,
+                binding,
+                Some(Arc::clone(&self.status)),
+                |scope| {
+                    self.candidate_root
+                        .arm_native_editor_pcm(binding, scope, Some(touch))
+                },
+            )
     }
 
     pub fn cancel_native_source_editor_delivery_on_control(
         &mut self,
         target: crate::foreign_parameter_delivery::editor::Target,
     ) -> bool {
-        self.foreign_editor_delivery.cancel(target)
+        self.foreign_editor_delivery
+            .as_ref()
+            .is_some_and(|delivery| delivery.cancel(target))
     }
 
     pub fn try_native_source_editor_delivery_on_control(
         &mut self,
     ) -> Option<crate::foreign_parameter_delivery::editor::Receipt> {
-        self.foreign_editor_delivery.try_receipt()
+        self.foreign_editor_delivery.as_mut()?.try_receipt()
     }
 
     pub fn native_source_editor_confirmed_sequence_on_control(
         &self,
         target: crate::foreign_parameter_delivery::editor::Target,
     ) -> Option<u64> {
-        self.foreign_editor_delivery.confirmed_sequence(target)
+        self.foreign_editor_delivery
+            .as_ref()?
+            .confirmed_sequence(target)
+    }
+
+    /// Detach the exact editor scope's observation before output relinquish.
+    /// This publication cannot admit another editor scope after transfer.
+    pub fn retire_native_source_editor_delivery_on_control(
+        &mut self,
+    ) -> Option<crate::foreign_parameter_delivery::editor::Retired> {
+        self.foreign_editor_delivery.as_ref()?.target()?;
+        self.foreign_editor_delivery.take()?.retire()
     }
 
     pub fn cancel_native_source_parameter_delivery_on_control(

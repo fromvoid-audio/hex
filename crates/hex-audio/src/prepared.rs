@@ -1244,7 +1244,7 @@ pub struct Control {
 pub struct PublicationControl {
     foreign_parameter_delivery: Option<crate::foreign_parameter_delivery::Control>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    foreign_editor_delivery: crate::foreign_parameter_delivery::editor::Control,
+    foreign_editor_delivery: Option<crate::foreign_parameter_delivery::editor::Control>,
     plugin_callback_quantum: Option<u16>,
     output_transport_reaper: Option<crate::plugin_worker::Reaper>,
     publications: Producer<QueuedPublication>,
@@ -1513,7 +1513,7 @@ pub(crate) fn channel_with_interface(
             publication: PublicationControl {
                 foreign_parameter_delivery: Some(foreign_parameter_delivery),
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                foreign_editor_delivery,
+                foreign_editor_delivery: Some(foreign_editor_delivery),
                 plugin_callback_quantum: None,
                 output_transport_reaper: None,
                 candidate_root: candidate_root.clone(),
