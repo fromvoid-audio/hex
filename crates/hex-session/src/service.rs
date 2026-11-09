@@ -3050,6 +3050,15 @@ fn run_worker(
                         failed_plugin_adoption = Some(adoption);
                         Ok(Step::Commit(command, path))
                     })()
+                } else if gesture_active
+                    && matches!(
+                        action,
+                        DeviceAutomationTakeAction::PrepareNativeRecovery
+                            | DeviceAutomationTakeAction::CopyNativeRecovery { .. }
+                            | DeviceAutomationTakeAction::KeepNativeRecoveryCopy { .. }
+                    )
+                {
+                    Err("native recovery requires a quiescent gesture".into())
                 } else if gesture_active && matches!(action, DeviceAutomationTakeAction::Poll) {
                     // A take must never finalize somebody else's active edit.
                     Ok(Step::Progress(DeviceAutomationTakeProgress::Pending))
