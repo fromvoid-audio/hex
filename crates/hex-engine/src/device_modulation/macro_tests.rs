@@ -287,7 +287,7 @@ fn saved_source_routes_deliver_sample_rate_pcm_and_preserve_authored_macro_value
 }
 
 #[test]
-fn saved_free_lfo_rate_route_doubles_the_phase_step_in_both_graphs() {
+fn saved_lfo_rate_route_doubles_the_free_and_synced_phase_steps_in_both_graphs() {
     use hex_devices::modulation::{lfo, macro_value};
     let mut editor = Editor::new(crate::audio_preparation::candidate_test_project(), 4).unwrap();
     let track = editor.project().tracks()[0].id();
@@ -365,35 +365,53 @@ fn saved_free_lfo_rate_route_doubles_the_phase_step_in_both_graphs() {
     let prepare = |project: &hex_project::Project| {
         PreparedRevision::prepare(project, &media, Arc::new(SineTable::new()), None)
     };
-    let untouched = editor.project().clone();
-    assert!(
-        editor
-            .execute_prepared(command(lfo::Rate::BeatsPerCycle(1.0)), prepare)
-            .is_err()
-    );
-    assert_eq!(editor.project(), &untouched);
-
-    let (_, revision) = editor
-        .execute_prepared(command(lfo::Rate::Hertz(6_000.0)), prepare)
+    let beat = hex_project::BeatTime::from_ratio(1, 6_000).unwrap();
+    assert_eq!(editor.project().tempo_map().beat_to_frame(beat).unwrap(), 4);
+    editor
+        .execute(Command::SetTempoPoint {
+            beat,
+            tempo: hex_project::Tempo::new(60_000_000).unwrap(),
+        })
         .unwrap();
-    let mut playback = Playback::try_from_prepared_with_session(Arc::new(revision)).unwrap();
-    playback.apply(PlaybackCommand::Play);
-    let mut pcm = [[0.0; 2]; 8];
-    playback.render(&mut pcm[..3]).unwrap();
-    playback.render(&mut pcm[3..]).unwrap();
-    let compare = |pcm: &[[f32; 2]; 8]| {
-        for (index, frame) in pcm.iter().enumerate() {
-            // A 0.25 macro at full depth adds one octave to 6 kHz.
-            let gain = 0.5 + (index % 4) as f32 * 0.25;
-            assert!((frame[0] - 0.125 * gain).abs() < 1e-6, "{frame:?}");
-            assert!((frame[1] + 0.25 * gain).abs() < 1e-6, "{frame:?}");
-        }
-    };
-    compare(&pcm);
-    if render_sealed(editor.project(), asset, &audio, &mut pcm) {
+
+    // At +1 octave, the free 6 kHz oscillator advances a quarter
+    // cycle per sample. The synced oscillator also advances a quarter
+    // cycle until the tempo halves at frame four, then an eighth.
+    for (rate, gains) in [
+        (
+            lfo::Rate::Hertz(6_000.0),
+            [0.5, 0.75, 1.0, 1.25, 0.5, 0.75, 1.0, 1.25],
+        ),
+        (
+            lfo::Rate::BeatsPerCycle(1.0 / 3000.0),
+            [0.5, 0.75, 1.0, 1.25, 0.5, 0.625, 0.75, 0.875],
+        ),
+    ] {
+        let (_, revision) = editor.execute_prepared(command(rate), prepare).unwrap();
+        let mut playback = Playback::try_from_prepared_with_session(Arc::new(revision)).unwrap();
+        playback.apply(PlaybackCommand::Play);
+        let mut pcm = [[0.0; 2]; 8];
+        playback.render(&mut pcm[..3]).unwrap();
+        playback.render(&mut pcm[3..]).unwrap();
+        let compare = |pcm: &[[f32; 2]; 8]| {
+            for (index, (frame, gain)) in pcm.iter().zip(gains).enumerate() {
+                assert!(
+                    (frame[0] - 0.125 * gain).abs() < 1e-6,
+                    "{rate:?} frame {index}: {frame:?}"
+                );
+                assert!(
+                    (frame[1] + 0.25 * gain).abs() < 1e-6,
+                    "{rate:?} frame {index}: {frame:?}"
+                );
+            }
+        };
         compare(&pcm);
+        if render_sealed(editor.project(), asset, &audio, &mut pcm) {
+            compare(&pcm);
+        }
+        let authored = editor.project().device(device).unwrap();
+        assert_eq!(authored.state(), &state);
+        assert_eq!(authored.modulation().routes(), routes);
+        assert_eq!(authored.modulation().sources()[1], oscillator(rate));
     }
-    let bank = editor.project().device(device).unwrap().modulation();
-    assert_eq!(bank.routes(), routes);
-    assert_eq!(bank.sources()[1], oscillator(lfo::Rate::Hertz(6_000.0)));
 }
