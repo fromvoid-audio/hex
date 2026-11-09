@@ -144,13 +144,11 @@ pub fn native_parameter_automation_supported(
     state: &NativeDeviceState,
     parameter: ParameterId,
 ) -> bool {
-    if class != NativeDeviceClass::Effect {
-        return false;
-    }
-    let Ok(registry) = hex_devices::native_registry() else {
-        return false;
-    };
-    supported(&registry, state, parameter)
+    native_device_automation_target_supported(
+        class,
+        state,
+        DeviceAutomationTarget::Parameter(parameter),
+    )
 }
 /// Provider/class metadata capability, without a project ownership decision.
 /// UI assignment uses project_device_automation_target_supported instead:
@@ -160,6 +158,9 @@ pub fn native_device_automation_target_supported(
     state: &NativeDeviceState,
     target: DeviceAutomationTarget,
 ) -> bool {
+    if class == NativeDeviceClass::Instrument {
+        return instrument_target_supported(state, target);
+    }
     if class != NativeDeviceClass::Effect {
         return false;
     }
@@ -168,14 +169,25 @@ pub fn native_device_automation_target_supported(
     };
     target_supported(&registry, state, target)
 }
-/// Actual-owner control query. Only track/main/return effect boundaries consume
-/// these curves. A retained source (including a linked/shared instrument or an
-/// effect in its chain), missing identity, or foreign provider returns false.
+/// Actual-owner control query for track/main/return effects and the four FM4
+/// carrier streams at a single-device receiving source. Contributors share that
+/// one source program. Unrouted sources, source effects and host trims refuse.
+/// This metadata query grants no runtime/resource custody; preparation validates
+/// the actual factory grants and bounded program storage before publication.
 pub fn project_device_automation_target_supported(
     project: &hex_project::Project,
     device: hex_project::DeviceId,
     target: DeviceAutomationTarget,
 ) -> bool {
+    if let Some(source) = project
+        .native_sources()
+        .iter()
+        .find(|source| source.instrument().id() == device)
+    {
+        return source.receiver().is_some()
+            && source.devices().count() == 1
+            && instrument_target_supported(source.instrument().state(), target);
+    }
     let Some(device) = effect_devices(project).find(|candidate| candidate.id() == device) else {
         return false;
     };
@@ -238,43 +250,28 @@ fn supported(
                 })
             })
 }
-// Narrow fixture seam until production source admission opens. It is consulted
-// only on control during validation, never while rendering prepared programs.
-#[cfg(test)]
-thread_local! {
-    static FM4_SOURCE_CURVES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-#[cfg(test)]
-pub(crate) fn with_fm4_source_curves<R>(run: impl FnOnce() -> R) -> R {
-    struct Restore(bool);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            FM4_SOURCE_CURVES.with(|slot| slot.set(self.0));
-        }
-    }
-    let _restore = Restore(FM4_SOURCE_CURVES.with(|slot| slot.replace(true)));
-    run()
-}
-fn fixture_source_lane(device: &hex_project::Device, target: DeviceAutomationTarget) -> bool {
-    #[cfg(test)]
-    if FM4_SOURCE_CURVES.with(std::cell::Cell::get)
-        && device.state().type_id() == hex_devices::fm4::device::FM4_TYPE_ID
-        && let DeviceAutomationTarget::Parameter(id) = target
-        && (29..=32).any(|value| id == ParameterId::from_static(value))
-        && let Ok(registry) = hex_devices::native_instrument_registry()
-        && let Some(definition) = registry.definition(device.state().type_id())
+fn instrument_target_supported(state: &NativeDeviceState, target: DeviceAutomationTarget) -> bool {
+    let DeviceAutomationTarget::Parameter(id) = target else {
+        return false;
+    };
+    if state.type_id() != hex_devices::fm4::device::FM4_TYPE_ID
+        || !(29..=32).any(|value| id == ParameterId::from_static(value))
     {
-        return hex_lattice_contract::validated_parameter_semantics(definition, device.state(), id)
-            .is_ok_and(|value| {
-                value.is_some_and(|semantics| {
-                    semantics.access == hex_lattice_contract::ParameterAccess::ReadWrite
-                        && semantics.automation
-                            == hex_lattice_contract::ParameterAutomation::DeviceArrangementEnvelope
-                })
-            });
+        return false;
     }
-    let _ = (device, target);
-    false
+    let Ok(registry) = hex_devices::native_instrument_registry() else {
+        return false;
+    };
+    let Some(definition) = registry.definition(state.type_id()) else {
+        return false;
+    };
+    hex_lattice_contract::validated_parameter_semantics(definition, state, id).is_ok_and(|value| {
+        value.is_some_and(|semantics| {
+            semantics.access == hex_lattice_contract::ParameterAccess::ReadWrite
+                && semantics.automation
+                    == hex_lattice_contract::ParameterAutomation::DeviceArrangementEnvelope
+        })
+    })
 }
 pub(crate) fn validate_project(project: &hex_project::Project) -> Result<(), Invalid> {
     let registry =
@@ -291,7 +288,8 @@ pub(crate) fn validate_project_with_registry(
                 device.id() != source.instrument().id()
                     || !(crate::compile::is_vst3_instrument(device)
                         && matches!(lane.target, DeviceAutomationTarget::Vst3 { .. })
-                        || fixture_source_lane(device, lane.target))
+                        || source.devices().count() == 1
+                            && instrument_target_supported(device.state(), lane.target))
             })
         })
     }) {
@@ -743,3 +741,6 @@ mod result_tests;
 #[cfg(test)]
 #[path = "device_parameter_input_tests.rs"]
 mod input_tests;
+
+#[cfg(test)]
+mod fm4_source_tests;
