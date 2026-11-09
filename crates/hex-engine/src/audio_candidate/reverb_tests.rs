@@ -129,7 +129,7 @@ fn reverb_modulation_follows_host_samples_in_the_96_khz_room() {
     use std::collections::BTreeMap;
 
     const RATE: u32 = 96_000;
-    const FRAMES: usize = 617;
+    const FRAMES: usize = 1_409;
     let mut editor = Editor::new(Project::new(RATE).unwrap(), 8).unwrap();
     let Created::Imported { track, asset, .. } = editor
         .execute(Command::ImportAudioTrack {
