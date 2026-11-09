@@ -14,11 +14,10 @@ mod parameter_page;
 pub(crate) use editor_pcm::pcm_packet_extent;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(crate) use editor_pcm::{EDITOR_PCM_BIT, editor_pcm};
-#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
-pub use editor_pcm::{EditorPcm, EditorPerform, EditorPerforms};
 pub use edits::{
-    MAX_PARAMETER_EDITS, ParameterEdit, ParameterEditKind, ParameterEdits, RecoveryEdits,
-    edit_request, idle_editor_edit_request, parameter_edits, recovery_edit_request, recovery_edits,
+    EditorPcm, EditorPerform, EditorPerforms, MAX_PARAMETER_EDITS, ParameterEdit,
+    ParameterEditKind, ParameterEdits, RecoveryEdits, edit_request, idle_editor_edit_request,
+    parameter_edits, recovery_edit_request, recovery_edits,
 };
 pub use parameter_page::{
     ControllerParameter, ControllerRequest, MAX_CONTROLLER_PARAMETERS, PARAMETER_PAGE_SIZE,

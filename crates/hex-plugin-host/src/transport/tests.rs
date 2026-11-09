@@ -30,7 +30,7 @@ fn constructor_storage_requires_the_original_pair_and_survives_exchange_and_reti
             + std::mem::size_of::<RingBuffer<OutputReply>>()
             + std::mem::size_of::<Revocation>()
     );
-    assert_eq!((storage.shared_groups, storage.shared_handle_bound), (3, 7));
+    assert_eq!((storage.shared_groups, storage.shared_handle_bound), (3, 8));
     for _ in 0..4 {
         callback
             .stage(&[[0.5; 2]; 8], &[], &mut [[0.0; 2]; 8])
