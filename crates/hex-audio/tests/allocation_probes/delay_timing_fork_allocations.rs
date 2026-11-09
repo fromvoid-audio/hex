@@ -319,3 +319,78 @@ fn closed_delay_graph_budget_refuses_before_allocating_any_ring() {
     assert!(counts.bytes_total < u64::from(RATE) * 16 * std::mem::size_of::<[f32; 2]>() as u64);
     preparation.cleanup_on_control().unwrap();
 }
+
+#[test]
+fn delay_sample_rate_feedback_and_mix_retry_without_allocating_or_freeing_rings() {
+    use hex_devices::delay::{DEFINITION, DRY_WET, DelayDefinition, FEEDBACK, TYPE_ID};
+    use hex_lattice::{
+        ModulationRoute, ModulationSourceId, ModulationTarget, PreparedModulation,
+        PreparedModulationSource, PreparedModulationState, PreparedOwnedProcessorRuntime,
+        PreparedProcessorFactory,
+    };
+
+    const RATE: u32 = 8_000;
+    let state = DEFINITION.default_state().unwrap();
+    let ids = [FEEDBACK, DRY_WET];
+    let factory = DelayDefinition::prepare_owned(&state, RATE, &ids).unwrap();
+    let targets = ids.map(|id| ModulationTarget {
+        descriptor: factory.parameter_automation_descriptor(id).unwrap(),
+        semantics: factory.parameter_modulation_semantics(id).unwrap(),
+        base: DEFINITION.read_parameter(&state, id).unwrap(),
+    });
+    let routes = ids.map(|target| ModulationRoute {
+        source: 0,
+        target,
+        amount: 0.4,
+        range: [-1.0, 1.0],
+    });
+    let program = PreparedModulation::new(&targets, &routes, 1).unwrap();
+    let source = PreparedModulationSource::free(
+        ModulationSourceId::new(1).unwrap(),
+        f64::from(RATE),
+        500.0,
+        0.0,
+    )
+    .unwrap();
+    let modulation = PreparedModulationState::new(vec![source], program, 23).unwrap();
+    let mut chain = NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+        modulation: Some(modulation),
+        automation: Default::default(),
+        meter: Default::default(),
+        owner: ProcessorChainOwner::Main,
+        device_id: 1,
+        device_type: TYPE_ID,
+        matrix: StereoMatrix::identity(),
+        bypassed: false,
+        sample_rate: RATE,
+        configuration: Some(Arc::new(state)),
+        definition: Some(PreparedProcessorFactory::Owned(Arc::new(factory))),
+    }])
+    .unwrap();
+    let dry = [[0.25, -0.125]; 131];
+    let mut first = dry;
+    let mut retry = dry;
+    let counts = measure(|| {
+        chain.begin_block();
+        chain
+            .process_block(std::hint::black_box(&mut first))
+            .unwrap();
+        chain.rollback_block();
+        chain.begin_block();
+        for block in retry.chunks_mut(19) {
+            chain.process_block(std::hint::black_box(block)).unwrap();
+        }
+        chain.commit_block();
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(first, retry);
+    assert_ne!(first, dry);
+}

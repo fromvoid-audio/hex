@@ -6,7 +6,7 @@
 use super::*;
 use crate::parameter_binding::{Binding, SCALAR_ENVELOPE};
 use hex_lattice_contract::{
-    ParameterDescriptor, ParameterId, ParameterSemantics, ParameterSmoothing,
+    ParameterDescriptor, ParameterId, ParameterModulation, ParameterSemantics, ParameterSmoothing,
 };
 
 pub(super) const COUNT: usize = 27;
@@ -104,7 +104,7 @@ impl LfoControls {
 impl ControlValues {
     // Timing is compared after linkage projection: an inactive raw lane must
     // not restart the shared scalar ramp. Exhaustive fields keep this audited.
-    pub(super) fn other_targets_changed(&self, other: &Self) -> bool {
+    pub(super) fn other_targets_changed(&self, other: &Self, immediate: [bool; 2]) -> bool {
         let Self {
             feedback,
             mix,
@@ -114,8 +114,8 @@ impl ControlValues {
             timing: _,
             flags,
         } = self;
-        *feedback != other.feedback
-            || *mix != other.mix
+        (!immediate[0] && *feedback != other.feedback)
+            || (!immediate[1] && *mix != other.mix)
             || *frequency != other.frequency
             || *width != other.width
             || lfo != &other.lfo
@@ -137,6 +137,11 @@ const SEMANTICS: ParameterSemantics = ParameterSemantics {
     smoothing: ParameterSmoothing::DeviceManaged,
     ..SCALAR_ENVELOPE
 };
+const SAMPLE_RATE: ParameterSemantics = ParameterSemantics {
+    modulation: ParameterModulation::SampleRate,
+    ..SEMANTICS
+};
+
 pub(super) const BINDINGS: [Binding<ControlValues>; COUNT] = [
     Binding::float(
         state::DESCRIPTORS[0],
@@ -149,13 +154,13 @@ pub(super) const BINDINGS: [Binding<ControlValues>; COUNT] = [
     ),
     Binding::float(
         state::DESCRIPTORS[1],
-        SEMANTICS,
+        SAMPLE_RATE,
         |s| s.feedback,
         |s, v| s.feedback = v,
     ),
     Binding::float(
         state::DESCRIPTORS[2],
-        SEMANTICS,
+        SAMPLE_RATE,
         |s| s.mix,
         |s, v| s.mix = v,
     ),
