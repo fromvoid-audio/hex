@@ -2,7 +2,7 @@
 //! Control preparation resolves stable IDs and validates real factory bindings.
 //! Prepared declarations borrow no project data and never enter project history.
 use hex_devices::modulation::{
-    audio_rate, button, buttons, envelope_follower, lfo, macro_four, macro_value, math,
+    audio_rate, button, buttons, envelope_follower, lfo, macro_four, macro_value, math, mix,
     note_pressure, random_hold,
 };
 use hex_lattice::{
@@ -448,6 +448,8 @@ impl EffectModulation {
                     .and_then(|settings| settings.prepare(source.id, sample_rate)),
                 math::TYPE_ID => math::Settings::decode(&source.state)
                     .and_then(|settings| settings.prepare(source.id, sample_rate)),
+                mix::TYPE_ID => mix::Settings::decode(&source.state)
+                    .and_then(|settings| settings.prepare(source.id, sample_rate)),
                 random_hold::TYPE_ID => random_hold::Settings::decode(&source.state)
                     .and_then(|settings| settings.prepare(source.id, sample_rate)),
                 _ => return Err(Invalid("modulator state or rate is unsupported")),
@@ -552,6 +554,9 @@ impl EffectModulation {
                         }
                         (math::TYPE_ID, math::INPUT_A) => SourceModulationParameter::MathA,
                         (math::TYPE_ID, math::INPUT_B) => SourceModulationParameter::MathB,
+                        (mix::TYPE_ID, mix::INPUT_A) => SourceModulationParameter::MixA,
+                        (mix::TYPE_ID, mix::INPUT_B) => SourceModulationParameter::MixB,
+                        (mix::TYPE_ID, mix::BLEND) => SourceModulationParameter::MixBlend,
                         (lfo::TYPE_ID, lfo::RATE_PARAMETER) => {
                             if target_source.is_some_and(|source| {
                                 source.supports_modulation_parameter(
