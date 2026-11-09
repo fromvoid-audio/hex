@@ -2,31 +2,8 @@
 //!
 //! The instrument host owns the bounded, ordered event slice. Counter state
 //! belongs to the bank transaction and never retains the borrowed events.
-use crate::NativeInstrumentEvent;
+use crate::{NativeInstrumentEvent, modulation_note_events::note_on_offsets};
 use hex_lattice_contract::DeviceContractError as Error;
-
-/// The ordinary instrument host can deliver up to 259 events in one chunk.
-/// This ceiling leaves room for other callers while bounding callback scans.
-const MAX_EVENTS: usize = 512;
-
-pub(crate) fn validate_events(
-    events: &[NativeInstrumentEvent],
-    frames: usize,
-) -> Result<(), Error> {
-    if events.len() > MAX_EVENTS {
-        return Err(Error::RuntimeBudgetExceeded);
-    }
-    if events
-        .last()
-        .is_some_and(|event| event.frame_offset() >= frames)
-        || events
-            .windows(2)
-            .any(|pair| pair[0].frame_offset() > pair[1].frame_offset())
-    {
-        return Err(Error::InvalidParameterValue);
-    }
-    Ok(())
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct NoteCounter {
@@ -54,15 +31,9 @@ impl NoteCounter {
     }
 
     pub(crate) fn render(&mut self, events: &[NativeInstrumentEvent], output: &mut [f32]) {
-        let mut onsets = events
-            .iter()
-            .filter(|event| matches!(event, NativeInstrumentEvent::NoteOn { .. }))
-            .peekable();
+        let mut onsets = note_on_offsets(events).peekable();
         for (offset, sample) in output.iter_mut().enumerate() {
-            while onsets
-                .next_if(|event| event.frame_offset() == offset)
-                .is_some()
-            {
+            while onsets.next_if_eq(&offset).is_some() {
                 self.step = (self.step + self.increment) % self.steps;
             }
             let value = f32::from(self.step) / f32::from(self.steps - 1);
