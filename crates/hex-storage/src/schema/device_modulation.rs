@@ -103,6 +103,14 @@ struct Row {
     #[serde(deserialize_with = "routes")]
     routes: Vec<Route>,
 }
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BankDto {
+    #[serde(deserialize_with = "sources")]
+    sources: Vec<Source>,
+    #[serde(deserialize_with = "routes")]
+    routes: Vec<Route>,
+}
 #[derive(Deserialize)]
 struct Rows(#[serde(deserialize_with = "rows")] Vec<Row>);
 fn required_class<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<[u8; 16]>, D::Error> {
@@ -179,6 +187,25 @@ impl Row {
         bank: &DeviceModulation,
         colored: bool,
     ) -> Result<Self, StorageError> {
+        let BankDto { sources, routes } = BankDto::from_model(bank, colored)?;
+        Ok(Self {
+            device,
+            sources,
+            routes,
+        })
+    }
+
+    fn into_model(self, colored: bool) -> Result<DeviceModulation, StorageError> {
+        BankDto {
+            sources: self.sources,
+            routes: self.routes,
+        }
+        .into_model(colored)
+    }
+}
+
+impl BankDto {
+    pub(crate) fn from_model(bank: &DeviceModulation, colored: bool) -> Result<Self, StorageError> {
         let sources = bank
             .sources()
             .iter()
@@ -246,13 +273,10 @@ impl Row {
                 })
             })
             .collect::<Result<_, StorageError>>()?;
-        Ok(Self {
-            device,
-            sources,
-            routes,
-        })
+        Ok(Self { sources, routes })
     }
-    fn into_model(self, colored: bool) -> Result<DeviceModulation, StorageError> {
+
+    pub(crate) fn into_model(self, colored: bool) -> Result<DeviceModulation, StorageError> {
         let sources = self
             .sources
             .into_iter()
