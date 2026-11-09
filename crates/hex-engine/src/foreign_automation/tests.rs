@@ -89,7 +89,6 @@ fn projects_the_ramp_at_each_tempo_boundary_then_chases_after_wrap() {
     let output = render(&program, &origins, &[]);
     let expected = [
         (0, 0.5 - 3.0 * 0.25 / 4000.0),
-        (2, 0.5 - 0.25 / 4000.0),
         (3, 0.5),
         (5, 0.5 + 2.0 * 0.25 / 8000.0),
         (6, 0.25),
@@ -573,5 +572,92 @@ fn constant_instrument_bases_share_one_point_each_across_discontinuities() {
             assert_eq!(point.normalized.to_bits(), capability.normalized_base_bits);
         }
         assert!(render(&program, &[None; 256], &[]).is_empty());
+    }
+}
+
+#[test]
+fn sparse_authored_curves_share_the_instrument_quantum_without_losing_samples() {
+    use AutomationInterpolation::{Linear, Step};
+    let beat = |quarters| BeatTime::from_quarters(quarters).unwrap();
+    let lanes = [
+        lane(
+            94,
+            vec![point(beat(0), 0.25, Linear), point(beat(2), 0.75, Step)],
+        ),
+        lane(
+            148,
+            vec![
+                point(beat(0), 0.75, Linear),
+                point(beat(1), 0.5, Linear),
+                point(beat(3), 0.25, Step),
+            ],
+        ),
+    ];
+    let capabilities = [94, 148, 200].map(|id| ParameterCapability {
+        id,
+        steps: 0,
+        normalized_base_bits: 0.625f64.to_bits(),
+    });
+    let program = Program::prepare(
+        &lanes,
+        CLASS,
+        &capabilities,
+        &tempo(),
+        QuantumProfile::for_arrangement_instrument(256, None),
+    )
+    .unwrap()
+    .unwrap();
+
+    let mut origins = [None; 256];
+    // Visit the same pair of corners in each of nine runs. Include a wrap
+    // within one SDK slice, a silent gap and independent SDK slice starts.
+    let cuts = [32, 62, 92, 122, 152, 182, 212];
+    for (start, width) in [(0, 17), (17, 15)]
+        .into_iter()
+        .chain(cuts.map(|cut| (usize::from(cut), 27)))
+    {
+        for (offset, origin) in origins[start..start + width].iter_mut().enumerate() {
+            *origin = Some(3994 + offset as u64);
+        }
+    }
+    let output = render(&program, &origins, &cuts);
+    assert_eq!(output.iter().filter(|point| point.id == 200).count(), 1);
+    for (offset, origin) in origins.iter().enumerate() {
+        let Some(origin) = origin else { continue };
+        let slice = cuts.partition_point(|&cut| usize::from(cut) <= offset);
+        let start = slice.checked_sub(1).map_or(0, |i| usize::from(cuts[i]));
+        let end = cuts.get(slice).map_or(256, |&cut| usize::from(cut));
+        for (id, expected) in if *origin < 4000 {
+            let distance = (4000 - origin) as f64;
+            [
+                (94, 0.5 - distance * 0.25 / 4000.0),
+                (148, 0.5 + distance * 0.25 / 4000.0),
+            ]
+        } else {
+            let distance = (origin - 4000) as f64;
+            [
+                (94, 0.5 + distance * 0.25 / 8000.0),
+                (148, 0.5 - distance * 0.25 / 16000.0),
+            ]
+        } {
+            let mut points = output
+                .iter()
+                .filter(|point| point.id == id && (start..end).contains(&usize::from(point.frame)));
+            let left = points
+                .clone()
+                .take_while(|point| usize::from(point.frame) <= offset)
+                .last()
+                .unwrap();
+            let right = points.find(|point| usize::from(point.frame) > offset);
+            let actual = right.map_or(left.normalized, |right| {
+                let ratio =
+                    (offset - usize::from(left.frame)) as f64 / f64::from(right.frame - left.frame);
+                left.normalized + ratio * (right.normalized - left.normalized)
+            });
+            assert!(
+                (actual - expected).abs() < 1e-12,
+                "parameter {id} at frame {offset}"
+            );
+        }
     }
 }

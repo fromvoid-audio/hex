@@ -18,6 +18,22 @@ impl ModulationSourceId {
     }
 }
 
+/// A stable, nonzero output identity within its module's declared inventory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ModulationOutputId(u32);
+impl ModulationOutputId {
+    pub const MAIN: Self = Self(1);
+    pub fn new(value: u32) -> Result<Self, DeviceContractError> {
+        if value == 0 {
+            return Err(DeviceContractError::InvalidId);
+        }
+        Ok(Self(value))
+    }
+    pub fn value(self) -> u32 {
+        self.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

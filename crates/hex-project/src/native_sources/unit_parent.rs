@@ -131,6 +131,7 @@ impl Project {
             chain.insert(
                 end,
                 Device {
+                    modulation: Default::default(),
                     id,
                     parent: Some(parent),
                     state,
@@ -143,7 +144,72 @@ impl Project {
         })?;
         Ok(Created::Device(id))
     }
+
+    pub(crate) fn remove_source_device(
+        &mut self,
+        source: SourceId,
+        device: DeviceId,
+    ) -> Result<(), Invalid> {
+        let definition = self
+            .native_source(source)
+            .ok_or(Invalid("native source no longer exists"))?;
+        if definition.instrument().id() == device {
+            return Err(Invalid(
+                "source instrument requires explicit source removal or unlinking",
+            ));
+        }
+        self.edit_source_chain(source, |chain| {
+            let index = chain
+                .iter()
+                .position(|item| item.id() == device)
+                .ok_or(Invalid("source device no longer exists"))?;
+            let span = crate::device_inventory::serial_unit_span(chain, index)?;
+            drop(chain.drain(span));
+            Ok(())
+        })
+    }
+    pub(crate) fn move_source_device(
+        &mut self,
+        source: SourceId,
+        device: DeviceId,
+        before: Option<DeviceId>,
+    ) -> Result<(), Invalid> {
+        let definition = self
+            .native_source(source)
+            .ok_or(Invalid("native source no longer exists"))?;
+        if !definition.devices().any(|item| item.id() == device) {
+            return Err(Invalid("device does not belong to the source"));
+        }
+        // These unchanged placements also remain harmless on a bound singleton.
+        if before == Some(device)
+            || (before.is_none()
+                && definition
+                    .devices()
+                    .last()
+                    .is_some_and(|item| item.id() == device))
+        {
+            return Ok(());
+        }
+        self.edit_source_chain(source, |chain| {
+            let index = chain
+                .iter()
+                .position(|item| item.id() == device)
+                .ok_or(Invalid("source device no longer exists"))?;
+            let destination = match before {
+                Some(anchor) => chain
+                    .iter()
+                    .position(|item| item.id() == anchor)
+                    .ok_or(Invalid("source device anchor no longer exists"))?,
+                None => chain.len(),
+            };
+            crate::device::move_serial_unit(chain, index, destination)
+        })
+    }
 }
 
+#[cfg(test)]
+mod order_tests;
+#[cfg(test)]
+mod removal_tests;
 #[cfg(test)]
 mod tests;

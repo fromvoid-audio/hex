@@ -16,6 +16,7 @@ pub(crate) mod crossfades;
 pub(crate) mod device_assets;
 pub(crate) mod device_automation;
 pub(crate) mod device_automation_touch;
+pub(crate) mod device_modulation;
 pub(crate) mod event_activation;
 pub(crate) mod event_fades;
 pub(crate) mod event_gain;
@@ -1223,6 +1224,7 @@ fn device_dto_into_snapshot(device: DeviceDtoV14) -> Result<DeviceSnapshot, Stor
         .with_output_gain_millidb(device.output_gain_millidb)
         .map_err(|_| StorageError::Invalid("invalid device output gain"))?;
     Ok(DeviceSnapshot {
+        modulation: Default::default(),
         parent: None,
         automation: Vec::new(),
         id: device.id,

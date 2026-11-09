@@ -17,7 +17,7 @@ pub use automation_target::DeviceAutomationTarget;
 mod host_gain;
 mod modulation_source_id;
 pub use host_gain::HostGain;
-pub use modulation_source_id::ModulationSourceId;
+pub use modulation_source_id::{ModulationOutputId, ModulationSourceId};
 mod foreign_binding;
 mod foreign_parameter;
 mod vst3_state_approval;

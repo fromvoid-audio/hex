@@ -770,6 +770,7 @@ mod tests {
         snapshot.tracks[0]
             .devices
             .push(hex_project::DeviceSnapshot {
+                modulation: Default::default(),
                 parent: None,
                 id,
                 bypassed: false,
@@ -843,6 +844,7 @@ mod tests {
         snapshot.tracks[0]
             .devices
             .push(hex_project::DeviceSnapshot {
+                modulation: Default::default(),
                 parent: None,
                 id,
                 bypassed: false,
@@ -946,6 +948,7 @@ mod tests {
                 snapshot.tracks[0]
                     .devices
                     .push(hex_project::DeviceSnapshot {
+                        modulation: Default::default(),
                         parent: None,
                         automation: if automated {
                             vec![hex_project::DeviceAutomation {
