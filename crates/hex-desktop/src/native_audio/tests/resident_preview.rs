@@ -365,6 +365,10 @@ impl WorkerAudioSink for ResidentSink {
         let observation = self.inner.take_plugin_parameter_observation();
         if std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").is_ok_and(|case| {
             case.starts_with("session_record")
+                || matches!(
+                    case.as_str(),
+                    "session_first_lane" | "session_first_lane_with_other"
+                )
                 || case == "session_recover"
                 || case.starts_with("session_writer_")
         }) && let Some(observation) = observation
@@ -820,11 +824,12 @@ impl ResidentHarness {
         host: hex_audio::plugin_effects::Hosting,
         presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
         rate: u32,
+        frame_limit: u64,
         catalog: PathBuf,
         recovery: PathBuf,
     ) -> Self {
         Self::with_plugin_fixture(
-            8192,
+            frame_limit,
             Arc::new(AtomicBool::new(true)),
             4,
             rate,

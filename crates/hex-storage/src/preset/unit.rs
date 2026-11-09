@@ -28,6 +28,16 @@ pub enum PresetContents {
     Unit(PortableDeviceUnit),
 }
 
+impl PresetContents {
+    /// The slot class and root provider, independent of the envelope version.
+    pub fn identity(&self) -> (DeviceClass, DeviceTypeId) {
+        match self {
+            Self::State(preset) => (preset.class, preset.state.type_id()),
+            Self::Unit(unit) => (unit.class().into(), unit.nodes()[0].state.type_id()),
+        }
+    }
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Envelope {
@@ -178,10 +188,7 @@ pub fn encode_unit(unit: &PortableDeviceUnit) -> Result<Vec<u8>, Error> {
     let envelope = Envelope {
         format: PRESET_FORMAT.into(),
         schema: UNIT_PRESET_SCHEMA,
-        class: match unit.class() {
-            DeviceUnitClass::Instrument => DeviceClass::Instrument,
-            DeviceUnitClass::Effect => DeviceClass::Effect,
-        },
+        class: unit.class().into(),
         nodes: unit
             .nodes()
             .iter()
@@ -239,4 +246,4 @@ pub fn save_unit_new(path: &Path, unit: &PortableDeviceUnit) -> Result<(), Error
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

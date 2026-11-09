@@ -886,6 +886,18 @@ int main(int argc,char** argv) {
                             wire::sample(packet.bytes.data()+wire::header_size+n*8,output_left[n]);
                             wire::sample(packet.bytes.data()+wire::header_size+n*8+4,output_right[n]);
                         }
+                        if(packet.observe_editor_pcm) {
+                            // An overwritten offset-zero value never entered
+                            // the SDK, even though its editor callback was consumed.
+                            for(size_t n=0;n<applying_edit_count;++n) {
+                                const auto& edit=applying_edits[n];
+                                if(edit.kind==hex_instance::Perform && last_editor_edit(edit.id)==n &&
+                                    !packet.append_editor_perform(edit)) {
+                                    worker_failure.store(ProtocolFailure);break;
+                                }
+                            }
+                            if(worker_failure.load()) break;
+                        }
                         for(size_t n=0;n<applying_edit_count;++n) complete_edit(applying_edits[n]);
                         instance.publish_parameter_feedback(parameter_feedback);
                         if(!packet.write(channel)) { worker_failure.store(Cancelled);break; }
