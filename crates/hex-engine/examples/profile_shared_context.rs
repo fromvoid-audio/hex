@@ -282,6 +282,7 @@ fn fixture(instrument_type: DeviceTypeId) -> Result<ProfileFixture, Box<dyn Erro
             soloed: false,
             devices: Vec::new(),
             instrument: Some(DeviceSnapshot {
+                modulation: Default::default(),
                 parent: None,
                 automation: Vec::new(),
                 comparison: None,

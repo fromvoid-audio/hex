@@ -5501,6 +5501,7 @@ mod tests {
             arrangement_sections: Vec::new(),
             main_devices: if effect_buses {
                 vec![DeviceSnapshot {
+                    modulation: Default::default(),
                     parent: None,
                     automation: Vec::new(),
                     comparison: None,
@@ -5545,6 +5546,7 @@ mod tests {
                 muted: false,
                 soloed: false,
                 devices: vec![DeviceSnapshot {
+                    modulation: Default::default(),
                     parent: None,
                     automation: Vec::new(),
                     comparison: None,
@@ -5585,6 +5587,7 @@ mod tests {
                 gain: 1.0,
                 muted: false,
                 devices: vec![DeviceSnapshot {
+                    modulation: Default::default(),
                     parent: None,
                     automation: Vec::new(),
                     comparison: None,
@@ -5717,6 +5720,7 @@ mod tests {
                 muted: false,
                 soloed: false,
                 devices: vec![DeviceSnapshot {
+                    modulation: Default::default(),
                     parent: None,
                     automation: Vec::new(),
                     comparison: None,
@@ -5753,6 +5757,7 @@ mod tests {
                 gain: 0.75,
                 muted: false,
                 devices: vec![DeviceSnapshot {
+                    modulation: Default::default(),
                     parent: None,
                     automation: Vec::new(),
                     comparison: None,
@@ -5858,6 +5863,7 @@ mod tests {
                 muted: false,
                 soloed: false,
                 devices: vec![DeviceSnapshot {
+                    modulation: Default::default(),
                     parent: None,
                     automation: Vec::new(),
                     comparison: None,
@@ -5894,6 +5900,7 @@ mod tests {
                 gain: 0.75,
                 muted: false,
                 devices: vec![DeviceSnapshot {
+                    modulation: Default::default(),
                     parent: None,
                     automation: Vec::new(),
                     comparison: None,
@@ -6020,6 +6027,7 @@ mod tests {
                 devices: state
                     .as_ref()
                     .map(|state| DeviceSnapshot {
+                        modulation: Default::default(),
                         parent: None,
                         automation: Vec::new(),
                         comparison: None,
@@ -6060,6 +6068,7 @@ mod tests {
                 devices: state
                     .as_ref()
                     .map(|state| DeviceSnapshot {
+                        modulation: Default::default(),
                         parent: None,
                         automation: Vec::new(),
                         comparison: None,
