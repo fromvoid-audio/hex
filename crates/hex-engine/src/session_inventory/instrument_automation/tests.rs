@@ -235,9 +235,15 @@ fn shared_contributors_compile_only_the_receiver_and_unbound_tracks_compile_noth
     let mut bytes = 0;
     let mut programs = Vec::new();
     for track in editor.project().tracks() {
-        if let Some(program) =
-            prepare_for_receiver(track, Some(factory.as_ref()), &registry, None, &mut bytes)
-                .unwrap()
+        if let Some(program) = prepare_for_receiver(
+            editor.project(),
+            track,
+            Some(factory.as_ref()),
+            &registry,
+            None,
+            &mut bytes,
+        )
+        .unwrap()
         {
             programs.push(program);
         }
@@ -260,9 +266,16 @@ fn shared_contributors_compile_only_the_receiver_and_unbound_tracks_compile_noth
     let mut bytes = 0;
     for track in editor.project().tracks() {
         assert!(
-            prepare_for_receiver(track, Some(factory.as_ref()), &registry, None, &mut bytes)
-                .unwrap()
-                .is_none()
+            prepare_for_receiver(
+                editor.project(),
+                track,
+                Some(factory.as_ref()),
+                &registry,
+                None,
+                &mut bytes
+            )
+            .unwrap()
+            .is_none()
         );
     }
     assert_eq!(bytes, 0);
@@ -380,7 +393,7 @@ fn ordinary_construction_quote_counts_shared_receiving_program_once() {
             assert_eq!(full.checked_sub(without), Some(expected));
             let limits = reservation();
             assert_eq!(limits.root_rows, hex_project::MAX_TRACKS);
-            assert_eq!(limits.data_rows, hex_project::MAX_TRACKS * 4);
+            assert_eq!(limits.data_rows, hex_project::MAX_TRACKS * 5);
             assert_eq!(limits.handle_rows, 0);
             assert!(expected <= limits.max_construction_peak_bytes);
         })
@@ -422,4 +435,262 @@ fn native_quote_does_not_charge_opaque_foreign_source_programs() {
         })
         .unwrap();
     assert_eq!(construction_bytes(editor.project(), None).unwrap(), 0);
+}
+
+#[test]
+fn saved_fm4_routes_compose_with_authored_curves_and_keep_phase_at_live_handoff() {
+    use crate::{LaunchQuantization, PreparedRevision, SessionPlayback, SessionPlaybackCommand};
+    use hex_devices::{
+        fm4::device::{FM4_DEFINITION, FM4_TYPE_ID, parameter},
+        modulation::lfo::{Rate, Settings, Waveform},
+    };
+    use hex_lattice::{
+        DevicePreparationContext, EMPTY_DEVICE_RESOURCES, NativeInstrumentDefinition,
+    };
+    use hex_lattice_contract::ParameterValue;
+    use hex_project::{
+        AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, Command, Created,
+        DeviceModulation, DeviceModulationRoute, ModulationAmount, ModulationDestination,
+        ModulationOutputId, ModulationRange, ModulationRouteId, ModulationSourceId, Modulator,
+    };
+    use std::{collections::BTreeMap, sync::Arc};
+
+    const RATE: u32 = 48_000;
+    const HANDOFF: usize = 11;
+    const FRAMES: usize = 137;
+    let ids = [parameter::carrier(1), parameter::carrier(2)];
+    let with_carriers = |values: [f32; 2]| {
+        let mut state = FM4_DEFINITION.default_state().unwrap();
+        for (id, value) in ids.into_iter().zip(values) {
+            state = FM4_DEFINITION
+                .patch_parameter(&state, id, ParameterValue::Float(value))
+                .unwrap();
+        }
+        state
+    };
+    let original = with_carriers([0.5; 2]);
+    let mut editor =
+        hex_project::Editor::new(hex_project::Project::new(RATE).unwrap(), 16).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "carrier fixture".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: original.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    let device = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let length = BeatTime::from_quarters(1).unwrap();
+    let Created::Clip(arrangement) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length,
+        })
+        .unwrap()
+    else {
+        panic!("arrangement clip");
+    };
+    let Created::Scene(scene) = editor
+        .execute(Command::AddScene { name: "a".into() })
+        .unwrap()
+    else {
+        panic!("scene");
+    };
+    let Created::SessionClip(session) = editor
+        .execute(Command::CreateSessionMidiClip {
+            track,
+            scene,
+            name: "session clip".into(),
+            source_length: length,
+        })
+        .unwrap()
+    else {
+        panic!("session clip");
+    };
+    for clip in [arrangement, session] {
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: length,
+                pitch: 60,
+                channel: 0,
+                velocity: 127,
+            })
+            .unwrap();
+    }
+    // 0.625 normalized equals 0.25 canonical in the carrier's ±1 domain.
+    editor
+        .execute(Command::ReplaceDeviceAutomation {
+            device,
+            parameter: ids[1],
+            points: vec![AutomationPoint {
+                beat: BeatTime::ZERO,
+                value: AutomationValue::new(0.625).unwrap(),
+                outgoing: AutomationInterpolation::Step,
+            }],
+        })
+        .unwrap();
+
+    let next = editor.project().next_identity();
+    let source = ModulationSourceId::new(next).unwrap();
+    let slot = Modulator {
+        id: source,
+        enabled: true,
+        color: Default::default(),
+        state: Settings {
+            rate: Rate::Hertz(12_000.0),
+            phase: 0.0,
+            waveform: Waveform::Square,
+        }
+        .encode()
+        .unwrap(),
+    };
+    let routes = std::array::from_fn::<_, 2, _>(|index| DeviceModulationRoute {
+        id: ModulationRouteId::new(next + index as u64 + 1).unwrap(),
+        source,
+        output: ModulationOutputId::MAIN,
+        destination: ModulationDestination::Device {
+            device_type: FM4_TYPE_ID,
+            target: DeviceAutomationTarget::Parameter(ids[index]),
+            vst3_class: None,
+        },
+        amount: ModulationAmount::new([0.125, -0.125][index]).unwrap(),
+        range: ModulationRange::default(),
+        enabled: true,
+    });
+    let edit = |routes: [DeviceModulationRoute; 2]| Command::ReplaceDeviceModulation {
+        device,
+        modulation: DeviceModulation::new(vec![slot.clone()], routes.to_vec()).unwrap(),
+    };
+    let table = Arc::new(crate::SineTable::new());
+    let prepare = |project: &hex_project::Project| {
+        PreparedRevision::prepare(project, &BTreeMap::new(), Arc::clone(&table), None).map(Arc::new)
+    };
+    editor.execute_prepared(edit(routes), prepare).unwrap();
+    let old = prepare(editor.project()).unwrap();
+    let mut edited = routes;
+    edited[0].amount = ModulationAmount::new(0.25).unwrap();
+    editor.execute_prepared(edit(edited), prepare).unwrap();
+    let new = prepare(editor.project()).unwrap();
+    let prepared = new.session().instrument_modulation(track).unwrap();
+    assert_eq!(prepared.program().parameter_ids(), &ids);
+    assert_eq!(editor.project().device(device).unwrap().state(), &original);
+
+    let mut ungranted = edited;
+    ungranted[0].destination = ModulationDestination::Device {
+        device_type: FM4_TYPE_ID,
+        target: DeviceAutomationTarget::Parameter(parameter::RELEASE),
+        vst3_class: None,
+    };
+    let authored = editor.project().clone();
+    assert!(editor.execute_prepared(edit(ungranted), prepare).is_err());
+    assert_eq!(*editor.project(), authored);
+
+    let source_id = editor.project().track(track).unwrap().source_id().unwrap();
+    editor
+        .execute_prepared(Command::RemoveInstrument { track }, prepare)
+        .unwrap();
+    let detached = editor.project();
+    assert!(detached.track(track).unwrap().instrument().is_none());
+    assert_eq!(
+        detached.device(device).unwrap().modulation(),
+        authored.device(device).unwrap().modulation(),
+    );
+    assert!(
+        prepare(detached)
+            .unwrap()
+            .session()
+            .instrument_modulation(track)
+            .is_none()
+    );
+    editor
+        .execute_prepared(
+            Command::BindTrackSource {
+                track,
+                source: Some(source_id),
+            },
+            prepare,
+        )
+        .unwrap();
+    assert_eq!(*editor.project(), authored);
+
+    let context = DevicePreparationContext {
+        sample_rate: RATE,
+        tuning: &hex_lattice::TuningTable::default(),
+        resources: &EMPTY_DEVICE_RESOURCES,
+    };
+    let note = |values| {
+        FM4_DEFINITION
+            .prepare_instrument(&with_carriers(values), &context)
+            .unwrap()
+            .prepare_note(60, 127)
+            .unwrap()
+    };
+    let before = [note([0.75, 0.0]), note([0.25, 0.5])];
+    let after = [note([1.0, 0.0]), note([0.0, 0.5])];
+    let expected: [[f32; 2]; FRAMES] = std::array::from_fn(|index| {
+        let note = if index < HANDOFF { &before } else { &after };
+        note[usize::from(index % 4 >= 2)].sample(index as u64, u64::MAX, &EMPTY_DEVICE_RESOURCES)
+    });
+    let mut previous = SessionPlayback::new(Arc::clone(&old)).unwrap();
+    let mut current = SessionPlayback::new(new).unwrap();
+    previous.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual = [[0.0; 2]; FRAMES];
+    previous.render(&mut actual[..HANDOFF]).unwrap();
+    current.try_inherit_state_live_from(&mut previous).unwrap();
+    for block in actual[HANDOFF..].chunks_mut(17) {
+        current.render(block).unwrap();
+    }
+    assert_eq!(actual, expected);
+
+    assert_eq!(
+        current.apply(SessionPlaybackCommand::Seek(0)),
+        Err(crate::SessionPlaybackError::MutableInstrumentActive),
+    );
+    let preroll = current
+        .prepare_arrangement_preroll(0, 0, true, &std::sync::atomic::AtomicBool::new(false))
+        .unwrap();
+    let mut seek = crate::playback::Playback::from_arrangement_preroll(preroll).unwrap();
+    let mut restarted = [[0.0; 2]; 31];
+    seek.render(&mut restarted).unwrap();
+    for (index, frame) in restarted.iter().enumerate() {
+        let expected = after[usize::from(index % 4 >= 2)].sample(
+            index as u64,
+            u64::MAX,
+            &EMPTY_DEVICE_RESOURCES,
+        );
+        assert_eq!(*frame, expected, "seek frame {index}");
+    }
+
+    // Session uses the same receiver bank and Arrangement-content controls.
+    let mut console = SessionPlayback::new(old).unwrap();
+    console
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip: session,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    console.apply(SessionPlaybackCommand::Play).unwrap();
+    for block in actual.chunks_mut(29) {
+        console.render(block).unwrap();
+    }
+    for (index, frame) in actual.iter().enumerate() {
+        let expected = before[usize::from(index % 4 >= 2)].sample(
+            index as u64,
+            u64::MAX,
+            &EMPTY_DEVICE_RESOURCES,
+        );
+        assert_eq!(*frame, expected, "session frame {index}");
+    }
 }
