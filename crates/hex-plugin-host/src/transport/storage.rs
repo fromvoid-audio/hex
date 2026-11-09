@@ -41,12 +41,12 @@ pub fn dense_channel_storage_bound() -> Option<ConstructorStorage> {
 }
 
 impl ConstructorStorage {
-    fn with_dense(self, ring: usize) -> Option<Self> {
+    pub(super) fn with_dense(self, ring: usize) -> Option<Self> {
         Some(Self {
             data_bytes: self
                 .data_bytes
                 .checked_add(ring)?
-                .checked_add(std::mem::size_of::<DenseStaging>())?,
+                .checked_add(std::mem::size_of::<super::dense::DenseStaging>())?,
             shared_groups: self.shared_groups.checked_add(1)?,
             shared_handle_bound: self.shared_handle_bound.checked_add(2)?,
         })
@@ -68,17 +68,12 @@ impl Callback {
                 .checked_mul(std::mem::size_of::<T>())?
                 .checked_add(std::mem::size_of_val(ring))
         }
-        let storage = ConstructorStorage {
+        Some(ConstructorStorage {
             data_bytes: ring_bytes(self.requests.buffer())?
                 .checked_add(ring_bytes(self.replies.buffer())?)?
                 .checked_add(std::mem::size_of_val(self.revoked.as_ref()))?,
             shared_groups: 3,
             shared_handle_bound: 8,
-        };
-        if let Some(dense) = &self.dense_staging {
-            storage.with_dense(ring_bytes(dense.sender.buffer())?)
-        } else {
-            Some(storage)
-        }
+        })
     }
 }

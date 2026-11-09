@@ -440,8 +440,7 @@ fn bounded_input_validation_and_queue_independent_stop() {
                         .requests
                         .push(InputRequest {
                             block: Block::empty(BINDING, 8),
-                            parameter_capacity: MAX_PARAMETER_POINTS as u8,
-                            has_dense: false,
+                            parameter_capacity: MAX_PARAMETER_POINTS,
                             authored_program: None,
                             manual_origin: None,
                             editor_scope: None,
@@ -457,8 +456,7 @@ fn bounded_input_validation_and_queue_independent_stop() {
                         .requests
                         .push(InputRequest {
                             block: Block::empty(BINDING, 8),
-                            parameter_capacity: MAX_PARAMETER_POINTS as u8,
-                            has_dense: false,
+                            parameter_capacity: MAX_PARAMETER_POINTS,
                             authored_program: None,
                             manual_origin: None,
                             editor_scope: None,
@@ -1056,7 +1054,6 @@ fn manual_marker_requires_the_aligned_accepted_physical_callback() {
                             EffectSegmentOrigins {
                                 authored: None,
                                 manual: Some(&origin),
-                                dense: None,
                             },
                         )
                         .unwrap();

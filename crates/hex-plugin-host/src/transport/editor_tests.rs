@@ -39,7 +39,6 @@ fn stage(callback: &mut Callback, position: u64, len: usize, accept: bool) {
             EffectSegmentOrigins {
                 authored: None,
                 manual: Some(&origin),
-                dense: None,
             },
         )
         .unwrap();

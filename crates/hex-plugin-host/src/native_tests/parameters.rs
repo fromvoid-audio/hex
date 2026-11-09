@@ -90,10 +90,8 @@ fn exercise_native_dense_request(reserved: bool) {
                     playing: None,
                     at: |_| None,
                 },
-                EffectSegmentOrigins {
-                    dense: Some(lane),
-                    ..Default::default()
-                },
+                EffectSegmentOrigins::default(),
+                Some(lane),
             )
             .unwrap();
         assert!(worker.receive_request().unwrap().is_none());

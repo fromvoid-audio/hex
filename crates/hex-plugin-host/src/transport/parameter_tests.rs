@@ -47,13 +47,11 @@ fn dense_input_retains_each_sample_through_physical_and_timing_cuts() {
                             })
                         },
                     },
-                    EffectSegmentOrigins {
-                        dense: Some(DenseParameterLane {
-                            id: 0,
-                            normalized: &values[start..end],
-                        }),
-                        ..Default::default()
-                    },
+                    EffectSegmentOrigins::default(),
+                    Some(DenseParameterLane {
+                        id: 0,
+                        normalized: &values[start..end],
+                    }),
                 )
                 .unwrap();
             assert!(worker.receive_request().unwrap().is_none());
@@ -101,13 +99,11 @@ fn dense_input_refuses_a_changed_parameter_before_dispatch() {
                 playing: None,
                 at: |_| None,
             },
-            EffectSegmentOrigins {
-                dense: Some(DenseParameterLane {
-                    id,
-                    normalized: &[0.5; 4],
-                }),
-                ..Default::default()
-            },
+            EffectSegmentOrigins::default(),
+            Some(DenseParameterLane {
+                id,
+                normalized: &[0.5; 4],
+            }),
         );
         if id == 7 {
             staged.unwrap();
@@ -123,7 +119,7 @@ fn dense_input_refuses_a_changed_parameter_before_dispatch() {
 #[test]
 fn dense_sidecar_refusal_and_saturation_publish_no_unpaired_request() {
     let reserve = || dense_effect_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
-    let stage = |callback: &mut Callback| {
+    let stage = |callback: &mut DenseEffectCallback| {
         callback.begin_physical_callback(8).unwrap();
         callback.stage_effect_segment(
             0,
@@ -135,13 +131,11 @@ fn dense_sidecar_refusal_and_saturation_publish_no_unpaired_request() {
                 playing: None,
                 at: |_| None,
             },
-            EffectSegmentOrigins {
-                dense: Some(DenseParameterLane {
-                    id: 17,
-                    normalized: &[0.5; 8],
-                }),
-                ..Default::default()
-            },
+            EffectSegmentOrigins::default(),
+            Some(DenseParameterLane {
+                id: 17,
+                normalized: &[0.5; 8],
+            }),
         )
     };
 
@@ -152,9 +146,7 @@ fn dense_sidecar_refusal_and_saturation_publish_no_unpaired_request() {
     assert!(worker.dense_requests.as_ref().unwrap().is_empty());
 
     let (_control, mut callback, mut worker) = reserve();
-    let (sender, receiver) = RingBuffer::new(1);
-    callback.dense_staging.as_mut().unwrap().sender = sender;
-    worker.dense_requests = Some(receiver);
+    callback.replace_dense_ring_for_test(&mut worker, 1);
     stage(&mut callback).unwrap();
     callback.finish(true).unwrap();
     assert_eq!(worker.pending_requests_for_test(), 1);
@@ -162,13 +154,45 @@ fn dense_sidecar_refusal_and_saturation_publish_no_unpaired_request() {
     assert_eq!(callback.finish(true), Err(Fault::Saturated));
     assert_eq!(worker.pending_requests_for_test(), 1);
     assert!(matches!(worker.receive_request(), Err(Fault::Revoked)));
+}
 
-    let (_control, mut callback, worker) = channel(BINDING, 8).unwrap();
-    assert!(matches!(
-        stage(&mut callback),
-        Err(Fault::InvalidParameters)
-    ));
-    assert!(worker.requests.is_empty());
+#[test]
+fn dense_sidecar_is_read_only_by_its_matching_pcm_request() {
+    let (_control, mut callback, mut worker) =
+        dense_effect_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
+    let dense = DenseParameterLane {
+        id: 0,
+        normalized: &[0.5; 8],
+    };
+    for lane in [None, Some(dense)] {
+        callback.begin_physical_callback(8).unwrap();
+        callback
+            .stage_effect_segment(
+                0,
+                &[[0.25; 2]; 8],
+                &[],
+                &[],
+                &mut [[0.0; 2]; 8],
+                SegmentTiming {
+                    playing: None,
+                    at: |_| None,
+                },
+                EffectSegmentOrigins::default(),
+                lane,
+            )
+            .unwrap();
+        callback.finish(true).unwrap();
+    }
+    let ordinary = worker.receive_request().unwrap().unwrap();
+    assert_eq!(ordinary.block.sequence, 0);
+    assert!(ordinary.dense_parameter.is_none());
+    worker.complete(ordinary.block).unwrap();
+    let reserved = worker.receive_request().unwrap().unwrap();
+    assert_eq!(reserved.block.sequence, 1);
+    assert_eq!(
+        reserved.dense_parameter.unwrap().lane().normalized,
+        dense.normalized
+    );
 }
 
 #[test]
