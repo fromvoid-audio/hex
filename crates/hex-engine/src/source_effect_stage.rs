@@ -11,6 +11,14 @@ pub(crate) struct PreparedSourceEffects<'a> {
     pub(crate) instances: &'a [hex_lattice::PreparedRuntimeInstance],
 }
 
+pub(crate) fn native_zero_latency(instance: &hex_lattice::PreparedRuntimeInstance) -> bool {
+    instance.algorithmic_latency_frames() == Some(0)
+        && !matches!(
+            instance.definition.as_ref(),
+            Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
+        )
+}
+
 #[derive(Default)]
 pub(crate) struct SourceEffectStages {
     chains: Vec<Option<NativeRuntimeChain>>,
@@ -64,12 +72,7 @@ impl SourceEffectStages {
                 ));
             }
             if instances.iter().any(|instance| {
-                instance.sample_rate != project.sample_rate()
-                    || instance.algorithmic_latency_frames() != Some(0)
-                    || matches!(
-                        instance.definition.as_ref(),
-                        Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
-                    )
+                instance.sample_rate != project.sample_rate() || !native_zero_latency(instance)
             }) {
                 return Err(Invalid(
                     "source effects require native zero-latency processors at the project rate",
