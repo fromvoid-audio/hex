@@ -13,7 +13,7 @@
 //! the prepared tempo. Rate/mode retargeting follows the same block transaction
 //! as phase, and graph inheritance retains the new graph's prepared timing mode.
 use crate::{NativeInstrumentClock, modulation_source_routes::PreparedSourceRoute};
-use hex_dsp::{EnvelopeFollower, LfoRate, ModulationLfo, RandomHold, StereoFrame};
+use hex_dsp::{EnvelopeFollower, LfoRate, LfoWaveform, ModulationLfo, RandomHold, StereoFrame};
 use hex_lattice_contract::{DeviceContractError as Error, ModulationSourceId};
 
 pub const MAX_MODULATION_SOURCE_SOURCES: usize = 32;
@@ -115,9 +115,21 @@ impl PreparedModulationSource {
         frequency_hz: f64,
         phase: f64,
     ) -> Result<Self, Error> {
+        Self::free_with_waveform(id, sample_rate, frequency_hz, phase, LfoWaveform::Sine)
+    }
+
+    /// Prepare a free-running oscillator with an explicit output shape.
+    pub fn free_with_waveform(
+        id: ModulationSourceId,
+        sample_rate: f64,
+        frequency_hz: f64,
+        phase: f64,
+        waveform: LfoWaveform,
+    ) -> Result<Self, Error> {
         let rate = hex_dsp::LfoRate::free(sample_rate, frequency_hz)
             .map_err(|_| Error::InvalidParameterValue)?;
-        let lfo = ModulationLfo::new(rate, phase).map_err(|_| Error::InvalidParameterValue)?;
+        let lfo = ModulationLfo::new_with_waveform(rate, phase, waveform)
+            .map_err(|_| Error::InvalidParameterValue)?;
         Ok(Self {
             id,
             sample_rate,
@@ -136,9 +148,29 @@ impl PreparedModulationSource {
         beats_per_cycle: f64,
         phase: f64,
     ) -> Result<Self, Error> {
+        Self::tempo_with_waveform(
+            id,
+            sample_rate,
+            beats_per_minute,
+            beats_per_cycle,
+            phase,
+            LfoWaveform::Sine,
+        )
+    }
+
+    /// Prepare a tempo-synced oscillator with an explicit output shape.
+    pub fn tempo_with_waveform(
+        id: ModulationSourceId,
+        sample_rate: f64,
+        beats_per_minute: f64,
+        beats_per_cycle: f64,
+        phase: f64,
+        waveform: LfoWaveform,
+    ) -> Result<Self, Error> {
         let rate = hex_dsp::LfoRate::tempo(sample_rate, beats_per_minute, beats_per_cycle)
             .map_err(|_| Error::InvalidParameterValue)?;
-        let lfo = ModulationLfo::new(rate, phase).map_err(|_| Error::InvalidParameterValue)?;
+        let lfo = ModulationLfo::new_with_waveform(rate, phase, waveform)
+            .map_err(|_| Error::InvalidParameterValue)?;
         Ok(Self {
             id,
             sample_rate,
@@ -728,6 +760,43 @@ mod tests {
         assert!(inserted[0].abs() < 1e-6);
         assert!((inserted[1] - 1.0).abs() < 1e-6);
         assert!(next.samples(old_sources[1].id).is_none());
+    }
+
+    #[test]
+    fn waveform_replacement_keeps_phase_through_tempo_and_rollback() {
+        let id = ModulationSourceId::new(1).unwrap();
+        let sine = PreparedModulationSource::free(id, 8.0, 1.0, 0.0).unwrap();
+        let square = PreparedModulationSource::tempo_with_waveform(
+            id,
+            8.0,
+            60.0,
+            1.0,
+            0.0,
+            LfoWaveform::Square,
+        )
+        .unwrap();
+        let mut previous = ModulationSourceBank::new(&[sine], 8).unwrap();
+        previous.begin();
+        previous.render_chunk(3).unwrap();
+        previous.commit().unwrap();
+        let mut candidate = ModulationSourceBank::new(&[square], 8).unwrap();
+        candidate.inherit_committed(&previous).unwrap();
+        candidate.begin();
+        candidate.render_chunk(1).unwrap();
+        assert_eq!(candidate.samples(id).unwrap(), &[1.0]);
+        candidate.render_chunk(5).unwrap();
+        assert_eq!(
+            candidate.samples(id).unwrap(),
+            &[-1.0, -1.0, -1.0, -1.0, 1.0]
+        );
+        candidate.rollback();
+        candidate.begin();
+        candidate.render_chunk(6).unwrap();
+        assert_eq!(
+            candidate.samples(id).unwrap(),
+            &[1.0, -1.0, -1.0, -1.0, -1.0, 1.0]
+        );
+        candidate.commit().unwrap();
     }
 
     #[test]

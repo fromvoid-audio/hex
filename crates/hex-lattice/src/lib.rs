@@ -47,6 +47,7 @@ pub use parameter_automation::{
 pub use tail_split::{TailSplit, TailSplitObserver};
 mod resources;
 mod runtime_ownership;
+pub use hex_dsp::LfoWaveform;
 pub use hex_lattice_contract::ModulationSourceId;
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, MAX_NATIVE_DEVICE_TYPES, NativeDeviceMetadata,
