@@ -21,6 +21,7 @@ mod matrix_ramp;
 mod meter;
 mod modulation;
 mod modulation_adsr;
+mod modulation_ahd_release;
 #[cfg(test)]
 mod modulation_graph_tests;
 mod modulation_note_counter;

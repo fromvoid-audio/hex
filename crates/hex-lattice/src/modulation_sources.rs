@@ -15,6 +15,7 @@
 use crate::{
     NativeInstrumentClock, NativeInstrumentEvent, SourceModulationParameter,
     modulation_adsr::Adsr,
+    modulation_ahd_release::AhdRelease,
     modulation_note_counter::NoteCounter,
     modulation_note_events::validate_events,
     modulation_note_gate::NoteGate,
@@ -140,6 +141,7 @@ enum SourceState {
     NoteCounter(NoteCounter),
     Ramp(Ramp),
     Adsr(Adsr),
+    AhdRelease(AhdRelease),
     Random(RandomHold),
 }
 
@@ -172,6 +174,7 @@ impl SourceState {
             (Self::NoteCounter(counter), Self::NoteCounter(old)) => counter.inherit(old),
             (Self::Ramp(ramp), Self::Ramp(old)) => ramp.inherit(old),
             (Self::Adsr(envelope), Self::Adsr(old)) => envelope.inherit(old),
+            (Self::AhdRelease(envelope), Self::AhdRelease(old)) => envelope.inherit(old),
             (Self::Random(random), Self::Random(old)) => random.inherit_history(&old),
             _ => return false,
         }
@@ -243,7 +246,10 @@ impl PreparedModulationSource {
     pub fn reads_note_events(&self) -> bool {
         matches!(
             self.initial,
-            SourceState::NoteCounter(_) | SourceState::Ramp(_) | SourceState::Adsr(_)
+            SourceState::NoteCounter(_)
+                | SourceState::Ramp(_)
+                | SourceState::AhdRelease(_)
+                | SourceState::Adsr(_)
         )
     }
 
@@ -465,6 +471,30 @@ impl PreparedModulationSource {
             id,
             output: ModulationOutputId::MAIN,
             initial: SourceState::Ramp(Ramp::new(duration, curve, falling, looping)),
+            sample_rate: f64::from(sample_rate),
+        })
+    }
+
+    /// Trigger an attack, hold and decay envelope on note release. A zero
+    /// duration skips that segment. Single-trigger mode ignores releases
+    /// until the active envelope has emitted its last sample.
+    pub fn ahd_on_release(
+        id: ModulationSourceId,
+        sample_rate: u32,
+        durations: [u32; 3],
+        curves: [ModulationRampCurve; 2],
+        single_trigger: bool,
+    ) -> Result<Self, Error> {
+        if !(8_000..=192_000).contains(&sample_rate)
+            || durations == [0; 3]
+            || durations.iter().any(|&frames| frames > 60 * sample_rate)
+        {
+            return Err(Error::InvalidParameterValue);
+        }
+        Ok(Self {
+            id,
+            output: ModulationOutputId::MAIN,
+            initial: SourceState::AhdRelease(AhdRelease::new(durations, curves, single_trigger)),
             sample_rate: f64::from(sample_rate),
         })
     }
@@ -872,6 +902,9 @@ impl ModulationSourceBank {
                 }
                 SourceState::Ramp(ramp) => {
                     ramp.render(note_events.ok_or(Error::InvalidParameterValue)?, output);
+                }
+                SourceState::AhdRelease(envelope) => {
+                    envelope.render(note_events.ok_or(Error::InvalidParameterValue)?, output);
                 }
                 SourceState::Adsr(envelope) => {
                     envelope.render(gate.ok_or(Error::InvalidParameterValue)?, output);
