@@ -260,6 +260,18 @@ fn operator_output_trim_renders_handoffs_and_detaches_without_callback_allocatio
     );
 }
 
+#[test]
+fn fm4_non_unity_trim_composes_once_and_restores_the_authored_level() {
+    probe_saved_instrument_bank(
+        FM4_DEFINITION
+            .default_state()
+            .unwrap()
+            .with_output_gain_millidb(-6_000)
+            .unwrap(),
+        hex_project::DeviceAutomationTarget::HostOutputGain,
+    );
+}
+
 fn probe_saved_instrument_bank(
     state: NativeDeviceState,
     target: hex_project::DeviceAutomationTarget,
@@ -270,6 +282,7 @@ fn probe_saved_instrument_bank(
         PreparedRevision, SineTable,
         playback::{Playback, PlaybackCommand},
     };
+    use hex_lattice_contract::HostGain;
     use hex_project::{
         BeatTime, Command, Created, DeviceModulation, DeviceModulationRoute, Editor,
         ModulationAmount, ModulationDestination, ModulationOutputId, ModulationRange,
@@ -278,6 +291,7 @@ fn probe_saved_instrument_bank(
     use std::{collections::BTreeMap, sync::Arc};
 
     let device_type = state.type_id();
+    let base = HostGain::from_millidb(state.output_gain_millidb()).unwrap();
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     let Created::Track(track) = editor
         .execute(Command::InsertTrackWithDevice {
@@ -366,11 +380,20 @@ fn probe_saved_instrument_bank(
     let initial = update(&mut editor, route);
     route.amount = ModulationAmount::new(-0.4).unwrap();
     let changed = update(&mut editor, route);
+    let disable_reenable = if base != HostGain::ZERO {
+        route.enabled = false;
+        let disabled = update(&mut editor, route);
+        route.enabled = true;
+        Some((disabled, update(&mut editor, route)))
+    } else {
+        None
+    };
     editor.execute(Command::RemoveTrack(track)).unwrap();
     let detached = prepare(editor.project());
     let (mut control, mut callback) = prepared::channel(48_000).unwrap();
     assert!(control.publish(initial).is_ok());
     control.command(PlaybackCommand::Play).unwrap();
+    let status = Arc::clone(&control.status);
     let mut frames = [[0.0; 2]; 131];
     let mut render = |depth: Option<f32>, start| {
         let counts = allocation_counter::measure(|| {
@@ -386,26 +409,38 @@ fn probe_saved_instrument_bank(
             ),
             (0, 0, 0, 0)
         );
+        assert!(
+            status.rejected_revision().is_none(),
+            "{:?}",
+            status.rejected_revision()
+        );
         assert!(frames.iter().flatten().any(|v| v.abs() > 0.0001));
         if let Some(depth) =
             depth.filter(|_| target == hex_project::DeviceAutomationTarget::HostOutputGain)
         {
-            use hex_lattice_contract::HostGain;
             let mut dry = [[0.0; 2]; 131];
             reference.render(&mut dry).unwrap();
+            if depth == 0.0 {
+                assert_eq!(frames, dry);
+                return;
+            }
+            let authored = base.linear();
             for (index, (&actual, &original)) in frames.iter().zip(&dry).enumerate() {
                 let signed = if (start + index) % 4 < 2 {
                     depth
                 } else {
                     -depth
                 };
-                let gain = HostGain::from_normalized(
-                    (HostGain::ZERO.normalized() + signed).clamp(0.0, 1.0),
-                )
-                .unwrap()
-                .linear();
-                for (&sample, expected) in actual.iter().zip(original.map(|v| v * gain)) {
-                    assert!((sample - expected).abs() < 1e-6, "sample {}", start + index);
+                let gain = HostGain::from_normalized((base.normalized() + signed).clamp(0.0, 1.0))
+                    .unwrap()
+                    .linear();
+                for (&sample, expected) in actual.iter().zip(original.map(|v| v / authored * gain))
+                {
+                    assert!(
+                        (sample - expected).abs() < 1e-6,
+                        "sample {}: {sample} vs {expected}, reference {original:?}",
+                        start + index
+                    );
                 }
             }
         }
@@ -413,8 +448,15 @@ fn probe_saved_instrument_bank(
     render(Some(0.25), 0);
     assert!(control.publish(changed).is_ok());
     render(Some(-0.4), 131);
+    if let Some((disabled, reenabled)) = disable_reenable {
+        assert!(control.publish(disabled).is_ok());
+        render(Some(0.0), 262);
+        assert!(control.reclaim() > 0);
+        assert!(control.publish(reenabled).is_ok());
+        render(Some(-0.4), 393);
+    }
     assert!(control.publish(detached).is_ok());
-    render(None, 262);
+    render(None, 0);
     assert!(control.status.rejected_revision().is_none());
     assert!(control.reclaim() > 0);
 }
