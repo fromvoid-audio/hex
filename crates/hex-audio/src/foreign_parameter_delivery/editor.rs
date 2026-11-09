@@ -19,7 +19,8 @@ use std::{
 };
 mod frontier;
 use frontier::Frontier;
-pub use frontier::{ConfirmedQuantum, Target};
+pub use frontier::{ConfirmedQuantum, MAX_EDITOR_COMPENSATED_INPUT_QUANTA, Target};
+pub use hex_plugin_host::protocol::EditorTouchTarget as GroupTouchTarget;
 
 /// Confirmed Main values and the one independently reserved terminal.
 pub const MAX_EDITOR_MAIN_RECEIPTS: usize = 65;

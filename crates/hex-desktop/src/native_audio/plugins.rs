@@ -206,7 +206,7 @@ impl Plugins {
             })
             .filter(|path| path.is_absolute() && path.as_os_str().len() <= 4096);
         match Hosting::current_on_control() {
-            Ok(host) => self.host = Some(host),
+            Ok(host) => self.host = Some(host.with_grouped_editor_callbacks()),
             Err(error) => self.unavailable = Some(error),
         }
     }
@@ -393,6 +393,15 @@ impl Plugins {
         context: AudioSourceContext,
         target: hex_session::service::automation_draft::Vst3CaptureTarget,
     ) -> bool {
+        self.matches_capture_binding(context, target.device.value(), target.binding)
+    }
+
+    pub(super) fn matches_capture_binding(
+        &self,
+        context: AudioSourceContext,
+        device: u64,
+        binding: Binding,
+    ) -> bool {
         self.sources
             .iter()
             .rev()
@@ -400,9 +409,9 @@ impl Plugins {
                 source.accepted
                     && !source.retiring
                     && source.project_generation == context.project_generation
-                    && source.device == target.device.value()
+                    && source.device == device
             })
-            .is_some_and(|source| source.binding == target.binding)
+            .is_some_and(|source| source.binding == binding)
     }
 
     pub(super) fn retire_document_sources(&mut self, generation: u64) {
