@@ -6,12 +6,14 @@
 //! rendering borrows all storage and never changes authored values. Upstream
 //! manual/automation selection wins over base; bipolar sources are summed in
 //! normalized units, then clamped and converted to canonical units once.
+//! An already admitted structural automation lane retains its exact typed value
+//! and can coexist with routes to other parameters.
 use crate::parameter_automation::Mapping;
 use crate::{NativeParameterAutomation, NormalizedAutomationValue};
 use hex_lattice_contract::{
-    DeviceContractError as Error, HostGain, ParameterAccess, ParameterChangeImpact,
-    ParameterDescriptor, ParameterId, ParameterModulation, ParameterSemantics, ParameterStepping,
-    ParameterValue,
+    DeviceContractError as Error, HostGain, ParameterAccess, ParameterAutomation,
+    ParameterChangeImpact, ParameterDescriptor, ParameterId, ParameterModulation,
+    ParameterSemantics, ParameterStepping, ParameterValue,
 };
 
 /// Bounds apply to one device-local prepared program and its borrowed blocks.
@@ -239,8 +241,13 @@ impl PreparedModulation {
         for &target in targets {
             let descriptor = target.descriptor;
             target.semantics.validate(descriptor)?;
+            let structural_automation = target.semantics.change_impact
+                == ParameterChangeImpact::Structural
+                && target.semantics.automation == ParameterAutomation::DeviceArrangementEnvelope
+                && target.semantics.modulation == ParameterModulation::Unsupported;
             if target.semantics.access != ParameterAccess::ReadWrite
-                || target.semantics.change_impact != ParameterChangeImpact::ValueOnly
+                || (target.semantics.change_impact != ParameterChangeImpact::ValueOnly
+                    && !structural_automation)
                 || target.semantics.stepping == ParameterStepping::Unspecified
                 || ids
                     .last()
@@ -273,6 +280,14 @@ impl PreparedModulation {
             let target_index = ids
                 .binary_search(&route.target)
                 .map_err(|_| Error::UnknownParameter)?;
+            if prepared_targets[target_index]
+                .authored
+                .semantics
+                .change_impact
+                != ParameterChangeImpact::ValueOnly
+            {
+                return Err(Error::InvalidDescriptor);
+            }
             let contribution = RangeContribution::prepare(route.amount, route.range)?;
             prepared_routes.push(Route {
                 source: route.source,
@@ -713,6 +728,65 @@ mod tests {
         assert_eq!(targets[0].base, ParameterValue::Float(5.0));
         assert_eq!(block.value_at(targets[0].descriptor.id, 3), None);
     }
+    #[test]
+    fn structural_automation_preserves_its_values_beside_a_mapped_scalar() {
+        struct StructuralLane([ParameterId; 1]);
+        impl NativeParameterAutomation for StructuralLane {
+            fn parameter_ids(&self) -> &[ParameterId] {
+                &self.0
+            }
+
+            fn value_at(&self, id: ParameterId, offset: usize) -> Option<ParameterValue> {
+                (id == self.0[0] && offset == 1).then_some(ParameterValue::Choice(2))
+            }
+        }
+
+        let scalar = target(1, 5.0);
+        let mut layout = target(2, 0.0);
+        layout.descriptor.kind = ParameterKind::Choice {
+            labels: &["short", "medium", "long"],
+        };
+        layout.descriptor.default = ParameterValue::Choice(1);
+        layout.base = layout.descriptor.default;
+        layout.semantics = ParameterSemantics {
+            normalization: ParameterNormalization::Discrete,
+            stepping: ParameterStepping::Choice,
+            automation: ParameterAutomation::DeviceArrangementEnvelope,
+            modulation: ParameterModulation::Unsupported,
+            change_impact: ParameterChangeImpact::Structural,
+            ..layout.semantics
+        };
+        let route = ModulationRoute {
+            source: 0,
+            target: scalar.descriptor.id,
+            amount: 0.25,
+            range: [-1.0, 1.0],
+        };
+        let program = PreparedModulation::new(&[scalar, layout], &[route], 1).unwrap();
+        let upstream = StructuralLane([layout.descriptor.id]);
+        let samples: [&[f32]; 1] = [&[-1.0, 1.0, 0.0]];
+        let block = program.block(Some(&upstream), &samples, 3).unwrap();
+        for (offset, (gain, choice)) in [(2.5, 1), (7.5, 2), (5.0, 1)].into_iter().enumerate() {
+            let mut values = [None; 2];
+            block.values_at(offset, &mut values).unwrap();
+            assert_eq!(
+                values,
+                [
+                    Some(ParameterValue::Float(gain)),
+                    Some(ParameterValue::Choice(choice))
+                ]
+            );
+        }
+        assert!(!block.has_sample_rate_modulation(layout.descriptor.id));
+        let invalid = ModulationRoute {
+            target: layout.descriptor.id,
+            ..route
+        };
+        assert!(PreparedModulation::new(&[scalar, layout], &[invalid], 1).is_err());
+        layout.semantics.modulation = ParameterModulation::SampleRate;
+        assert!(PreparedModulation::new(&[scalar, layout], &[route], 1).is_err());
+    }
+
     #[test]
     fn invalid_program_and_sample_blocks_are_rejected() {
         let t = target(1, 5.0);
