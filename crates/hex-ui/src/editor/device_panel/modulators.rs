@@ -8,7 +8,7 @@ use hex_engine::{
     audio_rate_modulator as audio_rate, button_modulator as manual_button,
     buttons_modulator as buttons, follower_modulator as follower, lfo_modulator as lfo,
     macro_four_modulator as macro_four, macro_modulator as manual, math_modulator as math,
-    note_pressure_modulator as pressure, random_modulator as random,
+    mix_modulator as mix, note_pressure_modulator as pressure, random_modulator as random,
 };
 use hex_lattice_contract::{ParameterId, ParameterModulation};
 use hex_project::{
@@ -29,10 +29,11 @@ enum SourceKind {
     Button,
     Math,
     Buttons,
+    Mix,
 }
 
 impl SourceKind {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 11] = [
         Self::Lfo,
         Self::Follower,
         Self::Macro,
@@ -43,6 +44,7 @@ impl SourceKind {
         Self::Button,
         Self::Math,
         Self::Buttons,
+        Self::Mix,
     ];
 
     fn label(self) -> &'static str {
@@ -57,6 +59,7 @@ impl SourceKind {
             Self::Button => "button",
             Self::Math => "math",
             Self::Buttons => "buttons",
+            Self::Mix => "mix",
         }
     }
 
@@ -81,6 +84,7 @@ impl SourceKind {
             Self::Button => manual_button::encode(false),
             Self::Math => math::Settings::default().encode(),
             Self::Buttons => buttons::Settings::default().encode(),
+            Self::Mix => mix::Settings::default().encode(),
             Self::Macro => manual::Settings::default().encode(),
             Self::MacroFour => macro_four::Settings::default().encode(),
             Self::Random => random::Settings {
@@ -129,7 +133,7 @@ enum MappingTarget {
     Macro(ModulationSourceId),
     MacroFour(ModulationSourceId, ParameterId),
     LfoRate(ModulationSourceId),
-    MathInput(ModulationSourceId, ParameterId),
+    CompositionInput(ModulationSourceId, ParameterId),
 }
 
 #[derive(Clone, Copy)]
@@ -174,11 +178,27 @@ fn macro_four_destination(
     }
 }
 
-fn math_destination(source: ModulationSourceId, parameter: ParameterId) -> ModulationDestination {
+fn composition_destination(
+    source: ModulationSourceId,
+    module_type: hex_lattice_contract::DeviceTypeId,
+    parameter: ParameterId,
+) -> ModulationDestination {
     ModulationDestination::Modulator {
         source,
-        module_type: math::TYPE_ID,
+        module_type,
         parameter,
+    }
+}
+
+fn composition_input_name(
+    module_type: hex_lattice_contract::DeviceTypeId,
+    parameter: ParameterId,
+) -> Option<&'static str> {
+    match (module_type, parameter) {
+        (math::TYPE_ID, math::INPUT_A) | (mix::TYPE_ID, mix::INPUT_A) => Some("a"),
+        (math::TYPE_ID, math::INPUT_B) | (mix::TYPE_ID, mix::INPUT_B) => Some("b"),
+        (mix::TYPE_ID, mix::BLEND) => Some("blend"),
+        _ => None,
     }
 }
 
@@ -203,7 +223,7 @@ enum Edit {
     LfoShape(ModulationSourceId, lfo::Waveform),
     MacroValue(ModulationSourceId, f32),
     MacroFourValue(ModulationSourceId, ParameterId, f32),
-    MathValue(ModulationSourceId, ParameterId, f32),
+    CompositionValue(ModulationSourceId, ParameterId, f32),
     MathOperation(ModulationSourceId, math::Operation),
     FollowerTime {
         source: ModulationSourceId,
@@ -536,6 +556,13 @@ pub(super) fn panel(
         .take(2)
         .count()
         > 1;
+    let multiple_mix = bank
+        .sources()
+        .iter()
+        .filter(|source| source.state.type_id() == mix::TYPE_ID)
+        .take(2)
+        .count()
+        > 1;
     for (slot, source) in bank.sources().iter().enumerate() {
         let source_id = source.id;
         let kind = match source.state.type_id() {
@@ -549,12 +576,14 @@ pub(super) fn panel(
             manual_button::TYPE_ID => SourceKind::Button,
             math::TYPE_ID => SourceKind::Math,
             buttons::TYPE_ID => SourceKind::Buttons,
+            mix::TYPE_ID => SourceKind::Mix,
             _ => continue,
         };
         let label = kind.label();
         let title = if (multiple_macros && matches!(kind, SourceKind::Macro))
             || (multiple_lfos && matches!(kind, SourceKind::Lfo))
             || (multiple_math && matches!(kind, SourceKind::Math))
+            || (multiple_mix && matches!(kind, SourceKind::Mix))
         {
             format!("{label} {}", slot + 1)
         } else {
@@ -844,7 +873,7 @@ pub(super) fn panel(
             }
             row = row.child(controls);
         }
-        if let SourceKind::Math = kind
+        let composition = if let SourceKind::Math = kind
             && let Ok(settings) = math::Settings::decode(&source.state)
         {
             use math::Operation;
@@ -861,45 +890,67 @@ pub(super) fn panel(
                 theme::text(label),
                 Edit::MathOperation(source_id, next),
             ));
-            for ((name, parameter), value) in [("a", math::INPUT_A), ("b", math::INPUT_B)]
-                .into_iter()
-                .zip(settings.inputs)
-            {
-                let value = format!("{name} {:+.0}%", value * 100.0);
-                let destination = math_destination(source_id, parameter);
-                let value_control =
-                    if let Some(mapping) = mapping_source_for(source_id, destination) {
-                        button(
-                            cx,
-                            format!("map-math-{name}-{}-{}", id.value(), source_id.value()),
-                            theme::text(value),
-                            Edit::Map(mapping, MappingTarget::MathInput(source_id, parameter)),
-                        )
-                        .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
-                        .into_any_element()
-                    } else {
-                        theme::text(value).into_any_element()
-                    };
-                row = row.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(2.0))
-                        .children([value_control])
-                        .child(button(
-                            cx,
-                            source_key(&format!("{name}-less")),
-                            theme::text("−"),
-                            Edit::MathValue(source_id, parameter, -0.05),
-                        ))
-                        .child(button(
-                            cx,
-                            source_key(&format!("{name}-more")),
-                            theme::text("+"),
-                            Edit::MathValue(source_id, parameter, 0.05),
-                        )),
-                );
-            }
+            [
+                Some((math::INPUT_A, settings.inputs[0])),
+                Some((math::INPUT_B, settings.inputs[1])),
+                None,
+            ]
+        } else if let SourceKind::Mix = kind
+            && let Ok(settings) = mix::Settings::decode(&source.state)
+        {
+            [
+                Some((mix::INPUT_A, settings.inputs[0])),
+                Some((mix::INPUT_B, settings.inputs[1])),
+                Some((mix::BLEND, settings.blend)),
+            ]
+        } else {
+            [None; 3]
+        };
+        let module_type = source.state.type_id();
+        for (parameter, value) in composition.into_iter().flatten() {
+            let Some(name) = composition_input_name(module_type, parameter) else {
+                continue;
+            };
+            let value = if name == "blend" {
+                format!("{name} {:.0}%", value * 100.0)
+            } else {
+                format!("{name} {:+.0}%", value * 100.0)
+            };
+            let destination = composition_destination(source_id, module_type, parameter);
+            let value_control = if let Some(mapping) = mapping_source_for(source_id, destination) {
+                button(
+                    cx,
+                    format!("map-{label}-{name}-{}-{}", id.value(), source_id.value()),
+                    theme::text(value),
+                    Edit::Map(
+                        mapping,
+                        MappingTarget::CompositionInput(source_id, parameter),
+                    ),
+                )
+                .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                .into_any_element()
+            } else {
+                theme::text(value).into_any_element()
+            };
+            row = row.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(2.0))
+                    .children([value_control])
+                    .child(button(
+                        cx,
+                        source_key(&format!("{name}-less")),
+                        theme::text("−"),
+                        Edit::CompositionValue(source_id, parameter, -0.05),
+                    ))
+                    .child(button(
+                        cx,
+                        source_key(&format!("{name}-more")),
+                        theme::text("+"),
+                        Edit::CompositionValue(source_id, parameter, 0.05),
+                    )),
+            );
         }
         if let SourceKind::Random = kind
             && let Ok(settings) = random::Settings::decode(&source.state)
@@ -998,22 +1049,26 @@ pub(super) fn panel(
                 }
                 ModulationDestination::Modulator {
                     source,
-                    module_type: math::TYPE_ID,
+                    module_type,
                     parameter,
-                } => {
+                } if matches!(module_type, math::TYPE_ID | mix::TYPE_ID) => {
                     let Some(slot) = bank.sources().iter().position(|slot| slot.id == source)
                     else {
                         continue;
                     };
-                    let input = match parameter {
-                        math::INPUT_A => "a",
-                        math::INPUT_B => "b",
-                        _ => continue,
+                    let Some(input) = composition_input_name(module_type, parameter) else {
+                        continue;
                     };
-                    if multiple_math {
-                        format!("math {} input {input}", slot + 1)
+                    if module_type == math::TYPE_ID {
+                        if multiple_math {
+                            format!("math {} input {input}", slot + 1)
+                        } else {
+                            format!("math input {input}")
+                        }
+                    } else if multiple_mix {
+                        format!("mix {} {input}", slot + 1)
                     } else {
-                        format!("math input {input}")
+                        format!("mix {input}")
                     }
                 }
                 _ => continue,
@@ -1320,16 +1375,35 @@ fn apply(
             *value = (*value + change).clamp(0.0, 1.0);
             source.state = settings.encode().map_err(unsupported)?;
         }
-        Edit::MathValue(id, parameter, change) => {
+        Edit::CompositionValue(id, parameter, change) => {
             let source = find_source(&mut sources, id)?;
-            let mut settings = math::Settings::decode(&source.state).map_err(unsupported)?;
-            let value = match parameter {
-                math::INPUT_A => &mut settings.inputs[0],
-                math::INPUT_B => &mut settings.inputs[1],
-                _ => return Err(Invalid("math input is unsupported")),
-            };
-            *value = (*value + change).clamp(-1.0, 1.0);
-            source.state = settings.encode().map_err(unsupported)?;
+            let unsupported_input = Invalid("modulator input is unsupported");
+            source.state = match source.state.type_id() {
+                math::TYPE_ID => {
+                    let mut settings =
+                        math::Settings::decode(&source.state).map_err(unsupported)?;
+                    let value = match parameter {
+                        math::INPUT_A => &mut settings.inputs[0],
+                        math::INPUT_B => &mut settings.inputs[1],
+                        _ => return Err(unsupported_input),
+                    };
+                    *value = (*value + change).clamp(-1.0, 1.0);
+                    settings.encode()
+                }
+                mix::TYPE_ID => {
+                    let mut settings = mix::Settings::decode(&source.state).map_err(unsupported)?;
+                    let (value, minimum) = match parameter {
+                        mix::INPUT_A => (&mut settings.inputs[0], -1.0),
+                        mix::INPUT_B => (&mut settings.inputs[1], -1.0),
+                        mix::BLEND => (&mut settings.blend, 0.0),
+                        _ => return Err(unsupported_input),
+                    };
+                    *value = (*value + change).clamp(minimum, 1.0);
+                    settings.encode()
+                }
+                _ => return Err(unsupported_input),
+            }
+            .map_err(unsupported)?;
         }
         Edit::MathOperation(id, operation) => {
             let source = find_source(&mut sources, id)?;
@@ -1408,13 +1482,21 @@ fn apply(
                         .ok_or(Invalid("macro-4 control is unsupported"))?;
                     macro_four_destination(target.id, parameter)
                 }
-                MappingTarget::MathInput(target, parameter) => {
+                MappingTarget::CompositionInput(target, parameter) => {
                     let target = find_source(&mut sources, target)?;
-                    math::Settings::decode(&target.state).map_err(unsupported)?;
-                    if !matches!(parameter, math::INPUT_A | math::INPUT_B) {
-                        return Err(Invalid("math input is unsupported"));
+                    let module_type = target.state.type_id();
+                    match module_type {
+                        math::TYPE_ID => {
+                            math::Settings::decode(&target.state).map_err(unsupported)?;
+                        }
+                        mix::TYPE_ID => {
+                            mix::Settings::decode(&target.state).map_err(unsupported)?;
+                        }
+                        _ => return Err(Invalid("modulator input is unsupported")),
                     }
-                    math_destination(target.id, parameter)
+                    composition_input_name(module_type, parameter)
+                        .ok_or(Invalid("modulator input is unsupported"))?;
+                    composition_destination(target.id, module_type, parameter)
                 }
                 MappingTarget::LfoRate(target) => {
                     let source = find_source(&mut sources, target)?;
