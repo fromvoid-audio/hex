@@ -17,6 +17,9 @@ pub use touch::{
 
 pub const MAX_DEVICE_AUTOMATION_LANES: usize = 256;
 pub const MAX_DEVICE_AUTOMATION_POINTS_PER_LANE: usize = 1_024;
+/// Recorded touches have an independent lane budget. Authored point limits and
+/// the total project budget still apply; this is not a callback event budget.
+pub const MAX_DEVICE_AUTOMATION_TOUCH_STEPS_PER_LANE: usize = 16_384;
 pub const MAX_DEVICE_AUTOMATION_POINTS: usize = 65_536;
 
 /// A finite normalized parameter value, including a canonical positive zero.
@@ -131,7 +134,7 @@ pub fn validate_device_automation(lanes: &[DeviceAutomation]) -> Result<(), Inva
         if lane.touch.is_empty() || !lane.points.is_empty() {
             validate_points(&lane.points)?;
         }
-        touch::validate(&lane.touch, lane.points.len())?;
+        touch::validate(&lane.touch)?;
     }
     Ok(())
 }
@@ -144,7 +147,7 @@ fn validate_points(points: &[AutomationPoint]) -> Result<(), Invalid> {
     }
     Ok(())
 }
-fn automation_class(
+pub(crate) fn automation_class(
     target: DeviceAutomationTarget,
     state: &hex_lattice_contract::NativeDeviceState,
 ) -> Result<Option<[u8; 16]>, Invalid> {
@@ -221,6 +224,18 @@ impl Device {
             .map(|index| &self.automation[index])
     }
 }
+// Provider grants are checked by Session and the prepared instrument factory.
+fn valid_source_touch(
+    device: &Device,
+    instrument: DeviceId,
+    target: DeviceAutomationTarget,
+) -> bool {
+    matches!(target, DeviceAutomationTarget::Vst3 { .. })
+        || (device.id() == instrument
+            && device.state().type_id() != hex_plugin_state::TYPE_ID
+            && matches!(target, DeviceAutomationTarget::Parameter(_)))
+}
+
 impl Project {
     /// Each canonical device is visited once; immutable track source bindings
     /// are views and do not add duplicate authored envelopes to this inventory.
@@ -236,17 +251,14 @@ impl Project {
             .any(|device| !device.automation.is_empty())
     }
     pub(crate) fn validate_device_automation(&self) -> Result<(), Invalid> {
-        if self
-            .native_sources
-            .iter()
-            .flat_map(|source| source.devices())
-            .any(|device| {
+        if self.native_sources.iter().any(|source| {
+            source.devices().any(|device| {
                 device.automation().iter().any(|lane| {
                     !lane.touch.is_empty()
-                        && !matches!(lane.target, DeviceAutomationTarget::Vst3 { .. })
+                        && !valid_source_touch(device, source.instrument().id(), lane.target)
                 })
             })
-        {
+        }) {
             return Err(Invalid("recorded touch requires a native effect target"));
         }
         let mut total = 0usize;
@@ -358,12 +370,11 @@ impl Project {
         target
             .validate()
             .map_err(|_| Invalid("invalid automation target identity"))?;
-        if !matches!(target, DeviceAutomationTarget::Vst3 { .. })
-            && self
-                .native_sources
-                .iter()
-                .any(|source| source.devices().any(|entry| entry.id() == device))
-        {
+        if self.native_sources.iter().any(|source| {
+            source.devices().any(|entry| {
+                entry.id() == device && !valid_source_touch(entry, source.instrument().id(), target)
+            })
+        }) {
             return Err(Invalid("recorded touch requires a native effect target"));
         }
         self.edit_device(device, |entry| {
@@ -376,7 +387,7 @@ impl Project {
             {
                 Ok(index) => {
                     let lane = &mut entry.automation[index];
-                    lane.touch = touch::splice(&lane.touch, spans, lane.points.len())?;
+                    lane.touch = touch::splice(&lane.touch, spans)?;
                     lane.read_selection = AutomationReadSelection::Authored;
                 }
                 Err(index) => {
@@ -389,7 +400,7 @@ impl Project {
                             target,
                             vst3_class,
                             points: Vec::new(),
-                            touch: touch::splice(&[], spans, 0)?,
+                            touch: touch::splice(&[], spans)?,
                             read_selection: AutomationReadSelection::Authored,
                         },
                     );

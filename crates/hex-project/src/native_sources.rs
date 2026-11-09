@@ -5,8 +5,8 @@
 //! and survive track removal and bounded history expiry. Immutable track binding
 //! handles refer to the same registry definition, not a copy or runtime. Only explicit removal
 //! deletes one (Undo of creation deliberately restores its prior state). Source
-//! mutations replace the registry and binding views together. A singleton source
-//! can contribute to many tracks, while one explicitly selected contributor
+//! mutations replace the registry and binding views together. A source can
+//! contribute to many tracks, while one explicitly selected contributor
 //! receives its audio. Duplicating a track makes an independent source instance.
 use crate::{
     Command, Created, Device, DeviceId, DeviceSnapshot, Invalid, Project, SourceId, TrackId,
@@ -53,6 +53,9 @@ impl SourceBinding {
     pub(crate) fn receiver(&self) -> Option<TrackId> {
         self.0.receiver()
     }
+    pub(crate) fn devices(&self) -> impl Iterator<Item = &Device> {
+        self.0.devices()
+    }
 }
 impl NativeSource {
     pub fn id(&self) -> SourceId {
@@ -70,6 +73,10 @@ impl NativeSource {
     pub fn receiver(&self) -> Option<TrackId> {
         self.definition.receiver
     }
+    /// Effects in authored order after the designated instrument.
+    pub fn post_instrument_effects(&self) -> &[Device] {
+        &self.definition.effects[self.instrument_index()..]
+    }
     pub fn devices(&self) -> impl Iterator<Item = &Device> {
         let index = self.instrument_index();
         self.definition
@@ -77,7 +84,7 @@ impl NativeSource {
             .iter()
             .take(index)
             .chain(std::iter::once(self.instrument()))
-            .chain(self.definition.effects.iter().skip(index))
+            .chain(self.post_instrument_effects())
     }
     pub(crate) fn from_parts(
         id: SourceId,
@@ -104,12 +111,32 @@ impl NativeSource {
             }),
         })
     }
-    pub(crate) fn binding(&self) -> Result<SourceBinding, Invalid> {
-        if !self.is_singleton() {
+    fn validate_binding(&self) -> Result<(), Invalid> {
+        if self.is_singleton() {
+            return Ok(());
+        }
+        if self.instrument_index() != 0 {
             return Err(Invalid(
-                "binding multi-device source chains is not supported yet",
+                "source effects before the instrument are not supported",
             ));
         }
+        let instrument = self.instrument().state();
+        if instrument.type_id() == hex_lattice_contract::VST3_DEVICE_TYPE_ID
+            || instrument.require_asset_free_processing().is_err()
+        {
+            return Err(Invalid(
+                "source effect units require an asset-free native instrument",
+            ));
+        }
+        if instrument.input_gain_millidb() != 0 || instrument.output_gain_millidb() != 0 {
+            return Err(Invalid(
+                "source effect units require neutral instrument trims",
+            ));
+        }
+        Ok(())
+    }
+    pub(crate) fn binding(&self) -> Result<SourceBinding, Invalid> {
+        self.validate_binding()?;
         Ok(SourceBinding(self.clone()))
     }
     pub(crate) fn is_singleton(&self) -> bool {
@@ -190,10 +217,17 @@ impl Project {
         let updated = NativeSource {
             definition: Arc::new(definition),
         };
-        self.native_sources[index] = updated.clone();
-        for track in &mut self.tracks {
-            if track.source_id() == Some(id) {
-                track.instrument = Some(SourceBinding(updated.clone()));
+        let has_bindings = self
+            .tracks
+            .iter()
+            .any(|track| track.source_id() == Some(id));
+        let binding = has_bindings.then(|| updated.binding()).transpose()?;
+        self.native_sources[index] = updated;
+        if let Some(binding) = binding {
+            for track in &mut self.tracks {
+                if track.source_id() == Some(id) {
+                    track.instrument = Some(binding.clone());
+                }
             }
         }
         Ok(())
@@ -303,11 +337,6 @@ impl Project {
             let source_definition = self
                 .native_source(id)
                 .ok_or(Invalid("native source no longer exists"))?;
-            if !source_definition.is_singleton() {
-                return Err(Invalid(
-                    "binding multi-device source chains is not supported yet",
-                ));
-            }
             self.source_contributors(id).next().is_none() && source_definition.receiver().is_none()
         } else {
             false
@@ -349,10 +378,8 @@ impl Project {
                 let source = self
                     .native_source(binding.source_id())
                     .ok_or(Invalid("track source is missing"))?;
-                if track.is_group()
-                    || !source.is_singleton()
-                    || !Arc::ptr_eq(&source.definition, &binding.0.definition)
-                {
+                source.validate_binding()?;
+                if track.is_group() || !Arc::ptr_eq(&source.definition, &binding.0.definition) {
                     return Err(Invalid(
                         "track source binding does not match retained definition",
                     ));
@@ -480,5 +507,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
 
 #[cfg(test)]
 mod binding_tests;
+#[cfg(test)]
+mod clipboard_tests;
 #[cfg(test)]
 mod tests;

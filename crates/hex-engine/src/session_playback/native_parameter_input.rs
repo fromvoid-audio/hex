@@ -47,7 +47,32 @@ impl crate::SessionPlayback {
             identity: target.identity(),
             operation,
         };
+        if matches!(
+            input.identity.owner(),
+            hex_lattice::ProcessorChainOwner::Source(_)
+        ) {
+            let program = self
+                .revision
+                .session()
+                .armed_instrument_automation(target)
+                .ok_or(Invalid("native instrument input is not prepared"))?;
+            if program.input_target() != Some(operation.target())
+                || program
+                    .block_with_input(None, 0, operation.value())
+                    .is_err()
+            {
+                return Err(Invalid("native instrument input is invalid or unsupported"));
+            }
+            let state = self
+                .native_parameter_state
+                .as_deref_mut()
+                .ok_or(Invalid("native parameter input state is not prepared"))?;
+            state.input = Some(input);
+            state.application = None;
+            return Ok(());
+        }
         let chain = match input.identity.owner() {
+            hex_lattice::ProcessorChainOwner::Source(_) => None,
             hex_lattice::ProcessorChainOwner::Main => Some(&self.main_chain),
             hex_lattice::ProcessorChainOwner::Track(id) => self
                 .revision
@@ -94,6 +119,7 @@ impl crate::SessionPlayback {
         {
             let identity = target.identity();
             let chain = match identity.owner() {
+                ProcessorChainOwner::Source(_) => None,
                 ProcessorChainOwner::Main => Some(&mut self.main_chain),
                 ProcessorChainOwner::Track(id) => self
                     .revision

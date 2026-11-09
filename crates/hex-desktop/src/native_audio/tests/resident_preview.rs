@@ -1,6 +1,7 @@
 //! Exercise the production-default consumer, with only native output creation
 //! substituted. Session transactions, prospective admission, publication and callback stay real.
 use super::*;
+mod native_automation;
 use hex_engine::{
     PreparedPlaybackObservation,
     native_device_resources::{DeviceResourceAdmission, PreparedDeviceResources},
@@ -164,10 +165,25 @@ pub(super) static CONFIRMED_TEST_NOOPS: AtomicU64 = AtomicU64::new(0);
 pub(super) static SESSION_RECORDING_OBSERVATIONS: Mutex<
     Vec<hex_session::service::PluginParameterObservation>,
 > = Mutex::new(Vec::new());
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(super) enum EditorRecordingProbe {
+    Prepare(
+        hex_session::service::PluginEditorRecordingInput,
+        SyncSender<Result<hex_session::service::PluginParameterObservation, String>>,
+    ),
+    Start(
+        hex_session::device_gesture::GestureKey,
+        SyncSender<Result<(), String>>,
+    ),
+    Take(SyncSender<Option<hex_session::service::PluginParameterObservation>>),
+}
+
 struct ResidentSink {
     inner: NativeAudioSink,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     control_polls: Arc<AtomicU64>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    editor_recording_probe: Arc<Mutex<Option<EditorRecordingProbe>>>,
     initial_rate: u32,
     refuse: Arc<AtomicBool>,
     budget_refuse: Arc<AtomicBool>,
@@ -359,15 +375,40 @@ impl WorkerAudioSink for ResidentSink {
         }
         result
     }
+    fn prepare_plugin_editor_recording(
+        &mut self,
+        input: hex_session::service::PluginEditorRecordingInput,
+    ) -> Result<hex_session::service::PluginParameterObservation, String> {
+        self.inner.prepare_plugin_editor_recording(input)
+    }
+    fn start_plugin_editor_recording(
+        &mut self,
+        key: hex_session::device_gesture::GestureKey,
+    ) -> Result<(), String> {
+        self.inner.start_plugin_editor_recording(key)
+    }
+    fn cancel_plugin_editor_recording(
+        &mut self,
+        key: hex_session::device_gesture::GestureKey,
+    ) -> bool {
+        self.inner.cancel_plugin_editor_recording(key)
+    }
     fn take_plugin_parameter_observation(
         &mut self,
     ) -> Option<hex_session::service::PluginParameterObservation> {
         let observation = self.inner.take_plugin_parameter_observation();
-        if std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").is_ok_and(|case| {
-            case.starts_with("session_record")
-                || case == "session_recover"
-                || case.starts_with("session_writer_")
-        }) && let Some(observation) = observation
+        if (std::env::var("HEX_DESKTOP_ORIGINAL_EDITOR_RECORDING_CHILD").as_deref()
+            == Ok("session")
+            || std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").is_ok_and(|case| {
+                case.starts_with("session_record")
+                    || matches!(
+                        case.as_str(),
+                        "session_first_lane" | "session_first_lane_with_other"
+                    )
+                    || case == "session_recover"
+                    || case.starts_with("session_writer_")
+            }))
+            && let Some(observation) = observation
         {
             let mut originals = SESSION_RECORDING_OBSERVATIONS.lock().unwrap();
             assert!(originals.len() < 8, "one bounded recording oracle");
@@ -644,6 +685,26 @@ impl WorkerAudioSink for ResidentSink {
     }
     fn poll(&mut self) {
         self.inner.poll();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if let Some(probe) = self.editor_recording_probe.lock().unwrap().take() {
+            match probe {
+                EditorRecordingProbe::Prepare(input, reply) => {
+                    reply
+                        .try_send(self.inner.prepare_plugin_editor_recording(input))
+                        .unwrap();
+                }
+                EditorRecordingProbe::Start(key, reply) => {
+                    reply
+                        .try_send(self.inner.start_plugin_editor_recording(key))
+                        .unwrap();
+                }
+                EditorRecordingProbe::Take(reply) => {
+                    reply
+                        .try_send(self.inner.take_plugin_parameter_observation())
+                        .unwrap();
+                }
+            }
+        }
         self.pending_observation_generation.store(
             match self.inner.pending_observation.as_ref() {
                 Some(EditorAudioEvent::Publication { context, .. }) => {
@@ -670,6 +731,8 @@ pub(super) struct ResidentHarness {
     pub(super) service: Service,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) control_polls: Arc<AtomicU64>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) editor_recording_probe: Arc<Mutex<Option<EditorRecordingProbe>>>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     event_sender: mpsc::SyncSender<EditorAudioEvent>,
     events: mpsc::Receiver<EditorAudioEvent>,
@@ -820,11 +883,12 @@ impl ResidentHarness {
         host: hex_audio::plugin_effects::Hosting,
         presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
         rate: u32,
+        frame_limit: u64,
         catalog: PathBuf,
         recovery: PathBuf,
     ) -> Self {
         Self::with_plugin_fixture(
-            8192,
+            frame_limit,
             Arc::new(AtomicBool::new(true)),
             4,
             rate,
@@ -914,6 +978,8 @@ impl ResidentHarness {
         let publication_probe = Arc::new(Mutex::new(None));
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let control_polls = Arc::new(AtomicU64::new(0));
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let editor_recording_probe = Arc::new(Mutex::new(None));
         let service = Service::with_audio_sink_and_native_reservation(
             16,
             frame_limit,
@@ -922,6 +988,8 @@ impl ResidentHarness {
                 inner,
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                 control_polls: Arc::clone(&control_polls),
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                editor_recording_probe: Arc::clone(&editor_recording_probe),
                 initial_rate: rate,
                 refuse: Arc::clone(&refuse),
                 budget_refuse: Arc::clone(&budget_refuse),
@@ -938,6 +1006,8 @@ impl ResidentHarness {
             service,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             control_polls,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            editor_recording_probe,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             event_sender: sender,
             events,
@@ -2258,7 +2328,8 @@ fn midi_recording_wire_and_physical_input_deliver_then_commit_one_native_history
 #[test]
 fn sealed_native_take_recovery_uses_canonical_publication_and_one_undo() {
     use hex_session::service::{
-        DeviceAutomationTakeProgress, DeviceAutomationTakeScope, DeviceCaptureTarget,
+        AutomationRecoveryFileIdentity, DeviceAutomationTakeProgress, DeviceAutomationTakeScope,
+        DeviceCaptureTarget,
     };
     use hex_storage::automation_draft::{
         AppliedEvent, CaptureClock, DraftClock, DraftProvenance, DraftTarget, DraftTerminal,
@@ -2332,15 +2403,25 @@ fn sealed_native_take_recovery_uses_canonical_publication_and_one_undo() {
         .unwrap();
     drop(writer);
     let bytes = std::fs::read(&path).unwrap();
-    let recovered = h.run(Request::RecoverDeviceAutomationTake {
+    let inspected = h.run(Request::InspectSealedAutomationRecovery {
         request_id: 41,
-        target: DraftTarget::Device {
-            device,
-            target: target.target(),
-        },
-        expected: scope.stamp,
         path: path.clone(),
+    });
+    assert!(inspected.error.is_none(), "{:?}", inspected.error);
+    assert_eq!(inspected.state.project, inserted.state.project);
+    assert_eq!(inspected.state.revision, inserted.state.revision);
+    let DeviceAutomationTakeProgress::SealedFile(selected) =
+        inspected.device_automation_take_complete.unwrap().progress
+    else {
+        panic!("finished recovery file did not produce an exact selection");
+    };
+    let recovered = h.run(Request::RecoverDeviceAutomationTake {
+        request_id: 42,
+        target: selected.target,
+        expected: selected.provenance,
+        path: selected.path,
         context,
+        identity: AutomationRecoveryFileIdentity::Sealed(selected.identity),
     });
     assert_eq!(
         recovered.device_automation_take_complete.unwrap().progress,

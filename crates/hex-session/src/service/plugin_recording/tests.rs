@@ -10,6 +10,8 @@ use std::collections::VecDeque;
 struct Sink {
     observations: VecDeque<PluginParameterObservation>,
     restorations: usize,
+    editor: Option<GestureKey>,
+    editor_cancelled: bool,
 }
 impl WorkerAudioSink for Sink {
     fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
@@ -20,7 +22,12 @@ impl WorkerAudioSink for Sink {
     fn canonical_changed(&mut self, _: Arc<CanonicalAudioSourceSnapshot>) {
         panic!("no publication in writer fixture");
     }
+    fn cancel_plugin_editor_recording(&mut self, key: GestureKey) -> bool {
+        self.editor_cancelled |= self.editor == Some(key);
+        self.editor_cancelled
+    }
     fn take_plugin_parameter_observation(&mut self) -> Option<PluginParameterObservation> {
+        assert!(self.editor.is_none() || self.editor_cancelled);
         self.observations.pop_front()
     }
     fn prepare_plugin_parameter_gesture(
@@ -94,6 +101,9 @@ fn active(scope: DeviceAutomationTakeScope, source: DeviceAutomationSource) -> S
             released: false,
             ended: false,
             failed_observations: [None; 2],
+            failed_editor: None,
+            editor_request: None,
+            editor_start_error: None,
             interrupted: false,
             sealing: false,
             outcome: None,
@@ -489,6 +499,7 @@ fn keeping_verified_copy_resolves_only_exact_custody_and_preserves_each_outcome(
         DraftAbortReason, DraftClock, DraftReadLimits, DraftReader, DraftTerminal,
     };
 
+    let mut previous_receipt = None;
     for terminal in [
         DraftTerminal::Finished(DraftClock {
             performance_frame: 32,
@@ -508,10 +519,10 @@ fn keeping_verified_copy_resolves_only_exact_custody_and_preserves_each_outcome(
         failed.ended = true;
         failed.path = original_path.clone();
         state.failed = Some(failed);
-        assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, false).is_err());
+        assert!(inspect_failed_copy(&state, &lane, scope, false).is_err());
         let output = files.0.join("kept-copy");
         start_failed_copy(&state, &mut lane, scope, &output, 1, false).unwrap();
-        assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, false).is_err());
+        assert!(inspect_failed_copy(&state, &lane, scope, false).is_err());
         let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
         let receipt = loop {
             match lane
@@ -535,29 +546,57 @@ fn keeping_verified_copy_resolves_only_exact_custody_and_preserves_each_outcome(
             }
         };
         assert_eq!(receipt.terminal(), terminal);
+        let keep = |state: &mut State, lane: &mut Lane, scope, max_events, gesture_active| {
+            keep_failed_copy(
+                state,
+                lane,
+                scope,
+                &output,
+                receipt,
+                max_events,
+                gesture_active,
+            )
+        };
+        assert!(
+            keep_failed_copy(
+                &mut state,
+                &mut lane,
+                scope,
+                &files.0.join("another-copy"),
+                receipt,
+                1,
+                false
+            )
+            .is_err()
+        );
+        if let Some(stale) = previous_receipt.replace(receipt) {
+            assert!(
+                keep_failed_copy(&mut state, &mut lane, scope, &output, stale, 1, false).is_err()
+            );
+        }
         let copy = std::fs::read(&output).unwrap();
         let mut wrong = scope;
         wrong.stamp.gesture_serial += 1;
-        assert!(keep_failed_copy(&mut state, &mut lane, wrong, 1, false).is_err());
-        assert!(keep_failed_copy(&mut state, &mut lane, scope, 0, false).is_err());
-        assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, true).is_err());
+        assert!(keep(&mut state, &mut lane, wrong, 1, false).is_err());
+        assert!(keep(&mut state, &mut lane, scope, 0, false).is_err());
+        assert!(keep(&mut state, &mut lane, scope, 1, true).is_err());
         state.failed.as_mut().unwrap().path = files.0.join("another-original");
-        assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, false).is_err());
+        assert!(keep(&mut state, &mut lane, scope, 1, false).is_err());
         state.failed.as_mut().unwrap().path = original_path.clone();
         state.failed.as_mut().unwrap().ended = false;
-        assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, false).is_err());
+        assert!(keep(&mut state, &mut lane, scope, 1, false).is_err());
         state.failed.as_mut().unwrap().ended = true;
         state.failed.as_mut().unwrap().failed_observations[0] =
             Some(PluginParameterObservation::Unchanged {
                 key: gesture(scope).key,
             });
-        assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, false).is_err());
+        assert!(keep(&mut state, &mut lane, scope, 1, false).is_err());
         state.failed.as_mut().unwrap().failed_observations[0] = None;
         std::fs::remove_file(&output).unwrap();
-        assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, false).is_err());
+        assert!(keep(&mut state, &mut lane, scope, 1, false).is_err());
         for changed in [&b"malformed"[..], original.as_slice()] {
             std::fs::write(&output, changed).unwrap();
-            assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, false).is_err());
+            assert!(keep(&mut state, &mut lane, scope, 1, false).is_err());
             assert!(!lane.close_safe());
             assert!(!state.close_safe());
             assert!(lane.begin(&session, None, scope, source, &files.0).is_err());
@@ -566,13 +605,13 @@ fn keeping_verified_copy_resolves_only_exact_custody_and_preserves_each_outcome(
         }
         std::fs::write(&output, &copy).unwrap();
         assert!(matches!(
-            keep_failed_copy(&mut state, &mut lane, scope, 1, false).unwrap(),
+            keep(&mut state, &mut lane, scope, 1, false).unwrap(),
             Step::Progress(DeviceAutomationTakeProgress::CopyKept(path)) if path == output
         ));
         assert!(lane.close_safe());
         assert!(state.close_safe());
         assert!(generic_sealed_recovery_idle(&state, &lane));
-        assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, false).is_err());
+        assert!(keep(&mut state, &mut lane, scope, 1, false).is_err());
         assert_eq!(session.project(), &before);
         assert_eq!(std::fs::read(&original_path).unwrap(), original);
         assert_eq!(std::fs::read(&output).unwrap(), copy);
@@ -762,6 +801,140 @@ fn failed_writer_retains_late_point_and_actual_terminal_without_fabricating_rele
     assert!(sink.observations.is_empty());
     assert_eq!(sink.restorations, 0);
 }
+#[test]
+fn failed_editor_writer_copies_its_whole_confirmed_prefix_before_releasing_custody() {
+    use crate::service::native_automation_recording::tests::failed_lane_for_test;
+    use hex_storage::automation_draft::{
+        DraftOutcome, DraftReadLimits, DraftReader, DraftTerminal,
+    };
+    let (files, session, scope, source) = fixture();
+    let original = files.0.join("original");
+    let mut lane = failed_lane_for_test(
+        &session,
+        scope,
+        source,
+        &original,
+        DraftTerminal::Interrupted,
+    );
+    let original_bytes = std::fs::read(&original).unwrap();
+    let mut state = active(scope, source);
+    let active = state.active.as_mut().unwrap();
+    active.path = original.clone();
+    active.outcome = Some(Err("actual injected writer refusal".into()));
+    let key = active.key;
+    let DeviceCaptureTarget::Vst3(target) = scope.target else {
+        panic!("foreign fixture")
+    };
+    let point = |index: usize| {
+        let frame = (index as u64 + 1) * 8;
+        PluginParameterObservation::Delivered(delivery(
+            scope,
+            source,
+            frame,
+            Vst3ApplicationValue::Value((index % 16) as f64 / 16.0),
+        ))
+    };
+    active.pending = Some(DeviceAutomationTakeAction::PluginObservation(Box::new(
+        point(0),
+    )));
+    let count = MAX_FAILED_PLUGIN_EDITOR_OBSERVATIONS - 1;
+    let mut sink = Sink {
+        editor: Some(key),
+        observations: (1..count)
+            .map(point)
+            .chain([PluginParameterObservation::Interrupted {
+                key,
+                context: scope.context(),
+                target,
+                source,
+                sequence: count as u64 * 8 + 1,
+            }])
+            .collect(),
+        ..Sink::default()
+    };
+    let copy = files.0.join("copied");
+    while state.active.is_some() {
+        let left = sink.observations.len();
+        Preparation {
+            state: &mut state,
+            lane: &mut lane,
+            document_base: None,
+            recovery: None,
+            may_defer: false,
+            deferred: false,
+        }
+        .drive(&session, scope.context(), &mut sink);
+        assert!((1..=4).contains(&(left - sink.observations.len())));
+        if state.active.is_some() {
+            assert!(start_failed_copy(&state, &mut lane, scope, &copy, 100, false).is_err());
+        }
+    }
+    assert!(sink.editor_cancelled);
+    assert!(sink.observations.is_empty());
+    assert_eq!(sink.restorations, 0);
+    assert!(!state.close_safe());
+    assert!(!lane.close_safe());
+    let mut full = state.failed_observations(scope, source).unwrap();
+    assert_eq!(full.len(), count + 1);
+    full.push(point(count));
+    assert_eq!(
+        prepare_failed_plugin_continuation(scope, source, None, &full).err(),
+        Some("failed plugin continuation has invalid scope or capacity"),
+    );
+    assert!(matches!(
+        start_failed_copy(&state, &mut lane, scope, &copy, 100, false).unwrap(),
+        Step::Progress(DeviceAutomationTakeProgress::Pending),
+    ));
+    let until = Instant::now() + Duration::from_secs(1);
+    let receipt = loop {
+        let step = lane
+            .receive(
+                &session,
+                None,
+                scope.context(),
+                scope,
+                &DeviceAutomationTakeAction::PollFailedCopy,
+            )
+            .unwrap();
+        if let Step::Progress(DeviceAutomationTakeProgress::VerifiedCopy { path, receipt }) = step {
+            assert_eq!(path, copy);
+            break receipt;
+        }
+        assert!(Instant::now() < until);
+        std::thread::yield_now();
+    };
+    let mut reader = DraftReader::open(
+        &copy,
+        DraftReadLimits {
+            max_source_bytes: 64 * 1024,
+        },
+    )
+    .unwrap();
+    assert_eq!(reader.outcome(), DraftOutcome::Interrupted);
+    let mut page = [None; 16];
+    let mut rows = Vec::new();
+    loop {
+        let read = reader.read_events(rows.len() as u64, &mut page).unwrap();
+        if read == 0 {
+            break;
+        }
+        rows.extend(page.iter().take(read).flatten().copied());
+    }
+    drop(reader);
+    assert_eq!(rows.len(), count + 1); // Includes the original writer prefix.
+    for (index, row) in rows.iter().skip(1).enumerate() {
+        assert_eq!(row.sequence, (index as u64 + 1) * 8);
+        assert_eq!(row.value.get(), (index % 16) as f32 / 16.0);
+    }
+    assert!(!state.close_safe());
+    assert!(matches!(
+        keep_failed_copy(&mut state, &mut lane, scope, &copy, receipt, 100, false).unwrap(),
+        Step::Progress(DeviceAutomationTakeProgress::CopyKept(_)),
+    ));
+    assert!(state.close_safe() && lane.close_safe());
+    assert_eq!(std::fs::read(original).unwrap(), original_bytes);
+}
+
 #[test]
 fn another_sources_terminal_does_not_prove_this_recording_released() {
     let (_files, session, scope, source) = fixture();

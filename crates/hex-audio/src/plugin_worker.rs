@@ -49,6 +49,8 @@ pub use hex_plugin_host::protocol::StateCaptureRefusal;
 struct Signal {
     blocks: AtomicU64,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    editor_plan: EditorPlanSignal,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     capture: std::sync::Mutex<capture::Slot>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     capture_requested: std::sync::atomic::AtomicBool,
@@ -66,6 +68,8 @@ impl Signal {
         Self {
             blocks: AtomicU64::new(0),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            editor_plan: EditorPlanSignal::default(),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             capture: std::sync::Mutex::new(capture::Slot::default()),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             capture_requested: std::sync::atomic::AtomicBool::new(false),
@@ -82,6 +86,49 @@ impl Signal {
 }
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use storage::{NativeWorkerResourceBound, NativeWorkerStorage};
+
+// Only joining control and the original worker use this snapshot. The
+// callback continues to copy just its original scope serial.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[derive(Default)]
+struct EditorPlanSignal {
+    scope: AtomicU64,
+    target: AtomicU64,
+    base: AtomicU64,
+}
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+impl EditorPlanSignal {
+    fn publish(&self, plan: hex_plugin_host::protocol::EditorTouchPlan) {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.scope.store(0, SeqCst);
+        self.target.store(
+            u64::from(plan.parameter) | (u64::from(plan.reading) << 32),
+            SeqCst,
+        );
+        self.base.store(plan.base.to_bits(), SeqCst);
+        self.scope.store(plan.scope.get(), SeqCst);
+    }
+
+    fn lookup(
+        &self,
+        scope: std::num::NonZeroU64,
+    ) -> Option<hex_plugin_host::protocol::EditorTouchPlan> {
+        use std::sync::atomic::Ordering::SeqCst;
+        if self.scope.load(SeqCst) != scope.get() {
+            return None;
+        }
+        let target = self.target.load(SeqCst);
+        let base = f64::from_bits(self.base.load(SeqCst));
+        (self.scope.load(SeqCst) == scope.get()).then_some(
+            hex_plugin_host::protocol::EditorTouchPlan {
+                scope,
+                parameter: target as u32,
+                reading: target >> 32 != 0,
+                base,
+            },
+        )
+    }
+}
 
 struct Completion {
     fault: Option<Fault>,
@@ -110,6 +157,10 @@ struct State {
     control_turn: u8,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     parameter_change: parameter_change::Work,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    editor_started: Option<std::num::NonZeroU64>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    editor_lost: Option<std::num::NonZeroU64>,
 }
 impl State {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -178,18 +229,46 @@ impl State {
         block: Block,
         authored: bool,
         manual_parameter: Option<ParameterPoint>,
-    ) -> Result<Block, Fault> {
+        observe_editor: bool,
+        editor_touch: Option<hex_plugin_host::protocol::EditorTouchPlan>,
+    ) -> Result<hex_plugin_host::protocol::EditorPcm, Fault> {
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-        let _ = manual_parameter;
+        let _ = (manual_parameter, editor_touch);
         match self.processor.as_mut() {
-            Some(Processor::Function(process)) if !authored => process(block),
+            Some(Processor::Function(process)) if !authored && !observe_editor => process(block)
+                .map(|block| hex_plugin_host::protocol::EditorPcm {
+                    block,
+                    performs: Default::default(),
+                    restoration: None,
+                }),
             Some(Processor::Function(_)) => Err(Fault::InvalidParameters),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             Some(Processor::Native(instance)) => {
-                let result = if authored {
-                    instance.exchange_armed_authored_with_manual_on_worker(block, manual_parameter)
-                } else {
-                    instance.exchange_on_worker(block)
+                let result = match (authored, observe_editor, editor_touch) {
+                    (true, _, Some(plan)) => instance
+                        .exchange_armed_authored_with_editor_touch_on_worker(
+                            block,
+                            plan,
+                            manual_parameter,
+                        ),
+                    (false, _, Some(plan)) => instance.exchange_editor_touch_on_worker(block, plan),
+                    (true, true, None) => instance
+                        .exchange_armed_authored_with_editor_on_worker(block, manual_parameter),
+                    (false, true, None) => instance.exchange_editor_on_worker(block),
+                    (true, false, None) => instance
+                        .exchange_armed_authored_with_manual_on_worker(block, manual_parameter)
+                        .map(|block| hex_plugin_host::protocol::EditorPcm {
+                            block,
+                            performs: Default::default(),
+                            restoration: None,
+                        }),
+                    (false, false, None) => instance.exchange_on_worker(block).map(|block| {
+                        hex_plugin_host::protocol::EditorPcm {
+                            block,
+                            performs: Default::default(),
+                            restoration: None,
+                        }
+                    }),
                 };
                 match result {
                     Ok(reply) => Ok(reply),
@@ -311,6 +390,10 @@ fn spawn_processor_with(
         control_turn: 0,
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         parameter_change: parameter_change::Work::default(),
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        editor_started: None,
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        editor_lost: None,
     });
     let storage = storage::reserved_backing(&guard, &completed);
     let join = spawn(guard, published);
@@ -391,6 +474,7 @@ fn transport_runner_with_setup(
                     parameter_capacity,
                     authored_program,
                     manual_origin_available,
+                    editor_scope,
                 })) => {
                     let authored = authored_program.is_some();
                     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -414,10 +498,43 @@ fn transport_runner_with_setup(
                             break;
                         }
                     };
-                    let result =
-                        state
-                            .process(block, authored, manual_parameter)
-                            .and_then(|reply| {
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    let (editor_touch, lost_origin) = {
+                        let plan =
+                            editor_scope.and_then(|scope| published.editor_plan.lookup(scope));
+                        if let Some(plan) = plan
+                            && !manual_origin_available
+                            && state.editor_started == Some(plan.scope)
+                        {
+                            state.editor_lost = Some(plan.scope);
+                        }
+                        let active = plan.filter(|plan| {
+                            manual_origin_available && state.editor_lost != Some(plan.scope)
+                        });
+                        if let Some(active) = active {
+                            state.editor_started = Some(active.scope);
+                        }
+                        (
+                            active,
+                            plan.is_some_and(|plan| state.editor_lost == Some(plan.scope)),
+                        )
+                    };
+                    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+                    let (editor_touch, lost_origin) = (None, false);
+                    let result = state
+                        .process(
+                            block,
+                            authored,
+                            manual_parameter,
+                            editor_scope.is_some(),
+                            editor_touch,
+                        )
+                        .and_then(
+                            |hex_plugin_host::protocol::EditorPcm {
+                                 block: reply,
+                                 performs,
+                                 restoration,
+                             }| {
                                 // Native exchange already validated the complete SDK
                                 // reply. Retain its private input receipt even if Stop
                                 // revokes the transport before callback publication.
@@ -426,11 +543,22 @@ fn transport_runner_with_setup(
                                 let manual = state.complete_parameter_change(&reply)?;
                                 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
                                 let manual = None;
-                                state.worker.complete_with_manual_parameter(reply, manual)?;
+                                state.worker.complete_with_editor_facts(
+                                    reply,
+                                    manual,
+                                    editor_scope.map(|_| {
+                                        hex_plugin_host::transport::EditorPcmFacts {
+                                            performs,
+                                            restoration,
+                                            lost_origin,
+                                        }
+                                    }),
+                                )?;
                                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                                 state.observe_parameter_reply(&reply)?;
                                 Ok(())
-                            });
+                            },
+                        );
                     if let Err(error) = result {
                         state.worker.revoke();
                         if error != Fault::Revoked {
@@ -518,6 +646,34 @@ impl NativeWorker {
     }
     pub fn binding(&self) -> Binding {
         self.binding
+    }
+
+    /// Enable exact editor observations on this original native worker's next
+    /// physical quantum. The paired endpoint only reports accepted PCM.
+    pub fn arm_editor_pcm_on_control(
+        &mut self,
+        scope: std::num::NonZeroU64,
+    ) -> Result<hex_plugin_host::transport::EditorScope, Fault> {
+        if self.retirement_requested {
+            return Err(Fault::Revoked);
+        }
+        self.reaper.control.arm_editor_pcm(scope)
+    }
+
+    pub fn arm_editor_touch_on_control(
+        &mut self,
+        plan: hex_plugin_host::protocol::EditorTouchPlan,
+    ) -> Result<hex_plugin_host::transport::EditorScope, Fault> {
+        if self.retirement_requested {
+            return Err(Fault::Revoked);
+        }
+        if plan.parameter > i32::MAX as u32 || !(0.0..=1.0).contains(&plan.base) {
+            return Err(Fault::InvalidParameters);
+        }
+        let signal = &self.reaper.completed.editor_plan;
+        self.reaper
+            .control
+            .arm_editor_pcm_after(plan.scope, || signal.publish(plan))
     }
     /// The unique loan control retains this worker while its paired callback
     /// is elsewhere. Source handoff clears the original constructor receipt.

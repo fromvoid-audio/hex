@@ -11,7 +11,7 @@ use hex_lattice::{
 };
 use hex_lattice_contract::{
     DeviceAutomationTarget, NativeDeviceMetadata, ParameterAccess, ParameterAutomation,
-    ParameterDescriptor,
+    ParameterDescriptor, ParameterId,
 };
 
 const MAX_PROGRAM_BYTES: usize = 16 * 1024 * 1024;
@@ -49,7 +49,10 @@ pub(super) fn reservation() -> crate::AudioStorageLedgerReservation {
 }
 /// One receiving program per source. Previous retained programs coexist with
 /// the current program's retained and temporary backing during compilation.
-pub(super) fn construction_bytes(project: &hex_project::Project) -> Result<usize, Invalid> {
+pub(super) fn construction_bytes(
+    project: &hex_project::Project,
+    native_input: Option<crate::NativeParameterInputTarget>,
+) -> Result<usize, Invalid> {
     let mut retained = 0;
     let mut peak = 0;
     for track in project
@@ -58,22 +61,50 @@ pub(super) fn construction_bytes(project: &hex_project::Project) -> Result<usize
         .filter(|track| track.receives_source_audio())
     {
         let Some(device) = track.instrument().filter(|device| {
-            !device.automation().is_empty() && !crate::compile::is_vst3_instrument(device)
+            (!device.automation().is_empty() || armed_parameter(device, native_input).is_some())
+                && !crate::compile::is_vst3_instrument(device)
         }) else {
             continue;
         };
-        let (bytes, temporary) = quote(device)?;
+        let (bytes, temporary) =
+            quote_lanes(device.automation(), armed_parameter(device, native_input))?;
         retained = add_budget(retained, bytes)?;
         peak = peak.max(add_budget(retained, temporary)?);
     }
     Ok(peak)
 }
 
+#[cfg(test)]
+#[cfg(test)]
 pub(super) fn quote(device: &hex_project::Device) -> Result<(usize, usize), Invalid> {
-    quote_lanes(device.automation())
+    quote_lanes(device.automation(), None)
 }
-fn quote_lanes(automation: &[hex_project::DeviceAutomation]) -> Result<(usize, usize), Invalid> {
-    let lanes = automation.len();
+
+fn armed_parameter(
+    device: &hex_project::Device,
+    native_input: Option<crate::NativeParameterInputTarget>,
+) -> Option<ParameterId> {
+    native_input
+        .filter(|input| {
+            input.device() == device.id()
+                && matches!(
+                    input.identity().owner(),
+                    hex_lattice::ProcessorChainOwner::Source(_)
+                )
+        })
+        .and_then(|input| input.target().provider_parameter())
+}
+
+fn quote_lanes(
+    automation: &[hex_project::DeviceAutomation],
+    armed: Option<ParameterId>,
+) -> Result<(usize, usize), Invalid> {
+    let extra = armed.is_some_and(|id| {
+        !automation
+            .iter()
+            .any(|lane| lane.target == DeviceAutomationTarget::Parameter(id))
+    });
+    let lanes = add_budget(automation.len(), usize::from(extra))?;
     let points = automation
         .iter()
         .filter(|lane| lane.is_reading())
@@ -119,6 +150,7 @@ fn quote_lanes(automation: &[hex_project::DeviceAutomation]) -> Result<(usize, u
     Ok((retained, overlap))
 }
 
+#[cfg(test)]
 pub(super) fn prepare(
     device: &hex_project::Device,
     definition: &dyn NativeDeviceMetadata,
@@ -132,6 +164,8 @@ pub(super) fn prepare(
         factory,
     )
 }
+
+#[cfg(test)]
 fn prepare_lanes(
     device: hex_project::DeviceId,
     state: &hex_lattice_contract::NativeDeviceState,
@@ -139,12 +173,23 @@ fn prepare_lanes(
     definition: &dyn NativeDeviceMetadata,
     factory: &dyn PreparedMutableInstrumentRuntime,
 ) -> Result<Option<Program>, Invalid> {
+    prepare_lanes_with_input(device, state, automation, definition, factory, None)
+}
+
+fn prepare_lanes_with_input(
+    device: hex_project::DeviceId,
+    state: &hex_lattice_contract::NativeDeviceState,
+    automation: &[hex_project::DeviceAutomation],
+    definition: &dyn NativeDeviceMetadata,
+    factory: &dyn PreparedMutableInstrumentRuntime,
+    armed: Option<ParameterId>,
+) -> Result<Option<Program>, Invalid> {
     hex_project::validate_device_automation(automation)
         .map_err(|_| Invalid("instrument automation lanes are invalid"))?;
-    if automation.is_empty() {
+    if automation.is_empty() && armed.is_none() {
         return Ok(None);
     }
-    let (retained, _) = quote_lanes(automation)?;
+    let (retained, _) = quote_lanes(automation, armed)?;
     let descriptors = hex_lattice_contract::validated_state_descriptors(definition, state)
         .map_err(|_| Invalid("instrument automation metadata is invalid"))?;
     let grants = factory.parameter_automation_descriptors();
@@ -247,6 +292,24 @@ fn prepare_lanes(
             .prepare_external_provider(descriptor, semantics)
             .map_err(|_| Invalid("retained instrument automation target is invalid"))?;
     }
+    if let Some(id) = armed {
+        let descriptor = *descriptors
+            .iter()
+            .find(|descriptor| descriptor.id == id)
+            .ok_or(Invalid("armed instrument parameter is missing"))?;
+        if !grants.contains(&descriptor) {
+            return Err(Invalid(
+                "instrument runtime does not grant live parameter input",
+            ));
+        }
+        let semantics = definition
+            .parameter_semantics_for_state(state, id)
+            .map_err(|_| Invalid("armed instrument semantics are invalid"))?
+            .ok_or(Invalid("armed instrument semantics are undeclared"))?;
+        values
+            .arm_provider_input(descriptor, semantics)
+            .map_err(|_| Invalid("instrument live parameter input is unsupported"))?;
+    }
     if values.storage_bytes().is_none_or(|n| n > retained) {
         return Err(Invalid(
             "instrument automation actual storage exceeds quote",
@@ -259,20 +322,29 @@ pub(super) fn prepare_for_receiver(
     track: &hex_project::Track,
     factory: Option<&dyn PreparedMutableInstrumentRuntime>,
     registry: &hex_lattice::NativeInstrumentRegistry<'_>,
+    native_input: Option<crate::NativeParameterInputTarget>,
     stored_bytes: &mut usize,
 ) -> Result<Option<Program>, Invalid> {
     let (Some(device), Some(factory)) = (track.instrument(), factory) else {
         return Ok(None);
     };
-    if !track.receives_source_audio() || device.automation().is_empty() {
+    let armed = armed_parameter(device, native_input);
+    if !track.receives_source_audio() || device.automation().is_empty() && armed.is_none() {
         return Ok(None);
     }
-    let (retained, overlap) = quote(device)?;
+    let (retained, overlap) = quote_lanes(device.automation(), armed)?;
     add_budget(add_budget(*stored_bytes, retained)?, overlap)?;
     let definition = registry
         .definition(device.state().type_id())
         .ok_or(Invalid("instrument automation definition is missing"))?;
-    let program = prepare(device, definition, factory)?;
+    let program = prepare_lanes_with_input(
+        device.id(),
+        device.state(),
+        device.automation(),
+        definition,
+        factory,
+        armed,
+    )?;
     let actual = program
         .as_ref()
         .and_then(|p| p.values.storage_bytes())

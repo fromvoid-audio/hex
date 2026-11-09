@@ -79,6 +79,18 @@ impl<'a> PluginParameterGestureInput<'a> {
         self.canonical_state
     }
 }
+/// Canonical target selected for one original editor take. Desktop must bind
+/// these copied facts to the exact playing worker and its frozen base.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PluginEditorRecordingInput {
+    pub key: crate::device_gesture::GestureKey,
+    pub context: hex_engine::AudioSourceContext,
+    pub device: hex_project::DeviceId,
+    pub class: [u8; 16],
+    pub parameter: u32,
+    pub reading: bool,
+}
+
 /// Control-side observation copied only after matching the complete private
 /// final-output receipt. Persist `application.origin`, not the later delivery
 /// processing frame. A caller requesting these records owns their retention.
@@ -473,6 +485,26 @@ pub trait WorkerAudioSink: Send {
     ) -> Result<bool, String> {
         Ok(false)
     }
+    /// Bind a selected target without affecting SDK PCM. The caller opens the
+    /// shared durable draft using Ready before it may start this exact scope.
+    fn prepare_plugin_editor_recording(
+        &mut self,
+        _input: PluginEditorRecordingInput,
+    ) -> Result<PluginParameterObservation, String> {
+        Err("plugin editor recording is unavailable for this output".into())
+    }
+    /// Publish an exact previously prepared editor scope to the original SDK.
+    fn start_plugin_editor_recording(
+        &mut self,
+        _key: crate::device_gesture::GestureKey,
+    ) -> Result<(), String> {
+        Err("plugin editor recording is unavailable for this output".into())
+    }
+    /// Stop admission, retaining the accepted prefix until its terminal.
+    fn cancel_plugin_editor_recording(&mut self, _key: crate::device_gesture::GestureKey) -> bool {
+        false
+    }
+
     /// Drain bounded final-output observations after each confirmed preparation,
     /// including refusal and output loss. The requesting control owner retains
     /// every returned record until durable recording admission; never UI time.
@@ -503,6 +535,21 @@ pub trait WorkerAudioSink: Send {
             "vst3 publication confirmation is unavailable".into(),
         ))
     }
+    /// Wait for the exact audio terminal of an edit that changes a revision
+    /// with active source effects. A submission alone cannot commit history.
+    fn confirm_source_effect_publication(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        acceptance: ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        match acceptance {
+            ResidentPublicationAcceptance::OfflineRetained => Ok(()),
+            ResidentPublicationAcceptance::Submitted { .. } => {
+                Err("source effect publication confirmation is unavailable".into())
+            }
+        }
+    }
+
     /// Called for every Commit attempt, including capture/compilation/publication
     /// refusal. Retire only the exact key/sequence/input context's pending
     /// compiler permission. This is the canonical worker's actual terminal,
@@ -979,6 +1026,7 @@ pub(super) struct WorkerEvents {
 pub(super) struct ControlPoll {
     pub pending: bool,
     pub gesture: Option<GestureRequest>,
+    pub editor_take: Option<u64>,
 }
 
 impl WorkerEvents {
@@ -1474,6 +1522,12 @@ impl WorkerEvents {
                 Ok(request) => return Some(request),
                 Err(mpsc::TryRecvError::Disconnected) => return None,
                 Err(mpsc::TryRecvError::Empty) => {}
+            }
+            if let Some(request_id) = control_pending.editor_take {
+                return Some(QueuedRequest::continuation(
+                    Request::ContinuePluginEditorRecording { request_id },
+                    document_intent,
+                ));
             }
             if let Some(gesture) = control_pending.gesture {
                 return Some(QueuedRequest::continuation(

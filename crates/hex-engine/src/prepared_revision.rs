@@ -165,6 +165,16 @@ impl std::fmt::Debug for PreparedRevision {
 
 impl PreparedRevision {
     #[cfg(test)]
+    pub(crate) fn test_install_source_effect_recipes(
+        &mut self,
+        recipes: Vec<crate::source_effect_stage::PreparedSourceEffects>,
+    ) {
+        let mut arrangement = self.arrangement().as_ref().clone();
+        arrangement.source_effects = recipes;
+        self.arrangement = crate::owned_shared::OwnedShared::new_owned(arrangement);
+    }
+
+    #[cfg(test)]
     pub(crate) fn test_install_retained_receiver(
         &mut self,
         canonical: &Project,
@@ -785,6 +795,7 @@ impl PreparedRevision {
                 instruments,
                 shared_contexts,
                 samplers,
+                native_input,
             )?;
             session.validate_shared_source_capacity(project, &arrangement)?;
             let source_routing = crate::PreparedSourceRouting::prepare_for_playback(
@@ -1513,6 +1524,14 @@ impl PreparedRevision {
     /// construction is separately quoted once, including retained/temporary overlap. Actual Vec
     /// capacities are checked after construction. Legacy closed compilation is unchanged.
     pub fn device_handoff_metadata_construction_bytes(project: &Project) -> Result<usize, Invalid> {
+        Self::device_handoff_metadata_construction_bytes_with_input(project, None)
+    }
+
+    /// Ordinary construction with one optional source-owned automation target.
+    pub fn device_handoff_metadata_construction_bytes_with_input(
+        project: &Project,
+        native_input: Option<crate::NativeParameterInputTarget>,
+    ) -> Result<usize, Invalid> {
         let bytes = (|| {
             let mut bytes = project
                 .tracks()
@@ -1542,7 +1561,10 @@ impl PreparedRevision {
             }
             bytes
                 .checked_add(authored_midi::construction_bytes(project).ok()?)?
-                .checked_add(crate::PreparedSourceRouting::construction_bytes(project))
+                .checked_add(crate::PreparedSourceRouting::construction_bytes(project))?
+                .checked_add(crate::source_effect_stage::metadata::construction_bytes(
+                    project,
+                )?)
         })();
         let programs = crate::foreign_automation::candidate::quote_instruments(project)
             .map_err(|_| Invalid("vst3 instrument automation reservation overflow"))?;
@@ -1553,8 +1575,10 @@ impl PreparedRevision {
         // descriptors. It may coexist with the candidate; reserve that finite worst case even
         // when this generic preparation call does not know whether validation will be requested.
         let predecessor_validation_scratch = candidate;
-        let native_programs =
-            PreparedSessionInventory::instrument_automation_construction_bytes(project)?;
+        let native_programs = PreparedSessionInventory::instrument_automation_construction_bytes(
+            project,
+            native_input,
+        )?;
         candidate
             .checked_add(predecessor_validation_scratch)
             .and_then(|bytes| bytes.checked_add(native_programs))
@@ -1604,7 +1628,10 @@ impl PreparedRevision {
             }
             bytes
                 .checked_add(authored_midi::retained_bytes(&self.authored_midi_sources)?)?
-                .checked_add(self.source_routing.retained_bytes())
+                .checked_add(self.source_routing.retained_bytes())?
+                .checked_add(crate::source_effect_stage::metadata::retained_bytes(
+                    &self.arrangement().source_effects,
+                )?)
         })();
         bytes.ok_or(crate::AudioStorageError::Overflow)
     }

@@ -1304,6 +1304,14 @@ pub(super) fn command(value: &Command) -> Description {
 
 pub(super) fn request(value: &Request) -> Description {
     match value {
+        Request::ReplaceDeviceModulation {
+            project_generation,
+            revision,
+            device,
+            modulation,
+        } => {
+            describe!("replace_device_modulation"; ["project_generation" => project_generation, "revision" => revision, "device" => device.value(), "sources" => modulation.sources().len(), "routes" => modulation.routes().len()]; omitted="modulator payloads")
+        }
         Request::PaintMidiClip(intent) => {
             describe!("paint_midi_clip"; ["project_generation" => intent.project_generation, "revision" => intent.revision, "track" => intent.track.value(), "start" => intent.start.raw(), "length" => intent.length.raw()]; omitted="")
         }
@@ -1434,6 +1442,12 @@ pub(super) fn request(value: &Request) -> Description {
         Request::SaveDeviceDefault { root, .. } => {
             describe!("save_device_default"; ["root_redacted_bytes" => root.as_os_str().len()]; omitted="owner")
         }
+        Request::SaveDeviceUnitPreset { path, .. } => {
+            describe!("save_device_unit_preset"; ["path_redacted_bytes" => path.as_os_str().len()]; omitted="owner")
+        }
+        Request::SaveDeviceUnitDefault { root, .. } => {
+            describe!("save_device_unit_default"; ["root_redacted_bytes" => root.as_os_str().len()]; omitted="owner")
+        }
         Request::LoadDevicePreset { path, .. } => {
             describe!("load_device_preset"; ["path_redacted_bytes" => path.as_os_str().len()]; omitted="owner")
         }
@@ -1511,6 +1525,18 @@ pub(super) fn request(value: &Request) -> Description {
             action: _,
         } => {
             describe!("device_automation_take"; ["request_id" => request_id, "gesture_serial" => scope.stamp.gesture_serial]; omitted="delivery data")
+        }
+        Request::StartPluginEditorRecording { request_id, input } => {
+            describe!("start_plugin_editor_recording"; ["request_id" => request_id, "project_generation" => input.context.project_generation, "revision" => input.context.editor_revision, "device" => input.device.value(), "parameter" => input.parameter]; omitted="binding")
+        }
+        Request::StopPluginEditorRecording { request_id, .. } => {
+            describe!("stop_plugin_editor_recording"; ["request_id" => request_id]; omitted="gesture")
+        }
+        Request::ContinuePluginEditorRecording { request_id } => {
+            describe!("continue_plugin_editor_recording"; ["request_id" => request_id]; omitted="none")
+        }
+        Request::InspectSealedAutomationRecovery { request_id, .. } => {
+            describe!("inspect_sealed_automation_recovery"; ["request_id" => request_id]; omitted="path")
         }
         Request::QueryFailedPluginAutomation { request_id } => {
             describe!("query_failed_plugin_automation"; ["request_id" => request_id]; omitted="none")

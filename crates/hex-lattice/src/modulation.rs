@@ -6,11 +6,11 @@
 //! rendering borrows all storage and never changes authored values. Upstream
 //! manual/automation selection wins over base; bipolar sources are summed in
 //! normalized units, then clamped and converted to canonical units once.
-use crate::NativeParameterAutomation;
 use crate::parameter_automation::Mapping;
+use crate::{NativeParameterAutomation, NormalizedAutomationValue};
 use hex_lattice_contract::{
-    DeviceContractError as Error, ParameterAccess, ParameterChangeImpact, ParameterDescriptor,
-    ParameterId, ParameterSemantics, ParameterStepping, ParameterValue,
+    DeviceContractError as Error, HostGain, ParameterAccess, ParameterChangeImpact,
+    ParameterDescriptor, ParameterId, ParameterSemantics, ParameterStepping, ParameterValue,
 };
 
 /// Bounds apply to one device-local prepared program and its borrowed blocks.
@@ -19,24 +19,41 @@ pub const MAX_MODULATION_ROUTES: usize = 512;
 pub const MAX_MODULATION_BLOCK_FRAMES: usize = 8192;
 
 /// One real provider target and its immutable authored base value.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModulationTarget {
     pub descriptor: ParameterDescriptor,
     pub semantics: ParameterSemantics,
     pub base: ParameterValue,
 }
 
-/// A bipolar source contributes `sample * amount` in normalized target units.
+/// Map the bipolar sample to the given range, then apply the signed amount.
 /// The source index is local to this prepared program; it is not a persistent
 /// identity and must be resolved from the canonical route by the host.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModulationRoute {
     pub source: usize,
     pub target: ParameterId,
     pub amount: f32,
+    pub range: [f32; 2],
 }
 
-#[derive(Clone, Copy, Debug)]
+/// A device-local source route to one of the two host gain stages.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HostGainModulationRoute {
+    pub source: usize,
+    pub amount: f32,
+    pub range: [f32; 2],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct HostGainTarget {
+    base: HostGain,
+    route_start: usize,
+    route_end: usize,
+}
+type HostGainRoutes<'a> = Option<(HostGain, &'a [HostGainModulationRoute])>;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Target {
     authored: ModulationTarget,
     normalized_base: f32,
@@ -44,23 +61,70 @@ struct Target {
     route_start: usize,
     route_end: usize,
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Route {
     source: usize,
     target_index: usize,
     order: usize,
-    amount: f32,
+    contribution: RangeContribution,
+}
+
+/// A validated affine mapping from bipolar samples to normalized offsets.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RangeContribution {
+    scale: f64,
+    offset: f64,
+}
+
+impl RangeContribution {
+    pub(crate) fn prepare(amount: f32, range: [f32; 2]) -> Result<Self, Error> {
+        if !(-1.0..=1.0).contains(&amount) || range.iter().any(|v| !(-1.0..=1.0).contains(v)) {
+            return Err(Error::InvalidParameterValue);
+        }
+        let [start, end] = range.map(f64::from);
+        let half_amount = f64::from(amount) * 0.5;
+        Ok(Self {
+            scale: half_amount * (end - start),
+            offset: half_amount * (end + start),
+        })
+    }
+
+    pub(crate) fn sample(self, bipolar: f32) -> f64 {
+        f64::from(bipolar) * self.scale + self.offset
+    }
 }
 
 /// Control-prepared target and route inventory. IDs are stable and sorted.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PreparedModulation {
     ids: Vec<ParameterId>,
     targets: Vec<Target>,
     routes: Vec<Route>,
+    input: Option<HostGainTarget>,
+    output: Option<HostGainTarget>,
     source_count: usize,
 }
 impl PreparedModulation {
+    /// Copy a prepared program on control, reporting allocation failure.
+    /// Runtime publication must account the copy as separately owned storage.
+    pub fn try_clone(&self) -> Result<Self, Error> {
+        fn copy<T: Copy>(input: &[T]) -> Result<Vec<T>, Error> {
+            let mut output = Vec::new();
+            output
+                .try_reserve_exact(input.len())
+                .map_err(|_| Error::RuntimeAllocation)?;
+            output.extend_from_slice(input);
+            Ok(output)
+        }
+        Ok(Self {
+            ids: copy(&self.ids)?,
+            targets: copy(&self.targets)?,
+            routes: copy(&self.routes)?,
+            input: self.input,
+            output: self.output,
+            source_count: self.source_count,
+        })
+    }
     /// Rejects invalid targets, routes and capacities before constructing a program.
     /// Callers remain responsible for state-aware runtime admission.
     pub fn new(
@@ -68,8 +132,24 @@ impl PreparedModulation {
         routes: &[ModulationRoute],
         source_count: usize,
     ) -> Result<Self, Error> {
+        Self::with_host_gains(targets, routes, source_count, None, None)
+    }
+
+    /// Compile provider, host input and host output routes into one bounded
+    /// program. Neither host stage has a provider parameter identity.
+    pub fn with_host_gains(
+        targets: &[ModulationTarget],
+        routes: &[ModulationRoute],
+        source_count: usize,
+        input: HostGainRoutes<'_>,
+        output: HostGainRoutes<'_>,
+    ) -> Result<Self, Error> {
+        let route_count = routes
+            .len()
+            .saturating_add(input.map_or(0, |(_, routes)| routes.len()))
+            .saturating_add(output.map_or(0, |(_, routes)| routes.len()));
         if targets.len() > hex_lattice_contract::MAX_PARAMETERS_PER_DEVICE
-            || routes.len() > MAX_MODULATION_ROUTES
+            || route_count > MAX_MODULATION_ROUTES
             || source_count > MAX_MODULATION_SOURCES
         {
             return Err(Error::RuntimeBudgetExceeded);
@@ -109,23 +189,21 @@ impl PreparedModulation {
         }
         let mut prepared_routes = Vec::new();
         prepared_routes
-            .try_reserve_exact(routes.len())
+            .try_reserve_exact(route_count)
             .map_err(|_| Error::RuntimeAllocation)?;
         for (order, route) in routes.iter().enumerate() {
-            if route.source >= source_count
-                || !route.amount.is_finite()
-                || !(-1.0..=1.0).contains(&route.amount)
-            {
+            if route.source >= source_count {
                 return Err(Error::InvalidParameterValue);
             }
             let target_index = ids
                 .binary_search(&route.target)
                 .map_err(|_| Error::UnknownParameter)?;
+            let contribution = RangeContribution::prepare(route.amount, route.range)?;
             prepared_routes.push(Route {
                 source: route.source,
                 target_index,
                 order,
-                amount: route.amount,
+                contribution,
             });
         }
         // Include original order in the key so sorting uses no scratch
@@ -142,10 +220,36 @@ impl PreparedModulation {
             }
             target.route_end = next;
         }
+        let mut append_host_routes = |stage: HostGainRoutes<'_>| -> Result<_, Error> {
+            let Some((base, routes)) = stage.filter(|(_, routes)| !routes.is_empty()) else {
+                return Ok(None);
+            };
+            let route_start = prepared_routes.len();
+            for (order, route) in routes.iter().enumerate() {
+                if route.source >= source_count {
+                    return Err(Error::InvalidParameterValue);
+                }
+                prepared_routes.push(Route {
+                    source: route.source,
+                    target_index: targets.len(),
+                    order,
+                    contribution: RangeContribution::prepare(route.amount, route.range)?,
+                });
+            }
+            Ok(Some(HostGainTarget {
+                base,
+                route_start,
+                route_end: prepared_routes.len(),
+            }))
+        };
+        let input = append_host_routes(input)?;
+        let output = append_host_routes(output)?;
         Ok(Self {
             ids,
             targets: prepared_targets,
             routes: prepared_routes,
+            input,
+            output,
             source_count,
         })
     }
@@ -153,19 +257,21 @@ impl PreparedModulation {
     /// Reserved vector capacities, excluding inline state and allocator bookkeeping.
     /// The owning graph must include this quote in its own admission budget.
     pub fn storage_bytes(&self) -> Option<usize> {
-        self.ids
-            .capacity()
-            .checked_mul(std::mem::size_of::<ParameterId>())?
-            .checked_add(
-                self.targets
-                    .capacity()
-                    .checked_mul(std::mem::size_of::<Target>())?,
-            )?
-            .checked_add(
-                self.routes
-                    .capacity()
-                    .checked_mul(std::mem::size_of::<Route>())?,
-            )
+        Self::quoted_storage_bytes(
+            self.ids.capacity(),
+            self.targets.capacity(),
+            self.routes.capacity(),
+        )
+    }
+
+    pub(crate) fn quoted_storage_bytes(ids: usize, targets: usize, routes: usize) -> Option<usize> {
+        ids.checked_mul(std::mem::size_of::<ParameterId>())?
+            .checked_add(targets.checked_mul(std::mem::size_of::<Target>())?)?
+            .checked_add(routes.checked_mul(std::mem::size_of::<Route>())?)
+    }
+
+    pub(crate) fn route_count(&self) -> usize {
+        self.routes.len()
     }
 
     /// Stable provider IDs, sorted and unique for runtime admission.
@@ -187,6 +293,22 @@ impl PreparedModulation {
         self.targets
             .get(index)
             .map(|target| target.authored.semantics)
+    }
+
+    /// Whether the provider value has an authored modulation route.
+    pub fn has_routes(&self, id: ParameterId) -> bool {
+        self.ids.binary_search(&id).ok().is_some_and(|index| {
+            let target = &self.targets[index];
+            target.route_start != target.route_end
+        })
+    }
+
+    pub(crate) fn host_input_base(&self) -> Option<HostGain> {
+        self.input.map(|target| target.base)
+    }
+
+    pub(crate) fn host_output_base(&self) -> Option<HostGain> {
+        self.output.map(|target| target.base)
     }
 
     /// Number of source buffers required by this prepared program.
@@ -241,6 +363,57 @@ pub struct ModulationBlock<'a> {
     frames: usize,
 }
 impl ModulationBlock<'_> {
+    pub(crate) fn host_input_gain_at(
+        &self,
+        offset: usize,
+        upstream: Option<NormalizedAutomationValue>,
+    ) -> Result<HostGain, Error> {
+        self.host_gain_at(self.program.input, offset, upstream)
+    }
+
+    pub(crate) fn host_output_gain_at(
+        &self,
+        offset: usize,
+        upstream: Option<NormalizedAutomationValue>,
+    ) -> Result<HostGain, Error> {
+        self.host_gain_at(self.program.output, offset, upstream)
+    }
+
+    fn host_gain_at(
+        &self,
+        target: Option<HostGainTarget>,
+        offset: usize,
+        upstream: Option<NormalizedAutomationValue>,
+    ) -> Result<HostGain, Error> {
+        if offset >= self.frames {
+            return Err(Error::InvalidParameterValue);
+        }
+        let target = target.ok_or(Error::InvalidDescriptor)?;
+        let base =
+            upstream.map_or_else(|| target.base.normalized(), NormalizedAutomationValue::get);
+        let sum = self.sum_routes(target.route_start..target.route_end, offset)?;
+        let final_value = (f64::from(base) + sum).clamp(0.0, 1.0) as f32;
+        HostGain::from_normalized(final_value)
+    }
+
+    fn sum_routes(&self, routes: std::ops::Range<usize>, offset: usize) -> Result<f64, Error> {
+        let routes = self
+            .program
+            .routes
+            .get(routes)
+            .ok_or(Error::InvalidDescriptor)?;
+        let mut sum = 0.0;
+        for route in routes {
+            let sample = self
+                .sources
+                .get(route.source)
+                .and_then(|source| source.get(offset))
+                .ok_or(Error::InvalidParameterValue)?;
+            sum += route.contribution.sample(*sample);
+        }
+        Ok(sum)
+    }
+
     fn sample(&self, index: usize, offset: usize) -> Result<ParameterValue, Error> {
         if offset >= self.frames {
             return Err(Error::InvalidParameterValue);
@@ -259,20 +432,7 @@ impl ModulationBlock<'_> {
                 .and_then(|_| input.value_at(authored.descriptor.id, offset))
         });
         let base = selected.unwrap_or(authored.base);
-        let mut sum = 0.0_f64;
-        let routes = self
-            .program
-            .routes
-            .get(target.route_start..target.route_end)
-            .ok_or(Error::InvalidDescriptor)?;
-        for route in routes {
-            let sample = self
-                .sources
-                .get(route.source)
-                .and_then(|source| source.get(offset))
-                .ok_or(Error::InvalidParameterValue)?;
-            sum += f64::from(*sample) * f64::from(route.amount);
-        }
+        let sum = self.sum_routes(target.route_start..target.route_end, offset)?;
         if sum == 0.0 {
             authored.descriptor.validate(base)?;
             return Ok(base);
@@ -297,6 +457,11 @@ impl NativeParameterAutomation for ModulationBlock<'_> {
     fn parameter_ids(&self) -> &[ParameterId] {
         &self.program.ids
     }
+
+    fn has_sample_rate_modulation(&self, parameter: ParameterId) -> bool {
+        self.program.has_routes(parameter)
+    }
+
     fn value_at(&self, id: ParameterId, offset: usize) -> Option<ParameterValue> {
         self.program
             .ids
@@ -348,6 +513,28 @@ mod tests {
             base: ParameterValue::Float(base),
         }
     }
+    #[test]
+    fn maps_source_range_before_applying_negative_depth() {
+        let target = target(1, 8.0);
+        let id = target.descriptor.id;
+        let routes = [ModulationRoute {
+            source: 0,
+            target: id,
+            amount: -0.4,
+            range: [0.0, 1.0],
+        }];
+        let program = PreparedModulation::new(&[target], &routes, 1).unwrap();
+        let input = [-1.0, 0.0, 1.0];
+        let samples: [&[f32]; 1] = [&input];
+        let block = program.block(None, &samples, input.len()).unwrap();
+        for (offset, expected) in [8.0, 6.0, 4.0].into_iter().enumerate() {
+            let Some(ParameterValue::Float(value)) = block.value_at(id, offset) else {
+                panic!("missing composed parameter");
+            };
+            assert!((value - expected).abs() < 1e-6);
+        }
+    }
+
     struct Upstream {
         ids: [ParameterId; 1],
     }
@@ -367,16 +554,19 @@ mod tests {
                 source: 0,
                 target: targets[0].descriptor.id,
                 amount: 0.5,
+                range: [-1.0, 1.0],
             },
             ModulationRoute {
                 source: 1,
                 target: targets[0].descriptor.id,
                 amount: -0.25,
+                range: [-1.0, 1.0],
             },
             ModulationRoute {
                 source: 0,
                 target: targets[1].descriptor.id,
                 amount: 0.25,
+                range: [-1.0, 1.0],
             },
         ];
         let program = PreparedModulation::new(&targets, &routes, 2).unwrap();
@@ -438,7 +628,8 @@ mod tests {
                 &[ModulationRoute {
                     source: 0,
                     target: t.descriptor.id,
-                    amount: f32::NAN
+                    amount: f32::NAN,
+                    range: [-1.0, 1.0],
                 }],
                 1
             )
@@ -459,6 +650,7 @@ mod tests {
             source: 0,
             target: t.descriptor.id,
             amount: 0.2,
+            range: [-1.0, 1.0],
         };
         let program = PreparedModulation::new(&[t], &[route], 1).unwrap();
         let samples = [0.0, 1.0, -1.0];
@@ -497,6 +689,7 @@ mod tests {
             source,
             target: target.descriptor.id,
             amount: 1.0,
+            range: [-1.0, 1.0],
         });
         let program = PreparedModulation::new(&[target], &routes, 3).unwrap();
         let a = [1.0];
@@ -528,11 +721,13 @@ mod tests {
                 source: 0,
                 target: frequency.descriptor.id,
                 amount: 0.5,
+                range: [-1.0, 1.0],
             },
             ModulationRoute {
                 source: 0,
                 target: toggle.descriptor.id,
                 amount: 0.5,
+                range: [-1.0, 1.0],
             },
         ];
         let program = PreparedModulation::new(&[frequency, toggle], &routes, 1).unwrap();

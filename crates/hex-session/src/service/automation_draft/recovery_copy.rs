@@ -106,26 +106,32 @@ pub fn copy_failed_on_control(
     limits: DraftReadLimits,
     max_events: u64,
 ) -> Result<(), String> {
-    copy_failed_with_tail_on_control(outcome, destination, limits, max_events, |_, _| {
+    if outcome.failure.is_none() {
+        return Err("automation writer outcome is not a bounded failure".into());
+    }
+    copy_outcome_with_tail_on_control(outcome, destination, limits, max_events, 0, |_, _| {
         Ok((Vec::new(), DraftTerminal::Interrupted))
     })
     .map(|_| ())
 }
 
-/// The callback validates the source and bounded tail against the actual copied
-/// predecessor. It runs on the control worker while the original reader is held.
-pub(in crate::service) fn copy_failed_with_tail_on_control(
+/// Copy a writer outcome whose failure or explicit interruption has already
+/// been authorized by the owning recovery adapter. The adapter bounds and
+/// validates its original continuation; this owner proves the writer prefix
+/// and copies all data in fixed-size pages.
+pub(in crate::service) fn copy_outcome_with_tail_on_control(
     outcome: &DraftWorkerOutcome,
     destination: &Path,
     limits: DraftReadLimits,
     max_events: u64,
+    max_tail: usize,
     prepare: impl FnOnce(
         &DraftReader,
         Option<AppliedEvent>,
     ) -> Result<(Vec<AppliedEvent>, DraftTerminal), String>,
 ) -> Result<RecoveryCopyReceipt, String> {
-    if outcome.failure.is_none() || outcome.retained.len() > super::BATCH_SLOTS {
-        return Err("automation writer outcome is not a bounded failure".into());
+    if outcome.retained.len() > super::BATCH_SLOTS {
+        return Err("automation writer outcome exceeds the retained batch bound".into());
     }
     let retained_count = outcome
         .retained
@@ -204,7 +210,7 @@ pub(in crate::service) fn copy_failed_with_tail_on_control(
         writer.append(&events).map_err(|error| error.to_string())?;
     }
     let (tail, terminal) = prepare(&reader, previous)?;
-    if tail.len() > 3
+    if tail.len() > max_tail
         || outcome
             .admitted_events
             .checked_add(tail.len() as u64)
@@ -212,8 +218,8 @@ pub(in crate::service) fn copy_failed_with_tail_on_control(
     {
         return Err("automation recovery continuation exceeds budget".into());
     }
-    if !tail.is_empty() {
-        writer.append(&tail).map_err(|error| error.to_string())?;
+    for events in tail.chunks(EVENTS_PER_BATCH) {
+        writer.append(events).map_err(|error| error.to_string())?;
     }
     writer.finish(terminal).map_err(|error| error.to_string())?;
     let copied = writer.durable_prefix_identity();

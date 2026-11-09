@@ -62,6 +62,7 @@ mod reverb_panel;
 pub(super) use keyboard::{bind_keys as bind_keyboard_keys, key_up as selection_key_up};
 mod numeric_display;
 pub(super) use navigation::{bottom_bar, capture_pointer_down as capture_navigation_pointer_down};
+mod modulators;
 mod operator_panel;
 mod parameter_rows;
 pub(super) mod vst3_parameters;
@@ -125,6 +126,8 @@ pub(super) struct DevicePanelState {
     pub(super) main_selected: Option<u64>,
     chain_window: chain_window::ChainWindow,
     parameter_rows: HashMap<DeviceId, parameter_rows::RowWindow>,
+    pub(super) mapping_source: Option<(DeviceId, hex_project::ModulationSourceId)>,
+    host_gain_mapping_availability: Option<modulators::HostGainMappingAvailability>,
     vst3_parameters: vst3_parameters::State,
     pub(super) navigation: navigation::Navigation,
     generation: u64,
@@ -914,6 +917,23 @@ fn render_track(
     let Some(track) = state.project.track(track_id) else {
         return empty_panel("selected track is no longer available");
     };
+    let source_effects = track
+        .source_id()
+        .filter(|_| track.receives_source_audio())
+        .and_then(|source| state.project.native_source(source))
+        .map_or(&[][..], hex_project::NativeSource::post_instrument_effects);
+    let is_source_effect = |id| source_effects.iter().any(|effect| effect.id() == id);
+    let nodes: Vec<_> = track
+        .ordered_device_chain()
+        .flat_map(|node| {
+            let suffix = if matches!(node, hex_project::TrackDeviceRef::Instrument(_)) {
+                source_effects
+            } else {
+                &[]
+            };
+            std::iter::once(node).chain(suffix.iter().map(hex_project::TrackDeviceRef::Effect))
+        })
+        .collect();
     let identities: HashMap<_, _> = track
         .ordered_device_chain()
         .map(|node| match node {
@@ -933,7 +953,11 @@ fn render_track(
             ),
         })
         .collect();
-    let alive: HashSet<_> = identities.keys().copied().collect();
+    let alive: HashSet<_> = identities
+        .keys()
+        .copied()
+        .chain(source_effects.iter().map(hex_project::Device::id))
+        .collect();
     view.device_panel.reconcile_selection(&alive);
 
     clear_removed_processor_audition_target(
@@ -1060,7 +1084,7 @@ fn render_track(
 
     // Prepare the full read-only inventory, including unavailable descriptors
     // and unsupported-state errors, without constructing offscreen controls.
-    for node in track.ordered_device_chain() {
+    for node in nodes.iter().copied() {
         let (device, class) = match node {
             hex_project::TrackDeviceRef::Instrument(device) => {
                 (device, NativeDeviceClass::Instrument)
@@ -1150,9 +1174,8 @@ fn render_track(
         }
     });
 
-    let nodes: Vec<_> = track.ordered_device_chain().collect();
-    let device_ids: Vec<_> = nodes
-        .iter()
+    let device_ids: Vec<_> = track
+        .ordered_device_chain()
         .map(|node| match node {
             hex_project::TrackDeviceRef::Instrument(device)
             | hex_project::TrackDeviceRef::Effect(device) => device.id(),
@@ -1167,7 +1190,12 @@ fn render_track(
                 }
                 hex_project::TrackDeviceRef::Effect(device) => (*device, NativeDeviceClass::Effect),
             };
-            (device.id(), device_card_width(view, class, device))
+            let width = if is_source_effect(device.id()) {
+                modulators::SOURCE_EFFECT_CARD_WIDTH
+            } else {
+                device_card_width(view, class, device)
+            };
+            (device.id(), width)
         })
         .collect();
     view.device_panel.chain_window.prepare(&geometry);
@@ -1177,7 +1205,8 @@ fn render_track(
             let hex_project::TrackDeviceRef::Effect(device) = node else {
                 return None;
             };
-            (eq_panel::is_spectrum_eq(device.state().type_id())
+            (!is_source_effect(device.id())
+                && eq_panel::is_spectrum_eq(device.state().type_id())
                 && chain_window::must_mount(view, device.id(), window, cx))
             .then(|| {
                 hex_engine::PostNodeIdentity::new(
@@ -1190,7 +1219,8 @@ fn render_track(
         .collect();
     eq_panel::sync_visible_spectra(view, &spectrum_identities);
     let first_device = device_ids.first().copied();
-    for (index, node) in nodes.into_iter().enumerate() {
+    let mut local_index = 0;
+    for node in nodes {
         let (device, class) = match node {
             hex_project::TrackDeviceRef::Instrument(device) => {
                 (device, NativeDeviceClass::Instrument)
@@ -1198,6 +1228,19 @@ fn render_track(
             hex_project::TrackDeviceRef::Effect(device) => (device, NativeDeviceClass::Effect),
         };
         let mounted = chain_window::must_mount(view, device.id(), window, cx);
+        if is_source_effect(device.id()) {
+            let width = modulators::SOURCE_EFFECT_CARD_WIDTH;
+            let card = if mounted {
+                modulators::source_effect_card(view, cx, device)
+            } else {
+                chain_window::spacer(device.id(), width)
+            };
+            let card = card.mr(px(DEVICE_CHAIN_PADDING));
+            chain = chain.child(card);
+            continue;
+        }
+        let index = local_index;
+        local_index += 1;
         if !mounted {
             let card = chain_window::spacer(device.id(), device_card_width(view, class, device))
                 .mr(px(DEVICE_CHAIN_PADDING));
@@ -2039,7 +2082,7 @@ fn render_effect(
                     device_view,
                 )
             };
-            device_frame(
+            hex_widgets::device_frame_with_modulators(
                 device_drag_title(
                     view,
                     cx,
@@ -2051,6 +2094,7 @@ fn render_effect(
                 leading,
                 header_actions,
                 body,
+                modulators::panel(view, cx, device, device_view),
             )
         }
         Err(error) => {
@@ -3171,7 +3215,7 @@ fn parameter_control_with_presentation(
         Some("ø l" | "ø r" | "mute" | "dc") => 31.0,
         _ => 40.0,
     };
-    bindings::render_parameter(
+    let control = bindings::render_parameter(
         view,
         cx,
         device,
@@ -3183,7 +3227,12 @@ fn parameter_control_with_presentation(
             policy: binding_policy,
             compact_toggle_width,
         },
-    )
+    );
+    if let Some(element) = modulators::target_overlay(view, cx, device, parameter) {
+        control.relative().child(element)
+    } else {
+        control
+    }
 }
 
 fn menu_message(message: &str) -> Div {

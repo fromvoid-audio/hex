@@ -188,7 +188,15 @@ impl NativeParameterCapture {
             let device = project
                 .device(target.device())
                 .ok_or(Invalid("native capture target no longer exists"))?;
-            let view = crate::native_device_view(device.state())?;
+            let class = if matches!(
+                target.identity().owner(),
+                hex_lattice::ProcessorChainOwner::Source(_)
+            ) {
+                crate::NativeDeviceClass::Instrument
+            } else {
+                crate::NativeDeviceClass::Effect
+            };
+            let view = crate::native_device_view_for_class(class, device.state())?;
             let parameter = view
                 .parameters
                 .iter()
@@ -264,6 +272,43 @@ impl Processing {
             final_arrival,
             applied: None,
         }
+    }
+
+    /// Input only for the current receiving instrument, never its MIDI
+    /// contributors or a retained release processor.
+    pub(crate) fn for_source(
+        &self,
+        source: Option<hex_project::SourceId>,
+        device: Option<hex_project::DeviceId>,
+    ) -> Option<NativeTransientInput> {
+        let hex_lattice::ProcessorChainOwner::Source(owner) = self.input.identity.owner() else {
+            return None;
+        };
+        (source.is_some_and(|source| source.value() == owner)
+            && device.is_some_and(|device| device.value() == self.input.identity.device_id()))
+        .then_some(self.input)
+    }
+
+    /// A successful source processor application precedes the full downstream
+    /// compensation delay. The callback owner still confirms final delivery.
+    pub(crate) fn source_applied(
+        &mut self,
+        arrangement_frame: u64,
+        loop_pass: u64,
+        performance_frame: u64,
+    ) -> Result<(), Invalid> {
+        if performance_frame < self.performance_start {
+            return Err(Invalid("native instrument input processing clock differs"));
+        }
+        self.applied.get_or_insert(NativeParameterApplication {
+            identity: self.input.identity,
+            operation: self.input.operation,
+            arrangement_frame,
+            loop_pass,
+            performance_frame,
+            remaining_latency_frames: self.final_arrival,
+        });
+        Ok(())
     }
 
     /// Different device arrivals require separate calls. Missing origins defer

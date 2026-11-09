@@ -78,7 +78,7 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = DEVICE_MODULATION_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = EXTENDED_AUTOMATION_TOUCH_SCHEMA_VERSION;
 
 /// Schema70 stores an independent original source span for signed musical event placement.
 pub const MUSICAL_EVENT_SOURCE_SCHEMA_VERSION: u32 = 70;
@@ -107,6 +107,22 @@ pub const SERIAL_DEVICE_SCHEMA_VERSION: u32 = 80;
 /// Schema81 retains device-local module configuration and source/route identities
 /// over the complete prior envelope; older projects migrate with empty banks.
 pub const DEVICE_MODULATION_SCHEMA_VERSION: u32 = 81;
+/// Schema82 adds a required semantic color on every modulator slot.
+pub const MODULATION_SLOT_COLOR_SCHEMA_VERSION: u32 = 82;
+/// Schema83 opts in to bound source units with serial native effects.
+pub const BOUND_SOURCE_EFFECT_SCHEMA_VERSION: u32 = 83;
+/// Schema84 admits newer LFO payloads and retains full slot colors and bound units.
+pub const LFO_SHAPE_SCHEMA_VERSION: u32 = 84;
+/// Schema85 admits the typed free LFO rate destination in the existing source bank.
+pub const LFO_RATE_ROUTE_SCHEMA_VERSION: u32 = 85;
+/// Schema86 admits rate assignments to tempo-synced LFO slots.
+pub const TEMPO_LFO_RATE_ROUTE_SCHEMA_VERSION: u32 = 86;
+/// Schema87 admits the Audio Rate source alongside every prior bank configuration.
+pub const AUDIO_RATE_MODULATOR_SCHEMA_VERSION: u32 = 87;
+/// Native instrument touches retain their exact source role and base read mode.
+pub const NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION: u32 = 88;
+/// A device touch lane may exceed the original combined point limit.
+pub const EXTENDED_AUTOMATION_TOUCH_SCHEMA_VERSION: u32 = 89;
 
 fn contains_larger_device_state(project: &Project) -> bool {
     schema::device_assets::authored_states(project)
@@ -161,8 +177,29 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// [`SINC_V2_SCHEMA_VERSION`] when it contains sinc v2 media, otherwise
 /// [`CURRENT_SCHEMA_VERSION`].
 /// Serial membership uses schema80 over its exact compatible flat envelope.
+/// Bound source effects use schema83 over their existing membership and state codecs.
+/// Non-sine LFOs use schema84 with complete slot colors and any bound source effects.
+/// Free LFO rate assignments require schema85 and tempo-synced rate assignments
+/// require schema86 regardless of oscillator shape. Audio Rate uses schema87.
+/// Native instrument touches use schema88 over the exact prior codec.
+/// Long touch lanes use the extended schema, preserving their exact steps;
+/// shorter lanes and the inner project retain their compatible format.
 pub fn schema_version_for(project: &Project) -> u32 {
-    if schema::device_modulation::contains(project) {
+    if schema::device_automation_touch::contains_extended(project) {
+        EXTENDED_AUTOMATION_TOUCH_SCHEMA_VERSION
+    } else if schema::device_automation_touch::contains_native_instrument(project) {
+        NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION
+    } else if schema::device_modulation::contains_audio_rate(project) {
+        AUDIO_RATE_MODULATOR_SCHEMA_VERSION
+    } else if let Some(version) = schema::device_modulation::lfo_rate_route_schema(project) {
+        version
+    } else if schema::device_modulation::contains_newer_lfo(project) {
+        LFO_SHAPE_SCHEMA_VERSION
+    } else if schema::bound_source_effects::contains(project) {
+        BOUND_SOURCE_EFFECT_SCHEMA_VERSION
+    } else if schema::device_modulation::contains_colors(project) {
+        MODULATION_SLOT_COLOR_SCHEMA_VERSION
+    } else if schema::device_modulation::contains(project) {
         DEVICE_MODULATION_SCHEMA_VERSION
     } else if schema::serial_units::contains(project) {
         SERIAL_DEVICE_SCHEMA_VERSION
@@ -376,6 +413,28 @@ impl From<serde_json::Error> for StorageError {
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 /// Nonempty serial units use schema80; flat projects retain their prior layout.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
+    if schema::device_automation_touch::contains_extended(project) {
+        return encode_document(&schema::device_automation_touch::encode_extended(project)?);
+    }
+    if schema::device_automation_touch::contains_native_instrument(project) {
+        return encode_document(&schema::device_automation_touch::encode_native_instrument(
+            project,
+        )?);
+    }
+    if schema::device_modulation::contains_audio_rate(project)
+        || schema::device_modulation::lfo_rate_route_schema(project).is_some()
+        || schema::device_modulation::contains_newer_lfo(project)
+    {
+        encode_document(&schema::device_modulation::encode(project)?)
+    } else if schema::bound_source_effects::contains(project) {
+        encode_document(&schema::bound_source_effects::encode(project)?)
+    } else {
+        encode_base(project)
+    }
+}
+
+/// Encode an existing layer without adding the bound-source envelope again.
+fn encode_base(project: &Project) -> Result<Vec<u8>, StorageError> {
     if schema::device_modulation::contains(project) {
         encode_document(&schema::device_modulation::encode(project)?)
     } else if schema::serial_units::contains(project) {
@@ -434,6 +493,11 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    if schema::bound_source_effects::contains(project) {
+        return Err(StorageError::Invalid(
+            "older schema cannot save bound source effects",
+        ));
+    }
     schema::device_modulation::refuse_legacy(project)?;
     schema::serial_units::refuse_legacy(project)?;
     if schema::sample_rate_mode::contains(project) {
@@ -621,8 +685,17 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
 /// From schema30 through79 the migration chain parses the bytes once (after one
 /// duplicate-field check) and each frozen layer adapts that single value in
 /// place; those layers never re-serialize the document for the next one.
-/// Schemas80/81 materialize a compatible predecessor envelope before using that chain.
+/// Schemas80 through87 materialize a compatible predecessor envelope before using that chain.
 pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
+    decode_impl(bytes, false)
+}
+
+/// Decode an inner envelope that the top-level reader will validate.
+fn decode_base(bytes: &[u8]) -> Result<Project, StorageError> {
+    decode_impl(bytes, true)
+}
+
+fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageError> {
     #[derive(serde::Deserialize)]
     struct CurrentHeader<'a> {
         format: &'a str,
@@ -633,7 +706,23 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("unsupported project format"));
     }
     let project = match header.version {
-        DEVICE_MODULATION_SCHEMA_VERSION => schema::device_modulation::decode(bytes),
+        EXTENDED_AUTOMATION_TOUCH_SCHEMA_VERSION if !inside_envelope => {
+            schema::device_automation_touch::decode_extended(bytes)
+        }
+        NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION if !inside_envelope => {
+            schema::device_automation_touch::decode_native_instrument(bytes)
+        }
+        BOUND_SOURCE_EFFECT_SCHEMA_VERSION if !inside_envelope => {
+            schema::bound_source_effects::decode(bytes)
+        }
+        DEVICE_MODULATION_SCHEMA_VERSION
+        | MODULATION_SLOT_COLOR_SCHEMA_VERSION
+        | LFO_SHAPE_SCHEMA_VERSION
+        | LFO_RATE_ROUTE_SCHEMA_VERSION
+        | TEMPO_LFO_RATE_ROUTE_SCHEMA_VERSION
+        | AUDIO_RATE_MODULATOR_SCHEMA_VERSION => {
+            schema::device_modulation::decode(bytes, header.version)
+        }
         SERIAL_DEVICE_SCHEMA_VERSION => schema::serial_units::decode(bytes),
         DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION | VST3_AUTOMATION_TOUCH_SCHEMA_VERSION => {
             schema::device_automation_touch::decode(bytes, header.version)
@@ -758,6 +847,14 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     if header.version < 47 && requires_schema47_audio_placement(&project)? {
         return Err(StorageError::Invalid(
             "historical project schema contains unsupported audio placement; open a copy with the hex build that saved it; original file unchanged",
+        ));
+    }
+    if !inside_envelope
+        && header.version < BOUND_SOURCE_EFFECT_SCHEMA_VERSION
+        && schema::bound_source_effects::contains(&project)
+    {
+        return Err(StorageError::Invalid(
+            "bound source effects require their current project schema",
         ));
     }
     Ok(project)

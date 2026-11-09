@@ -3,6 +3,82 @@
 use super::*;
 use std::num::NonZeroU64;
 pub const MAX_PARAMETER_EDITS: usize = 8;
+
+/// Effective editor input at frame zero of one successful SDK quantum.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EditorPerform {
+    pub sequence: u64,
+    pub gesture: u64,
+    pub id: u32,
+    pub normalized: f64,
+}
+
+/// The bounded, ordered batch copied out of that same native reply.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EditorPerforms {
+    points: [EditorPerform; MAX_PARAMETER_EDITS],
+    len: usize,
+}
+
+impl EditorPerforms {
+    pub fn as_slice(&self) -> &[EditorPerform] {
+        &self.points[..self.len]
+    }
+
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+    pub(crate) fn push(&mut self, point: EditorPerform) -> Result<()> {
+        let entry = self
+            .points
+            .get_mut(self.len)
+            .ok_or(Error::Protocol("editor PCM input capacity exceeded"))?;
+        *entry = point;
+        self.len += 1;
+        Ok(())
+    }
+}
+
+/// One successful SDK reply, including the exact original binding and quantum.
+/// Multiple staged editor callbacks to the same parameter at offset zero
+/// report only the final one that actually entered the processor.
+pub struct EditorPcm {
+    pub block: Block,
+    pub performs: EditorPerforms,
+    pub restoration: Option<EditorRestoration>,
+}
+
+/// The canonical restoration choice for one original worker target.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EditorTouchPlan {
+    pub scope: NonZeroU64,
+    pub parameter: u32,
+    pub base: f64,
+    pub reading: bool,
+}
+
+impl EditorTouchPlan {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn wire(self) -> Result<[u8; 24]> {
+        if self.parameter > i32::MAX as u32 || !(0.0..=1.0).contains(&self.base) {
+            return Err(Error::Protocol("invalid editor touch target or base"));
+        }
+        let mut bytes = [0; 24];
+        bytes[..8].copy_from_slice(&self.scope.get().to_le_bytes());
+        bytes[8..12].copy_from_slice(&self.parameter.to_le_bytes());
+        bytes[12] = u8::from(self.reading);
+        bytes[16..].copy_from_slice(&self.base.to_bits().to_le_bytes());
+        Ok(bytes)
+    }
+}
+
+/// An actual restored SDK sample following the exact ordered gesture End.
+/// The subsequent compensated Main delivery remains a separate witness.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EditorRestoration {
+    pub sequence: u64,
+    pub gesture: u64,
+    pub parameter: u32,
+}
+
 // Native main-thread FIFO plus the eight worker handoff slots. Completed
 // receipts are tracked separately and do not count toward pending callbacks.
 const MAX_PENDING_PARAMETER_EDITS: u16 = 72;

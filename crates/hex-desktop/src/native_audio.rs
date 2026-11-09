@@ -265,6 +265,7 @@ impl NativeAudioSink {
             .and_then(|output| output.publication.control())
         {
             self.plugins.retire_parameter_delivery(control);
+            self.plugins.retire_editor_recording(control);
         }
         self.plugins.output_closed();
         // Publication/StreamOwner relinquish before any event can backpressure.
@@ -1076,6 +1077,47 @@ impl WorkerAudioSink for NativeAudioSink {
             .parameter_requires_restore(control, context, origin.device.value())
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn prepare_plugin_editor_recording(
+        &mut self,
+        input: hex_session::service::PluginEditorRecordingInput,
+    ) -> Result<hex_session::service::PluginParameterObservation, String> {
+        let clock = self
+            .current_runtime_loop(input.context)?
+            .filter(|actual| self.resident.current_submission == Some(*actual))
+            .ok_or("vst3 editor recording requires ordinary resident playback")?;
+        let output = self.output.as_mut().ok_or("vst3 output is unavailable")?;
+        let control = output
+            .publication
+            .control()
+            .ok_or("vst3 output is unavailable")?;
+        self.plugins.prepare_editor_recording(
+            control,
+            input,
+            output.sample_rate,
+            clock,
+            self.request_cancellation.as_ref(),
+        )
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn start_plugin_editor_recording(
+        &mut self,
+        key: hex_session::device_gesture::GestureKey,
+    ) -> Result<(), String> {
+        let control = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .ok_or("vst3 output is unavailable")?;
+        self.plugins.start_editor_recording(control, key)
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn cancel_plugin_editor_recording(
+        &mut self,
+        key: hex_session::device_gesture::GestureKey,
+    ) -> bool {
+        self.plugins.cancel_editor_recording(key)
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn take_plugin_parameter_observation(
         &mut self,
     ) -> Option<hex_session::service::PluginParameterObservation> {
@@ -1187,6 +1229,57 @@ impl WorkerAudioSink for NativeAudioSink {
     ) {
         self.plugins
             .finish_parameter_gesture(context, key, sequence, accepted);
+    }
+    fn confirm_source_effect_publication(
+        &mut self,
+        context: AudioSourceContext,
+        acceptance: hex_session::service::ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        use hex_session::service::ResidentPublicationAcceptance;
+        use std::time::{Duration, Instant};
+
+        let ResidentPublicationAcceptance::Submitted {
+            output_identity,
+            audio_revision,
+        } = acceptance
+        else {
+            return Ok(());
+        };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let control = self
+                .output
+                .as_mut()
+                .and_then(|output| output.publication.control())
+                .filter(|control| control.output_identity() == Some(output_identity))
+                .ok_or("source edit lost its audio output")?;
+            let status = &control.status;
+            if status.recording_source().is_some_and(|source| {
+                source.output_identity == output_identity
+                    && source.audio_revision == audio_revision
+                    && source.context == context
+            }) {
+                return Ok(());
+            }
+            if let Some((revision, reason)) = status.rejected_revision()
+                && revision == audio_revision
+            {
+                return Err(format!(
+                    "source edit playback refused · {}",
+                    reason.message()
+                ));
+            }
+            if status.device_fault.load(Acquire)
+                || status.render_fault.load(Acquire)
+                || Instant::now() >= deadline
+            {
+                // A queued candidate must not install after the editor refuses
+                // its revision. Retire this output before reporting loss.
+                self.relinquish_output();
+                return Err("source edit lost audio confirmation · restart audio".into());
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
     fn resident_publication_readiness(
         &mut self,
@@ -1853,6 +1946,9 @@ impl WorkerAudioSink for NativeAudioSink {
                             Some(EditorAudioEvent::NativeLatencyRestart { source });
                     }
                 }
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                self.plugins
+                    .poll_editor_recording(output.publication.control());
                 if self.pending_parameter_event.is_none() {
                     self.pending_parameter_event = self.plugins.take_parameter_touch();
                 }

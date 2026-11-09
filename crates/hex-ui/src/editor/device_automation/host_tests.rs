@@ -1860,3 +1860,195 @@ fn host_trim_lane_controls_edit_their_exact_stage_and_offer_record_arm(cx: &mut 
     pump(&mut visual, &editor);
     assert_eq!(read(&visual), (input, 0.0));
 }
+
+#[gpui::test]
+fn vst3_first_lane_menu_arms_and_disarms_the_raw_zero_knob(cx: &mut TestAppContext) {
+    use hex_session::device_gesture::{
+        GesturePhase, GestureRequest, PluginParameterOrigin, PluginParameterValue,
+    };
+    use std::sync::atomic::Ordering::Release;
+
+    let _serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let client = output.take_client().unwrap();
+    let mut model = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(track) = model
+        .execute(Command::AddMidiTrack {
+            name: "vst recording".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    let mut payload = vec![0; 96];
+    payload[..4].copy_from_slice(b"HXVS");
+    payload[4] = 1;
+    payload[8..24].fill(2);
+    payload[24..88].fill(3);
+    let Created::Device(device) = model
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: hex_lattice_contract::NativeDeviceState::new(
+                DeviceTypeId::from_static("hex.vst3"),
+                1,
+                payload,
+            )
+            .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("device");
+    };
+    let (handle, editor) = crate::editor::clip_drag_ui_test::editor_window(
+        cx,
+        model.project().clone(),
+        std::sync::Arc::default(),
+    );
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1100.0), px(800.0)));
+    let row = PluginParameterRow {
+        id: 0,
+        name: "raw zero".into(),
+        value: "0.25".into(),
+        normalized: 0.25,
+        default_normalized: 0.25,
+        steps: 0,
+        editable: true,
+        automation_class: Some([2; 16]),
+        page_first: 0,
+        metadata_revision: 1,
+    };
+    editor.update(&mut visual, |view, _| {
+        view.selected_track = Some(track);
+        view.device_panel_active = true;
+        view.device_panel.owner = Some(Owner::Track(track));
+        view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+        view.audio = Some(crate::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "vst recording fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+    });
+    let menu = |visual: &mut VisualTestContext| {
+        visual.update(|window, cx| {
+            editor.update(cx, |view, cx| {
+                assert!(view.open_vst3_automation_menu(
+                    point(px(300.0), px(200.0)),
+                    device,
+                    &row,
+                    window,
+                    cx,
+                ));
+            });
+        });
+        visual.run_until_parked();
+    };
+    menu(&mut visual);
+    editor.read_with(&visual, |view, _| {
+        use crate::editor::context_menu::EditorContextAction;
+        let (target, revision) = view
+            .context_menu
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .find_map(|item| match &item.action {
+                EditorContextAction::Automation(Action::ToggleVst3Arm { target, revision }) => {
+                    Some((*target, *revision))
+                }
+                _ => None,
+            })
+            .expect("the exact live row offers an arm action");
+        assert!(!view.automation_action_stale(&Action::ToggleVst3Arm { target, revision }));
+        assert!(view.automation_action_stale(&Action::ToggleVst3Arm {
+            target,
+            revision: revision.checked_add(1).unwrap(),
+        }));
+    });
+    choose_label(&mut visual, &editor, "arm automation recording");
+    editor.update(&mut visual, |view, cx| {
+        assert!(view.vst3_automation_arm_selected(device, [2; 16], 0));
+        let origin = PluginParameterOrigin {
+            context: hex_engine::AudioSourceContext {
+                project_generation: view.project_generation,
+                editor_revision: view.state.as_ref().unwrap().revision,
+            },
+            device,
+            parameter: 0,
+            page_first: row.page_first,
+            metadata_revision: row.metadata_revision,
+            initial: PluginParameterValue::new(0.25).unwrap(),
+        };
+        view.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .playing
+            .store(true, Release);
+        let key = view.begin_vst3_parameter_gesture(origin).unwrap();
+        assert_eq!(
+            view.device_gesture.next_request(),
+            Some(GestureRequest::BeginPlugin {
+                key,
+                origin,
+                recording: true,
+            })
+        );
+        // Simulate the view's terminal ACK; the signed fixture independently
+        // proves actual worker adoption. The final value must not become the
+        // preview's base simply because the take committed.
+        assert!(view.remember_touched_vst3(Owner::Track(track), device, &row, cx));
+        view.device_gesture.mark_submitted();
+        acknowledge_plugin(view, key, GesturePhase::Begin, 0);
+        view.device_gesture
+            .finish_plugin(PluginParameterValue::new(0.75).unwrap())
+            .unwrap();
+        let request = view.device_gesture.next_request().unwrap();
+        view.device_gesture.mark_submitted();
+        assert_eq!(request.phase(), GesturePhase::Commit);
+        acknowledge_plugin(view, key, GesturePhase::Commit, request.sequence());
+        assert_eq!(view.automation_view.devices.main[0].base, 0.25);
+        view.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .playing
+            .store(false, Release);
+    });
+    menu(&mut visual);
+    choose_label(&mut visual, &editor, "disarm automation recording");
+    editor.read_with(&visual, |view, _| {
+        assert!(!view.vst3_automation_arm_selected(device, [2; 16], 0));
+    });
+    drop(backend);
+    output.publication.close();
+}
+
+#[gpui::test]
+fn utility_toggle_and_choice_offer_their_exact_recording_targets(cx: &mut TestAppContext) {
+    let (visual, editor, owner, _, device) = window(cx, "hex.utility", Slot::Track);
+    editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        for (parameter, expected) in [(8, "mute"), (4, "channel")] {
+            let kind = DeviceAutomationTarget::Parameter(
+                hex_lattice_contract::ParameterId::from_static(parameter),
+            );
+            let entry = Entry::read(project, view.project_generation, owner, device, kind).unwrap();
+            let EntryMetadata::Provider { descriptor, .. } = entry.metadata else {
+                panic!("utility provider target");
+            };
+            assert_eq!(descriptor.label, expected);
+            assert!(matches!(
+                view.native_automation_arm_action(&entry),
+                Some(("arm automation recording", Action::ToggleNativeArm(target)))
+                    if target.kind == kind && target.device == device
+            ));
+        }
+    });
+}

@@ -5,6 +5,7 @@ use hex_engine::native_device_resources::{PreparedDeviceResources, ResidentDevic
 use std::collections::BTreeMap;
 
 mod capture;
+mod editor_delivery;
 mod fenced_inheritance;
 mod manual_base;
 mod manual_order;

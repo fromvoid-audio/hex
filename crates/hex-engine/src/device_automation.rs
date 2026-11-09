@@ -12,7 +12,7 @@ pub const DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED: &str = "device parameter autom
 /// Maximum recorded targets admitted into one prepared binding union.
 pub(crate) const MAX_EXTERNAL_PARAMETER_TARGETS: usize = 256;
 
-/// Canonical control-side arm description for one supported native effect.
+/// Canonical control-side arm description for one supported native processor.
 /// This Copy identity grants neither publication nor a runtime/source lease.
 /// Runtime factory/twin admission and source fencing remain with preparation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,36 +57,73 @@ impl NativeParameterInputTarget {
         let device = project
             .device(self.device)
             .ok_or(Invalid("native parameter input device no longer exists"))?;
-        let registry = hex_devices::native_registry()
-            .map_err(|_| Invalid("native effect registry is invalid"))?;
         if let NativeTransientValue::Parameter { id, value } = value {
-            let definition = registry
-                .definition(self.device_type)
-                .ok_or(Invalid("native parameter input device is unsupported"))?;
-            hex_lattice_contract::validate_parameter_write(definition, device.state(), id, value)
-                .map_err(|_| {
+            let checked = if matches!(self.identity.owner(), ProcessorChainOwner::Source(_)) {
+                let registry = hex_devices::native_instrument_registry()
+                    .map_err(|_| Invalid("native instrument registry is invalid"))?;
+                let definition = registry
+                    .definition(self.device_type)
+                    .ok_or(Invalid("native parameter input instrument is unsupported"))?;
+                hex_lattice_contract::validate_parameter_write(
+                    definition,
+                    device.state(),
+                    id,
+                    value,
+                )
+            } else {
+                let registry = hex_devices::native_registry()
+                    .map_err(|_| Invalid("native effect registry is invalid"))?;
+                let definition = registry
+                    .definition(self.device_type)
+                    .ok_or(Invalid("native parameter input device is unsupported"))?;
+                hex_lattice_contract::validate_parameter_write(
+                    definition,
+                    device.state(),
+                    id,
+                    value,
+                )
+            };
+            checked.map_err(|_| {
                 Invalid("native parameter input value is invalid for the current state")
             })?;
         }
         Ok(value)
     }
 }
-/// Resolve exactly one canonical Track/Main/Return native effect. Source-owned
-/// devices and foreign providers are excluded even when they expose metadata.
+/// Resolve one canonical Track/Main/Return native effect or one supported
+/// receiving instrument. Foreign and source effect controls are excluded.
 /// Current provider capability is explicit; controls alone never grant it.
 pub fn native_parameter_input_target(
     project: &hex_project::Project,
     device: hex_project::DeviceId,
     target: DeviceAutomationTarget,
 ) -> Result<NativeParameterInputTarget, Invalid> {
-    if project
+    if let Some(source) = project
         .native_sources()
         .iter()
-        .any(|source| source.devices().any(|candidate| candidate.id() == device))
+        .find(|source| source.devices().any(|candidate| candidate.id() == device))
     {
-        return Err(Invalid(
-            "source-owned native parameter input is unsupported",
-        ));
+        let instrument = source.instrument();
+        if instrument.id() != device
+            || instrument.bypassed()
+            || source.receiver().is_none()
+            || source.devices().count() != 1
+            || !instrument_target_supported(instrument.state(), target)
+        {
+            return Err(Invalid(
+                "receiving instrument parameter input is unsupported",
+            ));
+        }
+        return Ok(NativeParameterInputTarget {
+            device,
+            target,
+            identity: ProcessorInstanceIdentity::new(
+                ProcessorChainOwner::Source(source.id().value()),
+                device.value(),
+            )
+            .map_err(|_| Invalid("native instrument input identity is invalid"))?,
+            device_type: instrument.state().type_id(),
+        });
     }
     let mut matching =
         effect_device_owners(project).filter(|(candidate, _)| candidate.id() == device);
@@ -282,14 +319,7 @@ pub(crate) fn validate_project_with_registry(
     project: &hex_project::Project,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
 ) -> Result<(), Invalid> {
-    if project
-        .devices()
-        .any(|device| !device.modulation().is_empty())
-    {
-        return Err(Invalid(
-            "authored device modulation requires playback preparation",
-        ));
-    }
+    crate::device_modulation::validate_source_owners(project)?;
     if project.native_sources().iter().any(|source| {
         source.devices().any(|device| {
             device.automation().iter().any(|lane| {
@@ -304,6 +334,7 @@ pub(crate) fn validate_project_with_registry(
         return Err(Invalid(DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED));
     }
     for device in effect_devices(project) {
+        crate::device_modulation::EffectModulation::validate(device, project)?;
         if device.automation().iter().any(|lane| {
             // The Arrangement compiler verifies exact foreign capabilities
             // for both effect chains and instrument sources.
@@ -332,9 +363,6 @@ pub(crate) fn quote_with_inputs_and_external(
     input: Option<NativeParameterInputTarget>,
     external: &[NativeParameterInputTarget],
 ) -> Result<usize, crate::AudioStorageError> {
-    if !device.modulation().is_empty() {
-        return Err(crate::AudioStorageError::UnsupportedConstructor);
-    }
     let (provider, host, points, _) = counts_with_external(device, input, external)?;
     hex_lattice::PreparedParameterAutomation::quoted_storage_bytes_with_host(provider, host, points)
         .and_then(|bytes| {
@@ -639,11 +667,6 @@ fn prepare_envelopes_with_registry(
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     foreign_preflighted: bool,
 ) -> Result<hex_lattice::PreparedParameterAutomation, Invalid> {
-    if !device.modulation().is_empty() {
-        return Err(Invalid(
-            "authored device modulation requires playback preparation",
-        ));
-    }
     let local = |lane: &&hex_project::DeviceAutomation| {
         !foreign_preflighted || !matches!(lane.target, DeviceAutomationTarget::Vst3 { .. })
     };

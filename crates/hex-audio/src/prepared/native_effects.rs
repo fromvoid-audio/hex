@@ -46,6 +46,8 @@ impl Callback {
         }
     }
     pub(crate) fn finish_foreign_parameter_delivery(&mut self, valid: bool) {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        self.finish_foreign_editor_delivery(valid);
         let Some(target) = self.foreign_parameter_delivery.prepare_target() else {
             return;
         };
@@ -69,6 +71,32 @@ impl Callback {
             end,
             latency,
             valid,
+            self.output_transport.is_none(),
+        );
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn finish_foreign_editor_delivery(&mut self, valid: bool) {
+        let Some(target) = self.foreign_editor_delivery.prepare_target() else {
+            return;
+        };
+        let observed = self
+            .native_sources
+            .take_accepted_editor_quantum(target.binding);
+        // This admission accepts only the direct, ordinary playing graph.
+        let active = self.active.as_ref().and_then(ActivePublication::legacy);
+        let (end, latency) = active.map_or((0, 0), |active| {
+            (
+                active.playback.performance_frame(),
+                active.playback.main_output_latency_frames(),
+            )
+        });
+        self.foreign_editor_delivery.finish(
+            observed.ok().flatten(),
+            self.status.live_native_parameter_source(),
+            end,
+            latency,
+            valid && observed.is_ok(),
             self.output_transport.is_none(),
         );
     }

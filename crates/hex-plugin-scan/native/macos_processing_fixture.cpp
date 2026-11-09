@@ -138,8 +138,18 @@ class RestoreController final : public IEditController {
     static void edit_tick(CFRunLoopTimerRef,void* context) {
         auto* self=static_cast<RestoreController*>(context);
         const auto* release=std::getenv("HEX_ORIGINAL_INSTANCE_RELEASE");
-        if(!self || self->edits_sent || !release || std::strlen(release)>4096 || ::access(release,F_OK)!=0) return;
-        self->edits_sent=true;CFRunLoopTimerInvalidate(self->edit_timer);
+        if(!self || !release || std::strlen(release)>4096 || ::access(release,F_OK)!=0) return;
+        const auto* end_release=(self->fault==touched_automation_variant || self->fault==held_instrument_variant)
+            ?std::getenv("HEX_ORIGINAL_EDITOR_END_RELEASE"):nullptr;
+        if(self->edits_sent) {
+            if(end_release && std::strlen(end_release)<=4096 && ::access(end_release,F_OK)==0) {
+                self->handler->endEdit(parameter_id(self->fault));
+                CFRunLoopTimerInvalidate(self->edit_timer);
+            }
+            return;
+        }
+        self->edits_sent=true;
+        if(!end_release) CFRunLoopTimerInvalidate(self->edit_timer);
         if(self->fault==134) {
             static constexpr char released='R';
             if(!defer_module_event(released)) ++observed.violations;
@@ -195,7 +205,7 @@ class RestoreController final : public IEditController {
             if(self->fault!=132) self->component_gain=3.0;
             const int repeats=self->fault==116?12:1;
             for(int n=0;n<repeats;++n) self->handler->performEdit(id,0.75);
-            self->handler->endEdit(id);
+            if(!end_release) self->handler->endEdit(id);
         }
         trace(25);
     }
@@ -229,7 +239,8 @@ public:
         if (!control() || !context || (value && handler)) return kResultFalse;
         if(value)value->addRef();if(handler)handler->release();handler=value;
         if(fault==104 || fault==105 || fault==118 || fault==119) latency_handler=handler;
-        if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116 || (fault>=131 && fault<=135) || fault==141 || fault==142 || fault==touched_automation_variant)) {
+        if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116 || (fault>=131 && fault<=135) || fault==141 || fault==142 || fault==touched_automation_variant ||
+            (fault==held_instrument_variant && std::getenv("HEX_ORIGINAL_EDITOR_TOUCH")))) {
             CFRunLoopTimerContext timer_context{};timer_context.info=this;
             edit_timer=CFRunLoopTimerCreate(nullptr,CFAbsoluteTimeGetCurrent(),0.001,0,0,edit_tick,&timer_context);
             if(!edit_timer) return kResultFalse;

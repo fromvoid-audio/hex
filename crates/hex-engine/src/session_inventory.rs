@@ -381,6 +381,7 @@ pub struct PreparedSessionInventory {
     mutable_history_retarget_storage_bytes: usize,
     instrument_automation_storage_bytes: usize,
     instrument_automation_indices: [Option<u16>; hex_project::MAX_TRACKS],
+    armed_instrument_index: Option<usize>,
     audio_clips: Vec<PreparedSessionAudioClip>,
     work: SessionWorkEnvelope,
     contains_streamed_sources: bool,
@@ -510,6 +511,7 @@ impl PreparedSessionInventory {
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
         shared_contexts: Arc<crate::shared_analytic::SharedAnalyticContextTable>,
         samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
+        native_input: Option<crate::NativeParameterInputTarget>,
     ) -> Result<Self, crate::Invalid> {
         Self::prepare_with_resolver_scoped(
             project,
@@ -519,6 +521,7 @@ impl PreparedSessionInventory {
             Some(shared_contexts),
             |asset, rate| sources.resolve(asset, rate),
             samplers,
+            native_input,
         )
     }
 
@@ -541,6 +544,7 @@ impl PreparedSessionInventory {
             shared_contexts,
             resolve_source,
             None,
+            None,
         )
     }
 
@@ -556,6 +560,7 @@ impl PreparedSessionInventory {
             u32,
         ) -> Result<PreparedAudioSourceRef<'a>, crate::Invalid>,
         samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
+        native_input: Option<crate::NativeParameterInputTarget>,
     ) -> Result<Self, crate::Invalid> {
         crate::device_automation::validate_project(project)?;
         crate::gain_envelope::validate_project(project)?;
@@ -596,7 +601,8 @@ impl PreparedSessionInventory {
         )?;
         let mut instrument_track_indices = BTreeMap::new();
         let mut instrument_automation_storage_bytes = 0;
-        for track in project.tracks() {
+        let mut armed_instrument_index = None;
+        for (index, track) in project.tracks().iter().enumerate() {
             let slot = track.instrument();
             let source_config = slot.and_then(|device| source_instruments.get_mut(&device.id()));
             let has_receiver = track
@@ -628,8 +634,21 @@ impl PreparedSessionInventory {
                 track,
                 mutable_runtime.as_deref(),
                 instrument_registry,
+                native_input,
                 &mut instrument_automation_storage_bytes,
             )?;
+            if let Some(target) = native_input
+                && let Some(program) = automation.as_ref()
+                && program.device == target.device()
+                && program.values.input_target() == Some(target.target())
+                && matches!(
+                    target.identity().owner(),
+                    hex_lattice::ProcessorChainOwner::Source(owner)
+                        if track.source_id().is_some_and(|source| source.value() == owner)
+                )
+            {
+                armed_instrument_index = Some(index);
+            }
             let resource_factory_inline_bound = if samplers
                 .is_some_and(|sources| sources.device_scope().is_some())
                 && slot.is_some_and(|device| !device.state().asset_references().is_empty())
@@ -1320,6 +1339,7 @@ impl PreparedSessionInventory {
             mutable_history_retarget_storage_bytes,
             instrument_automation_storage_bytes,
             instrument_automation_indices,
+            armed_instrument_index,
             audio_clips,
             work,
             contains_streamed_sources,
@@ -1368,8 +1388,9 @@ impl PreparedSessionInventory {
 
     pub(crate) fn instrument_automation_construction_bytes(
         project: &Project,
+        native_input: Option<crate::NativeParameterInputTarget>,
     ) -> Result<usize, crate::Invalid> {
-        instrument_automation::construction_bytes(project)
+        instrument_automation::construction_bytes(project, native_input)
     }
 
     /// Program backing only; this does not audit the complete native graph.
@@ -1426,6 +1447,14 @@ impl PreparedSessionInventory {
             .as_ref()
             .filter(|program| program.device == device)
             .map(|program| &program.values)
+    }
+
+    /// The exact receiving program chosen during control-side preparation.
+    pub(crate) fn armed_instrument_automation(
+        &self,
+        target: crate::NativeParameterInputTarget,
+    ) -> Option<&hex_lattice::PreparedParameterAutomation> {
+        self.instrument_automation_at(self.armed_instrument_index?, target.device())
     }
 
     pub(crate) fn resource_factory_inline_bytes(&self) -> Result<usize, crate::AudioStorageError> {

@@ -938,19 +938,15 @@ impl MutableInstrumentTrackRuntime {
         )?;
 
         events.sort_unstable_by_key(|event| {
-            let (offset, is_on, occurrence_id) = match *event {
-                NativeInstrumentEvent::Expression { frame_offset, .. } => (frame_offset, false, 0),
-                NativeInstrumentEvent::NoteOff {
-                    frame_offset,
-                    occurrence_id,
-                } => (frame_offset, false, occurrence_id),
-                NativeInstrumentEvent::NoteOn {
-                    frame_offset,
-                    occurrence_id,
-                    ..
-                } => (frame_offset, true, occurrence_id),
+            let (rank, occurrence_id) = match *event {
+                NativeInstrumentEvent::Expression { .. } => (0, 0),
+                NativeInstrumentEvent::NoteOff { occurrence_id, .. } => (1, occurrence_id),
+                NativeInstrumentEvent::NoteOn { occurrence_id, .. } => (2, occurrence_id),
+                NativeInstrumentEvent::NotePressure { occurrence_id, .. } => {
+                    (3, occurrence_id.get())
+                }
             };
-            (offset, is_on, occurrence_id)
+            (event.frame_offset(), rank, occurrence_id)
         });
         let gains = volume::gains_for_segment(
             &self.pair,

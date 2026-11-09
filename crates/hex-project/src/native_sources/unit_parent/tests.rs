@@ -261,7 +261,7 @@ fn source_depth_and_node_limits_refuse_atomically() {
 }
 
 #[test]
-fn bound_singleton_refuses_child_insertion_but_allows_noop_membership() {
+fn bound_source_child_edit_commits_only_after_preparation_and_updates_the_binding() {
     let (mut editor, source, ids) = fixture(1, 0);
     let Created::Track(track) = editor
         .execute(Command::AddMidiTrack {
@@ -287,12 +287,22 @@ fn bound_singleton_refuses_child_insertion_but_allows_noop_membership() {
     let before = editor.project().snapshot();
     assert_eq!(
         editor
-            .execute(Command::InsertNestedDevice {
-                parent: ids[0],
-                state: crate::default_instrument_state().unwrap()
-            })
+            .execute_prepared(
+                Command::InsertNestedDevice {
+                    parent: ids[0],
+                    state: crate::default_instrument_state().unwrap()
+                },
+                |candidate| {
+                    assert_eq!(
+                        candidate.native_source(source).unwrap().devices().count(),
+                        2
+                    );
+                    assert_eq!(candidate.track(track).unwrap().source_id(), Some(source));
+                    Err::<(), _>(Invalid("prepared source edit refused"))
+                },
+            )
             .unwrap_err(),
-        Invalid("editing bound source chains is not supported yet")
+        Invalid("prepared source edit refused")
     );
     assert_eq!(editor.project().snapshot(), before);
     assert!(editor.can_redo());
@@ -305,4 +315,44 @@ fn bound_singleton_refuses_child_insertion_but_allows_noop_membership() {
     assert_eq!(editor.project().snapshot(), before);
     assert!(editor.can_redo());
     assert!(editor.redo());
+    let Created::Device(child) = editor
+        .execute(Command::InsertNestedDevice {
+            parent: ids[0],
+            state: crate::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("child")
+    };
+    assert_eq!(
+        editor
+            .project()
+            .native_source(source)
+            .unwrap()
+            .post_instrument_effects()[0]
+            .id(),
+        child
+    );
+    assert_eq!(
+        editor.project().track(track).unwrap().source_id(),
+        Some(source)
+    );
+    assert!(editor.undo());
+    assert!(
+        editor
+            .project()
+            .native_source(source)
+            .unwrap()
+            .is_singleton()
+    );
+    assert!(editor.redo());
+    assert_eq!(
+        editor
+            .project()
+            .native_source(source)
+            .unwrap()
+            .post_instrument_effects()[0]
+            .id(),
+        child
+    );
 }

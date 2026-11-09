@@ -126,14 +126,22 @@ pub use device_modulation::{
     ModulationRange, ModulationRouteId, ModulationSourceId, Modulator,
 };
 mod device_inventory;
+pub use device_inventory::{DeviceLocation, DeviceOwner};
+mod device_unit_template;
 pub use device_automation::{
     AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
     DeviceAutomation, DeviceAutomationReplacement, DeviceAutomationTarget,
     DeviceAutomationTouchSpan, DeviceAutomationTouchStep, MAX_DEVICE_AUTOMATION_LANES,
     MAX_DEVICE_AUTOMATION_POINTS, MAX_DEVICE_AUTOMATION_POINTS_PER_LANE,
-    MAX_DEVICE_AUTOMATION_TOUCH_SPANS, validate_device_automation,
+    MAX_DEVICE_AUTOMATION_TOUCH_SPANS, MAX_DEVICE_AUTOMATION_TOUCH_STEPS_PER_LANE,
+    validate_device_automation,
 };
 pub use device_inventory::MAX_SERIAL_DEVICE_DEPTH;
+pub use device_unit_template::{
+    DeviceUnitClass, MAX_PORTABLE_DEVICE_UNIT_ASSETS, MAX_PORTABLE_DEVICE_UNIT_NODES,
+    MAX_PORTABLE_DEVICE_UNIT_PAYLOAD_BYTES, PortableDeviceAsset, PortableDeviceNode,
+    PortableDeviceUnit,
+};
 mod device_clipboard;
 pub use device_clipboard::{DeviceChainOwner, DeviceClipboard, DeviceSelectionIds};
 mod device_comparison;

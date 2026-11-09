@@ -510,6 +510,7 @@ impl SessionPlayback {
                     .flatten()
                     .all(|runtime| runtime.committed_is_quiescent())
                 && !self.has_analytic_release_output()
+                && !self.source_effects.has_monitor_tail()
                 && self
                     .device_chains
                     .iter()
@@ -627,6 +628,7 @@ impl SessionPlayback {
             for chain in self
                 .device_chains
                 .iter_mut()
+                .chain(self.source_effects.chains_mut())
                 .chain(self.return_chains.iter_mut())
                 .chain(std::iter::once(&mut self.main_chain))
             {
@@ -757,6 +759,9 @@ impl SessionPlayback {
             .checked_add(width)
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
         for chain in &mut self.device_chains {
+            chain.begin_block();
+        }
+        for chain in self.source_effects.chains_mut() {
             chain.begin_block();
         }
         for chain in &mut self.return_chains {
@@ -1155,6 +1160,9 @@ impl SessionPlayback {
         for chain in &mut self.device_chains {
             chain.commit_block();
         }
+        for chain in self.source_effects.chains_mut() {
+            chain.commit_block();
+        }
         for chain in &mut self.return_chains {
             chain.commit_block();
         }
@@ -1401,7 +1409,9 @@ impl SessionPlayback {
             let smoothing = self.track_fader_scratch[index].active()
                 && !track.has_gain_automation()
                 && recording_override.is_none();
-            let buffered = shared_source
+            let has_source_effects = self.source_effects.has_chain(index);
+            let buffered = has_source_effects
+                || shared_source
                 || live_target
                 || stateful_effects
                 || mutable_active
@@ -1409,8 +1419,11 @@ impl SessionPlayback {
                 || track.has_gain_automation()
                 || smoothing
                 || self.device_metering;
-            let ordered =
-                shared_source || live_target || smoothing || track.requires_ordered_processing();
+            let ordered = has_source_effects
+                || shared_source
+                || live_target
+                || smoothing
+                || track.requires_ordered_processing();
             let already_mixed = self.device_metering
                 && !ordered
                 && !stateful_effects
@@ -1444,10 +1457,11 @@ impl SessionPlayback {
                 || !matches!(midi_route.owner, RouteOwner::Silence);
             let has_current_effect_tail = !has_current_route
                 && !has_current_release
-                && self
-                    .device_chains
-                    .get(index)
-                    .is_some_and(|chain| !chain.committed_range_is_quiescent(0..chain.len()));
+                && (self.source_effects.has_tail(index)
+                    || self
+                        .device_chains
+                        .get(index)
+                        .is_some_and(|chain| !chain.committed_range_is_quiescent(0..chain.len())));
             if (buffered || ordered)
                 && (has_current_route
                     || has_current_release
@@ -1469,7 +1483,7 @@ impl SessionPlayback {
                             suppressions: &self.suppression_scratch,
                             continuations: &self.analytic_continuations,
                             index,
-                            raw: live_target || shared_source || smoothing,
+                            raw: has_source_effects || live_target || shared_source || smoothing,
                             loop_fade,
                             timing: &timing,
                             table,
@@ -1506,6 +1520,16 @@ impl SessionPlayback {
                     if self.device_metering {
                         track.instrument_meter.observe_input(render_output);
                     }
+                    // For a prepared source unit, isolate the complete generator
+                    // sum from the receiver's own clips before its effects run.
+                    let mut generator_buffer;
+                    let mut isolated = if has_source_effects {
+                        generator_buffer = [[0.0; 2]; 256];
+                        Some(&mut generator_buffer[..output.len()])
+                    } else {
+                        None
+                    };
+                    let generator = isolated.as_deref_mut().unwrap_or(&mut *render_output);
                     for release in &self.release_scratch[first_release..release_cursor] {
                         if release.location.tail_group().is_none() {
                             render_release_raw(
@@ -1516,7 +1540,7 @@ impl SessionPlayback {
                                 &self.analytic_continuations,
                                 performance_frame,
                                 self.playing,
-                                render_output,
+                                generator,
                             )?;
                         }
                     }
@@ -1532,7 +1556,7 @@ impl SessionPlayback {
                             suppressions: &self.suppression_scratch,
                             continuations: &self.analytic_continuations,
                             index,
-                            raw: live_target || shared_source || smoothing,
+                            raw: has_source_effects || live_target || shared_source || smoothing,
                             loop_fade,
                             timing: &timing,
                             table,
@@ -1543,7 +1567,7 @@ impl SessionPlayback {
                         &mut self.spans,
                         performance_frame,
                         arrangement_frame,
-                        render_output,
+                        generator,
                     )?;
                     if self.source_input_receiver() == Some(index) {
                         let authored = self
@@ -1564,7 +1588,7 @@ impl SessionPlayback {
                             &mut self.mutable_events,
                             authored,
                             performance_frame,
-                            render_output,
+                            generator,
                             &timing,
                             true,
                             None,
@@ -1587,6 +1611,7 @@ impl SessionPlayback {
                             performance_frame,
                             arrangement_frame,
                             arrangement_loop_pass,
+                            transient: None,
                             chase_at_start: self.interactive_start_frame == Some(performance_frame),
                             loop_region: if self.linear_arrangement_export {
                                 None
@@ -1596,7 +1621,10 @@ impl SessionPlayback {
                             timing: &timing,
                         },
                         index,
-                        render_output,
+                        generator,
+                        self.native_parameter_state
+                            .as_deref_mut()
+                            .and_then(|state| state.processing.as_mut()),
                     )?;
                     if let Some(keyboard) = self.computer_keyboard.as_mut().filter(|keyboard| {
                         !keyboard.is_source_input()
@@ -1606,7 +1634,7 @@ impl SessionPlayback {
                             .musical_clock(&timing, performance_frame, true)
                             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                         keyboard
-                            .render(render_output, Some(&clock))
+                            .render(generator, Some(&clock))
                             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     }
                     for keyboard in self
@@ -1619,8 +1647,17 @@ impl SessionPlayback {
                             .resources(keyboard.track())
                             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                         keyboard
-                            .render_with_resources(render_output, None, &resources)
+                            .render_with_resources(generator, None, &resources)
                             .map_err(|e| SessionPlaybackError::Arrangement(e.0))?;
+                    }
+                    if let Some(generated) = isolated {
+                        self.source_effects
+                            .process_with_clock(index, generated, &effect_clock)
+                            .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                        for (target, source) in render_output.iter_mut().zip(generated) {
+                            target[0] += source[0];
+                            target[1] += source[1];
+                        }
                     }
                     track.apply_instrument_output_gain(render_output);
                     if self.device_metering {
@@ -2535,6 +2572,7 @@ struct MutableInstrumentChunkContext<'a, T: ?Sized> {
     performance_frame: u64,
     arrangement_frame: u64,
     arrangement_loop_pass: u64,
+    transient: Option<hex_lattice::NativeTransientInput>,
     chase_at_start: bool,
     loop_region: Option<hex_project::LoopRegion>,
     timing: &'a T,
@@ -2591,6 +2629,41 @@ pub(super) fn collect_console_midi_onsets<T: MidiTiming + ?Sized>(
 }
 
 fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?Sized>(
+    mut context: MutableInstrumentChunkContext<'_, T>,
+    index: usize,
+    output: &mut [Frame],
+    processing: Option<&mut crate::native_parameter_input::Processing>,
+) -> Result<(), SessionPlaybackError> {
+    let origin = (
+        context.arrangement_frame,
+        context.arrangement_loop_pass,
+        context.performance_frame,
+    );
+    context.transient = processing.as_deref().and_then(|processing| {
+        let track = context.revision.arrangement().tracks().get(index)?;
+        if output.is_empty()
+            || !track.receives_source_audio()
+            || context
+                .runtimes
+                .get(index)
+                .and_then(Option::as_ref)
+                .is_none()
+        {
+            return None;
+        }
+        processing.for_source(track.source_id(), track.instrument_id)
+    });
+    let applied = context.transient.is_some();
+    render_mutable_instrument_inner(context, index, output)?;
+    if applied && let Some(processing) = processing {
+        processing
+            .source_applied(origin.0, origin.1, origin.2)
+            .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+    }
+    Ok(())
+}
+
+fn render_mutable_instrument_inner<T: crate::prepared_tempo::MidiTempoBreaks + ?Sized>(
     context: MutableInstrumentChunkContext<'_, T>,
     index: usize,
     output: &mut [Frame],
@@ -2611,6 +2684,7 @@ fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?
         performance_frame,
         arrangement_frame,
         arrangement_loop_pass,
+        transient,
         chase_at_start,
         loop_region,
         timing,
@@ -2756,7 +2830,7 @@ fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?
         },
         output.len(),
     )?;
-    let parameter_block = parameter_context.block();
+    let parameter_block = parameter_context.block_with_input(transient)?;
     let parameter_values = parameter_block
         .as_ref()
         .map(|values| values as &dyn hex_lattice::NativeParameterAutomation);
