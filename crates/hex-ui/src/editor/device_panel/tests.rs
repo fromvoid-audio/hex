@@ -6235,6 +6235,30 @@ fn open_operator_options(visual: &mut VisualTestContext, device: DeviceId) {
 #[gpui::test]
 fn modulation_panel_adds_and_maps_an_lfo_without_editing_base_values(cx: &mut TestAppContext) {
     use hex_devices::utility::parameter;
+    assert_modulation_mapping(
+        cx,
+        "lfo",
+        hex_engine::lfo_modulator::TYPE_ID,
+        &[parameter::GAIN, parameter::WIDTH],
+    );
+}
+
+#[gpui::test]
+fn modulation_panel_adds_and_maps_an_envelope_follower(cx: &mut TestAppContext) {
+    assert_modulation_mapping(
+        cx,
+        "follower",
+        hex_engine::follower_modulator::TYPE_ID,
+        &[hex_devices::utility::parameter::GAIN],
+    );
+}
+
+fn assert_modulation_mapping(
+    cx: &mut TestAppContext,
+    source_kind: &str,
+    type_id: hex_lattice_contract::DeviceTypeId,
+    targets: &[hex_lattice_contract::ParameterId],
+) {
     let (service, state, track, device, _, _) = actor_utility_fixture();
     let original = state.project.device(device).unwrap().state().clone();
     let (handle, editor) = actor_editor_window(cx, service, state, track);
@@ -6250,7 +6274,7 @@ fn modulation_panel_adds_and_maps_an_lfo_without_editing_base_values(cx: &mut Te
         bounds
     };
     click(&mut visual, "device-modulator-toggle".into());
-    click(&mut visual, format!("add-lfo-{}", device.value()));
+    click(&mut visual, format!("add-{source_kind}-{}", device.value()));
     let source = |view: &EditorView| {
         view.state
             .as_ref()?
@@ -6270,12 +6294,15 @@ fn modulation_panel_adds_and_maps_an_lfo_without_editing_base_values(cx: &mut Te
     pump_until(&editor, cx, |view| source(view).is_some());
     let source_id = editor.read_with(cx, |view, _| source(view).unwrap());
     visual.run_until_parked();
-    click(&mut visual, format!("lfo-{}-map", source_id.value()));
+    click(
+        &mut visual,
+        format!("{source_kind}-{}-map", source_id.value()),
+    );
     assert_eq!(
         editor.read_with(cx, |view, _| view.device_panel.mapping_source),
         Some((device, source_id))
     );
-    for (count, parameter) in [parameter::GAIN, parameter::WIDTH].into_iter().enumerate() {
+    for (count, parameter) in targets.iter().copied().enumerate() {
         let bounds = click(
             &mut visual,
             format!("map-target-{}-{}", device.value(), parameter.value()),
@@ -6316,6 +6343,7 @@ fn modulation_panel_adds_and_maps_an_lfo_without_editing_base_values(cx: &mut Te
     editor.read_with(cx, |view, _| {
         let device = view.state.as_ref().unwrap().project.device(device).unwrap();
         assert_eq!(device.state(), &original);
+        assert_eq!(device.modulation().sources()[0].state.type_id(), type_id);
         assert!(
             device
                 .modulation()
@@ -6324,12 +6352,12 @@ fn modulation_panel_adds_and_maps_an_lfo_without_editing_base_values(cx: &mut Te
                 .all(|route| route.source == source_id)
         );
     });
-    click(&mut visual, format!("lfo-{}-map", source_id.value()));
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
     assert!(
         visual
             .debug_bounds(Box::leak(
-                format!("map-target-{}-{}", device.value(), parameter::GAIN.value())
-                    .into_boxed_str()
+                format!("map-target-{}-{}", device.value(), targets[0].value()).into_boxed_str()
             ))
             .is_none()
     );
