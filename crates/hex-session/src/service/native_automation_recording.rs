@@ -212,6 +212,8 @@ pub enum DeviceAutomationTakeProgress {
     Backpressured,
     Sealing,
     Pending,
+    /// The original editor scope ended without a confirmed point or edit.
+    Unchanged,
     Committed,
     /// The edit committed but a custody recheck refused release.
     CommittedWithRetainedCustody(PathBuf),

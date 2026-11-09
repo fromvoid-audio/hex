@@ -102,6 +102,8 @@ fn active(scope: DeviceAutomationTakeScope, source: DeviceAutomationSource) -> S
             ended: false,
             failed_observations: [None; 2],
             failed_editor: None,
+            editor_request: None,
+            editor_start_error: None,
             interrupted: false,
             sealing: false,
             outcome: None,
