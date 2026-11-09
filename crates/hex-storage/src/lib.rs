@@ -78,7 +78,7 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = SOURCE_EFFECT_TOUCH_WITH_AHD_RELEASE_SCHEMA_VERSION;
 
 /// Schema70 stores an independent original source span for signed musical event placement.
 pub const MUSICAL_EVENT_SOURCE_SCHEMA_VERSION: u32 = 70;
@@ -148,6 +148,10 @@ pub const NATIVE_SOURCE_EFFECT_TOUCH_SCHEMA_VERSION: u32 = 100;
 pub const RAMP_MODULATOR_SCHEMA_VERSION: u32 = 101;
 /// Schema102 preserves source effect touches around a schema101 Ramp bank.
 pub const SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION: u32 = 102;
+/// Schema103 admits the note-off AHD source.
+pub const AHD_RELEASE_MODULATOR_SCHEMA_VERSION: u32 = 103;
+/// Schema104 preserves recorded source effect touches with an AHD bank.
+pub const SOURCE_EFFECT_TOUCH_WITH_AHD_RELEASE_SCHEMA_VERSION: u32 = 104;
 
 fn contains_larger_device_state(project: &Project) -> bool {
     schema::device_assets::authored_states(project)
@@ -214,9 +218,12 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// Mix uses schema97. Note Counter uses schema98.
 /// Native source effect touches use schema100. Ramp uses schema101, or
 /// schema102 in a project with recorded native source effect touches.
+/// AHD on Release uses schema103, or schema104 alongside those touches.
 pub fn schema_version_for(project: &Project) -> u32 {
     if schema::device_automation_touch::contains_native_source_effect(project) {
         schema::device_automation_touch::source_effect_schema_version(project)
+    } else if schema::device_modulation::contains_ahd_release(project) {
+        AHD_RELEASE_MODULATOR_SCHEMA_VERSION
     } else if schema::device_modulation::contains_ramp(project) {
         RAMP_MODULATOR_SCHEMA_VERSION
     } else if schema::device_modulation::contains_note_counter(project) {
@@ -470,7 +477,8 @@ pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
             &schema::device_automation_touch::encode_native_source_effect(project)?,
         );
     }
-    if schema::device_modulation::contains_ramp(project)
+    if schema::device_modulation::contains_ahd_release(project)
+        || schema::device_modulation::contains_ramp(project)
         || schema::device_modulation::contains_note_counter(project)
         || schema::device_modulation::contains_mix(project)
         || schema::device_modulation::contains_buttons(project)
@@ -776,6 +784,7 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
     let project = match header.version {
         NATIVE_SOURCE_EFFECT_TOUCH_SCHEMA_VERSION
         | SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION
+        | SOURCE_EFFECT_TOUCH_WITH_AHD_RELEASE_SCHEMA_VERSION
             if !inside_envelope =>
         {
             schema::device_automation_touch::decode_native_source_effect(bytes, header.version)
@@ -804,7 +813,10 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
         | BUTTONS_MODULATOR_SCHEMA_VERSION
         | MIX_MODULATOR_SCHEMA_VERSION
         | NOTE_COUNTER_MODULATOR_SCHEMA_VERSION
-        | RAMP_MODULATOR_SCHEMA_VERSION => schema::device_modulation::decode(bytes, header.version),
+        | RAMP_MODULATOR_SCHEMA_VERSION
+        | AHD_RELEASE_MODULATOR_SCHEMA_VERSION => {
+            schema::device_modulation::decode(bytes, header.version)
+        }
         SERIAL_DEVICE_SCHEMA_VERSION => schema::serial_units::decode(bytes),
         DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION | VST3_AUTOMATION_TOUCH_SCHEMA_VERSION => {
             schema::device_automation_touch::decode(bytes, header.version)
@@ -941,7 +953,9 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
     }
     if !matches!(
         header.version,
-        NATIVE_SOURCE_EFFECT_TOUCH_SCHEMA_VERSION | SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION
+        NATIVE_SOURCE_EFFECT_TOUCH_SCHEMA_VERSION
+            | SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION
+            | SOURCE_EFFECT_TOUCH_WITH_AHD_RELEASE_SCHEMA_VERSION
     ) && schema::device_automation_touch::contains_native_source_effect(&project)
     {
         return Err(StorageError::Invalid(
