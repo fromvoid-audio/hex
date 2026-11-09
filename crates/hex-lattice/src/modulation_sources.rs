@@ -81,6 +81,7 @@ enum SourceState {
         timing: Timing,
     },
     Follower(EnvelopeFollower),
+    AudioRate,
     Macro(f32),
     Random(RandomHold),
 }
@@ -108,6 +109,7 @@ impl SourceState {
             // The candidate's authored value is complete. There is no
             // temporal history to carry from the prior graph.
             (Self::Macro(_), Self::Macro(_)) => {}
+            (Self::AudioRate, Self::AudioRate) => {}
             (Self::Random(random), Self::Random(old)) => random.inherit_history(&old),
             _ => return false,
         }
@@ -241,6 +243,20 @@ impl PreparedModulationSource {
             sample_rate: f64::from(sample_rate),
         })
     }
+
+    /// A memoryless bipolar source reads the pre-device signal at each sample.
+    /// Its mono tap averages both stereo channels and bounds the result to ±1.
+    pub fn audio_rate(id: ModulationSourceId, sample_rate: u32) -> Result<Self, Error> {
+        if sample_rate == 0 {
+            return Err(Error::InvalidParameterValue);
+        }
+        Ok(Self {
+            id,
+            initial: SourceState::AudioRate,
+            sample_rate: f64::from(sample_rate),
+        })
+    }
+
     /// A manual source holds its finite normalized value at each sample.
     pub fn macro_value(
         id: ModulationSourceId,
@@ -392,9 +408,12 @@ impl ModulationSourceBank {
             chunk_frames,
             last_frames: 0,
             active: false,
-            follows_input: sources
-                .iter()
-                .any(|source| matches!(source.initial, SourceState::Follower(_))),
+            follows_input: sources.iter().any(|source| {
+                matches!(
+                    source.initial,
+                    SourceState::Follower(_) | SourceState::AudioRate
+                )
+            }),
         };
         if bank
             .storage_bytes()?
@@ -564,6 +583,13 @@ impl ModulationSourceBank {
                 SourceState::Follower(follower) => follower
                     .render(input.ok_or(Error::InvalidParameterValue)?, output)
                     .map_err(|_| Error::InvalidParameterValue)?,
+                SourceState::AudioRate => {
+                    let input = input.ok_or(Error::InvalidParameterValue)?;
+                    for (&[left, right], sample) in input.iter().zip(output) {
+                        // Scale before addition to avoid overflow for finite input.
+                        *sample = (left * 0.5 + right * 0.5).clamp(-1.0, 1.0);
+                    }
+                }
                 SourceState::Macro(value) => output.fill(*value),
                 SourceState::Random(random) => random.render(output),
             }
@@ -991,6 +1017,45 @@ mod tests {
         bank.render_chunk(1).unwrap();
         assert_eq!(bank.samples(prepared.id).unwrap(), &[1.0]);
     }
+    #[test]
+    fn audio_rate_tap_keeps_bipolar_samples_and_refuses_malformed_input_before_render() {
+        let id = ModulationSourceId::new(1).unwrap();
+        assert!(PreparedModulationSource::audio_rate(id, 0).is_err());
+        let source = PreparedModulationSource::audio_rate(id, 48_000).unwrap();
+        let mut bank = ModulationSourceBank::new(&[source], 6).unwrap();
+        let input = [
+            [0.75, 0.25],
+            [0.75, -0.75],
+            [-0.5, -1.0],
+            [-2.0, -1.0],
+            [f32::MAX, f32::MAX],
+            [f32::MAX, -f32::MAX],
+        ];
+        let expected = [0.5, 0.0, -0.75, -1.0, 1.0, 0.0];
+        bank.begin();
+        bank.render_chunk_with_input(input.len(), None, Some(&input))
+            .unwrap();
+        assert_eq!(bank.samples(id).unwrap(), expected);
+        let mut invalid = input;
+        invalid[5][1] = f32::NAN;
+        for invalid in [None, Some(&invalid[..]), Some(&input[..4])] {
+            assert!(
+                bank.render_chunk_with_input(input.len(), None, invalid)
+                    .is_err()
+            );
+            assert_eq!(bank.samples(id).unwrap(), expected);
+        }
+        bank.rollback();
+
+        bank.begin();
+        for (start, end) in [(0, 3), (3, 4), (4, 6)] {
+            bank.render_chunk_with_input(end - start, None, Some(&input[start..end]))
+                .unwrap();
+            assert_eq!(bank.samples(id).unwrap(), &expected[start..end]);
+        }
+        bank.commit().unwrap();
+    }
+
     struct TempoClock {
         start: usize,
         invalid: bool,
