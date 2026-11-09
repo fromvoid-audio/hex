@@ -27,10 +27,16 @@ fn fm4_oscillator_phases_follow_sample_routes_and_retry_without_allocating() {
     exercise_fm4_sample_routes(Fm4Targets::Phases);
 }
 
+#[test]
+fn fm4_existing_edges_follow_signed_sample_routes_and_retry_without_allocating() {
+    exercise_fm4_sample_routes(Fm4Targets::Edges);
+}
+
 enum Fm4Targets {
     Carriers,
     Levels,
     Phases,
+    Edges,
 }
 
 fn exercise_fm4_sample_routes(targets: Fm4Targets) {
@@ -55,6 +61,10 @@ fn exercise_fm4_sample_routes(targets: Fm4Targets) {
             ],
             2.0,
         ),
+        Fm4Targets::Edges => (
+            [parameter::modulation(2, 1), parameter::modulation(3, 2)],
+            0.125,
+        ),
     };
     let patch = |state: &NativeDeviceState, weights: [f32; 2]| {
         let snapshot = DeviceParameterSnapshot::new(&[
@@ -74,7 +84,12 @@ fn exercise_fm4_sample_routes(targets: Fm4Targets) {
             )
             .unwrap();
     }
-    let state = patch(&original, [0.5; 2]);
+    let base = if matches!(targets, Fm4Targets::Edges) {
+        [0.25, -0.25]
+    } else {
+        [0.5; 2]
+    };
+    let state = patch(&original, base);
     let factory = FM4_DEFINITION
         .prepare_carrier_runtime(&state, &context)
         .unwrap();
@@ -88,7 +103,10 @@ fn exercise_fm4_sample_routes(targets: Fm4Targets) {
             matches!(
                 descriptor.id.value(),
                 2 | 3 | 5 | 6 | 8 | 9 | 11 | 12 | 29..=32
-            )
+            ) || (!matches!(targets, Fm4Targets::Carriers)
+                && descriptor.id == parameter::modulation(2, 1))
+                || (matches!(targets, Fm4Targets::Edges)
+                    && descriptor.id == parameter::modulation(3, 2))
         );
     }
     let declared = ids.map(|id| ModulationTarget {
@@ -147,6 +165,8 @@ fn exercise_fm4_sample_routes(targets: Fm4Targets) {
             })
         };
         (note(phase(1.0)), note(phase(-1.0)))
+    } else if matches!(targets, Fm4Targets::Edges) {
+        (note([0.5, -0.75]), note([0.0, 0.25]))
     } else {
         (note([0.75, 0.0]), note([0.25, 1.0]))
     };
@@ -206,10 +226,10 @@ fn exercise_fm4_sample_routes(targets: Fm4Targets) {
         ),
         (0, 0, 0, 0)
     );
-    for id in ids {
+    for (id, value) in ids.into_iter().zip(base) {
         assert_eq!(
             FM4_DEFINITION.read_parameter(&state, id).unwrap(),
-            ParameterValue::Float(0.5)
+            ParameterValue::Float(value)
         );
     }
 }
