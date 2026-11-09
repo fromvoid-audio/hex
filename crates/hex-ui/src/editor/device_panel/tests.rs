@@ -6411,7 +6411,10 @@ fn assert_modulation_mapping(
     editor.read_with(cx, |view, _| {
         let project = &view.state.as_ref().unwrap().project;
         let current = project.device(device).unwrap();
-        if matches!(type_id, hex_engine::macro_modulator::TYPE_ID | hex_engine::random_modulator::TYPE_ID) {
+        if matches!(
+            type_id,
+            hex_engine::macro_modulator::TYPE_ID | hex_engine::random_modulator::TYPE_ID
+        ) {
             let bytes = hex_storage::encode(project).unwrap();
             let reopened = hex_storage::decode(&bytes).unwrap();
             assert_eq!(

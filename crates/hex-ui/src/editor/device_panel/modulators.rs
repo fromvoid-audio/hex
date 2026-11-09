@@ -2,7 +2,10 @@
 //! revision-bound edits. A selected mapping source is view state only.
 use super::*;
 use gpui::{AnyElement, SharedString};
-use hex_engine::{follower_modulator as follower, lfo_modulator as lfo, macro_modulator as manual, random_modulator as random};
+use hex_engine::{
+    follower_modulator as follower, lfo_modulator as lfo, macro_modulator as manual,
+    random_modulator as random,
+};
 use hex_lattice_contract::{ParameterId, ParameterModulation};
 use hex_project::{
     Device, DeviceAutomationTarget, DeviceModulation, DeviceModulationRoute, Invalid,
@@ -30,12 +33,19 @@ impl SourceKind {
         }
     }
 
-    fn default_state(self, identity: u64) -> Result<NativeDeviceState, hex_lattice_contract::DeviceContractError> {
+    fn default_state(
+        self,
+        identity: u64,
+    ) -> Result<NativeDeviceState, hex_lattice_contract::DeviceContractError> {
         match self {
             Self::Lfo => lfo::Settings::default().encode(),
             Self::Follower => follower::Settings::default().encode(),
             Self::Macro => manual::Settings::default().encode(),
-            Self::Random => random::Settings { seed: identity, rate_hz: 1.0 }.encode(),
+            Self::Random => random::Settings {
+                seed: identity,
+                rate_hz: 1.0,
+            }
+            .encode(),
         }
     }
 }
@@ -440,7 +450,9 @@ fn apply(
         Edit::Add(kind) => sources.push(Modulator {
             id: ModulationSourceId::new(project.next_identity()).map_err(unsupported)?,
             enabled: true,
-            state: kind.default_state(project.next_identity()).map_err(unsupported)?,
+            state: kind
+                .default_state(project.next_identity())
+                .map_err(unsupported)?,
         }),
         Edit::ToggleSource(id) => {
             let source = find_source(&mut sources, id)?;
