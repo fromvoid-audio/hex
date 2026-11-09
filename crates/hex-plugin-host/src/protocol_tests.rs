@@ -947,7 +947,7 @@ fn edit_receipts_bind_source_prefix_operation_order_and_gesture_without_coalesci
         (62, 9),
         (64, 0),
         (72, 0),
-        (92, 4),
+        (92, 7),
         (96, 17),
     ] {
         let mut bad = body.clone();

@@ -1071,7 +1071,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>touched_automation_variant) return false;next_fault=value;
+        if (value>grouped_effect_variant) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);
