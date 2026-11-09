@@ -145,6 +145,17 @@ public:
         if(!on_thread() || sdk_active || writable || bad.load()) return false;
         int32 index=0;return append(id,offset,value,index);
     }
+    // Editing an input before it is loaned to the SDK. Keep the order and
+    // bounded backing of every other parameter, including offset-zero points.
+    bool erase_input(ParamID id) {
+        if(!on_thread() || sdk_active || writable || bad.load() || !exclusive()) return false;
+        size_t values_kept=0,queues_kept=0;
+        for(size_t n=0;n<points_used;++n)
+            if(values[n].id!=id) values[values_kept++]=values[n];
+        for(size_t n=0;n<queues_used;++n)
+            if(queues[n].id!=id) queues[queues_kept++].id=queues[n].id;
+        points_used=values_kept;queues_used=queues_kept;return true;
+    }
     bool begin_sdk() {
         if(!on_thread() || sdk_active || bad.load() || !exclusive()) return false;
         sdk_active=true;return true;

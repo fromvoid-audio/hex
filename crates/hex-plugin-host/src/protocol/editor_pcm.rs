@@ -5,12 +5,23 @@ use crate::transport::{MAX_PARAMETER_POINTS, wire::HEADER_BYTES};
 use std::io::Read;
 
 pub(crate) const EDITOR_PCM_BIT: u16 = 0x4000;
+pub(crate) const EDITOR_TOUCH_BIT: u16 = 0x2000;
+const EDITOR_RESTORE_BYTES: usize = 24;
 const EDITOR_POINT_BYTES: usize = 32;
 
 struct Layout {
     pcm_end: usize,
     len: usize,
     editor: bool,
+    touch: bool,
+    restore: bool,
+}
+impl Layout {
+    fn extent(&self) -> usize {
+        self.pcm_end
+            + self.len * EDITOR_POINT_BYTES
+            + usize::from(self.restore) * EDITOR_RESTORE_BYTES
+    }
 }
 
 fn layout(header: &[u8; HEADER_BYTES]) -> Result<Layout> {
@@ -19,7 +30,9 @@ fn layout(header: &[u8; HEADER_BYTES]) -> Result<Layout> {
     let frames = usize::from(u16::from_le_bytes([header[6], header[7]]));
     let wire_version = u16::from_le_bytes([header[4], header[5]]);
     let editor = wire_version & EDITOR_PCM_BIT != 0;
-    let version = wire_version & !EDITOR_PCM_BIT;
+    let touch = wire_version & EDITOR_TOUCH_BIT != 0;
+    let restore = header[13] == 1;
+    let version = wire_version & !(EDITOR_PCM_BIT | EDITOR_TOUCH_BIT);
     let parameters = usize::from(u16::from_le_bytes([header[10], header[11]]));
     let len = usize::from(header[12]);
     if !(pcm || terminal)
@@ -28,7 +41,10 @@ fn layout(header: &[u8; HEADER_BYTES]) -> Result<Layout> {
         || !matches!(version, 1 | 2)
         || (version == 1 && parameters != 0)
         || parameters > MAX_PARAMETER_POINTS
-        || header[13..16] != [0; 3]
+        || header[13] > 1
+        || header[14..16] != [0; 2]
+        || (touch && !editor)
+        || (restore && !touch)
         || (parameters != 0 && (frames == 0 || !pcm))
         || (editor && (!pcm || frames == 0))
         || len > MAX_PARAMETER_EDITS
@@ -40,6 +56,8 @@ fn layout(header: &[u8; HEADER_BYTES]) -> Result<Layout> {
         pcm_end: HEADER_BYTES + frames * 8 + parameters * 16,
         len,
         editor,
+        touch,
+        restore,
     })
 }
 
@@ -48,7 +66,7 @@ pub(crate) fn pcm_packet_extent(header: &[u8]) -> Result<usize> {
         .try_into()
         .map_err(|_| Error::Protocol("instance PCM header extent differs"))?;
     let layout = layout(header)?;
-    Ok(layout.pcm_end + layout.len * EDITOR_POINT_BYTES)
+    Ok(layout.extent())
 }
 
 #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
@@ -58,19 +76,49 @@ pub(crate) fn editor_pcm(
     sequence: u64,
     previous: u64,
 ) -> Result<EditorPcm> {
+    decode(bytes, config, sequence, previous, None)
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+pub(crate) fn editor_touch_pcm(
+    bytes: &[u8],
+    config: &Configuration,
+    sequence: u64,
+    previous: u64,
+    plan: EditorTouchPlan,
+    previous_restoration: u64,
+) -> Result<EditorPcm> {
+    decode(
+        bytes,
+        config,
+        sequence,
+        previous,
+        Some((plan, previous_restoration)),
+    )
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+fn decode(
+    bytes: &[u8],
+    config: &Configuration,
+    sequence: u64,
+    previous: u64,
+    touch: Option<(EditorTouchPlan, u64)>,
+) -> Result<EditorPcm> {
     let (header, payload) = bytes
         .split_first_chunk::<HEADER_BYTES>()
         .ok_or(Error::Protocol("missing instance editor PCM header"))?;
     let layout = layout(header)?;
-    if !layout.editor || bytes.len() != layout.pcm_end + layout.len * EDITOR_POINT_BYTES {
+    if !layout.editor || layout.touch != touch.is_some() || bytes.len() != layout.extent() {
         return Err(Error::Protocol(
             "instance editor PCM extent or opt-in differs",
         ));
     }
     // Pass the unchanged ordinary PCM payload through the same strict decoder.
     let mut ordinary = *header;
-    ordinary[5] &= !((EDITOR_PCM_BIT >> 8) as u8);
+    ordinary[5] &= !(((EDITOR_PCM_BIT | EDITOR_TOUCH_BIT) >> 8) as u8);
     ordinary[12] = 0;
+    ordinary[13] = 0;
     let ordinary_reader = ordinary
         .as_slice()
         .chain(&payload[..layout.pcm_end - HEADER_BYTES]);
@@ -102,8 +150,37 @@ pub(crate) fn editor_pcm(
         })?;
         previous = sequence;
     }
+    let restoration = if layout.restore {
+        let (plan, previous) = touch.ok_or(Error::Protocol("unarmed editor restoration"))?;
+        let sequence = u64::from_le_bytes(reader.array()?);
+        let gesture = u64::from_le_bytes(reader.array()?);
+        let parameter = u32::from_le_bytes(reader.array()?);
+        if sequence <= previous
+            || gesture == 0
+            || gesture >= sequence
+            || parameter != plan.parameter
+            || reader.array::<4>()? != [0; 4]
+            || performs
+                .as_slice()
+                .iter()
+                .any(|point| point.id == parameter)
+        {
+            return Err(Error::Protocol("invalid effective editor restoration"));
+        }
+        Some(EditorRestoration {
+            sequence,
+            gesture,
+            parameter,
+        })
+    } else {
+        None
+    };
     reader.end()?;
-    Ok(EditorPcm { block, performs })
+    Ok(EditorPcm {
+        block,
+        performs,
+        restoration,
+    })
 }
 
 #[cfg(test)]
@@ -206,5 +283,41 @@ mod tests {
         let mut reserved = valid;
         *reserved.last_mut().unwrap() = 1;
         assert!(editor_pcm(&reserved, &config, 4, 3).is_err());
+    }
+
+    #[test]
+    fn restoration_reply_requires_exact_touch_mode_target_and_new_end_sequence() {
+        let config = super::super::tests::config();
+        let plan = EditorTouchPlan {
+            scope: std::num::NonZeroU64::MIN,
+            parameter: 0,
+            base: 0.25,
+            reading: false,
+        };
+        let mut bytes = packet(&config, 4, &[]);
+        bytes[5] |= (EDITOR_TOUCH_BIT >> 8) as u8;
+        bytes[13] = 1;
+        bytes.extend(10_u64.to_le_bytes());
+        bytes.extend(8_u64.to_le_bytes());
+        bytes.extend(0_u32.to_le_bytes());
+        bytes.extend([0; 4]);
+        let reply = editor_touch_pcm(&bytes, &config, 4, 0, plan, 9).unwrap();
+        assert_eq!(
+            reply.restoration,
+            Some(EditorRestoration {
+                sequence: 10,
+                gesture: 8,
+                parameter: 0
+            })
+        );
+        assert!(reply.performs.as_slice().is_empty());
+        assert!(editor_pcm(&bytes, &config, 4, 0).is_err());
+        assert!(editor_touch_pcm(&bytes, &config, 4, 0, plan, 10).is_err());
+        let other = EditorTouchPlan {
+            parameter: 1,
+            ..plan
+        };
+        assert!(editor_touch_pcm(&bytes, &config, 4, 0, other, 0).is_err());
+        assert!(editor_touch_pcm(&bytes[..bytes.len() - 1], &config, 4, 0, plan, 0).is_err());
     }
 }

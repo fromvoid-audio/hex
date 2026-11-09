@@ -433,20 +433,32 @@ int main(int argc,char** argv) {
                         const auto index=last_editor_edit(id);
                         return index<applying_edit_count?applying_edits[index].sequence:0;
                     };
-                    const auto stage_edits=[&](size_t later_points=0) {
+                    hex_instance::EditorTouch editor_touch;
+                    const auto stage_edits=[&](size_t later_points=0,
+                            const hex_instance::ParameterPoint* later=nullptr,hex_instance::EditorTouch* touch=nullptr) {
                         applying_edit_count=0;hex_instance::EditEvent event{};
                         while(completed_edit_count+applying_edit_count<completed_edits.size() && instance.peek_parameter_edit(event)) {
+                            if(touch && !touch->can_stage(event)) break;
                             if(event.kind==hex_instance::Perform) {
                                 const auto* info=processing_parameters.find(event.id);
                                 if(!info || (info->flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden))) return false;
+                                const bool takes=touch && touch->would_capture(event) && !touch->masks(event.id);
                                 bool duplicate=false;
+                                size_t projected=parameter_input.size()+later_points;
                                 for(size_t n=0;n<parameter_input.size();++n) {
                                     hex_instance::ParameterPoint point{};if(!parameter_input.point(n,point)) return false;
-                                    if(point.id==event.id && point.offset==0) duplicate=true;
+                                    if(point.id==event.id) {
+                                        if(takes) --projected;
+                                        else if(point.offset==0) duplicate=true;
+                                    }
                                 }
-                                if(parameter_input.size()+later_points>=hex_instance::PARAMETER_POINT_COUNT && !duplicate) break;
+                                if(touch && later) for(size_t n=0;n<later_points;++n)
+                                    if(touch->masks(later[n].id) || (takes && later[n].id==event.id)) --projected;
+                                if(projected>=hex_instance::PARAMETER_POINT_COUNT && !duplicate) break;
+                                if(takes && !parameter_input.erase_input(event.id)) return false;
                                 if(!parameter_input.input(event.id,0,event.normalized)) return false;
                             }
+                            if(touch) touch->applied(event);
                             applying_edits[applying_edit_count++]=event;instance.consume_parameter_edit();
                         }
                         return true;
@@ -807,6 +819,31 @@ int main(int argc,char** argv) {
                         if(!valid || (event_channels && !held_notes.stage(packet.notes,packet.note_count))) {
                             worker_failure.store(ProtocolFailure);break;
                         }
+                        if(!editor_touch.open_quantum(packet.editor_touch)) {
+                            worker_failure.store(ProtocolFailure);break;
+                        }
+                        const auto restore=editor_touch.restore_target();
+                        auto* touch=packet.editor_touch || restore?&editor_touch:nullptr;
+                        if(packet.editor_touch) {
+                            const auto* info=processing_parameters.find(packet.editor_touch->parameter);
+                            if(!info || !info->accepts_authored(static_cast<uint32_t>(info->steps)) ||
+                                (packet.manual_parameter && packet.parameters[0].id==packet.editor_touch->parameter)) {
+                                worker_failure.store(ProtocolFailure);break;
+                            }
+                        }
+                        bool restore_authored=false;
+                        if(restore && restore->reading && packet.authored_parameters) {
+                            for(size_t n=packet.manual_parameter?1:0;n<packet.parameter_count;++n) {
+                                const auto& point=packet.parameters[n];
+                                if(point.offset) break;
+                                if(point.id==restore->parameter) {restore_authored=true;break;}
+                            }
+                        }
+                        if(restore && !restore_authored &&
+                            ((restore->reading && editor_touch.ending_in_scope()) ||
+                             packet.parameter_count==hex_instance::PARAMETER_POINT_COUNT)) {
+                            worker_failure.store(ProtocolFailure);break;
+                        }
                         // Each transport context starts an SDK call, but the
                         // copied exchange and its reply remain one quantum.
                         packet.reply_parameter_count=0;
@@ -821,9 +858,13 @@ int main(int argc,char** argv) {
                             }
                             while(next_parameter<packet.parameter_count && static_cast<size_t>(packet.parameters[next_parameter].offset)<end) {
                                 const auto& point=packet.parameters[next_parameter++];
-                                if(!parameter_input.input(point.id,point.offset-static_cast<int32_t>(first),point.normalized)) valid=false;
+                                if((!touch || !touch->masks(point.id)) &&
+                                    !parameter_input.input(point.id,point.offset-static_cast<int32_t>(first),point.normalized)) valid=false;
                             }
-                            if(!valid || (!slice && !stage_edits(packet.parameter_count-next_parameter))) {
+                            if(!slice && restore && !restore_authored &&
+                                !parameter_input.input(restore->parameter,0,restore->base)) valid=false;
+                            if(!valid || (!slice && !stage_edits(packet.parameter_count-next_parameter,
+                                packet.parameters.data()+next_parameter,touch))) {
                                 worker_failure.store(ProtocolFailure);break;
                             }
                             const size_t first_note=next_note;
@@ -886,6 +927,7 @@ int main(int argc,char** argv) {
                             wire::sample(packet.bytes.data()+wire::header_size+n*8,output_left[n]);
                             wire::sample(packet.bytes.data()+wire::header_size+n*8+4,output_right[n]);
                         }
+                        if(restore) packet.editor_restore=editor_touch.processed();
                         if(packet.observe_editor_pcm) {
                             // An overwritten offset-zero value never entered
                             // the SDK, even though its editor callback was consumed.
