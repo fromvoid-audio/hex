@@ -7117,6 +7117,13 @@ fn assert_modulation_mapping(
         let map = format!("lfo-{}-map", source_id.value());
         scroll_to(&mut visual, &map);
         click(&mut visual, map);
+        if device_type == hex_engine::eq::EQ_TYPE_ID {
+            for name in ["input-gain", "output-gain"] {
+                let selector = Box::leak(format!("map-{name}-{}", device.value()).into_boxed_str());
+                assert!(visual.debug_bounds(selector).is_none());
+            }
+            return;
+        }
         let mut previous = active;
         for (target, name) in [
             (
