@@ -97,20 +97,25 @@ fn chunk_transactions_do_not_allocate_or_free() {
 
 #[test]
 fn utility_graph_modulation_transactions_do_not_allocate_or_free() {
-    probe_utility_graph(None);
+    probe_utility_graph(None, false);
 }
 
 #[test]
 fn utility_graph_with_lfo_rate_modulation_does_not_allocate_or_free() {
-    probe_utility_graph(Some(SourceModulationParameter::FreeLfoRate));
+    probe_utility_graph(Some(SourceModulationParameter::FreeLfoRate), false);
 }
 
 #[test]
 fn utility_graph_with_tempo_lfo_rate_modulation_does_not_allocate_or_free() {
-    probe_utility_graph(Some(SourceModulationParameter::TempoLfoRate));
+    probe_utility_graph(Some(SourceModulationParameter::TempoLfoRate), false);
 }
 
-fn probe_utility_graph(rate_route: Option<SourceModulationParameter>) {
+#[test]
+fn utility_graph_with_bipolar_audio_rate_modulation_does_not_allocate_or_free() {
+    probe_utility_graph(None, true);
+}
+
+fn probe_utility_graph(rate_route: Option<SourceModulationParameter>, audio_rate: bool) {
     use hex_devices::utility::{UTILITY_DEFINITION, UTILITY_TYPE_ID, UtilityDefinition, parameter};
     use hex_lattice::PreparedNativeProcessor;
     use hex_lattice::{
@@ -155,12 +160,12 @@ fn probe_utility_graph(rate_route: Option<SourceModulationParameter>) {
         }
         .unwrap();
 
-        let follower = PreparedModulationSource::envelope_follower(
-            ModulationSourceId::new(2).unwrap(),
-            48_000,
-            0.005,
-            0.05,
-        )
+        let input_id = ModulationSourceId::new(2).unwrap();
+        let input = if audio_rate {
+            PreparedModulationSource::audio_rate(input_id, 48_000)
+        } else {
+            PreparedModulationSource::envelope_follower(input_id, 48_000, 0.005, 0.05)
+        }
         .unwrap();
         let manual = PreparedModulationSource::macro_value(
             ModulationSourceId::new(3).unwrap(),
@@ -187,7 +192,7 @@ fn probe_utility_graph(rate_route: Option<SourceModulationParameter>) {
         let prepared = PreparedRuntimeInstance {
             modulation: Some(
                 PreparedModulationState::with_source_routes(
-                    vec![source, follower, manual],
+                    vec![source, input, manual],
                     program,
                     17,
                     &source_routes,
@@ -210,7 +215,7 @@ fn probe_utility_graph(rate_route: Option<SourceModulationParameter>) {
     };
     let (prepared, mut first) = build(LfoWaveform::Sine);
     let (_, mut second) = build(LfoWaveform::Square);
-    let mut frames = [[0.1, -0.1]; 128];
+    let mut frames = [[0.1, if audio_rate { -0.05 } else { -0.1 }]; 128];
     struct Tempo;
     impl hex_lattice::NativeInstrumentClock for Tempo {
         fn beat_at_offset(&self, _: usize) -> Option<u64> {
