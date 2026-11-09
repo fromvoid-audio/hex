@@ -54,6 +54,10 @@ impl SourceEffectStages {
             if instances.is_empty() || instances.len() > hex_project::MAX_DEVICES_PER_TRACK {
                 return Err(Invalid("source effect count is outside the bounded chain"));
             }
+            let owner = hex_lattice::ProcessorChainOwner::Source(recipe.source.value());
+            if instances.iter().any(|instance| instance.owner != owner) {
+                return Err(Invalid("source effect processor belongs to another owner"));
+            }
             if track.instrument_input_gain != 1.0 || track.instrument_output_gain != 1.0 {
                 return Err(Invalid(
                     "source effect recipes require neutral instrument trims",
