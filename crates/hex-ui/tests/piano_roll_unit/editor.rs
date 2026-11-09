@@ -10,6 +10,9 @@ mod midi_group_drag;
 #[path = "../../src/editor/midi_scene.rs"]
 mod midi_scene;
 #[allow(dead_code)]
+#[path = "../../src/editor/midi_selection.rs"]
+mod midi_selection;
+#[allow(dead_code)]
 #[path = "../../src/editor/midi_stroke.rs"]
 mod midi_stroke;
 #[allow(dead_code)]
