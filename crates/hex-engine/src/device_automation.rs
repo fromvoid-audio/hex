@@ -282,6 +282,14 @@ pub(crate) fn validate_project_with_registry(
     project: &hex_project::Project,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
 ) -> Result<(), Invalid> {
+    if project
+        .devices()
+        .any(|device| !device.modulation().is_empty())
+    {
+        return Err(Invalid(
+            "authored device modulation requires playback preparation",
+        ));
+    }
     if project.native_sources().iter().any(|source| {
         source.devices().any(|device| {
             device.automation().iter().any(|lane| {
@@ -324,6 +332,9 @@ pub(crate) fn quote_with_inputs_and_external(
     input: Option<NativeParameterInputTarget>,
     external: &[NativeParameterInputTarget],
 ) -> Result<usize, crate::AudioStorageError> {
+    if !device.modulation().is_empty() {
+        return Err(crate::AudioStorageError::UnsupportedConstructor);
+    }
     let (provider, host, points, _) = counts_with_external(device, input, external)?;
     hex_lattice::PreparedParameterAutomation::quoted_storage_bytes_with_host(provider, host, points)
         .and_then(|bytes| {
@@ -628,6 +639,11 @@ fn prepare_envelopes_with_registry(
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     foreign_preflighted: bool,
 ) -> Result<hex_lattice::PreparedParameterAutomation, Invalid> {
+    if !device.modulation().is_empty() {
+        return Err(Invalid(
+            "authored device modulation requires playback preparation",
+        ));
+    }
     let local = |lane: &&hex_project::DeviceAutomation| {
         !foreign_preflighted || !matches!(lane.target, DeviceAutomationTarget::Vst3 { .. })
     };
@@ -744,3 +760,7 @@ mod input_tests;
 
 #[cfg(test)]
 mod fm4_source_tests;
+
+#[cfg(test)]
+#[path = "device_modulation_admission_tests.rs"]
+mod modulation_admission_tests;

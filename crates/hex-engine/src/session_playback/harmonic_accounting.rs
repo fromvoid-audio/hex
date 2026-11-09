@@ -76,6 +76,7 @@ fn inventory_shape(
         }
         for effect in 0..effect_count {
             track.devices.push(hex_project::DeviceSnapshot {
+                modulation: Default::default(),
                 parent: None,
                 automation: Vec::new(),
                 comparison: None,
@@ -129,6 +130,7 @@ fn inventory_shape(
         let mut devices = Vec::new();
         for _ in 0..hex_project::MAX_DEVICES_PER_TRACK {
             devices.push(hex_project::DeviceSnapshot {
+                modulation: Default::default(),
                 parent: None,
                 automation: Vec::new(),
                 comparison: None,

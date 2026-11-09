@@ -40,6 +40,7 @@ fn instrument_eq8_utility(
     snapshot.tracks[0].devices = [(20, eq8_state), (21, utility_state)]
         .into_iter()
         .map(|(id, state)| DeviceSnapshot {
+            modulation: Default::default(),
             parent: None,
             automation: Vec::new(),
             comparison: None,

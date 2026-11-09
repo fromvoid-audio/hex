@@ -128,8 +128,8 @@ pub struct TrackSnapshot {
     pub soloed: bool,
     pub devices: Vec<DeviceSnapshot>,
     /// Resolved read projection of the bound source instrument. Identity, state,
-    /// bypass and comparison must match its registry device; `automation` must be
-    /// empty. NativeSourceSnapshot is the sole source-envelope transport owner,
+    /// bypass and comparison must match its registry device; `automation` and
+    /// `modulation` must be empty. NativeSourceSnapshot is the sole source-envelope transport owner,
     /// avoiding one curve copy per shared binding. This is never a second state
     /// owner. Historical inline projections use the explicit legacy adapter.
     pub instrument: Option<DeviceSnapshot>,
@@ -156,6 +156,7 @@ pub struct SendLevelSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceSnapshot {
+    pub modulation: crate::DeviceModulation,
     pub parent: Option<u64>,
     pub automation: Vec<crate::DeviceAutomation>,
     pub comparison: Option<crate::DeviceComparison>,
@@ -359,6 +360,7 @@ impl Project {
                         .devices
                         .iter()
                         .map(|device| DeviceSnapshot {
+                            modulation: device.modulation.clone(),
                             parent: device.parent.map(|id| id.value()),
                             automation: device.automation().to_vec(),
                             comparison: device.comparison.clone(),
@@ -368,6 +370,7 @@ impl Project {
                         })
                         .collect(),
                     instrument: track.instrument.as_ref().map(|instrument| DeviceSnapshot {
+                        modulation: Default::default(),
                         parent: instrument.parent.map(|id| id.value()),
                         automation: Vec::new(),
                         comparison: instrument.comparison.clone(),
@@ -458,6 +461,7 @@ impl Project {
                         .devices
                         .iter()
                         .map(|device| DeviceSnapshot {
+                            modulation: device.modulation.clone(),
                             parent: device.parent.map(|id| id.value()),
                             automation: device.automation().to_vec(),
                             comparison: device.comparison.clone(),
@@ -542,6 +546,7 @@ impl Project {
                 .main_devices
                 .iter()
                 .map(|device| DeviceSnapshot {
+                    modulation: device.modulation.clone(),
                     parent: device.parent.map(|id| id.value()),
                     automation: device.automation().to_vec(),
                     comparison: device.comparison.clone(),
@@ -584,10 +589,10 @@ impl Project {
                     .iter()
                     .flat_map(|source| source.devices.iter()),
             )
-            .any(|device| !device.automation.is_empty())
+            .any(|device| !device.automation.is_empty() || !device.modulation.is_empty())
         {
             return Err(Invalid(
-                "legacy snapshots cannot carry device automation; use strict current snapshots",
+                "legacy snapshots cannot carry device automation or modulation; use strict current snapshots",
             ));
         }
         let mut max_id = 0;
@@ -826,6 +831,7 @@ impl Project {
         for device in snapshot.main_devices {
             insert_id(device.id, &mut ids, &mut max_id)?;
             main_devices.push(Device {
+                modulation: device.modulation,
                 parent: device.parent.map(DeviceId),
                 automation: device.automation,
                 comparison: device.comparison,
@@ -858,6 +864,7 @@ impl Project {
                     comparison.validate(&device.state)?;
                 }
                 devices.push(Device {
+                    modulation: device.modulation,
                     parent: device.parent.map(DeviceId),
                     automation: device.automation,
                     id: DeviceId(device.id),
@@ -897,6 +904,7 @@ impl Project {
                     return Err(Invalid("project device limit reached"));
                 }
                 devices.push(Device {
+                    modulation: device.modulation,
                     parent: device.parent.map(DeviceId),
                     automation: device.automation,
                     comparison: device.comparison,
@@ -949,6 +957,7 @@ impl Project {
             for device in track.devices {
                 insert_id(device.id, &mut ids, &mut max_id)?;
                 devices.push(Device {
+                    modulation: device.modulation,
                     parent: device.parent.map(DeviceId),
                     automation: device.automation,
                     comparison: device.comparison,
@@ -965,6 +974,7 @@ impl Project {
                     .ok_or(Invalid("track instrument has no retained source"))?;
                 let expected = source.instrument();
                 if !instrument.automation.is_empty()
+                    || !instrument.modulation.is_empty()
                     || expected.state() != &instrument.state
                     || expected.bypassed() != instrument.bypassed
                     || expected.comparison() != instrument.comparison.as_ref()
@@ -1370,6 +1380,7 @@ impl Project {
         project.validate_retained_audio_roots()?;
         project.validate_device_asset_references()?;
         project.validate_device_automation()?;
+        project.validate_device_modulation()?;
         for track in &project.tracks {
             for clip in track.clips() {
                 if let Some(edit) = &clip.edit {
