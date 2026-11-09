@@ -3149,7 +3149,12 @@ impl EditorView {
         {
             self.error = Some(reason.clone().into());
         }
-        self.observe_vst3_automation_arm(&event);
+        self.observe_vst3_automation_arm(
+            event.project_replaced,
+            event.gesture_ack.as_ref(),
+            event.active_device_gesture.is_some(),
+            revision,
+        );
         if super::device_gesture::actor_retired_gesture(
             event.project_replaced,
             event.active_device_gesture.is_some(),
