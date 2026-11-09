@@ -3188,12 +3188,7 @@ impl NativeRuntimeChain {
                     && foreign.committed_tail_is_drained(node);
         } else if entry.bypassed {
             if entry.runtime.is_stateful() || entry.modulation.is_some() {
-                if entry.matrix.is_identity()
-                    || entry
-                        .modulation
-                        .as_ref()
-                        .is_some_and(|modulation| modulation.program().parameter_ids().is_empty())
-                {
+                if entry.matrix.is_identity() {
                     Self::process_native_provider(entry, frames, None, clock, input, external)?;
                 } else {
                     for (frame_index, frame) in frames.iter_mut().enumerate() {
@@ -3205,12 +3200,27 @@ impl NativeRuntimeChain {
                             clock,
                             offset: frame_index,
                         });
-                        entry.runtime.process_bypassed_with_clock(
-                            std::slice::from_mut(&mut internal),
-                            shifted
-                                .as_ref()
-                                .map(|clock| clock as &dyn NativeInstrumentClock),
-                        )?;
+                        let shifted = shifted
+                            .as_ref()
+                            .map(|clock| clock as &dyn NativeInstrumentClock);
+                        if entry.modulation.is_some() {
+                            // A nonidentity matrix can coexist only with an
+                            // unassigned bank. Advance it while the processor
+                            // sees the same private input it would without it.
+                            Self::process_native_provider(
+                                entry,
+                                std::slice::from_mut(&mut internal),
+                                None,
+                                shifted,
+                                None,
+                                None,
+                            )?;
+                        } else {
+                            entry.runtime.process_bypassed_with_clock(
+                                std::slice::from_mut(&mut internal),
+                                shifted,
+                            )?;
+                        }
                         *frame = audible;
                     }
                 }
