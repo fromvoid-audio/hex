@@ -1655,7 +1655,11 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/src/editor/audio_admission.rs"], inventory, [owner]),
             {owner: [admission]})
-        all_modules = [admission, cpu, disk, thumbnail, "editor::pending_edit::", scale, viewport]
+        navigation = "editor::clip_content_cache::profile::navigation::selection::"
+        self.assertEqual(plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/navigation_profile/selection.rs"], inventory, [owner]),
+            {owner: [navigation]})
+        all_modules = [admission, navigation, cpu, disk, thumbnail, "editor::pending_edit::", scale, viewport]
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/tests/unit_editor_state.rs"], inventory, [owner]),
             {owner: all_modules})
@@ -1664,7 +1668,8 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/tests/unit_pending_edit.rs"], inventory, [owner]), {})
         for names, expected in ((filters[owner], True), ([viewport], True), ([disk], True), ([cpu], True),
-                                ([thumbnail], True), ([scale], True), ([admission], True),
+                                ([thumbnail], True), ([scale], True), ([admission], True), ([navigation], True),
+                                (["editor::clip_content_cache::"], True),
                                 (["editor::track_meters::"], True),
                                 (all_modules, True), (["editor::"], True),
                                 (["editor::save::"], False)):
