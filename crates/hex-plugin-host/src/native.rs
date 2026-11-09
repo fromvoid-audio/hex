@@ -733,6 +733,35 @@ impl Prepared {
             .map(|reply| reply.block)
     }
 
+    /// The prepared callback sidecar uses the metadata retained by its own
+    /// armed lease. An editor touch plan is a separate ownership admission.
+    pub fn exchange_armed_dense_on_worker(
+        &mut self,
+        block: Block,
+        dense: crate::transport::DenseParameterLane<'_>,
+        manual_parameter: Option<crate::transport::ParameterPoint>,
+        observe_editor: bool,
+    ) -> Result<protocol::EditorPcm> {
+        let metadata = self
+            .authored_parameter_metadata
+            .take()
+            .ok_or(Error::Protocol("dense parameter metadata is not armed"))?;
+        let result = if metadata.matches(self) {
+            self.exchange_on_worker_with_metadata(
+                block,
+                Some(&metadata),
+                manual_parameter,
+                observe_editor,
+                None,
+                Some(dense),
+            )
+        } else {
+            Err(Error::Protocol("authored parameter source differs"))
+        };
+        self.authored_parameter_metadata = Some(metadata);
+        result
+    }
+
     fn exchange_authored_with_manual_on_worker(
         &mut self,
         block: Block,
@@ -972,11 +1001,13 @@ impl Prepared {
             + protocol::EditorTouchPlanSet::WIRE_BYTES];
         let mut cursor = Cursor::new(bytes.as_mut_slice());
         match (metadata, dense) {
-            (Some(metadata), Some(dense)) => {
-                crate::transport::wire::write_dense_authored(&mut cursor, &block, dense, &|id| {
-                    metadata.step_count(id)
-                })
-            }
+            (Some(metadata), Some(dense)) => crate::transport::wire::write_dense_authored(
+                &mut cursor,
+                &block,
+                dense,
+                manual_parameter,
+                &|id| metadata.step_count(id),
+            ),
             (Some(metadata), None) => crate::transport::wire::write_authored(
                 &mut cursor,
                 &block,

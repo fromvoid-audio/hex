@@ -66,9 +66,16 @@ pub(crate) fn write_dense_authored(
     writer: &mut impl Write,
     block: &Block,
     lane: DenseParameterLane<'_>,
+    manual_parameter: Option<ParameterPoint>,
     step_count: &dyn Fn(u32) -> Option<u32>,
 ) -> io::Result<()> {
-    write_with_parameters(writer, block, Some(step_count), None, Some(lane))
+    write_with_parameters(
+        writer,
+        block,
+        Some(step_count),
+        manual_parameter,
+        Some(lane),
+    )
 }
 
 fn write_with_parameters(

@@ -29,6 +29,10 @@ use std::sync::{
 mod authored;
 use authored::AuthoredOrigins;
 pub use authored::{AuthoredParameterProgram, AuthoredSegment};
+mod dense;
+pub use dense::{
+    DenseEffectCallback, DenseParameterRequest, dense_effect_channel_from_completed_prefix,
+};
 mod parameters;
 mod storage;
 pub use parameters::{MAX_PARAMETER_POINTS, ParameterPoint, Parameters};
@@ -37,7 +41,7 @@ mod editor_tests;
 #[cfg(test)]
 mod parameter_tests;
 pub mod wire;
-pub use storage::{ConstructorStorage, channel_storage_bound};
+pub use storage::{ConstructorStorage, channel_storage_bound, dense_channel_storage_bound};
 
 pub const MAX_FRAMES: usize = 256;
 pub const MAX_EVENTS: usize = 64;
@@ -656,6 +660,7 @@ struct InputRequest {
 pub struct WorkerRequest {
     pub block: Block,
     pub parameter_capacity: usize,
+    pub dense_parameter: Option<DenseParameterRequest>,
     /// Program frozen at the accepted physical quantum opening.
     pub authored_program: Option<NonZeroU64>,
     /// The exact accepted quantum starts on a known compensated Arrangement
@@ -836,6 +841,7 @@ pub struct Worker {
     revoked: Arc<Revocation>,
     sequence: u64,
     in_flight: Option<InFlight>,
+    dense_requests: Option<Consumer<DenseParameterRequest>>,
 }
 
 struct InFlight {
@@ -928,6 +934,7 @@ fn channel_with_policy(
             revoked,
             sequence: completed_blocks,
             in_flight: None,
+            dense_requests: None,
         },
     ))
 }
@@ -1573,7 +1580,9 @@ impl Worker {
     /// still be checked before adding input.
     pub fn receive_with_parameter_capacity(&mut self) -> Result<Option<(Block, usize)>, Fault> {
         match self.receive_request()? {
-            Some(request) if request.authored_program.is_some() => {
+            Some(request)
+                if request.authored_program.is_some() || request.dense_parameter.is_some() =>
+            {
                 self.fail(Fault::InvalidParameters)
             }
             Some(request) => Ok(Some((request.block, request.parameter_capacity))),
@@ -1600,6 +1609,13 @@ impl Worker {
         if let Err(fault) = block.valid(self.binding, self.quantum, self.sequence) {
             return self.fail(fault);
         }
+        let dense_parameter = match self.dense_requests.as_mut() {
+            Some(requests) => match dense::receive(requests, &block) {
+                Ok(lane) => lane,
+                Err(fault) => return self.fail(fault),
+            },
+            None => None,
+        };
         if let Err(fault) = self
             .revoked
             .record_received_program(self.sequence, request.authored_program)
@@ -1613,6 +1629,7 @@ impl Worker {
         Ok(Some(WorkerRequest {
             block,
             parameter_capacity: request.parameter_capacity,
+            dense_parameter,
             authored_program: request.authored_program,
             manual_origin_available: request.manual_origin.is_some(),
             editor_scope: request.editor_scope,

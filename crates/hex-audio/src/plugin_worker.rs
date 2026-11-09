@@ -292,12 +292,13 @@ impl State {
         &mut self,
         block: Block,
         authored: bool,
+        dense: Option<hex_plugin_host::transport::DenseParameterLane<'_>>,
         manual_parameter: Option<ParameterPoint>,
         observe_editor: bool,
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))] editor_touch: Option<EditorPlan>,
     ) -> Result<hex_plugin_host::protocol::EditorPcm, Fault> {
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-        let _ = manual_parameter;
+        let _ = (manual_parameter, dense);
         match self.processor.as_mut() {
             Some(Processor::Function(process)) if !authored && !observe_editor => process(block)
                 .map(|block| hex_plugin_host::protocol::EditorPcm {
@@ -308,34 +309,43 @@ impl State {
             Some(Processor::Function(_)) => Err(Fault::InvalidParameters),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             Some(Processor::Native(instance)) => {
-                let result = match (authored, observe_editor, editor_touch) {
-                    (true, _, Some(EditorPlan::Single(plan))) => instance
+                let result = match (dense, authored, observe_editor, editor_touch) {
+                    (Some(dense), _, observe, None) => instance.exchange_armed_dense_on_worker(
+                        block,
+                        dense,
+                        manual_parameter,
+                        observe,
+                    ),
+                    (Some(_), _, _, Some(_)) => return Err(Fault::InvalidParameters),
+                    (None, true, _, Some(EditorPlan::Single(plan))) => instance
                         .exchange_armed_authored_with_editor_touch_on_worker(
                             block,
                             plan,
                             manual_parameter,
                         ),
-                    (false, _, Some(EditorPlan::Single(plan))) => {
+                    (None, false, _, Some(EditorPlan::Single(plan))) => {
                         instance.exchange_editor_touch_on_worker(block, plan)
                     }
-                    (true, _, Some(EditorPlan::Group(plan))) => instance
+                    (None, true, _, Some(EditorPlan::Group(plan))) => instance
                         .exchange_armed_authored_with_editor_group_touch_on_worker(
                             block,
                             &plan,
                             manual_parameter,
                         ),
-                    (false, _, Some(EditorPlan::Group(_))) => return Err(Fault::InvalidParameters),
-                    (true, true, None) => instance
+                    (None, false, _, Some(EditorPlan::Group(_))) => {
+                        return Err(Fault::InvalidParameters);
+                    }
+                    (None, true, true, None) => instance
                         .exchange_armed_authored_with_editor_on_worker(block, manual_parameter),
-                    (false, true, None) => instance.exchange_editor_on_worker(block),
-                    (true, false, None) => instance
+                    (None, false, true, None) => instance.exchange_editor_on_worker(block),
+                    (None, true, false, None) => instance
                         .exchange_armed_authored_with_manual_on_worker(block, manual_parameter)
                         .map(|block| hex_plugin_host::protocol::EditorPcm {
                             block,
                             performs: Default::default(),
                             restorations: Default::default(),
                         }),
-                    (false, false, None) => instance.exchange_on_worker(block).map(|block| {
+                    (None, false, false, None) => instance.exchange_on_worker(block).map(|block| {
                         hex_plugin_host::protocol::EditorPcm {
                             block,
                             performs: Default::default(),
@@ -545,11 +555,13 @@ fn transport_runner_with_setup(
                 Ok(Some(hex_plugin_host::transport::WorkerRequest {
                     block,
                     parameter_capacity,
+                    dense_parameter,
                     authored_program,
                     manual_origin_available,
                     editor_scope,
                 })) => {
-                    let authored = authored_program.is_some();
+                    let dense = dense_parameter.as_ref().map(|request| request.lane());
+                    let authored = authored_program.is_some() || dense.is_some();
                     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
                     let _ = (parameter_capacity, manual_origin_available);
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -563,6 +575,7 @@ fn transport_runner_with_setup(
                         parameter_capacity,
                         authored,
                         manual_origin_available,
+                        dense.map(|lane| lane.id),
                     ) {
                         Ok(point) => point,
                         Err(error) => {
@@ -600,6 +613,7 @@ fn transport_runner_with_setup(
                         .process(
                             block,
                             authored,
+                            dense,
                             manual_parameter,
                             editor_scope.is_some(),
                             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
