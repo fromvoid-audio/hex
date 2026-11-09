@@ -715,6 +715,7 @@ fn instrument_takeover_preserves_other_base_and_held_midi() {
             "author",
             "author_empty",
             "idle",
+            "idle_empty",
             "refused",
         ] {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
@@ -2060,15 +2061,18 @@ fn verify_instrument_takeover(
     use hex_session::service::{DeviceAutomationControlEdit, PluginParameterQuery};
     let case = std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").unwrap();
     let author = matches!(case.as_str(), "author" | "author_empty");
+    let idle_unlaned = case == "idle_empty";
     let first_lane = matches!(
         case.as_str(),
         "session_first_lane" | "session_first_lane_with_other" | "session_first_lane_stop"
     );
     let stop_recording = matches!(case.as_str(), "session_stop" | "session_first_lane_stop");
-    let reading = !first_lane && !matches!(case.as_str(), "unread" | "empty" | "renew");
-    let playing = case != "idle";
+    let reading =
+        !first_lane && !matches!(case.as_str(), "unread" | "empty" | "renew" | "idle_empty");
+    let playing = !matches!(case.as_str(), "idle" | "idle_empty");
     let context = h.submitted.unwrap().1.context;
     let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let mut original_binding = None;
     let class = if case == "author_empty" {
         hex_plugin_state::decode(original.device(device).unwrap().state())
             .unwrap()
@@ -2083,7 +2087,9 @@ fn verify_instrument_takeover(
             request_id: 11,
             page_first: None,
         }));
-        let rows = h.next().plugin_parameters.unwrap().rows.unwrap();
+        let result = h.next().plugin_parameters.unwrap();
+        original_binding = result.source;
+        let rows = result.rows.unwrap();
         assert_eq!(rows.len(), 2);
         rows.iter()
             .find(|r| r.id == 7)
@@ -2096,7 +2102,12 @@ fn verify_instrument_takeover(
     for (id, value) in [(7, 0.25), (11, 0.5)] {
         if matches!(
             case.as_str(),
-            "empty" | "renew" | "author_empty" | "session_first_lane" | "session_first_lane_stop"
+            "empty"
+                | "renew"
+                | "author_empty"
+                | "idle_empty"
+                | "session_first_lane"
+                | "session_first_lane_stop"
         ) || id == 7 && (!reading || author)
         {
             continue;
@@ -3200,6 +3211,42 @@ fn verify_instrument_takeover(
         1.0,
         "the other authored DSP value must not replace its canonical base"
     );
+    if idle_unlaned {
+        assert!(
+            !h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .playing
+                .load(Acquire)
+        );
+        let source = h.submitted.unwrap().1.context;
+        let mut serial = 17;
+        let after = super::installed_edits::query(h, device, Some(0), &mut serial);
+        assert_eq!(after.query.context, source);
+        assert_eq!(
+            after
+                .rows
+                .unwrap()
+                .into_iter()
+                .find(|row| row.id == 7)
+                .unwrap()
+                .normalized,
+            0.5
+        );
+        assert!(original_binding.is_some());
+        assert_ne!(
+            after.source, original_binding,
+            "fixture must replace the worker"
+        );
+        assert!(after.source.is_some());
+        let undone = super::automation::edit_with_running_callback(h, Request::Undo);
+        assert!(undone.error.is_none(), "{:?}", undone.error);
+        assert_eq!(undone.state.project.as_ref(), &before);
+        h.applied(applied);
+        return;
+    }
     if playing {
         assert!(
             (peak(h) - baseline * 2.0).abs() < 0.0001,

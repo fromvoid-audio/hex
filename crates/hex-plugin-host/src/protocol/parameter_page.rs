@@ -197,6 +197,10 @@ pub enum ControllerRequest {
     },
     ToggleEditor,
     CloseEditor,
+    /// Close the predecessor and acknowledge whether it had an open editor.
+    DetachEditor,
+    /// Open the successor's editor without activating its helper application.
+    ReopenEditor,
 }
 impl Default for ControllerRequest {
     fn default() -> Self {
@@ -218,7 +222,9 @@ impl ControllerRequest {
                 }
                 Ok(())
             }
-            Self::ToggleEditor | Self::CloseEditor => Ok(()),
+            Self::ToggleEditor | Self::CloseEditor | Self::DetachEditor | Self::ReopenEditor => {
+                Ok(())
+            }
         }
     }
 }
@@ -252,6 +258,8 @@ pub fn parameter_page_request(
         }
         ControllerRequest::ToggleEditor => out[82] = 6,
         ControllerRequest::CloseEditor => out[82] = 7,
+        ControllerRequest::DetachEditor => out[82] = 9,
+        ControllerRequest::ReopenEditor => out[82] = 10,
         ControllerRequest::SelectedParameters { first } => {
             out[72..74].copy_from_slice(&first.to_le_bytes());
             out[82] = 8;
@@ -294,7 +302,10 @@ pub fn parameter_page(
             revision: 0,
             conversion: None,
         }),
-        ControllerRequest::ToggleEditor | ControllerRequest::CloseEditor => None,
+        ControllerRequest::ToggleEditor
+        | ControllerRequest::CloseEditor
+        | ControllerRequest::DetachEditor
+        | ControllerRequest::ReopenEditor => None,
     };
     let Some(query) = query else {
         if status != 4 {
@@ -306,8 +317,16 @@ pub fn parameter_page(
             2 => PluginEditorState::Unavailable,
             _ => return Err(Error::Protocol("invalid native editor state")),
         };
-        if request == ControllerRequest::CloseEditor && state != PluginEditorState::Closed {
-            return Err(Error::Protocol("native editor did not close"));
+        let valid = match request {
+            ControllerRequest::CloseEditor => state == PluginEditorState::Closed,
+            ControllerRequest::DetachEditor => state != PluginEditorState::Unavailable,
+            ControllerRequest::ReopenEditor => state != PluginEditorState::Closed,
+            _ => true,
+        };
+        if !valid {
+            return Err(Error::Protocol(
+                "native editor operation reported an invalid state",
+            ));
         }
         reader.end()?;
         return Ok(ParameterPageProgress::Editor(state));
