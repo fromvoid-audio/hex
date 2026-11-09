@@ -6239,6 +6239,15 @@ fn open_operator_options(visual: &mut VisualTestContext, device: DeviceId) {
 
 #[gpui::test]
 fn modulation_panel_maps_loaded_sampler_gain_through_its_authored_control(cx: &mut TestAppContext) {
+    exercise_sampler_modulation_mapper(cx, false);
+}
+
+#[gpui::test]
+fn modulation_panel_maps_loaded_sampler_host_output(cx: &mut TestAppContext) {
+    exercise_sampler_modulation_mapper(cx, true);
+}
+
+fn exercise_sampler_modulation_mapper(cx: &mut TestAppContext, host_output: bool) {
     use super::super::{
         device_automation::host_tests::TestWave,
         worker_ui_fixture::{self, WorkerUiFixture},
@@ -6374,39 +6383,54 @@ fn modulation_panel_maps_loaded_sampler_gain_through_its_authored_control(cx: &m
     let source = editor.read_with(cx, |view, _| bank(view).sources()[0].id);
     click_modulator_control(&mut visual, format!("lfo-{}-map", source.value()), true);
     let parameter = hex_engine::SAMPLER_GAIN_PARAMETER;
-    let overlay = format!("map-target-{}-{}", device.value(), parameter.value());
-    let target_selector = Box::leak(overlay.clone().into_boxed_str());
-    let shell = Box::leak(format!("device-shell-{}", device.value()).into_boxed_str());
-    // Use the part of the gain overlay visible inside the device rail
-    // and scroll the Sampler body vertically when it sits below the fold.
-    let rail = visual.debug_bounds("device-chain-scroll").unwrap();
-    let visible = visual.debug_bounds(shell).unwrap().intersect(&rail);
-    let target = visual.debug_bounds(target_selector).unwrap();
-    let hit = target.intersect(&visible);
-    assert!(
-        hit.size.width > px(0.0),
-        "gain has no visible horizontal area"
-    );
-    if hit.size.height <= px(0.0) {
-        visual.simulate_event(gpui::ScrollWheelEvent {
-            position: point(hit.center().x, visible.bottom() - px(14.0)),
-            delta: gpui::ScrollDelta::Pixels(point(
-                px(0.0),
-                visible.center().y - target.center().y,
-            )),
-            ..Default::default()
-        });
-        visual.run_until_parked();
-    }
-    let hit = visual
-        .debug_bounds(target_selector)
-        .unwrap()
-        .intersect(&visible);
-    assert!(
-        hit.size.height > px(0.0),
-        "gain is outside the visible housing"
-    );
-    let target = hit.center();
+    let destination = if host_output {
+        DeviceAutomationTarget::HostOutputGain
+    } else {
+        DeviceAutomationTarget::Parameter(parameter)
+    };
+    let target = if host_output {
+        let input = Box::leak(format!("map-input-gain-{}", device.value()).into_boxed_str());
+        assert!(visual.debug_bounds(input).is_none());
+        modulator_control_position(
+            &mut visual,
+            format!("map-output-gain-{}", device.value()),
+            true,
+        )
+    } else {
+        let overlay = format!("map-target-{}-{}", device.value(), parameter.value());
+        let target_selector = Box::leak(overlay.clone().into_boxed_str());
+        let shell = Box::leak(format!("device-shell-{}", device.value()).into_boxed_str());
+        // Use the part of the gain overlay visible inside the device rail
+        // and scroll the Sampler body vertically when it sits below the fold.
+        let rail = visual.debug_bounds("device-chain-scroll").unwrap();
+        let visible = visual.debug_bounds(shell).unwrap().intersect(&rail);
+        let target = visual.debug_bounds(target_selector).unwrap();
+        let hit = target.intersect(&visible);
+        assert!(
+            hit.size.width > px(0.0),
+            "gain has no visible horizontal area"
+        );
+        if hit.size.height <= px(0.0) {
+            visual.simulate_event(gpui::ScrollWheelEvent {
+                position: point(hit.center().x, visible.bottom() - px(14.0)),
+                delta: gpui::ScrollDelta::Pixels(point(
+                    px(0.0),
+                    visible.center().y - target.center().y,
+                )),
+                ..Default::default()
+            });
+            visual.run_until_parked();
+        }
+        let hit = visual
+            .debug_bounds(target_selector)
+            .unwrap()
+            .intersect(&visible);
+        assert!(
+            hit.size.height > px(0.0),
+            "gain is outside the visible housing"
+        );
+        hit.center()
+    };
     visual.simulate_mouse_move(target, None, Modifiers::default());
     visual.run_until_parked();
     assert_eq!(
@@ -6436,7 +6460,7 @@ fn modulation_panel_maps_loaded_sampler_gain_through_its_authored_control(cx: &m
             mapped.routes()[0].destination,
             ModulationDestination::Device {
                 device_type: type_id,
-                target: DeviceAutomationTarget::Parameter(parameter),
+                target: destination,
                 vst3_class: None,
             }
         );
