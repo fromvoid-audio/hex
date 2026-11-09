@@ -2074,6 +2074,7 @@ impl SessionPlayback {
                 revision: &revision,
                 midi_admission: midi_admission.as_ref(),
                 analytic_import: &analytic_import,
+                source_effects: &source_effects,
                 device_chains: &device_chains,
                 return_chains: &return_chains,
                 return_effect_tails: &return_effect_tails,
