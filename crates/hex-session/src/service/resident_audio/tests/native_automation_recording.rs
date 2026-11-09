@@ -212,9 +212,18 @@ fn successive_native_takes_keep_the_arm_and_refusals_keep_the_recovery_file() {
             performance_frame: frame + 20,
             remaining_latency_frames: 7,
         };
-    let record = |scope, frame| {
+    let record_with_fault = |scope, frame, inject: bool| {
         assert_eq!(send(scope, Action::Begin).1, Progress::Started);
         assert_eq!(close_safety(), Progress::CloseBlocked);
+        #[cfg(feature = "recording-fault-test-support")]
+        if inject {
+            assert_eq!(
+                send(scope, Action::InjectWriterFailure).1,
+                Progress::Appended
+            );
+        }
+        #[cfg(not(feature = "recording-fault-test-support"))]
+        assert!(!inject);
         let value = NativeTransientValue::HostOutputGain(HostGain::from_normalized(0.25).unwrap());
         let points = Arc::from([(
             1,
@@ -236,6 +245,7 @@ fn successive_native_takes_keep_the_arm_and_refusals_keep_the_recovery_file() {
         );
         assert_eq!(send(scope, Action::Append(points)).1, Progress::Appended);
     };
+    let record = |scope, frame| record_with_fault(scope, frame, false);
 
     record(initial_scope, 8);
     let blocked_disarm = submit(Request::ArmNativeParameterRecording {
@@ -271,7 +281,8 @@ fn successive_native_takes_keep_the_arm_and_refusals_keep_the_recovery_file() {
     ));
 
     let recovery_scope = scope();
-    record(recovery_scope, 8);
+    let writer_failed = cfg!(feature = "recording-fault-test-support");
+    record_with_fault(recovery_scope, 8, writer_failed);
     let mut wrong_recovery = recovery_scope;
     wrong_recovery.stamp.gesture_serial += 1;
     assert_eq!(
@@ -283,6 +294,13 @@ fn successive_native_takes_keep_the_arm_and_refusals_keep_the_recovery_file() {
         panic!("native recovery preparation: {:?}", prepared.error);
     };
     let original_bytes = std::fs::read(&original).unwrap();
+    assert_eq!(
+        DraftReader::open(&original, limits)
+            .unwrap()
+            .progress()
+            .durable_events,
+        u64::from(!writer_failed),
+    );
     assert_eq!(prepared.state.revision, revision);
     assert_eq!(close_safety(), Progress::CloseBlocked);
     assert_eq!(send(recovery_scope, Action::Poll).1, Progress::Refused);

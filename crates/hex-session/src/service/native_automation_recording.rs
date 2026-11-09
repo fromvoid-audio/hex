@@ -611,9 +611,6 @@ impl Lane {
         let progress = match action {
             #[cfg(feature = "recording-fault-test-support")]
             DeviceAutomationTakeAction::InjectWriterFailure => {
-                if !matches!(scope.target, DeviceCaptureTarget::Vst3(_)) {
-                    return Err("writer failure fixture requires a vst3 take".into());
-                }
                 active.input.inject_next_append_failure()?;
                 Progress::Appended
             }
