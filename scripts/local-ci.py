@@ -377,6 +377,14 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
             steps.append(Step(f"feature-test-{package['name']}-{index}",
                               scoped(("cargo", "test", "-p", package["name"], "--features", feature,
                                       "--all-targets", "--locked"))))
+    # The normal whole-package run already includes these targets. A lib-only
+    # module selection must explicitly retain tests moved to a small unit binary.
+    for module, target in ci_plan.UI_UNIT_TARGETS.items():
+        names = [name for name in module_filters.get("hex-ui", [])
+                 if module.startswith(name) or name.startswith(module)]
+        if "hex-ui" in tested and names:
+            steps.append(Step(f"ui-unit-{target}", ("cargo", "test", "-p", "hex-ui", "--test", target,
+                                                      "--locked", "--", *names)))
     if lint_features:
         lint_packages = sorted({feature.split("/")[0] for feature in lint_features})
         steps.append(Step("affected-feature-clippy",

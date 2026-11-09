@@ -93,6 +93,13 @@ unit tests. The counter stays dev-only and native worker I/O stays off callback.
 
 ## Merge selection
 
+The pure pending-edit receipt tests run in the small `hex-ui` target
+`unit_pending_edit`; the selector includes it for the receipt and enclosing editor
+module. Run it directly with `cargo test -p hex-ui --test unit_pending_edit --locked`.
+Other `hex-ui` tests have not yet been classified into separate tiers; in
+particular, the real-window receipt and delayed-acknowledgement tests remain in
+the `ui-test-support` library suite.
+
 Plans containing self-tests run the existing changelog, architecture, dependency,
 UI/layout and formatting checks first, once each, before Python self-tests and
 slower Cargo checks. A failure stops the plan and records later steps as `not_run`.
