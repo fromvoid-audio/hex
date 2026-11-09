@@ -1734,8 +1734,8 @@ class ModuleScopeTests(unittest.TestCase):
         inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
                       "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
                       "targets": [{"kind": ["lib"]}]}]
-        piano = ["editor::midi_drag::", "editor::midi_scene::", "editor::midi_viewport_grid::"]
-        for path in ("midi_drag.rs", "midi_scene.rs", "midi_viewport_grid.rs"):
+        piano = ["editor::midi_drag::", "editor::midi_group_drag::", "editor::midi_scene::", "editor::midi_viewport_grid::"]
+        for path in ("midi_drag.rs", "midi_group_drag.rs", "midi_scene.rs", "midi_viewport_grid.rs"):
             self.assertEqual(plan.module_test_filters(
                 root, ["crates/hex-ui/src/editor/" + path], inventory, [owner]), {owner: piano})
         self.assertEqual(plan.module_test_filters(
