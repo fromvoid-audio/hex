@@ -6249,7 +6249,9 @@ fn modulation_panel_adds_and_maps_an_lfo_without_editing_base_values(cx: &mut Te
 }
 
 #[gpui::test]
-fn modulation_panel_maps_eq8_output_gain_and_preserves_its_authored_value(cx: &mut TestAppContext) {
+fn modulation_panel_maps_eq8_gain_and_band_controls_without_editing_authored_values(
+    cx: &mut TestAppContext,
+) {
     use hex_devices::eq8::{EQ8_TYPE_ID, parameter};
     use hex_lattice_contract::ParameterId;
     use hex_project::{DeviceAutomationTarget, ModulationDestination};
@@ -6296,26 +6298,13 @@ fn modulation_panel_maps_eq8_output_gain_and_preserves_its_authored_value(cx: &m
         ..Default::default()
     });
     visual.run_until_parked();
-    click(&mut visual, target_key(parameter::OUTPUT_GAIN), false);
-    assert!(
-        editor.read_with(cx, |view, _| {
-            view.worker_requests_pending > 0
-                || !view.pending_requests.is_empty()
-                || view
-                    .state
-                    .as_ref()
-                    .unwrap()
-                    .project
-                    .device(device)
-                    .unwrap()
-                    .modulation()
-                    .routes()
-                    .len()
-                    == 1
-        }),
-        "visible EQ8 dial did not dispatch"
-    );
-    pump_until(&editor, cx, |view| {
+    let targets = [
+        parameter::OUTPUT_GAIN,
+        parameter::frequency(0, 0),
+        parameter::gain(0, 0),
+        parameter::q(0, 0),
+    ];
+    let route_count = |view: &EditorView| {
         view.state
             .as_ref()
             .unwrap()
@@ -6325,21 +6314,35 @@ fn modulation_panel_maps_eq8_output_gain_and_preserves_its_authored_value(cx: &m
             .modulation()
             .routes()
             .len()
-            == 1
-    });
+    };
+    for (index, parameter) in targets.into_iter().enumerate() {
+        click(&mut visual, target_key(parameter), false);
+        assert!(
+            editor.read_with(cx, |view, _| {
+                view.worker_requests_pending > 0
+                    || !view.pending_requests.is_empty()
+                    || route_count(view) == index + 1
+            }),
+            "visible EQ8 dial {} did not dispatch",
+            parameter.value()
+        );
+        pump_until(&editor, cx, |view| route_count(view) == index + 1);
+        visual.run_until_parked();
+    }
     editor.read_with(cx, |view, _| {
         let project = &view.state.as_ref().unwrap().project;
         let current = project.device(device).unwrap();
-        let route = current.modulation().routes()[0];
-        assert_eq!(route.source, source);
-        assert_eq!(
-            route.destination,
-            ModulationDestination::Device {
-                device_type: EQ8_TYPE_ID,
-                target: DeviceAutomationTarget::Parameter(parameter::OUTPUT_GAIN),
-                vst3_class: None,
-            }
-        );
+        for (route, parameter) in current.modulation().routes().iter().zip(targets) {
+            assert_eq!(route.source, source);
+            assert_eq!(
+                route.destination,
+                ModulationDestination::Device {
+                    device_type: EQ8_TYPE_ID,
+                    target: DeviceAutomationTarget::Parameter(parameter),
+                    vst3_class: None,
+                }
+            );
+        }
         assert_eq!(current.state(), &original);
         let reopened = hex_storage::decode(&hex_storage::encode(project).unwrap()).unwrap();
         assert_eq!(
