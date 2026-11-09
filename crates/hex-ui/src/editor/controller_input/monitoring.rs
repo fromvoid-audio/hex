@@ -213,7 +213,7 @@ mod tests {
             &mut hex_midi::Decoder::default(),
             2,
             Default::default(),
-            [&[0x92, 60, 37, 0xa2, 60, 72, 0x82, 60, 0][..]],
+            [&[0x92, 60, 37, 60, 0][..]],
             &held,
             sink.publish.as_ref(),
             sink.note.as_ref(),
