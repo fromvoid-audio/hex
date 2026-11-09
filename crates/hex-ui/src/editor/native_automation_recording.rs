@@ -170,13 +170,15 @@ impl Touch {
             }
         }
         if let Some(batch) = self.retired_batch.take() {
-            let mut receipts = batch.receipts().skip(self.retired_read);
             let mut read = 0;
-            let exhausted = self.drain_receipts(|| {
-                let receipt = receipts.next()?;
-                read += 1;
-                Some(receipt)
-            });
+            let exhausted = {
+                let mut receipts = batch.receipts().skip(self.retired_read);
+                self.drain_receipts(|| {
+                    let receipt = receipts.next()?;
+                    read += 1;
+                    Some(receipt)
+                })
+            };
             self.retired_read += read;
             if exhausted && self.terminal.is_none() {
                 self.terminal = Some(Action::Interrupt);
