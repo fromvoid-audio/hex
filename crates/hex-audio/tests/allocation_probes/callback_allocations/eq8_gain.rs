@@ -10,7 +10,7 @@ fn eq8_gain_automation_callback_publication_history_and_save_reopen() -> Result<
 }
 
 #[test]
-fn eq8_gain_modulation_callback_with_automation_publication_is_allocation_free()
+fn eq8_gain_and_band_modulation_with_automation_publication_is_allocation_free()
 -> Result<(), Box<dyn Error>> {
     eq8_gain_callback(true)
 }
@@ -83,19 +83,30 @@ fn eq8_gain_callback(with_modulation: bool) -> Result<(), Box<dyn Error>> {
                 }
                 .encode()?,
             }],
-            vec![DeviceModulationRoute {
-                id: ModulationRouteId::new(identity + 1)?,
-                source,
-                output: ModulationOutputId::MAIN,
-                destination: ModulationDestination::Device {
-                    device_type: EQ8_TYPE_ID,
-                    target: DeviceAutomationTarget::Parameter(p::OUTPUT_GAIN),
-                    vst3_class: None,
-                },
-                amount: ModulationAmount::new(0.015625)?,
-                range: ModulationRange::default(),
-                enabled: true,
-            }],
+            [
+                p::OUTPUT_GAIN,
+                p::frequency(0, 1),
+                p::gain(0, 1),
+                p::q(0, 1),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, parameter)| {
+                Ok(DeviceModulationRoute {
+                    id: ModulationRouteId::new(identity + 1 + index as u64)?,
+                    source,
+                    output: ModulationOutputId::MAIN,
+                    destination: ModulationDestination::Device {
+                        device_type: EQ8_TYPE_ID,
+                        target: DeviceAutomationTarget::Parameter(parameter),
+                        vst3_class: None,
+                    },
+                    amount: ModulationAmount::new(0.015625)?,
+                    range: ModulationRange::default(),
+                    enabled: true,
+                })
+            })
+            .collect::<Result<Vec<_>, hex_project::Invalid>>()?,
         )?;
         editor.execute(Command::ReplaceDeviceModulation { device, modulation })?;
     }

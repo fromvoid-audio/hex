@@ -25,6 +25,7 @@ impl ControlValues {
 const SEMANTICS: hex_lattice_contract::ParameterSemantics =
     hex_lattice_contract::ParameterSemantics {
         smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+        modulation: hex_lattice_contract::ParameterModulation::SampleRate,
         ..SCALAR_ENVELOPE
     };
 const LOG: hex_lattice_contract::ParameterSemantics = hex_lattice_contract::ParameterSemantics {
@@ -77,10 +78,7 @@ macro_rules! band_bindings {
                 |s, v| { s.mode = match v { 0 => ChannelMode::Stereo, 1 => ChannelMode::LeftRight, 2 => ChannelMode::MidSide, _ => return Err(DeviceContractError::InvalidParameterValue) }; Ok(()) }),
             Binding::float(
                 DESCRIPTORS[201],
-                hex_lattice_contract::ParameterSemantics {
-                    modulation: hex_lattice_contract::ParameterModulation::SampleRate,
-                    ..SEMANTICS
-                },
+                SEMANTICS,
                 |s| s.gain,
                 |s, v| s.gain = v,
             ),
@@ -180,6 +178,39 @@ fn design(
     let right = if a == b { left } else { bank(b)? };
     Ok([left, right])
 }
+
+/// The current coefficient targets describe the old effective controls. Keep
+/// untouched bands exact and only run the designer for changed active bands.
+fn redesign_changed(
+    current: [&CoefficientBank; 2],
+    old: &ControlValues,
+    next: &ControlValues,
+    banks: [usize; 2],
+    rate: u32,
+) -> Result<CoefficientTarget, DeviceContractError> {
+    let bank = |lane: usize| -> Result<CoefficientBank, DeviceContractError> {
+        let index = banks[lane];
+        let mut target = *current[lane];
+        for ((slot, old), next) in target
+            .iter_mut()
+            .zip(&old.banks[index])
+            .zip(&next.banks[index])
+        {
+            if old != next {
+                *slot = if next.enabled {
+                    design_band(*next, rate)?
+                } else {
+                    [Coefficients::IDENTITY; 4]
+                };
+            }
+        }
+        Ok(target)
+    };
+    let left = bank(0)?;
+    let right = if banks[0] == banks[1] { left } else { bank(1)? };
+    Ok([left, right])
+}
+
 impl Eq8Runtime {
     pub(super) fn current_target(&self) -> [&CoefficientBank; 2] {
         self.routing
@@ -272,8 +303,16 @@ impl Eq8Runtime {
                 let changed = banks
                     .into_iter()
                     .any(|bank| old.banks[bank] != next_values.banks[bank]);
-                let target = if self.band_targets_pending || changed {
+                let target = if self.band_targets_pending {
                     Some(design(&next_values.banks, self.mode, self.sample_rate)?)
+                } else if changed {
+                    Some(redesign_changed(
+                        self.current_target(),
+                        &old,
+                        &next_values,
+                        banks,
+                        self.sample_rate,
+                    )?)
                 } else {
                     None
                 };
