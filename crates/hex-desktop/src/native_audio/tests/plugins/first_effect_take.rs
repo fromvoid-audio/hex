@@ -34,7 +34,7 @@ fn records_first_raw_zero_effect_lane_without_mutating_the_base() {
     let _native = native_fixture();
     let files = Files::new();
     let directory = files.0.canonicalize().unwrap();
-    let wave = files.wav(48_000, 8192);
+    let wave = files.wav(48_000, 32_768);
     let mut h = ResidentHarness::with_plugins_at_rate_and_catalog_recovery(
         host(),
         Some(EffectPresentation {
@@ -42,6 +42,7 @@ fn records_first_raw_zero_effect_lane_without_mutating_the_base() {
             output_frames: 512,
         }),
         48_000,
+        32_768,
         directory.join("unused-catalog.json"),
         directory.join("effect.hex-journal"),
     );
@@ -106,7 +107,24 @@ fn records_first_raw_zero_effect_lane_without_mutating_the_base() {
     let send = |h: &mut ResidentHarness, client: &mut GestureClient| {
         let request = client.next_request().unwrap();
         client.mark_submitted();
-        let event = automation::edit_with_running_callback(h, Request::DeviceGesture(request));
+        h.service.submit(Request::DeviceGesture(request)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let event = loop {
+            h.pump();
+            if let Ok(event) = h.service.try_event()
+                && event
+                    .gesture_ack
+                    .as_ref()
+                    .is_some_and(|ack| ack.key == request.key() && ack.phase == request.phase())
+            {
+                break event;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {request:?}"
+            );
+            instruments::render_completed_block(h);
+        };
         assert!(event.error.is_none(), "{:?}", event.error);
         let ack = event.gesture_ack.as_ref().unwrap();
         assert!(ack.accepted && client.acknowledge_with_snapshot(ack, event.active_device_gesture));
@@ -125,7 +143,18 @@ fn records_first_raw_zero_effect_lane_without_mutating_the_base() {
         send(&mut h, &mut client).state.project,
         before.state.project
     );
-    assert!((peak(&h) - base * 2.0).abs() < 1.0e-6);
+    let touched = peak(&h);
+    assert!(
+        (touched - base * 2.0).abs() < 1.0e-6,
+        "effect PCM: base={base}, touched={touched}, position={}",
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire)
+    );
     client
         .finish_plugin(PluginParameterValue::new(0.75).unwrap())
         .unwrap();

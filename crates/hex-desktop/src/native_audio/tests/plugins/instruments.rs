@@ -913,6 +913,7 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
             host(),
             presentation,
             rate,
+            8192,
             files.0.canonicalize().unwrap().join("plugin-catalog.json"),
             files
                 .0
@@ -2976,7 +2977,8 @@ fn verify_instrument_takeover(
             .unwrap();
         let reference_path = files.0.join("independent-delivered-steps.hex");
         hex_storage::save_new(&reference_path, reference.project()).unwrap();
-        let blocks = usize::try_from(end_frame.unwrap() / 256 + 8).unwrap();
+        let end_frame = end_frame.expect("a committed take has an actual restored output witness");
+        let blocks = usize::try_from(end_frame / 256 + 8).unwrap();
         assert!(blocks < 512, "bounded signed replay fixture");
         let replay = |h: &mut ResidentHarness, path: &std::path::Path| -> Vec<[f32; 2]> {
             let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();

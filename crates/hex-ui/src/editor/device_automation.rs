@@ -1154,13 +1154,8 @@ impl EditorView {
             Action::ToggleVst3Arm { target, .. } => {
                 if let (Some(class), DeviceAutomationTarget::Vst3 { parameter }) =
                     (target.vst3_class, target.kind)
-                    && self.device_automation_read_selection(target)
-                        == Some(hex_project::AutomationReadSelection::Authored)
                 {
                     self.toggle_vst3_automation_arm(target.device, class, parameter);
-                } else {
-                    self.error =
-                        Some("enable automation on this parameter before arming recording".into());
                 }
             }
             Action::Clear(target) => {
