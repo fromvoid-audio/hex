@@ -7,7 +7,7 @@
 //! unbounded output tail before publication.
 use super::*;
 use crate::parameter_binding::{Binding, SCALAR_ENVELOPE};
-use hex_lattice_contract::ParameterSemantics;
+use hex_lattice_contract::{ParameterModulation, ParameterSemantics};
 
 #[derive(Clone, Copy, PartialEq)]
 pub(super) struct AutomatedSettings {
@@ -172,18 +172,32 @@ const CHOICE_SEMANTICS: ParameterSemantics = ParameterSemantics {
     smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
     ..crate::parameter_binding::CHOICE_ENVELOPE
 };
+// These controls participate in output mixing or input/tail decisions on
+// every host frame, including when the room tank advances less frequently.
+const HOST_MIX: ParameterSemantics = ParameterSemantics {
+    modulation: ParameterModulation::SampleRate,
+    ..SEMANTICS
+};
+const HOST_DECAY: ParameterSemantics = ParameterSemantics {
+    modulation: ParameterModulation::SampleRate,
+    ..LOG_SEMANTICS
+};
+const HOST_SWITCH: ParameterSemantics = ParameterSemantics {
+    modulation: ParameterModulation::SampleRate,
+    ..BOOLEAN_SEMANTICS
+};
 pub(super) const SMOOTH_INDEX: usize = 23;
 pub(super) const FREEZE_INDEX: usize = 25;
 const BINDINGS: [Binding<AutomatedSettings>; 33] = [
     Binding::float(
         crate::reverb::DESCRIPTORS[0],
-        LOG_SEMANTICS,
+        HOST_DECAY,
         |s| s.decay,
         |s, v| s.decay = v,
     ),
     Binding::float(
         crate::reverb::DESCRIPTORS[1],
-        SEMANTICS,
+        HOST_MIX,
         |s| s.dry_wet,
         |s, v| s.dry_wet = v,
     ),
@@ -333,7 +347,7 @@ const BINDINGS: [Binding<AutomatedSettings>; 33] = [
     ),
     Binding::boolean(
         crate::reverb::DESCRIPTORS[25],
-        BOOLEAN_SEMANTICS,
+        HOST_SWITCH,
         |s| s.freeze,
         |s, v| s.freeze = v,
     ),
@@ -345,7 +359,7 @@ const BINDINGS: [Binding<AutomatedSettings>; 33] = [
     ),
     Binding::boolean(
         crate::reverb::DESCRIPTORS[27],
-        BOOLEAN_SEMANTICS,
+        HOST_SWITCH,
         |s| s.cut,
         |s, v| s.cut = v,
     ),
