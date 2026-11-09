@@ -13,6 +13,12 @@ pub const MAX_POINTS: usize = 160;
 pub const EQ_STATE_VERSION: u32 = 1;
 pub const MODE: ParameterId = ParameterId::from_static(201);
 pub const OUTPUT_GAIN: ParameterId = ParameterId::from_static(202);
+const OUTPUT_GAIN_SEMANTICS: hex_lattice_contract::ParameterSemantics =
+    hex_lattice_contract::ParameterSemantics {
+        modulation: hex_lattice_contract::ParameterModulation::SampleRate,
+        smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+        ..crate::parameter_binding::SCALAR_ENVELOPE
+    };
 const KINDS: &[&str] = &[
     "bell",
     "low shelf",
@@ -64,17 +70,13 @@ impl NativeDeviceMetadata for EqDefinition {
             ParameterSmoothing as S, ParameterStepping as T,
         };
         let settings = EqState::decode(state)?;
+        if id == OUTPUT_GAIN {
+            return Ok(Some(OUTPUT_GAIN_SEMANTICS));
+        }
         let (normalization, stepping, automation, smoothing) = if id == MODE {
             (
                 N::Discrete,
                 T::Choice,
-                E::DeviceArrangementEnvelope,
-                S::DeviceManaged,
-            )
-        } else if id == OUTPUT_GAIN {
-            (
-                N::Linear,
-                T::Continuous,
                 E::DeviceArrangementEnvelope,
                 S::DeviceManaged,
             )
