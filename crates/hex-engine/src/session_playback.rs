@@ -1102,6 +1102,7 @@ impl SessionPlayback {
     ) -> bool {
         let project = self.revision.arrangement();
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Source(_) => false,
             hex_lattice::ProcessorChainOwner::Main => self.main_chain.select_processor_audition(
                 identity.owner,
                 identity.device_id,
@@ -1195,6 +1196,7 @@ impl SessionPlayback {
     ) -> bool {
         let project = self.revision.arrangement();
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Source(_) => false,
             hex_lattice::ProcessorChainOwner::Main => self.main_chain.processor_audition_is_active(
                 identity.owner,
                 identity.device_id,
@@ -1233,6 +1235,7 @@ impl SessionPlayback {
     pub(crate) fn cancel_processor_audition(&mut self, identity: crate::PostNodeIdentity) -> bool {
         let project = self.revision.arrangement();
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Source(_) => false,
             hex_lattice::ProcessorChainOwner::Main => {
                 self.main_chain.cancel_processor_audition_for_identity(
                     identity.owner,
