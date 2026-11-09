@@ -1765,6 +1765,7 @@ class ModuleScopeTests(unittest.TestCase):
                          {owner: ["editor::audio_import_settings::admission::",
                                   "editor::controller::audio_event_correlation::",
                                   "editor::controller::sampler_native_ui_protocol_tests::",
+                                  "editor::fade_calculation::", "editor::fades::",
                                   "editor::output_meter_ui_test::", "editor::refresh_state::",
                                   "editor::session_navigation::", "editor::session_navigation_ui_test::",
                                   "editor::session_route_view::", "editor::track_defaults::", *names]})
@@ -2060,6 +2061,24 @@ class ModuleScopeTests(unittest.TestCase):
                                       "cargo_inventory": inventory, "paths": []})
             self.assertTrue(any(unit in step.argv for step in steps if "unit_piano_roll" in step.argv))
             self.assertTrue(any(window in step.argv for step in steps if step.step_id == "ui-feature-tests"))
+
+    def test_fade_calculation_keeps_unit_and_musical_coverage(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::fade_calculation::"
+        integration = "editor::fades::"
+        for path in ("fade_calculation.rs", "fades.rs"):
+            names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            self.assertEqual(names, {owner: [unit, integration]})
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
+                        "single_run": {owner: "ui-test-support"}, "module_filters": names}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                      "cargo_inventory": inventory, "paths": []})
+            self.assertTrue(any(unit in step.argv for step in steps if "unit_editor_logic" in step.argv))
+            self.assertTrue(any(integration in step.argv for step in steps if step.step_id == "ui-feature-tests"))
 
     def crate(self, root: Path) -> list[dict]:
         files = {

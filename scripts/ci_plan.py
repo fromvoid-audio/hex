@@ -17,7 +17,7 @@ if _PYTHON_SPEC is None or _PYTHON_SPEC.loader is None:
 python_tests = importlib.util.module_from_spec(_PYTHON_SPEC)
 _PYTHON_SPEC.loader.exec_module(python_tests)
 
-POLICY_VERSION = 44
+POLICY_VERSION = 45
 UI_PACKAGES = {"hex-ui", "hex-widgets"}
 # Opaque state reaches storage through runtime type IDs, not a Cargo dependency.
 # Changes here must be reviewed with the real registration/codec consumers.
@@ -257,6 +257,7 @@ UI_UNIT_TARGETS = {"editor::audio_admission::": "unit_editor_state",
                    "editor::device_panel::numeric_display::": "unit_device",
                    "editor::device_panel::spectrum_display::": "unit_device",
                    "editor::disk_overload::": "unit_editor_state",
+                   "editor::fade_calculation::": "unit_editor_logic",
                    "editor::midi_drag::": "unit_piano_roll",
                    "editor::midi_group_drag::": "unit_piano_roll",
                    "editor::midi_scene::": "unit_piano_roll",
@@ -297,6 +298,7 @@ UI_UNIT_COHORTS = [{"editor::midi_drag::", "editor::midi_group_drag::", "editor:
 UI_INTEGRATION_PAIRS = {"editor::recovery_state::": "editor::recovery_state_integration_tests::",
                         "editor::audio_import_settings::admission::": "editor::track_defaults::",
                         "editor::controller::audio_event_correlation::": "editor::controller::sampler_native_ui_protocol_tests::",
+                        "editor::fade_calculation::": "editor::fades::",
                         "editor::midi_wheel_mapping::": "editor::midi_wheel::",
                         "editor::refresh_state::": "editor::output_meter_ui_test::",
                         "editor::session_navigation::": "editor::session_navigation_ui_test::"}
