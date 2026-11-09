@@ -14,6 +14,8 @@ mod disk_overload_state;
 mod midi_thumbnail_state;
 #[path = "../src/editor/navigation_profile/selection.rs"]
 mod navigation_selection_state;
+#[path = "../src/editor/play_intent.rs"]
+mod play_intent_state;
 #[path = "../src/editor/pending_edit.rs"]
 mod receipt;
 // Runtime-only methods remain in the library consumer.
@@ -923,6 +925,132 @@ mod editor {
                 state.seeking(2);
                 assert!(!state.complete(true, 1, 0, false));
                 assert!(state.complete(true, 2, 0, false));
+            }
+        }
+    }
+    mod play_intent {
+        use crate::play_intent_state::*;
+        mod tests {
+            use super::{AdmissionError, TokenExhausted, Tracker, prepare_admission};
+
+            #[test]
+            fn launch_then_space_tracks_pause_then_play() {
+                let mut tracker = Tracker::default();
+                let launch = tracker.reserve_token().expect("launch token");
+                tracker.admit(launch, true);
+                assert!(tracker.desired_playing(false));
+
+                let pause = tracker.reserve_token().expect("pause token");
+                tracker.admit(pause, false);
+                assert!(!tracker.desired_playing(false));
+
+                let play = tracker.reserve_token().expect("play token");
+                tracker.admit(play, true);
+                assert!(tracker.desired_playing(false));
+            }
+
+            #[test]
+            fn direct_play_pause_order_is_latest_intent_wins() {
+                let mut tracker = Tracker::default();
+                let play = tracker.reserve_token().expect("play token");
+                tracker.admit(play, true);
+                let pause = tracker.reserve_token().expect("pause token");
+                tracker.admit(pause, false);
+                assert!(!tracker.desired_playing(false));
+            }
+
+            #[test]
+            fn stale_launch_clear_cannot_erase_a_newer_pause() {
+                let mut tracker = Tracker::default();
+                let launch = tracker.reserve_token().expect("launch token");
+                tracker.admit(launch, true);
+                let pause = tracker.reserve_token().expect("pause token");
+                tracker.admit(pause, false);
+                tracker.clear_if_current(launch);
+                assert!(!tracker.desired_playing(true));
+            }
+
+            #[test]
+            fn earlier_ticket_does_not_resolve_a_newer_unsent_intent() {
+                let mut tracker = Tracker::default();
+                let launch = tracker.reserve_token().expect("launch token");
+                tracker.admit(launch, true);
+                tracker.attach_ticket(launch, 8);
+                let pause = tracker.reserve_token().expect("pause token");
+                tracker.admit(pause, false);
+                tracker.attach_ticket(launch, 8);
+                tracker.reconcile(8, true, None);
+                assert!(!tracker.desired_playing(true));
+            }
+
+            #[test]
+            fn later_receipt_does_not_resolve_an_earlier_pending_intent() {
+                let mut tracker = Tracker::default();
+                let token = tracker.reserve_token().unwrap();
+                tracker.admit(token, true);
+                tracker.attach_ticket(token, 4);
+                tracker.reconcile_receipt(5, false);
+                assert!(tracker.desired_playing(false));
+                tracker.reconcile_receipt(4, false);
+                assert!(!tracker.desired_playing(false));
+            }
+
+            #[test]
+            fn consumed_or_failed_latest_ticket_resolves_to_actual_state() {
+                let mut tracker = Tracker::default();
+                let launch = tracker.reserve_token().expect("launch token");
+                tracker.admit(launch, true);
+                tracker.attach_ticket(launch, 11);
+                tracker.reconcile(0, false, Some(11));
+                assert!(!tracker.desired_playing(false));
+
+                let next = tracker.reserve_token().expect("next token");
+                tracker.admit(next, true);
+                assert!(tracker.desired_playing(false));
+            }
+
+            #[test]
+            fn full_ui_queue_keeps_existing_intent_unchanged() {
+                let mut tracker = Tracker::default();
+                let play = prepare_admission(&mut tracker, Some(true), 0, 32)
+                    .expect("play admission")
+                    .expect("play token");
+                tracker.admit(play, true);
+                assert_eq!(
+                    prepare_admission(&mut tracker, Some(false), 32, 32),
+                    Err(AdmissionError::QueueFull)
+                );
+                assert!(tracker.desired_playing(false));
+            }
+
+            #[test]
+            fn priority_stop_and_lifecycle_clear_do_not_depend_on_tokens() {
+                let mut tracker = Tracker::default();
+                let play = tracker.reserve_token().expect("play token");
+                tracker.admit(play, true);
+                tracker.priority_stop();
+                assert!(!tracker.desired_playing(true));
+                tracker.reconcile(0, false, None);
+                assert!(!tracker.desired_playing(false));
+
+                let next = tracker.reserve_token().expect("next token");
+                tracker.admit(next, true);
+                tracker.clear();
+                assert!(!tracker.desired_playing(false));
+            }
+
+            #[test]
+            fn token_exhaustion_is_checked_without_aliasing() {
+                let mut tracker = Tracker::starting_at(u64::MAX);
+                assert_eq!(tracker.reserve_token(), Err(TokenExhausted));
+                assert_eq!(tracker.reserve_token(), Err(TokenExhausted));
+                assert!(!tracker.desired_playing(false));
+                assert!(tracker.desired_playing(true));
+                tracker.priority_stop();
+                assert!(!tracker.desired_playing(true));
+                let first = Tracker::default().reserve_token().unwrap();
+                let last = Tracker::starting_at(u64::MAX - 1).reserve_token().unwrap();
+                assert_ne!(first, last);
             }
         }
     }
