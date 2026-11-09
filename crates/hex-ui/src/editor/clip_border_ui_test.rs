@@ -1232,14 +1232,14 @@ fn resolved_backdrop_edge_follows_hover_without_capturing_input(cx: &mut TestApp
                 .w(px(201.0))
                 .h(px(50.0))
                 .debug_selector(|| "resolved-hover-lane".into())
-                .child(super::backdrop_shell(
+                .children([super::backdrop_shell(
                     body,
                     0.127,
                     0.197,
                     style,
                     true,
                     || "resolved-hover-edge".into(),
-                ))
+                )])
         }
     }
     let clicks = Rc::new(Cell::new(0));
@@ -1265,4 +1265,97 @@ fn resolved_backdrop_edge_follows_hover_without_capturing_input(cx: &mut TestApp
     assert!(has_edge_color(&mut visual, 0x03f0a7));
     visual.simulate_click(body.center(), Modifiers::default());
     assert_eq!(clicks.get(), 1);
+}
+
+#[gpui::test]
+#[ignore = "manual optimized clip-edge paint profile; no native acceptance"]
+fn profile_clip_edge_paint_composition(cx: &mut TestAppContext) {
+    use gpui::{Context, Render, Window, canvas, div, prelude::*, px, relative, rgb, size};
+    use std::{cell::Cell, rc::Rc, time::Instant};
+    struct Fixture(Rc<Cell<bool>>);
+    impl Render for Fixture {
+        fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl gpui::IntoElement {
+            let resolved = self.0.get();
+            let stroke = 1.0 / window.scale_factor();
+            let mut root = div().w(px(1280.0)).h(px(600.0)).flex().flex_col();
+            for row_index in 0..12 {
+                let mut row = div().relative().w_full().h(px(40.0)).flex_shrink_0();
+                for column in 0..16 {
+                    let notch = super::Notch::new((row_index + column) % 2 == 0);
+                    let style = super::Backdrop {
+                        body: 0x253546,
+                        header: 0x344b64,
+                        outline: 0x99aabb,
+                        hover_outline: 0x99aabb,
+                        stroke,
+                        bottom_radius: 0.0,
+                        header_height: 18.0,
+                        notch: notch.clone(),
+                    };
+                    let observe = notch.clone();
+                    let paint_style = style.clone();
+                    let paint = canvas(
+                        move |bounds, _, _| observe.observe(bounds),
+                        move |bounds, _, window, _| {
+                            let color = rgb(paint_style.outline).into();
+                            super::paint_backdrop(bounds, &paint_style, color, window);
+                            if resolved {
+                                super::paint_resolved_trailing(bounds, &paint_style, color, window);
+                            }
+                        },
+                    )
+                    .absolute()
+                    .inset_0();
+                    let mut clip = div()
+                        .absolute()
+                        .left(relative(column as f32 / 16.0))
+                        .w(relative(1.0 / 16.0))
+                        .top_0()
+                        .bottom_0()
+                        .children([paint]);
+                    if !resolved {
+                        clip = clip.children([super::trailing_edge(
+                            notch,
+                            style.outline,
+                            style.outline,
+                        )
+                        .absolute()
+                        .left(relative(1.0))
+                        .top_0()
+                        .bottom_0()
+                        .w(px(stroke))]);
+                    }
+                    row = row.children([clip]);
+                }
+                root = root.children([row]);
+            }
+            root
+        }
+    }
+    let resolved = Rc::new(Cell::new(false));
+    let handle = *cx.add_window(|_, _| Fixture(resolved.clone()));
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1280.0), px(600.0)));
+    visual.run_until_parked();
+    let mut samples = [Vec::new(), Vec::new()];
+    for iteration in 0..100 {
+        let mode = matches!(iteration % 4, 1 | 2);
+        resolved.set(mode);
+        let start = Instant::now();
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        let elapsed = start.elapsed();
+        if iteration >= 20 {
+            samples[usize::from(mode)].push(elapsed);
+        }
+    }
+    for (name, mut durations) in ["legacy_child", "resolved_canvas"].into_iter().zip(samples) {
+        durations.sort_unstable();
+        println!(
+            "CLIP_EDGE_PROFILE mode={name} clips=192 scale=2 warmup=20 samples={} median_us={:.3} p95_us={:.3}",
+            durations.len(),
+            durations[durations.len() / 2].as_secs_f64() * 1e6,
+            durations[durations.len() * 95 / 100].as_secs_f64() * 1e6
+        );
+    }
 }

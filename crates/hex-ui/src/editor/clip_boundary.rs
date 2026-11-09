@@ -291,10 +291,10 @@ pub(super) fn pixel_backdrop_shell<T: gpui::IntoElement + gpui::Styled>(
                 .h(px(
                     (f32::from(bounds.size.height) - style.bottom_radius).max(0.0)
                 ));
-            return outer.child(EdgeWitness {
+            return outer.children([EdgeWitness {
                 child: witness.into_any_element(),
                 anchor,
-            });
+            }]);
         }
         #[cfg(not(any(test, feature = "ui-test-support")))]
         {
@@ -415,10 +415,10 @@ pub(super) fn backdrop_shell(
                 .top_0()
                 .bottom(px(backdrop.bottom_radius))
                 .w(px(backdrop.stroke));
-            return framed.child(EdgeWitness {
+            return framed.children([EdgeWitness {
                 child: witness.into_any_element(),
                 anchor,
-            });
+            }]);
         }
     }
     #[cfg(not(any(test, feature = "ui-test-support")))]
