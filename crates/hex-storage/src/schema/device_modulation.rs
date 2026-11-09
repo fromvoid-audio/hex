@@ -375,6 +375,17 @@ pub(crate) fn contains_instrument_modulation(project: &Project) -> bool {
     fm4_banks(project).any(|bank| !bank.is_empty())
 }
 
+pub(crate) fn contains_button(project: &Project) -> bool {
+    const BUTTON: DeviceTypeId = DeviceTypeId::from_static("hex.modulator.button");
+    project.devices().any(|device| {
+        device
+            .modulation()
+            .sources()
+            .iter()
+            .any(|source| source.state.type_id() == BUTTON)
+    })
+}
+
 pub(crate) fn contains_note_pressure(project: &Project) -> bool {
     const PRESSURE: DeviceTypeId = DeviceTypeId::from_static("hex.modulator.note-pressure");
     fm4_banks(project).any(|bank| {
@@ -456,7 +467,9 @@ pub(crate) fn refuse_legacy(project: &Project) -> Result<(), StorageError> {
     Ok(())
 }
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
-    let version = if contains_note_pressure(project) {
+    let version = if contains_button(project) {
+        crate::BUTTON_MODULATOR_SCHEMA_VERSION
+    } else if contains_note_pressure(project) {
         crate::NOTE_PRESSURE_MODULATOR_SCHEMA_VERSION
     } else if contains_instrument_modulation(project) {
         crate::INSTRUMENT_MODULATION_SCHEMA_VERSION
@@ -550,6 +563,15 @@ pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError
         return Err(StorageError::Invalid(
             "modulation inventory must be nonempty",
         ));
+    }
+    let button_schema = version == crate::BUTTON_MODULATOR_SCHEMA_VERSION;
+    if contains_button(&project) != button_schema {
+        return Err(StorageError::Invalid(
+            "button modulators require their matching project schema",
+        ));
+    }
+    if button_schema {
+        return Ok(project);
     }
     if version == crate::NOTE_PRESSURE_MODULATOR_SCHEMA_VERSION && !contains_note_pressure(&project)
     {

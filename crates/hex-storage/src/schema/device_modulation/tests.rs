@@ -770,5 +770,82 @@ fn lfo_rate_route_upgrades_the_exact_previous_format_and_preserves_the_complete_
     let mut malformed = document;
     malformed["version"] = crate::NOTE_PRESSURE_MODULATOR_SCHEMA_VERSION.into();
     assert!(crate::decode(&serde_json::to_vec(&malformed).unwrap()).is_err());
+    let pressure_bytes = std::fs::read(&pressure_path).unwrap();
+    let bank = expression.device(instrument_id).unwrap().modulation();
+    let mut slots = bank.sources().to_vec();
+    slots.push(Modulator {
+        id: ModulationSourceId::new(expression.next_identity()).unwrap(),
+        enabled: true,
+        color: ElementColor::Cyan,
+        state: NativeDeviceState::new(
+            DeviceTypeId::from_static("hex.modulator.button"),
+            1,
+            vec![0],
+        )
+        .unwrap(),
+    });
+    let combined = DeviceModulation::new(slots, bank.routes().to_vec()).unwrap();
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device: instrument_id,
+            modulation: combined,
+        })
+        .unwrap();
+    let current = editor.project();
+    assert_eq!(
+        crate::schema_version_for(current),
+        crate::BUTTON_MODULATOR_SCHEMA_VERSION
+    );
+    let combined_path = dir.join("button-pressure-and-long-touch.hex");
+    crate::save_new(&combined_path, current).unwrap();
+    assert_eq!(crate::load(&combined_path).unwrap(), *current);
+    assert_eq!(std::fs::read(&pressure_path).unwrap(), pressure_bytes);
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn button_schema_preserves_effect_only_banks_and_reader_consent() {
+    let mut editor = Editor::new(legacy_fixture(), 8).unwrap();
+    let device = editor.project().main_devices()[0].id();
+    let root = temp_dir();
+    let prior_path = root.join("prior.hex");
+    crate::save_new(&prior_path, editor.project()).unwrap();
+    let old_bytes = std::fs::read(&prior_path).unwrap();
+    let old_token = crate::load_with_token(&prior_path).unwrap().1;
+    let prior_version = crate::schema_version_for(editor.project());
+    let next = editor.project().next_identity();
+    let button = Modulator {
+        id: ModulationSourceId::new(next).unwrap(),
+        enabled: true,
+        color: ElementColor::Cyan,
+        state: NativeDeviceState::new(
+            DeviceTypeId::from_static("hex.modulator.button"),
+            1,
+            vec![1],
+        )
+        .unwrap(),
+    };
+    let modulation = DeviceModulation::new(vec![button], Vec::new()).unwrap();
+    editor
+        .execute(Command::ReplaceDeviceModulation { device, modulation })
+        .unwrap();
+    let current = editor.project();
+    assert_eq!(
+        crate::schema_version_for(current),
+        crate::BUTTON_MODULATOR_SCHEMA_VERSION
+    );
+    assert!(old_token.requires_save_confirmation(current).unwrap());
+    let current_path = root.join("button.hex");
+    crate::save_new(&current_path, current).unwrap();
+    assert_eq!(crate::load(&current_path).unwrap(), *current);
+    assert_eq!(std::fs::read(&prior_path).unwrap(), old_bytes);
+    assert_eq!(
+        crate::schema_version_for(&crate::load(&prior_path).unwrap()),
+        prior_version
+    );
+    let mut wrong: serde_json::Value =
+        serde_json::from_slice(&crate::encode(current).unwrap()).unwrap();
+    wrong["version"] = crate::MODULATION_SLOT_COLOR_SCHEMA_VERSION.into();
+    assert!(crate::decode(&serde_json::to_vec(&wrong).unwrap()).is_err());
+    std::fs::remove_dir_all(root).unwrap();
 }
