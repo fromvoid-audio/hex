@@ -1741,8 +1741,14 @@ class ModuleScopeTests(unittest.TestCase):
                       "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
                       "targets": [{"kind": ["lib"]}]}]
         names = ["section_hit::"]
-        for path in ("crates/hex-ui/src/section_hit.rs", "crates/hex-ui/tests/unit_section.rs"):
-            self.assertEqual(plan.module_test_filters(root, [path], inventory, [owner]), {owner: names})
+        self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/section_hit.rs"], inventory, [owner]),
+                         {owner: names})
+        reorder = ["section_appearance::", "section_reorder::"]
+        for path in ("section_appearance.rs", "section_reorder.rs"):
+            self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/" + path], inventory, [owner]),
+                             {owner: reorder})
+        self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_section.rs"], inventory, [owner]),
+                         {owner: ["section_appearance::", "section_hit::", "section_reorder::"]})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
                     "single_run": {owner: "ui-test-support"}, "module_filters": {owner: names}}
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
