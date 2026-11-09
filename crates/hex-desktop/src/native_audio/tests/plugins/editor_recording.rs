@@ -6,8 +6,8 @@ use hex_project::{
 };
 use hex_session::device_gesture::GestureKey;
 use hex_session::service::{
-    PluginEditorRecordingInput, PluginParameterObservation as Observation,
-    automation_draft::Vst3ApplicationValue,
+    PluginEditorRecordingInput, PluginEditorRecordingTarget,
+    PluginParameterObservation as Observation, automation_draft::Vst3ApplicationValue,
 };
 
 #[test]
@@ -142,10 +142,12 @@ fn original_instrument_editor_joins_actual_main_take_and_late_restoration() {
     let input = PluginEditorRecordingInput {
         key,
         context,
-        device: instrument,
-        class,
-        parameter: 7,
-        reading: true,
+        target: PluginEditorRecordingTarget::Single {
+            device: instrument,
+            class,
+            parameter: 7,
+            reading: true,
+        },
     };
     assert!(probe(&h, |reply| EditorRecordingProbe::Prepare(input, reply)).is_err());
     h.audio
@@ -164,7 +166,12 @@ fn original_instrument_editor_joins_actual_main_take_and_late_restoration() {
         return;
     }
     let wrong_class = PluginEditorRecordingInput {
-        class: [0; 16],
+        target: PluginEditorRecordingTarget::Single {
+            device: instrument,
+            class: [0; 16],
+            parameter: 7,
+            reading: true,
+        },
         ..input
     };
     assert!(
@@ -313,15 +320,16 @@ fn verify_session_recording(
         panic!("exact original point and restoration: {observations:?}");
     };
     let project = &committed.state.project;
-    let device = project.device(input.device).unwrap();
-    let old = before.device(input.device).unwrap();
-    let target = DeviceAutomationTarget::Vst3 {
-        parameter: input.parameter,
+    let device = project.device(input.target.device()).unwrap();
+    let old = before.device(input.target.device()).unwrap();
+    let PluginEditorRecordingTarget::Single { parameter, .. } = input.target else {
+        panic!("expected a single target fixture");
     };
+    let target = DeviceAutomationTarget::Vst3 { parameter };
     assert_eq!(old.state(), device.state());
     let lane = device.automation_target(target).unwrap();
     assert_eq!(lane.points, old.automation_target(target).unwrap().points);
-    assert_eq!(lane.vst3_class, Some(input.class));
+    assert_eq!(lane.vst3_class, Some(input.target.class()));
     let [span] = lane.touch.as_slice() else {
         panic!("one canonical touch")
     };
@@ -369,7 +377,7 @@ fn verify_session_recording(
     let mut reference = hex_project::Editor::new((*before).clone(), 8).unwrap();
     reference
         .execute(Command::ReplaceDeviceAutomationTarget {
-            device: input.device,
+            device: input.target.device(),
             target,
             points: vec![
                 step(0, 0.25),
@@ -383,8 +391,8 @@ fn verify_session_recording(
     let blocks = usize::try_from(end.application.origin.content_frame / 256 + 8).unwrap();
     assert!(blocks < 128);
     let expected =
-        instruments::replay_reopened_instrument(h, &reference_path, input.device, blocks);
-    let actual = instruments::replay_reopened_instrument(h, &path, input.device, blocks);
+        instruments::replay_reopened_instrument(h, &reference_path, input.target.device(), blocks);
+    let actual = instruments::replay_reopened_instrument(h, &path, input.target.device(), blocks);
     assert_eq!(expected.len(), actual.len());
     assert!(actual.iter().any(|frame| frame[0] > 2.9 * baseline));
     let error = expected

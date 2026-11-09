@@ -3,7 +3,10 @@
 //! is acknowledged; this adapter owns no audio endpoint or second recorder.
 use super::super::automation_draft::{AppliedEvent, Vst3ApplicationValue};
 use super::*;
-use crate::service::{PluginParameterDelivery, PluginParameterObservation as Observation};
+use crate::service::{
+    PluginParameterDelivery, PluginParameterObservation as Observation, Vst3EditorGroupReceipt,
+};
+mod group;
 use hex_storage::automation_draft::DraftClock;
 
 /// Editor Main FIFO (64 values and one terminal) plus the adapter's
@@ -46,6 +49,17 @@ pub fn copy_failed_plugin_with_receipt_on_control(
 ) -> Result<super::super::automation_draft::RecoveryCopyReceipt, String> {
     use hex_storage::automation_draft::DraftTarget;
 
+    if matches!(scope.target, DeviceCaptureTarget::Vst3Group(_)) {
+        return group::copy_failed_group(
+            outcome,
+            destination,
+            limits,
+            max_events,
+            scope,
+            source,
+            observations,
+        );
+    }
     let DeviceCaptureTarget::Vst3(target) = scope.target else {
         return Err("plugin recovery requires a vst3 target".into());
     };
@@ -210,7 +224,9 @@ pub fn prepare_failed_plugin_continuation(
                 }
                 result.terminal = Some(DraftTerminal::Aborted(DraftAbortReason::Cancelled));
             }
-            Observation::Ready { .. } => return Err("plugin recovery is already admitted"),
+            Observation::Ready { .. } | Observation::Grouped(_) => {
+                return Err("plugin recovery does not match the original single-target take");
+            }
         }
     }
     Ok(result)
@@ -246,6 +262,12 @@ impl DeviceAutomationTakeScope {
         current: AudioSourceContext,
         observation: &Observation,
     ) -> Result<Self, &'static str> {
+        if let Observation::Grouped(group) = *observation {
+            if group.context != current || group.receipt != Vst3EditorGroupReceipt::Ready {
+                return Err("grouped vst3 recording requires its original ready observation");
+            }
+            return group.scope();
+        }
         let Observation::Ready {
             key,
             context,
@@ -306,6 +328,21 @@ impl Active {
     ) -> Result<DeviceAutomationTakeAction, String> {
         use DeviceAutomationTakeAction as Action;
         match observation {
+            Observation::Grouped(group) => {
+                if !group.matches(self.scope, self.source) {
+                    return Err("grouped vst3 observation belongs to another delivery".into());
+                }
+                match group.receipt {
+                    Vst3EditorGroupReceipt::Ready => {
+                        Err("grouped vst3 recording is already admitted".into())
+                    }
+                    Vst3EditorGroupReceipt::Applied(rows) => {
+                        Ok(Action::AppendVst3Group(rows.rows().collect()))
+                    }
+                    Vst3EditorGroupReceipt::Finished(clock) => Ok(Action::FinishVst3Group(clock)),
+                    Vst3EditorGroupReceipt::Interrupted => Ok(Action::Interrupt),
+                }
+            }
             Observation::Delivered(point) => {
                 self.validate_plugin_delivery(point)?;
                 if !matches!(point.application.value, Vst3ApplicationValue::Value(_)) {
@@ -338,7 +375,10 @@ impl Active {
             Observation::Unchanged { key } => {
                 if key.generation != self.scope.stamp.project_generation
                     || key.token != self.scope.stamp.gesture_serial
-                    || !matches!(self.scope.target, DeviceCaptureTarget::Vst3(_))
+                    || !matches!(
+                        self.scope.target,
+                        DeviceCaptureTarget::Vst3(_) | DeviceCaptureTarget::Vst3Group(_)
+                    )
                     || self.input.progress().accepted_events != 0
                 {
                     return Err("plugin recording has delivered changes".into());

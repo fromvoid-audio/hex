@@ -1,7 +1,9 @@
 //! Local source selection only. Session owns draft admission, original
 //! plug-in editor custody and publication. The view never consumes SDK facts.
 use super::*;
-use hex_session::service::{DeviceAutomationTakeCompletion, PluginEditorRecordingInput};
+use hex_session::service::{
+    DeviceAutomationTakeCompletion, PluginEditorRecordingInput, PluginEditorRecordingTarget,
+};
 
 #[derive(Clone, Copy)]
 pub(super) struct EditorCapture {
@@ -187,10 +189,12 @@ impl EditorView {
             input: PluginEditorRecordingInput {
                 key,
                 context,
-                device,
-                class,
-                parameter,
-                reading: false,
+                target: PluginEditorRecordingTarget::Single {
+                    device,
+                    class,
+                    parameter,
+                    reading: false,
+                },
             },
         }) {
             self.native_automation_recorder.editor_take = None;
