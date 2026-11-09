@@ -14,6 +14,7 @@ mod bypass_ramp;
 #[cfg(any(test, feature = "conformance"))]
 pub mod conformance;
 pub use aux_input::{AuxiliaryBlockError, StereoAuxiliaryBlock};
+mod foreign_modulation;
 mod foreign_processor;
 mod host_input_gain_modulation;
 mod host_output_gain_ramp;
@@ -55,6 +56,7 @@ pub use parameter_automation::{
 pub use tail_split::{TailSplit, TailSplitObserver};
 mod resources;
 mod runtime_ownership;
+pub use foreign_modulation::{ForeignModulationRuntime, PreparedForeignModulation};
 pub use hex_dsp::LfoWaveform;
 pub use hex_lattice_contract::ModulationSourceId;
 use hex_lattice_contract::{
@@ -64,9 +66,9 @@ use hex_lattice_contract::{
 pub use hex_tuning::{TuningTable, Waveform as TuningWaveform};
 pub use meter::{DeviceMeter, DevicePeaks, DynamicsMeter, RenderWorkMeter, RenderWorkSample};
 pub use modulation::{
-    HostGainModulationRoute, MAX_MODULATION_BLOCK_FRAMES, MAX_MODULATION_ROUTES,
-    MAX_MODULATION_SOURCES, ModulationBlock, ModulationRoute, ModulationTarget, PreparedModulation,
-    PreparedPressureRoute,
+    ForeignModulationRoute, HostGainModulationRoute, MAX_MODULATION_BLOCK_FRAMES,
+    MAX_MODULATION_ROUTES, MAX_MODULATION_SOURCES, ModulationBlock, ModulationRoute,
+    ModulationTarget, PreparedModulation, PreparedPressureRoute,
 };
 pub use modulation_ramp::ModulationRampCurve;
 pub use modulation_runtime::ModulationRuntime;
