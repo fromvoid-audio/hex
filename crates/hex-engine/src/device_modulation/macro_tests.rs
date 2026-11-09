@@ -58,6 +58,7 @@ fn macro_value_updates_active_sample_frames_and_matches_the_sealed_graph() {
         device,
         modulation: DeviceModulation::new(
             vec![Modulator {
+                color: Default::default(),
                 id: source,
                 enabled: true,
                 state: Settings { value }.encode().unwrap(),
