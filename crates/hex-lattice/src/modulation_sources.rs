@@ -14,7 +14,9 @@
 //! as phase, and graph inheritance retains the new graph's prepared timing mode.
 use crate::{
     NativeInstrumentClock, NativeInstrumentEvent, SourceModulationParameter,
-    modulation_note_counter::{NoteCounter, validate_events},
+    modulation_note_counter::NoteCounter,
+    modulation_note_events::validate_events,
+    modulation_ramp::{ModulationRampCurve, Ramp},
     modulation_source_routes::PreparedSourceRoute,
 };
 use hex_dsp::{EnvelopeFollower, LfoRate, LfoWaveform, ModulationLfo, RandomHold, StereoFrame};
@@ -134,6 +136,7 @@ enum SourceState {
     Math(MathControls),
     Mix(MixControls),
     NoteCounter(NoteCounter),
+    Ramp(Ramp),
     Random(RandomHold),
 }
 
@@ -164,6 +167,7 @@ impl SourceState {
             | (Self::Mix(_), Self::Mix(_)) => {}
             (Self::AudioRate, Self::AudioRate) => {}
             (Self::NoteCounter(counter), Self::NoteCounter(old)) => counter.inherit(old),
+            (Self::Ramp(ramp), Self::Ramp(old)) => ramp.inherit(old),
             (Self::Random(random), Self::Random(old)) => random.inherit_history(&old),
             _ => return false,
         }
@@ -233,7 +237,10 @@ impl PreparedModulationSource {
 
     /// True when rendering needs the instrument owner's ordered note events.
     pub fn reads_note_events(&self) -> bool {
-        matches!(self.initial, SourceState::NoteCounter(_))
+        matches!(
+            self.initial,
+            SourceState::NoteCounter(_) | SourceState::Ramp(_)
+        )
     }
 
     pub fn sample_rate(&self) -> f64 {
@@ -427,6 +434,29 @@ impl PreparedModulationSource {
             id,
             output: ModulationOutputId::MAIN,
             initial: SourceState::NoteCounter(NoteCounter::new(steps, increment, bipolar)?),
+            sample_rate: f64::from(sample_rate),
+        })
+    }
+
+    /// Restart at every note onset. A one-shot reaches the endpoint
+    /// exactly at `duration_frames`; a loop restarts at that same offset.
+    pub fn note_ramp(
+        id: ModulationSourceId,
+        sample_rate: u32,
+        duration_frames: u32,
+        curve: ModulationRampCurve,
+        falling: bool,
+        looping: bool,
+    ) -> Result<Self, Error> {
+        if !(8_000..=192_000).contains(&sample_rate) || duration_frames > 60 * sample_rate {
+            return Err(Error::InvalidParameterValue);
+        }
+        let duration =
+            std::num::NonZeroU32::new(duration_frames).ok_or(Error::InvalidParameterValue)?;
+        Ok(Self {
+            id,
+            output: ModulationOutputId::MAIN,
+            initial: SourceState::Ramp(Ramp::new(duration, curve, falling, looping)),
             sample_rate: f64::from(sample_rate),
         })
     }
@@ -770,6 +800,9 @@ impl ModulationSourceBank {
                 SourceState::Mix(controls) => output.fill(controls.sample([0.0; 3])),
                 SourceState::NoteCounter(counter) => {
                     counter.render(note_events.ok_or(Error::InvalidParameterValue)?, output);
+                }
+                SourceState::Ramp(ramp) => {
+                    ramp.render(note_events.ok_or(Error::InvalidParameterValue)?, output);
                 }
                 SourceState::Random(random) => random.render(output),
             }

@@ -212,8 +212,6 @@ fn probe_routed_composition(
 
 #[test]
 fn note_counter_reads_the_borrowed_events_without_allocating_or_freeing() {
-    use hex_lattice::{NativeInstrumentEvent, PreparedModulationState};
-
     let source = PreparedModulationSource::note_counter(
         ModulationSourceId::new(1).unwrap(),
         48_000,
@@ -222,6 +220,26 @@ fn note_counter_reads_the_borrowed_events_without_allocating_or_freeing() {
         true,
     )
     .unwrap();
+    probe_instrument_event_source(source);
+}
+
+#[test]
+fn note_ramp_reads_the_borrowed_events_without_allocating_or_freeing() {
+    let source = PreparedModulationSource::note_ramp(
+        ModulationSourceId::new(1).unwrap(),
+        48_000,
+        33,
+        hex_lattice::ModulationRampCurve::EaseIn,
+        true,
+        true,
+    )
+    .unwrap();
+    probe_instrument_event_source(source);
+}
+
+fn probe_instrument_event_source(source: PreparedModulationSource) {
+    use hex_lattice::{NativeInstrumentEvent, PreparedModulationState};
+
     let target = gain_target();
     let id = target.descriptor.id;
     let program = PreparedModulation::new(
@@ -239,7 +257,7 @@ fn note_counter_reads_the_borrowed_events_without_allocating_or_freeing() {
     let mut runtime = declaration.prepare().unwrap();
     let events: [NativeInstrumentEvent; 128] =
         std::array::from_fn(|offset| NativeInstrumentEvent::NoteOn {
-            frame_offset: offset,
+            frame_offset: offset / 2,
             occurrence_id: offset as u64 + 1,
             pitch: 60,
             velocity: 100,
