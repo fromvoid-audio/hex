@@ -6753,11 +6753,17 @@ fn modulation_panel_maps_fm4_note_counter_and_edits_its_settings(cx: &mut TestAp
     exercise_fm4_modulation_mapper(cx, Fm4MappingFixture::Counter);
 }
 
+#[gpui::test]
+fn modulation_panel_maps_all_four_fm4_oscillator_phases(cx: &mut TestAppContext) {
+    exercise_fm4_modulation_mapper(cx, Fm4MappingFixture::OscillatorPhases);
+}
+
 enum Fm4MappingFixture {
     Carriers,
     Pressure,
     Counter,
     OscillatorLevels,
+    OscillatorPhases,
 }
 
 fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFixture) {
@@ -6768,6 +6774,7 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
     let pressure = matches!(fixture, Fm4MappingFixture::Pressure);
     let counter = matches!(fixture, Fm4MappingFixture::Counter);
     let levels = matches!(fixture, Fm4MappingFixture::OscillatorLevels);
+    let phases = matches!(fixture, Fm4MappingFixture::OscillatorPhases);
     let service = Service::new(48_000, 8, 8_000_000).unwrap();
     receive_service_event(&service);
     let original = FM4_DEFINITION.default_state().unwrap();
@@ -6936,7 +6943,7 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
         visual.run_until_parked();
     }
     click(&mut visual, format!("{kind}-{}-map", source.value()), true);
-    if !levels {
+    if !levels && !phases {
         editor.update(cx, |view, cx| {
             view.device_panel.parameter_rows[&device]
                 .scroll
@@ -6957,7 +6964,7 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
         )
         .into_boxed_str(),
     );
-    if !levels {
+    if !levels && !phases {
         assert!(visual.debug_bounds(release_control).is_some());
     }
     assert!(
@@ -6966,7 +6973,9 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
             .is_none()
     );
 
-    let controls = if levels {
+    let controls = if phases {
+        [1, 2, 3, 4].map(parameter::oscillator_phase)
+    } else if levels {
         [1, 2, 3, 4].map(parameter::oscillator_level)
     } else {
         [1, 2, 3, 4].map(parameter::carrier)
