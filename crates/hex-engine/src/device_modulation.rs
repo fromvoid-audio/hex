@@ -70,13 +70,20 @@ pub fn project_device_modulation_target_supported(
     if !eligible {
         return false;
     }
-    let Ok(registry) = hex_devices::native_registry() else {
-        return false;
-    };
-    let Some(definition) = registry.definition(device.state().type_id()) else {
-        return false;
-    };
     let state = device.state();
+    let definition: Option<&dyn NativeDeviceMetadata> = match location.class {
+        DeviceUnitClass::Instrument => hex_devices::native_instrument_registry()
+            .ok()
+            .and_then(|registry| registry.definition(state.type_id()))
+            .map(|definition| definition as &dyn NativeDeviceMetadata),
+        DeviceUnitClass::Effect => hex_devices::native_registry()
+            .ok()
+            .and_then(|registry| registry.definition(state.type_id()))
+            .map(|definition| definition as &dyn NativeDeviceMetadata),
+    };
+    let Some(definition) = definition else {
+        return false;
+    };
     let migrated;
     let state = if state.state_version() == definition.state_version() {
         state

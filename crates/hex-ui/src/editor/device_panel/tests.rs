@@ -6528,16 +6528,31 @@ fn modulation_panel_maps_all_fm4_carriers_through_the_scrolled_instrument_body(
     );
 
     let targets = [1, 2, 3, 4].map(parameter::carrier);
+    let body = Box::leak(format!("device-body-{}", device.value()).into_boxed_str());
     for (index, target) in targets.into_iter().enumerate() {
-        click(&mut visual, map_key(target), false);
+        let key = map_key(target);
+        let selector = Box::leak(key.clone().into_boxed_str());
+        let bounds = visual.debug_bounds(body).unwrap();
+        let position = visual.debug_bounds(selector).unwrap().center();
+        if !bounds.contains(&position) {
+            visual.simulate_event(gpui::ScrollWheelEvent {
+                position: bounds.center(),
+                delta: gpui::ScrollDelta::Pixels(point(px(0.0), bounds.center().y - position.y)),
+                ..Default::default()
+            });
+            visual.run_until_parked();
+        }
+        assert!(bounds.contains(&visual.debug_bounds(selector).unwrap().center()));
+        click(&mut visual, key, false);
         assert!(
             editor.read_with(cx, |view, _| {
                 view.worker_requests_pending > 0
                     || !view.pending_requests.is_empty()
                     || bank(view).routes().len() == index + 1
             }),
-            "carrier {} did not dispatch",
-            target.value()
+            "carrier {} did not dispatch: {:?}",
+            target.value(),
+            editor.read_with(cx, |view, _| view.error.clone())
         );
         pump_until(&editor, cx, |view| bank(view).routes().len() == index + 1);
         visual.run_until_parked();
