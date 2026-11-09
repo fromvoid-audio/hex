@@ -17,6 +17,7 @@ fn project_with_device_slot() -> (Project, u64) {
     let device = snapshot.next_id;
     snapshot.next_id = device + 1;
     snapshot.tracks[0].devices.push(DeviceSnapshot {
+        modulation: Default::default(),
         parent: None,
         automation: Vec::new(),
         comparison: None,

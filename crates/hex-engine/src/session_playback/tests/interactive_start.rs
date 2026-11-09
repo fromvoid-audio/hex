@@ -11,6 +11,7 @@ fn start_fixture(start: u64, duration: u64, limiter: Option<bool>) -> Arc<Prepar
     let project = with_test_instrument(&project(1.0, start, duration), definition.metadata.id, 0);
     let mut snapshot = project.snapshot();
     let device = DeviceSnapshot {
+        modulation: Default::default(),
         parent: None,
         automation: Vec::new(),
         comparison: None,
@@ -536,6 +537,7 @@ fn shared_chase_and_handoff(limiter: Option<bool>, handoff_frames: &[usize]) {
         let mut snapshot = editor.project().snapshot();
         if let Some(main) = limiter {
             let device = DeviceSnapshot {
+                modulation: Default::default(),
                 parent: None,
                 automation: Vec::new(),
                 comparison: None,
