@@ -24,6 +24,7 @@ fn arrangement_and_session_refuse_unknown_modulator_without_committing() {
             device: id,
             modulation: DeviceModulation::new(
                 vec![Modulator {
+                    color: Default::default(),
                     id: ModulationSourceId::new(before.next_id).unwrap(),
                     enabled: true,
                     state: NativeDeviceState::new(
@@ -46,6 +47,7 @@ fn arrangement_and_session_refuse_unknown_modulator_without_committing() {
             device: id,
             modulation: DeviceModulation::new(
                 vec![Modulator {
+                    color: Default::default(),
                     id: ModulationSourceId::new(editor.project().snapshot().next_id).unwrap(),
                     enabled: true,
                     state: NativeDeviceState::new(
@@ -155,6 +157,7 @@ fn saved_lfos_modulate_automation_per_sample_in_arrangement_session_and_sealed_p
     };
     let next = editor.project().snapshot().next_id;
     let source = |offset, rate, phase| Modulator {
+        color: Default::default(),
         id: ModulationSourceId::new(next + offset).unwrap(),
         enabled: true,
         state: Settings { rate, phase }.encode().unwrap(),
@@ -365,6 +368,7 @@ fn envelope_follower_samples_the_owning_effect_input_before_processing() {
     let source = ModulationSourceId::new(next).unwrap();
     let modulation = DeviceModulation::new(
         vec![Modulator {
+            color: Default::default(),
             id: source,
             enabled: true,
             state: Settings {
