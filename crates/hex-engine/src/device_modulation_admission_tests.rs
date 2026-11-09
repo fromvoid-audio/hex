@@ -235,21 +235,54 @@ fn saved_lfos_modulate_automation_per_sample_in_arrangement_session_and_sealed_p
         )
         .unwrap(),
     );
-    let mut playback = crate::playback::Playback::try_from_prepared_with_session(revision).unwrap();
-    playback
-        .try_apply_action(PlaybackAction::Session(
-            SessionPlaybackCommand::LaunchClip {
-                clip,
-                quantization: LaunchQuantization::Immediate,
-            },
-        ))
-        .unwrap();
-    playback
-        .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
-        .unwrap();
+    let playing = |revision| {
+        let mut playback =
+            crate::playback::Playback::try_from_prepared_with_session(revision).unwrap();
+        playback
+            .try_apply_action(PlaybackAction::Session(
+                SessionPlaybackCommand::LaunchClip {
+                    clip,
+                    quantization: LaunchQuantization::Immediate,
+                },
+            ))
+            .unwrap();
+        playback
+            .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
+            .unwrap();
+        playback
+    };
+    let mut playback = playing(Arc::clone(&revision));
     playback.render(&mut pcm[..3]).unwrap();
     playback.render(&mut pcm[3..]).unwrap();
     assert_pcm(pcm);
+
+    let mut prior = playing(Arc::clone(&revision));
+    prior.render(&mut pcm[..3]).unwrap();
+    let bank = project.device(device).unwrap().modulation();
+    let mut routes = bank.routes().to_vec();
+    routes[0].amount = ModulationAmount::new(0.5 / MAX_UTILITY_GAIN).unwrap();
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device,
+            modulation: DeviceModulation::new(bank.sources().to_vec(), routes).unwrap(),
+        })
+        .unwrap();
+    let successor = PreparedRevision::prepare(
+        editor.project(),
+        &media,
+        Arc::new(hex_devices::SineTable::new()),
+        Some(revision.session()),
+    )
+    .unwrap();
+    let mut next =
+        crate::playback::Playback::try_from_prepared_with_session(Arc::new(successor)).unwrap();
+    next.try_inherit_runtime_from(&mut prior).unwrap();
+    let mut first = [[0.0; 2]];
+    next.render(&mut first).unwrap();
+    // At the inherited fourth sample the LFO is negative one. Its new
+    // depth makes the gain 1.25, compared with 0.75 before the edit.
+    assert!((first[0][0] - 0.125 * 1.25).abs() < 1e-6, "{first:?}");
+    assert!((first[0][1] + 0.25 * 1.25).abs() < 1e-6, "{first:?}");
 
     if !crate::audio_storage_constructor_layout_supported() {
         eprintln!("sealed modulation playback requires the supported constructor layout");
