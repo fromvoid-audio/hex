@@ -597,6 +597,34 @@ fn saved_fm4_routes_compose_with_authored_curves_and_keep_phase_at_live_handoff(
     assert!(editor.execute_prepared(edit(ungranted), prepare).is_err());
     assert_eq!(*editor.project(), authored);
 
+    let source_id = editor.project().track(track).unwrap().source_id().unwrap();
+    editor
+        .execute_prepared(Command::RemoveInstrument { track }, prepare)
+        .unwrap();
+    let detached = editor.project();
+    assert!(detached.track(track).unwrap().instrument().is_none());
+    assert_eq!(
+        detached.device(device).unwrap().modulation(),
+        authored.device(device).unwrap().modulation(),
+    );
+    assert!(
+        prepare(detached)
+            .unwrap()
+            .session()
+            .instrument_modulation(track)
+            .is_none()
+    );
+    editor
+        .execute_prepared(
+            Command::BindTrackSource {
+                track,
+                source: Some(source_id),
+            },
+            prepare,
+        )
+        .unwrap();
+    assert_eq!(*editor.project(), authored);
+
     let context = DevicePreparationContext {
         sample_rate: RATE,
         tuning: &hex_lattice::TuningTable::default(),

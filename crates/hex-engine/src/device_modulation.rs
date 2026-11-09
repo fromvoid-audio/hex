@@ -127,12 +127,13 @@ pub(super) fn validate_source_owners(project: &Project) -> Result<(), Invalid> {
             return Err(Invalid("source prefix modulation is unsupported"));
         }
         let instrument = source.instrument();
+        // An unbound instrument stays in the retained source inventory. Keep
+        // its bank for a later binding and compile it only for a real receiver.
         if !instrument.modulation().is_empty()
-            && (instrument.state().type_id() != hex_devices::fm4::device::FM4_TYPE_ID
-                || source.receiver().is_none())
+            && instrument.state().type_id() != hex_devices::fm4::device::FM4_TYPE_ID
         {
             return Err(Invalid(
-                "instrument modulation requires a supported bound receiver",
+                "instrument modulation requires a supported provider",
             ));
         }
         for device in source.post_instrument_effects() {
