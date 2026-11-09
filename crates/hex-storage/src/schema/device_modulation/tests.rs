@@ -282,3 +282,48 @@ fn malformed_future_incomplete_and_cyclic_documents_refuse_instead_of_losing_rou
         project.snapshot()
     );
 }
+
+#[test]
+fn bound_source_effect_schema_preserves_colored_slots_and_requires_upgrade_consent() {
+    let original = authored();
+    let older = crate::FileToken::from_validated_bytes(crate::encode(&original).unwrap().into());
+    let mut editor = Editor::new(original, 8).unwrap();
+    let main = &editor.project().main_devices()[0];
+    let id = main.id();
+    let mut slots = main.modulation().sources().to_vec();
+    slots[0].color = ElementColor::Cyan;
+    let modulation = DeviceModulation::new(slots, main.modulation().routes().to_vec()).unwrap();
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device: id,
+            modulation,
+        })
+        .unwrap();
+
+    let parent = editor.project().tracks()[0].instrument().unwrap().id();
+    editor
+        .execute(Command::InsertNestedDevice {
+            parent,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap();
+    let project = editor.project();
+    assert!(older.requires_save_confirmation(project).unwrap());
+    let saved = crate::encode(project).unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&saved).unwrap();
+    assert_eq!(json["version"], 83);
+    assert_eq!(json["source_effect_base_version"], 82);
+    assert_eq!(
+        crate::decode(&saved).unwrap().snapshot(),
+        project.snapshot()
+    );
+    let mut missing = json.clone();
+    missing
+        .as_object_mut()
+        .unwrap()
+        .remove("source_effect_base_version");
+    assert!(crate::decode(&serde_json::to_vec(&missing).unwrap()).is_err());
+    let mut recursive = json;
+    recursive["source_effect_base_version"] = 83.into();
+    assert!(crate::decode(&serde_json::to_vec(&recursive).unwrap()).is_err());
+}
