@@ -1,7 +1,48 @@
 //! Canonical read inventory shared by device lookup, capacity and media checks.
-use crate::{Device, DeviceId, Invalid, Project};
+use crate::{
+    Device, DeviceChainOwner, DeviceId, DeviceUnitClass, Invalid, NativeSource, Project, ReturnId,
+    SourceId, TrackId,
+};
 
 pub const MAX_SERIAL_DEVICE_DEPTH: usize = 8;
+
+/// Actual authored owner. A track showing a shared source does not own it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceOwner {
+    Track(TrackId),
+    Return(ReturnId),
+    Main,
+    Source(SourceId),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct DeviceLocation<'a> {
+    pub device: &'a Device,
+    pub owner: DeviceOwner,
+    pub class: DeviceUnitClass,
+}
+
+fn find_effect(devices: &[Device], owner: DeviceOwner, id: DeviceId) -> Option<DeviceLocation<'_>> {
+    let device = devices.iter().find(|device| device.id() == id)?;
+    Some(DeviceLocation {
+        device,
+        owner,
+        class: DeviceUnitClass::Effect,
+    })
+}
+
+fn find_source(source: &NativeSource, id: DeviceId) -> Option<DeviceLocation<'_>> {
+    let device = source.devices().find(|device| device.id() == id)?;
+    Some(DeviceLocation {
+        device,
+        owner: DeviceOwner::Source(source.id()),
+        class: if source.instrument().id() == id {
+            DeviceUnitClass::Instrument
+        } else {
+            DeviceUnitClass::Effect
+        },
+    })
+}
 
 /// Contiguous subtree in an already validated, bounded canonical owner chain.
 /// Parent IDs always name earlier nodes; stop when a node leaves this subtree.
@@ -57,6 +98,50 @@ impl Project {
 
     pub fn device(&self, id: DeviceId) -> Option<&Device> {
         self.devices().find(|device| device.id() == id)
+    }
+
+    /// Resolve any existing canonical device and its native slot class.
+    pub fn device_location(&self, id: DeviceId) -> Option<DeviceLocation<'_>> {
+        self.tracks()
+            .iter()
+            .find_map(|track| find_effect(track.devices(), DeviceOwner::Track(track.id()), id))
+            .or_else(|| {
+                self.return_tracks().iter().find_map(|track| {
+                    find_effect(track.devices(), DeviceOwner::Return(track.id()), id)
+                })
+            })
+            .or_else(|| find_effect(self.main_devices(), DeviceOwner::Main, id))
+            .or_else(|| {
+                self.native_sources()
+                    .iter()
+                    .find_map(|source| find_source(source, id))
+            })
+    }
+
+    /// Resolve membership in one visible chain, including the track's current
+    /// source binding. The returned owner is still the canonical source.
+    pub fn device_in_chain(
+        &self,
+        chain: DeviceChainOwner,
+        id: DeviceId,
+    ) -> Option<DeviceLocation<'_>> {
+        match chain {
+            DeviceChainOwner::Track(owner) => {
+                let track = self.track(owner)?;
+                find_effect(track.devices(), DeviceOwner::Track(owner), id).or_else(|| {
+                    let source = self.native_source(track.source_id()?)?;
+                    find_source(source, id)
+                })
+            }
+            DeviceChainOwner::Return(owner) => {
+                let track = self
+                    .return_tracks()
+                    .iter()
+                    .find(|track| track.id() == owner)?;
+                find_effect(track.devices(), DeviceOwner::Return(owner), id)
+            }
+            DeviceChainOwner::Main => find_effect(self.main_devices(), DeviceOwner::Main, id),
+        }
     }
 
     pub(crate) fn validate_serial_units(&self) -> Result<(), Invalid> {
@@ -115,6 +200,139 @@ fn validate_chain<'a>(devices: impl Iterator<Item = &'a Device>) -> Result<(), I
 mod tests {
     use super::*;
     use crate::{Command, Created, Editor, default_instrument_state};
+
+    #[test]
+    fn locations_keep_nested_owners_and_resolve_only_current_track_bindings() {
+        let state = default_instrument_state().unwrap();
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let mut add_track = |name: &str| {
+            let Created::Track(track) = editor
+                .execute(Command::AddMidiTrack { name: name.into() })
+                .unwrap()
+            else {
+                panic!("track")
+            };
+            track
+        };
+        let track = add_track("one");
+        let other = add_track("two");
+        let Created::NativeSource(source) = editor
+            .execute(Command::CreateNativeSource {
+                name: "shared".into(),
+                devices: vec![state.clone()],
+                instrument_index: 0,
+            })
+            .unwrap()
+        else {
+            panic!("source")
+        };
+        let instrument = editor
+            .project()
+            .native_source(source)
+            .unwrap()
+            .instrument()
+            .id();
+        let Created::ReturnTrack(bus) = editor
+            .execute(Command::AddReturnTrack {
+                name: "return".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return")
+        };
+        let mut add = |command| {
+            let Created::Device(device) = editor.execute(command).unwrap() else {
+                panic!("device")
+            };
+            device
+        };
+        let local = add(Command::InsertDevice {
+            track,
+            before: None,
+            state: state.clone(),
+        });
+        let main = add(Command::InsertMainDevice {
+            before: None,
+            state: state.clone(),
+        });
+        let ret = add(Command::InsertReturnDevice {
+            return_track: bus,
+            before: None,
+            state: state.clone(),
+        });
+        let children = [local, main, ret, instrument].map(|parent| {
+            add(Command::InsertNestedDevice {
+                parent,
+                state: state.clone(),
+            })
+        });
+        for owner in [track, other] {
+            editor
+                .execute(Command::BindTrackSource {
+                    track: owner,
+                    source: Some(source),
+                })
+                .unwrap();
+        }
+        let project = editor.project();
+        assert_eq!(
+            project.device_location(instrument).unwrap().class,
+            DeviceUnitClass::Instrument
+        );
+        for (child, parent, chain, owner) in [
+            (
+                children[0],
+                local,
+                DeviceChainOwner::Track(track),
+                DeviceOwner::Track(track),
+            ),
+            (children[1], main, DeviceChainOwner::Main, DeviceOwner::Main),
+            (
+                children[2],
+                ret,
+                DeviceChainOwner::Return(bus),
+                DeviceOwner::Return(bus),
+            ),
+            (
+                children[3],
+                instrument,
+                DeviceChainOwner::Track(track),
+                DeviceOwner::Source(source),
+            ),
+        ] {
+            for location in [
+                project.device_location(child),
+                project.device_in_chain(chain, child),
+            ] {
+                let location = location.unwrap();
+                assert_eq!(location.owner, owner);
+                assert_eq!(location.class, DeviceUnitClass::Effect);
+                assert_eq!(location.device.parent(), Some(parent));
+            }
+        }
+        let other_chain = DeviceChainOwner::Track(other);
+        assert!(project.device_in_chain(other_chain, children[0]).is_none());
+        assert_eq!(
+            project
+                .device_in_chain(other_chain, children[3])
+                .unwrap()
+                .owner,
+            DeviceOwner::Source(source)
+        );
+        editor
+            .execute(Command::BindTrackSource {
+                track: other,
+                source: None,
+            })
+            .unwrap();
+        assert!(
+            editor
+                .project()
+                .device_in_chain(other_chain, children[3])
+                .is_none()
+        );
+        assert!(editor.project().device_location(children[3]).is_some());
+    }
 
     #[test]
     fn local_units_cannot_cross_the_track_instrument_slot() {
