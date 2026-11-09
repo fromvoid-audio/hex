@@ -1635,27 +1635,33 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/src/editor/viewport.rs"], inventory, [owner]),
             {owner: [viewport]})
-        both = ["editor::pending_edit::", viewport]
+        disk = "editor::disk_overload::"
         self.assertEqual(plan.module_test_filters(
-            root, ["crates/hex-ui/tests/unit_pending_edit.rs"], inventory, [owner]), filters)
+            root, ["crates/hex-ui/src/editor/disk_overload.rs"], inventory, [owner]),
+            {owner: [disk]})
+        all_modules = [disk, "editor::pending_edit::", viewport]
         self.assertEqual(plan.module_test_filters(
-            root, ["crates/hex-ui/tests/unit_viewport.rs"], inventory, [owner]),
-            {owner: [viewport]})
-        for names, expected in ((filters[owner], {"unit_pending_edit"}),
-                                ([viewport], {"unit_viewport"}),
-                                (both, {"unit_pending_edit", "unit_viewport"}),
-                                (["editor::"], {"unit_pending_edit", "unit_viewport"}),
-                                (["editor::save::"], set())):
+            root, ["crates/hex-ui/tests/unit_editor_state.rs"], inventory, [owner]),
+            {owner: all_modules})
+        # A removed test target remains unproven rather than silently selecting
+        # a subset; this migration uses an explicitly reviewed check set.
+        self.assertEqual(plan.module_test_filters(
+            root, ["crates/hex-ui/tests/unit_pending_edit.rs"], inventory, [owner]), {})
+        for names, expected in ((filters[owner], True), ([viewport], True), ([disk], True),
+                                (all_modules, True), (["editor::"], True),
+                                (["editor::save::"], False)):
             boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
                         "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
                         "module_filters": {owner: names}}
             steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
                                       "boundary": boundary, "cargo_inventory": inventory,
                                       "paths": [path]})
-            unit = [step for step in steps if "--test" in step.argv]
-            self.assertEqual({step.argv[step.argv.index("--test") + 1] for step in unit}, expected)
-            for step in unit:
-                self.assertTrue(ci.module_scoped(step.argv))
+            unit = [step for step in steps if "unit_editor_state" in step.argv]
+            self.assertEqual(len(unit), int(expected))
+            if unit:
+                self.assertTrue(ci.module_scoped(unit[0].argv))
+                for name in names:
+                    self.assertIn(name, unit[0].argv)
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
                     "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
                     "module_filters": {}}
