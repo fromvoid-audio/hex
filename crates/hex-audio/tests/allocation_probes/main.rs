@@ -45,6 +45,7 @@ mod session_silence_effect_allocations;
 mod shared_source_allocations;
 mod short_latency_bypass;
 mod signed_envelope_allocations;
+mod source_automation;
 mod source_effect_modulation_allocations;
 mod sparse_eq_modulation_allocations;
 mod spectrum_capture_allocations;

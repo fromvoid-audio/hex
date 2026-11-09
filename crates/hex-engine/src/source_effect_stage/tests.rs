@@ -1665,3 +1665,208 @@ fn source_compressor_modulates_only_generator_audio_and_preserves_history_on_rou
     }
     assert_eq!(actual, expected);
 }
+
+#[test]
+fn bound_source_automation_reads_step_linear_and_loop_on_the_shared_signal() {
+    use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
+    use hex_devices::utility::{MAX_UTILITY_GAIN, UTILITY_DEFINITION, parameter};
+    use hex_lattice_contract::NativeDeviceMetadata;
+    use hex_project::{
+        AutomationInterpolation, AutomationPoint, AutomationValue, DeviceAutomationTarget,
+    };
+
+    let target = DeviceAutomationTarget::Parameter(parameter::GAIN);
+    let (mut editor, asset, device) = authored_modulated_suffix(
+        UTILITY_DEFINITION.default_state().unwrap(),
+        target,
+        0.0,
+        false,
+    );
+    let source = editor.project().tracks()[0].source_id().unwrap();
+    let receiver = editor.project().tracks()[0].id();
+    editor
+        .execute(Command::SetNativeSourceReceiver {
+            source,
+            track: None,
+        })
+        .unwrap();
+    assert!(!crate::project_device_automation_target_supported(
+        editor.project(),
+        device,
+        target
+    ));
+    editor
+        .execute(Command::SetNativeSourceReceiver {
+            source,
+            track: Some(receiver),
+        })
+        .unwrap();
+    assert!(crate::project_device_automation_target_supported(
+        editor.project(),
+        device,
+        target
+    ));
+
+    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
+    let prepare = |project: &hex_project::Project| {
+        Arc::new(
+            PreparedRevision::prepare(project, &media, Arc::new(crate::SineTable::new()), None)
+                .unwrap(),
+        )
+    };
+    editor
+        .execute(Command::SetLoopRegion {
+            start: 24,
+            end: 192,
+            enabled: true,
+        })
+        .unwrap();
+    let original = editor.project().clone();
+    let dry = prepare(&original);
+    editor
+        .execute(Command::ReplaceDeviceAutomationTarget {
+            device,
+            target,
+            points: [
+                (0, 0.25, AutomationInterpolation::Step),
+                (64, 0.5, AutomationInterpolation::Linear),
+                (160, 1.0, AutomationInterpolation::Step),
+            ]
+            .into_iter()
+            .map(|(frame, gain, outgoing)| AutomationPoint {
+                beat: BeatTime::from_ratio(frame, 24_000).unwrap(),
+                value: AutomationValue::new(gain / MAX_UTILITY_GAIN).unwrap(),
+                outgoing,
+            })
+            .collect(),
+        })
+        .unwrap();
+    let wet = prepare(editor.project());
+    let recipes = &wet.arrangement().source_effects;
+    assert_eq!(recipes.len(), 1);
+    assert_eq!(recipes[0].receiver, 0);
+    assert_eq!(recipes[0].instances[0].device_id, device.value());
+    assert!(
+        metadata::construction_bytes(editor.project()).unwrap()
+            >= metadata::retained_bytes(recipes).unwrap()
+    );
+    let bound = editor.project().clone();
+    editor
+        .execute(Command::SetNativeSourceReceiver {
+            source,
+            track: None,
+        })
+        .unwrap();
+    let dormant = prepare(editor.project());
+    assert!(dormant.arrangement().source_effects.is_empty());
+    editor
+        .execute(Command::SetNativeSourceReceiver {
+            source,
+            track: Some(receiver),
+        })
+        .unwrap();
+    assert_eq!(
+        editor.project(),
+        &bound,
+        "unbinding keeps dormant envelopes intact"
+    );
+    let gain = |frame: usize| {
+        if frame < 64 {
+            0.25
+        } else if frame < 160 {
+            0.5 + (frame - 64) as f32 / 192.0
+        } else {
+            1.0
+        }
+    };
+    let compare = |path: &str,
+                   reference: &[Frame],
+                   actual: &[Frame],
+                   local: &[Frame],
+                   content: fn(usize) -> usize| {
+        assert!(
+            reference
+                .iter()
+                .zip(local)
+                .any(|(frame, clip)| (frame[0] - clip[0]).abs() > 0.001)
+        );
+        for (index, ((plain, changed), clip)) in reference.iter().zip(actual).zip(local).enumerate()
+        {
+            for channel in 0..2 {
+                let expected =
+                    clip[channel] + (plain[channel] - clip[channel]) * gain(content(index));
+                assert!(
+                    (changed[channel] - expected).abs() < 1e-6,
+                    "{path} frame {index}, origin {}, channel {channel}, dry {}, got {}, expected {expected}",
+                    content(index),
+                    plain[channel],
+                    changed[channel]
+                );
+            }
+        }
+    };
+
+    let mut before = [[0.0; 2]; WIDTH];
+    let mut after = [[0.0; 2]; WIDTH];
+    let mut offline_dry = Renderer::new(dry.arrangement());
+    let mut offline_wet = Renderer::new(wet.arrangement());
+    offline_dry.play();
+    offline_wet.play();
+    for block in before.chunks_mut(31) {
+        offline_dry.render(block).unwrap();
+    }
+    for block in after.chunks_mut(53) {
+        offline_wet.render(block).unwrap();
+    }
+    let loop_frame = |index| {
+        if index < 192 {
+            index
+        } else {
+            24 + (index - 192) % 168
+        }
+    };
+    assert_eq!(offline_wet.position(), WIDTH as u64);
+    compare("offline", &before, &after, &[CLIP; WIDTH], |index| index);
+
+    let mut playing_dry = SessionPlayback::new(Arc::clone(&dry)).unwrap();
+    let mut playing_wet = SessionPlayback::new(Arc::clone(&wet)).unwrap();
+    assert!(
+        SessionPlayback::interactive_runtime_allowance(&wet).unwrap()
+            >= playing_wet.accounted_runtime_storage_bytes().unwrap()
+    );
+    playing_dry.apply(SessionPlaybackCommand::Play).unwrap();
+    playing_wet.apply(SessionPlaybackCommand::Play).unwrap();
+    for block in before.chunks_mut(47) {
+        playing_dry.render(block).unwrap();
+    }
+    for block in after.chunks_mut(73) {
+        playing_wet.render(block).unwrap();
+    }
+    assert_eq!(playing_wet.performance_frame(), WIDTH as u64);
+    // Arrangement fades the local audio clip before the loop end. Measure
+    // that path by itself so the oracle scales only the generator signal.
+    let mut local = [[0.0; 2]; WIDTH];
+    let mut playing_clip = SessionPlayback::new(dormant).unwrap();
+    playing_clip.apply(SessionPlaybackCommand::Play).unwrap();
+    for block in local.chunks_mut(59) {
+        playing_clip.render(block).unwrap();
+    }
+    compare("playing", &before, &after, &local, loop_frame);
+
+    // Installing the lane while the source is already playing keeps its
+    // original note phase and applies the program only to future frames.
+    let cut = 97;
+    let mut donor = SessionPlayback::new(dry).unwrap();
+    donor.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut live = [[0.0; 2]; WIDTH];
+    donor.render(&mut live[..cut]).unwrap();
+    let mut successor = SessionPlayback::new(wet).unwrap();
+    successor.try_inherit_state_live_from(&mut donor).unwrap();
+    assert_eq!(successor.performance_frame(), cut as u64);
+    successor.render(&mut live[cut..]).unwrap();
+    for (got, want) in live.iter().zip(before[..cut].iter().chain(&after[cut..])) {
+        for channel in 0..2 {
+            assert!((got[channel] - want[channel]).abs() < 1e-6);
+        }
+    }
+}

@@ -34,9 +34,6 @@ pub(crate) fn factory_bytes(
 ) -> Result<usize, Invalid> {
     let state = instance.configuration.as_ref().ok_or(UNKNOWN_FACTORY)?;
     validate_authored(state, registry)?;
-    if instance.automation.storage_bytes() != Some(0) {
-        return Err(Invalid("source effects cannot retain automation programs"));
-    }
     let Some(factory) = &instance.definition else {
         return Ok(0);
     };
@@ -82,7 +79,14 @@ pub(crate) fn construction_bytes(project: &hex_project::Project) -> Option<usize
         .flat_map(|source| source.post_instrument_effects())
         .try_fold(recipes, |bytes, device| {
             let (retained, temporary) = crate::device_modulation::EffectModulation::quote(device)?;
-            bytes.checked_add(retained)?.checked_add(temporary)
+            let provider = device.automation().iter().filter(|lane| !lane.target.is_host()).count();
+            let automation = crate::device_automation::quote(device).ok()?;
+            let staging = hex_lattice::PreparedParameterAutomation::quoted_construction_overlap_bytes_with_host(
+                provider,
+                device.automation().len().checked_sub(provider)?,
+                device.reading_automation().try_fold(0usize, |sum, lane| sum.checked_add(lane.point_count()))?,
+            )?.checked_add(crate::device_automation::input_construction_growth_overlap(device, None).ok()?)?;
+            bytes.checked_add(retained)?.checked_add(temporary)?.checked_add(automation)?.checked_add(staging)
         })
 }
 
@@ -133,7 +137,8 @@ pub(crate) fn retained_bytes(recipes: &Vec<PreparedSourceEffects>) -> Option<usi
                 bytes
                     .checked_add(inline)?
                     .checked_add(state.retained_control_metadata_bytes()?)?
-                    .checked_add(modulation_bytes(instance)?)
+                    .checked_add(modulation_bytes(instance)?)?
+                    .checked_add(instance.automation.storage_bytes()?)
             },
         )
     })
