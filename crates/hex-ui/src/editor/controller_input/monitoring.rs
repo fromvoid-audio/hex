@@ -42,6 +42,15 @@ pub(super) fn sink(
                     pitch,
                     velocity,
                 },
+                hex_midi::NoteEvent::PolyPressure {
+                    channel,
+                    pitch,
+                    value,
+                } => LiveNoteEvent::PolyPressure {
+                    channel,
+                    pitch,
+                    value,
+                },
                 hex_midi::NoteEvent::AllNotesOff => LiveNoteEvent::AllNotesOff,
                 hex_midi::NoteEvent::InputLost(_) => {
                     let _ = input.cancel_activation(activation);
@@ -124,6 +133,40 @@ mod tests {
     }
 
     #[test]
+    fn poly_pressure_reaches_the_bounded_note_queue_and_cancels_on_overflow() {
+        let input = Arc::new(
+            hex_engine::computer_keyboard::ComputerKeyboardInput::default()
+                .with_live_notes()
+                .unwrap(),
+        );
+        let activation = input.begin_live_notes_activation_on_control().unwrap();
+        let held = Arc::new(hex_midi::HeldNoteInput::default());
+        let sink = sink(None, Arc::clone(&held), Arc::clone(&input), activation);
+        // One pressure status plus 512 running-status messages remains inside
+        // the decoder's packet budget. The smaller host queue must reject it.
+        let mut packet = vec![0x92, 60, 91, 0xa2];
+        packet.extend(std::iter::repeat_n([60, 85], 512).flatten());
+        hex_midi::deliver_packets_with_notes(
+            &mut hex_midi::Decoder::default(),
+            2,
+            Default::default(),
+            [packet.as_slice()],
+            &held,
+            sink.publish.as_ref(),
+            sink.note.as_ref(),
+        );
+        assert!((sink.is_cancelled)());
+        assert!(held.is_cancelled());
+        assert!(
+            !input
+                .live_notes()
+                .unwrap()
+                .same_current_activation(activation)
+        );
+        assert!(!input.is_cancelled(), "computer keys keep their own root");
+    }
+
+    #[test]
     fn actual_wire_ingress_reaches_host_pcm_and_stale_sink_cannot_cancel_reconnect() {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
         let Created::Track(track) = editor
@@ -170,7 +213,7 @@ mod tests {
             &mut hex_midi::Decoder::default(),
             2,
             Default::default(),
-            [&[0x92, 60, 37, 60, 0][..]],
+            [&[0x92, 60, 37, 0xa2, 60, 72, 0x82, 60, 0][..]],
             &held,
             sink.publish.as_ref(),
             sink.note.as_ref(),
