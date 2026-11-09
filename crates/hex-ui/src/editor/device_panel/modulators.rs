@@ -8,7 +8,8 @@ use hex_engine::{
     audio_rate_modulator as audio_rate, button_modulator as manual_button,
     buttons_modulator as buttons, follower_modulator as follower, lfo_modulator as lfo,
     macro_four_modulator as macro_four, macro_modulator as manual, math_modulator as math,
-    mix_modulator as mix, note_pressure_modulator as pressure, random_modulator as random,
+    mix_modulator as mix, note_counter_modulator as note_counter,
+    note_pressure_modulator as pressure, random_modulator as random,
 };
 use hex_lattice_contract::{ParameterId, ParameterModulation};
 use hex_project::{
@@ -30,10 +31,11 @@ enum SourceKind {
     Math,
     Buttons,
     Mix,
+    NoteCounter,
 }
 
 impl SourceKind {
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 12] = [
         Self::Lfo,
         Self::Follower,
         Self::Macro,
@@ -45,6 +47,7 @@ impl SourceKind {
         Self::Math,
         Self::Buttons,
         Self::Mix,
+        Self::NoteCounter,
     ];
 
     fn label(self) -> &'static str {
@@ -60,6 +63,7 @@ impl SourceKind {
             Self::Math => "math",
             Self::Buttons => "buttons",
             Self::Mix => "mix",
+            Self::NoteCounter => "note counter",
         }
     }
 
@@ -85,6 +89,7 @@ impl SourceKind {
             Self::Math => math::Settings::default().encode(),
             Self::Buttons => buttons::Settings::default().encode(),
             Self::Mix => mix::Settings::default().encode(),
+            Self::NoteCounter => note_counter::Settings::default().encode(),
             Self::Macro => manual::Settings::default().encode(),
             Self::MacroFour => macro_four::Settings::default().encode(),
             Self::Random => random::Settings {
@@ -211,11 +216,19 @@ fn lfo_rate_destination(source: ModulationSourceId) -> ModulationDestination {
 }
 
 #[derive(Clone, Copy)]
+enum CounterEdit {
+    Steps(i16),
+    Increment(i16),
+    TogglePolarity,
+}
+
+#[derive(Clone, Copy)]
 enum Edit {
     Add(SourceKind),
     ToggleSource(ModulationSourceId),
     ToggleButton(ModulationSourceId),
     ToggleButtons(MappingOutput),
+    NoteCounter(ModulationSourceId, CounterEdit),
     DuplicateSource(ModulationSourceId),
     RemoveSource(ModulationSourceId),
     Rate(ModulationSourceId, f64),
@@ -302,6 +315,9 @@ fn open_add_menu(
     let allow_note_pressure = view.state.as_ref().is_some_and(|state| {
         hex_engine::project_device_can_add_note_pressure(&state.project, target.device)
     });
+    let allow_note_counter = view.state.as_ref().is_some_and(|state| {
+        hex_engine::project_device_has_modulation_note_events(&state.project, target.device)
+    });
     let outputs_available = view
         .state
         .as_ref()
@@ -313,6 +329,7 @@ fn open_add_menu(
         .filter(|kind| match kind {
             SourceKind::Follower | SourceKind::AudioRate => allow_audio_input,
             SourceKind::NotePressure => allow_note_pressure,
+            SourceKind::NoteCounter => allow_note_counter,
             _ => true,
         })
         .map(|kind| MenuItem {
@@ -577,6 +594,7 @@ pub(super) fn panel(
             math::TYPE_ID => SourceKind::Math,
             buttons::TYPE_ID => SourceKind::Buttons,
             mix::TYPE_ID => SourceKind::Mix,
+            note_counter::TYPE_ID => SourceKind::NoteCounter,
             _ => continue,
         };
         let label = kind.label();
@@ -678,6 +696,48 @@ pub(super) fn panel(
                         )]),
                 );
             }
+        }
+        if let SourceKind::NoteCounter = kind
+            && let Ok(settings) = note_counter::Settings::decode(&source.state)
+        {
+            for (label, value, edit) in [
+                (
+                    "steps",
+                    settings.steps,
+                    CounterEdit::Steps as fn(i16) -> CounterEdit,
+                ),
+                ("increment", settings.increment, CounterEdit::Increment),
+            ] {
+                row = row.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(2.0))
+                        .child(theme::text(format!("{label} {value}")))
+                        .child(button(
+                            cx,
+                            source_key(&format!("{label}-less")),
+                            theme::text("−"),
+                            Edit::NoteCounter(source_id, edit(-1)),
+                        ))
+                        .child(button(
+                            cx,
+                            source_key(&format!("{label}-more")),
+                            theme::text("+"),
+                            Edit::NoteCounter(source_id, edit(1)),
+                        )),
+                );
+            }
+            row = row.child(button(
+                cx,
+                source_key("polarity"),
+                theme::text(if settings.bipolar {
+                    "bipolar"
+                } else {
+                    "unipolar"
+                }),
+                Edit::NoteCounter(source_id, CounterEdit::TogglePolarity),
+            ));
         }
         if matches!(kind, SourceKind::NotePressure) {
             row = row.child(theme::text("one carrier"));
@@ -1278,6 +1338,11 @@ fn apply(
                     "one note pressure source is supported on an fm4 receiver",
                 ));
             }
+            if matches!(kind, SourceKind::NoteCounter)
+                && !hex_engine::project_device_has_modulation_note_events(project, id)
+            {
+                return Err(Invalid("this modulator requires instrument note events"));
+            }
             sources.push(Modulator {
                 color: Default::default(),
                 id: ModulationSourceId::new(project.next_identity()).map_err(unsupported)?,
@@ -1302,6 +1367,24 @@ fn apply(
             let index = buttons::index_for_output(output.output)
                 .ok_or(Invalid("button output is unsupported"))?;
             settings.on[index] = !settings.on[index];
+            source.state = settings.encode().map_err(unsupported)?;
+        }
+        Edit::NoteCounter(id, edit) => {
+            let source = find_source(&mut sources, id)?;
+            let mut settings =
+                note_counter::Settings::decode(&source.state).map_err(unsupported)?;
+            match edit {
+                CounterEdit::Steps(delta) => {
+                    settings.steps = settings.steps.saturating_add_signed(delta).clamp(2, 128);
+                }
+                CounterEdit::Increment(delta) => {
+                    settings.increment = settings
+                        .increment
+                        .saturating_add_signed(delta)
+                        .clamp(1, 128);
+                }
+                CounterEdit::TogglePolarity => settings.bipolar = !settings.bipolar,
+            }
             source.state = settings.encode().map_err(unsupported)?;
         }
         Edit::DuplicateSource(id) => {
