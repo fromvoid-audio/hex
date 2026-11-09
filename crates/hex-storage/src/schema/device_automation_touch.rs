@@ -16,15 +16,17 @@
 //! schema103 AHD release bank. Schema106 requires a schema105 ADSR bank.
 //! Schema108 requires a schema107 free-running Steps bank.
 //! Schema110 requires a schema109 Arrangement Steps bank.
+//! Schema112 requires a schema111 Operator modulation bank.
 use super::{automation_read::Selection, device_automation};
 use crate::{
     ADSR_MODULATOR_SCHEMA_VERSION, AHD_RELEASE_MODULATOR_SCHEMA_VERSION,
     ARRANGEMENT_STEPS_SCHEMA_VERSION, DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION,
     EXTENDED_AUTOMATION_TOUCH_SCHEMA_VERSION, NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION,
-    NATIVE_SOURCE_EFFECT_TOUCH_SCHEMA_VERSION, Project, RAMP_MODULATOR_SCHEMA_VERSION,
-    SOURCE_EFFECT_TOUCH_WITH_ADSR_SCHEMA_VERSION,
+    NATIVE_SOURCE_EFFECT_TOUCH_SCHEMA_VERSION, OPERATOR_MODULATION_SCHEMA_VERSION, Project,
+    RAMP_MODULATOR_SCHEMA_VERSION, SOURCE_EFFECT_TOUCH_WITH_ADSR_SCHEMA_VERSION,
     SOURCE_EFFECT_TOUCH_WITH_AHD_RELEASE_SCHEMA_VERSION,
     SOURCE_EFFECT_TOUCH_WITH_ARRANGEMENT_STEPS_SCHEMA_VERSION,
+    SOURCE_EFFECT_TOUCH_WITH_OPERATOR_MODULATION_SCHEMA_VERSION,
     SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION, SOURCE_EFFECT_TOUCH_WITH_STEPS_SCHEMA_VERSION,
     STEPS_MODULATOR_SCHEMA_VERSION, StorageError, VST3_AUTOMATION_TOUCH_SCHEMA_VERSION,
 };
@@ -480,7 +482,9 @@ pub(crate) fn encode_extended(project: &Project) -> Result<Value, StorageError> 
 }
 
 pub(crate) fn source_effect_schema_version(project: &Project) -> u32 {
-    if super::device_modulation::contains_arrangement_steps(project) {
+    if super::device_modulation::contains_operator_modulation(project) {
+        SOURCE_EFFECT_TOUCH_WITH_OPERATOR_MODULATION_SCHEMA_VERSION
+    } else if super::device_modulation::contains_arrangement_steps(project) {
         SOURCE_EFFECT_TOUCH_WITH_ARRANGEMENT_STEPS_SCHEMA_VERSION
     } else if super::device_modulation::contains_steps(project) {
         SOURCE_EFFECT_TOUCH_WITH_STEPS_SCHEMA_VERSION
@@ -556,6 +560,9 @@ fn decode_envelope(bytes: &[u8], envelope: Envelope) -> Result<Project, StorageE
         .remove(base_field)
         .and_then(|base| base.as_u64())
         .filter(|base| match envelope.version() {
+            SOURCE_EFFECT_TOUCH_WITH_OPERATOR_MODULATION_SCHEMA_VERSION => {
+                *base == u64::from(OPERATOR_MODULATION_SCHEMA_VERSION)
+            }
             SOURCE_EFFECT_TOUCH_WITH_ARRANGEMENT_STEPS_SCHEMA_VERSION => {
                 *base == u64::from(ARRANGEMENT_STEPS_SCHEMA_VERSION)
             }
@@ -982,6 +989,64 @@ mod tests {
         transport_doc["native_source_effect_touch_base_version"] =
             STEPS_MODULATOR_SCHEMA_VERSION.into();
         assert!(crate::decode(&serde_json::to_vec(&transport_doc).unwrap()).is_err());
+
+        let historical = with_transport.clone();
+        let Created::Track(vector) = editor
+            .execute(Command::InsertTrackWithDevice {
+                name: "vector".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: NativeDeviceState::new(
+                    DeviceTypeId::from_static("hex.instrument.operator"),
+                    1,
+                    vec![7],
+                )
+                .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("vector");
+        };
+        let vector = editor
+            .project()
+            .track(vector)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        let slot = Modulator {
+            id: ModulationSourceId::new(editor.project().next_identity()).unwrap(),
+            color: ElementColor::default(),
+            enabled: true,
+            state: NativeDeviceState::new(
+                DeviceTypeId::from_static("hex.modulator.macro"),
+                1,
+                0.5_f32.to_le_bytes().to_vec(),
+            )
+            .unwrap(),
+        };
+        editor
+            .execute(Command::ReplaceDeviceModulation {
+                device: vector,
+                modulation: DeviceModulation::new(vec![slot], Vec::new()).unwrap(),
+            })
+            .unwrap();
+        let with_vector = editor.project();
+        assert_eq!(
+            crate::schema_version_for(with_vector),
+            SOURCE_EFFECT_TOUCH_WITH_OPERATOR_MODULATION_SCHEMA_VERSION,
+        );
+        let vector_bytes = crate::encode(with_vector).unwrap();
+        assert_eq!(crate::decode(&vector_bytes).unwrap(), *with_vector);
+        assert_eq!(crate::decode(&encoded).unwrap(), historical);
+        let mut vector_doc: Value = serde_json::from_slice(&vector_bytes).unwrap();
+        assert_eq!(
+            vector_doc["native_source_effect_touch_base_version"],
+            OPERATOR_MODULATION_SCHEMA_VERSION
+        );
+        vector_doc["native_source_effect_touch_base_version"] =
+            ARRANGEMENT_STEPS_SCHEMA_VERSION.into();
+        assert!(crate::decode(&serde_json::to_vec(&vector_doc).unwrap()).is_err());
     }
 
     #[test]

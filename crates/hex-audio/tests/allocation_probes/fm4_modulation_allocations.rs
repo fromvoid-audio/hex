@@ -236,22 +236,36 @@ fn exercise_fm4_sample_routes(targets: Fm4Targets) {
 
 #[test]
 fn fm4_saved_bank_renders_and_hands_off_through_the_callback_without_allocation() {
-    probe_fm4_saved_bank(hex_project::DeviceAutomationTarget::Parameter(
-        parameter::carrier(1),
-    ));
+    probe_saved_instrument_bank(
+        FM4_DEFINITION.default_state().unwrap(),
+        hex_project::DeviceAutomationTarget::Parameter(parameter::carrier(1)),
+    );
 }
 
 #[test]
 fn fm4_output_trim_renders_handoffs_and_detaches_without_callback_allocations() {
-    probe_fm4_saved_bank(hex_project::DeviceAutomationTarget::HostOutputGain);
+    probe_saved_instrument_bank(
+        FM4_DEFINITION.default_state().unwrap(),
+        hex_project::DeviceAutomationTarget::HostOutputGain,
+    );
 }
 
-fn probe_fm4_saved_bank(target: hex_project::DeviceAutomationTarget) {
+#[test]
+fn operator_output_trim_renders_handoffs_and_detaches_without_callback_allocations() {
+    probe_saved_instrument_bank(
+        hex_devices::operator_state::OPERATOR_METADATA
+            .default_state()
+            .unwrap(),
+        hex_project::DeviceAutomationTarget::HostOutputGain,
+    );
+}
+
+fn probe_saved_instrument_bank(
+    state: NativeDeviceState,
+    target: hex_project::DeviceAutomationTarget,
+) {
     use hex_audio::prepared;
-    use hex_devices::{
-        fm4::device::FM4_TYPE_ID,
-        modulation::lfo::{Rate, Settings, Waveform},
-    };
+    use hex_devices::modulation::lfo::{Rate, Settings, Waveform};
     use hex_engine::{
         PreparedRevision, SineTable,
         playback::{Playback, PlaybackCommand},
@@ -263,13 +277,14 @@ fn probe_fm4_saved_bank(target: hex_project::DeviceAutomationTarget) {
     };
     use std::{collections::BTreeMap, sync::Arc};
 
+    let device_type = state.type_id();
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     let Created::Track(track) = editor
         .execute(Command::InsertTrackWithDevice {
-            name: "fm4".into(),
+            name: "instrument".into(),
             before_track: None,
             slot: hex_project::TrackDeviceSlot::Instrument,
-            state: FM4_DEFINITION.default_state().unwrap(),
+            state,
         })
         .unwrap()
     else {
@@ -322,7 +337,7 @@ fn probe_fm4_saved_bank(target: hex_project::DeviceAutomationTarget) {
         source,
         output: ModulationOutputId::MAIN,
         destination: ModulationDestination::Device {
-            device_type: FM4_TYPE_ID,
+            device_type,
             target,
             vst3_class: None,
         },
@@ -330,43 +345,34 @@ fn probe_fm4_saved_bank(target: hex_project::DeviceAutomationTarget) {
         range: ModulationRange::default(),
         enabled: true,
     };
-    let prepare = |editor: &mut Editor, route| {
+    let prepare = |project: &Project| {
+        let revision = Arc::new(
+            PreparedRevision::prepare(project, &BTreeMap::new(), Arc::new(SineTable::new()), None)
+                .unwrap(),
+        );
+        Playback::try_from_prepared_with_session(revision).unwrap()
+    };
+    let mut reference = prepare(editor.project());
+    reference.apply(PlaybackCommand::Play);
+    let update = |editor: &mut Editor, route| {
         editor
             .execute(Command::ReplaceDeviceModulation {
                 device,
                 modulation: DeviceModulation::new(vec![slot.clone()], vec![route]).unwrap(),
             })
             .unwrap();
-        let revision = Arc::new(
-            PreparedRevision::prepare(
-                editor.project(),
-                &BTreeMap::new(),
-                Arc::new(SineTable::new()),
-                None,
-            )
-            .unwrap(),
-        );
-        Playback::try_from_prepared_with_session(revision).unwrap()
+        prepare(editor.project())
     };
-    let initial = prepare(&mut editor, route);
+    let initial = update(&mut editor, route);
     route.amount = ModulationAmount::new(-0.4).unwrap();
-    let changed = prepare(&mut editor, route);
+    let changed = update(&mut editor, route);
     editor.execute(Command::RemoveTrack(track)).unwrap();
-    let detached = Playback::try_from_prepared_with_session(Arc::new(
-        PreparedRevision::prepare(
-            editor.project(),
-            &BTreeMap::new(),
-            Arc::new(SineTable::new()),
-            None,
-        )
-        .unwrap(),
-    ))
-    .unwrap();
+    let detached = prepare(editor.project());
     let (mut control, mut callback) = prepared::channel(48_000).unwrap();
     assert!(control.publish(initial).is_ok());
     control.command(PlaybackCommand::Play).unwrap();
     let mut frames = [[0.0; 2]; 131];
-    let mut render = || {
+    let mut render = |depth: Option<f32>, start| {
         let counts = allocation_counter::measure(|| {
             callback.begin_block();
             callback.render(black_box(&mut frames)).unwrap();
@@ -381,12 +387,34 @@ fn probe_fm4_saved_bank(target: hex_project::DeviceAutomationTarget) {
             (0, 0, 0, 0)
         );
         assert!(frames.iter().flatten().any(|v| v.abs() > 0.0001));
+        if let Some(depth) =
+            depth.filter(|_| target == hex_project::DeviceAutomationTarget::HostOutputGain)
+        {
+            use hex_lattice_contract::HostGain;
+            let mut dry = [[0.0; 2]; 131];
+            reference.render(&mut dry).unwrap();
+            for (index, (&actual, &original)) in frames.iter().zip(&dry).enumerate() {
+                let signed = if (start + index) % 4 < 2 {
+                    depth
+                } else {
+                    -depth
+                };
+                let gain = HostGain::from_normalized(
+                    (HostGain::ZERO.normalized() + signed).clamp(0.0, 1.0),
+                )
+                .unwrap()
+                .linear();
+                for (&sample, expected) in actual.iter().zip(original.map(|v| v * gain)) {
+                    assert!((sample - expected).abs() < 1e-6, "sample {}", start + index);
+                }
+            }
+        }
     };
-    render();
+    render(Some(0.25), 0);
     assert!(control.publish(changed).is_ok());
-    render();
+    render(Some(-0.4), 131);
     assert!(control.publish(detached).is_ok());
-    render();
+    render(None, 262);
     assert!(control.status.rejected_revision().is_none());
     assert!(control.reclaim() > 0);
 }
