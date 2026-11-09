@@ -17,3 +17,7 @@ mod controller;
 
 #[path = "audio_import_settings.rs"]
 mod audio_import_settings;
+
+#[allow(dead_code)]
+#[path = "../../src/editor/refresh_state.rs"]
+mod refresh_state;
