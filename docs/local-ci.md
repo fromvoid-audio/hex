@@ -119,12 +119,6 @@ cargo test -p hex-ui --features ui-unit-tier --test unit_timeline --locked
 ```
 
 The merge selector also runs this target for changes to its viewport dependency.
-Session route view-state tests use:
-
-```sh
-cargo test -p hex-ui --features ui-unit-tier --test unit_session --locked
-```
-
 Automation plot tests use:
 
 ```sh
@@ -141,6 +135,12 @@ Section hit tests use:
 
 ```sh
 cargo test -p hex-ui --features ui-unit-tier --test unit_section --locked
+```
+
+Editor logic tests, including Session route view state, use:
+
+```sh
+cargo test -p hex-ui --features ui-unit-tier --test unit_editor_logic --locked
 ```
 Other `hex-ui` tests have not yet been classified into separate tiers; in
 particular, the real-window receipt and delayed-acknowledgement tests remain in

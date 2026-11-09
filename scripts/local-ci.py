@@ -143,10 +143,10 @@ FULL_STEPS = (
     Step("ui-feature-tests", ("cargo", "test", "-p", "hex-ui", "--features", "ui-test-support", "--locked")),
     Step("ui-piano-unit-tests", ("cargo", "test", "-p", "hex-ui", "--features", "ui-unit-tier", "--test", "unit_piano_roll", "--locked")),
     Step("ui-timeline-unit-tests", ("cargo", "test", "-p", "hex-ui", "--features", "ui-unit-tier", "--test", "unit_timeline", "--locked")),
-    Step("ui-session-unit-tests", ("cargo", "test", "-p", "hex-ui", "--features", "ui-unit-tier", "--test", "unit_session", "--locked")),
     Step("ui-automation-unit-tests", ("cargo", "test", "-p", "hex-ui", "--features", "ui-unit-tier", "--test", "unit_automation", "--locked")),
     Step("ui-device-unit-tests", ("cargo", "test", "-p", "hex-ui", "--features", "ui-unit-tier", "--test", "unit_device", "--locked")),
     Step("ui-section-unit-tests", ("cargo", "test", "-p", "hex-ui", "--features", "ui-unit-tier", "--test", "unit_section", "--locked")),
+    Step("ui-editor-logic-unit-tests", ("cargo", "test", "-p", "hex-ui", "--features", "ui-unit-tier", "--test", "unit_editor_logic", "--locked")),
     Step("device-gallery-tests", ("cargo", "test", "-p", "hex-ui", "--example", "layout_review", "--features", "ui-test-support", "--locked")),
     Step("audio-allocation-probe", ("cargo", "test", "-p", "hex-audio", "-p", "hex-plugin-host", "--features", "allocation-probe", "--locked")),
     # Native fixtures serialize on hex-desktop's process-wide output lease;
@@ -348,7 +348,7 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
     for step in FULL_STEPS:
         if "--features" not in step.argv:
             continue
-        if step.step_id in {"ui-piano-unit-tests", "ui-timeline-unit-tests", "ui-session-unit-tests", "ui-automation-unit-tests", "ui-device-unit-tests", "ui-section-unit-tests", "ui-unit-clippy"} and (
+        if step.step_id in {"ui-piano-unit-tests", "ui-timeline-unit-tests", "ui-automation-unit-tests", "ui-device-unit-tests", "ui-section-unit-tests", "ui-editor-logic-unit-tests", "ui-unit-clippy"} and (
                 "hex-ui" not in by_name or "ui-unit-tier" not in by_name["hex-ui"]["features"]):
             continue
         owners = [step.argv[i + 1] for i, arg in enumerate(step.argv) if arg == "-p"]
@@ -359,7 +359,7 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
             continue
         # Scoped UI changes select mapped unit targets below; a whole-package
         # run retains this explicit feature-gated target from FULL_STEPS.
-        if step.step_id in {"ui-piano-unit-tests", "ui-timeline-unit-tests", "ui-session-unit-tests", "ui-automation-unit-tests", "ui-device-unit-tests", "ui-section-unit-tests"} and "hex-ui" in module_filters:
+        if step.step_id in {"ui-piano-unit-tests", "ui-timeline-unit-tests", "ui-automation-unit-tests", "ui-device-unit-tests", "ui-section-unit-tests", "ui-editor-logic-unit-tests"} and "hex-ui" in module_filters:
             continue
         # Example targets are separate crates: a src module filter cannot name
         # their tests. A module-scoped owner's own module tests cover the change.
@@ -442,14 +442,14 @@ def planned_steps(plan: dict) -> tuple[Step, ...]:
                                                         "--test", "unit_piano_roll", "--locked"), requires_tests=True))
             steps.append(Step("health-ui-timeline-unit", ("cargo", "test", "-p", "hex-ui", "--features", "ui-unit-tier",
                                                            "--test", "unit_timeline", "--locked"), requires_tests=True))
-            steps.append(Step("health-ui-session-unit", ("cargo", "test", "-p", "hex-ui", "--features", "ui-unit-tier",
-                                                          "--test", "unit_session", "--locked"), requires_tests=True))
             steps.append(Step("health-ui-automation-unit", ("cargo", "test", "-p", "hex-ui", "--features", "ui-unit-tier",
                                                              "--test", "unit_automation", "--locked"), requires_tests=True))
             steps.append(Step("health-ui-device-unit", ("cargo", "test", "-p", "hex-ui", "--features", "ui-unit-tier",
                                                          "--test", "unit_device", "--locked"), requires_tests=True))
             steps.append(Step("health-ui-section-unit", ("cargo", "test", "-p", "hex-ui", "--features", "ui-unit-tier",
                                                           "--test", "unit_section", "--locked"), requires_tests=True))
+            steps.append(Step("health-ui-editor-logic-unit", ("cargo", "test", "-p", "hex-ui", "--features", "ui-unit-tier",
+                                                               "--test", "unit_editor_logic", "--locked"), requires_tests=True))
         if len(steps) == 1:
             steps.append(Step("metadata", ("python3", "scripts/ci_plan.py", "--check-metadata",
                                            "--base", plan["base"], "--source", plan["source"])))
@@ -476,10 +476,10 @@ def planned_steps(plan: dict) -> tuple[Step, ...]:
                  next(s for s in FULL_STEPS if s.step_id == "ui-feature-tests"),
                  next(s for s in FULL_STEPS if s.step_id == "ui-piano-unit-tests"),
                  next(s for s in FULL_STEPS if s.step_id == "ui-timeline-unit-tests"),
-                 next(s for s in FULL_STEPS if s.step_id == "ui-session-unit-tests"),
                  next(s for s in FULL_STEPS if s.step_id == "ui-automation-unit-tests"),
                  next(s for s in FULL_STEPS if s.step_id == "ui-device-unit-tests"),
                  next(s for s in FULL_STEPS if s.step_id == "ui-section-unit-tests"),
+                 next(s for s in FULL_STEPS if s.step_id == "ui-editor-logic-unit-tests"),
                  next(s for s in FULL_STEPS if s.step_id == "device-gallery-tests"),
                  Step("ui-default-clippy", ("cargo", "clippy", "-p", "hex-ui", "-p", "hex-widgets", "-p", "hex-desktop", "--all-targets", "--locked", "--", "-D", "warnings")),
                  next(s for s in FULL_STEPS if s.step_id == "ui-feature-clippy"),
