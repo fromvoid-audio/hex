@@ -166,7 +166,9 @@ pub struct NativeWorkerResourceBound {
 impl NativeWorker {
     pub(crate) fn resource_bound_on_control() -> Option<NativeWorkerResourceBound> {
         let source = hex_plugin_host::native::PreparationResourceBound::ordinary_instance();
-        let channel = channel_storage_bound()?;
+        // Root reserves the largest admitted copied-channel profile before
+        // any individual source chooses its actual ordinary or dense pair.
+        let channel = dense_channel_storage_bound()?;
         let terminal = ChannelStorage::owner_reservation::<State>()?;
         Some(NativeWorkerResourceBound {
             source,
