@@ -193,7 +193,7 @@ pub(super) fn source_effect_card(
                 .children(target_overlay(view, cx, id, row)),
         );
     }
-    let modulation = panel(view, cx, device, &metadata);
+    let modulation = panel(view, cx, device, &metadata, true);
     let rendered = hex_widgets::device_frame_with_modulators(
         theme::text(metadata.name),
         theme::device_frame_style(false),
@@ -211,6 +211,7 @@ pub(super) fn panel(
     cx: &mut Context<EditorView>,
     device: &Device,
     view_data: &NativeDeviceView,
+    allow_audio_input: bool,
 ) -> Option<AnyElement> {
     let state = view.state.as_ref()?;
     let id = device.id();
@@ -262,7 +263,9 @@ pub(super) fn panel(
     };
     let mut header = div().flex().flex_wrap().items_center().gap(px(4.0));
     if bank.sources().len() < hex_project::MAX_MODULATORS_PER_DEVICE {
-        for kind in SourceKind::ALL {
+        for kind in SourceKind::ALL.into_iter().filter(|kind| {
+            allow_audio_input || !matches!(kind, SourceKind::Follower | SourceKind::AudioRate)
+        }) {
             let name = kind.label();
             header = header.child(button(
                 cx,
