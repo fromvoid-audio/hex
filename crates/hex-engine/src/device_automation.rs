@@ -2,8 +2,8 @@
 //! Retained native/host targets keep their preparation eligibility when reading
 //! base values; only authored/touch readings change, not the target union.
 //! Utility effect controls are consumed by the existing closed processor family.
-//! Host trims are consumed at native effect boundaries (track/main/return).
-//! Foreign processors and source-owned instruments/effects refuse host targets;
+//! Host trims are consumed at native effect boundaries, including a bound
+//! post-instrument source stage. Foreign processors and instruments refuse host targets;
 //! other provider parameter curves still require explicit runtime support.
 use crate::{Invalid, NativeDeviceClass};
 use hex_lattice::{NativeTransientValue, ProcessorChainOwner, ProcessorInstanceIdentity};
@@ -188,8 +188,8 @@ pub fn native_parameter_automation_supported(
     )
 }
 /// Provider/class metadata capability, without a project ownership decision.
-/// UI assignment uses project_device_automation_target_supported instead:
-/// source-owned effects can share this metadata but lack render delivery.
+/// UI assignment uses project_device_automation_target_supported to include
+/// the actual graph owner and the bound source effect capability.
 pub fn native_device_automation_target_supported(
     class: NativeDeviceClass,
     state: &NativeDeviceState,
@@ -206,9 +206,10 @@ pub fn native_device_automation_target_supported(
     };
     target_supported(&registry, state, target)
 }
-/// Actual-owner control query for track/main/return effects and the four FM4
-/// carrier streams at a single-device receiving source. Contributors share that
-/// one source program. Unrouted sources, source effects and host trims refuse.
+/// Actual-owner query for supported effects and FM4 provider lanes at a
+/// single-device receiving source. A supported post-instrument
+/// effect uses one bound source program for all contributors. Unbinding the
+/// receiver leaves existing lanes dormant until a new receiver is bound.
 /// This metadata query grants no runtime/resource custody; preparation validates
 /// the actual factory grants and bounded program storage before publication.
 pub fn project_device_automation_target_supported(
@@ -225,13 +226,36 @@ pub fn project_device_automation_target_supported(
             && source.devices().count() == 1
             && instrument_target_supported(source.instrument().state(), target);
     }
-    let Some(device) = effect_devices(project).find(|candidate| candidate.id() == device) else {
+    let Some(location) = project.device_location(device) else {
         return false;
     };
     let Ok(registry) = hex_devices::native_registry() else {
         return false;
     };
-    target_supported(&registry, device.state(), target)
+    match location.owner {
+        hex_project::DeviceOwner::Source(source) => {
+            project.native_source(source).is_some_and(|source| {
+                source.receiver().is_some()
+                    && source_effect_target_supported(source, location.device, target, &registry)
+            })
+        }
+        _ => target_supported(&registry, location.device.state(), target),
+    }
+}
+
+fn source_effect_target_supported(
+    source: &hex_project::NativeSource,
+    device: &hex_project::Device,
+    target: DeviceAutomationTarget,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+) -> bool {
+    source.instrument_index() == 0
+        && source
+            .post_instrument_effects()
+            .iter()
+            .any(|member| member.id() == device.id())
+        && crate::source_effect_stage::metadata::validate_authored(device.state(), registry).is_ok()
+        && target_supported(registry, device.state(), target)
 }
 /// Canonical track-local, Return and Main effects, excluding retained sources.
 pub(crate) fn effect_devices(
@@ -321,11 +345,14 @@ pub(crate) fn validate_project_with_registry(
     if project.native_sources().iter().any(|source| {
         source.devices().any(|device| {
             device.automation().iter().any(|lane| {
-                device.id() != source.instrument().id()
-                    || !(crate::compile::is_vst3_instrument(device)
+                if device.id() == source.instrument().id() {
+                    !(crate::compile::is_vst3_instrument(device)
                         && matches!(lane.target, DeviceAutomationTarget::Vst3 { .. })
                         || source.devices().count() == 1
                             && instrument_target_supported(device.state(), lane.target))
+                } else {
+                    !source_effect_target_supported(source, device, lane.target, registry)
+                }
             })
         })
     }) {

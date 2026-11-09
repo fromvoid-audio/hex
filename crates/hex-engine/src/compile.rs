@@ -1271,8 +1271,10 @@ pub fn prepare_source_effect_suffix(
     if suffix.iter().any(is_vst3_instrument) {
         return Err(Invalid("foreign source effects are not supported"));
     }
-    if suffix.iter().any(|device| !device.automation().is_empty()) {
-        return Err(Invalid("source effect automation is not supported"));
+    if source.receiver().is_none() && suffix.iter().any(|device| !device.automation().is_empty()) {
+        return Err(Invalid(
+            "source effect automation requires a bound receiver",
+        ));
     }
     let plan = compile_effect_devices(
         EffectPower::after_instrument(suffix, source.instrument())?,

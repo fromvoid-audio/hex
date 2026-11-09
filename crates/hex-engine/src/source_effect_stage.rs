@@ -61,7 +61,7 @@ fn validate_recipes(project: &Project, recipes: &[PreparedSourceEffects]) -> Res
         if instances.iter().any(|instance| {
             instance.sample_rate != project.sample_rate()
                 || !native_zero_latency(instance)
-                || !instance.automation.is_empty()
+                || instance.automation.foreign().is_some()
         }) {
             return Err(Invalid(
                 "source effects require native zero-latency processors at the project rate",
@@ -209,7 +209,7 @@ impl SourceEffectStages {
     }
 
     /// Match by source identity, independently of the current receiver index.
-    /// Live publication may change a compatible recipe's modulation program
+    /// Live publication may change a compatible recipe's control programs
     /// or attach a fresh stage. An unmatched old stage may retire only when
     /// its host is stopped and the processor proves its committed state quiet.
     pub(crate) fn plan_continuation(
