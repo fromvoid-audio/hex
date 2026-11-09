@@ -908,9 +908,16 @@ fn receiver_move_continues_the_source_effect_and_incompatible_recipe_leaves_dono
     ));
     assert_eq!(donor.performance_frame(), 97);
     assert_eq!(wrong.performance_frame(), 0);
+    assert!(wrong.try_inherit_state_live_from(&mut donor).is_err());
+    assert_eq!(wrong.performance_frame(), 0);
+    let mut restart = make(Arc::clone(&after), 1, std::slice::from_ref(&instance));
+    restart.request_live_restart();
+    assert!(restart.try_inherit_state_live_from(&mut donor).is_err());
+    assert_eq!(restart.performance_frame(), 0);
+    assert_eq!(donor.performance_frame(), 97);
 
     let mut moved = make(after, 1, &[instance]);
-    moved.try_inherit_state_from(&mut donor).unwrap();
+    moved.try_inherit_state_live_from(&mut donor).unwrap();
     assert_eq!(moved.performance_frame(), 97);
     let mut actual = [[0.0; 2]; 173];
     let mut expected = [[0.0; 2]; 173];
