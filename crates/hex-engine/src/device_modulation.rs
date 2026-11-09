@@ -21,21 +21,28 @@ const CHUNK_FRAMES: usize = 128;
 
 fn mapping_effect(project: &Project, device: DeviceId) -> Option<DeviceLocation<'_>> {
     let location = project.device_location(device)?;
+    effect_location_supported(project, location).then_some(location)
+}
+
+fn effect_location_supported(project: &Project, location: DeviceLocation<'_>) -> bool {
     if location.class != DeviceUnitClass::Effect {
-        return None;
+        return false;
     }
     if let DeviceOwner::Source(source) = location.owner {
-        let source = project.native_source(source)?;
-        source.receiver()?;
-        if !source
-            .post_instrument_effects()
-            .iter()
-            .any(|effect| effect.id() == device)
-        {
-            return None;
-        }
+        return project.native_source(source).is_some_and(|source| {
+            source.receiver().is_some()
+                && source
+                    .post_instrument_effects()
+                    .iter()
+                    .any(|effect| effect.id() == location.device.id())
+        });
     }
-    Some(location)
+    true
+}
+
+fn instrument_modulation_supported(source: &hex_project::NativeSource) -> bool {
+    source.receiver().is_some()
+        && source.instrument().state().type_id() == hex_devices::fm4::device::FM4_TYPE_ID
 }
 
 /// State-aware eligibility for native device-panel mapping. Ownership is
@@ -46,13 +53,21 @@ pub fn project_device_modulation_target_supported(
     device: DeviceId,
     parameter: ParameterId,
 ) -> bool {
-    let Some(location) = mapping_effect(project, device) else {
+    let Some(location) = project.device_location(device) else {
         return false;
     };
     let device = location.device;
-    if matches!(location.owner, DeviceOwner::Source(_))
-        && !source_provider_mapping_supported(device.state(), parameter)
-    {
+    let eligible = match (location.class, location.owner) {
+        (DeviceUnitClass::Instrument, DeviceOwner::Source(source)) => project
+            .native_source(source)
+            .is_some_and(instrument_modulation_supported),
+        (DeviceUnitClass::Effect, DeviceOwner::Source(_)) => {
+            effect_location_supported(project, location)
+                && source_provider_mapping_supported(device.state(), parameter)
+        }
+        _ => effect_location_supported(project, location),
+    };
+    if !eligible {
         return false;
     }
     let Ok(registry) = hex_devices::native_registry() else {
