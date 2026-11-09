@@ -236,6 +236,43 @@ fn valid_source_touch(
             && matches!(target, DeviceAutomationTarget::Parameter(_)))
 }
 
+fn splice_touch_lane(
+    entry: &mut Device,
+    target: DeviceAutomationTarget,
+    vst3_class: Option<[u8; 16]>,
+    spans: Vec<DeviceAutomationTouchSpan>,
+) -> Result<(), Invalid> {
+    if automation_class(target, entry.state())? != vst3_class {
+        return Err(Invalid("recorded touch differs from device class"));
+    }
+    match entry
+        .automation
+        .binary_search_by_key(&target, |lane| lane.target)
+    {
+        Ok(index) => {
+            let lane = &mut entry.automation[index];
+            lane.touch = touch::splice(&lane.touch, spans)?;
+            lane.read_selection = AutomationReadSelection::Authored;
+        }
+        Err(index) => {
+            if entry.automation.len() == MAX_DEVICE_AUTOMATION_LANES {
+                return Err(Invalid("device automation lane limit reached"));
+            }
+            entry.automation.insert(
+                index,
+                DeviceAutomation {
+                    target,
+                    vst3_class,
+                    points: Vec::new(),
+                    touch: touch::splice(&[], spans)?,
+                    read_selection: AutomationReadSelection::Authored,
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
 impl Project {
     /// Each canonical device is visited once; immutable track source bindings
     /// are views and do not add duplicate authored envelopes to this inventory.
@@ -378,33 +415,36 @@ impl Project {
             return Err(Invalid("recorded touch requires a native effect target"));
         }
         self.edit_device(device, |entry| {
-            if automation_class(target, entry.state())? != vst3_class {
-                return Err(Invalid("recorded touch differs from device class"));
-            }
-            match entry
-                .automation
-                .binary_search_by_key(&target, |lane| lane.target)
-            {
-                Ok(index) => {
-                    let lane = &mut entry.automation[index];
-                    lane.touch = touch::splice(&lane.touch, spans)?;
-                    lane.read_selection = AutomationReadSelection::Authored;
-                }
-                Err(index) => {
-                    if entry.automation.len() == MAX_DEVICE_AUTOMATION_LANES {
-                        return Err(Invalid("device automation lane limit reached"));
-                    }
-                    entry.automation.insert(
-                        index,
-                        DeviceAutomation {
-                            target,
-                            vst3_class,
-                            points: Vec::new(),
-                            touch: touch::splice(&[], spans)?,
-                            read_selection: AutomationReadSelection::Authored,
-                        },
-                    );
-                }
+            splice_touch_lane(entry, target, vst3_class, spans)
+        })?;
+        self.validate_device_automation()?;
+        Ok(Created::None)
+    }
+
+    /// Use the same candidate for every lane so its preparation and history
+    /// can succeed only for the complete group. The wire/worker admits and
+    /// clocks the group before Project sees this edit.
+    pub(crate) fn splice_vst3_automation_touch_group(
+        &mut self,
+        device: DeviceId,
+        class: [u8; 16],
+        lanes: Vec<(u32, Vec<DeviceAutomationTouchSpan>)>,
+    ) -> Result<Created, Invalid> {
+        const MAX_GROUP_LANES: usize = 8;
+        if !(2..=MAX_GROUP_LANES).contains(&lanes.len())
+            || lanes.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+        {
+            return Err(Invalid(
+                "vst3 touch group needs distinct ordered parameters",
+            ));
+        }
+        self.edit_device(device, |entry| {
+            for (parameter, spans) in lanes {
+                let target = DeviceAutomationTarget::Vst3 { parameter };
+                target
+                    .validate()
+                    .map_err(|_| Invalid("invalid grouped vst3 target"))?;
+                splice_touch_lane(entry, target, Some(class), spans)?;
             }
             Ok(())
         })?;
