@@ -174,36 +174,6 @@ impl PreparedRevision {
         self.arrangement = crate::owned_shared::OwnedShared::new_owned(arrangement);
     }
 
-    /// Headless callback fixture while the authored binding gate is closed.
-    /// The canonical route is already compiled from a bound singleton; its
-    /// retained children are authored in a separate detached copy of the source.
-    #[doc(hidden)]
-    #[cfg(feature = "instrument-test-support")]
-    pub fn test_install_compiled_source_effects(
-        &mut self,
-        retained: &Project,
-    ) -> Result<(), Invalid> {
-        let mut arrangement = self.arrangement().as_ref().clone();
-        let registry = hex_devices::native_registry()
-            .map_err(|_| Invalid("invalid native effect fixture registry"))?;
-        let context = hex_lattice::DevicePreparationContext {
-            sample_rate: arrangement.sample_rate(),
-            tuning: arrangement.shared_contexts().tuning(),
-            resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
-        };
-        arrangement.source_effects = crate::compile::prepare_source_effect_recipes(
-            &arrangement,
-            retained,
-            &registry,
-            &context,
-        )?;
-        if arrangement.source_effects.is_empty() {
-            return Err(Invalid("fixture has no prepared source effect recipe"));
-        }
-        self.arrangement = crate::owned_shared::OwnedShared::new_owned(arrangement);
-        Ok(())
-    }
-
     #[cfg(test)]
     pub(crate) fn test_install_retained_receiver(
         &mut self,
