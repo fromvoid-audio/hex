@@ -144,7 +144,7 @@ fn validate_points(points: &[AutomationPoint]) -> Result<(), Invalid> {
     }
     Ok(())
 }
-fn automation_class(
+pub(crate) fn automation_class(
     target: DeviceAutomationTarget,
     state: &hex_lattice_contract::NativeDeviceState,
 ) -> Result<Option<[u8; 16]>, Invalid> {

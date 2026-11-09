@@ -296,15 +296,23 @@ impl Gesture {
             .as_ref()
             .and_then(|live| live.hold.as_ref())
             .ok_or_else(lost)?;
+        let command = match self.recording_base {
+            Some(base) => NativeParameterHold::RestoreAndRelease {
+                hold,
+                normalized: self.sdk_value(base),
+            },
+            None => NativeParameterHold::Release { hold },
+        };
         let (token, target) = admit(control, |control| {
             control.native_source_parameter_hold_with_delivery_on_control(
                 capture.applied,
                 self.binding,
-                NativeParameterHold::Release { hold },
+                command,
             )
         })?;
         self.pending = Some(PendingPoint {
             token,
+            // A release is a terminal, not a new requested gesture value.
             value: self.last,
             sequence: self.sequence,
             opening_hold: false,

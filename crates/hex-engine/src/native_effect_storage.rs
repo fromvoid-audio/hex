@@ -21,7 +21,9 @@ pub(crate) fn pair_bytes(
             if entry
                 .runtime_types_are::<hex_devices::utility_filters::UtilityFilterProcessor>()
                 || entry.runtime_types_are::<hex_devices::saturator::SaturatorRuntime>()
-                || entry.runtime_types_are::<hex_devices::auto_pan::AutoPanRuntime>() =>
+                || entry.runtime_types_are::<hex_devices::auto_pan::AutoPanRuntime>()
+                || entry.runtime_types_are::<hex_devices::overdrive::OverdriveRuntime>()
+                || entry.runtime_types_are::<hex_devices::gate::GateRuntime>() =>
         {
             Ok(Some((a, b)))
         }
@@ -36,4 +38,6 @@ pub(crate) fn is_closed_type(id: hex_lattice_contract::DeviceTypeId) -> bool {
         || id == hex_devices::reverb::REVERB_TYPE_ID
         || id == hex_devices::saturator::SATURATOR_TYPE_ID
         || id == hex_devices::auto_pan::AUTO_PAN_TYPE_ID
+        || id == hex_devices::overdrive::OVERDRIVE_TYPE_ID
+        || id == hex_devices::gate::GATE_TYPE_ID
 }

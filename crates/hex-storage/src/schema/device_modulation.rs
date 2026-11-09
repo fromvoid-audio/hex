@@ -1,11 +1,15 @@
 //! Schema81 wraps the exact previous envelope with complete device-local module
 //! inventories. Older schemas migrate with empty banks; decoding is in-memory
-//! and never modifies original project bytes or media. Unknown module payloads
-//! remain opaque and intact; playback admission still validates their registry.
+//! and never modifies original project bytes or media. Schema82 adds a required
+//! slot color key; schema81 maps absent colors to gray and remains the write
+//! format for entirely gray banks with legacy LFO state. Schema84 carries LFO
+//! payload versions newer than sine v1, requires every slot's color, and admits
+//! bound source units through the same flat membership envelope. Module payloads
+//! stay opaque here; playback admission validates the provider's exact codec.
 use crate::{Project, StorageError};
 use hex_lattice_contract::{DeviceAutomationTarget, DeviceTypeId, NativeDeviceState, ParameterId};
 use hex_project::{
-    DeviceModulation, DeviceModulationRoute, ModulationAmount, ModulationDestination,
+    DeviceModulation, DeviceModulationRoute, ElementColor, ModulationAmount, ModulationDestination,
     ModulationOutputId, ModulationRange, ModulationRouteId, ModulationSourceId, Modulator,
 };
 use serde::{Deserialize, Serialize};
@@ -14,6 +18,12 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 struct Source {
     id: u64,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "color"
+    )]
+    color: Option<String>,
     enabled: bool,
     type_id: String,
     state_version: u32,
@@ -93,10 +103,21 @@ struct Row {
     #[serde(deserialize_with = "routes")]
     routes: Vec<Route>,
 }
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BankDto {
+    #[serde(deserialize_with = "sources")]
+    sources: Vec<Source>,
+    #[serde(deserialize_with = "routes")]
+    routes: Vec<Route>,
+}
 #[derive(Deserialize)]
 struct Rows(#[serde(deserialize_with = "rows")] Vec<Row>);
 fn required_class<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<[u8; 16]>, D::Error> {
     Option::deserialize(d)
+}
+fn color<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    String::deserialize(d).map(Some)
 }
 fn payload<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
     super::device_automation::bounded(d, hex_project::MAX_PROJECT_MODULATOR_STATE_BYTES)
@@ -161,13 +182,37 @@ fn source_id(value: u64) -> Result<ModulationSourceId, StorageError> {
     ModulationSourceId::new(value).map_err(|_| StorageError::Invalid("invalid modulator identity"))
 }
 impl Row {
-    fn from_model(device: u64, bank: &DeviceModulation) -> Result<Self, StorageError> {
+    fn from_model(
+        device: u64,
+        bank: &DeviceModulation,
+        colored: bool,
+    ) -> Result<Self, StorageError> {
+        let BankDto { sources, routes } = BankDto::from_model(bank, colored)?;
+        Ok(Self {
+            device,
+            sources,
+            routes,
+        })
+    }
+
+    fn into_model(self, colored: bool) -> Result<DeviceModulation, StorageError> {
+        BankDto {
+            sources: self.sources,
+            routes: self.routes,
+        }
+        .into_model(colored)
+    }
+}
+
+impl BankDto {
+    pub(crate) fn from_model(bank: &DeviceModulation, colored: bool) -> Result<Self, StorageError> {
         let sources = bank
             .sources()
             .iter()
             .map(|source| {
                 Ok(Source {
                     id: source.id.value(),
+                    color: colored.then(|| source.color.key().into()),
                     enabled: source.enabled,
                     type_id: source
                         .state
@@ -228,17 +273,23 @@ impl Row {
                 })
             })
             .collect::<Result<_, StorageError>>()?;
-        Ok(Self {
-            device,
-            sources,
-            routes,
-        })
+        Ok(Self { sources, routes })
     }
-    fn into_model(self) -> Result<DeviceModulation, StorageError> {
+
+    pub(crate) fn into_model(self, colored: bool) -> Result<DeviceModulation, StorageError> {
         let sources = self
             .sources
             .into_iter()
             .map(|source| {
+                let color = match (colored, source.color) {
+                    (true, Some(key)) => ElementColor::from_key(&key).map_err(invalid)?,
+                    (false, None) => ElementColor::default(),
+                    _ => {
+                        return Err(StorageError::Invalid(
+                            "invalid modulation slot color for schema",
+                        ));
+                    }
+                };
                 let state = NativeDeviceState::new(
                     type_id(&source.type_id)?,
                     source.state_version,
@@ -249,6 +300,7 @@ impl Row {
                 .map_err(|_| StorageError::Invalid("invalid modulator state"))?;
                 Ok(Modulator {
                     id: source_id(source.id)?,
+                    color,
                     enabled: source.enabled,
                     state,
                 })
@@ -302,6 +354,27 @@ pub(crate) fn contains(project: &Project) -> bool {
         .devices()
         .any(|device| !device.modulation().is_empty())
 }
+pub(crate) fn contains_colors(project: &Project) -> bool {
+    project.devices().any(|device| {
+        device
+            .modulation()
+            .sources()
+            .iter()
+            .any(|source| source.color != ElementColor::default())
+    })
+}
+/// Older readers can decode only the sine provider's version 1.
+pub(crate) fn contains_newer_lfo(project: &Project) -> bool {
+    const LFO: DeviceTypeId = DeviceTypeId::from_static("hex.modulator.lfo");
+    project.devices().any(|device| {
+        device
+            .modulation()
+            .sources()
+            .iter()
+            .any(|source| source.state.type_id() == LFO && source.state.state_version() > 1)
+    })
+}
+
 pub(crate) fn refuse_legacy(project: &Project) -> Result<(), StorageError> {
     if contains(project) {
         return Err(StorageError::Invalid(
@@ -311,23 +384,32 @@ pub(crate) fn refuse_legacy(project: &Project) -> Result<(), StorageError> {
     Ok(())
 }
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
+    let version = if contains_newer_lfo(project) {
+        crate::LFO_SHAPE_SCHEMA_VERSION
+    } else if contains_colors(project) {
+        crate::MODULATION_SLOT_COLOR_SCHEMA_VERSION
+    } else {
+        crate::DEVICE_MODULATION_SCHEMA_VERSION
+    };
+    let colored = version != crate::DEVICE_MODULATION_SCHEMA_VERSION;
     let mut snapshot = project.snapshot();
     let rows = super::device_automation::devices(&mut snapshot)
         .map(|device| {
-            let row = Row::from_model(device.id, &device.modulation)?;
+            let row = Row::from_model(device.id, &device.modulation, colored)?;
             device.modulation = DeviceModulation::default();
             Ok(row)
         })
         .collect::<Result<Vec<_>, StorageError>>()?;
     let flat = Project::from_snapshot(snapshot).map_err(invalid)?;
-    let mut value: serde_json::Value = serde_json::from_slice(&crate::encode(&flat)?)?;
+    let mut value: serde_json::Value = serde_json::from_slice(&crate::encode_base(&flat)?)?;
     let base = value["version"].clone();
-    value["version"] = crate::DEVICE_MODULATION_SCHEMA_VERSION.into();
+    value["version"] = version.into();
     value["modulation_base_version"] = base;
     value["device_modulation"] = serde_json::to_value(rows)?;
     Ok(value)
 }
-pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
+pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError> {
+    let colored = version != crate::DEVICE_MODULATION_SCHEMA_VERSION;
     let mut value = super::audio_events::parse_unique(bytes)?;
     let object = value
         .as_object_mut()
@@ -347,7 +429,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             .ok_or(StorageError::Invalid("modulation inventory missing"))?,
     )?;
     object.insert("version".into(), base.into());
-    let flat = crate::decode(&serde_json::to_vec(&value)?)?;
+    let flat = crate::decode_base(&serde_json::to_vec(&value)?)?;
     let mut snapshot = flat.snapshot();
     let mut rows = rows.into_iter();
     for device in super::device_automation::devices(&mut snapshot) {
@@ -359,7 +441,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
                 "modulation inventory differs from canonical device order",
             ));
         }
-        device.modulation = row.into_model()?;
+        device.modulation = row.into_model(colored)?;
     }
     if rows.next().is_some() {
         return Err(StorageError::Invalid(
@@ -370,6 +452,11 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     if !contains(&project) {
         return Err(StorageError::Invalid(
             "modulation inventory must be nonempty",
+        ));
+    }
+    if contains_newer_lfo(&project) != (version == crate::LFO_SHAPE_SCHEMA_VERSION) {
+        return Err(StorageError::Invalid(
+            "lfos with newer payloads require their matching project schema",
         ));
     }
     Ok(project)

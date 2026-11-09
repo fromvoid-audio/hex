@@ -503,6 +503,21 @@ pub trait WorkerAudioSink: Send {
             "vst3 publication confirmation is unavailable".into(),
         ))
     }
+    /// Wait for the exact audio terminal of an edit that changes a revision
+    /// with active source effects. A submission alone cannot commit history.
+    fn confirm_source_effect_publication(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        acceptance: ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        match acceptance {
+            ResidentPublicationAcceptance::OfflineRetained => Ok(()),
+            ResidentPublicationAcceptance::Submitted { .. } => {
+                Err("source effect publication confirmation is unavailable".into())
+            }
+        }
+    }
+
     /// Called for every Commit attempt, including capture/compilation/publication
     /// refusal. Retire only the exact key/sequence/input context's pending
     /// compiler permission. This is the canonical worker's actual terminal,

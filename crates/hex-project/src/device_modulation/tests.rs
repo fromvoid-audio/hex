@@ -3,6 +3,7 @@ use crate::{Command, Editor};
 
 fn source(id: u64) -> Modulator {
     Modulator {
+        color: Default::default(),
         id: ModulationSourceId::new(id).unwrap(),
         enabled: true,
         state: NativeDeviceState::new(
@@ -61,7 +62,7 @@ fn bank() -> DeviceModulation {
 }
 
 #[test]
-fn authored_banks_survive_history_snapshots_and_reordering_without_retargeting() {
+fn authored_banks_survive_history_snapshots_recoloring_and_reordering_without_retargeting() {
     let (mut editor, id) = fixture();
     let mut empty = editor.project().snapshot();
     let expected = bank();
@@ -82,6 +83,8 @@ fn authored_banks_survive_history_snapshots_and_reordering_without_retargeting()
         &expected
     );
     let mut order = expected.sources().to_vec();
+    let colored_slot = order[0].id;
+    order[0].color = ElementColor::Violet;
     order.reverse();
     let reordered = DeviceModulation::new(order, expected.routes().to_vec()).unwrap();
     editor
@@ -94,6 +97,9 @@ fn authored_banks_survive_history_snapshots_and_reordering_without_retargeting()
         editor.project().device(id).unwrap().modulation(),
         &reordered
     );
+    assert_eq!(reordered.routes(), expected.routes());
+    assert_eq!(reordered.sources()[1].id, colored_slot);
+    assert_eq!(reordered.sources()[1].color, ElementColor::Violet);
     assert!(editor.undo());
     assert_eq!(editor.project().snapshot(), saved);
     assert!(editor.undo());
@@ -111,6 +117,62 @@ fn authored_banks_survive_history_snapshots_and_reordering_without_retargeting()
     assert_eq!(
         editor.project().device(id).unwrap().modulation(),
         &reordered
+    );
+}
+
+#[test]
+fn reusing_a_slot_id_with_a_new_provider_cannot_retarget_its_existing_routes() {
+    let (mut editor, device) = fixture();
+    let original = bank();
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device,
+            modulation: original.clone(),
+        })
+        .unwrap();
+    let saved = editor.project().snapshot();
+    let mut slots = original.sources().to_vec();
+    slots[0].state =
+        NativeDeviceState::new(DeviceTypeId::from_static("test.other"), 1, vec![]).unwrap();
+    let replacement = DeviceModulation::new(slots, original.routes().to_vec()).unwrap();
+    assert!(
+        editor
+            .execute(Command::ReplaceDeviceModulation {
+                device,
+                modulation: replacement
+            })
+            .is_err()
+    );
+    assert_eq!(editor.project().snapshot(), saved);
+}
+
+#[test]
+fn source_ancestors_include_transitive_feeds_but_exclude_disabled_routes() {
+    let destination = |id| ModulationDestination::Modulator {
+        source: ModulationSourceId::new(id).unwrap(),
+        module_type: DeviceTypeId::from_static("test.modulator"),
+        parameter: ParameterId::from_static(1),
+    };
+    let mut disabled = route(8, 4, destination(1));
+    disabled.enabled = false;
+    let bank = DeviceModulation::new(
+        (1..=4).map(source).collect(),
+        vec![
+            route(5, 1, destination(2)),
+            route(6, 2, destination(3)),
+            disabled,
+        ],
+    )
+    .unwrap();
+    let ids = bank
+        .source_route_ancestors(ModulationSourceId::new(3).unwrap())
+        .map(ModulationSourceId::value)
+        .collect::<Vec<_>>();
+    assert_eq!(ids, [3, 2, 1]);
+    assert!(
+        bank.source_route_ancestors(ModulationSourceId::new(5).unwrap())
+            .next()
+            .is_none()
     );
 }
 

@@ -12,8 +12,8 @@
 //! preallocated cache shares clock reads across sources; absent clock values use
 //! the prepared tempo. Rate/mode retargeting follows the same block transaction
 //! as phase, and graph inheritance retains the new graph's prepared timing mode.
-use crate::NativeInstrumentClock;
-use hex_dsp::{EnvelopeFollower, LfoRate, ModulationLfo, StereoFrame};
+use crate::{NativeInstrumentClock, modulation_source_routes::PreparedSourceRoute};
+use hex_dsp::{EnvelopeFollower, LfoRate, LfoWaveform, ModulationLfo, RandomHold, StereoFrame};
 use hex_lattice_contract::{DeviceContractError as Error, ModulationSourceId};
 
 pub const MAX_MODULATION_SOURCE_SOURCES: usize = 32;
@@ -58,6 +58,8 @@ enum SourceState {
         timing: Timing,
     },
     Follower(EnvelopeFollower),
+    Macro(f32),
+    Random(RandomHold),
 }
 
 impl SourceState {
@@ -80,6 +82,10 @@ impl SourceState {
                 },
             ) => oscillator.inherit_phase(&old),
             (Self::Follower(follower), Self::Follower(old)) => follower.inherit_envelope(&old),
+            // The candidate's authored value is complete. There is no
+            // temporal history to carry from the prior graph.
+            (Self::Macro(_), Self::Macro(_)) => {}
+            (Self::Random(random), Self::Random(old)) => random.inherit_history(&old),
             _ => return false,
         }
         true
@@ -94,6 +100,10 @@ pub struct PreparedModulationSource {
     sample_rate: f64,
 }
 impl PreparedModulationSource {
+    pub(crate) fn is_macro(&self) -> bool {
+        matches!(self.initial, SourceState::Macro(_))
+    }
+
     pub fn sample_rate(&self) -> f64 {
         self.sample_rate
     }
@@ -105,9 +115,21 @@ impl PreparedModulationSource {
         frequency_hz: f64,
         phase: f64,
     ) -> Result<Self, Error> {
+        Self::free_with_waveform(id, sample_rate, frequency_hz, phase, LfoWaveform::Sine)
+    }
+
+    /// Prepare a free-running oscillator with an explicit output shape.
+    pub fn free_with_waveform(
+        id: ModulationSourceId,
+        sample_rate: f64,
+        frequency_hz: f64,
+        phase: f64,
+        waveform: LfoWaveform,
+    ) -> Result<Self, Error> {
         let rate = hex_dsp::LfoRate::free(sample_rate, frequency_hz)
             .map_err(|_| Error::InvalidParameterValue)?;
-        let lfo = ModulationLfo::new(rate, phase).map_err(|_| Error::InvalidParameterValue)?;
+        let lfo = ModulationLfo::new_with_waveform(rate, phase, waveform)
+            .map_err(|_| Error::InvalidParameterValue)?;
         Ok(Self {
             id,
             sample_rate,
@@ -126,9 +148,29 @@ impl PreparedModulationSource {
         beats_per_cycle: f64,
         phase: f64,
     ) -> Result<Self, Error> {
+        Self::tempo_with_waveform(
+            id,
+            sample_rate,
+            beats_per_minute,
+            beats_per_cycle,
+            phase,
+            LfoWaveform::Sine,
+        )
+    }
+
+    /// Prepare a tempo-synced oscillator with an explicit output shape.
+    pub fn tempo_with_waveform(
+        id: ModulationSourceId,
+        sample_rate: f64,
+        beats_per_minute: f64,
+        beats_per_cycle: f64,
+        phase: f64,
+        waveform: LfoWaveform,
+    ) -> Result<Self, Error> {
         let rate = hex_dsp::LfoRate::tempo(sample_rate, beats_per_minute, beats_per_cycle)
             .map_err(|_| Error::InvalidParameterValue)?;
-        let lfo = ModulationLfo::new(rate, phase).map_err(|_| Error::InvalidParameterValue)?;
+        let lfo = ModulationLfo::new_with_waveform(rate, phase, waveform)
+            .map_err(|_| Error::InvalidParameterValue)?;
         Ok(Self {
             id,
             sample_rate,
@@ -155,6 +197,37 @@ impl PreparedModulationSource {
         Ok(Self {
             id,
             initial: SourceState::Follower(follower),
+            sample_rate: f64::from(sample_rate),
+        })
+    }
+    /// A manual source holds its finite normalized value at each sample.
+    pub fn macro_value(
+        id: ModulationSourceId,
+        sample_rate: u32,
+        value: f32,
+    ) -> Result<Self, Error> {
+        if sample_rate == 0 || !(0.0..=1.0).contains(&value) {
+            return Err(Error::InvalidParameterValue);
+        }
+        Ok(Self {
+            id,
+            initial: SourceState::Macro(value),
+            sample_rate: f64::from(sample_rate),
+        })
+    }
+
+    /// Prepare a free-running, seeded sample-and-hold source.
+    pub fn random_hold(
+        id: ModulationSourceId,
+        sample_rate: u32,
+        seed: u64,
+        rate_hz: f64,
+    ) -> Result<Self, Error> {
+        let random = RandomHold::new(seed, sample_rate, rate_hz)
+            .map_err(|_| Error::InvalidParameterValue)?;
+        Ok(Self {
+            id,
+            initial: SourceState::Random(random),
             sample_rate: f64::from(sample_rate),
         })
     }
@@ -417,9 +490,44 @@ impl ModulationSourceBank {
                 SourceState::Follower(follower) => follower
                     .render(input.ok_or(Error::InvalidParameterValue)?, output)
                     .map_err(|_| Error::InvalidParameterValue)?,
+                SourceState::Macro(value) => output.fill(*value),
+                SourceState::Random(random) => random.render(output),
             }
         }
         self.last_frames = frames;
+        Ok(())
+    }
+
+    /// Compose in dependency order after the chunk's raw sources are rendered.
+    /// Control preparation ties every index and non-self edge to this bank.
+    pub(crate) fn apply_source_routes(
+        &mut self,
+        routes: &[PreparedSourceRoute],
+    ) -> Result<(), Error> {
+        for incoming in routes.chunk_by(|a, b| a.target == b.target) {
+            let index = incoming[0].target;
+            let (before, target_and_after) = self
+                .sources
+                .split_at_mut_checked(index)
+                .ok_or(Error::InvalidDescriptor)?;
+            let (target, after) = target_and_after
+                .split_first_mut()
+                .ok_or(Error::InvalidDescriptor)?;
+            for (frame, value) in target.samples[..self.last_frames].iter_mut().enumerate() {
+                let mut sum = 0.0_f64;
+                for route in incoming {
+                    let source = if route.source < index {
+                        &before[route.source]
+                    } else {
+                        &after[route.source - index - 1]
+                    };
+                    sum += route.contribution.sample(source.samples[frame]);
+                }
+                if sum != 0.0 {
+                    *value = (f64::from(*value) + sum).clamp(0.0, 1.0) as f32;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -536,6 +644,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn random_modulation_rolls_back_and_restarts_from_the_authored_seed() {
+        let id = ModulationSourceId::new(1).unwrap();
+        let source = PreparedModulationSource::random_hold(id, 8, 0, 2.0).unwrap();
+        let mut bank = ModulationSourceBank::new(&[source], 8).unwrap();
+        let observe = |bank: &ModulationSourceBank| {
+            bank.samples(id)
+                .unwrap()
+                .iter()
+                .map(|sample| sample.to_bits())
+                .collect::<Vec<_>>()
+        };
+        let expected = [0x3f44_4150; 4]
+            .into_iter()
+            .chain([0xbe0c_3b10; 4])
+            .collect::<Vec<_>>();
+        bank.begin();
+        bank.render_chunk(8).unwrap();
+        assert_eq!(observe(&bank), expected);
+        bank.rollback();
+        bank.begin();
+        bank.render_chunk(8).unwrap();
+        assert_eq!(observe(&bank), expected);
+        bank.commit().unwrap();
+        bank.begin();
+        bank.render_chunk(4).unwrap();
+        assert_eq!(observe(&bank), [0xbf72_7746; 4]);
+        bank.rollback();
+        bank.reset_all();
+        bank.begin();
+        bank.render_chunk(8).unwrap();
+        assert_eq!(observe(&bank), expected);
+    }
+
+    #[test]
     fn follower_requires_finite_input_and_refusal_leaves_other_sources_untouched() {
         let oscillator = source(1, 12_000.0, 0.0);
         let follower = PreparedModulationSource::envelope_follower(
@@ -618,6 +760,43 @@ mod tests {
         assert!(inserted[0].abs() < 1e-6);
         assert!((inserted[1] - 1.0).abs() < 1e-6);
         assert!(next.samples(old_sources[1].id).is_none());
+    }
+
+    #[test]
+    fn waveform_replacement_keeps_phase_through_tempo_and_rollback() {
+        let id = ModulationSourceId::new(1).unwrap();
+        let sine = PreparedModulationSource::tempo(id, 8.0, 60.0, 1.0, 0.0).unwrap();
+        let square = PreparedModulationSource::tempo_with_waveform(
+            id,
+            8.0,
+            60.0,
+            1.0,
+            0.0,
+            LfoWaveform::Square,
+        )
+        .unwrap();
+        let mut previous = ModulationSourceBank::new(&[sine], 8).unwrap();
+        previous.begin();
+        previous.render_chunk(3).unwrap();
+        previous.commit().unwrap();
+        let mut candidate = ModulationSourceBank::new(&[square], 8).unwrap();
+        candidate.inherit_committed(&previous).unwrap();
+        candidate.begin();
+        candidate.render_chunk(1).unwrap();
+        assert_eq!(candidate.samples(id).unwrap(), &[1.0]);
+        candidate.render_chunk(5).unwrap();
+        assert_eq!(
+            candidate.samples(id).unwrap(),
+            &[-1.0, -1.0, -1.0, -1.0, 1.0]
+        );
+        candidate.rollback();
+        candidate.begin();
+        candidate.render_chunk(6).unwrap();
+        assert_eq!(
+            candidate.samples(id).unwrap(),
+            &[1.0, -1.0, -1.0, -1.0, -1.0, 1.0]
+        );
+        candidate.commit().unwrap();
     }
 
     #[test]

@@ -34,6 +34,7 @@ fn bank(device_type: DeviceTypeId, first: u64) -> DeviceModulation {
     let module_type = DeviceTypeId::from_static("test.original.modulator");
     let sources = (first..first + 2)
         .map(|id| Modulator {
+            color: Default::default(),
             id: ModulationSourceId::new(id).unwrap(),
             enabled: id == first,
             state: NativeDeviceState::new(module_type, 7, vec![0, 127, 255])
@@ -128,6 +129,77 @@ fn complete_banks_round_trip_and_save_reopen_with_serial_and_retained_source_own
     std::fs::remove_dir_all(dir).unwrap();
 }
 #[test]
+fn schema81_keeps_gray_slots_and_schema82_round_trips_complete_colored_slots() {
+    let gray = authored();
+    let bytes = crate::encode(&gray).unwrap();
+    let old: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(old["version"], 81);
+    assert!(
+        old["device_modulation"][0]["sources"][0]
+            .get("color")
+            .is_none()
+    );
+
+    let dir = temp_dir();
+    let path = dir.join("schema81.hex");
+    std::fs::write(&path, &bytes).unwrap();
+    let (loaded, old_token) = crate::load_with_token(&path).unwrap();
+    assert_eq!(loaded.snapshot(), gray.snapshot());
+    assert!(!old_token.requires_save_confirmation(&loaded).unwrap());
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+
+    let device = loaded.devices().next().unwrap();
+    let bank = device.modulation();
+    let mut slots = bank.sources().to_vec();
+    slots[0].color = ElementColor::Cyan;
+    slots.reverse();
+    let replacement = DeviceModulation::new(slots, bank.routes().to_vec()).unwrap();
+    let edit = Command::ReplaceDeviceModulation {
+        device: device.id(),
+        modulation: replacement,
+    };
+    let mut editor = Editor::new(loaded, 8).unwrap();
+    editor.execute(edit).unwrap();
+    let colored = editor.project();
+    assert_eq!(crate::schema_version_for(colored), 82);
+    assert!(old_token.requires_save_confirmation(colored).unwrap());
+    let path = dir.join("schema82.hex");
+    crate::save_new(&path, colored).unwrap();
+    assert_eq!(crate::load(&path).unwrap().snapshot(), colored.snapshot());
+    let current: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        current["device_modulation"][0]["sources"][0]["color"],
+        "gray"
+    );
+    assert_eq!(
+        current["device_modulation"][0]["sources"][1]["color"],
+        "cyan"
+    );
+    assert_eq!(
+        current["device_modulation"][1]["sources"][0]["color"],
+        "gray"
+    );
+
+    let mut unexpected = old;
+    unexpected["device_modulation"][0]["sources"][0]["color"] = "cyan".into();
+    assert!(crate::decode(&serde_json::to_vec(&unexpected).unwrap()).is_err());
+
+    let mut missing = current.clone();
+    missing["device_modulation"][0]["sources"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("color");
+    assert!(crate::decode(&serde_json::to_vec(&missing).unwrap()).is_err());
+    for invalid in [serde_json::Value::Null, "unknown".into(), 1.into()] {
+        let mut malformed = current.clone();
+        malformed["device_modulation"][0]["sources"][0]["color"] = invalid;
+        assert!(crate::decode(&serde_json::to_vec(&malformed).unwrap()).is_err());
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn schema80_fixture_migrates_in_memory_without_overwriting_its_file() {
     let legacy = legacy_fixture();
     // The unchanged prior-schema owner produces this historical-layout fixture.
@@ -209,4 +281,135 @@ fn malformed_future_incomplete_and_cyclic_documents_refuse_instead_of_losing_rou
             .snapshot(),
         project.snapshot()
     );
+}
+
+#[test]
+fn bound_source_effect_schema_preserves_colored_slots_and_requires_upgrade_consent() {
+    let original = authored();
+    let older = crate::FileToken::from_validated_bytes(crate::encode(&original).unwrap().into());
+    let mut editor = Editor::new(original, 8).unwrap();
+    let main = &editor.project().main_devices()[0];
+    let id = main.id();
+    let mut slots = main.modulation().sources().to_vec();
+    slots[0].color = ElementColor::Cyan;
+    let modulation = DeviceModulation::new(slots, main.modulation().routes().to_vec()).unwrap();
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device: id,
+            modulation,
+        })
+        .unwrap();
+
+    let parent = editor.project().tracks()[0].instrument().unwrap().id();
+    editor
+        .execute(Command::InsertNestedDevice {
+            parent,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap();
+    let project = editor.project();
+    assert!(older.requires_save_confirmation(project).unwrap());
+    let saved = crate::encode(project).unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&saved).unwrap();
+    assert_eq!(json["version"], 83);
+    assert_eq!(json["source_effect_base_version"], 82);
+    assert_eq!(
+        crate::decode(&saved).unwrap().snapshot(),
+        project.snapshot()
+    );
+    let mut missing = json.clone();
+    missing
+        .as_object_mut()
+        .unwrap()
+        .remove("source_effect_base_version");
+    assert!(crate::decode(&serde_json::to_vec(&missing).unwrap()).is_err());
+    let mut recursive = json;
+    recursive["source_effect_base_version"] = 83.into();
+    assert!(crate::decode(&serde_json::to_vec(&recursive).unwrap()).is_err());
+}
+
+#[test]
+fn shaped_lfo_uses_its_own_schema_and_retains_bound_units_and_slot_metadata() {
+    let mut editor = Editor::new(authored(), 8).unwrap();
+    let parent = editor.project().tracks()[0].instrument().unwrap().id();
+    editor
+        .execute(Command::InsertNestedDevice {
+            parent,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap();
+    let device = &editor.project().main_devices()[0];
+    let id = device.id();
+    let mut slots = device.modulation().sources().to_vec();
+    let routes = device.modulation().routes().to_vec();
+    let mut payload = vec![0];
+    payload.extend(1.0_f64.to_le_bytes());
+    payload.extend(0.0_f64.to_le_bytes());
+    let lfo = DeviceTypeId::from_static("hex.modulator.lfo");
+    slots.push(Modulator {
+        id: ModulationSourceId::new(editor.project().next_identity()).unwrap(),
+        enabled: true,
+        color: ElementColor::Cyan,
+        state: NativeDeviceState::new(lfo, 1, payload.clone()).unwrap(),
+    });
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device: id,
+            modulation: DeviceModulation::new(slots.clone(), routes.clone()).unwrap(),
+        })
+        .unwrap();
+
+    let dir = temp_dir();
+    let legacy = dir.join("sine.hex");
+    crate::save_new(&legacy, editor.project()).unwrap();
+    let original = std::fs::read(&legacy).unwrap();
+    let (loaded, token) = crate::load_with_token(&legacy).unwrap();
+    assert_eq!(loaded, *editor.project());
+    assert_eq!(
+        crate::schema_version_for(&loaded),
+        crate::BOUND_SOURCE_EFFECT_SCHEMA_VERSION
+    );
+    assert!(!token.requires_save_confirmation(&loaded).unwrap());
+
+    payload.push(3);
+    slots.last_mut().unwrap().state = NativeDeviceState::new(lfo, 2, payload).unwrap();
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device: id,
+            modulation: DeviceModulation::new(slots, routes).unwrap(),
+        })
+        .unwrap();
+    let shaped = editor.project();
+    assert_eq!(
+        crate::schema_version_for(shaped),
+        crate::LFO_SHAPE_SCHEMA_VERSION
+    );
+    assert!(token.requires_save_confirmation(shaped).unwrap());
+    let upgraded = dir.join("square.hex");
+    crate::save_new(&upgraded, shaped).unwrap();
+    assert_eq!(crate::load(&upgraded).unwrap(), *shaped);
+    assert_eq!(std::fs::read(&legacy).unwrap(), original);
+
+    let mut wrong_schema: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&upgraded).unwrap()).unwrap();
+    wrong_schema["version"] = crate::MODULATION_SLOT_COLOR_SCHEMA_VERSION.into();
+    assert!(crate::decode(&serde_json::to_vec(&wrong_schema).unwrap()).is_err());
+
+    let mut missing_shape: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&upgraded).unwrap()).unwrap();
+    let slot = missing_shape["device_modulation"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|row| row["device"] == id.value())
+        .unwrap()["sources"]
+        .as_array_mut()
+        .unwrap()
+        .last_mut()
+        .unwrap();
+    slot["state_version"] = 1.into();
+    slot["payload"].as_array_mut().unwrap().pop();
+    assert!(crate::decode(&serde_json::to_vec(&missing_shape).unwrap()).is_err());
+
+    std::fs::remove_dir_all(dir).unwrap();
 }

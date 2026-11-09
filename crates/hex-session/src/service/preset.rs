@@ -7,6 +7,8 @@ use hex_project::{Command, DeviceId};
 use hex_storage::preset::{DeviceClass, Preset};
 use std::path::Path;
 
+pub mod originals;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Owner {
     pub project_generation: u64,

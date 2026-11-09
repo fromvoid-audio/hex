@@ -4,8 +4,28 @@
 use super::{EditorView, context_menu::EditorContextAction, device_panel};
 use gpui::{Context, Window};
 use hex_engine::NativeDeviceClass;
-use hex_project::DeviceId;
+use hex_project::{DeviceChainOwner, DeviceId, DeviceUnitClass, Project};
 use hex_session::service::preset::Owner;
+
+pub(super) fn device_in_panel(
+    panel: device_panel::DevicePanelOwner,
+    project: &Project,
+    id: DeviceId,
+    class: NativeDeviceClass,
+) -> Option<&hex_project::Device> {
+    use device_panel::DevicePanelOwner;
+    let chain = match panel {
+        DevicePanelOwner::Main => DeviceChainOwner::Main,
+        DevicePanelOwner::Track(track) => DeviceChainOwner::Track(track),
+        DevicePanelOwner::Return(bus) => DeviceChainOwner::Return(bus),
+    };
+    let location = project.device_in_chain(chain, id)?;
+    let actual = match location.class {
+        DeviceUnitClass::Instrument => NativeDeviceClass::Instrument,
+        DeviceUnitClass::Effect => NativeDeviceClass::Effect,
+    };
+    (actual == class).then_some(location.device)
+}
 
 #[derive(Clone, Copy)]
 pub(super) struct Target {
@@ -22,45 +42,8 @@ impl Target {
             return None;
         }
         let state = view.state.as_ref()?;
-        let entry = state.project.device(device)?;
         let panel = view.device_panel.owner?;
-        let actual_class = match panel {
-            device_panel::DevicePanelOwner::Main => {
-                if !state
-                    .project
-                    .main_devices()
-                    .iter()
-                    .any(|entry| entry.id() == device)
-                {
-                    return None;
-                }
-                NativeDeviceClass::Effect
-            }
-            device_panel::DevicePanelOwner::Track(track) => {
-                let track = state.project.track(track)?;
-                if track.instrument().is_some_and(|entry| entry.id() == device) {
-                    NativeDeviceClass::Instrument
-                } else if track.devices().iter().any(|entry| entry.id() == device) {
-                    NativeDeviceClass::Effect
-                } else {
-                    return None;
-                }
-            }
-            device_panel::DevicePanelOwner::Return(bus) => {
-                let bus = state
-                    .project
-                    .return_tracks()
-                    .iter()
-                    .find(|entry| entry.id() == bus)?;
-                if !bus.devices().iter().any(|entry| entry.id() == device) {
-                    return None;
-                }
-                NativeDeviceClass::Effect
-            }
-        };
-        if actual_class != class {
-            return None;
-        }
+        let entry = device_in_panel(panel, &state.project, device, class)?;
         Some(Self {
             owner: Owner {
                 project_generation: view.project_generation,

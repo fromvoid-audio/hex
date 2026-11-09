@@ -3,6 +3,8 @@ use crate::{Frame, Invalid, Project, effect_clock::ArrangementEffectClock};
 use hex_lattice::{NativeInstrumentClock, NativeRuntimeChain};
 use std::{ops::Range, sync::Arc};
 
+pub(crate) mod metadata;
+
 /// Control-prepared recipe retained once per source by the compiled project.
 /// Renderers borrow this immutable configuration to build their runtime.
 #[derive(Debug, Clone)]
@@ -10,6 +12,7 @@ pub(crate) struct PreparedSourceEffects {
     pub(crate) source: hex_project::SourceId,
     pub(crate) receiver: usize,
     pub(crate) instances: Arc<[hex_lattice::PreparedRuntimeInstance]>,
+    pub(crate) factory_bytes: usize,
 }
 
 pub(crate) fn native_zero_latency(instance: &hex_lattice::PreparedRuntimeInstance) -> bool {
@@ -109,6 +112,11 @@ struct SourceEffectStage {
     chain: NativeRuntimeChain,
 }
 
+/// Bounded receiver-to-donor indices, prepared before any history is moved.
+pub(crate) struct SourceEffectTransfer {
+    donors: [Option<usize>; hex_project::MAX_TRACKS],
+}
+
 #[derive(Default)]
 pub(crate) struct SourceEffectStages {
     chains: Vec<Option<SourceEffectStage>>,
@@ -156,42 +164,114 @@ impl SourceEffectStages {
         Ok(Self { chains })
     }
 
+    /// Ordinary construction quote. The compiled recipes are retained by the
+    /// revision; this charges only the exclusive runtime backings.
+    pub(crate) fn requested_runtime_bytes(
+        receiver_slots: usize,
+        recipes: &[PreparedSourceEffects],
+    ) -> Option<usize> {
+        if recipes.is_empty() {
+            return Some(0);
+        }
+        Self::runtime_bytes(
+            receiver_slots,
+            recipes.iter().map(|recipe| {
+                NativeRuntimeChain::declared_storage_preflight_bytes_for_prepared(&recipe.instances)
+            }),
+        )
+    }
+
+    pub(crate) fn accounted_runtime_bytes(&self) -> Option<usize> {
+        Self::runtime_bytes(
+            self.chains.capacity(),
+            self.chains
+                .iter()
+                .flatten()
+                .map(|stage| stage.chain.accounted_storage_bytes()),
+        )
+    }
+
+    fn runtime_bytes(
+        slots: usize,
+        mut chains: impl Iterator<Item = Option<usize>>,
+    ) -> Option<usize> {
+        let stage_table = slots.checked_mul(std::mem::size_of::<Option<SourceEffectStage>>())?;
+        chains.try_fold(stage_table, |total, chain| {
+            // Chain headers are already inline in the receiver slots.
+            total.checked_add(chain?.checked_sub(std::mem::size_of::<NativeRuntimeChain>())?)
+        })
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.chains.is_empty()
     }
 
-    pub(crate) fn sources(&self) -> impl Iterator<Item = hex_project::SourceId> + '_ {
-        self.chains.iter().flatten().map(|stage| stage.source)
+    /// Match by source identity, independently of the current receiver index.
+    /// New stages have no donor. An unmatched old stage may retire only when
+    /// its host is stopped and the processor proves its committed state quiet.
+    pub(crate) fn plan_continuation(
+        &self,
+        previous: &Self,
+        allow_new: bool,
+        allow_quiet_retirement: bool,
+        generator_matches: impl Fn(hex_project::SourceId) -> bool,
+    ) -> Option<SourceEffectTransfer> {
+        let mut donors = [None; hex_project::MAX_TRACKS];
+        for (index, old) in previous.chains.iter().enumerate() {
+            let Some(old) = old else { continue };
+            let matching = self
+                .chains
+                .iter()
+                .enumerate()
+                .find(|(_, next)| next.as_ref().is_some_and(|next| next.source == old.source));
+            if let Some((receiver, Some(next))) = matching
+                && next
+                    .chain
+                    .can_transfer_unchanged_native_history_from(&old.chain)
+                && generator_matches(old.source)
+            {
+                *donors.get_mut(receiver)? = Some(index);
+            } else if !allow_quiet_retirement
+                || !old.chain.committed_range_is_quiescent(0..old.chain.len())
+            {
+                return None;
+            }
+        }
+        if !allow_new
+            && self
+                .chains
+                .iter()
+                .zip(&donors)
+                .any(|(stage, donor)| stage.is_some() && donor.is_none())
+        {
+            return None;
+        }
+        Some(SourceEffectTransfer { donors })
     }
 
-    /// Match by source identity; a receiver index is only a rendering location.
-    pub(crate) fn can_continue_from(&self, previous: &Self) -> bool {
-        self.sources().count() == previous.sources().count()
-            && self.chains.iter().flatten().all(|stage| {
-                previous
-                    .chains
-                    .iter()
-                    .flatten()
-                    .find(|old| old.source == stage.source)
-                    .is_some_and(|old| {
-                        stage
-                            .chain
-                            .can_transfer_unchanged_native_history_from(&old.chain)
-                    })
+    pub(crate) fn has_continued_source(
+        &self,
+        transfer: &SourceEffectTransfer,
+        source: hex_project::SourceId,
+    ) -> bool {
+        self.chains
+            .iter()
+            .zip(&transfer.donors)
+            .any(|(stage, donor)| {
+                donor.is_some() && stage.as_ref().is_some_and(|stage| stage.source == source)
             })
     }
 
-    /// The caller has preflighted both source layouts and is retiring previous.
-    /// Processors exchange or copy their existing backing; neither bank drops.
-    pub(crate) fn continue_from(&mut self, previous: &mut Self) {
-        for stage in self.chains.iter_mut().flatten() {
-            let old = previous
-                .chains
-                .iter_mut()
-                .flatten()
-                .find(|old| old.source == stage.source)
-                .expect("source effect handoff preflight matched this source");
-            stage.chain.transfer_history_from(&mut old.chain);
+    /// Processors exchange or copy existing backing; the caller still retires
+    /// the old graph on control. An unpaired candidate keeps its fresh history.
+    pub(crate) fn continue_from(&mut self, previous: &mut Self, transfer: SourceEffectTransfer) {
+        for (stage, donor) in self.chains.iter_mut().zip(transfer.donors) {
+            if let (Some(stage), Some(index)) = (stage, donor) {
+                let old = previous.chains[index]
+                    .as_mut()
+                    .expect("source effect handoff preflight matched this donor");
+                stage.chain.transfer_history_from(&mut old.chain);
+            }
         }
     }
 

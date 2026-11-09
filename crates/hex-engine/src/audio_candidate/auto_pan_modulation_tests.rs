@@ -11,7 +11,7 @@ use hex_lattice_contract::{
 };
 use hex_project::{
     Command, Created, DeviceAutomationTarget, DeviceModulation, DeviceModulationRoute, Editor,
-    ModulationAmount, ModulationDestination, ModulationOutputId, ModulationRange,
+    ElementColor, ModulationAmount, ModulationDestination, ModulationOutputId, ModulationRange,
     ModulationRouteId, ModulationSourceId, Modulator, Project,
 };
 use std::collections::BTreeMap;
@@ -86,31 +86,38 @@ fn auto_pan_modulation_matches_independent_sample_frames_in_both_compilers() {
         panic!("effect fixture");
     };
     let next = editor.project().next_identity();
-    let source = ModulationSourceId::new(next).unwrap();
+    let source = |index| ModulationSourceId::new(next + index).unwrap();
     let bank = DeviceModulation::new(
-        vec![Modulator {
-            id: source,
-            enabled: true,
-            state: Settings {
-                rate: Rate::Hertz(2_000.0),
-                phase: 0.0,
-            }
-            .encode()
-            .unwrap(),
-        }],
+        [0.0, 0.5]
+            .into_iter()
+            .enumerate()
+            .map(|(index, phase)| Modulator {
+                color: ElementColor::default(),
+                id: source(index as u64),
+                enabled: true,
+                state: Settings {
+                    rate: Rate::Hertz(2_000.0),
+                    phase,
+                    ..Settings::default()
+                }
+                .encode()
+                .unwrap(),
+            })
+            .collect(),
         IDS.into_iter()
             .zip([0.25, 0.125, 0.25, 0.5])
             .enumerate()
             .map(|(index, (parameter, amount))| DeviceModulationRoute {
-                id: ModulationRouteId::new(next + index as u64 + 1).unwrap(),
-                source,
+                id: ModulationRouteId::new(next + index as u64 + 2).unwrap(),
+                source: source(index as u64 % 2),
                 output: ModulationOutputId::MAIN,
                 destination: ModulationDestination::Device {
                     device_type: AUTO_PAN_TYPE_ID,
                     target: DeviceAutomationTarget::Parameter(parameter),
                     vst3_class: None,
                 },
-                amount: ModulationAmount::new(amount).unwrap(),
+                amount: ModulationAmount::new(if index % 2 == 0 { amount } else { -amount })
+                    .unwrap(),
                 range: ModulationRange::default(),
                 enabled: true,
             })
@@ -120,7 +127,7 @@ fn auto_pan_modulation_matches_independent_sample_frames_in_both_compilers() {
     editor
         .execute(Command::ReplaceDeviceModulation {
             device,
-            modulation: bank,
+            modulation: bank.clone(),
         })
         .unwrap();
     let project = editor.project();
@@ -161,6 +168,23 @@ fn auto_pan_modulation_matches_independent_sample_frames_in_both_compilers() {
     let mut renderer = Renderer::new(&graph);
     renderer.play();
     let mut output = [[0.0; 2]; FRAMES];
+    renderer.render(&mut output).unwrap();
+    compare(output);
+
+    let mut slots = bank.sources().to_vec();
+    slots[0].color = ElementColor::Cyan;
+    slots.reverse();
+    let reordered = DeviceModulation::new(slots, bank.routes().to_vec()).unwrap();
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device,
+            modulation: reordered.clone(),
+        })
+        .unwrap();
+    let project = editor.project();
+    let graph = crate::compile::project(project, &media).unwrap();
+    let mut renderer = Renderer::new(&graph);
+    renderer.play();
     renderer.render(&mut output).unwrap();
     compare(output);
 
@@ -207,4 +231,20 @@ fn auto_pan_modulation_matches_independent_sample_frames_in_both_compilers() {
     }
     compare(output);
     candidate.cleanup_on_control().unwrap();
+
+    editor
+        .execute(Command::SetDeviceBypass {
+            device,
+            bypassed: true,
+        })
+        .unwrap();
+    assert_eq!(
+        editor.project().device(device).unwrap().modulation(),
+        &reordered
+    );
+    let graph = crate::compile::project(editor.project(), &media).unwrap();
+    let mut renderer = Renderer::new(&graph);
+    renderer.play();
+    renderer.render(&mut output).unwrap();
+    assert_eq!(output, [[0.125, -0.25]; FRAMES]);
 }

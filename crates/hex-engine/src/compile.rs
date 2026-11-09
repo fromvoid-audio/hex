@@ -1193,7 +1193,21 @@ pub(crate) fn prepare_source_effect_recipes(
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     context: &hex_lattice::DevicePreparationContext<'_>,
 ) -> Result<Vec<crate::source_effect_stage::PreparedSourceEffects>, Invalid> {
+    let count = compiled
+        .tracks
+        .iter()
+        .filter(|track| {
+            track
+                .source_id()
+                .filter(|_| track.receives_source_audio())
+                .and_then(|source| arrangement.native_source(source))
+                .is_some_and(|definition| !definition.post_instrument_effects().is_empty())
+        })
+        .count();
     let mut recipes = Vec::new();
+    recipes
+        .try_reserve_exact(count)
+        .map_err(|_| Invalid("could not reserve prepared source recipe"))?;
     for (receiver, track) in compiled.tracks.iter().enumerate() {
         let Some(source) = track.source_id().filter(|_| track.receives_source_audio()) else {
             continue;
@@ -1204,14 +1218,22 @@ pub(crate) fn prepare_source_effect_recipes(
         if definition.instrument_index() == 0 && definition.post_instrument_effects().is_empty() {
             continue;
         }
+        use crate::source_effect_stage::metadata;
+        let suffix = definition.post_instrument_effects();
+        for device in suffix {
+            metadata::validate_authored(device.state(), registry)?;
+        }
         let instances = prepare_source_effect_suffix(arrangement, source, registry, context)?;
-        recipes
-            .try_reserve(1)
-            .map_err(|_| Invalid("could not reserve prepared source recipe"))?;
+        let factory_bytes = instances.iter().try_fold(0usize, |bytes, instance| {
+            bytes
+                .checked_add(metadata::factory_bytes(instance, registry)?)
+                .ok_or(Invalid("source effect factory byte count overflow"))
+        })?;
         recipes.push(crate::source_effect_stage::PreparedSourceEffects {
             source,
             receiver,
             instances: Arc::from(instances),
+            factory_bytes,
         });
     }
     crate::source_effect_stage::SourceEffectStages::validate_preparation(compiled, &recipes)?;

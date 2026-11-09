@@ -54,6 +54,9 @@ impl NativeProcessorRuntime for MemorySquare {
     fn reset(&mut self) {
         self.0 = [0.0; 2];
     }
+    fn is_quiescent(&self) -> bool {
+        !self.1 && self.0 == [0.0; 2]
+    }
     fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
         previous.as_any().is::<Self>()
     }
@@ -63,7 +66,11 @@ impl NativeProcessorRuntime for MemorySquare {
         }
     }
 }
-struct SquareRecipe(Option<u32>, bool);
+struct SquareRecipe {
+    latency: Option<u32>,
+    stamp_clock: bool,
+    tail: hex_lattice::OutputTail,
+}
 impl PreparedNativeProcessor for SquareRecipe {
     fn runtime_version(&self) -> u32 {
         1
@@ -72,10 +79,13 @@ impl PreparedNativeProcessor for SquareRecipe {
         std::mem::size_of::<MemorySquare>()
     }
     fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
-        Box::new(MemorySquare([0.0; 2], self.1))
+        Box::new(MemorySquare([0.0; 2], self.stamp_clock))
+    }
+    fn output_tail(&self) -> hex_lattice::OutputTail {
+        self.tail
     }
     fn algorithmic_latency_frames(&self) -> Option<u32> {
-        self.0
+        self.latency
     }
 }
 
@@ -91,9 +101,11 @@ fn recipe(source: hex_project::SourceId, latency: Option<u32>) -> PreparedRuntim
         bypassed: false,
         sample_rate: 48_000,
         configuration: None,
-        definition: Some(PreparedProcessorFactory::Legacy(Arc::new(SquareRecipe(
-            latency, false,
-        )))),
+        definition: Some(PreparedProcessorFactory::Legacy(Arc::new(SquareRecipe {
+            latency,
+            stamp_clock: false,
+            tail: hex_lattice::OutputTail::Finite { max_tail_frames: 1 },
+        }))),
     }
 }
 
@@ -228,6 +240,7 @@ fn with_recipe<'a>(
     instances: &[PreparedRuntimeInstance],
 ) -> Renderer<'a> {
     let recipes = [PreparedSourceEffects {
+        factory_bytes: 0,
         source: project.tracks[0].source_id().unwrap(),
         receiver,
         instances: Arc::from(instances),
@@ -314,6 +327,7 @@ fn invalid_prepared_source_recipes_refuse_before_rendering() {
     let source = project.tracks[0].source_id().unwrap();
     let instances = [recipe(project.tracks[0].source_id().unwrap(), Some(0))];
     let duplicates = [0, 0].map(|receiver| PreparedSourceEffects {
+        factory_bytes: 0,
         source,
         receiver,
         instances: Arc::from(instances.as_slice()),
@@ -389,15 +403,61 @@ fn registry_suffix_respects_order_and_power_without_processing_receiver_clips() 
     let source = model.tracks()[0].source_id().unwrap();
     let instrument = model.native_source(source).unwrap().instrument().id();
     let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
-    let mut revision =
-        crate::PreparedRevision::prepare(model, &media, Arc::new(crate::SineTable::new()), None)
-            .unwrap();
+    use crate::native_device_resources::{
+        DeviceResourceAdmission, DeviceResourcePhase, PreparedDeviceResources,
+        ResidentDeviceAssets, inspect_device_resource_union,
+    };
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let resources = PreparedDeviceResources::prepare_on_control(
+        &ResidentDeviceAssets::default(),
+        model,
+        1 << 20,
+        &cancel,
+    )
+    .unwrap();
+    let mut revision = crate::PreparedRevision::prepare_with_device_resources(
+        model,
+        &media,
+        Arc::new(crate::SineTable::new()),
+        None,
+        &crate::audio_transform::AudioTransformPreparation::default(),
+        &resources,
+        0,
+        &cancel,
+    )
+    .unwrap();
+    let measure = |revision: &crate::PreparedRevision| {
+        let registered = [DeviceResourceAdmission::prepared_on_control(
+            &resources, revision,
+        )];
+        let phase = DeviceResourcePhase {
+            stores: &[],
+            registered: &registered,
+            selections: &[],
+            outbound: &[],
+            legacy: &[],
+            checked_runtime_bytes: 0,
+            construction_bytes: 0,
+        };
+        let budget = crate::AudioStorageLedgerReservation {
+            data_rows: 64,
+            handle_rows: 64,
+            root_rows: 16,
+            max_retained_bytes: 1 << 20,
+            max_construction_peak_bytes: 1 << 20,
+        };
+        inspect_device_resource_union(&phase, &phase, budget)
+            .unwrap()
+            .retained
+            .retained_bytes
+    };
+    let plain_retained = measure(&revision);
     let mut compiled = revision.arrangement().as_ref().clone();
     assert!(compiled.source_effects.is_empty());
     assert!(prepare_suffix(model, source).unwrap().is_empty());
 
-    // Render the bound singleton separately. Author the same source's suffix
-    // while detached; production cannot bind a source with effects yet.
+    // Prepare the bound receiver separately, then author the suffix on the
+    // detached copy to verify that dormant definitions have no retained charge.
     for track in [receiver, contributor] {
         editor
             .execute(Command::BindTrackSource {
@@ -438,17 +498,27 @@ fn registry_suffix_respects_order_and_power_without_processing_receiver_clips() 
         })
         .unwrap();
 
-    compiled.source_effects = crate::compile::prepare_source_effect_recipes(
-        &compiled,
-        editor.project(),
-        &hex_devices::native_registry().unwrap(),
-        &hex_lattice::DevicePreparationContext {
-            sample_rate: 48_000,
-            tuning: &hex_lattice::TuningTable::default(),
-            resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
-        },
-    )
-    .unwrap();
+    let native = hex_devices::native_registry().unwrap();
+    let context = hex_lattice::DevicePreparationContext {
+        sample_rate: 48_000,
+        tuning: &hex_lattice::TuningTable::default(),
+        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    };
+    let prepare = |compiled: &Project| {
+        crate::compile::prepare_source_effect_recipes(compiled, editor.project(), &native, &context)
+            .unwrap()
+    };
+    compiled.source_effects = prepare(&compiled);
+    let mut receiver_only = compiled.clone();
+    receiver_only.tracks.pop().unwrap();
+    let retained = metadata::retained_bytes(&compiled.source_effects).unwrap();
+    assert!(retained > 0);
+    assert_eq!(
+        retained,
+        metadata::retained_bytes(&prepare(&receiver_only)).unwrap()
+    );
+    assert!(metadata::construction_for([2].into_iter()).unwrap() >= retained);
+    assert_eq!(metadata::construction_bytes(editor.project()), Some(0));
     assert_eq!(compiled.source_effects.len(), 1);
     let plan = &compiled.source_effects[0];
     assert_eq!(plan.source, source);
@@ -463,8 +533,10 @@ fn registry_suffix_respects_order_and_power_without_processing_receiver_clips() 
     renderer.play();
     let mut rendered = [[0.0; 2]; WIDTH];
     renderer.render(&mut rendered).unwrap();
-    revision.test_install_source_effect_recipes(compiled.source_effects.clone());
-    let mut session = crate::SessionPlayback::new(Arc::new(revision)).unwrap();
+    revision.test_install_source_effect_recipes(prepare(&compiled));
+    assert_eq!(measure(&revision) - plain_retained, retained);
+    let mut session =
+        crate::SessionPlayback::new_with_device_resources(Arc::new(revision), &resources).unwrap();
     session.apply(crate::SessionPlaybackCommand::Play).unwrap();
     let mut session_pcm = [[0.0; 2]; WIDTH];
     session.render(&mut session_pcm).unwrap();
@@ -612,12 +684,14 @@ fn session_playing_paths_run_source_effects_once_before_mixing_receiver_clips() 
                 route == 2,
             );
             let mut clocked = recipe(source, Some(0));
-            clocked.definition = Some(PreparedProcessorFactory::Legacy(Arc::new(SquareRecipe(
-                Some(0),
-                true,
-            ))));
+            clocked.definition = Some(PreparedProcessorFactory::Legacy(Arc::new(SquareRecipe {
+                latency: Some(0),
+                stamp_clock: true,
+                tail: hex_lattice::OutputTail::Finite { max_tail_frames: 1 },
+            })));
             let instances = [clocked];
             let recipes = [PreparedSourceEffects {
+                factory_bytes: 0,
                 source,
                 receiver: 0,
                 instances: Arc::from(instances.as_slice()),
@@ -748,6 +822,7 @@ fn aggregate_track_return_main_and_source_budgets_refuse_before_runtime_creation
         1,
     )];
     let recipes = [PreparedSourceEffects {
+        factory_bytes: 0,
         source,
         receiver: 0,
         instances: Arc::from(source_instances.as_slice()),
@@ -811,6 +886,7 @@ fn receiver_move_continues_the_source_effect_and_incompatible_recipe_leaves_dono
         SessionPlayback::test_with_source_effects(
             revision,
             &[PreparedSourceEffects {
+                factory_bytes: 0,
                 source,
                 receiver,
                 instances: Arc::from(instances),
@@ -835,9 +911,16 @@ fn receiver_move_continues_the_source_effect_and_incompatible_recipe_leaves_dono
     ));
     assert_eq!(donor.performance_frame(), 97);
     assert_eq!(wrong.performance_frame(), 0);
+    assert!(wrong.try_inherit_state_live_from(&mut donor).is_err());
+    assert_eq!(wrong.performance_frame(), 0);
+    let mut restart = make(Arc::clone(&after), 1, std::slice::from_ref(&instance));
+    restart.request_live_restart();
+    assert!(restart.try_inherit_state_live_from(&mut donor).is_err());
+    assert_eq!(restart.performance_frame(), 0);
+    assert_eq!(donor.performance_frame(), 97);
 
     let mut moved = make(after, 1, &[instance]);
-    moved.try_inherit_state_from(&mut donor).unwrap();
+    moved.try_inherit_state_live_from(&mut donor).unwrap();
     assert_eq!(moved.performance_frame(), 97);
     let mut actual = [[0.0; 2]; 173];
     let mut expected = [[0.0; 2]; 173];
@@ -849,4 +932,343 @@ fn receiver_move_continues_the_source_effect_and_incompatible_recipe_leaves_dono
             "at {i}: moved {actual:?} vs uninterrupted {expected:?}"
         );
     }
+}
+
+#[test]
+fn ordinary_runtime_quote_covers_the_constructed_source_effect_stage() {
+    use crate::{PreparedRevision, SessionPlayback};
+
+    let (editor, asset) = authored_fixture(0, false);
+    let source = editor.project().tracks()[0].source_id().unwrap();
+    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
+    let revision = Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &media,
+            Arc::new(crate::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let plain_quote = SessionPlayback::interactive_runtime_allowance(&revision).unwrap();
+    let plain_actual = {
+        let playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        playback.accounted_runtime_storage_bytes().unwrap()
+    };
+
+    let mut revision = Arc::try_unwrap(revision).unwrap();
+    revision.test_install_source_effect_recipes(vec![PreparedSourceEffects {
+        factory_bytes: 0,
+        source,
+        receiver: 0,
+        instances: Arc::from([recipe(source, Some(0))]),
+    }]);
+    let effect_quote = SessionPlayback::interactive_runtime_allowance(&revision).unwrap();
+    let playback = SessionPlayback::new(Arc::new(revision)).unwrap();
+    let effect_actual = playback.accounted_runtime_storage_bytes().unwrap();
+    assert!(effect_actual > plain_actual);
+    assert_eq!(effect_quote - plain_quote, effect_actual - plain_actual);
+    assert!(effect_quote >= effect_actual);
+}
+
+#[test]
+fn linear_export_uses_source_effect_pcm_and_declared_tail_only_on_its_path() {
+    use crate::{OutputCaptureId, PreparedRevision, SessionPlayback, SessionPlaybackCommand};
+    let (editor, asset) = authored_fixture(1, false);
+    let source = editor.project().tracks()[0].source_id().unwrap();
+    let receiving = [OutputCaptureId::Track(editor.project().tracks()[0].id())];
+    let sent = [OutputCaptureId::Return(
+        editor.project().return_tracks()[0].id(),
+    )];
+    let unrelated = [OutputCaptureId::Track(editor.project().tracks()[1].id())];
+    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
+    let mut revision = PreparedRevision::prepare(
+        editor.project(),
+        &media,
+        Arc::new(crate::SineTable::new()),
+        None,
+    )
+    .unwrap();
+    let main_end = revision
+        .arrangement()
+        .untrimmed_main_end_frame()
+        .unwrap()
+        .unwrap();
+    let receiving_end = revision
+        .arrangement()
+        .untrimmed_capture_end_frame(&receiving)
+        .unwrap()
+        .unwrap();
+    let sent_end = revision
+        .arrangement()
+        .untrimmed_capture_end_frame(&sent)
+        .unwrap()
+        .unwrap();
+    let unrelated_end = revision
+        .arrangement()
+        .untrimmed_capture_end_frame(&unrelated)
+        .unwrap()
+        .unwrap();
+
+    let mut dry_pcm = [[0.0; 2]; WIDTH];
+    {
+        let mut dry = Renderer::new(revision.arrangement());
+        dry.play();
+        dry.render(&mut dry_pcm).unwrap();
+    }
+
+    let instance = recipe(source, Some(0));
+    revision.test_install_source_effect_recipes(vec![PreparedSourceEffects {
+        factory_bytes: 0,
+        source,
+        receiver: 0,
+        instances: Arc::from([instance.clone()]),
+    }]);
+    let revision = Arc::new(revision);
+    let compiled = revision.arrangement();
+    assert_eq!(
+        compiled.untrimmed_main_end_frame().unwrap(),
+        Some(main_end + 1)
+    );
+    assert_eq!(
+        compiled.untrimmed_capture_end_frame(&receiving).unwrap(),
+        Some(receiving_end + 1)
+    );
+    assert_eq!(
+        compiled.untrimmed_capture_end_frame(&unrelated).unwrap(),
+        Some(unrelated_end)
+    );
+
+    assert_eq!(
+        compiled.untrimmed_capture_end_frame(&sent).unwrap(),
+        Some(sent_end + 1)
+    );
+
+    let mut ordinary = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let mut export = SessionPlayback::new_linear_arrangement_export(Arc::clone(&revision)).unwrap();
+    let mut ordinary_pcm = [[0.0; 2]; WIDTH];
+    let mut export_pcm = [[0.0; 2]; WIDTH];
+    ordinary.apply(SessionPlaybackCommand::Play).unwrap();
+    export.apply(SessionPlaybackCommand::Play).unwrap();
+    ordinary.render(&mut ordinary_pcm).unwrap();
+    export.render(&mut export_pcm).unwrap();
+    assert_eq!(export_pcm, ordinary_pcm);
+    assert_ne!(export_pcm, dry_pcm);
+
+    let mut with_tail = compiled.as_ref().clone();
+    let mut bypassed = instance.clone();
+    bypassed.bypassed = true;
+    with_tail.source_effects[0].instances = Arc::from([bypassed]);
+    assert_eq!(
+        with_tail.untrimmed_main_end_frame().unwrap(),
+        Some(main_end)
+    );
+
+    let mut unbounded = instance;
+    unbounded.definition = Some(PreparedProcessorFactory::Legacy(Arc::new(SquareRecipe {
+        latency: Some(0),
+        stamp_clock: false,
+        tail: hex_lattice::OutputTail::Unbounded,
+    })));
+    with_tail.source_effects[0].instances = Arc::from([unbounded]);
+    assert!(with_tail.untrimmed_main_end_frame().is_err());
+    assert!(with_tail.untrimmed_capture_end_frame(&receiving).is_err());
+    assert!(with_tail.untrimmed_capture_end_frame(&sent).is_err());
+    assert_eq!(
+        with_tail.untrimmed_capture_end_frame(&unrelated).unwrap(),
+        Some(unrelated_end)
+    );
+}
+
+#[test]
+fn registered_source_effect_factory_bounds_cover_each_supported_factory() {
+    use hex_lattice_contract::NativeDeviceMetadata;
+    let (mut editor, _) = authored_fixture(0, false);
+    let source = editor.project().tracks()[0].source_id().unwrap();
+    let instrument = editor
+        .project()
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    let tracks: Vec<_> = editor
+        .project()
+        .tracks()
+        .iter()
+        .map(|track| track.id())
+        .collect();
+    for track in tracks {
+        editor
+            .execute(Command::BindTrackSource {
+                track,
+                source: None,
+            })
+            .unwrap();
+    }
+    let registry = hex_devices::native_registry().unwrap();
+    let definitions: [&dyn NativeDeviceMetadata; 7] = [
+        &hex_devices::auto_pan::AUTO_PAN_DEFINITION,
+        &hex_devices::compressor::COMPRESSOR_DEFINITION,
+        &hex_devices::delay::DEFINITION,
+        &hex_devices::eq::EQ_DEFINITION,
+        &hex_devices::eq8::EQ8_DEFINITION,
+        &hex_devices::gate::GATE_DEFINITION,
+        &hex_devices::reverb::REVERB_DEFINITION,
+    ];
+    for definition in definitions {
+        let state = definition.default_state().unwrap();
+        metadata::validate_authored(&state, &registry).unwrap();
+        editor
+            .execute(Command::InsertNestedDevice {
+                parent: instrument,
+                state,
+            })
+            .unwrap();
+    }
+    let unquoted = hex_devices::saturator::SATURATOR_DEFINITION
+        .default_state()
+        .unwrap();
+    assert!(metadata::validate_authored(&unquoted, &registry).is_err());
+    let instances = prepare_suffix(editor.project(), source).unwrap();
+    assert_eq!(instances.len(), definitions.len());
+    let factory_bytes = instances
+        .iter()
+        .map(|instance| {
+            assert!(instance.definition.is_some());
+            metadata::factory_bytes(instance, &registry).unwrap()
+        })
+        .sum::<usize>();
+    assert!(factory_bytes > 0);
+    let recipes = vec![PreparedSourceEffects {
+        source,
+        receiver: 0,
+        factory_bytes,
+        instances: Arc::from(instances),
+    }];
+    assert!(
+        metadata::construction_for([definitions.len()].into_iter()).unwrap()
+            >= metadata::retained_bytes(&recipes).unwrap()
+    );
+}
+
+#[test]
+fn ordinary_live_source_attachment_starts_empty_and_retirement_requires_a_quiet_stop() {
+    use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
+    let (editor, asset) = authored_fixture(0, false);
+    let source = editor.project().tracks()[0].source_id().unwrap();
+    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
+    let prepare = || {
+        PreparedRevision::prepare(
+            editor.project(),
+            &media,
+            Arc::new(crate::SineTable::new()),
+            None,
+        )
+        .unwrap()
+    };
+    let dry = Arc::new(prepare());
+    let mut wet = prepare();
+    wet.test_install_source_effect_recipes(vec![PreparedSourceEffects {
+        source,
+        receiver: 0,
+        instances: Arc::from([recipe(source, Some(0))]),
+        factory_bytes: 0,
+    }]);
+    let wet = Arc::new(wet);
+    let playback = |revision| SessionPlayback::new(revision).unwrap();
+    let mut previous = playback(Arc::clone(&dry));
+    previous.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut dry_prefix = [[0.0; 2]; 98];
+    previous.render(&mut dry_prefix[..97]).unwrap();
+    let mut independent = playback(Arc::clone(&dry));
+    independent.apply(SessionPlaybackCommand::Play).unwrap();
+    independent.render(&mut dry_prefix).unwrap();
+
+    let mut added = playback(Arc::clone(&wet));
+    added.try_inherit_state_live_from(&mut previous).unwrap();
+    assert_eq!(added.performance_frame(), 97);
+    let mut sample = [[0.0; 2]];
+    added.render(&mut sample).unwrap();
+    for (channel, clip) in CLIP.into_iter().enumerate() {
+        let generator = dry_prefix[97][channel] - clip;
+        assert!(generator.abs() > 1e-5);
+        assert!((sample[0][channel] - (clip + generator * generator)).abs() < 1e-6);
+    }
+
+    let mut removed = playback(Arc::clone(&dry));
+    assert!(removed.try_inherit_state_live_from(&mut added).is_err());
+    added.apply(SessionPlaybackCommand::Pause).unwrap();
+    assert!(removed.try_inherit_state_live_from(&mut added).is_err());
+    assert_eq!(added.performance_frame(), 98);
+    assert_eq!(removed.performance_frame(), 0);
+    added.apply(SessionPlaybackCommand::Stop).unwrap();
+    removed.try_inherit_state_live_from(&mut added).unwrap();
+
+    let mut restored = playback(Arc::clone(&wet));
+    restored.try_inherit_state_live_from(&mut removed).unwrap();
+    restored.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut clean = playback(wet);
+    clean.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut a = [[0.0; 2]; 19];
+    let mut b = a;
+    restored.render(&mut a).unwrap();
+    clean.render(&mut b).unwrap();
+    assert_eq!(a, b);
+}
+
+#[test]
+fn attaching_a_second_source_effect_keeps_the_first_sources_wet_history() {
+    use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
+    let (mut editor, asset) = authored_fixture(0, false);
+    let Created::Track(second) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "independent source".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("second source track");
+    };
+    let project = editor.project();
+    let first = project.tracks()[0].source_id().unwrap();
+    let second = project.track(second).unwrap().source_id().unwrap();
+    let instance = |source, receiver| {
+        let mut effect = recipe(source, Some(0));
+        effect.configuration = Some(Arc::new(
+            hex_lattice_contract::NativeDeviceState::new(effect.device_type, 1, vec![1]).unwrap(),
+        ));
+        PreparedSourceEffects {
+            source,
+            receiver,
+            instances: Arc::from([effect]),
+            factory_bytes: 0,
+        }
+    };
+    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
+    let prepare = |include_second| {
+        let mut revision =
+            PreparedRevision::prepare(project, &media, Arc::new(crate::SineTable::new()), None)
+                .unwrap();
+        let mut stages = vec![instance(first, 0)];
+        if include_second {
+            stages.push(instance(second, 2));
+        }
+        revision.test_install_source_effect_recipes(stages);
+        SessionPlayback::new(Arc::new(revision)).unwrap()
+    };
+    let mut donor = prepare(false);
+    let mut reference = prepare(false);
+    for session in [&mut donor, &mut reference] {
+        session.apply(SessionPlaybackCommand::Play).unwrap();
+        session.render(&mut [[0.0; 2]; 97]).unwrap();
+    }
+    let mut candidate = prepare(true);
+    candidate.try_inherit_state_live_from(&mut donor).unwrap();
+    let mut a = [[0.0; 2]; 173];
+    let mut b = a;
+    candidate.render(&mut a).unwrap();
+    reference.render(&mut b).unwrap();
+    assert_eq!(a, b);
 }

@@ -226,7 +226,8 @@ struct Packet {
         const auto wire_version=number(p+4,2);
         constexpr uint64_t authored_bit=0x8000;
         authored_parameters=pcm && (wire_version&authored_bit);
-        const auto version=authored_parameters?(wire_version&~authored_bit):wire_version;
+        observe_editor_pcm=pcm && (wire_version&editor_pcm_bit);reply_editor_count=0;
+        const auto version=wire_version&~((authored_parameters?authored_bit:0)|(observe_editor_pcm?editor_pcm_bit:0));
         release_gates=quiesce && version==2 && !config.inputs;
         observe_latency=edit_query && (version==2 || version==3);
         flush_idle_edits=edit_query && version==3;
@@ -414,12 +415,33 @@ struct Packet {
         }
         return true;
     }
+    // Optional PCM reply tail. Each record is one effective offset-zero
+    // input. The ordered receipt reader remains the only boundary owner.
+    static constexpr uint64_t editor_pcm_bit=0x4000;
+    static constexpr size_t editor_point_bytes=32;
+    bool observe_editor_pcm=false;
+    size_t reply_editor_count=0;
+    bool append_editor_perform(const hex_instance::EditEvent& edit) {
+        if(!observe_editor_pcm || reply_editor_count==hex_instance::HOST_EDIT_COUNT) return false;
+        const auto offset=header_size+frames*8+reply_parameter_count*16+reply_editor_count*editor_point_bytes;
+        if(offset+editor_point_bytes>bytes.size()) return false;
+        auto* point=bytes.data()+offset;
+        const auto put=[](uint8_t* out,uint64_t value,size_t count) {
+            for(size_t n=0;n<count;++n) out[n]=static_cast<uint8_t>(value>>(n*8));
+        };
+        uint64_t normalized=0;std::memcpy(&normalized,&edit.normalized,8);
+        put(point,edit.sequence,8);put(point+8,edit.gesture,8);put(point+16,normalized,8);
+        put(point+24,edit.id,4);put(point+28,0,4);
+        ++reply_editor_count;return true;
+    }
     bool write(int fd) {
-        bytes[4]=reply_parameter_count?2:1;bytes[5]=0;
+        bytes[4]=reply_parameter_count?2:1;
+        bytes[5]=observe_editor_pcm?static_cast<uint8_t>(editor_pcm_bit>>8):0;
         bytes[8]=bytes[9]=0; // Input notes are never echoed as processor output.
         bytes[10]=static_cast<uint8_t>(reply_parameter_count);
         std::fill(bytes.begin()+11,bytes.begin()+16,0); // Request timing is never echoed.
-        return write_exact(fd,bytes.data(),header_size+frames*8+reply_parameter_count*16);
+        bytes[12]=static_cast<uint8_t>(reply_editor_count);
+        return write_exact(fd,bytes.data(),header_size+frames*8+reply_parameter_count*16+reply_editor_count*editor_point_bytes);
     }
 };
 } // namespace hex_instance_wire
