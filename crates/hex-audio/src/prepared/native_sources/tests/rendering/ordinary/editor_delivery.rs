@@ -83,20 +83,29 @@ fn verify_editor_delivery(reading: bool) {
     physical_block::<1>(&mut f);
     replacement::wait_for_blocks(&root, f.binding, 2);
 
-    let source = f.control.status.native_effect_source().unwrap();
+    let (source, epoch) = f.control.status.live_native_parameter_source().unwrap();
+    let touch = TouchPlan {
+        parameter: 7,
+        base: 0.25,
+        reading: true,
+    };
+    if reading {
+        assert!(
+            f.control
+                .arm_native_source_editor_touch_delivery_on_control(
+                    source,
+                    epoch + 1,
+                    f.binding,
+                    touch,
+                )
+                .is_err()
+        );
+    }
     let until = Instant::now() + Duration::from_secs(2);
     let target = loop {
         let armed = if reading {
             f.control
-                .arm_native_source_editor_touch_delivery_on_control(
-                    source,
-                    f.binding,
-                    TouchPlan {
-                        parameter: 7,
-                        base: 0.25,
-                        reading: true,
-                    },
-                )
+                .arm_native_source_editor_touch_delivery_on_control(source, epoch, f.binding, touch)
         } else {
             f.control
                 .arm_native_source_editor_delivery_on_control(source, f.binding)

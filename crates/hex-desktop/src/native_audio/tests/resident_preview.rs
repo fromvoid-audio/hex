@@ -164,10 +164,25 @@ pub(super) static CONFIRMED_TEST_NOOPS: AtomicU64 = AtomicU64::new(0);
 pub(super) static SESSION_RECORDING_OBSERVATIONS: Mutex<
     Vec<hex_session::service::PluginParameterObservation>,
 > = Mutex::new(Vec::new());
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(super) enum EditorRecordingProbe {
+    Prepare(
+        hex_session::service::PluginEditorRecordingInput,
+        SyncSender<Result<hex_session::service::PluginParameterObservation, String>>,
+    ),
+    Start(
+        hex_session::device_gesture::GestureKey,
+        SyncSender<Result<(), String>>,
+    ),
+    Take(SyncSender<Option<hex_session::service::PluginParameterObservation>>),
+}
+
 struct ResidentSink {
     inner: NativeAudioSink,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     control_polls: Arc<AtomicU64>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    editor_recording_probe: Arc<Mutex<Option<EditorRecordingProbe>>>,
     initial_rate: u32,
     refuse: Arc<AtomicBool>,
     budget_refuse: Arc<AtomicBool>,
@@ -648,6 +663,26 @@ impl WorkerAudioSink for ResidentSink {
     }
     fn poll(&mut self) {
         self.inner.poll();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if let Some(probe) = self.editor_recording_probe.lock().unwrap().take() {
+            match probe {
+                EditorRecordingProbe::Prepare(input, reply) => {
+                    reply
+                        .try_send(self.inner.prepare_plugin_editor_recording(input))
+                        .unwrap();
+                }
+                EditorRecordingProbe::Start(key, reply) => {
+                    reply
+                        .try_send(self.inner.start_plugin_editor_recording(key))
+                        .unwrap();
+                }
+                EditorRecordingProbe::Take(reply) => {
+                    reply
+                        .try_send(self.inner.take_plugin_parameter_observation())
+                        .unwrap();
+                }
+            }
+        }
         self.pending_observation_generation.store(
             match self.inner.pending_observation.as_ref() {
                 Some(EditorAudioEvent::Publication { context, .. }) => {
@@ -674,6 +709,8 @@ pub(super) struct ResidentHarness {
     pub(super) service: Service,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) control_polls: Arc<AtomicU64>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) editor_recording_probe: Arc<Mutex<Option<EditorRecordingProbe>>>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     event_sender: mpsc::SyncSender<EditorAudioEvent>,
     events: mpsc::Receiver<EditorAudioEvent>,
@@ -919,6 +956,8 @@ impl ResidentHarness {
         let publication_probe = Arc::new(Mutex::new(None));
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let control_polls = Arc::new(AtomicU64::new(0));
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let editor_recording_probe = Arc::new(Mutex::new(None));
         let service = Service::with_audio_sink_and_native_reservation(
             16,
             frame_limit,
@@ -927,6 +966,8 @@ impl ResidentHarness {
                 inner,
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                 control_polls: Arc::clone(&control_polls),
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                editor_recording_probe: Arc::clone(&editor_recording_probe),
                 initial_rate: rate,
                 refuse: Arc::clone(&refuse),
                 budget_refuse: Arc::clone(&budget_refuse),
@@ -943,6 +984,8 @@ impl ResidentHarness {
             service,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             control_polls,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            editor_recording_probe,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             event_sender: sender,
             events,

@@ -368,7 +368,7 @@ impl PublicationControl {
         self.foreign_editor_delivery
             .as_mut()
             .ok_or("vst3 editor delivery reader is retired")?
-            .begin(&self.status, source, binding, None, |scope| {
+            .begin(&self.status, source, binding, None, None, |scope| {
                 self.candidate_root
                     .arm_native_editor_pcm(binding, scope, None)
             })
@@ -380,6 +380,7 @@ impl PublicationControl {
     pub fn arm_native_source_editor_touch_delivery_on_control(
         &mut self,
         source: AppliedAudioSource,
+        transport_epoch: u64,
         binding: Binding,
         touch: crate::foreign_parameter_delivery::editor::TouchPlan,
     ) -> Result<crate::foreign_parameter_delivery::editor::Target, &'static str> {
@@ -391,6 +392,7 @@ impl PublicationControl {
                 &self.status,
                 source,
                 binding,
+                Some(transport_epoch),
                 Some(Arc::clone(&self.status)),
                 |scope| {
                     self.candidate_root
