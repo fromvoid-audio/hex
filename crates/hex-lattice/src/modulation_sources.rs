@@ -106,6 +106,21 @@ impl MathControls {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+struct MixControls {
+    inputs: [f32; 2],
+    blend: f32,
+}
+
+impl MixControls {
+    fn sample(self, offsets: [f64; 3]) -> f32 {
+        let a = (f64::from(self.inputs[0]) + 2.0 * offsets[0]).clamp(-1.0, 1.0);
+        let b = (f64::from(self.inputs[1]) + 2.0 * offsets[1]).clamp(-1.0, 1.0);
+        let blend = (f64::from(self.blend) + offsets[2]).clamp(0.0, 1.0);
+        (a * (1.0 - blend) + b * blend) as f32
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum SourceState {
     Lfo {
         oscillator: ModulationLfo,
@@ -115,6 +130,7 @@ enum SourceState {
     AudioRate,
     Macro(f32),
     Math(MathControls),
+    Mix(MixControls),
     Random(RandomHold),
 }
 
@@ -140,7 +156,9 @@ impl SourceState {
             (Self::Follower(follower), Self::Follower(old)) => follower.inherit_envelope(&old),
             // The candidate's authored value is complete. There is no
             // temporal history to carry from the prior graph.
-            (Self::Macro(_), Self::Macro(_)) | (Self::Math(_), Self::Math(_)) => {}
+            (Self::Macro(_), Self::Macro(_))
+            | (Self::Math(_), Self::Math(_))
+            | (Self::Mix(_), Self::Mix(_)) => {}
             (Self::AudioRate, Self::AudioRate) => {}
             (Self::Random(random), Self::Random(old)) => random.inherit_history(&old),
             _ => return false,
@@ -177,6 +195,12 @@ impl PreparedModulationSource {
                 | (
                     SourceModulationParameter::MathA | SourceModulationParameter::MathB,
                     SourceState::Math(_)
+                )
+                | (
+                    SourceModulationParameter::MixA
+                        | SourceModulationParameter::MixB
+                        | SourceModulationParameter::MixBlend,
+                    SourceState::Mix(_)
                 )
                 | (
                     SourceModulationParameter::FreeLfoRate,
@@ -351,6 +375,28 @@ impl PreparedModulationSource {
             id,
             output: ModulationOutputId::MAIN,
             initial: SourceState::Math(MathControls { inputs, operation }),
+            sample_rate: f64::from(sample_rate),
+        })
+    }
+
+    /// Crossfade between signed A and B at a normalized position. The
+    /// prepared graph clamps each input after summing its incoming routes.
+    pub fn mix(
+        id: ModulationSourceId,
+        sample_rate: u32,
+        inputs: [f32; 2],
+        blend: f32,
+    ) -> Result<Self, Error> {
+        if !(8_000..=192_000).contains(&sample_rate)
+            || inputs.iter().any(|value| !(-1.0..=1.0).contains(value))
+            || !(0.0..=1.0).contains(&blend)
+        {
+            return Err(Error::InvalidParameterValue);
+        }
+        Ok(Self {
+            id,
+            output: ModulationOutputId::MAIN,
+            initial: SourceState::Mix(MixControls { inputs, blend }),
             sample_rate: f64::from(sample_rate),
         })
     }
@@ -683,6 +729,7 @@ impl ModulationSourceBank {
                 }
                 SourceState::Macro(value) => output.fill(*value),
                 SourceState::Math(controls) => output.fill(controls.sample([0.0; 2])),
+                SourceState::Mix(controls) => output.fill(controls.sample([0.0; 3])),
                 SourceState::Random(random) => random.render(output),
             }
         }
@@ -751,6 +798,26 @@ impl ModulationSourceBank {
                         for route in incoming {
                             let input =
                                 usize::from(route.parameter == SourceModulationParameter::MathB);
+                            offsets[input] += contribution(route, frame);
+                        }
+                        *sample = controls.sample(offsets);
+                    }
+                }
+                (
+                    SourceModulationParameter::MixA
+                    | SourceModulationParameter::MixB
+                    | SourceModulationParameter::MixBlend,
+                    SourceState::Mix(controls),
+                ) => {
+                    for (frame, sample) in output.iter_mut().enumerate() {
+                        let mut offsets = [0.0; 3];
+                        for route in incoming {
+                            let input = match route.parameter {
+                                SourceModulationParameter::MixA => 0,
+                                SourceModulationParameter::MixB => 1,
+                                SourceModulationParameter::MixBlend => 2,
+                                _ => return Err(Error::InvalidDescriptor),
+                            };
                             offsets[input] += contribution(route, frame);
                         }
                         *sample = controls.sample(offsets);
@@ -913,6 +980,24 @@ impl ModulationSourceBank {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mix_preserves_endpoints_and_refuses_invalid_controls() {
+        let id = ModulationSourceId::new(1).unwrap();
+        let inputs = [-0.75, 0.5];
+        for (blend, expected) in [(0.0, -0.75), (0.25, -0.4375), (1.0, 0.5)] {
+            let source = PreparedModulationSource::mix(id, 48_000, inputs, blend).unwrap();
+            let SourceState::Mix(controls) = source.initial else {
+                panic!("expected Mix controls");
+            };
+            assert_eq!(controls.sample([0.0; 3]), expected);
+            assert_eq!(controls.sample([1.0, -1.0, -1.0]), 1.0);
+            assert_eq!(controls.sample([1.0, -1.0, 1.0]), -1.0);
+        }
+        assert!(PreparedModulationSource::mix(id, 48_000, [f32::NAN, 0.0], 0.5).is_err());
+        assert!(PreparedModulationSource::mix(id, 48_000, inputs, -0.1).is_err());
+        assert!(PreparedModulationSource::mix(id, 0, inputs, 0.5).is_err());
+    }
 
     #[test]
     fn math_checks_bounds_and_emits_signed_arithmetic_at_stock_values() {
