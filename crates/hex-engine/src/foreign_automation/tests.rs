@@ -77,10 +77,7 @@ fn projects_the_ramp_at_each_tempo_boundary_then_chases_after_wrap() {
         CLASS,
         &[capability],
         &tempo(),
-        QuantumProfile {
-            frames: 8,
-            max_runs: 2,
-        },
+        QuantumProfile::arbitrary(8, 2),
     )
     .unwrap()
     .unwrap();
@@ -137,10 +134,7 @@ fn steps_stay_adjacent_and_each_sdk_slice_gets_a_chase() {
         CLASS,
         &capabilities,
         &tempo(),
-        QuantumProfile {
-            frames: 8,
-            max_runs: 2,
-        },
+        QuantumProfile::arbitrary(8, 2),
     )
     .unwrap()
     .unwrap();
@@ -220,10 +214,7 @@ fn coincident_frames_keep_the_later_point_and_one_point_holds_across_its_origin(
         CLASS,
         &capabilities,
         &tempo(),
-        QuantumProfile {
-            frames: 8,
-            max_runs: 1,
-        },
+        QuantumProfile::arbitrary(8, 1),
     )
     .unwrap()
     .unwrap();
@@ -259,10 +250,7 @@ fn refuses_dense_or_mismatched_programs_and_checks_admitted_runs() {
             normalized_base_bits: 0,
         })
         .collect();
-    let profile = QuantumProfile {
-        frames: 8,
-        max_runs: 2,
-    };
+    let profile = QuantumProfile::arbitrary(8, 2);
     assert!(Program::prepare(&lanes, CLASS, &capabilities, &tempo(), profile).is_err());
     assert!(Program::prepare(&lanes[..1], [2; 16], &capabilities, &tempo(), profile).is_err());
     assert!(Program::prepare(&lanes[..1], CLASS, &capabilities[1..], &tempo(), profile).is_err());
@@ -319,10 +307,7 @@ fn base_and_cleared_targets_restore_exact_sdk_values_beside_a_reading_ramp() {
             ),
         ],
     );
-    let profile = QuantumProfile {
-        frames: 8,
-        max_runs: 4,
-    };
+    let profile = QuantumProfile::arbitrary(8, 4);
     let program = Program::prepare(&[base, reading], CLASS, &capabilities, &tempo(), profile)
         .unwrap()
         .unwrap();
@@ -394,10 +379,7 @@ fn canonical_base_metadata_is_reserved_without_any_authored_lane() {
         CLASS,
         &capabilities[..16],
         &tempo(),
-        QuantumProfile {
-            frames: 8,
-            max_runs: 2,
-        },
+        QuantumProfile::arbitrary(8, 2),
     )
     .unwrap()
     .unwrap();
@@ -458,10 +440,7 @@ fn revision_program_storage_accounts_for_the_table_and_each_lane_backing() {
             normalized_base_bits: 0,
         }],
         &tempo(),
-        QuantumProfile {
-            frames: 8,
-            max_runs: 1,
-        },
+        QuantumProfile::arbitrary(8, 1),
     )
     .unwrap()
     .unwrap();
@@ -509,10 +488,7 @@ fn canonical_vst3_touch_only_admission_quotes_backing_and_requires_exact_source_
     }];
     let lanes = [lane];
     let map = tempo();
-    let profile = QuantumProfile {
-        frames: 8,
-        max_runs: 1,
-    };
+    let profile = QuantumProfile::arbitrary(8, 1);
     let capabilities = [ParameterCapability {
         id: 0,
         steps: 0,
