@@ -78,7 +78,7 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = SOURCE_EFFECT_TOUCH_WITH_ADSR_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = SOURCE_EFFECT_TOUCH_WITH_STEPS_SCHEMA_VERSION;
 
 /// Schema70 stores an independent original source span for signed musical event placement.
 pub const MUSICAL_EVENT_SOURCE_SCHEMA_VERSION: u32 = 70;
@@ -156,6 +156,10 @@ pub const SOURCE_EFFECT_TOUCH_WITH_AHD_RELEASE_SCHEMA_VERSION: u32 = 104;
 pub const ADSR_MODULATOR_SCHEMA_VERSION: u32 = 105;
 /// Schema106 preserves recorded source effect touches with an ADSR bank.
 pub const SOURCE_EFFECT_TOUCH_WITH_ADSR_SCHEMA_VERSION: u32 = 106;
+/// Schema107 admits the signed Steps provider.
+pub const STEPS_MODULATOR_SCHEMA_VERSION: u32 = 107;
+/// Schema108 preserves recorded source effect touches with a Steps bank.
+pub const SOURCE_EFFECT_TOUCH_WITH_STEPS_SCHEMA_VERSION: u32 = 108;
 
 fn contains_larger_device_state(project: &Project) -> bool {
     schema::device_assets::authored_states(project)
@@ -224,9 +228,12 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// schema102 in a project with recorded native source effect touches.
 /// AHD on Release uses schema103, or schema104 alongside those touches.
 /// ADSR uses schema105, or schema106 alongside those touches.
+/// Steps uses schema107, or schema108 alongside those touches.
 pub fn schema_version_for(project: &Project) -> u32 {
     if schema::device_automation_touch::contains_native_source_effect(project) {
         schema::device_automation_touch::source_effect_schema_version(project)
+    } else if schema::device_modulation::contains_steps(project) {
+        STEPS_MODULATOR_SCHEMA_VERSION
     } else if schema::device_modulation::contains_adsr(project) {
         ADSR_MODULATOR_SCHEMA_VERSION
     } else if schema::device_modulation::contains_ahd_release(project) {
@@ -484,7 +491,8 @@ pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
             &schema::device_automation_touch::encode_native_source_effect(project)?,
         );
     }
-    if schema::device_modulation::contains_adsr(project)
+    if schema::device_modulation::contains_steps(project)
+        || schema::device_modulation::contains_adsr(project)
         || schema::device_modulation::contains_ahd_release(project)
         || schema::device_modulation::contains_ramp(project)
         || schema::device_modulation::contains_note_counter(project)
@@ -794,6 +802,7 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
         | SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION
         | SOURCE_EFFECT_TOUCH_WITH_AHD_RELEASE_SCHEMA_VERSION
         | SOURCE_EFFECT_TOUCH_WITH_ADSR_SCHEMA_VERSION
+        | SOURCE_EFFECT_TOUCH_WITH_STEPS_SCHEMA_VERSION
             if !inside_envelope =>
         {
             schema::device_automation_touch::decode_native_source_effect(bytes, header.version)
@@ -824,7 +833,10 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
         | NOTE_COUNTER_MODULATOR_SCHEMA_VERSION
         | RAMP_MODULATOR_SCHEMA_VERSION
         | AHD_RELEASE_MODULATOR_SCHEMA_VERSION
-        | ADSR_MODULATOR_SCHEMA_VERSION => schema::device_modulation::decode(bytes, header.version),
+        | ADSR_MODULATOR_SCHEMA_VERSION
+        | STEPS_MODULATOR_SCHEMA_VERSION => {
+            schema::device_modulation::decode(bytes, header.version)
+        }
         SERIAL_DEVICE_SCHEMA_VERSION => schema::serial_units::decode(bytes, inside_envelope),
         DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION | VST3_AUTOMATION_TOUCH_SCHEMA_VERSION => {
             schema::device_automation_touch::decode(bytes, header.version)
@@ -965,6 +977,7 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
             | SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION
             | SOURCE_EFFECT_TOUCH_WITH_AHD_RELEASE_SCHEMA_VERSION
             | SOURCE_EFFECT_TOUCH_WITH_ADSR_SCHEMA_VERSION
+            | SOURCE_EFFECT_TOUCH_WITH_STEPS_SCHEMA_VERSION
     ) && schema::device_automation_touch::contains_native_source_effect(&project)
     {
         return Err(StorageError::Invalid(

@@ -15,3 +15,4 @@ pub mod note_counter;
 pub mod note_pressure;
 pub mod ramp;
 pub mod random_hold;
+pub mod steps;
