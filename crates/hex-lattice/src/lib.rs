@@ -31,6 +31,7 @@ mod modulation_ramp;
 mod modulation_runtime;
 mod modulation_source_routes;
 mod modulation_sources;
+mod modulation_steps;
 mod owned_processor;
 mod parameter_automation;
 mod prepared_modulation;
@@ -73,6 +74,7 @@ pub use modulation_source_routes::{SourceModulationParameter, SourceModulationRo
 pub use modulation_sources::{
     ModulationMathOperation, ModulationSourceBank, PreparedModulationSource,
 };
+pub use modulation_steps::{MAX_MODULATION_STEPS, ModulationStepDirection};
 pub use owned_processor::{
     MAX_RESERVED_BYPASS_FRAMES, OwnedProcessorRuntime, PreparedOwnedProcessorRuntime,
     PreparedProcessorFactory, PreparedRuntimeDevice, PreparedRuntimeInstance,

@@ -401,6 +401,100 @@ fn utility_graph_with_bipolar_audio_rate_modulation_does_not_allocate_or_free() 
     probe_utility_graph(None, true);
 }
 
+#[test]
+fn utility_graph_with_steps_replays_exact_pcm_without_allocating_or_freeing() {
+    use hex_devices::utility::{
+        MAX_UTILITY_GAIN, UTILITY_DEFINITION, UTILITY_TYPE_ID, UtilityDefinition, parameter::GAIN,
+    };
+    use hex_lattice::{
+        ModulationStepDirection, NativeRuntimeChain, PreparedModulationState,
+        PreparedNativeProcessor, PreparedProcessorFactory, PreparedRuntimeInstance,
+        ProcessorChainOwner, StereoMatrix,
+    };
+    use hex_lattice_contract::NativeDeviceMetadata;
+    use std::sync::Arc;
+
+    let state = UTILITY_DEFINITION.default_state().unwrap();
+    let factory = UtilityDefinition::prepare_owned_automated_filter(&state, 48_000).unwrap();
+    let target = ModulationTarget {
+        descriptor: *UTILITY_DEFINITION
+            .descriptors()
+            .iter()
+            .find(|d| d.id == GAIN)
+            .unwrap(),
+        semantics: factory.parameter_modulation_semantics(GAIN).unwrap(),
+        base: UTILITY_DEFINITION.read_parameter(&state, GAIN).unwrap(),
+    };
+    let program = PreparedModulation::new(
+        &[target],
+        &[ModulationRoute {
+            source: 0,
+            target: GAIN,
+            amount: 1.0,
+            range: [-1.0, 1.0],
+        }],
+        1,
+    )
+    .unwrap();
+    let steps = PreparedModulationSource::steps(
+        ModulationSourceId::new(1).unwrap(),
+        48_000,
+        &[-32767, 32767],
+        5,
+        ModulationStepDirection::Forward,
+    )
+    .unwrap();
+    let prepared = PreparedRuntimeInstance {
+        modulation: Some(PreparedModulationState::new(vec![steps], program, 7).unwrap()),
+        automation: Default::default(),
+        meter: Default::default(),
+        owner: ProcessorChainOwner::Track(1),
+        device_id: 1,
+        device_type: UTILITY_TYPE_ID,
+        matrix: StereoMatrix::identity(),
+        bypassed: false,
+        sample_rate: 48_000,
+        configuration: Some(Arc::new(state)),
+        definition: Some(PreparedProcessorFactory::Legacy(Arc::new(factory))),
+    };
+    let mut chain = NativeRuntimeChain::new_prepared(vec![prepared]).unwrap();
+    let input = [0.03125, -0.03125];
+    let expected: [[f32; 2]; 16] = std::array::from_fn(|frame| {
+        if (frame / 5).is_multiple_of(2) {
+            [0.0; 2]
+        } else {
+            input.map(|sample| sample * MAX_UTILITY_GAIN)
+        }
+    });
+    let counts = allocation_counter::measure(|| {
+        for commit in [false, true] {
+            let mut frames = [input; 16];
+            chain.begin_block();
+            chain
+                .process_range_with_clock(0..1, black_box(&mut frames[..9]), None, None)
+                .unwrap();
+            chain
+                .process_range_with_clock(0..1, black_box(&mut frames[9..]), None, None)
+                .unwrap();
+            assert_eq!(frames, expected);
+            if commit {
+                chain.commit_block();
+            } else {
+                chain.rollback_block();
+            }
+        }
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+}
+
 fn probe_utility_graph(rate_route: Option<SourceModulationParameter>, audio_rate: bool) {
     use hex_devices::{
         modulation::macro_four,
