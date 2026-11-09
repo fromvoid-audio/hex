@@ -1,6 +1,6 @@
-//! Receiver-only, zero-latency source FX for the existing linear renderer.
+//! Receiver-only, zero-latency effects on isolated shared generator audio.
 use crate::{Frame, Invalid, Project, effect_clock::ArrangementEffectClock};
-use hex_lattice::NativeRuntimeChain;
+use hex_lattice::{NativeInstrumentClock, NativeRuntimeChain};
 use std::ops::Range;
 
 /// Borrowed control-side recipe. Placement is validated against the compiled
@@ -90,6 +90,24 @@ impl SourceEffectStages {
         Ok(Self { chains })
     }
 
+    pub(crate) fn is_empty(&self) -> bool {
+        self.chains.is_empty()
+    }
+
+    pub(crate) fn has_monitor_tail(&self) -> bool {
+        self.chains
+            .iter()
+            .flatten()
+            .any(|chain| !chain.committed_range_is_quiescent(0..chain.len()))
+    }
+
+    pub(crate) fn has_tail(&self, index: usize) -> bool {
+        self.chains
+            .get(index)
+            .and_then(Option::as_ref)
+            .is_some_and(|chain| !chain.committed_range_is_quiescent(0..chain.len()))
+    }
+
     pub(crate) fn has_chain(&self, index: usize) -> bool {
         self.chains.get(index).is_some_and(Option::is_some)
     }
@@ -112,10 +130,19 @@ impl SourceEffectStages {
         start: u64,
         frames: &mut [Frame],
     ) -> Result<(), Invalid> {
+        let clock = ArrangementEffectClock::canonical(project.tempo_map.as_ref(), start);
+        self.process_with_clock(index, frames, &clock)
+    }
+
+    pub(crate) fn process_with_clock(
+        &mut self,
+        index: usize,
+        frames: &mut [Frame],
+        clock: &dyn NativeInstrumentClock,
+    ) -> Result<(), Invalid> {
         if let Some(chain) = self.chains.get_mut(index).and_then(Option::as_mut) {
-            let clock = ArrangementEffectClock::canonical(project.tempo_map.as_ref(), start);
             chain
-                .process_range_with_clock(0..chain.len(), frames, Some(&clock), Some(&clock))
+                .process_range_with_clock(0..chain.len(), frames, Some(clock), Some(clock))
                 .map_err(|_| Invalid("prepared source effect segment is invalid"))?;
         }
         Ok(())

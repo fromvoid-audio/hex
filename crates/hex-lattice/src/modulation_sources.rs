@@ -155,9 +155,10 @@ impl ModulationLfoBank {
             })
     }
 
-    /// IDs must be unique and strictly increasing. The host accounts this
-    /// storage alongside its existing paired-runtime budget before publication.
-    pub fn new(sources: &[PreparedLfoSource], chunk_frames: usize) -> Result<Self, Error> {
+    pub(crate) fn validate_sources(
+        sources: &[PreparedLfoSource],
+        chunk_frames: usize,
+    ) -> Result<(), Error> {
         if sources.len() > MAX_MODULATION_LFO_SOURCES
             || chunk_frames == 0
             || chunk_frames > MAX_MODULATION_LFO_CHUNK_FRAMES
@@ -173,6 +174,13 @@ impl ModulationLfoBank {
         if sources.windows(2).any(|pair| pair[0].id >= pair[1].id) {
             return Err(Error::InvalidId);
         }
+        Ok(())
+    }
+
+    /// IDs must be unique and strictly increasing. The host accounts this
+    /// storage alongside its existing paired-runtime budget before publication.
+    pub fn new(sources: &[PreparedLfoSource], chunk_frames: usize) -> Result<Self, Error> {
+        Self::validate_sources(sources, chunk_frames)?;
         let mut prepared = Vec::new();
         prepared
             .try_reserve_exact(sources.len())

@@ -62,6 +62,7 @@ mod reverb_panel;
 pub(super) use keyboard::{bind_keys as bind_keyboard_keys, key_up as selection_key_up};
 mod numeric_display;
 pub(super) use navigation::{bottom_bar, capture_pointer_down as capture_navigation_pointer_down};
+mod modulators;
 mod operator_panel;
 mod parameter_rows;
 pub(super) mod vst3_parameters;
@@ -125,6 +126,7 @@ pub(super) struct DevicePanelState {
     pub(super) main_selected: Option<u64>,
     chain_window: chain_window::ChainWindow,
     parameter_rows: HashMap<DeviceId, parameter_rows::RowWindow>,
+    pub(super) mapping_source: Option<(DeviceId, hex_project::ModulationSourceId)>,
     vst3_parameters: vst3_parameters::State,
     pub(super) navigation: navigation::Navigation,
     generation: u64,
@@ -2039,7 +2041,7 @@ fn render_effect(
                     device_view,
                 )
             };
-            device_frame(
+            hex_widgets::device_frame_with_modulators(
                 device_drag_title(
                     view,
                     cx,
@@ -2051,6 +2053,7 @@ fn render_effect(
                 leading,
                 header_actions,
                 body,
+                modulators::panel(view, cx, device, device_view),
             )
         }
         Err(error) => {
@@ -3171,7 +3174,7 @@ fn parameter_control_with_presentation(
         Some("ø l" | "ø r" | "mute" | "dc") => 31.0,
         _ => 40.0,
     };
-    bindings::render_parameter(
+    let control = bindings::render_parameter(
         view,
         cx,
         device,
@@ -3183,7 +3186,12 @@ fn parameter_control_with_presentation(
             policy: binding_policy,
             compact_toggle_width,
         },
-    )
+    );
+    if let Some(element) = modulators::target_overlay(view, cx, device, parameter) {
+        control.relative().child(element)
+    } else {
+        control
+    }
 }
 
 fn menu_message(message: &str) -> Div {
