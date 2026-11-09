@@ -2,7 +2,7 @@
 //! Uncovered time evaluates the original base envelope exactly. A newer take
 //! replaces only its covered intervals; existing left/right fragments retain
 //! their held values and original step times.
-use super::{AutomationValue, MAX_DEVICE_AUTOMATION_POINTS_PER_LANE};
+use super::{AutomationValue, MAX_DEVICE_AUTOMATION_TOUCH_STEPS_PER_LANE};
 use crate::{BeatTime, Invalid};
 
 pub const MAX_DEVICE_AUTOMATION_TOUCH_SPANS: usize = 128;
@@ -50,10 +50,7 @@ impl DeviceAutomationTouchSpan {
     }
 }
 
-pub(super) fn validate(
-    spans: &[DeviceAutomationTouchSpan],
-    base_points: usize,
-) -> Result<(), Invalid> {
+pub(super) fn validate(spans: &[DeviceAutomationTouchSpan]) -> Result<(), Invalid> {
     if spans.len() > MAX_DEVICE_AUTOMATION_TOUCH_SPANS
         || spans.windows(2).any(|pair| pair[0].end > pair[1].start)
     {
@@ -61,7 +58,7 @@ pub(super) fn validate(
             "device automation touch spans overlap or exceed capacity",
         ));
     }
-    let mut count = base_points;
+    let mut count = 0usize;
     for span in spans {
         if span.start >= span.end
             || span
@@ -79,10 +76,8 @@ pub(super) fn validate(
         count = count
             .checked_add(span.steps.len())
             .ok_or(Invalid("device automation point count overflow"))?;
-        if count > MAX_DEVICE_AUTOMATION_POINTS_PER_LANE {
-            return Err(Invalid(
-                "device automation envelope exceeds its point budget",
-            ));
+        if count > MAX_DEVICE_AUTOMATION_TOUCH_STEPS_PER_LANE {
+            return Err(Invalid("device automation touch exceeds its step budget"));
         }
     }
     Ok(())
@@ -99,12 +94,11 @@ pub(super) fn value_at(
 pub(super) fn splice(
     old: &[DeviceAutomationTouchSpan],
     added: Vec<DeviceAutomationTouchSpan>,
-    base_points: usize,
 ) -> Result<Vec<DeviceAutomationTouchSpan>, Invalid> {
     if added.is_empty() {
         return Err(Invalid("device automation take has no covered time"));
     }
-    validate(&added, base_points)?;
+    validate(&added)?;
     let mut result = Vec::new();
     // Each existing and incoming interval can contribute at most two
     // boundaries to the combined disjoint inventory.
@@ -129,6 +123,6 @@ pub(super) fn splice(
     }
     result.extend(added);
     result.sort_unstable_by_key(|span| span.start);
-    validate(&result, base_points)?;
+    validate(&result)?;
     Ok(result)
 }

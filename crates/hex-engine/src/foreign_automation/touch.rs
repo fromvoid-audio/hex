@@ -39,7 +39,7 @@ impl Overlay {
         for span in source {
             count = count
                 .checked_add(span.steps.len())
-                .filter(|&n| n <= hex_project::MAX_DEVICE_AUTOMATION_POINTS_PER_LANE)
+                .filter(|&n| n <= hex_project::MAX_DEVICE_AUTOMATION_TOUCH_STEPS_PER_LANE)
                 .ok_or(Invalid("foreign touch point budget exceeded"))?;
             let start = tempo
                 .beat_to_frame(span.start)
