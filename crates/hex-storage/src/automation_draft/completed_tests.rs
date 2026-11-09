@@ -11,7 +11,7 @@ fn capture_fixture() -> (Project, DraftTarget, DraftProvenance, CaptureClock) {
 }
 
 /// Reframe a header-only test file, keeping integrity valid so metadata validation is exercised.
-fn changed_metadata(
+pub(super) fn changed_metadata(
     original: &[u8],
     version: u32,
     change: impl FnOnce(&mut serde_json::Value),
@@ -189,7 +189,7 @@ fn clocked_headers_require_strict_explicit_and_well_formed_clock_metadata() {
         assert!(DraftReader::open(&path, limits()).is_err());
         assert_eq!(fs::read(&path).unwrap(), malformed);
     }
-    let unsupported = changed_metadata(&original, 3, |_| {});
+    let unsupported = changed_metadata(&original, VST3_CLOCK_VERSION + 1, |_| {});
     fs::write(&path, &unsupported).unwrap();
     assert!(
         DraftReader::open(&path, limits())

@@ -7,11 +7,27 @@
 //! not transfer source custody. Every destructive frontier records Pending before taking an owner.
 //! Only a normal return from the actual destructor closes that frontier; failure retains the first
 //! payload and remaining owners without retry or invented completion.
+#[cfg(test)]
+mod auto_pan_modulation_tests;
 mod claimed;
+#[cfg(test)]
+mod compressor_modulation_tests;
 mod draft;
 #[cfg(test)]
+mod eq8_storage_tests;
+#[cfg(test)]
+mod gate_modulation_tests;
+#[cfg(test)]
 mod grouped_audio_tests;
+#[cfg(test)]
+mod host_output_modulation_tests;
+#[cfg(test)]
+mod overdrive_modulation_tests;
+#[cfg(test)]
+mod overdrive_storage_tests;
 mod preparation;
+#[cfg(test)]
+mod rattle_modulation_tests;
 mod reservation;
 #[cfg(test)]
 mod reverb_tests;

@@ -17,8 +17,8 @@ struct ParameterPoint {
 // One instance permanently retains its input and output containers. SDK access
 // is confined to the serialized processing/flush call. Host loading/extraction
 // uses that same thread before/after the call. Retained references prevent
-// reset; malformed writes/overflow are sticky, so partial feedback is never
-// mistaken for a complete successful process result.
+// reset. Structural misuse and overflow remain sticky. Invalid normalized
+// values in plug-in output are individually refused without poisoning PCM.
 class ParameterChanges final : public IParameterChanges {
     struct Queue final : public IParamValueQueue {
         ParameterChanges* owner=nullptr;
@@ -100,8 +100,14 @@ class ParameterChanges final : public IParameterChanges {
     }
     bool append(ParamID id,int32 offset,ParamValue value,int32& index) {
         index=-1;
-        if(offset<0 || offset>=offset_limit || !std::isfinite(value) || value<0 || value>1) {
+        if(offset<0 || offset>=offset_limit) {
             bad.store(true);return false;
+        }
+        if(!std::isfinite(value) || value<0 || value>1) {
+            // Output feedback is optional. Preserve the valid points and the
+            // worker's independent PCM and queue-lifetime checks.
+            if(!writable) bad.store(true);
+            return false;
         }
         int32 parameter_index=0;
         if(!queue(id,parameter_index)) return false;
@@ -138,6 +144,17 @@ public:
     bool input(ParamID id,int32 offset,ParamValue value) {
         if(!on_thread() || sdk_active || writable || bad.load()) return false;
         int32 index=0;return append(id,offset,value,index);
+    }
+    // Editing an input before it is loaned to the SDK. Keep the order and
+    // bounded backing of every other parameter, including offset-zero points.
+    bool erase_input(ParamID id) {
+        if(!on_thread() || sdk_active || writable || bad.load() || !exclusive()) return false;
+        size_t values_kept=0,queues_kept=0;
+        for(size_t n=0;n<points_used;++n)
+            if(values[n].id!=id) values[values_kept++]=values[n];
+        for(size_t n=0;n<queues_used;++n)
+            if(queues[n].id!=id) queues[queues_kept++].id=queues[n].id;
+        points_used=values_kept;queues_used=queues_kept;return true;
     }
     bool begin_sdk() {
         if(!on_thread() || sdk_active || bad.load() || !exclusive()) return false;

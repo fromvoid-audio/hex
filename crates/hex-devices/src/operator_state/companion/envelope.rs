@@ -111,6 +111,28 @@ impl Machine {
             _ => self.envelope.level(age, u64::MAX),
         }
     }
+    // Factory proves equal loop timing; released voices use the ordinary path.
+    #[cold]
+    pub fn shared_loop_levels(machines: &[Option<Self>; 4], age: u64) -> Option<[f64; 4]> {
+        let [Some(a), Some(b), Some(c), Some(d)] = machines else {
+            return None;
+        };
+        if [a, b, c, d].iter().any(|m| m.release.is_some()) {
+            return None;
+        }
+        let ad = a.envelope.attack_frames() + a.envelope.decay_frames();
+        let at = age % (ad + a.loop_frames);
+        if at < ad {
+            Some(PreparedOperatorEnvelope::shared_held_levels(
+                [&a.envelope, &b.envelope, &c.envelope, &d.envelope],
+                at,
+            ))
+        } else {
+            Some([a, b, c, d].map(|m| {
+                m.levels[2] + (m.levels[0] - m.levels[2]) * (at - ad) as f64 / m.loop_frames as f64
+            }))
+        }
+    }
     pub fn note_off(&mut self, age: u64) {
         if self.release.is_none() {
             self.release = Some((age, self.held(age)));
@@ -194,6 +216,33 @@ mod tests {
             assert!((released.level(gate + 12) - level * 0.00001_f64.sqrt()).abs() < 1e-12);
             assert_eq!(released.level(gate + 24), 0.0);
             assert!(released.finished(gate + 24));
+        }
+    }
+    #[test]
+    fn shared_loop_timing_matches_independent_levels_and_refuses_release() {
+        for (attack, decay) in [(0.0, 0.0), (0.001, 0.0), (0.0, 0.002), (0.001, 0.002)] {
+            let mut machines = [machine(1, None, None); 4];
+            for (index, machine) in machines.iter_mut().enumerate() {
+                let sustain = [-0.0, 0.2, 0.7, 1.0][index];
+                machine.envelope = OperatorEnvelope::new(0.1, 1.0, sustain, attack, decay, 0.003)
+                    .unwrap()
+                    .prepare(8000)
+                    .unwrap();
+                machine.levels = [0.1, 1.0, sustain];
+            }
+            let mut options = machines.map(Some);
+            for age in 0..512 {
+                assert_eq!(
+                    Machine::shared_loop_levels(&options, age)
+                        .unwrap()
+                        .map(f64::to_bits),
+                    machines.map(|m| m.level(age).to_bits())
+                );
+            }
+            options[2].as_mut().unwrap().note_off(9);
+            assert!(Machine::shared_loop_levels(&options, 10).is_none());
+            options[2] = None;
+            assert!(Machine::shared_loop_levels(&options, 10).is_none());
         }
     }
     #[test]

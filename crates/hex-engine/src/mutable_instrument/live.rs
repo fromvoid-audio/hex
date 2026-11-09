@@ -52,6 +52,12 @@ impl LiveLedger {
         self.pending_len += 1;
         Ok(())
     }
+    fn committed_gates_released(&self) -> bool {
+        self.primary
+            .iter()
+            .flatten()
+            .all(|voice| voice.quiet_age.is_some() && !voice.release_requested)
+    }
     pub(super) fn begin(&mut self) {
         self.scratch = self.primary;
         self.scratch_age = self.age;
@@ -169,6 +175,17 @@ impl MutableInstrumentTrackRuntime {
             .is_some_and(|ledger| ledger.primary.iter().any(Option::is_some))
     }
 
+    /// A detached release can rejoin only after every live gate's NoteOff
+    /// committed. A requested release is still owed; a scratch deadline does
+    /// not prove dispatch. Inheritance copies the exact source IDs, producer
+    /// generations/tokens, allocator and DSP age, so later input cannot reuse
+    /// an old voice or reset its release deadline.
+    pub(crate) fn committed_live_gates_released(&self) -> bool {
+        self.live
+            .as_ref()
+            .is_none_or(|ledger| ledger.committed_gates_released())
+    }
+
     pub(crate) fn validates_live_note(&self, pitch: u8, velocity: u8) -> bool {
         let Some(occurrence_id) = self.next_id.checked_add(1) else {
             return false;
@@ -241,7 +258,8 @@ impl MutableInstrumentTrackRuntime {
         live.expire();
         for &event in transitions {
             match event {
-                NativeInstrumentEvent::Expression { .. } => live.push(event)?,
+                NativeInstrumentEvent::Expression { .. }
+                | NativeInstrumentEvent::NotePressure { .. } => live.push(event)?,
                 NativeInstrumentEvent::NoteOff {
                     frame_offset,
                     occurrence_id: token,
@@ -448,5 +466,59 @@ impl MutableInstrumentTrackRuntime {
             .unwrap_or(0);
         self.next_id_scratch = self.next_id;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scratch_note_off_and_requested_release_are_not_committed_release_proofs() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(8000).unwrap(), 4).unwrap();
+        let hex_project::Created::Track(track) = editor
+            .execute(hex_project::Command::AddMidiTrack {
+                name: "live".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        let mut ledger = LiveLedger::default();
+        ledger.primary[0] = Some(LiveOccurrence {
+            input: LiveInputId {
+                track,
+                generation: 9,
+            },
+            token: 1,
+            id: 7,
+            quiet_age: None,
+            release_requested: true,
+        });
+        assert!(!ledger.committed_gates_released());
+        ledger.begin();
+        ledger.emit_requested(800).unwrap();
+        assert_eq!(ledger.pending_len, 1);
+        assert!(matches!(
+            ledger.pending[0],
+            Some(NativeInstrumentEvent::NoteOff {
+                frame_offset: 0,
+                occurrence_id: 7
+            })
+        ));
+        assert!(
+            !ledger.committed_gates_released(),
+            "scratch dispatch may roll back"
+        );
+        ledger.begin();
+        assert!(!ledger.committed_gates_released());
+        ledger.emit_requested(800).unwrap();
+        ledger.primary = ledger.scratch;
+        assert!(ledger.committed_gates_released());
+        assert_eq!(ledger.primary[0].unwrap().quiet_age, Some(800));
+        assert_eq!(ledger.primary[0].unwrap().input.generation, 9);
+        assert_eq!(ledger.primary[0].unwrap().token, 1);
+        assert_eq!(ledger.primary[0].unwrap().id, 7);
     }
 }

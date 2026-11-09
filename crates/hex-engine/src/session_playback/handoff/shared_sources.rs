@@ -1,6 +1,209 @@
 //! Source-owned kernel continuity, separate from track-local effect history.
 use super::*;
 
+/// A compensated or typed route can retain upstream frames independently of
+/// its current source. Until that route can carry the bypass transition, keep
+/// the applied graph rather than reset its delay and chase a held note.
+pub(super) fn compensated_long_source_bypass(
+    candidate: &SessionPlayback,
+    previous: &SessionPlayback,
+) -> bool {
+    if !previous.playing || (candidate.compensation.is_none() && previous.compensation.is_none()) {
+        return false;
+    }
+    let limit = u64::from(candidate.revision.arrangement().sample_rate().div_ceil(200));
+    previous
+        .mutable_instruments
+        .iter()
+        .enumerate()
+        .any(|(index, runtime)| {
+            let Some(runtime) = runtime.as_ref().filter(|runtime| {
+                runtime.max_release_tail_frames() > limit && !runtime.committed_is_quiescent()
+            }) else {
+                return false;
+            };
+            let Some(device) = runtime.expression_identity else {
+                return false;
+            };
+            let Some(old) = previous.revision.arrangement().tracks().get(index) else {
+                return false;
+            };
+            if old.instrument_bypassed || old.instrument_id != Some(device) {
+                return false;
+            }
+            candidate
+                .revision
+                .arrangement()
+                .tracks()
+                .iter()
+                .any(|track| {
+                    track.canonical_track_id() == old.canonical_track_id()
+                        && track.instrument_id == Some(device)
+                        && track.instrument_bypassed
+                })
+        })
+}
+
+/// A short, already-releasing source must finish before another kernel for
+/// the same device is admitted. The callback can retry while the old graph
+/// renders; held live inputs and long releases retain the existing policy.
+pub(super) fn short_source_release_blocks_reenable(
+    revision: &PreparedRevision,
+    previous: &SessionPlayback,
+) -> bool {
+    let limit = u64::from(revision.arrangement().sample_rate().div_ceil(200));
+    revision.arrangement().tracks().iter().any(|track| {
+        track.receives_source_audio()
+            && track.instrument_slot_enabled()
+            && track.instrument_id.is_some_and(|device| {
+                previous
+                    .tail_mutable_instruments
+                    .iter()
+                    .flatten()
+                    .any(|tail| {
+                        tail.runtime.expression_identity == Some(device)
+                            && tail.runtime.max_release_tail_frames() <= limit
+                            && !tail.runtime.has_committed_live_occurrences()
+                            && tail.runtime.proofs().all(|note| {
+                                note.note_off_sent
+                                    || note.gate_end_frame <= previous.performance_frame
+                            })
+                            && !tail.runtime.committed_is_quiescent()
+                    })
+            })
+    })
+}
+
+/// Plan a return from a detached release to the same receiver. Copying
+/// the committed kernel and its ledger admits future onsets immediately;
+/// the old tail stays in the retiring graph and cannot render a second copy.
+/// Live releases require committed NoteOffs; source inheritance retains their
+/// generations, IDs, allocator and render-age deadlines beside the same DSP pair.
+pub(super) fn reenabled_release_receivers(
+    candidate: &SessionPlayback,
+    previous: &SessionPlayback,
+    timing_changed: bool,
+) -> Result<[Option<usize>; SESSION_TAIL_GROUP_CAPACITY], SessionPlaybackError> {
+    let mut receivers = [None; SESSION_TAIL_GROUP_CAPACITY];
+    let tracks = candidate.revision.arrangement().tracks();
+    let short_limit = u64::from(candidate.revision.arrangement().sample_rate().div_ceil(200));
+    for (slot, tail) in previous.tail_mutable_instruments.iter().enumerate() {
+        let Some(tail) = tail.as_ref().filter(|tail| {
+            !tail.runtime.committed_is_quiescent() || tail.runtime.has_committed_live_occurrences()
+        }) else {
+            continue;
+        };
+        let Some(device) = tail.runtime.expression_identity else {
+            continue;
+        };
+        let Some((index, track)) = tracks.iter().enumerate().find(|(_, track)| {
+            track.receives_source_audio()
+                && track.instrument_slot_enabled()
+                && track.instrument_id == Some(device)
+        }) else {
+            continue;
+        };
+        let old_index = previous
+            .routes
+            .iter()
+            .position(|route| route.id == tail.track_id);
+        let same_receiver = track.canonical_track_id() == Some(tail.track_id)
+            && old_index.is_some_and(|old_index| {
+                let old = &previous.revision.arrangement().tracks()[old_index];
+                old.receives_source_audio()
+                    && old.instrument_bypassed
+                    && old.instrument_id == Some(device)
+                    && old.instrument_state == track.instrument_state
+                    && old.source_id() == track.source_id()
+                    && old.mix() == track.mix()
+                    && old.instrument_position() == track.instrument_position()
+                    && source_release_chain_matches(
+                        track,
+                        &candidate.device_chains[index],
+                        &previous.device_chains[old_index],
+                    )
+                    && !previous.track_faders[old_index].active()
+            });
+        // Retain the exact ordered suffix and post-fader sends. A detached
+        // source cannot stand in for compensation and typed route histories.
+        let no_compensation = candidate.compensation.is_none() && previous.compensation.is_none();
+        let same_sends = crate::mutable_instrument::DetachedSourceSends::from_track(
+            track,
+            candidate.revision.arrangement().return_buses(),
+        ) == Some(tail.sends);
+        let detached_chain = previous.tail_groups[slot].as_ref();
+        let same_processing_path = no_compensation
+            && same_sends
+            && !track.has_gain_automation()
+            && candidate.revision.gain_recording_track() != Some(tail.track_id)
+            && previous.revision.gain_recording_track() != Some(tail.track_id)
+            && track.instrument_output_gain == 1.0
+            && previous.tail_mixes[slot] == track.mix()
+            && previous.tail_suffix_matrices[slot] == track.instrument_suffix_matrix()
+            && tail_runtime_suffix_start(
+                &candidate.device_chains[index],
+                track.instrument_position(),
+            )
+            .is_ok_and(|start| previous.tail_suffix_starts[slot] == start)
+            && detached_chain.is_some_and(|chain| {
+                source_release_chain_matches(track, &candidate.device_chains[index], chain)
+            })
+            && !previous.tail_output_active[slot]
+            && !previous
+                .releases
+                .iter()
+                .any(|release| release.location.tail_group().map(usize::from) == Some(slot));
+        let long_release = tail.runtime.max_release_tail_frames() > short_limit;
+        let released = long_release
+            && tail.runtime.committed_live_gates_released()
+            && tail.runtime.proofs().all(|note| {
+                note.note_off_sent || note.gate_end_frame <= previous.performance_frame
+            });
+        if timing_changed
+            || !previous.playing
+            || !same_receiver
+            || !same_processing_path
+            || !released
+            || receivers.contains(&Some(index))
+            || candidate.mutable_instruments[index]
+                .as_ref()
+                .is_none_or(|runtime| !runtime.can_inherit_from(&tail.runtime))
+        {
+            if long_release
+                && !timing_changed
+                && previous.playing
+                && track.canonical_track_id() == Some(tail.track_id)
+                && old_index.is_some_and(|old_index| {
+                    let old = &previous.revision.arrangement().tracks()[old_index];
+                    old.instrument_bypassed && old.instrument_id == Some(device)
+                })
+                && (!no_compensation
+                    || !tail.sends.is_empty()
+                    || !track.sends().is_empty()
+                    || detached_chain.is_some_and(|chain| chain.stateful_count() != 0))
+            {
+                return Err(SessionPlaybackError::DetachedReceiverHistoryUnavailable);
+            }
+            return Err(SessionPlaybackError::MutableInstrumentActive);
+        }
+        receivers[slot] = Some(index);
+    }
+    Ok(receivers)
+}
+
+fn source_release_chain_matches(
+    track: &crate::Track,
+    candidate: &hex_lattice::NativeRuntimeChain,
+    previous: &hex_lattice::NativeRuntimeChain,
+) -> bool {
+    candidate.static_processing_matches(previous)
+        // With no prefix or independent audio, this chain sees only the
+        // retained source. Its detached copy owns the live signal history.
+        || (track.instrument_position() == 0
+            && track.clips.is_empty()
+            && candidate.detached_source_history_matches(previous))
+}
+
 pub(super) struct SharedSourceHandoff {
     pub(super) new_for_old: [usize; MAX_TRACKS],
     pub(super) retarget_for_old: [usize; MAX_TRACKS],
@@ -18,6 +221,7 @@ impl SharedSourceHandoff {
     pub(super) fn handles_new(&self, index: usize) -> bool {
         self.new_for_old.contains(&index) || self.retarget_for_old.contains(&index)
     }
+    #[allow(clippy::too_many_arguments)] // Explicit candidate/donor owners and timing facts.
     pub(super) fn prepare(
         revision: &PreparedRevision,
         runtimes: &[Option<MutableInstrumentTrackRuntime>],
@@ -25,6 +229,8 @@ impl SharedSourceHandoff {
         admission: Option<&crate::session_inventory::PreparedSessionMidiAdmission>,
         previous: &SessionPlayback,
         timing_changed: bool,
+        arrangement_tempo_remap: bool,
+        arrangement_loop_continuity: bool,
         spans: &mut MidiSpanBuffer,
     ) -> Result<Self, SessionPlaybackError> {
         let mut plan = Self {
@@ -33,28 +239,6 @@ impl SharedSourceHandoff {
         };
         let old_routing = previous.revision.source_routing();
         let new_routing = revision.source_routing();
-        // Disabled/unlinked source kernels retain their finite tail custody.
-        // Re-enabling the same device cannot create a concurrent second pair.
-        for track in revision
-            .arrangement()
-            .tracks()
-            .iter()
-            .filter(|track| track.receives_source_audio() && track.instrument_slot_enabled())
-        {
-            if track.instrument_id.is_some_and(|device| {
-                previous
-                    .tail_mutable_instruments
-                    .iter()
-                    .flatten()
-                    .any(|tail| {
-                        tail.runtime.expression_identity == Some(device)
-                            && (!tail.runtime.committed_is_quiescent()
-                                || tail.runtime.has_committed_live_occurrences())
-                    })
-            }) {
-                return Err(SessionPlaybackError::MutableInstrumentActive);
-            }
-        }
         for (old_index, old_runtime) in previous.mutable_instruments.iter().enumerate() {
             let Some(old_runtime) = old_runtime else {
                 continue;
@@ -100,11 +284,19 @@ impl SharedSourceHandoff {
                     && revision.arrangement().tracks()[new_index].instrument_slot_enabled()
                     && (!old_runtime.committed_is_quiescent() || held_input || precut_analytic)
                 {
-                    return Err(SessionPlaybackError::MutableInstrumentChase);
+                    return Err(SessionPlaybackError::SourceHistoryUnavailable);
                 }
                 continue;
             };
-            let exact = !timing_changed
+            // An edited base map cuts every held Arrangement gate at the cut
+            // (Pulse #4117). A first-pass loop proof instead preserves their
+            // canonical deadlines before either wrap. Other owners refuse.
+            let retimed = (arrangement_tempo_remap || arrangement_loop_continuity)
+                && super::arrangement_only_proofs(previous, old_runtime)
+                && routes
+                    .get(new_index)
+                    .is_some_and(|route| route.owner == RouteOwner::Arrangement);
+            let exact = (!timing_changed || retimed)
                 && previous
                     .revision
                     .retained_source_configuration_matches(revision, source);
@@ -131,13 +323,7 @@ impl SharedSourceHandoff {
                 if ((shared || same_device) && !old_runtime.committed_is_quiescent())
                     || old_runtime.has_committed_live_occurrences()
                 {
-                    return Err(if shared {
-                        SessionPlaybackError::MutableInstrumentDiagnostic(
-                            "shared source configuration changed while notes are active",
-                        )
-                    } else {
-                        SessionPlaybackError::DeviceRuntime
-                    });
+                    return Err(SessionPlaybackError::SourceHistoryUnavailable);
                 }
                 continue;
             }
@@ -317,43 +503,44 @@ pub(super) fn analytic_import_sources_match(
     Ok(true)
 }
 
-pub(super) fn release_disconnected_contributors(
-    runtime: &mut MutableInstrumentTrackRuntime,
+/// Compute the revision-wide source changes once before reconciling owners.
+/// Track IDs are unique, and an absent old source cannot be disconnected.
+pub(super) fn disconnected_contributors(
     previous: &PreparedRevision,
     candidate: &PreparedRevision,
-    frame: u64,
-) {
-    let disconnected = |track: TrackId| {
-        let old = previous
+) -> [Option<TrackId>; MAX_TRACKS] {
+    std::array::from_fn(|old| {
+        let track = previous
             .arrangement()
             .tracks()
-            .iter()
-            .position(|row| row.canonical_track_id() == Some(track));
+            .get(old)?
+            .canonical_track_id()?;
+        let source = previous.source_routing().source(old)?;
         let new = candidate
             .arrangement()
             .tracks()
             .iter()
             .position(|row| row.canonical_track_id() == Some(track));
-        old.and_then(|index| previous.source_routing().source(index))
-            .is_some_and(|source| {
-                new.is_none_or(|index| {
-                    candidate.source_routing().source(index) != Some(source)
-                        || candidate.source_routing().receiver_index(index).is_none()
-                })
-            })
-    };
+        new.is_none_or(|index| {
+            candidate.source_routing().source(index) != Some(source)
+                || candidate.source_routing().receiver_index(index).is_none()
+        })
+        .then_some(track)
+    })
+}
+
+pub(super) fn release_disconnected_contributors(
+    runtime: &mut MutableInstrumentTrackRuntime,
+    disconnected: &[Option<TrackId>; MAX_TRACKS],
+    frame: u64,
+) {
     runtime.reconcile_gate_deadlines_at(frame, |signature| {
-        disconnected(signature.key().track).then_some(frame)
+        disconnected
+            .contains(&Some(signature.key().track))
+            .then_some(frame)
     });
-    for track in previous
-        .arrangement()
-        .tracks()
-        .iter()
-        .filter_map(crate::Track::canonical_track_id)
-    {
-        if disconnected(track) {
-            runtime.release_live_contributor(track);
-        }
+    for &track in disconnected.iter().flatten() {
+        runtime.release_live_contributor(track);
     }
 }
 
@@ -372,6 +559,35 @@ pub(super) fn track_has_analytic_source(revision: &PreparedRevision, index: usiz
         }
 }
 
+/// Contributors store their own MIDI, but the receiver owns the bypass bit.
+/// Give each Arrangement contributor the same release and onset suppression
+/// as the receiver when that bit changes.
+pub(super) fn shared_analytic_bypass_changed(
+    old: &PreparedRevision,
+    old_index: usize,
+    new: &PreparedRevision,
+    new_index: usize,
+) -> bool {
+    if old.source_routing().source(old_index) != new.source_routing().source(new_index)
+        || !(old.source_routing().is_shared(old_index) || new.source_routing().is_shared(new_index))
+    {
+        return false;
+    }
+    let receiver = |revision: &PreparedRevision, index| {
+        revision
+            .source_routing()
+            .receiver_index(index)
+            .map(|receiver| {
+                let track = &revision.arrangement().tracks()[receiver];
+                (track.instrument_id, track.instrument_bypassed)
+            })
+    };
+    matches!(receiver(old, old_index).zip(receiver(new, new_index)),
+        Some(((Some(old_device), old_bypassed), (Some(new_device), new_bypassed)))
+            if old_device == new_device && old_bypassed != new_bypassed)
+        && (track_has_analytic_source(old, old_index) || track_has_analytic_source(new, new_index))
+}
+
 pub(super) struct ReleaseAudioPlan {
     pub(super) current_receiver: Option<usize>,
     pub(super) old_receiver: Option<usize>,
@@ -384,6 +600,7 @@ pub(super) fn plan_release_audio_owner(
     previous: &SessionPlayback,
     candidate: &PreparedRevision,
     analytic_owner_matches: &[bool; MAX_TRACKS],
+    source_effects_continue: bool,
 ) -> Result<ReleaseAudioPlan, SessionPlaybackError> {
     let Some(mut origin) = release.source_origin else {
         return Ok(ReleaseAudioPlan {
@@ -430,9 +647,13 @@ pub(super) fn plan_release_audio_owner(
                 &candidate.arrangement().tracks()[receiver],
             )
         });
-    let follows = previous
-        .revision
-        .retained_source_configuration_matches(candidate, origin.source)
+    // A compatible source effect stage has already verified the explicit
+    // prepared generator. Keep its held voices on the new source input;
+    // a dry detached copy would bypass the transferred effect history.
+    let follows = source_effects_continue
+        || previous
+            .revision
+            .retained_source_configuration_matches(candidate, origin.source)
         || continued_context
         || inline_tuning;
     if follows && let Some(receiver) = current_receiver {
@@ -457,11 +678,11 @@ pub(super) fn plan_release_audio_owner(
     if !source_track.instrument_bypassed {
         release.clip_gain *= f64::from(source_track.instrument_output_gain);
     }
-    release.mix = gain_recording::effective_mix(
+    release.mix = gain_recording::detached_mix(
+        previous,
         &previous.revision.arrangement().tracks()[old_receiver],
+        old_receiver,
         previous.arrangement_frame,
-        previous.revision.gain_recording_track(),
-        previous.gain_recording_override,
     );
     Ok(ReleaseAudioPlan {
         current_receiver: None,
@@ -692,6 +913,52 @@ mod tests {
     #[test]
     fn shared_analytic_release_keeps_receiver_mix_and_one_nonlinear_suffix() {
         on_control(|| {
+            shared_analytic_release_through_receiver_suffix(
+                hex_devices::saturator::SATURATOR_TYPE_ID,
+                hex_devices::saturator::parameter::DRIVE,
+                30.0,
+                0,
+            )
+        });
+    }
+    /// Pulse #4188: Overdrive declares oversampler latency, so the released
+    /// notes run through a latent nonlinear receiver suffix.
+    #[test]
+    fn shared_analytic_release_runs_through_a_latent_nonlinear_receiver_suffix() {
+        on_control(|| {
+            shared_analytic_release_through_receiver_suffix(
+                hex_devices::overdrive::OVERDRIVE_TYPE_ID,
+                hex_devices::overdrive::parameter::DRIVE,
+                0.8,
+                0,
+            )
+        });
+    }
+    /// Pulse #4188: when compensation delays the receiver's own edge to Main,
+    /// a detached copy of its suffix would land early. The strict planner
+    /// refuses explicitly instead of committing a silent cut.
+    #[test]
+    fn misaligned_latent_receiver_suffix_release_refuses_instead_of_silencing() {
+        on_control(|| {
+            shared_analytic_release_through_receiver_suffix(
+                hex_devices::overdrive::OVERDRIVE_TYPE_ID,
+                hex_devices::overdrive::parameter::DRIVE,
+                0.8,
+                2,
+            )
+        });
+    }
+    /// Unbinding a shared source while its notes sound releases them through
+    /// the receiver's suffix exactly as a baseline that stops the track. With
+    /// `contributor_effects` copies of the effect on the contributor, the
+    /// contributor arrives later than the receiver and the handoff refuses.
+    fn shared_analytic_release_through_receiver_suffix(
+        effect: hex_lattice_contract::DeviceTypeId,
+        drive: hex_lattice_contract::ParameterId,
+        drive_value: f32,
+        contributor_effects: usize,
+    ) {
+        {
             let mut f = fixture();
             let device = f
                 .editor
@@ -726,16 +993,23 @@ mod tests {
                 })
                 .unwrap();
             let registry = hex_devices::native_registry().unwrap();
-            let definition = registry
-                .definition(hex_devices::saturator::SATURATOR_TYPE_ID)
-                .unwrap();
+            let definition = registry.definition(effect).unwrap();
             let state = definition
                 .patch_parameter(
                     &definition.default_state().unwrap(),
-                    hex_devices::saturator::parameter::DRIVE,
-                    hex_lattice_contract::ParameterValue::Float(30.0),
+                    drive,
+                    hex_lattice_contract::ParameterValue::Float(drive_value),
                 )
                 .unwrap();
+            for _ in 0..contributor_effects {
+                f.editor
+                    .execute(Command::InsertDevice {
+                        track: f.contributor,
+                        before: None,
+                        state: state.clone(),
+                    })
+                    .unwrap();
+            }
             f.editor
                 .execute(Command::InsertDevice {
                     track: f.receiver,
@@ -782,7 +1056,11 @@ mod tests {
             let mut right = left;
             actual.render(&mut left).unwrap();
             baseline.render(&mut right).unwrap();
-            assert_eq!(left, right);
+            if contributor_effects == 0 {
+                // The baseline has no contributor, so only an equal latency
+                // layout renders the same prefix.
+                assert_eq!(left, right);
+            }
             baseline
                 .apply(SessionPlaybackCommand::StopTrack {
                     track: f.receiver,
@@ -796,6 +1074,18 @@ mod tests {
                 })
                 .unwrap();
             let mut candidate = SessionPlayback::new(prepare(f.editor.project())).unwrap();
+            if contributor_effects != 0 {
+                assert!(matches!(
+                    candidate.try_inherit_state_from(&mut actual),
+                    Err(SessionPlaybackError::Arrangement(message))
+                        if message == super::super::COMPENSATED_TAILS_CHANGED
+                ));
+                assert!(
+                    candidate.candidate_admission_open,
+                    "refusal commits nothing"
+                );
+                return;
+            }
             candidate.try_inherit_state_from(&mut actual).unwrap();
             assert_eq!(candidate.releases.len(), 2);
             let group = candidate.releases[0].location.tail_group();
@@ -823,7 +1113,7 @@ mod tests {
                     );
                 }
             }
-        });
+        }
     }
 
     #[test]
@@ -1048,7 +1338,8 @@ mod tests {
             let mut next = playback(&f);
             next.try_inherit_state_from(&mut old).unwrap();
             assert_eq!(next.mutable_instruments.iter().flatten().count(), 2);
-            check_pcm(&mut next, 7, 19, 0.75);
+            // The relinked contributor's note releases on the old receiver.
+            check_released_pcm(&mut next, 7, 19, 0.75, 0.25);
         });
     }
 
@@ -1215,10 +1506,165 @@ mod tests {
             &resources,
         )
         .unwrap();
-        result
-            .prepare_computer_keyboard(f.editor.project(), f.contributor, Arc::clone(input))
-            .unwrap();
+        if !f
+            .editor
+            .project()
+            .track(f.contributor)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .bypassed()
+        {
+            result
+                .prepare_computer_keyboard(f.editor.project(), f.contributor, Arc::clone(input))
+                .unwrap();
+        }
         (result, revision)
+    }
+
+    #[test]
+    fn live_sampler_long_release_survives_reenable_without_reusing_input_ids() {
+        on_control(|| {
+            use crate::computer_keyboard::ComputerKeyboardInput;
+            use crate::playback::PlaybackCommand;
+            for (key_up, utility_gain_db) in [
+                ("before-disable", None),
+                ("while-disabled", None),
+                ("after-reenable", None),
+                ("after-reenable", Some(-6.0)),
+            ] {
+                let mut f = fixture();
+                let clips: Vec<_> = f
+                    .editor
+                    .project()
+                    .tracks()
+                    .iter()
+                    .flat_map(|track| track.midi_clips().iter().map(|clip| clip.id()))
+                    .collect();
+                for clip in clips {
+                    f.editor.execute(Command::RemoveMidiClip(clip)).unwrap();
+                }
+                let instrument = f
+                    .editor
+                    .project()
+                    .track(f.receiver)
+                    .unwrap()
+                    .instrument()
+                    .unwrap();
+                let device = instrument.id();
+                let mut state =
+                    hex_devices::sampler::state::SamplerState::from_native(instrument.state())
+                        .unwrap();
+                state.envelope.release_seconds = 0.1;
+                let state = state
+                    .to_native()
+                    .unwrap()
+                    .with_asset_references(instrument.state().asset_references().to_vec())
+                    .unwrap();
+                f.editor
+                    .execute(Command::ReplaceDeviceState { device, state })
+                    .unwrap();
+                if let Some(gain_db) = utility_gain_db {
+                    let state = hex_devices::utility::UTILITY_DEFINITION
+                        .default_state()
+                        .unwrap()
+                        .with_output_gain_db(gain_db)
+                        .unwrap();
+                    f.editor
+                        .execute(Command::InsertDevice {
+                            track: f.receiver,
+                            before: None,
+                            state,
+                        })
+                        .unwrap();
+                }
+                let input = Arc::new(ComputerKeyboardInput::default());
+                let oracle_input = Arc::new(ComputerKeyboardInput::default());
+                for keys in [&input, &oracle_input] {
+                    keys.set_key(0, Some((60, 127, 1))).unwrap();
+                }
+                let (mut actual, _) = live_playback(&f, &input);
+                let (mut oracle, _) = live_playback(&f, &oracle_input);
+                actual.apply(PlaybackCommand::Play);
+                oracle.apply(PlaybackCommand::Play);
+                let compare = |actual: &mut crate::playback::Playback,
+                               oracle: &mut crate::playback::Playback,
+                               frames: usize,
+                               phase: &str| {
+                    let mut a = vec![[0.0; 2]; frames];
+                    let mut b = a.clone();
+                    actual.render(&mut a).unwrap();
+                    oracle.render(&mut b).unwrap();
+                    assert_eq!(a, b, "{key_up}, utility={utility_gain_db:?}: {phase}");
+                    if phase == "held prefix" {
+                        assert!(a.iter().flatten().any(|x| x.abs() > 0.001));
+                    }
+                };
+                compare(&mut actual, &mut oracle, 129, "held prefix");
+                if key_up == "before-disable" {
+                    input.set_key(0, None).unwrap();
+                    oracle_input.set_key(0, None).unwrap();
+                    compare(&mut actual, &mut oracle, 13, "physical release");
+                } else {
+                    oracle_input.set_key(0, None).unwrap();
+                }
+                f.editor
+                    .execute(Command::SetDeviceBypass {
+                        device,
+                        bypassed: true,
+                    })
+                    .unwrap();
+                let (mut disabled, _) = live_playback(&f, &input);
+                disabled
+                    .try_inherit_runtime_in_control_context(&mut actual, Some(19), Some(19))
+                    .unwrap();
+                compare(&mut disabled, &mut oracle, 32, "disable release");
+                assert!(input.is_cancelled(), "disabled input is terminal");
+                if key_up == "while-disabled" {
+                    input.set_key(0, None).unwrap();
+                }
+                input.set_key(1, Some((67, 127, 2))).unwrap();
+                compare(
+                    &mut disabled,
+                    &mut oracle,
+                    7,
+                    "disabled key up and new press",
+                );
+                f.editor
+                    .execute(Command::SetDeviceBypass {
+                        device,
+                        bypassed: false,
+                    })
+                    .unwrap();
+                // Resident input attachment drops a bypassed source. A later
+                // activation gets a fresh root/generation, even if tokens repeat.
+                let fresh = Arc::new(ComputerKeyboardInput::default());
+                let (mut enabled, _) = live_playback(&f, &fresh);
+                enabled
+                    .try_inherit_runtime_in_control_context(&mut disabled, Some(19), Some(19))
+                    .unwrap();
+                compare(&mut enabled, &mut oracle, 13, "reenable release");
+                for keys in [&fresh, &oracle_input] {
+                    keys.set_key(1, Some((67, 127, 1))).unwrap();
+                }
+                compare(&mut enabled, &mut oracle, 13, "new physical key");
+                input.set_key(0, None).unwrap();
+                fresh.set_key(0, None).unwrap();
+                compare(
+                    &mut enabled,
+                    &mut oracle,
+                    13,
+                    "old key up cannot cut the new key",
+                );
+                for keys in [&fresh, &oracle_input] {
+                    keys.set_key(1, None).unwrap();
+                }
+                compare(&mut enabled, &mut oracle, 900, "all released");
+                let mut silence = [[1.0; 2]; 32];
+                enabled.render(&mut silence).unwrap();
+                assert_eq!(silence, [[0.0; 2]; 32]);
+            }
+        });
     }
 
     #[test]
@@ -1370,12 +1816,16 @@ mod tests {
             muted
                 .try_inherit_runtime_in_control_context(&mut previous, Some(19), Some(19))
                 .unwrap();
+            // The deactivated clip's note releases from frame7 under the
+            // still-held key.
+            let release = release_frames(0.0);
             let mut after_cut = [[0.0; 2]; 5];
             muted.render(&mut after_cut).unwrap();
             for (index, frame) in after_cut.iter().enumerate() {
+                let gain = 0.25 * (1.0 + release_level(index, release));
                 for channel in 0..2 {
                     assert!(
-                        (frame[channel] - PCM[(7 + index) % 4][channel] * 0.25).abs() < 0.000_002
+                        (frame[channel] - PCM[(7 + index) % 4][channel] * gain).abs() < 0.000_002
                     );
                 }
             }
@@ -1415,6 +1865,7 @@ mod tests {
             effected.render(&mut after_effect).unwrap();
             let gain = 0.25 * 0.5;
             for (index, frame) in after_effect.iter().enumerate() {
+                let gain = gain * (1.0 + release_level(5 + index, release));
                 for channel in 0..2 {
                     assert!(
                         (frame[channel] - PCM[(12 + index) % 4][channel] * gain).abs() < 0.000_002
@@ -1444,25 +1895,27 @@ mod tests {
                     state,
                 })
                 .unwrap();
-            let (mut unsupported, _) = live_playback(&f, &input);
+            // The live handoff restarts audio at the cursor instead of
+            // refusing (Pulse #3784). It must still never sound two source
+            // kernels at once, and releasing the held key must leave silence.
+            let (mut restarted, _) = live_playback(&f, &input);
+            restarted
+                .try_inherit_runtime_in_control_context(&mut effected, Some(19), Some(19))
+                .unwrap();
+            let mut after_restart = [[0.0; 2]; 64];
+            restarted.render(&mut after_restart).unwrap();
+            let single_kernel = 0.5 * gain + 0.000_002;
             assert!(
-                unsupported
-                    .try_inherit_runtime_in_control_context(&mut effected, Some(19), Some(19))
-                    .is_err()
+                after_restart
+                    .iter()
+                    .flatten()
+                    .all(|sample| sample.abs() <= single_kernel),
+                "no second concurrent source kernel"
             );
-            let mut after_refusal = [[0.0; 2]; 5];
-            effected.render(&mut after_refusal).unwrap();
-            for (index, frame) in after_refusal.iter().enumerate() {
-                for channel in 0..2 {
-                    assert!(
-                        (frame[channel] - PCM[(23 + index) % 4][channel] * gain).abs() < 0.000_002
-                    );
-                }
-            }
             input.set_key(0, None).unwrap();
-            let mut stopped = [[1.0; 2]; 32];
-            effected.render(&mut stopped).unwrap();
-            assert_eq!(stopped, [[0.0; 2]; 32]);
+            let mut stopped = [[1.0; 2]; 64];
+            restarted.render(&mut stopped).unwrap();
+            assert_eq!(stopped[32..], [[0.0; 2]; 32], "no stuck live note");
         });
     }
 
@@ -1517,6 +1970,11 @@ mod tests {
                 reenabled.try_inherit_state_from(&mut disabled),
                 Err(SessionPlaybackError::MutableInstrumentActive)
             );
+            assert_eq!(
+                reenabled.try_inherit_state_live_from(&mut disabled),
+                Err(SessionPlaybackError::DeviceTransitionBusy),
+                "live publication must wait for the short original release"
+            );
             let mut actual = [[0.0; 2]; 32];
             let mut expected = actual;
             disabled.render(&mut actual).unwrap();
@@ -1532,7 +1990,162 @@ mod tests {
                     .any(|sample| sample.abs() > 0.001)
             );
             assert_eq!(actual[16..], [[0.0; 2]; 16]);
+            reenabled
+                .try_inherit_state_live_from(&mut disabled)
+                .unwrap();
+            let mut settled = [[0.0; 2]; 32];
+            reenabled.render(&mut settled).unwrap();
+            assert_eq!(
+                settled, [[0.0; 2]; 32],
+                "the old held note must not be chased"
+            );
         });
+    }
+
+    fn long_sampler_release(f: &mut Fixture) -> hex_project::DeviceId {
+        let instrument = f
+            .editor
+            .project()
+            .track(f.receiver)
+            .unwrap()
+            .instrument()
+            .unwrap();
+        let mut state =
+            hex_devices::sampler::state::SamplerState::from_native(instrument.state()).unwrap();
+        state.envelope.release_seconds = 0.1;
+        let state = state
+            .to_native()
+            .unwrap()
+            .with_asset_references(instrument.state().asset_references().to_vec())
+            .unwrap();
+        let device = instrument.id();
+        f.editor
+            .execute(Command::ReplaceDeviceState { device, state })
+            .unwrap();
+        device
+    }
+
+    #[test]
+    fn rapid_shared_source_reenable_preserves_the_original_long_release() {
+        on_control(|| {
+            let mut f = fixture();
+            let device = long_sampler_release(&mut f);
+            check_rapid_source_toggles(&mut f, device);
+        });
+    }
+
+    #[test]
+    fn rapid_static_utility_receiver_reenable_preserves_the_original_release() {
+        on_control(|| {
+            use hex_devices::utility::{UTILITY_DEFINITION as utility, parameter as p};
+            use hex_lattice_contract::ParameterValue;
+            for case in 0..3 {
+                let mut f = fixture();
+                let device = long_sampler_release(&mut f);
+                let mut state = utility.default_state().unwrap();
+                if case == 1 {
+                    state = utility
+                        .patch_parameter(&state, p::BALANCE, ParameterValue::Float(0.5))
+                        .unwrap();
+                    state = utility
+                        .patch_parameter(&state, p::WIDTH, ParameterValue::Float(2.0))
+                        .unwrap();
+                } else if case == 2 {
+                    state = utility
+                        .patch_parameter(&state, p::INVERT_LEFT, ParameterValue::Bool(true))
+                        .unwrap();
+                }
+                f.editor
+                    .execute(Command::InsertDevice {
+                        track: f.receiver,
+                        before: None,
+                        state,
+                    })
+                    .unwrap();
+                if case == 2 {
+                    let state = utility
+                        .patch_parameter(
+                            &utility.default_state().unwrap(),
+                            p::WIDTH,
+                            ParameterValue::Float(0.5),
+                        )
+                        .unwrap();
+                    f.editor
+                        .execute(Command::InsertDevice {
+                            track: f.receiver,
+                            before: None,
+                            state,
+                        })
+                        .unwrap();
+                }
+                check_rapid_source_toggles(&mut f, device);
+            }
+        });
+    }
+
+    #[test]
+    fn rapid_shared_analytic_reenable_preserves_the_original_release() {
+        on_control(|| {
+            let mut f = fixture();
+            let device = f
+                .editor
+                .project()
+                .track(f.receiver)
+                .unwrap()
+                .instrument()
+                .unwrap()
+                .id();
+            f.editor
+                .execute(Command::ReplaceDeviceState {
+                    device,
+                    state: hex_project::default_instrument_state().unwrap(),
+                })
+                .unwrap();
+            assert!(playback(&f).mutable_instruments.iter().all(Option::is_none));
+            check_rapid_source_toggles(&mut f, device);
+        });
+    }
+
+    fn check_rapid_source_toggles(f: &mut Fixture, device: hex_project::DeviceId) {
+        let mut current = playback(f);
+        let mut reference = playback(f);
+        let mut held = playback(f);
+        for runtime in [&mut current, &mut reference, &mut held] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            runtime.render(&mut [[0.0; 2]; 129]).unwrap();
+        }
+        let mut boundary = [[0.0; 2]; 1];
+        held.render(&mut boundary).unwrap();
+        for (turn, bypassed) in [true, false, true, false].into_iter().enumerate() {
+            f.editor
+                .execute(Command::SetDeviceBypass { device, bypassed })
+                .unwrap();
+            let mut candidate = playback(f);
+            candidate.try_inherit_state_live_from(&mut current).unwrap();
+            if turn == 0 {
+                let mut disabled = playback(f);
+                disabled.try_inherit_state_from(&mut reference).unwrap();
+                reference = disabled;
+            }
+            let mut actual = [[0.0; 2]; 13];
+            let mut expected = actual;
+            candidate.render(&mut actual).unwrap();
+            reference.render(&mut expected).unwrap();
+            if turn == 0 {
+                assert_eq!(actual[0], boundary[0], "bypass preserves every contributor");
+            }
+            assert!(
+                expected.iter().flatten().any(|sample| sample.abs() > 0.001),
+                "the original release must be audible on turn {turn}"
+            );
+            assert_eq!(actual, expected, "bypassed={bypassed}");
+            current = candidate;
+        }
+        let mut settled = [[1.0; 2]; 256];
+        for _ in 0..4 {
+            current.render(&mut settled).unwrap();
+        }
+        assert_eq!(settled, [[0.0; 2]; 256], "no held note was chased");
     }
 
     #[test]
@@ -1672,53 +2285,21 @@ mod tests {
                             state: hex_project::default_instrument_state().unwrap(),
                         })
                         .unwrap();
-                    let (mut refused, _) = live_playback(&f, &input);
-                    assert!(
-                        refused
-                            .try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
-                            .is_err()
-                    );
-                    let mut quiet = [[1.0; 2]; 8];
-                    old.render(&mut quiet).unwrap();
-                    assert_eq!(
-                        quiet, [[0.0; 2]; 8],
-                        "held physical key cannot restart a completed voice"
-                    );
-                    input.set_key(0, None).unwrap();
-                    let tail = old
-                        .prepared_revision()
-                        .unwrap()
-                        .session()
-                        .mutable_instrument_factory(f.receiver)
-                        .unwrap()
-                        .max_release_tail_frames();
-                    assert!(tail < 16_000, "bounded four-frame one-shot source");
-                    let mut drained = vec![[1.0; 2]; tail as usize + 2];
-                    for chunk in drained.chunks_mut(17) {
-                        old.render(chunk).unwrap();
-                    }
-                    assert!(drained.iter().all(|frame| *frame == [0.0; 2]));
-                    // Expired scheduler slots retire at the next bounded span.
-                    old.render(&mut [[0.0; 2]; 1]).unwrap();
-                    let source = old.session_runtime_mut_for_stream_action().unwrap();
-                    assert!(
-                        source.mutable_instruments[0]
-                            .as_ref()
-                            .unwrap()
-                            .committed_is_quiescent(),
-                        "completed native kernel is quiet"
-                    );
-                    assert!(
-                        !source
-                            .computer_keyboard
-                            .as_ref()
-                            .unwrap()
-                            .has_mutable_source_input_voices(),
-                        "released logical input is quiet after its bound"
-                    );
+                    // The live handoff restarts audio instead of refusing
+                    // (Pulse #3784). Releasing the held key leaves silence, and
+                    // a real new onset still plays on the new instrument.
                     let (mut next, _) = live_playback(&f, &input);
                     next.try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
                         .unwrap();
+                    input.set_key(0, None).unwrap();
+                    let mut drained = vec![[1.0; 2]; 16_064];
+                    for chunk in drained.chunks_mut(17) {
+                        next.render(chunk).unwrap();
+                    }
+                    assert!(
+                        drained[16_000..].iter().all(|frame| *frame == [0.0; 2]),
+                        "no stuck note after the held key is released"
+                    );
                     input.set_key(0, Some((60, 127, 2))).unwrap();
                     let mut future = [[0.0; 2]; 32];
                     next.render(&mut future).unwrap();
@@ -1742,7 +2323,7 @@ mod tests {
                     let mut refused = playback(&f);
                     assert_eq!(
                         refused.try_inherit_state_from(&mut old),
-                        Err(SessionPlaybackError::MutableInstrumentChase)
+                        Err(SessionPlaybackError::SourceHistoryUnavailable)
                     );
                     let mut quiet = [[1.0; 2]; 8];
                     old.render(&mut quiet).unwrap();
@@ -1797,6 +2378,61 @@ mod tests {
             playback.render(chunk).unwrap();
         }
         for (index, frame) in output.iter().enumerate() {
+            for channel in 0..2 {
+                assert!(
+                    (frame[channel] - PCM[(start + index) % 4][channel] * gain).abs() < 0.000_002,
+                    "start={start} index={index} frame={frame:?} gain={gain}"
+                );
+            }
+        }
+    }
+    /// Prepared gated release, in 8 kHz output frames, of the fixture sampler
+    /// with `release_seconds`. Oracles derive from it so a host declick floor
+    /// only lengthens the release they expect.
+    fn release_frames(release_seconds: f64) -> u64 {
+        let mut state = hex_devices::sampler::state::SamplerState::for_source_frames(4).unwrap();
+        state.envelope.release_seconds = release_seconds;
+        hex_devices::sampler::PreparedSamplerPlan::new(
+            hex_devices::sampler::SampleShape::new(
+                4,
+                8000,
+                hex_devices::sampler::SampleChannels::Stereo,
+            )
+            .unwrap(),
+            8000,
+            state.settings(),
+        )
+        .unwrap()
+        .prepare_voice_coefficients(60, 127)
+        .unwrap()
+        .unwrap()
+        .release_frames()
+    }
+    /// Linear release level `steps` frames after note-off.
+    fn release_level(steps: usize, release: u64) -> f32 {
+        let steps = steps as u64;
+        if steps >= release {
+            0.0
+        } else {
+            1.0 - steps as f32 / release as f32
+        }
+    }
+    /// Like `check_pcm`, plus one same-phase note released at `start` with
+    /// `released` gain over the fixture's zero-authored-release envelope.
+    fn check_released_pcm(
+        playback: &mut SessionPlayback,
+        start: usize,
+        count: usize,
+        held: f32,
+        released: f32,
+    ) {
+        let release = release_frames(0.0);
+        let mut output = vec![[0.0; 2]; count];
+        for chunk in output.chunks_mut(3) {
+            playback.render(chunk).unwrap();
+        }
+        for (index, frame) in output.iter().enumerate() {
+            let gain = held + released * release_level(index, release);
             for channel in 0..2 {
                 assert!(
                     (frame[channel] - PCM[(start + index) % 4][channel] * gain).abs() < 0.000_002,
@@ -1878,15 +2514,17 @@ mod tests {
             assert!(actual.revision.arrangement().tracks().is_empty());
             actual.apply(SessionPlaybackCommand::Play).unwrap();
             actual.apply(SessionPlaybackCommand::Pause).unwrap();
-            let mut expected = [[0.0; 2]; 16];
-            let mut output = [[0.0; 2]; 16];
+            // The detached release lasts the prepared release, then stays quiet.
+            let quiet_from = release_frames(4.0 / 8000.0) as usize + 4;
+            let mut expected = vec![[0.0; 2]; quiet_from + 8];
+            let mut output = expected.clone();
             oracle.render(&mut expected).unwrap();
             for chunk in output.chunks_mut(3) {
                 actual.render(chunk).unwrap();
             }
             assert!(expected.iter().any(|frame| *frame != [0.0; 2]));
             assert_eq!(output, expected);
-            assert_eq!(&output[8..], &[[0.0; 2]; 8]);
+            assert!(output[quiet_from..].iter().all(|frame| *frame == [0.0; 2]));
             assert_eq!(actual.performance_frame, 7);
             assert_eq!(actual.arrangement_frame, 7);
         });
@@ -1982,7 +2620,9 @@ mod tests {
                     .iter()
                     .all(Option::is_none)
             );
-            check_pcm(&mut detached, 20, 8, 0.125);
+            // The detached contributor's note releases from frame20 while the
+            // receiver's own note holds.
+            check_released_pcm(&mut detached, 20, 8, 0.125, 0.125);
         });
     }
     #[test]
@@ -2052,7 +2692,7 @@ mod tests {
                     .unwrap();
                 let mut candidate = playback(&f);
                 candidate.try_inherit_state_from(&mut old).unwrap();
-                check_pcm(&mut candidate, 7, 19, 0.25);
+                check_released_pcm(&mut candidate, 7, 19, 0.25, 0.25);
             }
         });
     }
@@ -2143,9 +2783,7 @@ mod tests {
             let mut candidate = playback(&f);
             assert_eq!(
                 candidate.try_inherit_state_from(&mut old),
-                Err(SessionPlaybackError::MutableInstrumentDiagnostic(
-                    "shared source configuration changed while notes are active",
-                ))
+                Err(SessionPlaybackError::SourceHistoryUnavailable)
             );
             assert_eq!(old.performance_frame(), 7);
             check_pcm(&mut old, 7, 19, 0.5);
@@ -2202,6 +2840,24 @@ mod tests {
                     );
                 }
             }
+            // An octave up, band-limited reconstruction (#4089) of the
+            // 4-frame loop keeps only its mean: every other partial lies at
+            // or above the output Nyquist. The cursor is checked by the
+            // literal unity segments on either side.
+            fn octave(runtime: &mut SessionPlayback, count: usize) {
+                let mut output = vec![[0.0; 2]; count];
+                for chunk in output.chunks_mut(3) {
+                    runtime.render(chunk).unwrap();
+                }
+                let mean: [f32; 2] = std::array::from_fn(|channel| {
+                    PCM.iter().map(|frame| frame[channel]).sum::<f32>() / 4.0 * 0.5
+                });
+                for frame in output {
+                    for channel in 0..2 {
+                        assert!((frame[channel] - mean[channel]).abs() < 1e-3, "{frame:?}");
+                    }
+                }
+            }
             let mut f = fixture();
             let neutral = f.editor.project().clone();
             let mut old = started(&f);
@@ -2221,7 +2877,7 @@ mod tests {
             tuned.try_inherit_state_from(&mut old).unwrap();
             assert_eq!(tuned.mutable_instruments.iter().flatten().count(), 1);
             assert!(tuned.tail_mutable_instruments.iter().all(Option::is_none));
-            literal(&mut tuned, 12, 2, 21);
+            octave(&mut tuned, 21);
             f.editor
                 .execute(Command::SetTuning(neutral.tuning()))
                 .unwrap();

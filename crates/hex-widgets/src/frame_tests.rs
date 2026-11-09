@@ -24,6 +24,8 @@ const STYLE: ControlStyle = ControlStyle {
     focus_marker: 0xaaaaaa,
     dial_rail: 0,
     hover: 0x555555,
+    selection: 0x3350a0,
+    invalid: 0xff554c,
     font_size: 9.0,
     text_case: crate::TextCase::Preserve,
 };
@@ -138,12 +140,18 @@ fn rendered_shell_and_rounded_sections_clip_oversized_artwork_and_hits(cx: &mut 
             Some(gpui::Background::from(rgb(STYLE.background)))
         );
 
-        assert_eq!(header.size.height, px(DEVICE_FRAME_HEADER_HEIGHT));
+        assert_eq!(header.size.width, px(DEVICE_FRAME_HEADER_WIDTH));
+        assert_eq!(
+            header.origin.x,
+            frame.origin.x + px(DEVICE_FRAME_BORDER_WIDTH)
+        );
         assert_eq!(
             header.origin.y,
             frame.origin.y + px(DEVICE_FRAME_BORDER_WIDTH)
         );
-        assert_eq!(body.origin.y, header.bottom_left().y);
+        assert_eq!(body.origin.y, header.origin.y);
+        assert_eq!(body.origin.x, header.right());
+        assert_eq!(header.size.height, body.size.height);
         assert_eq!(
             body.bottom_left().y,
             frame.bottom_left().y - px(DEVICE_FRAME_BORDER_WIDTH)
@@ -320,14 +328,24 @@ impl Render for SelectionFixture {
         let mut idle = device_frame("device", STYLE, div(), div(), div());
         let idle = idle.interactivity().compute_style(None, None, window, cx);
         let current = frame.interactivity().compute_style(None, None, window, cx);
-        assert_eq!(current.border_color, idle.border_color);
+        assert_eq!(
+            current.border_color,
+            Some(
+                rgb(if self.selected {
+                    STYLE.accent
+                } else {
+                    STYLE.border
+                })
+                .into()
+            )
+        );
         assert_eq!(current.border_widths, idle.border_widths);
         frame
     }
 }
 
 #[gpui::test]
-fn selection_changes_only_header_paint_without_moving_or_recoloring_the_frame(
+fn selection_changes_only_border_paint_without_moving_or_recoloring_surfaces(
     cx: &mut TestAppContext,
 ) {
     let handle = *cx.add_window(|_, _| SelectionFixture { selected: false });
@@ -376,11 +394,7 @@ fn selection_changes_only_header_paint_without_moving_or_recoloring_the_frame(
         }
         assert_eq!(
             visual.rendered_background("device-frame-header"),
-            Some(gpui::Background::from(rgb(if selected {
-                STYLE.accent
-            } else {
-                STYLE.surface
-            })))
+            Some(gpui::Background::from(rgb(STYLE.surface)))
         );
     }
 }
@@ -635,7 +649,9 @@ impl Render for HousingFixture {
         let order = if self.reverse { ["b", "a"] } else { ["a", "b"] };
         div().flex().children(order.map(|id| {
             device_frame(
-                "device",
+                div()
+                    .debug_selector(move || format!("title-{id}"))
+                    .child(vertical_device_name("device")),
                 STYLE,
                 div(),
                 crate::device_action(
@@ -657,7 +673,7 @@ impl Render for HousingFixture {
             )
             .id(id)
             .debug_selector(move || id.into())
-            .w(px(142.0))
+            .w(px(142.0 + DEVICE_FRAME_HEADER_WIDTH))
             .h(px(150.0))
             .flex_shrink_0()
         }))
@@ -671,7 +687,7 @@ fn shared_housing_panels_toggle_independently_and_follow_device_identity(cx: &mu
     });
     let view = handle.root(cx).unwrap();
     let mut visual = VisualTestContext::from_window(*handle, cx);
-    visual.simulate_resize(size(px(400.0), px(200.0)));
+    visual.simulate_resize(size(px(520.0), px(200.0)));
     visual.run_until_parked();
     assert!(visual.debug_bounds("device-macro-panel").is_none());
     assert!(visual.debug_bounds("device-modulator-panel").is_none());
@@ -679,6 +695,16 @@ fn shared_housing_panels_toggle_independently_and_follow_device_identity(cx: &mu
     let b = visual.debug_bounds("b").unwrap();
     let macro_b = visual.debug_bounds("device-macro-toggle").unwrap();
     let mod_b = visual.debug_bounds("device-modulator-toggle").unwrap();
+    let title_b = visual.debug_bounds("title-b").unwrap();
+    let action_b = visual.debug_bounds("action-b").unwrap();
+    assert!(action_b.bottom() <= title_b.top());
+    assert!(title_b.bottom() <= macro_b.top());
+    assert_eq!(macro_b.bottom() + px(DEVICE_FRAME_HEADER_GAP), mod_b.top());
+    assert_eq!(
+        mod_b.bottom() + px(DEVICE_FRAME_HEADER_PADDING + DEVICE_FRAME_BORDER_WIDTH),
+        b.bottom(),
+        "panel toggles stay at the foot of the sidebar"
+    );
     let macro_a = macro_b.center() + point(a.left() - b.left(), px(0.0));
     visual.simulate_click(macro_a, Modifiers::default());
     visual.run_until_parked();

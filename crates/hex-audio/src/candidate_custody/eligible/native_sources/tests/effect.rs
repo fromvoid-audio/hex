@@ -5,17 +5,8 @@ use super::*;
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_root_effect_cannot_spend_beyond_its_native_pool_cell() {
     let root = root();
-    let limit = 32 * 1024;
-    root.configure_native_sources(
-        1,
-        NativeSourceDataReservation {
-            max_retained_data_bytes: limit,
-            // Startup buffers have a separate peak allowance; retain32KiB to
-            // exercise refusal of the later worker/queues, not startup.
-            max_construction_peak_data_bytes: source_reservation().max_construction_peak_data_bytes,
-        },
-    )
-    .unwrap();
+    root.configure_native_sources(1, source_reservation())
+        .unwrap();
     let binding = start(&root);
     root.complete_native_source(
         binding,
@@ -25,18 +16,26 @@ fn actual_root_effect_cannot_spend_beyond_its_native_pool_cell() {
         }),
     )
     .unwrap();
-    {
+    let limit = {
         let work = root.work.try_lock().unwrap();
         let Some(Owner::Prepared(instance)) = work.sources.cells[0].owner.as_ref() else {
             panic!("original prepared source");
         };
-        assert!(instance.retained_storage_on_control().unwrap().data_bytes < limit);
-        assert!(
+        let limit =
             crate::plugin_worker::NativeWorker::preconstruction_data_bytes_on_control(instance)
                 .unwrap()
-                > limit
-        );
-    }
+                - 1;
+        assert!(instance.retained_storage_on_control().unwrap().data_bytes < limit);
+        limit
+    };
+    // Fault-inject the later construction allowance after admitted startup.
+    // Root must recheck this boundary, independently of its startup preflight.
+    lock(&root.bank)
+        .sources
+        .limits
+        .as_mut()
+        .unwrap()
+        .max_retained_data_bytes = limit;
     let held = root.usage();
     root.start_native_effect(binding).unwrap();
     assert_eq!(
@@ -96,7 +95,7 @@ fn actual_root_constructs_and_retires_the_original_unsplit_native_effect() {
         )
         .unwrap();
         let state = root.native_source_prepared_state(binding).unwrap();
-        root.start_native_effect_between(binding, || {
+        root.start_native_effect_between(binding, None, || {
             if close_during_construction {
                 root.close();
             }
@@ -121,7 +120,7 @@ fn actual_root_constructs_and_retires_the_original_unsplit_native_effect() {
                 assert_eq!(effect.identity(), identity());
                 let transport = effect.transport_storage_on_control().unwrap();
                 assert_eq!(transport.shared_groups, 3);
-                assert_eq!(transport.shared_handle_bound, 7);
+                assert_eq!(transport.shared_handle_bound, 8);
                 assert!(transport.data_bytes > 0);
                 let source = effect.retained_source_storage_on_control().unwrap();
                 assert_eq!(source.shared_groups, 3);

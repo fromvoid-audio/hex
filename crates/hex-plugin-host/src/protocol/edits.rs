@@ -1,7 +1,87 @@
 //! Ordered native controller callback receipts. These are source observations,
 //! not authored automation, a canonical edit, or final host audio acceptance.
 use super::*;
+use std::num::NonZeroU64;
 pub const MAX_PARAMETER_EDITS: usize = 8;
+
+/// Effective editor input at frame zero of one successful SDK quantum.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EditorPerform {
+    pub sequence: u64,
+    pub gesture: u64,
+    pub id: u32,
+    pub normalized: f64,
+}
+
+/// The bounded, ordered batch copied out of that same native reply.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EditorPerforms {
+    points: [EditorPerform; MAX_PARAMETER_EDITS],
+    len: usize,
+}
+
+impl EditorPerforms {
+    pub fn as_slice(&self) -> &[EditorPerform] {
+        &self.points[..self.len]
+    }
+
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+    pub(crate) fn push(&mut self, point: EditorPerform) -> Result<()> {
+        let entry = self
+            .points
+            .get_mut(self.len)
+            .ok_or(Error::Protocol("editor PCM input capacity exceeded"))?;
+        *entry = point;
+        self.len += 1;
+        Ok(())
+    }
+}
+
+/// One successful SDK reply, including the exact original binding and quantum.
+/// Multiple staged editor callbacks to the same parameter at offset zero
+/// report only the final one that actually entered the processor.
+pub struct EditorPcm {
+    pub block: Block,
+    pub performs: EditorPerforms,
+    pub restoration: Option<EditorRestoration>,
+}
+
+/// The canonical restoration choice for one original worker target.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EditorTouchPlan {
+    pub scope: NonZeroU64,
+    pub parameter: u32,
+    pub base: f64,
+    pub reading: bool,
+}
+
+impl EditorTouchPlan {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn wire(self) -> Result<[u8; 24]> {
+        if self.parameter > i32::MAX as u32 || !(0.0..=1.0).contains(&self.base) {
+            return Err(Error::Protocol("invalid editor touch target or base"));
+        }
+        let mut bytes = [0; 24];
+        bytes[..8].copy_from_slice(&self.scope.get().to_le_bytes());
+        bytes[8..12].copy_from_slice(&self.parameter.to_le_bytes());
+        bytes[12] = u8::from(self.reading);
+        bytes[16..].copy_from_slice(&self.base.to_bits().to_le_bytes());
+        Ok(bytes)
+    }
+}
+
+/// An actual restored SDK sample following the exact ordered gesture End.
+/// The subsequent compensated Main delivery remains a separate witness.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EditorRestoration {
+    pub sequence: u64,
+    pub gesture: u64,
+    pub parameter: u32,
+}
+
+// Native main-thread FIFO plus the eight worker handoff slots. Completed
+// receipts are tracked separately and do not count toward pending callbacks.
+const MAX_PENDING_PARAMETER_EDITS: u16 = 72;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ParameterEditKind {
     #[default]
@@ -42,6 +122,48 @@ pub fn edit_request(config: &Configuration, sequence: u64, operation: u64) -> Re
     request[..4].copy_from_slice(b"HXVG");
     Ok(request)
 }
+/// A source-bound edit batch with the latest uncovered latency restart.
+/// Repeated reads can return the same ordinal until reactivation covers it.
+#[derive(Clone, Copy, Debug)]
+pub struct RecoveryEdits {
+    pub edits: ParameterEdits,
+    pub pending_latency_restart: Option<NonZeroU64>,
+}
+pub fn recovery_edit_request(
+    config: &Configuration,
+    sequence: u64,
+    operation: u64,
+) -> Result<[u8; 72]> {
+    let mut request = edit_request(config, sequence, operation)?;
+    request[4..6].copy_from_slice(&2_u16.to_le_bytes());
+    Ok(request)
+}
+/// Request one parameter-only exchange while the transport is idle. The
+/// active helper keeps its PCM prefix and returns the usual recovery receipts.
+pub fn idle_editor_edit_request(
+    config: &Configuration,
+    sequence: u64,
+    operation: u64,
+) -> Result<[u8; 72]> {
+    let mut request = edit_request(config, sequence, operation)?;
+    request[4..6].copy_from_slice(&3_u16.to_le_bytes());
+    Ok(request)
+}
+pub fn recovery_edits(
+    body: &[u8],
+    config: &Configuration,
+    sequence: u64,
+    operation: u64,
+    previous: (u64, u64),
+) -> Result<RecoveryEdits> {
+    let (edits, ordinal) = body
+        .split_last_chunk::<8>()
+        .ok_or(Error::Protocol("missing latency restart ordinal"))?;
+    Ok(RecoveryEdits {
+        edits: parameter_edits(edits, config, sequence, operation, previous)?,
+        pending_latency_restart: NonZeroU64::new(u64::from_le_bytes(*ordinal)),
+    })
+}
 pub fn parameter_edits(
     body: &[u8],
     config: &Configuration,
@@ -65,7 +187,11 @@ pub fn parameter_edits(
     let pending = u16::from_le_bytes(reader.array()?);
     let ready = u16::from_le_bytes(reader.array()?);
     let len = usize::from(u16::from_le_bytes(reader.array()?));
-    if pending > 24 || ready > 8 || ready > pending || len > MAX_PARAMETER_EDITS {
+    if pending > MAX_PENDING_PARAMETER_EDITS
+        || usize::from(ready) > MAX_PARAMETER_EDITS
+        || ready > pending
+        || len > MAX_PARAMETER_EDITS
+    {
         return Err(Error::Protocol("parameter edit capacity differs"));
     }
     let mut result = ParameterEdits {

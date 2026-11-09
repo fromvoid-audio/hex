@@ -146,7 +146,8 @@ fn reverse_musical_audio_reflects_beats_across_tempo_seams_and_keeps_live_warp()
         length,
     )
     .unwrap();
-    let oracle = hex_warp::render(
+    // A new directed view reads with the current v2 law.
+    let oracle = hex_warp::render_with_resampler(
         &hex_warp::Request {
             attacks: &[],
             input: hex_warp::Input {
@@ -163,6 +164,7 @@ fn reverse_musical_audio_reflects_beats_across_tempo_seams_and_keeps_live_warp()
             pitch_cents: 0,
             mode: hex_warp::Mode::RePitch,
         },
+        hex_warp::Resampler::V2,
         &mut || false,
     )
     .unwrap()

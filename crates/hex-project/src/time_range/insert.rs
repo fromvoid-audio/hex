@@ -163,8 +163,8 @@ fn open_midi_gap(
             let new_end_frame = original_end_frame
                 .checked_add(duration)
                 .ok_or(Invalid("shifted midi clip end overflow"))?;
-            if project.tempo_map().points().len() == 1 {
-                if let Some(shifted) = shift_midi_source_exact(
+            if project.tempo_map().points().len() == 1
+                && let Some(shifted) = shift_midi_source_exact(
                     project,
                     &original,
                     original_start_frame,
@@ -173,10 +173,10 @@ fn open_midi_gap(
                     new_end_frame,
                     duration,
                     &mut expanded_notes,
-                )? {
-                    replacement.push(shifted);
-                    continue;
-                }
+                )?
+            {
+                replacement.push(shifted);
+                continue;
             }
             expanded_notes = expanded_notes
                 .checked_add(materialized_note_bound(&original)?)

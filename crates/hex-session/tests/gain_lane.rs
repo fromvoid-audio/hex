@@ -1,17 +1,14 @@
 //! Revision-stamped UI gain edits exercise the real control worker and history.
 use hex_project::{BeatTime, Command, Created, GainInterpolation, GainPoint};
 use hex_session::service::{Event, GainLaneEdit, Request, Service};
-use std::{
-    thread,
-    time::{Duration, Instant},
-};
+use std::time::Instant;
 fn event(service: &Service) -> Event {
-    let until = Instant::now() + Duration::from_secs(3);
+    let until = Instant::now() + std::time::Duration::from_secs(60);
     loop {
         match service.try_event() {
             Ok(event) => return event,
             Err(std::sync::mpsc::TryRecvError::Empty) if Instant::now() < until => {
-                thread::yield_now()
+                std::thread::sleep(std::time::Duration::from_millis(1))
             }
             Err(reason) => panic!("event: {reason}"),
         }

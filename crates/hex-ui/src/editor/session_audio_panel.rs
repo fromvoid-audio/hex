@@ -1,8 +1,10 @@
 //! Compact source-window and cycle controls for the selected Console audio cell.
+//! The waveform also shows the accepted Session playback position of that cell.
 use super::EditorView;
 use crate::theme;
-use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px, rgb};
-use hex_project::{AssetId, ClipId, Command, SessionCellContent};
+use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px, relative, rgb};
+use hex_audio::prepared::SessionRouteOwner;
+use hex_project::{AssetId, ClipId, Command, SessionAudioClip, SessionCellContent, TrackId};
 use hex_session::CachedWaveform;
 use std::ops::Range;
 
@@ -29,6 +31,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
     let name = clip.name().to_lowercase();
     let gain = clip.gain();
     let loop_range = clip.loop_range();
+    let playhead = view.session_audio_playhead(track, clip);
     let captured = SourceWindow {
         clip: id,
         asset: asset_id,
@@ -207,6 +210,8 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
     if let Some(amplitudes) = waveform {
         let linear_gain = gain.linear();
         let mut bars = div()
+            .debug_selector(|| "session-audio-waveform".into())
+            .relative()
             .h(px(24.0))
             .flex_1()
             .min_w_0()
@@ -225,9 +230,98 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
                 ),
             );
         }
+        if let Some(fraction) = playhead {
+            bars = bars.child(
+                div()
+                    .debug_selector(|| "session-audio-playback-position".into())
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(relative(fraction))
+                    .w(px(1.0))
+                    .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
+            );
+        }
         row = row.child(bars);
     }
     Some(row)
+}
+
+/// Fraction of the displayed `source_start..source_end` window heard at
+/// `performance_frame` for a cell launched at `launch_frame`, both on the
+/// performance clock in project frames. None before the launch, after a
+/// one-shot ends, or where a loop cycle starts before the displayed window.
+fn playhead_fraction(
+    clip: &SessionAudioClip,
+    launch_frame: u64,
+    performance_frame: u64,
+) -> Option<f32> {
+    let elapsed = performance_frame.checked_sub(launch_frame)?;
+    let frame = clip.source_frame_at(elapsed)?;
+    let span = clip
+        .source_end()
+        .checked_sub(clip.source_start())
+        .filter(|span| *span > 0)?;
+    let offset = frame
+        .checked_sub(clip.source_start())
+        .filter(|offset| *offset < span)?;
+    Some((offset as f64 / span as f64) as f32)
+}
+
+impl EditorView {
+    /// Accepted Session playback of this cell only: the same revision, fault
+    /// and route-owner guards as the piano roll's Session cursor, reading the
+    /// launch published with the route snapshot. Never an optimistic launch.
+    fn session_audio_playhead(&self, track: TrackId, clip: &SessionAudioClip) -> Option<f32> {
+        use std::sync::atomic::Ordering::Acquire;
+        if !clip.active() {
+            return None;
+        }
+        let state = self.state.as_ref()?;
+        let audible = self.audible_playback.as_ref()?;
+        if audible.project_generation != self.project_generation
+            || audible.state.revision != state.revision
+        {
+            return None;
+        }
+        let audio = self.audio.as_ref()?;
+        let status = audio.control.status()?;
+        if status.applied_revision.load(Acquire) != audible.audio_revision
+            || status.device_fault.load(Acquire)
+            || status.render_fault.load(Acquire)
+            || status.shutdown_complete.load(Acquire)
+        {
+            return None;
+        }
+        let snapshot = self.session_routes.matching_snapshot(
+            audio.control.output_identity()?,
+            Some((
+                audible.audio_revision,
+                state.revision,
+                self.project_generation,
+            )),
+            state.revision,
+            self.project_generation,
+        )?;
+        let route = self
+            .session_routes
+            .entry_for_track(snapshot, true, track.value())?;
+        if route.owner
+            != (SessionRouteOwner::Session {
+                clip_id: clip.id().value(),
+            })
+        {
+            return None;
+        }
+        let fraction = playhead_fraction(
+            clip,
+            route.audio_launch_frame?,
+            status.performance_frame.load(Acquire),
+        )?;
+        // A publication can change during scalar reads; never paint it against
+        // another compiled revision's launch.
+        (status.applied_revision.load(Acquire) == audible.audio_revision).then_some(fraction)
+    }
 }
 
 fn session_audio_loop_button(
@@ -517,7 +611,7 @@ fn adjusted_source_range(
 }
 
 fn waveform_bars(waveform: &CachedWaveform, start: u64, end: u64) -> Vec<f32> {
-    let source_frames = waveform.source_frames;
+    let source_frames = waveform.source_frames();
     let start = usize::try_from(start)
         .unwrap_or(usize::MAX)
         .min(source_frames);
@@ -525,7 +619,7 @@ fn waveform_bars(waveform: &CachedWaveform, start: u64, end: u64) -> Vec<f32> {
         .unwrap_or(usize::MAX)
         .min(source_frames)
         .max(start);
-    if start == end || source_frames == 0 || waveform.bins.is_empty() {
+    if start == end || source_frames == 0 || waveform.bins().is_empty() {
         return vec![0.0; WAVEFORM_COLUMNS];
     }
     (0..WAVEFORM_COLUMNS)
@@ -539,7 +633,7 @@ fn waveform_bars(waveform: &CachedWaveform, start: u64, end: u64) -> Vec<f32> {
                 .min(end);
             let bins = bin_range(waveform, left, right);
             waveform
-                .bins
+                .bins()
                 .get(bins)
                 .unwrap_or(&[])
                 .iter()
@@ -556,14 +650,14 @@ fn fraction(length: usize, numerator: usize, denominator: usize) -> usize {
 }
 
 fn bin_range(waveform: &CachedWaveform, start: usize, end: usize) -> Range<usize> {
-    let start = start.min(waveform.source_frames);
-    let end = end.min(waveform.source_frames).max(start);
-    let count = waveform.bins.len();
-    if start == end || count == 0 || waveform.source_frames == 0 {
+    let start = start.min(waveform.source_frames());
+    let end = end.min(waveform.source_frames()).max(start);
+    let count = waveform.bins().len();
+    if start == end || count == 0 || waveform.source_frames() == 0 {
         return 0..0;
     }
-    let width = waveform.source_frames / count;
-    let extra = waveform.source_frames % count;
+    let width = waveform.source_frames() / count;
+    let extra = waveform.source_frames() % count;
     let wide_frames = (width + 1).saturating_mul(extra);
     let at = |frame: usize| {
         if frame < wide_frames {
@@ -578,8 +672,8 @@ fn bin_range(waveform: &CachedWaveform, start: usize, end: usize) -> Range<usize
 #[cfg(test)]
 mod tests {
     use super::{
-        SourceEdge, SourceWindow, WAVEFORM_COLUMNS, adjusted_source_range, bin_range, source_step,
-        source_window_is_current, waveform_bars,
+        SourceEdge, SourceWindow, WAVEFORM_COLUMNS, adjusted_source_range, bin_range,
+        playhead_fraction, source_step, source_window_is_current, waveform_bars,
     };
     #[cfg(feature = "ui-test-support")]
     use gpui::{AnyWindowHandle, AppContext, Empty, TestAppContext, VisualTestContext, px};
@@ -737,6 +831,97 @@ mod tests {
             project.session_cell(track, scene),
             Some(SessionCellContent::Audio(item)) if item.id() == clip
         ));
+    }
+
+    fn session_audio_cell(source_start: u64, source_end: u64) -> (Editor, hex_project::ClipId) {
+        let mut editor = Editor::new(Project::new(48_000).expect("project"), 8).expect("editor");
+        let Ok(Created::Track(track)) = editor.execute(Command::AddTrack {
+            name: "audio".into(),
+        }) else {
+            panic!("track")
+        };
+        let Ok(Created::Scene(scene)) = editor.execute(Command::AddScene {
+            name: "scene".into(),
+        }) else {
+            panic!("scene")
+        };
+        let Ok(Created::Asset(asset)) = editor.execute(Command::AddAsset {
+            path: "source.wav".into(),
+            sample_rate: 48_000,
+            frames: 1_000,
+        }) else {
+            panic!("asset")
+        };
+        let Ok(Created::SessionClip(clip)) = editor.execute(Command::CreateSessionAudioClip {
+            track,
+            scene,
+            name: "audio".into(),
+            asset,
+            source_start,
+            source_end,
+        }) else {
+            panic!("Session clip")
+        };
+        (editor, clip)
+    }
+
+    fn cell(editor: &Editor, clip: hex_project::ClipId) -> &hex_project::SessionAudioClip {
+        editor
+            .project()
+            .session_audio_clip(clip)
+            .expect("Session audio cell")
+    }
+
+    #[test]
+    fn playhead_follows_source_offset_from_the_accepted_launch() {
+        let (editor, clip) = session_audio_cell(100, 300);
+        let clip = cell(&editor, clip);
+        // Launched at performance frame 5_000: elapsed 0 is the offset start.
+        assert_eq!(playhead_fraction(clip, 5_000, 5_000), Some(0.0));
+        assert_eq!(playhead_fraction(clip, 5_000, 5_050), Some(0.25));
+        assert_eq!(
+            playhead_fraction(clip, 5_000, 5_199),
+            Some((199.0_f64 / 200.0) as f32)
+        );
+    }
+
+    #[test]
+    fn playhead_hides_before_launch_and_after_a_one_shot_ends() {
+        let (editor, clip) = session_audio_cell(100, 300);
+        let clip = cell(&editor, clip);
+        assert_eq!(playhead_fraction(clip, 5_000, 4_999), None);
+        assert_eq!(playhead_fraction(clip, 5_000, 5_200), None);
+        assert_eq!(playhead_fraction(clip, 5_000, u64::MAX), None);
+    }
+
+    #[test]
+    fn looped_playhead_wraps_inside_the_cycle_and_hides_outside_the_window() {
+        let (mut editor, id) = session_audio_cell(100, 300);
+        editor
+            .execute(Command::SetSessionAudioClipLoop {
+                clip: id,
+                loop_range: Some(hex_project::SessionAudioLoop::new(150, 250).expect("loop")),
+            })
+            .expect("loop");
+        let clip = cell(&editor, id);
+        // Intro 100..250 (150 frames), then the 150..250 cycle repeats.
+        assert_eq!(playhead_fraction(clip, 0, 100), Some(0.5));
+        assert_eq!(playhead_fraction(clip, 0, 150), Some(0.25));
+        assert_eq!(playhead_fraction(clip, 0, 250), Some(0.25));
+        assert_eq!(
+            playhead_fraction(clip, 0, 1_000_075),
+            playhead_fraction(clip, 0, 175)
+        );
+        // A cycle that starts before the displayed source start has no line there.
+        editor
+            .execute(Command::SetSessionAudioClipLoop {
+                clip: id,
+                loop_range: Some(hex_project::SessionAudioLoop::new(50, 250).expect("loop")),
+            })
+            .expect("loop");
+        let clip = cell(&editor, id);
+        assert_eq!(playhead_fraction(clip, 0, 150), None);
+        assert_eq!(playhead_fraction(clip, 0, 200), Some(0.0));
     }
 
     #[cfg(feature = "ui-test-support")]

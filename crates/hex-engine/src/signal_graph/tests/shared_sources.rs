@@ -65,6 +65,159 @@ fn try_compile(f: &Fixture) -> Result<Project, Invalid> {
 }
 
 #[test]
+fn shared_analytic_receiver_compensation_preserves_mixed_routes_and_loop_partitions() {
+    use crate::{LaunchQuantization, SessionPlaybackCommand};
+    let mut editor = Editor::new(hex_project::Project::new(48_000).unwrap(), 16).unwrap();
+    let state = crate::default_native_device_state_for_class(
+        crate::NativeDeviceClass::Instrument,
+        hex_devices::SINE_INSTRUMENT_TYPE_ID,
+    )
+    .unwrap();
+    let Created::NativeSource(source) = editor
+        .execute(Command::CreateNativeSource {
+            name: "shared".into(),
+            devices: vec![state],
+            instrument_index: 0,
+        })
+        .unwrap()
+    else {
+        panic!("source")
+    };
+    let mut tracks = Vec::new();
+    for pitch in [60, 64, 67] {
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "midi".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        editor
+            .execute(Command::BindTrackSource {
+                track,
+                source: Some(source),
+            })
+            .unwrap();
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(4).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch,
+                velocity: 96,
+                channel: 0,
+            })
+            .unwrap();
+        tracks.push(track);
+    }
+    editor
+        .execute(Command::SetNativeSourceReceiver {
+            source,
+            track: Some(tracks[1]),
+        })
+        .unwrap();
+    let Created::Scene(scene) = editor
+        .execute(Command::AddScene {
+            name: "scene".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene")
+    };
+    let Created::SessionClip(clip) = editor
+        .execute(Command::CreateSessionMidiClip {
+            track: tracks[0],
+            scene,
+            name: "session".into(),
+            source_length: BeatTime::from_quarters(4).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("session clip")
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 72,
+            velocity: 96,
+            channel: 0,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetLoopRegion {
+            start: 0,
+            end: 257,
+            enabled: true,
+        })
+        .unwrap();
+    let limiter = crate::default_native_device_state_for_class(
+        crate::NativeDeviceClass::Effect,
+        DeviceTypeId::from_static("hex.limiter"),
+    )
+    .unwrap();
+    editor
+        .execute(Command::InsertDevice {
+            track: tracks[1],
+            before: None,
+            state: limiter,
+        })
+        .unwrap();
+    let revision = Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &std::collections::BTreeMap::new(),
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let render = |partition| {
+        let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        playback
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut output = [[0.0; 2]; 1024];
+        for chunk in output.chunks_mut(partition) {
+            playback.render(chunk).unwrap();
+        }
+        (
+            output,
+            playback.performance_frame(),
+            playback.arrangement_frame(),
+        )
+    };
+    let expected = render(1);
+    assert!(
+        expected
+            .0
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 1.0e-6)
+    );
+    assert_eq!((expected.1, expected.2), (1024, 253));
+    for partition in [17, 64, 256, 512] {
+        assert_eq!(render(partition), expected, "partition {partition}");
+    }
+}
+
+#[test]
 fn shared_source_main_only_latency_preserves_receiver_mix_and_partitions() {
     for mutable in [false, true] {
         let kind = if mutable {
@@ -192,18 +345,24 @@ fn shared_source_main_only_latency_preserves_receiver_mix_and_partitions() {
         );
         let delay = revision.arrangement().main_latency_frames() as usize;
         assert_eq!(delay, 288);
-        // Main batching does not admit a new live-monitoring capability.
+        // Keyboard monitoring plays through the batched Main latency (#3772).
         let mut monitor =
             crate::playback::Playback::try_from_prepared_with_session(Arc::clone(&revision))
                 .unwrap();
-        let error = monitor
-            .prepare_computer_keyboard(
-                editor.project(),
-                tracks[0],
-                Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default()),
-            )
-            .unwrap_err();
-        assert!(error.0.contains("unavailable with positive latency"));
+        let keys = Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
+        keys.set_key(0, Some((60, 100, 1))).unwrap();
+        monitor
+            .prepare_computer_keyboard(editor.project(), tracks[0], keys)
+            .unwrap();
+        let mut monitored = vec![[0.0; 2]; delay + 512];
+        monitor.render(&mut monitored).unwrap();
+        assert!(monitored[..delay].iter().all(|frame| *frame == [0.0; 2]));
+        assert!(
+            monitored[delay..]
+                .iter()
+                .flatten()
+                .any(|sample| *sample != 0.0)
+        );
         for partition in [1, 63, 257] {
             let output = session(Arc::clone(&revision), dry.len(), partition);
             assert!(output[..delay].iter().all(|frame| *frame == [0.0; 2]));
@@ -231,6 +390,20 @@ fn shared_source_has_one_generator_and_preserves_both_local_chains_and_midi_bank
     assert_eq!(graph.tracks[1].devices.len(), 1);
     assert_eq!(compiled.tracks[0].instrument_latency, Some(5));
     assert_eq!(compiled.tracks[1].instrument_latency, Some(0));
+    // The shared generator belongs to its receiver. Both local chains still
+    // contribute independently, and the parallel contributor aligns to it.
+    let receiver = graph
+        .track_latency(0, compiled.tracks[0].instrument_position())
+        .unwrap();
+    let contributor = graph
+        .track_latency(1, compiled.tracks[1].instrument_position())
+        .unwrap();
+    assert_eq!((receiver.local_frames, receiver.arrival_frames), (8, 8));
+    assert_eq!(
+        (contributor.local_frames, contributor.arrival_frames),
+        (7, 7)
+    );
+    assert_eq!(contributor.default_route_delay_frames, 1);
     for (index, clip) in clips.iter().enumerate() {
         assert_eq!(
             compiled.tracks[index].instrument.as_ref().unwrap().spans[0].clip,
@@ -266,6 +439,28 @@ fn receiver_none_preserves_authored_midi_without_any_generator() {
             .iter()
             .all(|track| track.midi_clips()[0].notes().len() == 1)
     );
+}
+/// Pulse #4188: delay history copies by typed endpoints. A graph maps from
+/// itself, but dropping a latent generator moves the arrivals behind it, so
+/// its history must not map in either direction.
+#[test]
+fn history_mapping_refuses_a_removed_latent_generator() {
+    let (mut f, source, _) = shared_fixture();
+    let bound = compile(&f);
+    let bound = bound.signal_graph.as_ref().unwrap();
+    assert!(bound.pre_main_history_maps_from(bound));
+    f.editor
+        .execute(Command::SetNativeSourceReceiver {
+            source,
+            track: None,
+        })
+        .unwrap();
+    let unbound = compile(&f);
+    let unbound = unbound.signal_graph.as_ref().unwrap();
+    assert!(unbound.tracks.iter().all(|track| track.generator.is_none()));
+    assert!(!unbound.pre_main_compatible(bound));
+    assert!(!unbound.pre_main_history_maps_from(bound));
+    assert!(!bound.pre_main_history_maps_from(unbound));
 }
 #[test]
 fn duplicate_selected_root_for_one_shared_source_is_refused() {
@@ -439,4 +634,40 @@ fn mixed_arrangement_and_console_share_one_combined_voice_budget() {
             "shared source exceeds its combined arrangement and console capacity"
         ))
     );
+}
+
+#[test]
+fn solo_shared_contributor_admits_receiver_group_without_receiver_local_content() {
+    let (mut f, _, _) = shared_fixture();
+    let Created::Track(group) = f
+        .editor
+        .execute(Command::GroupTracks {
+            tracks: hex_project::TrackSelectionIds::new(&[f.tracks[0]]).unwrap(),
+            name: "receiver group".into(),
+        })
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    f.editor
+        .execute(Command::ToggleSolo {
+            track: f.tracks[1],
+            exclusive: false,
+        })
+        .unwrap();
+    let compiled = compile(&f);
+    let receiver = compiled
+        .tracks
+        .iter()
+        .find(|track| track.canonical_track_id() == Some(f.tracks[0]))
+        .unwrap();
+    let group = compiled
+        .tracks
+        .iter()
+        .find(|track| track.canonical_track_id() == Some(group))
+        .unwrap();
+    assert!(!group.mix.muted);
+    assert!(!receiver.mix.muted);
+    assert!(!receiver.source_input_enabled());
+    assert!(!receiver.audio_content_enabled());
 }

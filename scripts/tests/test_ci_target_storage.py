@@ -13,6 +13,46 @@ storage = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(storage)
 
 
+def reuse_fixed_scratch_observations(test, *runner_modules):
+    """Probe fixed volume and worktree locations once per Cargo fixture.
+
+    The callers never move a worktree or change its Git configuration after
+    setup. Commit, dirty state, file lists and fingerprints remain live.
+    """
+    for runner in runner_modules:
+        inspect = runner.ci_target_storage.inspect
+        observed = {}
+
+        def inspect_scratch(target, env, *, inspect=inspect, observed=observed):
+            if target not in observed:
+                observed[target] = inspect(target, env)
+            return observed[target]
+
+        patched = patch.object(runner.ci_target_storage, "inspect", inspect_scratch)
+        patched.start()
+        test.addCleanup(patched.stop)
+
+        command_output = runner.command_output
+        locations = {}
+
+        def observe_location(argv, cwd, env, *, command_output=command_output, locations=locations):
+            if argv not in (["git", "rev-parse", "--show-toplevel"],
+                            ["git", "rev-parse", "--git-common-dir"]):
+                return command_output(argv, cwd, env)
+            key = (cwd, argv[-1], env.get("PATH"),
+                   tuple(sorted((name, value) for name, value in env.items() if name.startswith("GIT_"))))
+            if key not in locations:
+                result = command_output(argv, cwd, env)
+                if result.returncode != 0:
+                    return result
+                locations[key] = result
+            return locations[key]
+
+        patched = patch.object(runner, "command_output", observe_location)
+        patched.start()
+        test.addCleanup(patched.stop)
+
+
 class TargetStorageTests(unittest.TestCase):
     def test_macos_identifies_actual_device_for_new_target_without_creating_it(self):
         with tempfile.TemporaryDirectory() as directory:

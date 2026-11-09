@@ -28,7 +28,7 @@ static bool host_case(CFBundleRef bundle,Steinberg::IPluginFactory* factory) {
     auto& e=host_evidence;
     hex_instance::Instance instance;
     PClassInfo info{};
-    if (factory->getClassInfo(0,&info)!=kResultOk || !instance.open(factory,info.cid) || !instance.configure_stereo(48000,64,false)) {
+    if (factory->getClassInfo(0,&info)!=kResultOk || !instance.open(factory,info.cid,e.scenario==0) || !instance.configure_stereo(48000,64,false)) {
         lifecycle_evidence.closed=instance.close(); return false;
     }
     const bool baseline=action(0,hex_instance::Host::supported_restarts)==kResultOk &&
@@ -97,6 +97,11 @@ static bool host_case(CFBundleRef bundle,Steinberg::IPluginFactory* factory) {
     } else if (e.scenario==10) {
         e.processing_callback=action(4,0); e.processing_message=action(7,0);
     } else if (e.scenario==11) e.message=messages(1);
+    else if(e.scenario==14) {
+        // Independent of both the main thread and the original PCM reader.
+        std::thread background([&] {e.message=messages(2);});
+        background.join();
+    }
     else if(e.scenario==13) {
         const auto wave=[&](uint32 id) {
             bool ok=edit(1,id,0)==kResultOk;
@@ -128,11 +133,19 @@ static bool host_case(CFBundleRef bundle,Steinberg::IPluginFactory* factory) {
     { std::lock_guard<std::mutex> lock(mutex); resume=true; changed.notify_all(); }
     worker.join();
     e.pcm=e.pcm && processed && stopped;
+    const auto* trace=instance.message_diagnostics_on_control();
+    // Scenario zero exercises accepted, oversized, missing and off-lane
+    // binary calls while PCM is active. Scenario 14 uses the disabled path.
+    const bool diagnostics=e.scenario==0?
+        trace && trace->messages==18 && trace->binary_attempts==5 && trace->binary_writes==3 &&
+        trace->max_binary_bytes==32769 && trace->binary_oversize==1 && trace->binary_reads==3 &&
+        trace->binary_misses==1 && trace->wrong_thread_reads==3:
+        trace && trace->messages==0 && trace->binary_attempts==0 && trace->binary_reads==0;
     e.closed=instance.close(); lifecycle_evidence.closed=e.closed;
     int observation[135]{};
     const int size=observe(observation,135);
     if (size>=7) e.violations=observation[0];
-    return e.pcm && e.violations==0 && (e.scenario!=13 || (e.edit_count==16 && e.edit_order && e.edit_backpressure && e.enqueued==16 && e.callback==kResultOk));
+    return diagnostics && e.pcm && e.violations==0 && (e.scenario!=13 || (e.edit_count==16 && e.edit_order && e.edit_backpressure && e.enqueued==16 && e.callback==kResultOk));
 }
 static void print_host() {
     const auto& e=host_evidence;

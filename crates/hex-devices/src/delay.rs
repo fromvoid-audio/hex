@@ -8,12 +8,35 @@ use hex_lattice::{
 };
 use hex_lattice_contract::{DeviceContractError, NativeDeviceState};
 use std::{any::Any, sync::Arc};
+mod automation;
 mod state;
 pub use state::*;
 use state::{Settings, decode};
 pub struct DelayDefinition;
 pub static DEFINITION: DelayDefinition = DelayDefinition;
 impl NativeDeviceDefinition for DelayDefinition {
+    fn source_effect_factory_bytes(&self) -> Option<usize> {
+        // The prepared factory contains only inline settings and coefficients.
+        Some(crate::source_effect_arc_bytes::<runtime::Factory>())
+    }
+    fn supports_parameter_automation(
+        &self,
+        state: &NativeDeviceState,
+        id: hex_lattice_contract::ParameterId,
+    ) -> Result<bool, DeviceContractError> {
+        decode(state)?;
+        Ok(automation::slot(id).is_some())
+    }
+    fn prepare_automated_runtime_instance(
+        &self,
+        _identity: hex_lattice::ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+        ids: &[hex_lattice_contract::ParameterId],
+    ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
+        automation::prepare(state, context, ids)
+    }
+
     fn prepare_matrix(
         &self,
         state: &NativeDeviceState,
@@ -48,6 +71,7 @@ impl NativeDeviceDefinition for DelayDefinition {
         Ok(Some(PreparedProcessorFactory::Owned(Arc::new(Factory {
             settings,
             rate: context.sample_rate,
+            admitted: [false; automation::COUNT],
         }))))
     }
 }

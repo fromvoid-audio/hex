@@ -111,6 +111,22 @@ impl EditorView {
     }
 }
 
+/// Clip-elapsed quarter-note beats at an Arrangement frame, mapped through the
+/// tempo map; none outside the placement's half-open `start..start + length`.
+pub(super) fn arrangement_elapsed(
+    tempo: &hex_project::TempoMap,
+    start: BeatTime,
+    length: BeatTime,
+    frame: u64,
+) -> Option<BeatTime> {
+    let elapsed = tempo
+        .frame_to_beat(frame)
+        .ok()?
+        .raw()
+        .checked_sub(start.raw())?;
+    (elapsed < length.raw()).then_some(BeatTime::from_raw(elapsed))
+}
+
 impl EditorView {
     /// Only accepted, revision-bound playback state supplies this cursor. The
     /// insertion cursor and persisted source-start marker keep their own state.
@@ -169,16 +185,12 @@ impl EditorView {
             if route.owner != SessionRouteOwner::Arrangement {
                 return None;
             }
-            let absolute = state
-                .project
-                .tempo_map()
-                .frame_to_beat(status.position.load(Acquire))
-                .ok()?;
-            let elapsed = absolute.raw().checked_sub(placement.start().raw())?;
-            if elapsed >= placement.arrangement_length().raw() {
-                return None;
-            }
-            BeatTime::from_raw(elapsed)
+            arrangement_elapsed(
+                state.project.tempo_map(),
+                placement.start(),
+                placement.arrangement_length(),
+                status.position.load(Acquire),
+            )?
         } else {
             let route = self
                 .session_routes
@@ -273,6 +285,27 @@ mod tests {
         assert!(arrangement_destination(editor.project(), clip, beat(6)).is_err());
         editor.execute(source(2)).unwrap();
         assert!(arrangement_destination(editor.project(), clip, beat(3)).is_err());
+    }
+
+    #[test]
+    fn arrangement_playhead_elapsed_follows_a_tempo_change_and_hides_outside_the_clip() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
+        // 120 bpm until beat 10, then 60 bpm: beat 10 is 240_000 frames and
+        // each later beat lasts 48_000 frames.
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: beat(10),
+                tempo: Tempo::new(60_000_000).unwrap(),
+            })
+            .unwrap();
+        let tempo = editor.project().tempo_map();
+        let elapsed = |frame| arrangement_elapsed(tempo, beat(8), beat(4), frame);
+        assert_eq!(elapsed(191_999), None);
+        assert_eq!(elapsed(192_000), Some(BeatTime::ZERO));
+        assert_eq!(elapsed(240_000), Some(beat(2)));
+        assert_eq!(elapsed(264_000), Some(BeatTime::from_ratio(5, 2).unwrap()));
+        assert_eq!(elapsed(335_999).map(|b| b < beat(4)), Some(true));
+        assert_eq!(elapsed(336_000), None);
     }
 }
 

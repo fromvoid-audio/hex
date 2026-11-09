@@ -13,7 +13,8 @@ use std::{collections::BTreeMap, sync::Arc};
 /// project. The service clears its clipboard on project replacement. Asset
 /// metadata, scene and route dependencies are checked again at paste admission.
 /// Setup-only copies retain mixer/gain automation and the complete device chain,
-/// including both A/B authored states; all Arrangement and Session cells are omitted.
+/// including both A/B authored states. Arrangement clips and output mute
+/// ranges, and Session cells, are omitted.
 #[derive(Clone, Debug)]
 pub struct TrackClipboard {
     tempo: Arc<TempoMap>,
@@ -48,6 +49,7 @@ impl Project {
             if without_clips {
                 copy.content.audio_clips.clear();
                 copy.content.midi_clips.clear();
+                copy.group_output_mutes = Default::default();
             }
             tracks.push(copy);
         }
@@ -65,7 +67,12 @@ impl Project {
                     .iter()
                     .flat_map(|clip| clip.referenced_assets()),
             );
-            for device in track.devices().iter().chain(track.instrument()) {
+            for device in track.devices().iter().chain(
+                track
+                    .instrument
+                    .iter()
+                    .flat_map(|binding| binding.devices()),
+            ) {
                 asset_ids.extend(
                     device
                         .authored_states()
@@ -166,8 +173,26 @@ pub(crate) fn paste(
             .parent_group
             .and_then(|parent| remap.get(&parent).copied())
             .or(destination.parent_group);
+        let mut device_ids = Vec::new();
+        device_ids
+            .try_reserve_exact(track.devices.len())
+            .map_err(|_| Invalid("could not reserve copied device identities"))?;
         for device in &mut track.devices {
-            device.id = DeviceId(project.allocate_id()?);
+            // Canonical preorder puts each parent before its descendants. Keep
+            // those relationships inside this independent copy, never its source.
+            let parent = device
+                .parent
+                .map(|parent| {
+                    device_ids
+                        .iter()
+                        .find_map(|(old, new)| (*old == parent).then_some(*new))
+                        .ok_or(Invalid("copied device parent is missing"))
+                })
+                .transpose()?;
+            let id = DeviceId(project.allocate_id()?);
+            device_ids.push((device.id, id));
+            device.id = id;
+            device.parent = parent;
         }
         if let Some(binding) = &track.instrument {
             // Duplicating a track is an explicit independent-copy operation;

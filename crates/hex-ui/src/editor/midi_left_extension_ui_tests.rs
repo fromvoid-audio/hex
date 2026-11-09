@@ -13,18 +13,21 @@ use std::{
 };
 
 fn next(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             assert!(event.error.is_none(), "{:?}", event.error);
             return event;
         }
-        assert!(Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "next: hang guard expired"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
 pub(super) fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(&mut *visual, |v, cx| {
             if v.tick(cx) {
@@ -36,7 +39,10 @@ pub(super) fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) 
             visual.run_until_parked();
             return;
         }
-        assert!(Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "pump: hang guard expired"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
@@ -167,10 +173,10 @@ fn fresh_midi_left_extension_preserves_right_edge_notes_and_real_worker_history(
         assert_eq!(preview.start().raw()+preview.length().raw(), original.start().raw()+original.length().raw());
         let project = &v.state.as_ref().unwrap().project;
         let unchanged = original.preview_edge_trim(hex_project::TrimEdge::Left, original.start()).unwrap();
-        let shapes = super::super::tracks::midi_trim_note_shapes(project, &original, unchanged, 0, 384_000);
+        let shapes = super::super::tracks::midi_trim_note_shapes(project, &original, unchanged, 0, 384_000, 0);
         assert_eq!(shapes.len(), 1);
         assert_eq!(
-            super::super::tracks::midi_trim_note_shapes(project, &original, preview, 0, 384_000), shapes,
+            super::super::tracks::midi_trim_note_shapes(project, &original, preview, 0, 384_000, 0), shapes,
             "the actual paint projection keeps the note at its old musical position",
         );
         preview

@@ -4,6 +4,8 @@
 //! version-1 payload is a bounded, exact little-endian sequence
 //! of 36 finite `f32` fields; preparation validates it through the standalone
 //! oscillator, routing and envelope constructors.
+mod runtime;
+
 use super::{Envelope, OPERATORS, Oscillator, PreparedFm4, Routing};
 use hex_lattice::{NativeInstrumentDefinition, PreparedAnalyticNote, PreparedNativeInstrument};
 use hex_lattice_contract::{
@@ -340,6 +342,29 @@ impl NativeDeviceMetadata for Fm4Definition {
         &PARAMETERS
     }
 
+    fn parameter_semantics_for_state(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+    ) -> Result<Option<hex_lattice_contract::ParameterSemantics>, DeviceContractError> {
+        Fm4Settings::from_state(state)?.read_parameter(id)?;
+        use hex_lattice_contract::{
+            ParameterAccess, ParameterAutomation, ParameterChangeImpact, ParameterModulation,
+            ParameterNormalization, ParameterSemantics, ParameterSmoothing, ParameterStepping,
+        };
+        Ok((29..=32)
+            .contains(&id.value())
+            .then_some(ParameterSemantics {
+                access: ParameterAccess::ReadWrite,
+                normalization: ParameterNormalization::Linear,
+                stepping: ParameterStepping::Continuous,
+                automation: ParameterAutomation::DeviceArrangementEnvelope,
+                modulation: ParameterModulation::Undeclared,
+                smoothing: ParameterSmoothing::DeviceManaged,
+                change_impact: ParameterChangeImpact::ValueOnly,
+            }))
+    }
+
     fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
         Fm4Settings::defaults().to_state()
     }
@@ -371,6 +396,10 @@ impl NativeDeviceMetadata for Fm4Definition {
 }
 
 impl NativeInstrumentDefinition for Fm4Definition {
+    fn resource_factory_inline_bound(&self) -> Option<usize> {
+        Some(std::mem::size_of::<runtime::Factory>())
+    }
+
     fn prepare_instrument(
         &self,
         state: &NativeDeviceState,
@@ -384,17 +413,23 @@ impl NativeInstrumentDefinition for Fm4Definition {
         let settings = Fm4Settings::from_state(state)?;
         let (oscillators, routing, envelope) = settings.kernel_parts()?;
         let _ = crate::shared_sine_table();
+        let runtime = runtime::Factory::prepare(state, context)?;
         Ok(Box::new(PreparedFm4Instrument {
             tuning: *tuning,
             sample_rate,
             oscillators,
             routing,
             envelope,
+            runtime,
         }))
     }
 }
 
+/// Inline note preparation remains available; registered hosts use the same
+/// bounded mutable factory for Arrangement, Session and live input. The existing
+/// graph transaction owns voice history and prepared retarget proofs.
 struct PreparedFm4Instrument {
+    runtime: runtime::Factory,
     tuning: hex_lattice::TuningTable,
     sample_rate: u32,
     oscillators: [Oscillator; OPERATORS],
@@ -403,6 +438,17 @@ struct PreparedFm4Instrument {
 }
 
 impl PreparedNativeInstrument for PreparedFm4Instrument {
+    fn validate_event_note(&self, pitch: u8, velocity: u8) -> Result<(), DeviceContractError> {
+        self.runtime.validate_note_on(pitch, velocity)
+    }
+
+    fn prepare_mutable_runtime(
+        &self,
+    ) -> Result<Option<Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>>, DeviceContractError>
+    {
+        Ok(Some(Box::new(self.runtime)))
+    }
+
     fn algorithmic_latency_frames(&self) -> Option<u32> {
         Some(0)
     }
