@@ -160,7 +160,7 @@ fn original_instrument_editor_joins_actual_main_take_and_late_restoration() {
     let baseline = instruments::render_completed_block(&h)[0];
     assert!(baseline[0] > 0.0);
     if session_recording {
-        verify_session_recording(&mut h, input, before, applied, &files.0);
+        verify_session_recording(&mut h, input, before, applied, &files.0, baseline[0]);
         return;
     }
     let wrong_class = PluginEditorRecordingInput {
@@ -258,6 +258,7 @@ fn verify_session_recording(
     before: Arc<hex_project::Project>,
     mut applied: u64,
     directory: &std::path::Path,
+    baseline: f32,
 ) {
     use crate::native_audio::tests::resident_preview::SESSION_RECORDING_OBSERVATIONS;
     use hex_session::service::DeviceAutomationTakeProgress as Progress;
@@ -302,6 +303,10 @@ fn verify_session_recording(
         }
         assert!(Instant::now() < until, "editor take did not publish");
     };
+    // Save and Open may create fresh SDK workers. Only the original
+    // recording worker should see the synthetic editor trigger.
+    std::fs::remove_file(perform_gate).unwrap();
+    std::fs::remove_file(end_gate).unwrap();
     let observations = SESSION_RECORDING_OBSERVATIONS.lock().unwrap().clone();
     let [Observation::Delivered(point), Observation::Restored(end)] = observations.as_slice()
     else {
@@ -352,9 +357,46 @@ fn verify_session_recording(
     let path = directory.join("recorded-editor.hex");
     let saved = h.run(Request::SaveNew(path.clone()));
     assert!(saved.save_complete && saved.error.is_none());
-    assert_eq!(hex_storage::load(path).unwrap(), *saved.state.project);
-    std::fs::remove_file(perform_gate).unwrap();
-    std::fs::remove_file(end_gate).unwrap();
+    assert_eq!(hex_storage::load(&path).unwrap(), *saved.state.project);
+
+    // Independent authored-Step oracle, calculated from the Main receipts
+    // instead of the committed overlay. Compare actual reopened SDK audio.
+    let step = |frame, value| AutomationPoint {
+        beat: clock.frame_to_beat(frame).unwrap(),
+        value: AutomationValue::new(value).unwrap(),
+        outgoing: AutomationInterpolation::Step,
+    };
+    let mut reference = hex_project::Editor::new((*before).clone(), 8).unwrap();
+    reference
+        .execute(Command::ReplaceDeviceAutomationTarget {
+            device: input.device,
+            target,
+            points: vec![
+                step(0, 0.25),
+                step(point.application.origin.content_frame, 0.75),
+                step(end.application.origin.content_frame, 0.25),
+            ],
+        })
+        .unwrap();
+    let reference_path = directory.join("editor-delivered-steps.hex");
+    hex_storage::save_new(&reference_path, reference.project()).unwrap();
+    let blocks = usize::try_from(end.application.origin.content_frame / 256 + 8).unwrap();
+    assert!(blocks < 128);
+    let expected =
+        instruments::replay_reopened_instrument(h, &reference_path, input.device, blocks);
+    let actual = instruments::replay_reopened_instrument(h, &path, input.device, blocks);
+    assert_eq!(expected.len(), actual.len());
+    assert!(actual.iter().any(|frame| frame[0] > 2.9 * baseline));
+    let error = expected
+        .iter()
+        .flatten()
+        .zip(actual.iter().flatten())
+        .map(|(left, right)| (left - right).abs())
+        .fold(0.0, f32::max);
+    assert!(
+        error < 1.0e-6,
+        "reopened editor take differs from the Main receipt oracle: {error}"
+    );
 }
 
 fn probe<T>(
