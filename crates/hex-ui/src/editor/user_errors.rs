@@ -94,7 +94,7 @@ pub(super) fn gain_abort(reason: gain_recording::AbortReason) -> &'static str {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::*;
 
