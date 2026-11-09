@@ -180,8 +180,10 @@ impl Correlation {
             .find(|point| point.id == self.target.parameter);
         let end = main
             .input
-            .restoration
-            .filter(|end| end.parameter == self.target.parameter);
+            .restorations
+            .as_slice()
+            .iter()
+            .find(|end| end.parameter == self.target.parameter);
         let (sequence, begin, value) = match (point, end) {
             (Some(point), None) => (
                 point.sequence,

@@ -203,6 +203,7 @@ impl NativeWorker {
         };
         let binding = instance.configuration().binding;
         let quantum = instance.configuration().quantum;
+        let grouped_editor_callbacks = instance.grouped_editor_callbacks_enabled();
         let prefix = instance.completed_blocks_on_control();
         let channel = if instance.configuration().input_channels == 0 {
             instrument_channel_from_completed_prefix(binding, quantum, prefix)
@@ -231,6 +232,7 @@ impl NativeWorker {
                     binding,
                     quantum,
                     retirement_requested: false,
+                    grouped_editor_callbacks,
                     source_storage: Some(source_storage),
                 },
                 callback,

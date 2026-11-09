@@ -91,12 +91,17 @@ impl Callback {
                 active.playback.main_output_latency_frames(),
             )
         });
+        let source = self.status.live_native_parameter_source();
+        let same_scope = source == Some((target.source, target.transport_epoch));
+        // Priority Stop and source/epoch replacement can revoke the old
+        // endpoint before this lookup. On a valid host block that is a scope
+        // change, not an output fault. Earlier confirmed receipts stay queued.
         self.foreign_editor_delivery.finish(
             observed.ok().flatten(),
-            self.status.live_native_parameter_source(),
+            source,
             end,
             latency,
-            valid && observed.is_ok(),
+            valid && (!same_scope || observed.is_ok()),
             self.output_transport.is_none(),
         );
     }
