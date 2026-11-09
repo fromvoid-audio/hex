@@ -1,7 +1,7 @@
 use super::completed_tests::changed_metadata;
 use super::*;
 
-fn vst3_fixture() -> (Project, DraftTarget, DraftProvenance) {
+pub(super) fn vst3_fixture() -> (Project, DraftTarget, DraftProvenance) {
     let state = hex_plugin_state::encode(hex_plugin_state::State {
         identity: hex_plugin_state::Identity {
             class: hex_plugin_state::ClassId::new([9; 16]).unwrap(),
@@ -181,7 +181,7 @@ fn legacy_headers_never_reinterpret_vst3_and_malformed_headers_preserve_original
         assert!(DraftReader::open(&path, limits()).is_err());
         assert_eq!(fs::read(&path).unwrap(), malformed);
     }
-    for version in [CLOCK_VERSION, VST3_CLOCK_VERSION + 1] {
+    for version in [CLOCK_VERSION, VST3_GROUP_VERSION + 1] {
         let refused = changed_metadata(&original, version, |_| {});
         fs::write(&path, &refused).unwrap();
         assert!(DraftReader::open(&path, limits()).is_err());
