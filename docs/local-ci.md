@@ -130,6 +130,12 @@ Automation plot tests use:
 ```sh
 cargo test -p hex-ui --features ui-unit-tier --test unit_automation --locked
 ```
+
+Device display tests use:
+
+```sh
+cargo test -p hex-ui --features ui-unit-tier --test unit_device --locked
+```
 Other `hex-ui` tests have not yet been classified into separate tiers; in
 particular, the real-window receipt and delayed-acknowledgement tests remain in
 the `ui-test-support` library suite.
