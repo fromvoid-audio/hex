@@ -1,5 +1,7 @@
 //! Pure editor state tests; no GPUI window or service is created.
 
+#[path = "../src/editor/cpu_meter.rs"]
+mod cpu_meter_state;
 #[path = "../src/editor/disk_overload.rs"]
 mod disk_overload_state;
 #[path = "../src/editor/pending_edit.rs"]
@@ -287,6 +289,63 @@ mod editor {
                 assert!(state.shown());
                 state.observe(None, now);
                 assert!(!state.shown());
+            }
+        }
+    }
+    mod cpu_meter {
+        use crate::cpu_meter_state::*;
+        use hex_audio::cpu_meter::CpuSample;
+        use std::time::{Duration, Instant};
+
+        // These durations are the observable meter update/hold contract.
+        const INTERVAL: Duration = Duration::from_millis(100);
+        const HOLD: Duration = Duration::from_secs(3);
+
+        mod tests {
+            use super::*;
+            fn sample(elapsed: u64, budget: u64, peak: u32) -> CpuSample {
+                CpuSample {
+                    elapsed,
+                    budget,
+                    peak,
+                    frames: 256,
+                    rate: 44_100,
+                }
+            }
+            #[test]
+            fn smoothing_throttling_peak_reset_and_overload_hold() {
+                let now = Instant::now();
+                let mut meter = CpuMeter::default();
+                assert_eq!(meter.label(), "cpu —");
+                assert!(meter.observe(Some((1, sample(10, 100, 1000), 0)), now));
+                assert_eq!(meter.label(), "cpu 10%");
+                assert!((meter.fraction() - 0.1).abs() < f32::EPSILON);
+                assert!(!meter.observe(
+                    Some((1, sample(60, 200, 5000), 0)),
+                    now + Duration::from_millis(20)
+                ));
+                assert!(meter.observe(Some((1, sample(60, 200, 5000), 1)), now + INTERVAL));
+                assert_eq!(meter.label(), "cpu 22%");
+                assert!(meter.warning());
+                assert!(meter.description().contains("1 callbacks over budget"));
+                assert!(meter.observe(Some((1, sample(110, 300, 5000), 1)), now + INTERVAL + HOLD));
+                assert!(!meter.warning());
+                meter.reset(1);
+                assert!(meter.description().contains("0 callbacks over budget"));
+                assert!(meter.observe(None, now + INTERVAL + HOLD));
+                assert_eq!(meter.label(), "cpu —");
+            }
+            #[test]
+            fn replacement_output_resets_the_old_peak_and_miss_count() {
+                let now = Instant::now();
+                let mut meter = CpuMeter::default();
+                meter.observe(Some((1, sample(100, 100, 10_000), 3)), now);
+                assert!(meter.description().contains("3 callbacks over budget"));
+                meter.observe(Some((1, sample(200, 200, 10_000), 4)), now + INTERVAL);
+                meter.observe(Some((2, sample(5, 100, 500), 0)), now + INTERVAL * 2);
+                assert_eq!(meter.label(), "cpu 5%");
+                assert!(!meter.warning());
+                assert!(meter.description().contains("0 callbacks over budget"));
             }
         }
     }
