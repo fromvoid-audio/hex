@@ -1442,6 +1442,12 @@ pub(super) fn request(value: &Request) -> Description {
         Request::SaveDeviceDefault { root, .. } => {
             describe!("save_device_default"; ["root_redacted_bytes" => root.as_os_str().len()]; omitted="owner")
         }
+        Request::SaveDeviceUnitPreset { path, .. } => {
+            describe!("save_device_unit_preset"; ["path_redacted_bytes" => path.as_os_str().len()]; omitted="owner")
+        }
+        Request::SaveDeviceUnitDefault { root, .. } => {
+            describe!("save_device_unit_default"; ["root_redacted_bytes" => root.as_os_str().len()]; omitted="owner")
+        }
         Request::LoadDevicePreset { path, .. } => {
             describe!("load_device_preset"; ["path_redacted_bytes" => path.as_os_str().len()]; omitted="owner")
         }
