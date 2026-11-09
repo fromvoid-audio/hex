@@ -3,7 +3,7 @@
 //! Prepared declarations borrow no project data and never enter project history.
 use hex_devices::modulation::{envelope_follower, lfo, macro_value, random_hold};
 use hex_lattice::{
-    HostOutputModulationRoute, ModulationRoute, ModulationTarget, PreparedModulation,
+    HostGainModulationRoute, ModulationRoute, ModulationTarget, PreparedModulation,
     PreparedModulationSource, PreparedModulationState, PreparedProcessorFactory,
     SourceModulationRoute,
 };
@@ -97,7 +97,8 @@ pub(super) fn validate_source_owners(project: &Project) -> Result<(), Invalid> {
 pub(super) struct EffectModulation {
     sources: Vec<PreparedModulationSource>,
     routes: Vec<ModulationRoute>,
-    host_output_routes: Vec<HostOutputModulationRoute>,
+    host_input_routes: Vec<HostGainModulationRoute>,
+    host_output_routes: Vec<HostGainModulationRoute>,
     source_routes: Vec<SourceModulationRoute>,
     parameters: Vec<ParameterId>,
 }
@@ -166,20 +167,21 @@ impl EffectModulation {
             .iter()
             .filter(|route| matches!(route.destination, ModulationDestination::Modulator { .. }))
             .count();
-        let host_output_count = bank
-            .routes()
-            .iter()
-            .filter(|route| {
-                matches!(
-                    route.destination,
-                    ModulationDestination::Device {
-                        target: DeviceAutomationTarget::HostOutputGain,
-                        ..
-                    }
-                )
-            })
-            .count();
-        let mut routes = reserved(bank.routes().len() - source_route_count - host_output_count)?;
+        let host_route_count = |target| {
+            bank.routes()
+                .iter()
+                .filter(|route| {
+                    matches!(route.destination, ModulationDestination::Device { target: candidate, .. }
+                        if candidate == target)
+                })
+                .count()
+        };
+        let host_input_count = host_route_count(DeviceAutomationTarget::HostInputGain);
+        let host_output_count = host_route_count(DeviceAutomationTarget::HostOutputGain);
+        let mut routes = reserved(
+            bank.routes().len() - source_route_count - host_input_count - host_output_count,
+        )?;
+        let mut host_input_routes = reserved(host_input_count)?;
         let mut host_output_routes = reserved(host_output_count)?;
         let mut source_routes = reserved(source_route_count)?;
         let mut parameters = reserved(automation.len() + bank.routes().len())?;
@@ -199,8 +201,13 @@ impl EffectModulation {
                     target,
                     vst3_class: None,
                 } if device_type == device.state().type_id() => {
-                    if target == DeviceAutomationTarget::HostOutputGain {
-                        host_output_routes.push(HostOutputModulationRoute {
+                    let host_routes = match target {
+                        DeviceAutomationTarget::HostInputGain => Some(&mut host_input_routes),
+                        DeviceAutomationTarget::HostOutputGain => Some(&mut host_output_routes),
+                        _ => None,
+                    };
+                    if let Some(host_routes) = host_routes {
+                        host_routes.push(HostGainModulationRoute {
                             source,
                             amount,
                             range,
@@ -240,6 +247,7 @@ impl EffectModulation {
         Ok(Some(Self {
             sources,
             routes,
+            host_input_routes,
             host_output_routes,
             source_routes,
             parameters,
@@ -289,7 +297,7 @@ impl EffectModulation {
         let overlap = sources
             .checked_mul(size_of::<&Modulator>() + size_of::<ModulationSourceId>())?
             .checked_add(routes.checked_mul(
-                size_of::<ModulationRoute>().max(size_of::<HostOutputModulationRoute>())
+                size_of::<ModulationRoute>().max(size_of::<HostGainModulationRoute>())
                     + size_of::<ParameterId>(),
             )?)?
             .checked_add(
@@ -341,27 +349,31 @@ impl EffectModulation {
                 base,
             });
         }
-        let host_output = if self.host_output_routes.is_empty() {
-            None
-        } else {
+        let host_gain = |millidb, routes: &[HostGainModulationRoute]| {
+            if routes.is_empty() {
+                return Ok(None);
+            }
             if factory.map_or(
                 Some(0),
                 PreparedProcessorFactory::algorithmic_latency_frames,
             ) != Some(0)
             {
                 return Err(Invalid(
-                    "output gain modulation requires a zero-latency native effect",
+                    "host gain modulation requires a zero-latency native effect",
                 ));
             }
-            let base = HostGain::from_millidb(state.output_gain_millidb())
-                .map_err(|_| Invalid("authored output gain is invalid"))?;
-            Some((base, self.host_output_routes.as_slice()))
+            HostGain::from_millidb(millidb)
+                .map(Some)
+                .map_err(|_| Invalid("authored host gain is invalid"))
         };
-        let program = PreparedModulation::with_host_output(
+        let input = host_gain(state.input_gain_millidb(), &self.host_input_routes)?;
+        let output = host_gain(state.output_gain_millidb(), &self.host_output_routes)?;
+        let program = PreparedModulation::with_host_gains(
             &targets,
             &self.routes,
             self.sources.len(),
-            host_output,
+            input.map(|base| (base, self.host_input_routes.as_slice())),
+            output.map(|base| (base, self.host_output_routes.as_slice())),
         )
         .map_err(|_| Invalid("modulation program is invalid or exceeds its capacity"))?;
         PreparedModulationState::with_source_routes(
