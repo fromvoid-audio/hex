@@ -476,6 +476,7 @@ fn successive_native_takes_keep_the_arm_and_refusals_keep_the_recovery_file() {
             .unwrap()
             .candidates
             .len(),
-        4
+        5,
+        "include the original interrupted draft retained after keep-copy"
     );
 }
