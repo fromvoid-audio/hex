@@ -631,6 +631,18 @@ impl EditorView {
                 }
                 return;
             }
+            (Submission::Poll, Progress::NativeWriterRetained { path, reason }) => {
+                // Sealing already retired the endpoint. The writer owns the
+                // admitted terminal; there are no more caller receipts.
+                touch.phase = Phase::Retained;
+                self.error = Some(
+                    format!(
+                        "{reason} · automation take retained at {}",
+                        hex_session::service::text::verbatim(path.display())
+                    )
+                    .into(),
+                );
+            }
             (Submission::Poll, Progress::Retained(path)) => {
                 if event.error.is_none() {
                     self.error = Some(
@@ -1036,6 +1048,35 @@ mod tests {
                 let capture = view.native_automation_recorder.touch.as_ref().unwrap();
                 assert!(matches!(capture.terminal, Some(Action::Abort(_))));
                 assert!(capture.next_submission().is_none());
+            });
+            editor.update(cx, |view, _| {
+                let mut capture = touch();
+                let scope = capture.scope;
+                capture.phase = Phase::Sealing;
+                capture.in_flight = Some((3, Submission::Poll));
+                view.native_automation_recorder.touch = Some(capture);
+                event.device_automation_take_complete = Some(DeviceAutomationTakeCompletion {
+                    request_id: 4,
+                    progress: Progress::NativeWriterRetained {
+                        path: "/fixture/original.hex-automation-draft".into(),
+                        reason: "writer refused".into(),
+                    },
+                });
+                view.native_automation_take_completion(&event);
+                let capture = view.native_automation_recorder.touch.as_ref().unwrap();
+                assert!(capture.phase == Phase::Sealing && capture.in_flight.is_some());
+                event
+                    .device_automation_take_complete
+                    .as_mut()
+                    .unwrap()
+                    .request_id = 3;
+                view.native_automation_take_completion(&event);
+                let capture = view.native_automation_recorder.touch.as_ref().unwrap();
+                assert_eq!(capture.scope, scope);
+                assert!(capture.phase == Phase::Retained);
+                assert!(capture.in_flight.is_none());
+                assert!(view.native_automation_recorder.busy());
+                assert!(view.error.as_ref().unwrap().contains("writer refused"));
             });
             window.remove_window();
         })

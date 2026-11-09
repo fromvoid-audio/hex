@@ -600,6 +600,7 @@ pub(super) fn plan_release_audio_owner(
     previous: &SessionPlayback,
     candidate: &PreparedRevision,
     analytic_owner_matches: &[bool; MAX_TRACKS],
+    source_effects_continue: bool,
 ) -> Result<ReleaseAudioPlan, SessionPlaybackError> {
     let Some(mut origin) = release.source_origin else {
         return Ok(ReleaseAudioPlan {
@@ -646,9 +647,13 @@ pub(super) fn plan_release_audio_owner(
                 &candidate.arrangement().tracks()[receiver],
             )
         });
-    let follows = previous
-        .revision
-        .retained_source_configuration_matches(candidate, origin.source)
+    // A compatible source effect stage has already verified the explicit
+    // prepared generator. Keep its held voices on the new source input;
+    // a dry detached copy would bypass the transferred effect history.
+    let follows = source_effects_continue
+        || previous
+            .revision
+            .retained_source_configuration_matches(candidate, origin.source)
         || continued_context
         || inline_tuning;
     if follows && let Some(receiver) = current_receiver {
