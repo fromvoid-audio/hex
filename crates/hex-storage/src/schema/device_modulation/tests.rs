@@ -1265,6 +1265,11 @@ fn note_event_reader_floors_preserve_settings_and_instrument_routes() {
             adsr,
             crate::ADSR_MODULATOR_SCHEMA_VERSION,
         ),
+        (
+            "hex.modulator.steps",
+            vec![125, 0, 0, 0, 2, 3, 1, 128, 133, 255, 255, 127],
+            crate::STEPS_MODULATOR_SCHEMA_VERSION,
+        ),
     ] {
         let project = editor.project();
         let next = project.next_identity();

@@ -3,7 +3,7 @@
 //! Prepared declarations borrow no project data and never enter project history.
 use hex_devices::modulation::{
     adsr, ahd_release, audio_rate, button, buttons, envelope_follower, lfo, macro_four,
-    macro_value, math, mix, note_counter, note_pressure, ramp, random_hold,
+    macro_value, math, mix, note_counter, note_pressure, ramp, random_hold, steps,
 };
 use hex_lattice::{
     HostGainModulationRoute, MAX_MODULATION_SOURCES, ModulationRoute, ModulationTarget,
@@ -476,6 +476,8 @@ impl EffectModulation {
                 ahd_release::TYPE_ID => ahd_release::Settings::decode(&source.state)
                     .and_then(|settings| settings.prepare(source.id, sample_rate)),
                 adsr::TYPE_ID => adsr::Settings::decode(&source.state)
+                    .and_then(|settings| settings.prepare(source.id, sample_rate)),
+                steps::TYPE_ID => steps::Settings::decode(&source.state)
                     .and_then(|settings| settings.prepare(source.id, sample_rate)),
                 random_hold::TYPE_ID => random_hold::Settings::decode(&source.state)
                     .and_then(|settings| settings.prepare(source.id, sample_rate)),
