@@ -416,6 +416,7 @@ fn grouped_editor_touch_restores_each_target_on_its_actual_late_end() {
 
     for (pattern, instrument) in [
         ("held", false),
+        ("ordinary-first", false),
         ("staggered", true),
         ("abort-held", false),
         ("invalidate", false),
@@ -424,6 +425,7 @@ fn grouped_editor_touch_restores_each_target_on_its_actual_late_end() {
         let setup = case.setup_restore(if instrument { 149 } else { 148 });
         let end = case.root.join("group-end");
         let second_end = case.root.join("second-end");
+        let grouped_release = case.root.join("grouped-release");
         let mut opts = options();
         opts.preparation.quantum = 64;
         if instrument {
@@ -439,6 +441,7 @@ fn grouped_editor_touch_restores_each_target_on_its_actual_late_end() {
                 command
                     .arg("--test-grouped-editor")
                     .env("HEX_ORIGINAL_GROUPED_EDITOR_PATTERN", pattern)
+                    .env("HEX_ORIGINAL_GROUPED_RELEASE", &grouped_release)
                     .env("HEX_ORIGINAL_EDITOR_END_RELEASE", &end)
                     .env("HEX_ORIGINAL_EDITOR_SECOND_END_RELEASE", &second_end);
             },
@@ -560,10 +563,35 @@ fn grouped_editor_touch_restores_each_target_on_its_actual_late_end() {
                     thread::yield_now();
                 }
             };
+        let move_sequence = if pattern == "ordinary-first" {
+            poll(&mut instance, &mut ordered, &|_, ready| ready >= 2);
+            let ordinary = exchange(&mut instance, 1, None, 0.25, 0.25);
+            expect(&ordinary, 2.0);
+            assert!(ordinary.performs.as_slice().is_empty());
+            assert!(ordinary.restorations.as_slice().is_empty());
+            poll(&mut instance, &mut ordered, &|rows, _| {
+                rows.iter()
+                    .any(|row| row.id == 0 && row.kind == ParameterEditKind::End)
+            });
+            assert!(ordered.iter().any(|row| {
+                row.id == 0 && row.kind == ParameterEditKind::Perform && row.normalized == 0.5
+            }));
+            let reading = exchange(&mut instance, 2, None, 0.25, 0.25);
+            expect(&reading, 1.0);
+            assert!(reading.restorations.as_slice().is_empty());
+            fs::write(
+                &grouped_release,
+                b"admit an SDK group after the ordinary edit",
+            )
+            .unwrap();
+            3
+        } else {
+            1
+        };
         poll(&mut instance, &mut ordered, &|_, ready| ready >= 4);
         let held = exchange(
             &mut instance,
-            1,
+            move_sequence,
             None,
             0.25,
             if instrument { 0.5 } else { 0.25 },
@@ -599,13 +627,17 @@ fn grouped_editor_touch_restores_each_target_on_its_actual_late_end() {
         } else {
             ParameterEditKind::End
         };
-        let required = if pattern == "held" { 2 } else { 1 };
+        let required = match pattern {
+            "ordinary-first" => 3,
+            "held" => 2,
+            _ => 1,
+        };
         poll(&mut instance, &mut ordered, &|rows, _| {
             rows.iter().filter(|row| row.kind == wait_for).count() >= required
         });
         let restored = exchange(
             &mut instance,
-            2,
+            move_sequence + 1,
             None,
             0.5,
             if instrument { 0.125 } else { 0.25 },
@@ -615,7 +647,9 @@ fn grouped_editor_touch_restores_each_target_on_its_actual_late_end() {
         let end_fact = |ordered: &[crate::protocol::ParameterEdit], id, gesture, frame| {
             let end = ordered
                 .iter()
-                .find(|row| row.kind == ParameterEditKind::End && row.id == id)
+                .find(|row| {
+                    row.kind == ParameterEditKind::End && row.id == id && row.gesture == gesture
+                })
                 .unwrap();
             assert_eq!((end.gesture, end.first_frame), (gesture, frame));
             EditorRestoration {
@@ -625,13 +659,16 @@ fn grouped_editor_touch_restores_each_target_on_its_actual_late_end() {
             }
         };
         match pattern {
-            "held" => assert_eq!(
-                restored.restorations.as_slice(),
-                [
-                    end_fact(&ordered, 0, primary.gesture, 128),
-                    end_fact(&ordered, 11, axis.gesture, 128),
-                ]
-            ),
+            "held" | "ordinary-first" => {
+                let end_frame = (move_sequence + 1) * 64;
+                assert_eq!(
+                    restored.restorations.as_slice(),
+                    [
+                        end_fact(&ordered, 0, primary.gesture, end_frame),
+                        end_fact(&ordered, 11, axis.gesture, end_frame),
+                    ]
+                );
+            }
             "abort-held" => {
                 assert!(restored.restorations.as_slice().is_empty());
                 assert!(!ordered.iter().any(|row| row.kind == ParameterEditKind::End));

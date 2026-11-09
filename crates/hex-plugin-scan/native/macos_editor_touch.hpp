@@ -63,6 +63,10 @@ class EditorTouch {
         for(const auto& row:held) if(row.gesture && row.target.parameter==id) return &row;
         return nullptr;
     }
+    void abort_group() {
+        scope_aborted=true;
+        for(auto& row:held) if(row.scope==current->scope) row.cancelled=true;
+    }
 public:
     // End never clears a value in the quantum where its last Perform may
     // enter DSP. Release is eligible at the next real PCM boundary.
@@ -78,6 +82,7 @@ public:
     }
     bool would_capture(const EditEvent& edit) const {
         if(scope_aborted || !current || edit.kind!=Perform || !current->find(edit.id)) return false;
+        if(current->count>1 && (!edit.cohort || !edit.grouped_gesture)) return false;
         const auto* row=find(edit.id);
         return !row || (!row->restoring && row->gesture==edit.gesture && !row->end_sequence);
     }
@@ -99,8 +104,12 @@ public:
         if(edit.kind==GroupAborted && current && current->count>1) {
             // The take cannot succeed after an abort. Release retained values
             // on the next real quantum without fabricating any End.
-            scope_aborted=true;
-            for(auto& row:held) if(row.scope==current->scope) row.cancelled=true;
+            abort_group();
+        } else if(current && current->count>1 && edit.kind==Perform && !edit.cohort && edit.grouped_gesture) {
+            // An ungrouped Perform within a grouped member's active gesture
+            // changes audio outside the grouped trace. Cancel its entire take.
+            const auto* row=find(edit.id);
+            if(row && row->gesture==edit.gesture && !row->restoring && in_current_scope(*row)) abort_group();
         }
         if(would_capture(edit) && !find(edit.id)) {
             for(auto& row:held) if(!row.gesture) {
