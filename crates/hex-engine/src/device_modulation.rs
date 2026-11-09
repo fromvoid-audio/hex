@@ -148,7 +148,10 @@ fn source_provider_mapping_supported(state: &NativeDeviceState, parameter: Param
         || id == hex_devices::delay::TYPE_ID
             && matches!(
                 parameter,
-                hex_devices::delay::FEEDBACK | hex_devices::delay::DRY_WET
+                hex_devices::delay::FEEDBACK
+                    | hex_devices::delay::DRY_WET
+                    | hex_devices::delay::LFO_DELAY
+                    | hex_devices::delay::LFO_RATE
             )
         || id == hex_devices::reverb::REVERB_TYPE_ID
         || id == hex_devices::utility::UTILITY_TYPE_ID
