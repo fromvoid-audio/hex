@@ -291,9 +291,7 @@ fn instrument_target_supported(state: &NativeDeviceState, target: DeviceAutomati
     let DeviceAutomationTarget::Parameter(id) = target else {
         return false;
     };
-    if state.type_id() != hex_devices::fm4::device::FM4_TYPE_ID
-        || !(29..=32).any(|value| id == ParameterId::from_static(value))
-    {
+    if state.type_id() != hex_devices::fm4::device::FM4_TYPE_ID {
         return false;
     }
     let Ok(registry) = hex_devices::native_instrument_registry() else {

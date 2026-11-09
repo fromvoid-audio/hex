@@ -827,9 +827,9 @@ pub(super) fn target_overlay(
                     if id == parameter
             )
     });
-    if !assigned
-        && is_pressure_source(bank.sources(), source)
-        && bank.routes().iter().any(|route| route.source == source)
+    if is_pressure_source(bank.sources(), source)
+        && (!hex_engine::fm4_note_pressure_parameter_supported(parameter)
+            || (!assigned && bank.routes().iter().any(|route| route.source == source)))
     {
         return None;
     }
@@ -1039,7 +1039,7 @@ fn apply(
         Edit::Map(source, target) => {
             let pressure = is_pressure_source(&sources, source);
             if pressure
-                && (!matches!(target, MappingTarget::Device(_))
+                && (!matches!(target, MappingTarget::Device(id) if hex_engine::fm4_note_pressure_parameter_supported(id))
                     || routes.iter().any(|route| route.source == source))
             {
                 return Err(Invalid("note pressure supports one carrier assignment"));

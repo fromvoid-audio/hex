@@ -1,4 +1,4 @@
-//! Fixed FM4 voices and carrier controls used by the registered native host.
+//! Fixed FM4 voices, oscillator levels and carrier controls used by the native host.
 //!
 //! Control prepares all 128 tuned step entries (invalid/Nyquist keys remain
 //! explicitly unavailable). One twin owns 64 inline occurrence slots; batches
@@ -13,7 +13,9 @@
 //! the current effective weight. A routed carrier follows its per-sample
 //! canonical value directly. Removing that route resumes the authored ramp
 //! from the last effective weight.
-//! Original levels remain available to reveal previously inaudible operators.
+//! Each sample's oscillator levels are selected before pruning or rendering.
+//! Unpruned effective levels remain available to a newly audible carrier and
+//! to a detached release.
 //! Voice age/gate and the original tuned phase-step law are unchanged by carrier
 //! controls. Per-voice f32 source samples receive occurrence gain before f64 sum.
 //! Complete controls, effective pruning and voices participate in twin history.
@@ -58,6 +60,19 @@ const CARRIERS: [ParameterDescriptor; 4] = [
     PARAMETERS[27],
 ];
 
+const LEVELS: [ParameterDescriptor; 4] =
+    [PARAMETERS[1], PARAMETERS[4], PARAMETERS[7], PARAMETERS[10]];
+const TARGETS: [ParameterDescriptor; 8] = [
+    LEVELS[0],
+    LEVELS[1],
+    LEVELS[2],
+    LEVELS[3],
+    CARRIERS[0],
+    CARRIERS[1],
+    CARRIERS[2],
+    CARRIERS[3],
+];
+
 /// Control-only component preparation through FM4's existing validated state
 /// and tuning contract. This does not advertise native host automation support.
 impl Fm4Definition {
@@ -95,12 +110,14 @@ impl Factory {
                 let index = CARRIERS
                     .iter()
                     .position(|descriptor| *descriptor == route.descriptor())
-                    .filter(|_| carrier_semantics(route.descriptor().id) == Some(route.semantics()))
+                    .filter(|_| {
+                        modulation_semantics(route.descriptor().id) == Some(route.semantics())
+                    })
                     .ok_or(DeviceContractError::UnsupportedProcessingClass)?;
                 let mut routing = self.config.full.routing;
                 routing.carriers = [0.0; 4];
                 routing.carriers[index] = 1.0;
-                let required = audible_operator_ancestors(&self.config.full.levels, &routing);
+                let required = audible_operator_ancestors(&[1.0; 4], &routing);
                 Ok(PressureRoute {
                     index,
                     route,
@@ -287,6 +304,7 @@ struct Runtime {
     config: Config,
     voices: [Voice; VOICES],
     controls: [Control; 4],
+    levels: [f64; 4],
     effective: PreparedFmConfiguration,
     unclamped_pressure_target: Option<(ParameterId, f64)>,
     cold: bool,
@@ -301,6 +319,7 @@ impl Runtime {
                 target: value,
                 remaining: 0,
             }),
+            levels: config.full.levels,
             effective: config.base,
             unclamped_pressure_target: None,
             cold: true,
@@ -369,8 +388,10 @@ impl Runtime {
         }
         Ok(())
     }
-    fn set_carriers(&mut self, carriers: [f64; 4]) {
+    fn set_controls(&mut self, levels: [f64; 4], carriers: [f64; 4]) {
+        self.levels = levels;
         self.effective = self.config.full;
+        self.effective.levels = levels;
         self.effective.routing.carriers = carriers;
         let audible = audible_operator_ancestors(&self.effective.levels, &self.effective.routing);
         for (index, audible) in audible.into_iter().enumerate() {
@@ -446,7 +467,14 @@ impl Runtime {
         let mut next_event = 0;
         let mut slots = [0; VOICES];
         let mut active_count = self.active_slots(&mut slots);
-        let steady_base = values.is_none() && self.has_steady_base_carriers();
+        let steady_base = values.is_none()
+            && self.levels == self.config.full.levels
+            && self.has_steady_base_carriers();
+        let level_lanes = LEVELS.map(|descriptor| {
+            values
+                .is_some_and(|values| values.parameter_ids().binary_search(&descriptor.id).is_ok())
+        });
+        let level_values = values.filter(|_| level_lanes.contains(&true));
         let modulated = CARRIERS.map(|descriptor| {
             values.is_some_and(|values| values.has_sample_rate_modulation(descriptor.id))
         });
@@ -465,8 +493,14 @@ impl Runtime {
                         self.cold || modulated[index],
                     )
                 });
-                if carriers != self.effective.routing.carriers {
-                    self.set_carriers(carriers);
+                let levels = level_values.map_or(self.config.full.levels, |values| {
+                    std::array::from_fn(|index| match values.value_at(LEVELS[index].id, offset) {
+                        Some(ParameterValue::Float(value)) => f64::from(value),
+                        _ => self.config.full.levels[index],
+                    })
+                });
+                if levels != self.levels || carriers != self.effective.routing.carriers {
+                    self.set_controls(levels, carriers);
                 }
             }
             self.cold = false;
@@ -535,8 +569,7 @@ impl Runtime {
                             if base == 0.0 {
                                 for (index, required) in pressure.required.into_iter().enumerate() {
                                     if required {
-                                        configuration.levels[index] =
-                                            self.config.full.levels[index];
+                                        configuration.levels[index] = self.levels[index];
                                     }
                                 }
                             }
@@ -577,13 +610,13 @@ impl PreparedMutableInstrumentRuntime for Factory {
         self.config.accepts_note_pressure()
     }
     fn parameter_automation_descriptors(&self) -> &[ParameterDescriptor] {
-        &CARRIERS
+        &TARGETS
     }
     fn parameter_modulation_semantics(
         &self,
         parameter: ParameterId,
     ) -> Option<hex_lattice_contract::ParameterSemantics> {
-        carrier_semantics(parameter)
+        modulation_semantics(parameter)
     }
     fn supports_active_occurrence_ids(&self) -> bool {
         true
@@ -726,6 +759,7 @@ impl MutableInstrumentRuntime for Runtime {
         if let Some(previous) = previous.as_any().downcast_ref::<Self>() {
             self.inherit_voices(previous);
             self.controls = previous.controls;
+            self.levels = previous.levels;
             self.effective = previous.effective;
             self.cold = previous.cold;
         }
@@ -784,7 +818,10 @@ impl MutableInstrumentRuntime for Runtime {
                 }
             }
             self.controls = previous.controls;
-            self.set_carriers(previous.controls.map(|control| control.current));
+            self.set_controls(
+                self.config.full.levels,
+                previous.controls.map(|control| control.current),
+            );
             self.cold = previous.cold;
         }
     }
@@ -801,23 +838,27 @@ impl InstrumentParameterRuntime for Runtime {
     }
 
     fn copy_targets(&self, output: &mut [Option<ParameterValue>]) -> Result<(), Error> {
-        if output.len() != CARRIERS.len() {
+        if output.len() != TARGETS.len() {
             return Err(Error::InvalidParameterAutomation);
         }
-        for (slot, control) in output.iter_mut().zip(self.controls) {
+        let (levels, carriers) = output.split_at_mut(LEVELS.len());
+        for (slot, level) in levels.iter_mut().zip(self.levels) {
+            *slot = Some(ParameterValue::Float(level as f32));
+        }
+        for (slot, control) in carriers.iter_mut().zip(self.controls) {
             *slot = Some(ParameterValue::Float(control.target as f32));
         }
         Ok(())
     }
 
     fn descriptors(&self) -> &[ParameterDescriptor] {
-        &CARRIERS
+        &TARGETS
     }
     fn parameter_modulation_semantics(
         &self,
         parameter: ParameterId,
     ) -> Option<hex_lattice_contract::ParameterSemantics> {
-        carrier_semantics(parameter)
+        modulation_semantics(parameter)
     }
     fn preflight(
         &self,

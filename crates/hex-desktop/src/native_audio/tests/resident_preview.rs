@@ -299,6 +299,9 @@ impl WorkerAudioSink for ResidentSink {
             while let Some(observation) = self.inner.take_plugin_parameter_observation() {
                 use hex_session::service::PluginParameterObservation as Observation;
                 match observation {
+                    Observation::Grouped(_) => {
+                        panic!("generic parameter gesture emitted a grouped editor observation");
+                    }
                     Observation::Ready {
                         key,
                         context,
