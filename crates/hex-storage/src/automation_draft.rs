@@ -61,8 +61,8 @@ mod take;
 pub use take::{
     AutomationSharedData, CompletedAutomationTake, MAX_PREVIEW_QUERIES, MAX_SCALAR_RANGE_FRAMES,
     MAX_SPANS_PER_STEP, PreparedAutomationTake, PreparedAutomationTakeDataLayout,
-    ProjectedAutomationSpan, ProjectedSpanCursor, SpanReadProgress, SpanReadState, TakeOpenError,
-    automation_projection_fingerprint,
+    ProjectedAutomationSpan, ProjectedGroupLane, ProjectedSpanCursor, SpanReadProgress,
+    SpanReadState, TakeOpenError, automation_projection_fingerprint,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
