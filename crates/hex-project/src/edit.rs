@@ -395,7 +395,7 @@ pub enum Command {
     },
     /// Move a complete unit within one retained source, keeping its parent.
     /// The designated instrument moves with its children. None appends; invalid
-    /// membership placement and edits to bound source chains refuse.
+    /// membership placement must stay inside the owning chain.
     MoveNativeSourceDevice {
         source: crate::SourceId,
         device: DeviceId,
