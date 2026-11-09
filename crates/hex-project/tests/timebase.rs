@@ -141,6 +141,31 @@ fn meter_map_tracks_arbitrary_midbar_changes_and_fragmentary_bars() {
 }
 
 #[test]
+fn meter_change_bar_number_rounds_only_incomplete_prior_bars_up() {
+    let four = Meter::COMMON_TIME;
+    let bar = BeatTime::from_quarters(4).unwrap().raw();
+    for (offset, expected_bar) in [(bar - 1, 2), (bar, 2), (bar + 1, 3)] {
+        let map = MeterMap::new(vec![
+            MeterPoint::new(BeatTime::ZERO, four),
+            MeterPoint::new(BeatTime::from_raw(offset), four),
+        ])
+        .unwrap();
+        assert_eq!(
+            map.position(BeatTime::from_raw(offset)).unwrap().bar(),
+            expected_bar
+        );
+    }
+    let shortest = Meter::new(1, 64).unwrap();
+    let last = BeatTime::from_raw(u64::MAX);
+    let map = MeterMap::new(vec![
+        MeterPoint::new(BeatTime::ZERO, shortest),
+        MeterPoint::new(last, four),
+    ])
+    .unwrap();
+    assert_eq!(map.position(last).unwrap().bar(), 68_719_476_737);
+}
+
+#[test]
 fn meter_map_rejects_bad_order_and_invalid_meter_values() {
     assert!(Meter::new(0, 4).is_err());
     assert!(Meter::new(4, 3).is_err());

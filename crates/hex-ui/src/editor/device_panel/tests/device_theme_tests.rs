@@ -22,7 +22,7 @@ fn light_palette() -> hex_preferences::ThemePreferences {
 }
 
 #[gpui::test]
-fn device_theme_refresh_preserves_canonical_and_preview_numeric_drafts(cx: &mut TestAppContext) {
+fn device_theme_refresh_preserves_canonical_numeric_drafts(cx: &mut TestAppContext) {
     let _restore = RestoreTheme(theme::preferences());
     theme::apply_preferences(hex_preferences::ThemePreferences::default());
     cx.update(hex_widgets::bind_numeric_control_keys);
@@ -78,44 +78,14 @@ fn device_theme_refresh_preserves_canonical_and_preview_numeric_drafts(cx: &mut 
     theme::apply_preferences(hex_preferences::ThemePreferences::default());
     editor.update(cx, |_, cx| cx.notify());
     visual.run_until_parked();
-    let field = operator_panel::preview::Field::FineA;
-    let preview = editor.read_with(cx, |view, _| {
-        view.device_panel.operator_previews[&device].controls[&field]
-            .entity
-            .clone()
-    });
-    let value_selector = selector(format!(
-        "operator-preview-{}-{}-value",
-        device.value(),
-        field as usize
-    ));
-    let value_bounds = visual
-        .debug_bounds(value_selector)
-        .expect("preview value field");
-    visual.simulate_click(value_bounds.center(), Modifiers::default());
-    visual.simulate_keystrokes("cmd-a");
-    visual.simulate_input("invalid preview");
-    visual.run_until_parked();
-    let preview_focus = cx.update(|app| preview.focus_handle(app));
-    theme::apply_preferences(light_palette());
-    editor.update(cx, |_, cx| cx.notify());
-    visual.run_until_parked();
-    editor.read_with(cx, |view, app| {
-        let retained = &view.device_panel.operator_previews[&device].controls[&field].entity;
-        assert_eq!(retained.entity_id(), preview.entity_id());
-        assert!(retained.read(app).is_editing());
-        assert_eq!(retained.read(app).display_text(), "invalid preview");
-        assert_eq!(view.state.as_ref().unwrap().project, project);
-        assert_eq!(view.worker_requests_pending, 0);
-    });
-    assert!(visual.update(|window, _| preview_focus.is_focused(window)));
-    assert_eq!(
-        visual.rendered_background(value_selector),
-        Some(gpui::Background::from(gpui::rgb(
-            control_style().background
-        )))
+    assert!(
+        visual
+            .debug_bounds(selector(format!(
+                "operator-preview-row-{}-pitch env",
+                device.value()
+            )))
+            .is_none()
     );
-    visual.simulate_keystrokes("escape");
 }
 
 #[gpui::test]
@@ -172,13 +142,14 @@ fn device_theme_refresh_keeps_open_selector_and_navigation_state(cx: &mut TestAp
         visual.debug_bounds(popup).is_some(),
         "theme refresh leaves popup open"
     );
-    assert_eq!(
-        visual.rendered_background(selector(format!(
-            "operator-preview-{}-toggle-0-indicator",
-            device.value()
-        ))),
-        Some(gpui::Background::from(gpui::rgb(control_style().accent))),
-        "retained view-only toggle receives the active palette"
+    assert!(
+        visual
+            .debug_bounds(selector(format!(
+                "operator-preview-{}-toggle-0",
+                device.value()
+            )))
+            .is_none(),
+        "theme refresh cannot recreate unsupported controls"
     );
     assert_eq!(
         visual.rendered_background(popup),

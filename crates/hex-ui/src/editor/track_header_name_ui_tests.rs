@@ -43,10 +43,115 @@ fn assert_color(visual: &mut VisualTestContext, editor: &Entity<EditorView>, tra
             c.muted
         }
     });
-    assert_eq!(
-        visual.rendered_background(selector("track-name-area", track.value())),
-        Some(gpui::rgb(expected).into())
+    let mesh = visual.rendered_path_triangles(selector("track-name-plate", track.value()));
+    assert!(!mesh.is_empty(), "actual completed name-plate path");
+    assert!(
+        mesh.iter()
+            .all(|triangle| triangle.color == gpui::rgb(expected).into())
     );
+}
+
+fn path_covers(mesh: &[gpui::RenderedPathTriangle], at: gpui::Point<gpui::ScaledPixels>) -> bool {
+    mesh.iter().any(|triangle| {
+        if !triangle.mask.contains(&at) {
+            return false;
+        }
+        let cross = |a: gpui::Point<gpui::ScaledPixels>, b: gpui::Point<gpui::ScaledPixels>| {
+            let (ax, ay) = (f64::from(a.x), f64::from(a.y));
+            let (bx, by) = (f64::from(b.x), f64::from(b.y));
+            (bx - ax) * (f64::from(at.y) - ay) - (by - ay) * (f64::from(at.x) - ax)
+        };
+        let [a, b, c] = triangle.vertices;
+        let signs = [cross(a, b), cross(b, c), cross(c, a)];
+        signs.iter().all(|sign| *sign >= 0.0) || signs.iter().all(|sign| *sign <= 0.0)
+    })
+}
+
+#[gpui::test]
+fn colored_header_paths_keep_open_corners_and_neutral_expanded_backing(cx: &mut TestAppContext) {
+    let (_environment, mut visual, editor, tracks) = setup(cx);
+    for group in [false, true] {
+        let id = if group {
+            editor.update(&mut visual, |view, _| {
+                assert!(view.enqueue(hex_session::service::Request::Edit(
+                    hex_project::Command::GroupTracks {
+                        tracks: hex_project::TrackSelectionIds::new(&tracks).unwrap(),
+                        name: "bus".into(),
+                    }
+                )))
+            });
+            clip_drag_ui_test::pump_move(&editor, &mut visual);
+            editor.read_with(&visual, |view, _| {
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .tracks()
+                    .iter()
+                    .find(|track| track.is_group())
+                    .unwrap()
+                    .id()
+            })
+        } else {
+            tracks[0]
+        };
+        editor.update(&mut visual, |view, cx| {
+            view.track_scroll
+                .scroll_to_item(0, gpui::ScrollStrategy::Top);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        for height in [super::super::tracks::TRACK_ROW_HEIGHT, 150.0] {
+            let header = bounds(&mut visual, "arrangement-track-header", id.value());
+            let start = bounds(&mut visual, "track-height-resize", id.value()).center();
+            let end = start + point(px(0.0), px(height - f32::from(header.size.height)));
+            visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            let plate = bounds(&mut visual, "track-name-plate", id.value());
+            let mesh = visual.rendered_path_triangles(selector("track-name-plate", id.value()));
+            let scale = visual.update(|window, _| window.scale_factor());
+            let at = |x, y| (plate.origin + point(px(x), px(y))).scale(scale);
+            let (w, h) = (f32::from(plate.size.width), f32::from(plate.size.height));
+            assert_color(&mut visual, &editor, id);
+            assert!(
+                path_covers(&mesh, at(w / 2.0, h / 2.0)),
+                "visible plate center · group={group}, height={height}"
+            );
+            assert!(
+                !path_covers(&mesh, at(w - 0.5, h - 0.5)),
+                "lower-right cut reveals the header"
+            );
+            assert!(
+                path_covers(&mesh, at(w - 8.0, h - 1.0)),
+                "fill reaches the diagonal without gaps"
+            );
+            assert_eq!(
+                path_covers(&mesh, at(0.5, 0.5)),
+                !group,
+                "only group starts have a rounded upper-left corner"
+            );
+            assert!(
+                visual
+                    .rendered_background(selector("track-name-area", id.value()))
+                    .is_none(),
+                "no rectangular colored backing"
+            );
+            let header_fill = visual
+                .rendered_background(selector("arrangement-track-header", id.value()))
+                .unwrap();
+            assert!(
+                [
+                    theme::PaletteRole::Surface,
+                    theme::PaletteRole::Raised,
+                    theme::PaletteRole::Hover
+                ]
+                .iter()
+                .any(|role| header_fill == gpui::rgb(theme::color(*role)).into())
+            );
+        }
+    }
 }
 #[gpui::test]
 fn colored_name_column_is_readable_and_its_blank_area_selects_with_modifiers(

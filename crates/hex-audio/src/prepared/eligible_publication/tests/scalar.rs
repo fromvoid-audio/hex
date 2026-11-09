@@ -36,6 +36,14 @@ fn scalar_source_for_target(
     target: DraftTarget,
     value: f32,
 ) -> (DraftFile, hex_stream::ScalarSourceDefinition) {
+    scalar_source_for_target_with_id(project, target, value, 1)
+}
+fn scalar_source_for_target_with_id(
+    project: &hex_project::Project,
+    target: DraftTarget,
+    value: f32,
+    source_id: u64,
+) -> (DraftFile, hex_stream::ScalarSourceDefinition) {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let path = std::env::temp_dir().join(format!(
         "hex-native-scalar-{}-{}",
@@ -97,7 +105,7 @@ fn scalar_source_for_target(
     .into_prepared_on_control()
     .unwrap();
     let source = hex_stream::ScalarSourceDefinition::new(
-        hex_engine::ScalarSourceKey::new(7, 1, 1).unwrap(),
+        hex_engine::ScalarSourceKey::new(7, source_id, 1).unwrap(),
         source,
         Arc::new(project.tempo_map().clone()),
     )
@@ -356,21 +364,20 @@ fn real_scalar_only_native_source_requires_catalog_and_pages_then_renders_and_jo
     if !hex_engine::audio_storage_constructor_layout_supported() {
         return;
     }
-    for target in [
-        DeviceAutomationTarget::Parameter(hex_devices::utility::parameter::GAIN),
-        DeviceAutomationTarget::HostInputGain,
-        DeviceAutomationTarget::HostOutputGain,
-    ] {
-        scalar_case(target, false);
-    }
-    // The same native endpoint, union readiness and retirement path must also
-    // render a real streamed WAV beside the sealed scalar source.
-    scalar_case(
-        DeviceAutomationTarget::Parameter(hex_devices::utility::parameter::GAIN),
-        true,
-    );
+    let gain = DeviceAutomationTarget::Parameter(hex_devices::utility::parameter::GAIN);
+    let recorded_gain = scalar_case(gain, false);
+    scalar_case(DeviceAutomationTarget::HostInputGain, false);
+    scalar_case(DeviceAutomationTarget::HostOutputGain, false);
+    // The same native endpoint must render a real streamed WAV beside both
+    // recorded parameters. The independent one-lane run supplies the PCM oracle
+    // for Utility's gain while the typed host law supplies the second factor.
+    let mixed = scalar_case(gain, true);
+    let trim = hex_lattice_contract::HostGain::from_normalized(0.75)
+        .unwrap()
+        .linear();
+    assert!((mixed - recorded_gain * trim).abs() < 1e-6);
 }
-fn scalar_case(target: DeviceAutomationTarget, mixed: bool) {
+fn scalar_case(target: DeviceAutomationTarget, mixed: bool) -> f32 {
     let mut snapshot = readiness::project_with_frames(8192).snapshot();
     // This clip is resident in the scalar-only cases. Its recovery checkpoint
     // still uses an absolute media reference, as required by the draft codec.
@@ -400,6 +407,51 @@ fn scalar_case(target: DeviceAutomationTarget, mixed: bool) {
         .as_ref()
         .map(|definition| definition.metadata.clone());
     let (_file, source) = scalar_source(project, device, target);
+    let extra = mixed.then(|| {
+        scalar_source_for_target_with_id(
+            project,
+            DraftTarget::Device {
+                device,
+                target: DeviceAutomationTarget::HostInputGain,
+            },
+            0.75,
+            2,
+        )
+    });
+    let extra_metadata = extra.as_ref().map(|(_, source)| source.metadata().clone());
+    let compile_selected = |source: hex_engine::ScalarSourceMetadata| {
+        if let (Some(audio), Some(extra)) = (&audio_metadata, &extra_metadata) {
+            let asset = project.assets().next().unwrap().id();
+            let sources = BTreeMap::from([(
+                asset,
+                hex_engine::compile::PreparedAudioSource::Streamed(Arc::new(audio.clone())),
+            )]);
+            let revision = hex_engine::PreparedRevision::prepare_with_scalar_automation_bindings(
+                project,
+                &sources,
+                audio.key().generation(),
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+                vec![
+                    hex_engine::ScalarAutomationBinding {
+                        device,
+                        target,
+                        source,
+                    },
+                    hex_engine::ScalarAutomationBinding {
+                        device,
+                        target: DeviceAutomationTarget::HostInputGain,
+                        source: extra.clone(),
+                    },
+                ],
+                None,
+            )
+            .unwrap();
+            Playback::from_prepared(Arc::new(revision))
+        } else {
+            compile(project, device, target, source, audio_metadata.as_ref())
+        }
+    };
     let metadata = source.metadata().clone();
     let context = hex_engine::AudioSourceContext {
         project_generation: 7,
@@ -429,13 +481,7 @@ fn scalar_case(target: DeviceAutomationTarget, mixed: bool) {
         .unwrap();
     let refused = control
         .publish_with_admission_and_source_on_control(
-            compile(
-                project,
-                device,
-                target,
-                metadata.clone(),
-                audio_metadata.as_ref(),
-            ),
+            compile_selected(metadata.clone()),
             PublicationPolicy::InheritRuntime,
             context,
             |_| Ok::<_, ()>(()),
@@ -448,10 +494,15 @@ fn scalar_case(target: DeviceAutomationTarget, mixed: bool) {
 
     // Three cases have no PCM definition and prove scalar-only readiness. The
     // mixed case additionally supplies a real WAV to the same endpoint/pool.
+    let (_extra_file, extra_source) = match extra {
+        Some((file, source)) => (Some(file), Some(source)),
+        None => (None, None),
+    };
+    let definitions = std::iter::once(source).chain(extra_source).collect();
     let mut runtime = hex_stream::StreamRuntime::spawn_with_scalar_sources(
         hex_stream::StreamConfig::with_pool_pages(4),
         audio_definition.into_iter().collect(),
-        vec![source],
+        definitions,
     )
     .unwrap();
     runtime
@@ -521,7 +572,7 @@ fn scalar_case(target: DeviceAutomationTarget, mixed: bool) {
     }
     let revision = control
         .publish_with_admission_and_source_on_control(
-            compile(project, device, target, metadata, audio_metadata.as_ref()),
+            compile_selected(metadata),
             PublicationPolicy::InheritRuntime,
             context,
             |_| Ok::<_, ()>(()),
@@ -611,6 +662,7 @@ fn scalar_case(target: DeviceAutomationTarget, mixed: bool) {
     drop(errors);
     drop(control);
     finish(&mut retirement);
+    first[0][0]
 }
 
 #[test]
@@ -888,12 +940,12 @@ fn conflicting_scalar_key_facts_across_selected_domains_refuse_before_publicatio
         measured_block(&mut data);
         control.reclaim();
         for (index, token) in domains.iter().enumerate() {
-            if !reports[index] {
-                if let Some(report) = control.recover_audio_candidate_domain(*token) {
-                    assert!(report.worker_joined && report.accounting_complete);
-                    assert_eq!(report.page_buffers, 4);
-                    reports[index] = true;
-                }
+            if !reports[index]
+                && let Some(report) = control.recover_audio_candidate_domain(*token)
+            {
+                assert!(report.worker_joined && report.accounting_complete);
+                assert_eq!(report.page_buffers, 4);
+                reports[index] = true;
             }
         }
         assert!(std::time::Instant::now() < deadline);

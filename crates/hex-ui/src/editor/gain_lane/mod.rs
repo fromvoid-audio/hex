@@ -10,7 +10,7 @@ mod paint;
 mod pending;
 use pending::PendingGain;
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 use super::{EditorView, ViewState, viewport::Viewport};
 use gpui::{Context, Entity, Subscription, Window};
 use hex_project::{BeatTime, GainPoint, TrackId};
@@ -29,6 +29,7 @@ pub(super) struct Draft {
 }
 struct NumericBinding {
     entity: Entity<NumericControl>,
+    edit_state: hex_widgets::NumericEditState,
     _subscription: Subscription,
     key: (TrackId, BeatTime, u64, u64),
 }
@@ -43,6 +44,12 @@ pub(super) struct GainLane {
     pub(super) error: Option<String>,
 }
 impl GainLane {
+    pub(super) fn numeric_draft_active(&self) -> bool {
+        self.gain
+            .as_ref()
+            .is_some_and(|binding| binding.edit_state.is_editing())
+    }
+
     pub(super) fn pointer_is_active(&self) -> bool {
         self.draft.is_some_and(|draft| draft.pointer.is_some())
     }
@@ -87,13 +94,12 @@ impl GainLane {
             self.selected = None;
             self.gain = None;
         }
-        if let Some(track) = self.track.and_then(|track| project.track(track)) {
-            if self
+        if let Some(track) = self.track.and_then(|track| project.track(track))
+            && self
                 .selected
                 .is_some_and(|beat| !track.gain_envelope().iter().any(|point| point.beat == beat))
-            {
-                self.selected = track.gain_envelope().first().map(|point| point.beat);
-            }
+        {
+            self.selected = track.gain_envelope().first().map(|point| point.beat);
         }
     }
 }

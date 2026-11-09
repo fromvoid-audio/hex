@@ -1,7 +1,7 @@
 //! Grouping through the production Session/native publication path. Only output
 //! device creation is substituted; callback allocation probes stay enabled.
-use super::resident_preview::ResidentHarness;
 use super::*;
+use super::{resident_lifecycle::finish_replacement, resident_preview::ResidentHarness};
 use hex_project::{Command, Created};
 
 fn replay(h: &mut ResidentHarness) -> Vec<hex_engine::Frame> {
@@ -169,9 +169,7 @@ fn resident_grouping_publishes_exact_pcm_with_atomic_refusal_history_and_reopen(
     let reopened = h.run(Request::Open(saved));
     assert!(reopened.open_complete && reopened.project_replaced);
     assert_eq!(reopened.state.project, faded.state.project);
-    h.release_relinquished_output();
-    h.wait_fresh_output(old_output);
-    let (applied, _) = h.applied(0);
+    let applied = finish_replacement(&mut h, &reopened, old_output);
     assert_eq!(replay(&mut h), expected);
     let group = reopened
         .state
@@ -196,7 +194,7 @@ fn resident_grouping_publishes_exact_pcm_with_atomic_refusal_history_and_reopen(
         .preview_root
         .as_ref()
         .unwrap();
-    assert_eq!(preview.waveform.source_frames, 144);
+    assert_eq!(preview.waveform.source_frames(), 144);
     let mut repeated = expected.clone();
     for (index, frame) in repeated.iter_mut().take(200).enumerate() {
         *frame = expected[index % 144];
@@ -281,9 +279,7 @@ fn resident_grouping_publishes_exact_pcm_with_atomic_refusal_history_and_reopen(
     let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
     let reopened = h.run(Request::Open(saved));
     assert_eq!(reopened.state.project, regrouped.state.project);
-    h.release_relinquished_output();
-    h.wait_fresh_output(old_output);
-    h.applied(0);
+    finish_replacement(&mut h, &reopened, old_output);
     assert_eq!(replay(&mut h), expected);
 }
 

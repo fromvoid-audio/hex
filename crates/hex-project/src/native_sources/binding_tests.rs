@@ -227,7 +227,7 @@ fn reassignment_and_unsupported_bindings_are_explicit_atomic_and_identity_scoped
         .execute(Command::CreateNativeSource {
             name: "chain".into(),
             devices: vec![default_instrument_state().unwrap(); 2],
-            instrument_index: 0,
+            instrument_index: 1,
         })
         .unwrap()
     else {

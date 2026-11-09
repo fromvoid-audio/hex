@@ -1,4 +1,4 @@
-//! Post-device output metering: the passive stereo peak meter after each device,
+//! Post-device output metering: stereo peaks and a separate insertion action,
 //! plus the dynamics readings that device panels draw themselves.
 use super::*;
 use std::time::Instant;
@@ -38,6 +38,32 @@ impl MeterState {
             self.dynamics_routing = None;
         }
         self.device_type = Some(device_type);
+    }
+
+    /// Fold one drained callback reading into the display. Held peaks keep
+    /// the loudest observed value until acknowledged; only a fresh reading
+    /// can raise them again, so an acknowledged overload stays cleared.
+    fn record(&mut self, peaks: [f32; 2], playing: bool, healthy: bool, decay: f32) {
+        for (index, peak) in peaks.into_iter().enumerate() {
+            self.levels[index] = if playing {
+                peak.max(self.levels[index] * decay)
+            } else {
+                0.0
+            };
+            // Drain the final valid transient even when Pause/Stop wins before
+            // the next UI refresh; only the live fills depend on transport state.
+            if healthy {
+                self.held[index] = self.held[index].max(peak);
+            }
+        }
+    }
+
+    /// A click acknowledges the meter: held peaks, including an overload
+    /// line at the top, clear. Live levels are left to the signal.
+    fn acknowledge(&mut self) -> bool {
+        let changed = self.held != [0.0; 2];
+        self.held = [0.0; 2];
+        changed
     }
 
     fn update_dynamics(
@@ -162,25 +188,21 @@ fn sample_levels(view: &mut EditorView, device: &hex_project::Device) -> ([f32; 
     let now = Instant::now();
     let decay = 10.0_f32.powf(-12.0 * now.duration_since(state.updated).as_secs_f32() / 20.0);
     state.updated = now;
-    for (index, peak) in peaks.into_iter().enumerate() {
-        state.levels[index] = if playing {
-            peak.max(state.levels[index] * decay)
-        } else {
-            0.0
-        };
-        // Drain the final valid transient even when Pause/Stop wins before
-        // the next UI refresh; only the live fills depend on transport state.
-        if healthy {
-            state.held[index] = state.held[index].max(peak);
-        }
-    }
+    state.record(peaks, playing, healthy, decay);
     (state.levels, state.held)
 }
 
-/// Passive post-device stereo meter between devices: left/right output peaks,
-/// display-only. Host trim stays canonical device state edited by automation;
-/// a non-neutral trim is disclosed in the tooltip rather than hidden.
-pub(super) fn render(view: &mut EditorView, device: &hex_project::Device) -> Div {
+/// Post-device stereo meter between devices: left/right output peaks.
+/// Host trim stays canonical device state edited by automation; a
+/// non-neutral trim is disclosed in the tooltip rather than hidden. A click
+/// clears the held peaks (Pulse #3273) and also reaches the device frame's
+/// selection listener; it never edits the project. The separate + action below
+/// opens the catalog without clearing peaks or selecting the frame.
+pub(super) fn render(
+    view: &mut EditorView,
+    device: &hex_project::Device,
+    cx: &mut Context<EditorView>,
+) -> impl IntoElement {
     let (levels, held) = sample_levels(view, device);
     let mut tooltip = format!(
         "output peak l {} · r {} dbfs",
@@ -196,27 +218,52 @@ pub(super) fn render(view: &mut EditorView, device: &hex_project::Device) -> Div
             "\ntrim in {input_trim:+.2} db · out {output_trim:+.2} db"
         ));
     }
+    tooltip.push_str("\nclick to clear peaks");
+    let id = device.id();
     div()
+        .id(ElementId::Name(
+            format!("device-{}-output-meter-strip", id.value()).into(),
+        ))
+        .on_click(cx.listener(move |view, _: &gpui::ClickEvent, _, cx| {
+            if view
+                .device_panel
+                .meter_states
+                .get_mut(&id)
+                .is_some_and(MeterState::acknowledge)
+            {
+                cx.notify();
+            }
+        }))
         .w(px(WIDTH))
         .h_full()
         .flex()
         .flex_shrink_0()
-        .justify_center()
+        .flex_col()
+        .items_center()
+        .gap(px(2.0))
         .py(px(4.0))
-        .child(hex_widgets::stereo_peak_meter(
-            format!("device-{}-output-meter", device.id().value()).into(),
-            hex_widgets::StereoPeakMeter {
-                levels,
-                held,
-                tooltip: theme::text(tooltip),
-                colors: theme::meter_colors(),
-            },
-            theme::control_style(),
-        ))
+        .child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .child(hex_widgets::stereo_peak_meter(
+                    format!("device-{}-output-meter", device.id().value()).into(),
+                    hex_widgets::StereoPeakMeter {
+                        levels,
+                        held,
+                        tooltip: theme::text(tooltip),
+                        colors: theme::meter_colors(),
+                    },
+                    theme::control_style(),
+                )),
+        )
+        .child(device_add::button(view, id, cx))
 }
 
 fn peak_db(peak: f32) -> String {
-    if peak > 0.0 {
+    if peak == f32::INFINITY {
+        "+∞".to_owned()
+    } else if peak > 0.0 {
         format!("{:.2}", 20.0 * peak.log10())
     } else {
         "−∞".to_owned()
@@ -226,6 +273,16 @@ fn peak_db(peak: f32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn peak_labels_include_infinity_symbols() {
+        assert_eq!(peak_db(f32::INFINITY), "+∞");
+        for value in [f32::NEG_INFINITY, f32::NAN, 0.0, -1.0] {
+            assert_eq!(peak_db(value), "−∞");
+        }
+        assert_eq!(peak_db(1.0), "0.00");
+        assert_eq!(peak_db(0.1), "-20.00");
+    }
 
     #[test]
     fn compatible_handoff_preserves_peaks_and_replacement_or_missing_source_clears_them() {

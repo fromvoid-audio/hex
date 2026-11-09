@@ -379,6 +379,9 @@ impl<const N: usize> Runtime<N> {
     }
     fn apply(&mut self, event: NativeInstrumentEvent) -> Result<(), Error> {
         match event {
+            NativeInstrumentEvent::NotePressure { .. } => {
+                return Err(Error::UnsupportedNotePressure);
+            }
             NativeInstrumentEvent::Expression { .. } => return Err(Error::InvalidEventBatch),
             NativeInstrumentEvent::NoteOn {
                 occurrence_id,
@@ -518,11 +521,7 @@ impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
         };
         let mut offset = 0;
         for event in events {
-            let next = match *event {
-                NativeInstrumentEvent::NoteOn { frame_offset, .. }
-                | NativeInstrumentEvent::NoteOff { frame_offset, .. }
-                | NativeInstrumentEvent::Expression { frame_offset, .. } => frame_offset,
-            };
+            let next = event.frame_offset();
             if next < offset || next >= frames {
                 return Err(Error::InvalidEventBatch);
             }
@@ -583,11 +582,7 @@ impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
         let mut event = 0;
         for (offset, frame) in frames.iter_mut().enumerate() {
             while let Some(next) = events.get(event) {
-                let at = match *next {
-                    NativeInstrumentEvent::NoteOn { frame_offset, .. }
-                    | NativeInstrumentEvent::NoteOff { frame_offset, .. }
-                    | NativeInstrumentEvent::Expression { frame_offset, .. } => frame_offset,
-                };
+                let at = next.frame_offset();
                 if at != offset {
                     break;
                 }
@@ -919,6 +914,8 @@ fn export<const N: usize>(runtime: &Runtime<N>) -> Option<super::harmonic_runtim
     }
     let spectrum = builtin_spectrum(&base)?;
     Some(Legacy {
+        fine_offsets: runtime.factory.configuration.fine_offsets_hz(),
+        pitch_keytrack: runtime.factory.configuration.pitch_keytrack_percent(),
         tuning: None,
         rate: runtime.factory.rate,
         companion: super::companion::Settings::default(),
@@ -1039,6 +1036,9 @@ mod tests {
             ] {
                 if (start..end).contains(&at) {
                     events.push(match event {
+                        NativeInstrumentEvent::NotePressure { .. } => {
+                            panic!("unexpected test note pressure")
+                        }
                         NativeInstrumentEvent::Expression { expression, .. } => {
                             NativeInstrumentEvent::Expression {
                                 frame_offset: at - start,
@@ -1339,7 +1339,7 @@ mod tests {
         assert!(
             edited
                 .preflight_events(&high, 1, &hex_lattice::EMPTY_DEVICE_RESOURCES)
-                .is_err()
+                .is_ok()
         );
     }
 }

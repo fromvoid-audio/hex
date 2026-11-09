@@ -1,5 +1,6 @@
 //! Delayed original SDK capture through the real Service Save request.
 use super::*;
+mod authored_reopen;
 mod batch;
 mod reopen;
 

@@ -153,8 +153,8 @@ fn held_event_gestures_isolate_other_input_and_finish_outside(cx: &mut TestAppCo
                     (kind, gesture.kind),
                     ("start", Kind::PlayStart { .. })
                         | ("select", Kind::Select)
-                        | ("move", Kind::Move(_))
-                        | ("range", Kind::RangeMove { .. })
+                        | ("move", Kind::Move(_) | Kind::FreeMove { .. })
+                        | ("range", Kind::RangeMove { .. } | Kind::FreeRangeMove { .. })
                         | ("leading", Kind::Leading(_))
                         | ("trailing", Kind::Trailing(_))
                         | ("fade", Kind::Fade(_))
