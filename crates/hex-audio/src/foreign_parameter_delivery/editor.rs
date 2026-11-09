@@ -21,7 +21,8 @@ mod frontier;
 use frontier::Frontier;
 pub use frontier::{ConfirmedQuantum, Target};
 
-const RECEIPTS: usize = 65;
+/// Confirmed Main values and the one independently reserved terminal.
+pub const MAX_EDITOR_MAIN_RECEIPTS: usize = 65;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AbortReason {
@@ -121,7 +122,7 @@ pub(crate) struct Callback {
 
 pub(crate) fn channel() -> (Control, Callback) {
     let (commands, incoming) = RingBuffer::new(1);
-    let (returning, receipts) = RingBuffer::new(RECEIPTS);
+    let (returning, receipts) = RingBuffer::new(MAX_EDITOR_MAIN_RECEIPTS);
     let signals = Arc::new(Signals::default());
     (
         Control {
@@ -143,7 +144,9 @@ pub(crate) fn channel() -> (Control, Callback) {
 
 pub(crate) fn constructor_storage_quote() -> Option<usize> {
     ChannelStorage::ring_bytes::<Target>(1)?
-        .checked_add(ChannelStorage::ring_bytes::<Receipt>(RECEIPTS)?)?
+        .checked_add(ChannelStorage::ring_bytes::<Receipt>(
+            MAX_EDITOR_MAIN_RECEIPTS,
+        )?)?
         .checked_add(std::mem::size_of::<Signals>())?
         .checked_add(Frontier::storage_quote()?)
 }
