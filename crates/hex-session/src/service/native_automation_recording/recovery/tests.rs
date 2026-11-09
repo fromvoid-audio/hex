@@ -24,7 +24,15 @@ fn recover(
     scope: DeviceAutomationTakeScope,
     path: &Path,
 ) -> Result<(Box<Command>, TakePublication), String> {
-    recover_sealed(session, None, target(scope), scope.stamp, path, None)
+    let selected = inspect_sealed_file(path)?;
+    recover_sealed(
+        session,
+        None,
+        target(scope),
+        scope.stamp,
+        path,
+        AutomationRecoveryFileIdentity::Sealed(selected.identity),
+    )
 }
 fn write(
     path: &Path,
@@ -262,7 +270,7 @@ fn verified_vst3_recovery_prepares_one_edit_and_refuses_changed_custody() {
             target(scope),
             scope.stamp,
             &replacement,
-            Some(receipt)
+            AutomationRecoveryFileIdentity::Copy(receipt)
         )
         .is_err()
     );
@@ -273,7 +281,7 @@ fn verified_vst3_recovery_prepares_one_edit_and_refuses_changed_custody() {
             target(scope),
             scope.stamp,
             &damaged,
-            Some(receipt)
+            AutomationRecoveryFileIdentity::Copy(receipt)
         )
         .is_err()
     );
@@ -291,7 +299,7 @@ fn verified_vst3_recovery_prepares_one_edit_and_refuses_changed_custody() {
         target(scope),
         scope.stamp,
         &copy,
-        Some(receipt),
+        AutomationRecoveryFileIdentity::Copy(receipt),
     )
     .unwrap();
     assert!(matches!(publication, TakePublication::Vst3));
@@ -424,7 +432,7 @@ fn a_verified_native_finished_copy_revalidates_and_adopts_exact_values_once() {
             scope.target.draft_target(),
             scope.stamp,
             &replacement,
-            Some(receipt),
+            AutomationRecoveryFileIdentity::Copy(receipt),
         )
         .is_err()
     );
@@ -435,7 +443,7 @@ fn a_verified_native_finished_copy_revalidates_and_adopts_exact_values_once() {
         scope.target.draft_target(),
         scope.stamp,
         &copy,
-        Some(receipt),
+        AutomationRecoveryFileIdentity::Copy(receipt),
     )
     .unwrap();
     assert!(matches!(publication, TakePublication::Native(found) if found == target));
@@ -462,4 +470,61 @@ fn a_verified_native_finished_copy_revalidates_and_adopts_exact_values_once() {
     );
     assert_eq!(std::fs::read(path).unwrap(), original);
     assert_eq!(std::fs::read(copy).unwrap(), copy_bytes);
+}
+
+#[test]
+fn selecting_a_finished_file_is_read_only_and_cannot_adopt_replacement_bytes() {
+    let (files, mut session, scope, _) = fixture();
+    let path = files.0.join("selected");
+    write(&path, &session, scope, end());
+    let before = session.project().clone();
+    let selected = inspect_sealed_file(&path).unwrap();
+    assert_eq!(selected.path, path);
+    assert_eq!(selected.target, target(scope));
+    assert_eq!(selected.provenance, scope.stamp);
+    assert_eq!(session.project(), &before);
+    let original = std::fs::read(&path).unwrap();
+    let replacement = files.0.join("another-finished");
+    write(
+        &replacement,
+        &session,
+        scope,
+        DraftTerminal::Finished(DraftClock {
+            performance_frame: 25,
+            content_frame: 17,
+            loop_pass: 0,
+        }),
+    );
+    let identity = AutomationRecoveryFileIdentity::Sealed(selected.identity);
+    std::fs::write(&path, std::fs::read(&replacement).unwrap()).unwrap();
+    assert!(
+        recover_sealed(
+            &session,
+            None,
+            selected.target,
+            selected.provenance,
+            &path,
+            identity
+        )
+        .is_err()
+    );
+    assert_eq!(session.project(), &before);
+    std::fs::write(&path, &original).unwrap();
+    let (command, _) = recover_sealed(
+        &session,
+        None,
+        selected.target,
+        selected.provenance,
+        &path,
+        identity,
+    )
+    .unwrap();
+    session.editor.execute(*command).unwrap();
+    assert_ne!(session.project(), &before);
+    assert!(session.editor.undo());
+    assert_eq!(session.project(), &before);
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    let unfinished = files.0.join("unfinished");
+    write(&unfinished, &session, scope, DraftTerminal::Interrupted);
+    assert!(inspect_sealed_file(&unfinished).is_err());
 }

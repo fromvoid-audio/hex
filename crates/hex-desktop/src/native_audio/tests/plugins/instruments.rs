@@ -2413,7 +2413,9 @@ fn verify_instrument_takeover(
                             target: scope.target.draft_target(),
                             expected: scope.stamp,
                             path: copy.clone(),
-                            receipt: Some(receipt),
+                            identity: hex_session::service::AutomationRecoveryFileIdentity::Copy(
+                                receipt,
+                            ),
                         }
                     } else {
                         Request::DeviceAutomationTake {
@@ -2774,24 +2776,30 @@ fn verify_instrument_takeover(
             assert_eq!(paths.len(), 1);
             let path = paths[0].clone();
             let original = std::fs::read(&path).unwrap();
-            // Durable header data are sufficient; the caller does not retain or
-            // reconstruct the old SDK worker binding to request recovery.
-            let (target, expected) = {
-                let reader = hex_storage::automation_draft::DraftReader::open(
-                    &path,
-                    hex_storage::automation_draft::DraftReadLimits {
-                        max_source_bytes: hex_storage::MAX_PROJECT_DOCUMENT_BYTES as u64,
-                    },
-                )
-                .unwrap();
-                (reader.target(), reader.provenance())
+            let inspected = super::automation::edit_with_running_callback(
+                h,
+                Request::InspectSealedAutomationRecovery {
+                    request_id: 400,
+                    path: path.clone(),
+                },
+            );
+            assert!(inspected.error.is_none(), "{:?}", inspected.error);
+            assert_eq!(inspected.state.project.as_ref(), &before);
+            assert_eq!(inspected.state.revision, origin.context.editor_revision);
+            let DeviceAutomationTakeProgress::SealedFile(selected) =
+                inspected.device_automation_take_complete.unwrap().progress
+            else {
+                panic!("publication refusal did not leave a selectable finished take");
             };
+            assert_eq!(selected.path, path);
             let request = |request_id| Request::RecoverDeviceAutomationTake {
                 request_id,
-                target,
-                expected,
-                path: path.clone(),
-                receipt: None,
+                target: selected.target,
+                expected: selected.provenance,
+                path: selected.path.clone(),
+                identity: hex_session::service::AutomationRecoveryFileIdentity::Sealed(
+                    selected.identity,
+                ),
                 context: origin.context,
             };
             h.service.submit(request(401)).unwrap();
