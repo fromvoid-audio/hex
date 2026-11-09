@@ -6247,6 +6247,7 @@ fn modulation_panel_adds_and_maps_an_lfo_without_editing_base_values(cx: &mut Te
             .unwrap_or_else(|| panic!("missing {selector}"));
         visual.simulate_click(bounds.center(), Modifiers::default());
         visual.run_until_parked();
+        bounds
     };
     click(&mut visual, "device-modulator-toggle".into());
     click(&mut visual, format!("add-lfo-{}", device.value()));
@@ -6260,14 +6261,43 @@ fn modulation_panel_adds_and_maps_an_lfo_without_editing_base_values(cx: &mut Te
             .first()
             .map(|source| source.id)
     };
+    assert!(
+        editor.read_with(cx, |view, _| source(view).is_some()
+            || view.worker_requests_pending > 0
+            || !view.pending_requests.is_empty()),
+        "add did not dispatch"
+    );
     pump_until(&editor, cx, |view| source(view).is_some());
     let source_id = editor.read_with(cx, |view, _| source(view).unwrap());
     visual.run_until_parked();
     click(&mut visual, format!("lfo-{}-map", source_id.value()));
+    assert_eq!(
+        editor.read_with(cx, |view, _| view.device_panel.mapping_source),
+        Some((device, source_id))
+    );
     for (count, parameter) in [parameter::GAIN, parameter::WIDTH].into_iter().enumerate() {
-        click(
+        let bounds = click(
             &mut visual,
             format!("map-target-{}-{}", device.value(), parameter.value()),
+        );
+        assert!(
+            editor.read_with(cx, |view, _| view.worker_requests_pending > 0
+                || !view.pending_requests.is_empty()
+                || view
+                    .state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .device(device)
+                    .unwrap()
+                    .modulation()
+                    .routes()
+                    .len()
+                    > count),
+            "target {} did not dispatch from {:?}, modulator panel {:?}",
+            parameter.value(),
+            bounds,
+            visual.debug_bounds("device-modulator-panel"),
         );
         pump_until(&editor, cx, |view| {
             view.state

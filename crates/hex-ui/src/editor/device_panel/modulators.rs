@@ -68,7 +68,11 @@ pub(super) fn panel(
                 },
             ),
     );
-    let selected = view.device_panel.mapping_sources.get(&id).copied();
+    let selected = view
+        .device_panel
+        .mapping_source
+        .filter(|(device, _)| *device == id)
+        .map(|(_, source)| source);
     for source in bank.sources() {
         let source_id = source.id;
         let Ok(settings) = lfo::Settings::decode(&source.state) else {
@@ -80,7 +84,7 @@ pub(super) fn panel(
             lfo::Rate::BeatsPerCycle(rate) => (rate, "beats"),
         };
         let source_key = |suffix| format!("lfo-{}-{suffix}", source_id.value());
-        let mapping_button = action(
+        let control = action(
             source_key("map"),
             theme::text(if mapping { "done" } else { "map" }),
         )
@@ -89,11 +93,7 @@ pub(super) fn panel(
             if view.project_generation != generation {
                 return;
             }
-            if mapping {
-                view.device_panel.mapping_sources.remove(&id);
-            } else {
-                view.device_panel.mapping_sources.insert(id, source_id);
-            }
+            view.device_panel.mapping_source = (!mapping).then_some((id, source_id));
             cx.notify();
         }));
         content = content.child(
@@ -109,7 +109,7 @@ pub(super) fn panel(
                     theme::text(if source.enabled { "on" } else { "off" }),
                     Edit::ToggleSource(source_id),
                 ))
-                .child(mapping_button)
+                .child(control)
                 .child(button(
                     cx,
                     source_key("slower"),
@@ -223,7 +223,10 @@ pub(super) fn target_overlay(
     device: DeviceId,
     target: &NativeDeviceParameterView,
 ) -> Option<AnyElement> {
-    let source = *view.device_panel.mapping_sources.get(&device)?;
+    let (_, source) = view
+        .device_panel
+        .mapping_source
+        .filter(|(owner, _)| *owner == device)?;
     let state = view.state.as_ref()?;
     let bank = state.project.device(device)?.modulation();
     let parameter = target.descriptor.id;
@@ -328,7 +331,10 @@ fn apply(
         }
         Edit::RemoveSource(id) => {
             sources.retain(|source| source.id != id);
-            routes.retain(|route| route.source != id);
+            routes.retain(|route| {
+                route.source != id
+                    && !matches!(route.destination, ModulationDestination::Modulator { source, .. } if source == id)
+            });
         }
         Edit::Rate(id, factor) => {
             let source = find_source(&mut sources, id)?;

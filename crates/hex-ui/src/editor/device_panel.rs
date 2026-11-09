@@ -126,7 +126,7 @@ pub(super) struct DevicePanelState {
     pub(super) main_selected: Option<u64>,
     chain_window: chain_window::ChainWindow,
     parameter_rows: HashMap<DeviceId, parameter_rows::RowWindow>,
-    mapping_sources: HashMap<DeviceId, hex_project::ModulationSourceId>,
+    pub(super) mapping_source: Option<(DeviceId, hex_project::ModulationSourceId)>,
     vst3_parameters: vst3_parameters::State,
     pub(super) navigation: navigation::Navigation,
     generation: u64,
@@ -3187,8 +3187,8 @@ fn parameter_control_with_presentation(
             compact_toggle_width,
         },
     );
-    if let Some(overlay) = modulators::target_overlay(view, cx, device, parameter) {
-        control.relative().child(overlay)
+    if let Some(element) = modulators::target_overlay(view, cx, device, parameter) {
+        control.relative().child(element)
     } else {
         control
     }
