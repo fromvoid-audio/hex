@@ -6353,6 +6353,21 @@ fn modulation_panel_maps_loaded_sampler_gain_through_its_authored_control(cx: &m
     let gain_selector = Box::leak(gain.into_boxed_str());
     assert!(visual.debug_bounds(gain_selector).is_some());
     click_modulator_control(&mut visual, "device-modulator-toggle".into(), false);
+    click_modulator_control(
+        &mut visual,
+        format!("add-modulator-{}", device.value()),
+        true,
+    );
+    assert!(editor.read_with(cx, |view, _| {
+        view.context_menu
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .any(|item| item.label == "note counter")
+    }));
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
     add_modulator_from_menu(&mut visual, device, "lfo");
     pump(&mut fixture, &mut visual, &|view| {
         bank(view).sources().len() == 1
@@ -6459,6 +6474,28 @@ fn modulation_panel_maps_sparse_eq_output_gain(cx: &mut TestAppContext) {
         hex_engine::lfo_modulator::TYPE_ID,
         &[OUTPUT_GAIN],
     );
+}
+
+#[gpui::test]
+fn modulation_panel_omits_note_counter_from_an_effect_without_events(cx: &mut TestAppContext) {
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    click_modulator_control(&mut visual, "device-modulator-toggle".into(), false);
+    click_modulator_control(
+        &mut visual,
+        format!("add-modulator-{}", device.value()),
+        true,
+    );
+    assert!(editor.read_with(cx, |view, _| {
+        view.context_menu
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .all(|item| item.label != "note counter")
+    }));
 }
 
 #[gpui::test]
@@ -6711,9 +6748,15 @@ fn modulation_panel_maps_fm4_oscillator_levels(cx: &mut TestAppContext) {
     exercise_fm4_modulation_mapper(cx, Fm4MappingFixture::OscillatorLevels);
 }
 
+#[gpui::test]
+fn modulation_panel_maps_fm4_note_counter_and_edits_its_settings(cx: &mut TestAppContext) {
+    exercise_fm4_modulation_mapper(cx, Fm4MappingFixture::Counter);
+}
+
 enum Fm4MappingFixture {
     Carriers,
     Pressure,
+    Counter,
     OscillatorLevels,
 }
 
@@ -6723,6 +6766,7 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
     use hex_project::{DeviceAutomationTarget, ModulationDestination};
 
     let pressure = matches!(fixture, Fm4MappingFixture::Pressure);
+    let counter = matches!(fixture, Fm4MappingFixture::Counter);
     let levels = matches!(fixture, Fm4MappingFixture::OscillatorLevels);
     let service = Service::new(48_000, 8, 8_000_000).unwrap();
     receive_service_event(&service);
@@ -6778,6 +6822,7 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
             "math",
             "buttons",
             "mix",
+            "note counter",
         ],
     );
     visual.simulate_keystrokes("escape");
@@ -6793,15 +6838,32 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
             .modulation()
             .clone()
     };
-    let kind = if pressure {
+    let kind = if pressure || counter {
         click(
             &mut visual,
             format!("add-modulator-{}", device.value()),
             true,
         );
-        visual.simulate_keystrokes("down down down down enter");
+        let kind = if pressure {
+            "note pressure"
+        } else {
+            "note counter"
+        };
+        let index = editor.read_with(cx, |view, _| {
+            view.context_menu
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .position(|item| item.label == kind)
+                .unwrap()
+        });
+        for _ in 0..index {
+            visual.simulate_keystrokes("down");
+        }
+        visual.simulate_keystrokes("enter");
         visual.run_until_parked();
-        "note pressure"
+        kind
     } else {
         add_modulator_from_menu(&mut visual, device, "lfo");
         "lfo"
@@ -6809,6 +6871,46 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
     pump_until(&editor, cx, |view| bank(view).sources().len() == 1);
     visual.run_until_parked();
     let source = editor.read_with(cx, |view, _| bank(view).sources()[0].id);
+    if counter {
+        use hex_engine::note_counter_modulator::Settings;
+        let settings =
+            |view: &EditorView| Settings::decode(&bank(view).sources()[0].state).unwrap();
+        let edits = [
+            (
+                "steps-more",
+                Settings {
+                    steps: 9,
+                    increment: 1,
+                    bipolar: false,
+                },
+            ),
+            (
+                "increment-more",
+                Settings {
+                    steps: 9,
+                    increment: 2,
+                    bipolar: false,
+                },
+            ),
+            (
+                "polarity",
+                Settings {
+                    steps: 9,
+                    increment: 2,
+                    bipolar: true,
+                },
+            ),
+        ];
+        for (suffix, expected) in edits {
+            click(
+                &mut visual,
+                format!("note counter-{}-{suffix}", source.value()),
+                true,
+            );
+            pump_until(&editor, cx, |view| settings(view) == expected);
+            visual.run_until_parked();
+        }
+    }
     if pressure {
         assert!(
             visual
@@ -6869,7 +6971,7 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
     } else {
         [1, 2, 3, 4].map(parameter::carrier)
     };
-    let targets = if pressure {
+    let targets = if pressure || counter {
         &controls[..1]
     } else {
         &controls[..]
