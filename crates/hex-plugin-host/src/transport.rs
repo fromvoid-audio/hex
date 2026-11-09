@@ -15,6 +15,7 @@
 //! DSP rollback occurs.
 
 type Frame = [f32; 2];
+use crate::protocol::EditorPerforms;
 use hex_lattice_contract::ForeignProcessorBinding as Binding;
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::num::NonZeroU64;
@@ -31,6 +32,8 @@ pub use authored::{AuthoredParameterProgram, AuthoredSegment};
 mod parameters;
 mod storage;
 pub use parameters::{MAX_PARAMETER_POINTS, ParameterPoint, Parameters};
+#[cfg(test)]
+mod editor_tests;
 #[cfg(test)]
 mod parameter_tests;
 pub mod wire;
@@ -102,6 +105,9 @@ struct Revocation {
     quantum_serial: AtomicU64,
     quantum_program: AtomicU64,
     quantum_state: AtomicU8,
+    // Scope in high bits; low bit means armed. Keep the last serial after end
+    // so a stale caller cannot reopen an earlier physical capture scope.
+    editor_scope: AtomicU64,
 }
 impl Revocation {
     const REPORTED: u8 = 1 << 7;
@@ -119,6 +125,7 @@ impl Revocation {
             quantum_serial: AtomicU64::new(0),
             quantum_program: AtomicU64::new(0),
             quantum_state: AtomicU8::new(0),
+            editor_scope: AtomicU64::new(0),
         }
     }
 
@@ -470,7 +477,47 @@ pub struct ReceivedProgram {
     pub sequence: u64,
     pub program: Option<NonZeroU64>,
 }
+/// Control-side custody of the original pair's opt-in. This retains only
+/// copied transport signals, not a worker, endpoint, SDK or output lease.
+/// Drop on control after the last wanted marker is drained.
+pub struct EditorScope {
+    signal: Arc<Revocation>,
+    serial: NonZeroU64,
+}
+
+impl Drop for EditorScope {
+    fn drop(&mut self) {
+        let ended = self.serial.get() << 1;
+        let _ = self
+            .signal
+            .editor_scope
+            .compare_exchange(ended | 1, ended, AcqRel, Acquire);
+    }
+}
+
 impl Control {
+    /// Enable observation on new physical quantum starts for this exact pair.
+    /// Serial numbers must increase per pair. Ending discards unconsumed
+    /// markers; drain wanted observations before ending an orderly scope.
+    pub fn arm_editor_pcm(&self, serial: NonZeroU64) -> Result<EditorScope, Fault> {
+        if self.is_revoked() {
+            return Err(Fault::Revoked);
+        }
+        let value = serial.get().checked_mul(2).ok_or(Fault::Exhausted)? | 1;
+        let previous = self.revoked.editor_scope.load(Acquire);
+        if previous & 1 != 0 || serial.get() <= previous >> 1 {
+            return Err(Fault::Protocol);
+        }
+        self.revoked
+            .editor_scope
+            .compare_exchange(previous, value, AcqRel, Acquire)
+            .map_err(|_| Fault::Protocol)?;
+        Ok(EditorScope {
+            signal: Arc::clone(&self.revoked),
+            serial,
+        })
+    }
+
     /// Read one bounded snapshot of the exact paired callback's most recently
     /// accepted quantum. None means no observation, contention, exhaustion, or
     /// revocation. A copied binding is not proof of any graph installation.
@@ -578,6 +625,7 @@ struct InputRequest {
     parameter_capacity: usize,
     authored_program: Option<NonZeroU64>,
     manual_origin: Option<ManualParameterOrigin>,
+    editor_scope: Option<NonZeroU64>,
 }
 
 pub struct WorkerRequest {
@@ -589,6 +637,9 @@ pub struct WorkerRequest {
     /// origin. The copied clock stays with the transport's in-flight request.
     /// This observation grants no publication or parameter input authority.
     pub manual_origin_available: bool,
+    /// The control scope active at the original accepted physical quantum's
+    /// first sample. No request already staged at arm time is retroactively tagged.
+    pub editor_scope: Option<NonZeroU64>,
 }
 
 /// The one exact host operation applied at offset zero in a successful SDK
@@ -648,10 +699,31 @@ struct ManualExchange {
     origin: Option<ManualParameterOrigin>,
 }
 
+/// Successful editor input carried with this exact endpoint's accepted sample.
+/// Only the Main owner can determine its final delivery and transport validity.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AcceptedEditorQuantum {
+    pub binding: Binding,
+    pub sequence: u64,
+    pub first_frame: u64,
+    pub callback_offset: u16,
+    pub scope: NonZeroU64,
+    pub performs: EditorPerforms,
+    pub origin: Option<ManualParameterOrigin>,
+}
+
+#[derive(Clone, Copy)]
+struct EditorExchange {
+    scope: NonZeroU64,
+    performs: EditorPerforms,
+    origin: Option<ManualParameterOrigin>,
+}
+
 #[derive(Clone, Copy)]
 struct OutputReply {
     block: Block,
     manual: Option<ManualExchange>,
+    editor: Option<EditorExchange>,
 }
 
 impl OutputReply {
@@ -672,6 +744,7 @@ struct State {
     position: u64,
     input: Block,
     input_manual_origin: Option<ManualParameterOrigin>,
+    input_editor_scope: Option<NonZeroU64>,
     output: OutputReply,
     output_gap: bool,
     parameter_capacity: usize,
@@ -681,6 +754,7 @@ struct Stage {
     state: State,
     request: Option<InputRequest>,
     manual: Option<AcceptedManualParameter>,
+    editor: Option<AcceptedEditorQuantum>,
     expected_frames: usize,
     staged_frames: usize,
     input_events: usize,
@@ -711,6 +785,7 @@ pub struct Callback {
     state: State,
     staged: Option<Stage>,
     accepted_manual: Option<AcceptedManualParameter>,
+    accepted_editor: Option<AcceptedEditorQuantum>,
     committed_quantum: Option<CommittedQuantumState>,
     // Only the prefix below the staged position is read. Rejection permanently
     // revokes the endpoint, so origin scratch does not need a rollback copy.
@@ -731,6 +806,7 @@ pub struct Worker {
 
 struct InFlight {
     manual_origin: Option<ManualParameterOrigin>,
+    editor_scope: Option<NonZeroU64>,
 }
 
 /// Allocate only on control. The two rings have eight fixed inline slots each.
@@ -795,15 +871,18 @@ fn channel_with_policy(
                 position,
                 input: empty,
                 input_manual_origin: None,
+                input_editor_scope: None,
                 output: OutputReply {
                     block: empty,
                     manual: None,
+                    editor: None,
                 },
                 output_gap: false,
                 parameter_capacity: MAX_PARAMETER_POINTS,
             },
             staged: None,
             accepted_manual: None,
+            accepted_editor: None,
             committed_quantum: None,
             authored_origins: AuthoredOrigins::default(),
         },
@@ -856,6 +935,7 @@ impl Callback {
         self.revoked.revoke();
         self.staged = None;
         self.accepted_manual = None;
+        self.accepted_editor = None;
     }
     pub fn latency_frames(&self) -> u32 {
         u32::from(self.quantum) * 2
@@ -892,6 +972,7 @@ impl Callback {
         self.revoked.record_callback_fault(fault);
         self.staged = None;
         self.accepted_manual = None;
+        self.accepted_editor = None;
         Err(fault)
     }
     /// Declare one actual physical callback, even when the graph renders it in
@@ -905,10 +986,12 @@ impl Callback {
             return self.fail(Fault::Protocol);
         }
         self.accepted_manual = None;
+        self.accepted_editor = None;
         self.staged = Some(Stage {
             state: self.state,
             request: None,
             manual: None,
+            editor: None,
             expected_frames: frames,
             staged_frames: 0,
             input_events: 0,
@@ -1148,6 +1231,12 @@ impl Callback {
                 stage.state.input.sequence = sequence;
                 stage.state.input.first_frame = position;
                 stage.state.input_manual_origin = manual.and_then(|origin| origin(index));
+                let editor_scope = self.revoked.editor_scope.load(Acquire);
+                stage.state.input_editor_scope = if editor_scope & 1 != 0 {
+                    NonZeroU64::new(editor_scope >> 1)
+                } else {
+                    None
+                };
                 stage.state.parameter_capacity = MAX_PARAMETER_POINTS;
                 self.authored_origins.program = program;
                 stage.state.input.timing = (timing.at)(index);
@@ -1179,6 +1268,17 @@ impl Callback {
                             callback_offset: (frame_offset + index) as u16,
                             input: manual.input,
                             origin: manual.origin,
+                        });
+                    }
+                    if let Some(editor) = stage.state.output.editor {
+                        stage.editor = Some(AcceptedEditorQuantum {
+                            binding: self.binding,
+                            sequence: stage.state.output.block.sequence,
+                            first_frame: stage.state.output.block.first_frame,
+                            callback_offset: (frame_offset + index) as u16,
+                            scope: editor.scope,
+                            performs: editor.performs,
+                            origin: editor.origin,
                         });
                     }
                 }
@@ -1280,6 +1380,7 @@ impl Callback {
                     parameter_capacity: stage.state.parameter_capacity,
                     authored_program: self.authored_origins.program,
                     manual_origin: stage.state.input_manual_origin,
+                    editor_scope: stage.state.input_editor_scope,
                 });
             }
         }
@@ -1326,6 +1427,7 @@ impl Callback {
         }
         self.state = stage.state;
         self.accepted_manual = stage.manual;
+        self.accepted_editor = stage.editor;
         let quantum = if self.state.position.is_multiple_of(u64::from(self.quantum)) {
             CommittedQuantumState::Closed
         } else if let Some(key) = self.authored_origins.program {
@@ -1347,6 +1449,15 @@ impl Callback {
         self.accepted_manual
             .take()
             .filter(|_| !self.revoked.is_revoked())
+    }
+
+    /// Consume once before the next physical callback. Rejection, revocation
+    /// and ending/replacing the control scope never return an old marker.
+    pub fn take_accepted_editor_quantum(&mut self) -> Option<AcceptedEditorQuantum> {
+        self.accepted_editor.take().filter(|marker| {
+            self.revoked.editor_scope.load(Acquire) == ((marker.scope.get() << 1) | 1)
+                && !self.revoked.is_revoked()
+        })
     }
 }
 
@@ -1384,6 +1495,7 @@ fn stage_reply(
             state.output = OutputReply {
                 block: Block::empty(binding, quantum),
                 manual: None,
+                editor: None,
             };
             state.output_gap = true;
         }
@@ -1460,12 +1572,14 @@ impl Worker {
         }
         self.in_flight = Some(InFlight {
             manual_origin: request.manual_origin,
+            editor_scope: request.editor_scope,
         });
         Ok(Some(WorkerRequest {
             block,
             parameter_capacity: request.parameter_capacity,
             authored_program: request.authored_program,
             manual_origin_available: request.manual_origin.is_some(),
+            editor_scope: request.editor_scope,
         }))
     }
     /// Publish exactly one matching reply after the isolated processor finishes.
@@ -1481,6 +1595,18 @@ impl Worker {
         reply: Block,
         manual: Option<ManualParameterInput>,
     ) -> Result<(), Fault> {
+        self.complete_with_parameter_observations(reply, manual, None)
+    }
+
+    /// Attach the validated result of the opted-in SDK exchange for this
+    /// in-flight request. An empty batch still witnesses its physical quantum;
+    /// absence means the SDK exchange did not opt in.
+    pub fn complete_with_parameter_observations(
+        &mut self,
+        reply: Block,
+        manual: Option<ManualParameterInput>,
+        performs: Option<EditorPerforms>,
+    ) -> Result<(), Fault> {
         if self.revoked.is_revoked() {
             return Err(Fault::Revoked);
         }
@@ -1490,8 +1616,18 @@ impl Worker {
         self.revoked
             .processed_prefix
             .store(self.sequence.saturating_add(1), Release);
+        let editor = match (in_flight.editor_scope, performs) {
+            (None, None) => None,
+            (Some(scope), Some(performs)) => Some(EditorExchange {
+                scope,
+                performs,
+                origin: in_flight.manual_origin,
+            }),
+            _ => return self.fail(Fault::Protocol),
+        };
         let reply = OutputReply {
             block: reply,
+            editor,
             manual: manual.map(|input| ManualExchange {
                 input,
                 origin: in_flight.manual_origin,
