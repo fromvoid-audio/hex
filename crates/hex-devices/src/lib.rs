@@ -32,6 +32,7 @@ pub use eq8::flexible as eq;
 pub mod fm4;
 pub mod gate;
 pub mod limiter;
+pub mod modulation;
 pub mod operator_envelope;
 pub mod operator_state;
 pub mod operator_waveform;

@@ -199,11 +199,13 @@ mod tests {
                 source: 0,
                 target: id,
                 amount: 0.1,
+                range: [-1.0, 1.0],
             },
             ModulationRoute {
                 source: 1,
                 target: id,
                 amount: 0.1,
+                range: [-1.0, 1.0],
             },
         ];
         let program = PreparedModulation::new(&[target], &routes, 2).unwrap();

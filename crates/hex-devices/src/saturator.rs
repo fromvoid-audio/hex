@@ -238,9 +238,11 @@ impl NativeDeviceMetadata for SaturatorDefinition {
         id: ParameterId,
     ) -> Result<Option<hex_lattice_contract::ParameterSemantics>, DeviceContractError> {
         decode(state)?;
-        Ok(Some(
-            crate::parameter_binding::binding(&BINDINGS, id)?.semantics,
-        ))
+        let mut semantics = crate::parameter_binding::binding(&BINDINGS, id)?.semantics;
+        if runtime_parameter_automation_supported(id) {
+            semantics.modulation = hex_lattice_contract::ParameterModulation::SampleRate;
+        }
+        Ok(Some(semantics))
     }
 
     fn patch_parameter(

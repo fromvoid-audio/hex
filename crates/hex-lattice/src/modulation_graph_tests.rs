@@ -63,6 +63,7 @@ fn next_value(chain: &NativeRuntimeChain) -> f32 {
             source: 0,
             target: id,
             amount: 0.1,
+            range: [-1.0, 1.0],
         }],
         1,
     )

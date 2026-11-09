@@ -959,11 +959,13 @@ fn shared_lfo_matches_independent_saturator_control_frames() {
                 source: 0,
                 target: ids[0],
                 amount: 0.1,
+                range: [-1.0, 1.0],
             },
             ModulationRoute {
                 source: 0,
                 target: ids[1],
                 amount: 0.25,
+                range: [-1.0, 1.0],
             },
         ],
         1,
