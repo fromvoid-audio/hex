@@ -117,6 +117,8 @@ pub use sparse_audio::SparseFrameMap;
 mod device_automation;
 mod device_modulation;
 pub use device_modulation::project_device_modulation_target_supported;
+/// Versioned, control-side settings for the built-in LFO modulator.
+pub use hex_devices::modulation::lfo as lfo_modulator;
 mod native_parameter_input;
 pub use device_automation::{
     DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED, NativeParameterInputTarget,
@@ -2966,6 +2968,7 @@ impl RendererRuntime {
         selection: Option<hex_lattice::ProcessorAuditionSelection>,
     ) -> bool {
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Source(_) => false,
             hex_lattice::ProcessorChainOwner::Main => self.main_chain.select_processor_audition(
                 identity.owner,
                 identity.device_id,
@@ -3008,6 +3011,7 @@ impl RendererRuntime {
         selection: hex_lattice::ProcessorAuditionSelection,
     ) -> bool {
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Source(_) => false,
             hex_lattice::ProcessorChainOwner::Main => self.main_chain.processor_audition_is_active(
                 identity.owner,
                 identity.device_id,
@@ -3049,6 +3053,7 @@ impl RendererRuntime {
         identity: crate::PostNodeIdentity,
     ) -> bool {
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Source(_) => false,
             hex_lattice::ProcessorChainOwner::Main => {
                 self.main_chain.cancel_processor_audition_for_identity(
                     identity.owner,
