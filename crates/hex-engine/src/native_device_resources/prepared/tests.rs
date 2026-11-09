@@ -1003,21 +1003,19 @@ fn native_source_program_bytes_remain_charged_through_refusal_and_matching_retir
             )
             .unwrap();
             let prepare = |project: &Project| {
-                crate::device_automation::with_fm4_source_curves(|| {
-                    Arc::new(
-                        PreparedRevision::prepare_with_device_resources(
-                            project,
-                            &BTreeMap::new(),
-                            Arc::new(SineTable::new()),
-                            None,
-                            &crate::audio_transform::AudioTransformPreparation::default(),
-                            &resources,
-                            resources.compiler_scan_work_on_control(project).unwrap(),
-                            &cancel,
-                        )
-                        .unwrap(),
+                Arc::new(
+                    PreparedRevision::prepare_with_device_resources(
+                        project,
+                        &BTreeMap::new(),
+                        Arc::new(SineTable::new()),
+                        None,
+                        &crate::audio_transform::AudioTransformPreparation::default(),
+                        &resources,
+                        resources.compiler_scan_work_on_control(project).unwrap(),
+                        &cancel,
                     )
-                })
+                    .unwrap(),
+                )
             };
             let plain = prepare(&plain);
             let automated = prepare(editor.project());

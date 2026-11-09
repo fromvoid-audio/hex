@@ -15,6 +15,7 @@ fn final_main_observer_reads_both_channels_after_main_device_and_fader() {
             )
             .unwrap();
         snapshot.main_devices.push(DeviceSnapshot {
+            modulation: Default::default(),
             parent: None,
             automation: Vec::new(),
             comparison: None,
