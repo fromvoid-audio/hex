@@ -261,6 +261,17 @@ fn fm4_saved_bank_renders_and_hands_off_through_the_callback_without_allocation(
     let initial = prepare(&mut editor, route);
     route.amount = ModulationAmount::new(-0.4).unwrap();
     let changed = prepare(&mut editor, route);
+    editor.execute(Command::RemoveTrack(track)).unwrap();
+    let detached = Playback::try_from_prepared_with_session(Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    ))
+    .unwrap();
     let (mut control, mut callback) = prepared::channel(48_000).unwrap();
     assert!(control.publish(initial).is_ok());
     control.command(PlaybackCommand::Play).unwrap();
@@ -283,6 +294,8 @@ fn fm4_saved_bank_renders_and_hands_off_through_the_callback_without_allocation(
     };
     render();
     assert!(control.publish(changed).is_ok());
+    render();
+    assert!(control.publish(detached).is_ok());
     render();
     assert!(control.status.rejected_revision().is_none());
     assert!(control.reclaim() > 0);

@@ -149,7 +149,11 @@ impl MutableInstrumentTrackRuntime {
             ));
         }
         let frame = std::mem::take(&mut self.frozen_parameters);
+        // The detached tail consumes the last committed effective values.
+        // Keep custody of the inactive source bank through the callback.
+        let modulation = self.modulation.take();
         let result = render(self, Some(&frame));
+        self.modulation = modulation;
         self.frozen_parameters = frame;
         Ok(result)
     }
