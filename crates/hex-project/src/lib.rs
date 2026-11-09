@@ -118,6 +118,13 @@ mod clip_fragment;
 mod conversion;
 mod device;
 mod device_automation;
+mod device_modulation;
+pub use device_modulation::{
+    DeviceModulation, DeviceModulationRoute, MAX_MODULATION_ROUTES_PER_DEVICE,
+    MAX_MODULATORS_PER_DEVICE, MAX_PROJECT_MODULATION_ROUTES, MAX_PROJECT_MODULATOR_STATE_BYTES,
+    MAX_PROJECT_MODULATORS, ModulationAmount, ModulationDestination, ModulationOutputId,
+    ModulationRange, ModulationRouteId, ModulationSourceId, Modulator,
+};
 mod device_inventory;
 pub use device_automation::{
     AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
