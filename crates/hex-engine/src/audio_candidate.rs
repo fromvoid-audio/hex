@@ -14,6 +14,8 @@ mod claimed;
 mod compressor_modulation_tests;
 mod draft;
 #[cfg(test)]
+mod eq8_storage_tests;
+#[cfg(test)]
 mod gate_modulation_tests;
 #[cfg(test)]
 mod grouped_audio_tests;
