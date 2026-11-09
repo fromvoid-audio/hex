@@ -489,6 +489,7 @@ fn keeping_verified_copy_resolves_only_exact_custody_and_preserves_each_outcome(
         DraftAbortReason, DraftClock, DraftReadLimits, DraftReader, DraftTerminal,
     };
 
+    let mut previous_receipt = None;
     for terminal in [
         DraftTerminal::Finished(DraftClock {
             performance_frame: 32,
@@ -508,10 +509,10 @@ fn keeping_verified_copy_resolves_only_exact_custody_and_preserves_each_outcome(
         failed.ended = true;
         failed.path = original_path.clone();
         state.failed = Some(failed);
-        assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, false).is_err());
+        assert!(inspect_failed_copy(&state, &lane, scope, false).is_err());
         let output = files.0.join("kept-copy");
         start_failed_copy(&state, &mut lane, scope, &output, 1, false).unwrap();
-        assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, false).is_err());
+        assert!(inspect_failed_copy(&state, &lane, scope, false).is_err());
         let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
         let receipt = loop {
             match lane
@@ -535,29 +536,57 @@ fn keeping_verified_copy_resolves_only_exact_custody_and_preserves_each_outcome(
             }
         };
         assert_eq!(receipt.terminal(), terminal);
+        let keep = |state: &mut State, lane: &mut Lane, scope, max_events, gesture_active| {
+            keep_failed_copy(
+                state,
+                lane,
+                scope,
+                &output,
+                receipt,
+                max_events,
+                gesture_active,
+            )
+        };
+        assert!(
+            keep_failed_copy(
+                &mut state,
+                &mut lane,
+                scope,
+                &files.0.join("another-copy"),
+                receipt,
+                1,
+                false
+            )
+            .is_err()
+        );
+        if let Some(stale) = previous_receipt.replace(receipt) {
+            assert!(
+                keep_failed_copy(&mut state, &mut lane, scope, &output, stale, 1, false).is_err()
+            );
+        }
         let copy = std::fs::read(&output).unwrap();
         let mut wrong = scope;
         wrong.stamp.gesture_serial += 1;
-        assert!(keep_failed_copy(&mut state, &mut lane, wrong, 1, false).is_err());
-        assert!(keep_failed_copy(&mut state, &mut lane, scope, 0, false).is_err());
-        assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, true).is_err());
+        assert!(keep(&mut state, &mut lane, wrong, 1, false).is_err());
+        assert!(keep(&mut state, &mut lane, scope, 0, false).is_err());
+        assert!(keep(&mut state, &mut lane, scope, 1, true).is_err());
         state.failed.as_mut().unwrap().path = files.0.join("another-original");
-        assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, false).is_err());
+        assert!(keep(&mut state, &mut lane, scope, 1, false).is_err());
         state.failed.as_mut().unwrap().path = original_path.clone();
         state.failed.as_mut().unwrap().ended = false;
-        assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, false).is_err());
+        assert!(keep(&mut state, &mut lane, scope, 1, false).is_err());
         state.failed.as_mut().unwrap().ended = true;
         state.failed.as_mut().unwrap().failed_observations[0] =
             Some(PluginParameterObservation::Unchanged {
                 key: gesture(scope).key,
             });
-        assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, false).is_err());
+        assert!(keep(&mut state, &mut lane, scope, 1, false).is_err());
         state.failed.as_mut().unwrap().failed_observations[0] = None;
         std::fs::remove_file(&output).unwrap();
-        assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, false).is_err());
+        assert!(keep(&mut state, &mut lane, scope, 1, false).is_err());
         for changed in [&b"malformed"[..], original.as_slice()] {
             std::fs::write(&output, changed).unwrap();
-            assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, false).is_err());
+            assert!(keep(&mut state, &mut lane, scope, 1, false).is_err());
             assert!(!lane.close_safe());
             assert!(!state.close_safe());
             assert!(lane.begin(&session, None, scope, source, &files.0).is_err());
@@ -566,13 +595,13 @@ fn keeping_verified_copy_resolves_only_exact_custody_and_preserves_each_outcome(
         }
         std::fs::write(&output, &copy).unwrap();
         assert!(matches!(
-            keep_failed_copy(&mut state, &mut lane, scope, 1, false).unwrap(),
+            keep(&mut state, &mut lane, scope, 1, false).unwrap(),
             Step::Progress(DeviceAutomationTakeProgress::CopyKept(path)) if path == output
         ));
         assert!(lane.close_safe());
         assert!(state.close_safe());
         assert!(generic_sealed_recovery_idle(&state, &lane));
-        assert!(keep_failed_copy(&mut state, &mut lane, scope, 1, false).is_err());
+        assert!(keep(&mut state, &mut lane, scope, 1, false).is_err());
         assert_eq!(session.project(), &before);
         assert_eq!(std::fs::read(&original_path).unwrap(), original);
         assert_eq!(std::fs::read(&output).unwrap(), copy);
