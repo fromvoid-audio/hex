@@ -117,7 +117,8 @@ pub use sparse_audio::SparseFrameMap;
 mod device_automation;
 mod device_modulation;
 pub use device_modulation::{
-    project_device_host_gain_modulation_supported, project_device_modulation_target_supported,
+    project_device_can_add_note_pressure, project_device_host_gain_modulation_supported,
+    project_device_modulation_target_supported,
 };
 /// Versioned, control-side settings for the built-in envelope follower.
 pub use hex_devices::modulation::audio_rate as audio_rate_modulator;
@@ -126,6 +127,8 @@ pub use hex_devices::modulation::envelope_follower as follower_modulator;
 pub use hex_devices::modulation::lfo as lfo_modulator;
 /// Versioned control-side settings for the built-in manual macro source.
 pub use hex_devices::modulation::macro_value as macro_modulator;
+/// The authored note-pressure source codec. Active readings belong to the voice.
+pub use hex_devices::modulation::note_pressure as note_pressure_modulator;
 /// The authored reusable random sample-and-hold source codec.
 pub use hex_devices::modulation::random_hold as random_modulator;
 

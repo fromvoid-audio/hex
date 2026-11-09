@@ -108,8 +108,13 @@ pub(crate) fn prepare_source_instruments(
         } else {
             Some(0)
         };
+        let pressure = crate::device_modulation::prepare_voice_pressure(device, registry)?;
         let mutable_runtime = if let Some(receiver) = receiver.filter(|_| enabled) {
-            if contexts.requires_mutable_continuation(receiver, device.id()) {
+            if let Some(pressure) = pressure {
+                config
+                    .prepare_mutable_note_pressure(pressure.source, pressure.route)
+                    .map(Some)
+            } else if contexts.requires_mutable_continuation(receiver, device.id()) {
                 config.prepare_mutable_continuation_runtime()
             } else {
                 config.prepare_mutable_runtime()

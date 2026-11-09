@@ -1,7 +1,9 @@
 //! Translate a saved device bank into a bounded device-local render declaration.
 //! Control preparation resolves stable IDs and validates real factory bindings.
 //! Prepared declarations borrow no project data and never enter project history.
-use hex_devices::modulation::{audio_rate, envelope_follower, lfo, macro_value, random_hold};
+use hex_devices::modulation::{
+    audio_rate, envelope_follower, lfo, macro_value, note_pressure, random_hold,
+};
 use hex_lattice::{
     HostGainModulationRoute, ModulationRoute, ModulationTarget, PreparedModulation,
     PreparedModulationSource, PreparedModulationState, PreparedMutableInstrumentRuntime,
@@ -43,6 +45,28 @@ fn effect_location_supported(project: &Project, location: DeviceLocation<'_>) ->
 fn instrument_modulation_supported(source: &hex_project::NativeSource) -> bool {
     source.receiver().is_some()
         && source.instrument().state().type_id() == hex_devices::fm4::device::FM4_TYPE_ID
+}
+
+/// The native note-pressure slot belongs to the FM4 source receiver. A
+/// bank with a pressure slot already owns that source identity.
+pub fn project_device_can_add_note_pressure(project: &Project, device: DeviceId) -> bool {
+    let Some(location) = project.device_location(device) else {
+        return false;
+    };
+    let (DeviceUnitClass::Instrument, DeviceOwner::Source(source)) =
+        (location.class, location.owner)
+    else {
+        return false;
+    };
+    project
+        .native_source(source)
+        .is_some_and(instrument_modulation_supported)
+        && !location
+            .device
+            .modulation()
+            .sources()
+            .iter()
+            .any(|source| source.state.type_id() == note_pressure::TYPE_ID)
 }
 
 /// State-aware eligibility for native device-panel mapping. Ownership is
@@ -186,6 +210,79 @@ pub(super) fn validate_source_owners(project: &Project) -> Result<(), Invalid> {
     Ok(())
 }
 
+pub(super) struct VoicePressure {
+    pub source: hex_lattice_contract::ModulationSourceId,
+    pub route: Option<hex_lattice::PreparedPressureRoute>,
+}
+
+/// Resolve the authored source on control. The instrument's prepared provider
+/// independently admits the exact descriptor and owns the per-voice reading.
+pub(super) fn prepare_voice_pressure(
+    device: &Device,
+    registry: &hex_lattice::NativeInstrumentRegistry<'_>,
+) -> Result<Option<VoicePressure>, Invalid> {
+    let bank = device.modulation();
+    let mut slots = bank
+        .sources()
+        .iter()
+        .filter(|slot| slot.state.type_id() == note_pressure::TYPE_ID);
+    let Some(slot) = slots.next() else {
+        return Ok(None);
+    };
+    if device.state().type_id() != hex_devices::fm4::device::FM4_TYPE_ID || slots.next().is_some() {
+        return Err(Invalid(
+            "one note pressure source is supported on an fm4 receiver",
+        ));
+    }
+    note_pressure::validate(&slot.state).map_err(|_| Invalid("note pressure state is invalid"))?;
+    let mut routes = bank.routes().iter().filter(|route| route.source == slot.id);
+    let Some(route) = routes.next() else {
+        return Ok(Some(VoicePressure {
+            source: slot.id,
+            route: None,
+        }));
+    };
+    if routes.next().is_some() || route.output != ModulationOutputId::MAIN {
+        return Err(Invalid("note pressure supports one carrier assignment"));
+    }
+    let ModulationDestination::Device {
+        device_type,
+        target: DeviceAutomationTarget::Parameter(parameter),
+        vst3_class: None,
+    } = route.destination
+    else {
+        return Err(Invalid("note pressure requires a carrier assignment"));
+    };
+    let invalid_target = || Invalid("note pressure carrier is unsupported");
+    if device_type != device.state().type_id() {
+        return Err(invalid_target());
+    }
+    let definition = registry
+        .definition(device_type)
+        .ok_or_else(invalid_target)?;
+    let descriptor = definition
+        .descriptors()
+        .iter()
+        .find(|descriptor| descriptor.id == parameter)
+        .copied()
+        .ok_or_else(invalid_target)?;
+    let semantics =
+        hex_lattice_contract::validated_parameter_semantics(definition, device.state(), parameter)
+            .map_err(|_| invalid_target())?
+            .ok_or_else(invalid_target)?;
+    let prepared = hex_lattice::PreparedPressureRoute::new(
+        descriptor,
+        semantics,
+        route.amount.get(),
+        [route.range.start.get(), route.range.end.get()],
+    )
+    .map_err(|_| invalid_target())?;
+    Ok(Some(VoicePressure {
+        source: slot.id,
+        route: (slot.enabled && route.enabled).then_some(prepared),
+    }))
+}
+
 pub(super) struct EffectModulation {
     sources: Vec<PreparedModulationSource>,
     routes: Vec<ModulationRoute>,
@@ -209,6 +306,36 @@ impl EffectModulation {
         sample_rate: u32,
         automation: &[ParameterId],
     ) -> Result<Option<Self>, Invalid> {
+        Self::plan_without_voice_source(device, project, sample_rate, automation, None)
+    }
+
+    pub(super) fn plan_instrument(
+        device: &Device,
+        project: &Project,
+        automation: &[ParameterId],
+    ) -> Result<Option<Self>, Invalid> {
+        let voice_source = device
+            .modulation()
+            .sources()
+            .iter()
+            .find(|slot| slot.state.type_id() == note_pressure::TYPE_ID)
+            .map(|slot| slot.id);
+        Self::plan_without_voice_source(
+            device,
+            Some(project),
+            project.sample_rate(),
+            automation,
+            voice_source,
+        )
+    }
+
+    fn plan_without_voice_source(
+        device: &Device,
+        project: Option<&Project>,
+        sample_rate: u32,
+        automation: &[ParameterId],
+        voice_source: Option<hex_lattice_contract::ModulationSourceId>,
+    ) -> Result<Option<Self>, Invalid> {
         let bank = device.modulation();
         if bank.is_empty() {
             return Ok(None);
@@ -226,7 +353,11 @@ impl EffectModulation {
             (f64::from(fallback) / 1e6, f64::from(maximum) / 1e6)
         });
         let mut ordered = reserved(bank.sources().len())?;
-        ordered.extend(bank.sources());
+        ordered.extend(
+            bank.sources()
+                .iter()
+                .filter(|slot| Some(slot.id) != voice_source),
+        );
         ordered.sort_unstable_by_key(|source| source.id);
 
         let mut sources = reserved(ordered.len())?;

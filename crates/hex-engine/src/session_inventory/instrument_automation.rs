@@ -366,10 +366,9 @@ pub(super) fn prepare_for_receiver(
     let automation_ids = program
         .as_ref()
         .map_or(&[][..], |program| program.values.parameter_ids());
-    let modulation =
-        EffectModulation::plan(device, Some(project), project.sample_rate(), automation_ids)?
-            .map(|plan| plan.prepare_instrument(device.state(), definition, factory))
-            .transpose()?;
+    let modulation = EffectModulation::plan_instrument(device, project, automation_ids)?
+        .map(|plan| plan.prepare_instrument(device.state(), definition, factory))
+        .transpose()?;
     if modulation.is_some() {
         program
             .get_or_insert_with(|| Program {

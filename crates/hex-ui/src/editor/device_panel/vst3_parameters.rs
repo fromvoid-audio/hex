@@ -1,6 +1,6 @@
 //! View-local panels for exact hosted VST3 controller sources. Persisted rows
-//! supply names and order only; every displayed parameter value is refreshed
-//! from the active source before it can be edited.
+//! supply names and order only. Native Perform receipts can advance the knob's
+//! display. Fresh controller pages still authorize edits.
 use super::*;
 use gpui::{Entity, Subscription, UniformListScrollHandle, uniform_list};
 use hex_audio::prepared::AppliedAudioSource;
@@ -51,6 +51,13 @@ struct TouchObservation {
     binding: hex_lattice_contract::ForeignProcessorBinding,
     parameter: u32,
 }
+#[derive(Clone, Copy)]
+struct LiveTouchValue {
+    touch: TouchObservation,
+    value: PluginParameterValue,
+    after_request: u64,
+}
+
 struct Panel {
     owner: super::DevicePanelOwner,
     key: String,
@@ -73,6 +80,7 @@ struct Panel {
     visible_pages: BTreeSet<u16>,
     priority_page: Option<u16>,
     queued_touch: Option<TouchObservation>,
+    live_values: HashMap<u32, LiveTouchValue>,
     pending_touch: Option<TouchObservation>,
     last_touched: Option<u32>,
     touch_unavailable: bool,
@@ -123,6 +131,7 @@ impl Knob {
         &self,
         query: PluginParameterQuery,
         row: &PluginParameterRow,
+        value: f64,
         enabled: bool,
         active: Option<GestureKey>,
         cx: &mut Context<EditorView>,
@@ -130,7 +139,7 @@ impl Knob {
         self.origin.set(parameter_origin(query, row)?);
         let busy = active.is_some_and(|key| !self.owns(key));
         self.control.update(cx, |control, cx| {
-            let _ = control.set_external_value(row.normalized, cx);
+            let _ = control.set_external_value(value, cx);
             control.set_availability(ControlAvailability::for_edit(enabled, busy), cx);
         });
         Some(self.control.clone())
@@ -152,6 +161,53 @@ pub(in crate::editor) fn query_pending(view: &EditorView) -> bool {
 impl Panel {
     fn rows(&self) -> Option<&[PluginParameterRow]> {
         self.result.as_ref().map(|rows| rows.as_slice())
+    }
+
+    fn observe_value(&mut self, touch: TouchObservation, value: Option<PluginParameterValue>) {
+        // Bound this map by the admitted row inventory. Unknown targets still
+        // follow the ordinary controller lookup before displaying a value.
+        if let Some(value) = value
+            && self.source == Some(touch.binding)
+            && self.query.context == touch.source.context
+            && self.query.output_identity == touch.source.output_identity
+            && self.rows().is_some_and(|rows| {
+                rows.iter()
+                    .any(|row| row.id == touch.parameter && row.metadata_revision != 0)
+            })
+        {
+            self.live_values.insert(
+                touch.parameter,
+                LiveTouchValue {
+                    touch,
+                    value,
+                    after_request: self.query.request_id,
+                },
+            );
+        }
+    }
+
+    fn display_value(&self, row: &PluginParameterRow) -> f64 {
+        self.live_values
+            .get(&row.id)
+            .filter(|live| {
+                self.source == Some(live.touch.binding)
+                    && self.query.context == live.touch.source.context
+                    && self.query.output_identity == live.touch.source.output_identity
+                    && row.metadata_revision != 0
+            })
+            .map_or(row.normalized, |live| live.value.normalized())
+    }
+
+    fn reconcile_live_values(
+        &mut self,
+        query: PluginParameterQuery,
+        source: hex_lattice_contract::ForeignProcessorBinding,
+        rows: &[PluginParameterRow],
+    ) {
+        self.live_values.retain(|&id, live| {
+            live.touch.binding == source
+                && (query.request_id <= live.after_request || !rows.iter().any(|row| row.id == id))
+        });
     }
 
     fn refilter(&mut self, reset_scroll: bool) {
@@ -191,6 +247,7 @@ impl Panel {
         // prevent these controls from admitting input until a fresh page arrives.
         self.priority_page = None;
         self.queued_touch = None;
+        self.live_values.clear();
         self.pending_touch = None;
         self.pending_touch_request = None;
         // The selected parameter is view intent, not edit authority. Keep its
@@ -328,7 +385,7 @@ pub(in crate::editor) fn touched(
     binding: hex_lattice_contract::ForeignProcessorBinding,
     device_id: u64,
     parameter: u32,
-    _sequence: u64,
+    value: Option<PluginParameterValue>,
 ) {
     let Some(device) = view
         .device_panel
@@ -350,6 +407,7 @@ pub(in crate::editor) fn touched(
     }
     view.device_panel.vst3_parameters.last_touched_device = Some(device);
     if let Some(panel) = view.device_panel.vst3_parameters.panels.get_mut(&device) {
+        panel.observe_value(touch, value);
         queue_native_touch(panel, touch);
     }
 }
@@ -664,6 +722,7 @@ fn ensure_panel(view: &mut EditorView, device: DeviceId, cx: &mut Context<Editor
             visible_pages: BTreeSet::new(),
             priority_page: None,
             queued_touch: None,
+            live_values: HashMap::new(),
             pending_touch: None,
             pending_touch_request: None,
             last_touched: None,
@@ -787,6 +846,10 @@ fn apply_result(
         panel.mark_values_stale();
         return;
     };
+    panel.reconcile_live_values(result.query, source, &rows);
+    if panel.descriptor_signature != result.descriptor_signature {
+        panel.live_values.clear();
+    }
     let Some(descriptor_signature) = result.descriptor_signature else {
         panel.result = None;
         panel.source = None;
@@ -912,7 +975,7 @@ fn apply_result(
         if &cached[index] != row
             && let Some(origin) = parameter_origin(result.query, row)
         {
-            let value = row.normalized;
+            let value = panel.display_value(row);
             if let Some(knob) = panel.knobs.get(&row.id) {
                 knob.origin.set(origin);
                 knob.control.update(cx, |control, cx| {
@@ -2009,7 +2072,7 @@ fn knob(
     if let Some(knob) = panel.knobs.get(&row.id)
         && knob.matches_source(panel.source?, query, row)
     {
-        return knob.renew(query, row, true, active, cx);
+        return knob.renew(query, row, panel.display_value(row), true, active, cx);
     }
     let knob = create_knob(view, device, query, row, "row", true, cx)?;
     let control = knob.control.clone();
@@ -2036,7 +2099,7 @@ fn follow_knob(
         && *id == row.id
         && knob.matches_source(panel.source?, query, row)
     {
-        return knob.renew(query, row, enabled, active, cx);
+        return knob.renew(query, row, panel.display_value(row), enabled, active, cx);
     }
     let knob = create_knob(view, device, query, row, "follow", enabled, cx)?;
     let control = knob.control.clone();
@@ -2057,12 +2120,8 @@ fn create_knob(
     enabled: bool,
     cx: &mut Context<EditorView>,
 ) -> Option<Knob> {
-    let source = view
-        .device_panel
-        .vst3_parameters
-        .panels
-        .get(&device)?
-        .source?;
+    let panel = view.device_panel.vst3_parameters.panels.get(&device)?;
+    let source = panel.source?;
     let origin = parameter_origin(query, row)?;
     let spec = NumericSpec::new(
         0.0,
@@ -2083,7 +2142,7 @@ fn create_knob(
         theme::text(hex_session::service::text::verbatim(&row.name)),
         NumericControlPresentation::MicroDial,
         spec,
-        row.normalized,
+        panel.display_value(row),
         theme::control_style(),
     )
     .ok()?;
@@ -3331,6 +3390,48 @@ mod tests {
                 assert_eq!(panel.priority_page, Some(0));
                 assert_eq!(panel.next_query_at, refresh_due);
             }
+            // A native receipt can paint ahead of an already submitted page.
+            // It must never change the edit origin or be overwritten by that page.
+            panel.query.request_id = 12;
+            panel.observe_value(touch, Some(PluginParameterValue::new(0.7).unwrap()));
+            let row = panel.rows().unwrap()[0].clone();
+            assert_eq!(panel.display_value(&row), 0.7);
+            assert_eq!(
+                parameter_origin(panel.query, &row)
+                    .unwrap()
+                    .initial
+                    .normalized(),
+                0.4
+            );
+            panel.reconcile_live_values(panel.query, binding, std::slice::from_ref(&row));
+            assert_eq!(panel.display_value(&row), 0.7);
+            let newer = PluginParameterQuery {
+                request_id: 13,
+                ..panel.query
+            };
+            panel.reconcile_live_values(newer, binding, std::slice::from_ref(&row));
+            assert_eq!(panel.display_value(&row), 0.4);
+            panel.observe_value(touch, Some(PluginParameterValue::new(0.8).unwrap()));
+            panel.source = Some(hex_lattice_contract::ForeignProcessorBinding {
+                epoch: 5,
+                ..binding
+            });
+            assert_eq!(panel.display_value(&row), 0.4);
+            panel.source = Some(binding);
+            panel.live_values.clear();
+
+            let query = panel.query;
+            panel.observe_value(touch, Some(PluginParameterValue::new(0.9).unwrap()));
+            let control = knob(view, device, query, &row, cx).unwrap();
+            assert_eq!(control.read(cx).value(), 0.9);
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap();
+            assert_eq!(panel.knobs[&row.id].origin.get().initial.normalized(), 0.4);
+
             // Different raw IDs and source identities must restart validation.
             let other = TouchObservation {
                 parameter: 0,
