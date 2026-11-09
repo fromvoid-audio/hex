@@ -84,7 +84,15 @@ impl Fm4Definition {
             .filter(|_| carrier_semantics(route.descriptor().id) == Some(route.semantics()))
             .ok_or(DeviceContractError::UnsupportedProcessingClass)?;
         let mut factory = Factory::prepare(state, context)?;
-        factory.config.pressure = Some(PressureRoute { index, route });
+        let mut routing = factory.config.full.routing;
+        routing.carriers = [0.0; 4];
+        routing.carriers[index] = 1.0;
+        let required = audible_operator_ancestors(&factory.config.full.levels, &routing);
+        factory.config.pressure = Some(PressureRoute {
+            index,
+            route,
+            required,
+        });
         Ok(Box::new(factory))
     }
 }
@@ -161,6 +169,7 @@ impl Factory {
 struct PressureRoute {
     index: usize,
     route: PreparedPressureRoute,
+    required: [bool; 4],
 }
 
 #[derive(Clone, Copy)]
@@ -378,6 +387,22 @@ impl Runtime {
         gains: &[NativeInstrumentOccurrenceGain],
         values: Option<&dyn NativeParameterAutomation>,
     ) {
+        if let Some(pressure) = self.config.pressure {
+            self.render_block::<true>(events, frames, gains, values, Some(pressure));
+        } else {
+            self.render_block::<false>(events, frames, gains, values, None);
+        }
+    }
+
+    fn render_block<const PRESSURE: bool>(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        frames: &mut [StereoFrame],
+        gains: &[NativeInstrumentOccurrenceGain],
+        values: Option<&dyn NativeParameterAutomation>,
+        pressure: Option<PressureRoute>,
+    ) {
+        let pressure = if PRESSURE { pressure } else { None };
         let mut next_event = 0;
         let mut slots = [0; VOICES];
         let mut active_count = self.active_slots(&mut slots);
@@ -385,7 +410,6 @@ impl Runtime {
         let modulated = CARRIERS.map(|descriptor| {
             values.is_some_and(|values| values.has_sample_rate_modulation(descriptor.id))
         });
-        let pressure = self.config.pressure;
         for (offset, frame) in frames.iter_mut().enumerate() {
             if !steady_base {
                 let carriers = std::array::from_fn(|index| {
@@ -447,7 +471,7 @@ impl Runtime {
                         let canonical = ParameterValue::Float(base as f32);
                         match pressure.route.compose(canonical, unclamped, voice.pressure) {
                             Ok(ParameterValue::Float(value)) if value != base as f32 => {
-                                Some((pressure.index, f64::from(value)))
+                                Some((pressure, base, f64::from(value)))
                             }
                             _ => None,
                         }
@@ -461,11 +485,17 @@ impl Runtime {
                         )
                     } else {
                         let mut configuration = self.effective;
-                        if let Some((index, value)) = override_carrier {
-                            // A per-voice route can reveal an operator pruned
-                            // from the source-global configuration.
-                            configuration.levels = self.config.full.levels;
-                            configuration.routing.carriers[index] = value;
+                        if let Some((pressure, base, value)) = override_carrier {
+                            // Restore only the ancestors of a newly audible carrier.
+                            if base == 0.0 {
+                                for (index, required) in pressure.required.into_iter().enumerate() {
+                                    if required {
+                                        configuration.levels[index] =
+                                            self.config.full.levels[index];
+                                    }
+                                }
+                            }
+                            configuration.routing.carriers[pressure.index] = value;
                         }
                         for (phase, offset) in
                             configuration.phases.iter_mut().zip(voice.phase_offsets)
