@@ -194,23 +194,22 @@ pub(super) fn panel(
         && host_gain_available
         && bank.routes().len() < hex_project::MAX_MODULATION_ROUTES_PER_DEVICE
     {
-        let mut targets = div().flex().flex_wrap().gap(px(4.0));
-        for stage in [HostGainTarget::Input, HostGainTarget::Output] {
-            let (target, key, label) = stage.mapping();
-            if bank.routes().iter().any(|route| {
-                route.source == source
-                    && matches!(route.destination, ModulationDestination::Device { target: existing, .. } if existing == target)
-            }) {
-                continue;
-            }
-            targets = targets.child(button(
-                cx,
-                format!("map-{key}-{}", id.value()),
-                theme::text(label),
-                Edit::Map(source, MappingTarget::HostGain(stage)),
-            ));
-        }
-        body = body.child(targets);
+        let targets = [HostGainTarget::Input, HostGainTarget::Output]
+            .into_iter()
+            .filter_map(|stage| {
+                let (target, key, label) = stage.mapping();
+                let assigned = bank.routes().iter().any(|route| {
+                    route.source == source
+                        && matches!(route.destination, ModulationDestination::Device { target: existing, .. } if existing == target)
+                });
+                (!assigned).then(|| button(
+                    cx,
+                    format!("map-{key}-{}", id.value()),
+                    theme::text(label),
+                    Edit::Map(source, MappingTarget::HostGain(stage)),
+                ))
+            });
+        body = body.child(div().flex().flex_wrap().gap(px(4.0)).children(targets));
     }
     let blocked_targets: Vec<_> = selected
         .into_iter()
