@@ -186,6 +186,101 @@ fn detached_fm4_freezes_latest_target_across_pause_bypass_removal_and_revision()
 }
 
 #[test]
+fn detached_fm4_keeps_the_last_modulated_sample_for_its_release() {
+    use hex_devices::{
+        fm4::device::{FM4_DEFINITION, FM4_TYPE_ID, parameter},
+        modulation::lfo::{Rate, Settings, Waveform},
+    };
+    use hex_lattice::{
+        DevicePreparationContext, EMPTY_DEVICE_RESOURCES, NativeInstrumentDefinition,
+    };
+    use hex_lattice_contract::ParameterValue;
+    use hex_project::{
+        DeviceAutomationTarget, DeviceModulation, DeviceModulationRoute, ModulationAmount,
+        ModulationDestination, ModulationOutputId, ModulationRange, ModulationRouteId,
+        ModulationSourceId, Modulator,
+    };
+
+    let (mut editor, track, device) = fixture();
+    let carrier = parameter::carrier(1);
+    editor
+        .execute(Command::ReplaceDeviceAutomation {
+            device,
+            parameter: carrier,
+            points: vec![point(BeatTime::ZERO, 0.75)],
+        })
+        .unwrap();
+    let next = editor.project().next_identity();
+    let source = ModulationSourceId::new(next).unwrap();
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device,
+            modulation: DeviceModulation::new(
+                vec![Modulator {
+                    id: source,
+                    color: Default::default(),
+                    enabled: true,
+                    state: Settings {
+                        rate: Rate::Hertz(1000.0),
+                        phase: 0.0,
+                        waveform: Waveform::Square,
+                    }
+                    .encode()
+                    .unwrap(),
+                }],
+                vec![DeviceModulationRoute {
+                    id: ModulationRouteId::new(next + 1).unwrap(),
+                    source,
+                    output: ModulationOutputId::MAIN,
+                    destination: ModulationDestination::Device {
+                        device_type: FM4_TYPE_ID,
+                        target: DeviceAutomationTarget::Parameter(carrier),
+                        vst3_class: None,
+                    },
+                    amount: ModulationAmount::new(0.125).unwrap(),
+                    range: ModulationRange::default(),
+                    enabled: true,
+                }],
+            )
+            .unwrap(),
+        })
+        .unwrap();
+    let mut old = playback(&editor);
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    const DETACH: u64 = 53;
+    render(&mut old, DETACH as usize, 13);
+    editor.execute(Command::RemoveTrack(track)).unwrap();
+    let mut detached = playback(&editor);
+    detached.try_inherit_state_from(&mut old).unwrap();
+
+    // At 8 kHz the square is negative on frame 52, yielding a normalized
+    // target of 0.625 (canonical carrier weight 0.25) at the release boundary.
+    let state = FM4_DEFINITION
+        .patch_parameter(
+            &FM4_DEFINITION.default_state().unwrap(),
+            carrier,
+            ParameterValue::Float(0.25),
+        )
+        .unwrap();
+    let note = FM4_DEFINITION
+        .prepare_instrument(
+            &state,
+            &DevicePreparationContext {
+                sample_rate: 8000,
+                tuning: &Default::default(),
+                resources: &EMPTY_DEVICE_RESOURCES,
+            },
+        )
+        .unwrap()
+        .prepare_note(60, 120)
+        .unwrap();
+    let expected = (DETACH..DETACH + 113)
+        .map(|age| note.sample(age, DETACH, &EMPTY_DEVICE_RESOURCES))
+        .collect();
+    assert_signal_eq(render(&mut detached, 113, 11), expected);
+}
+
+#[test]
 fn second_capture_refusal_preserves_both_donor_voices_and_retry() {
     std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
