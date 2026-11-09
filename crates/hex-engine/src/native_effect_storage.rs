@@ -25,7 +25,8 @@ pub(crate) fn pair_bytes(
                 || entry.runtime_types_are::<hex_devices::overdrive::OverdriveRuntime>()
                 || entry.runtime_types_are::<hex_devices::gate::GateRuntime>()
                 || entry.runtime_types_are::<hex_devices::compressor::CompressorRuntime>()
-                || entry.runtime_types_are::<hex_devices::eq8::Eq8Runtime>() =>
+                || entry.runtime_types_are::<hex_devices::eq8::Eq8Runtime>()
+                || entry.runtime_types_are::<hex_devices::rattle::RattleRuntime>() =>
         {
             Ok(Some((a, b)))
         }
@@ -44,4 +45,5 @@ pub(crate) fn is_closed_type(id: hex_lattice_contract::DeviceTypeId) -> bool {
         || id == hex_devices::gate::GATE_TYPE_ID
         || id == hex_devices::compressor::COMPRESSOR_TYPE_ID
         || id == hex_devices::eq8::EQ8_TYPE_ID
+        || id == hex_devices::rattle::RATTLE_TYPE_ID
 }

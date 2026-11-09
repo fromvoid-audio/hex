@@ -761,8 +761,11 @@ impl Prepared {
         &mut self,
         block: Block,
         plan: protocol::EditorTouchPlan,
+        manual: Option<crate::transport::ParameterPoint>,
     ) -> Result<protocol::EditorPcm> {
-        if !self.has_armed_authored_parameter(plan.parameter) {
+        if !self.has_armed_authored_parameter(plan.parameter)
+            || manual.is_some_and(|point| point.id == plan.parameter)
+        {
             return Err(Error::Protocol(
                 "editor touch requires an exact writable target",
             ));
@@ -780,7 +783,7 @@ impl Prepared {
                 "editor touch cannot reserve its exact restoration",
             ));
         }
-        self.exchange_armed_with_mode(block, None, true, Some(plan))
+        self.exchange_armed_with_mode(block, manual, true, Some(plan))
     }
 
     fn exchange_armed_with_mode(

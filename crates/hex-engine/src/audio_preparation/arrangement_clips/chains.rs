@@ -150,6 +150,19 @@ impl ChainCustody {
                         OwnedShared::<hex_devices::eq8::PreparedEq8>::declared_parts(),
                     )?),
                 )
+            } else if state.type_id() == hex_devices::rattle::RATTLE_TYPE_ID {
+                let migrated = hex_devices::rattle::RATTLE_DEFINITION
+                    .migrate_state(state)
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                hex_devices::rattle::RattleDefinition::prepare_owned(&migrated, rate, &[])
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                largest_copy = largest_copy.max(migrated.payload().len());
+                (
+                    migrated.payload().len(),
+                    Some(parts(
+                        OwnedShared::<hex_devices::rattle::PreparedRattle>::declared_parts(),
+                    )?),
+                )
             } else if state.type_id() == hex_devices::compressor::COMPRESSOR_TYPE_ID {
                 let migrated = hex_devices::compressor::COMPRESSOR_DEFINITION
                     .migrate_state(state)
@@ -384,20 +397,12 @@ impl ChainCustody {
             let gate = device.state().type_id() == hex_devices::gate::GATE_TYPE_ID;
             let compressor =
                 device.state().type_id() == hex_devices::compressor::COMPRESSOR_TYPE_ID;
+            let rattle = device.state().type_id() == hex_devices::rattle::RATTLE_TYPE_ID;
             let eq8 = device.state().type_id() == hex_devices::eq8::EQ8_TYPE_ID;
-            let native = utility
-                || reverb
-                || saturator
-                || auto_pan
-                || overdrive
-                || gate
-                || compressor
-                || eq8;
+            let native = crate::native_effect_storage::is_closed_type(device.state().type_id());
             let definition = &hex_devices::utility::UTILITY_DEFINITION;
-            // Never adopt a provider's state/processor owner. The Utility,
-            // Reverb, Saturator, Auto Pan, Overdrive, Gate, Compressor and EQ8
-            // constructors are closed.
-            // Foreign factories return scalar facts matched to the original source.
+            // Construct closed native factories here. Foreign factories
+            // return scalar facts matched to the original source.
             let foreign_definition = if native {
                 None
             } else {
@@ -409,6 +414,11 @@ impl ChainCustody {
             };
             let migrated = if eq8 {
                 hex_devices::eq8::EQ8_DEFINITION
+                    .migrate_state(device.state())
+                    .and_then(|state| state.with_host_metadata_from(device.state()))
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?
+            } else if rattle {
+                hex_devices::rattle::RATTLE_DEFINITION
                     .migrate_state(device.state())
                     .and_then(|state| state.with_host_metadata_from(device.state()))
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?
@@ -507,6 +517,7 @@ impl ChainCustody {
                 || overdrive
                 || gate
                 || compressor
+                || rattle
                 || eq8
             {
                 StereoMatrix::identity()
@@ -535,6 +546,16 @@ impl ChainCustody {
                     OwnedShared::new_owned(
                         hex_devices::eq8::Eq8Definition::prepare_owned(&migrated, rate, parameters)
                             .map_err(|_| AudioStorageError::UnsupportedGraph)?,
+                    )
+                    .into_processor_parts_on_control(),
+                )
+            } else if rattle {
+                Some(
+                    OwnedShared::new_owned(
+                        hex_devices::rattle::RattleDefinition::prepare_owned(
+                            &migrated, rate, parameters,
+                        )
+                        .map_err(|_| AudioStorageError::UnsupportedGraph)?,
                     )
                     .into_processor_parts_on_control(),
                 )
@@ -643,10 +664,12 @@ impl ChainCustody {
                         &hex_devices::auto_pan::AUTO_PAN_DEFINITION
                     } else if overdrive {
                         &hex_devices::overdrive::OVERDRIVE_DEFINITION
-                    } else if eq8 {
-                        &hex_devices::eq8::EQ8_DEFINITION
                     } else if compressor {
                         &hex_devices::compressor::COMPRESSOR_DEFINITION
+                    } else if eq8 {
+                        &hex_devices::eq8::EQ8_DEFINITION
+                    } else if rattle {
+                        &hex_devices::rattle::RATTLE_DEFINITION
                     } else if gate {
                         &hex_devices::gate::GATE_DEFINITION
                     } else if reverb {
