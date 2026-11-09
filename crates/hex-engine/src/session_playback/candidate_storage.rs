@@ -40,6 +40,7 @@ impl SessionPlayback {
             route_scratch,
             track_faders: _,
             track_fader_scratch: _,
+            source_effects,
             device_chains,
             return_chains,
             main_chain,
@@ -84,7 +85,9 @@ impl SessionPlayback {
             candidate_admission_open,
             live_restart: _,
         } = self;
-        if !foreign_arrangement.is_empty()
+        // The closed owner has no source effect lease or backing quote yet.
+        if !source_effects.is_empty()
+            || !foreign_arrangement.is_empty()
             || midi_admission.is_some()
             || live_expression.is_some()
             || computer_keyboard.is_some()

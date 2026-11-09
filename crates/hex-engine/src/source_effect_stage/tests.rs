@@ -1,8 +1,8 @@
 use super::*;
 use crate::{Audio, Renderer};
 use hex_lattice::{
-    DeviceResources, NativeProcessorRuntime, PreparedNativeProcessor, PreparedProcessorFactory,
-    PreparedRuntimeInstance, ProcessorChainOwner, StereoMatrix,
+    DeviceResources, NativeInstrumentClock, NativeProcessorRuntime, PreparedNativeProcessor,
+    PreparedProcessorFactory, PreparedRuntimeInstance, ProcessorChainOwner, StereoMatrix,
 };
 use hex_lattice_contract::DeviceTypeId;
 use hex_project::{BeatTime, Command, Created, Editor};
@@ -15,7 +15,7 @@ const CLIP: Frame = [0.125, -0.25];
 // distinguishes processing the shared sum once from processing each note or
 // the receiver's clip, and makes a missed seek reset observable.
 #[derive(Default)]
-struct MemorySquare(Frame);
+struct MemorySquare(Frame, bool);
 impl NativeProcessorRuntime for MemorySquare {
     fn as_any(&self) -> &dyn Any {
         self
@@ -26,6 +26,25 @@ impl NativeProcessorRuntime for MemorySquare {
                 let input = *sample;
                 *sample = input * input + *history;
                 *history = input * 0.125;
+            }
+        }
+    }
+    fn process_block_with_clock(
+        &mut self,
+        frames: &mut [Frame],
+        clock: Option<&dyn NativeInstrumentClock>,
+        resources: &dyn DeviceResources,
+    ) {
+        self.process_block(frames, resources);
+        if self.1 {
+            for (offset, frame) in frames.iter_mut().enumerate() {
+                let stamp = clock
+                    .and_then(|clock| clock.performance_frame_at_offset(offset))
+                    .map_or(-1.0, |frame| frame as f32)
+                    * (1.0 / 65_536.0);
+                for sample in frame {
+                    *sample += stamp;
+                }
             }
         }
     }
@@ -41,7 +60,7 @@ impl NativeProcessorRuntime for MemorySquare {
         }
     }
 }
-struct SquareRecipe(Option<u32>);
+struct SquareRecipe(Option<u32>, bool);
 impl PreparedNativeProcessor for SquareRecipe {
     fn runtime_version(&self) -> u32 {
         1
@@ -50,7 +69,7 @@ impl PreparedNativeProcessor for SquareRecipe {
         std::mem::size_of::<MemorySquare>()
     }
     fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
-        Box::new(MemorySquare::default())
+        Box::new(MemorySquare([0.0; 2], self.1))
     }
     fn algorithmic_latency_frames(&self) -> Option<u32> {
         self.0
@@ -70,7 +89,7 @@ fn recipe(source: hex_project::SourceId, latency: Option<u32>) -> PreparedRuntim
         sample_rate: 48_000,
         configuration: None,
         definition: Some(PreparedProcessorFactory::Legacy(Arc::new(SquareRecipe(
-            latency,
+            latency, false,
         )))),
     }
 }
@@ -496,4 +515,140 @@ fn registry_suffix_refuses_prefix_latency_foreign_and_unknown_effects() {
     }
     // Retaining definitions alone must not prepare or admit any of these devices.
     assert!(crate::compile::project(editor.project(), &BTreeMap::new()).is_ok());
+}
+
+#[test]
+fn session_playing_paths_run_source_effects_once_before_mixing_receiver_clips() {
+    use crate::{
+        LaunchQuantization, PreparedRevision, SessionPlayback, SessionPlaybackCommand,
+        SessionPlaybackError,
+    };
+
+    for route in [0, 2] {
+        for console in [false, true] {
+            let (mut editor, asset) = authored_fixture(route, false);
+            let contributor = editor.project().tracks()[1].id();
+            let source = editor.project().tracks()[0].source_id().unwrap();
+            let session_clip = if console {
+                let Created::Scene(scene) = editor
+                    .execute(Command::AddScene {
+                        name: "scene".into(),
+                    })
+                    .unwrap()
+                else {
+                    panic!("scene")
+                };
+                let Created::SessionClip(clip) = editor
+                    .execute(Command::CreateSessionMidiClip {
+                        track: contributor,
+                        scene,
+                        name: "console note".into(),
+                        source_length: BeatTime::ONE,
+                    })
+                    .unwrap()
+                else {
+                    panic!("session clip")
+                };
+                editor
+                    .execute(Command::AddMidiNote {
+                        clip,
+                        start: BeatTime::ZERO,
+                        duration: BeatTime::ONE,
+                        pitch: 76,
+                        channel: 0,
+                        velocity: 100,
+                    })
+                    .unwrap();
+                Some(clip)
+            } else {
+                None
+            };
+            let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
+            let revision = Arc::new(
+                PreparedRevision::prepare(
+                    editor.project(),
+                    &media,
+                    Arc::new(crate::SineTable::new()),
+                    None,
+                )
+                .unwrap(),
+            );
+            assert_eq!(
+                revision
+                    .arrangement()
+                    .signal_graph
+                    .as_ref()
+                    .is_some_and(|graph| graph.needs_upstream_frame_routing()),
+                route == 2,
+            );
+            let mut clocked = recipe(source, Some(0));
+            clocked.definition = Some(PreparedProcessorFactory::Legacy(Arc::new(SquareRecipe(
+                Some(0),
+                true,
+            ))));
+            let instances = [clocked];
+            let recipes = [PreparedSourceEffects {
+                source,
+                receiver: 0,
+                instances: &instances,
+            }];
+            let start = |playback: &mut SessionPlayback| {
+                playback.apply(SessionPlaybackCommand::Play).unwrap();
+                if let Some(clip) = session_clip {
+                    playback
+                        .apply(SessionPlaybackCommand::LaunchClip {
+                            clip,
+                            quantization: LaunchQuantization::Immediate,
+                        })
+                        .unwrap();
+                }
+            };
+            let mut dry = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+            let mut wet =
+                SessionPlayback::test_with_source_effects(Arc::clone(&revision), &recipes).unwrap();
+            start(&mut dry);
+            start(&mut wet);
+            let mut baseline = [[0.0; 2]; WIDTH];
+            let mut actual = [[0.0; 2]; WIDTH];
+            dry.render(&mut baseline).unwrap();
+            wet.render(&mut actual[..17]).unwrap();
+            wet.render(&mut actual[17..]).unwrap();
+            assert!(baseline.iter().any(|f| (f[0] - CLIP[0]).abs() > 0.001));
+
+            let mut previous = [0.0; 2];
+            for (frame, (sample, dry)) in actual.iter().zip(baseline).enumerate() {
+                let source = [dry[0] - CLIP[0], dry[1] - CLIP[1]];
+                let stamp = frame as f32 * (1.0 / 65_536.0);
+                for ch in 0..2 {
+                    let expected =
+                        CLIP[ch] + source[ch] * source[ch] + previous[ch] * 0.125 + stamp;
+                    assert!(
+                        (sample[ch] - expected).abs() < 1e-6,
+                        "route {route}, console {console}: {sample:?} vs {expected}"
+                    );
+                }
+                previous = source;
+            }
+            if !console {
+                wet.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+                let mut restarted = [[0.0; 2]; WIDTH];
+                wet.render(&mut restarted).unwrap();
+                assert_eq!(restarted, actual);
+            }
+            wet.apply(SessionPlaybackCommand::Pause).unwrap();
+            assert!(matches!(
+                wet.render(&mut [[0.0; 2]]),
+                Err(SessionPlaybackError::Arrangement(
+                    "paused source effect monitoring is not supported yet"
+                ))
+            ));
+            let mut candidate = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+            assert!(matches!(
+                candidate.try_inherit_state_from(&mut wet),
+                Err(SessionPlaybackError::Arrangement(
+                    "source effect handoff is not supported yet"
+                ))
+            ));
+        }
+    }
 }
