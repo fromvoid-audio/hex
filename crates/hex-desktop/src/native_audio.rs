@@ -1927,10 +1927,7 @@ impl WorkerAudioSink for NativeAudioSink {
                     self.plugins
                         .poll_reopen(&mut output, self.desired.as_deref());
                 }
-                self.plugins.poll(
-                    &mut output,
-                    self.desired.as_ref().map(|source| source.context()),
-                );
+                self.plugins.poll(&mut output, self.desired.as_deref());
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                 if let Some(desired) = self.desired.as_deref() {
                     self.plugins.close_removed_editor(desired);
