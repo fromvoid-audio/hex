@@ -1,5 +1,9 @@
 //! Native modulator controls. The panel renders canonical assignments and emits
 //! revision-bound edits. A selected mapping source is view state only.
+mod target_drag;
+
+pub(super) use target_drag::State as TargetDragState;
+
 use super::*;
 use crate::context_menu::{MenuItem, PopupMenu};
 use crate::editor::context_menu::EditorContextAction;
@@ -17,6 +21,8 @@ use hex_project::{
     ModulationAmount, ModulationDestination, ModulationOutputId, ModulationRange,
     ModulationRouteId, ModulationSourceId, Modulator,
 };
+
+const DEFAULT_MAPPING_DEPTH: f32 = 0.1;
 
 #[derive(Clone, Copy)]
 enum SourceKind {
@@ -258,7 +264,8 @@ enum Edit {
     },
     RandomRate(ModulationSourceId, f64),
     Reseed(ModulationSourceId),
-    Map(MappingOutput, MappingTarget),
+    Map(MappingOutput, MappingTarget, f32),
+    SetDepth(ModulationRouteId, ModulationAmount),
     Adjust(ModulationRouteId, f32),
     Range(ModulationRouteId),
     ToggleRoute(ModulationRouteId),
@@ -542,7 +549,7 @@ pub(super) fn panel(
                     cx,
                     format!("map-{key}-{}", id.value()),
                     theme::text(label),
-                    Edit::Map(source, MappingTarget::HostGain(stage)),
+                    Edit::Map(source, MappingTarget::HostGain(stage), DEFAULT_MAPPING_DEPTH),
                 ))
             });
         body = body.child(div().flex().flex_wrap().gap(px(4.0)).children(targets));
@@ -833,7 +840,11 @@ pub(super) fn panel(
                         cx,
                         format!("map-lfo-rate-{}-{}", id.value(), source_id.value()),
                         theme::text(rate_text),
-                        Edit::Map(mapping_source, MappingTarget::LfoRate(source_id)),
+                        Edit::Map(
+                            mapping_source,
+                            MappingTarget::LfoRate(source_id),
+                            DEFAULT_MAPPING_DEPTH,
+                        ),
                     )
                     .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
                     .into_any_element()
@@ -924,7 +935,11 @@ pub(super) fn panel(
                         cx,
                         format!("map-macro-{}-{}", id.value(), source_id.value()),
                         theme::text(value),
-                        Edit::Map(mapping_source, MappingTarget::Macro(source_id)),
+                        Edit::Map(
+                            mapping_source,
+                            MappingTarget::Macro(source_id),
+                            DEFAULT_MAPPING_DEPTH,
+                        ),
                     )
                     .border_color(rgb(theme::color(theme::PaletteRole::Primary))),
                 );
@@ -966,7 +981,11 @@ pub(super) fn panel(
                             cx,
                             format!("map-macro-4-{}-{}-{number}", id.value(), source_id.value()),
                             theme::text(value),
-                            Edit::Map(mapping, MappingTarget::MacroFour(source_id, parameter)),
+                            Edit::Map(
+                                mapping,
+                                MappingTarget::MacroFour(source_id, parameter),
+                                DEFAULT_MAPPING_DEPTH,
+                            ),
                         )
                         .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
                         .into_any_element()
@@ -1055,6 +1074,7 @@ pub(super) fn panel(
                     Edit::Map(
                         mapping,
                         MappingTarget::CompositionInput(source_id, parameter),
+                        DEFAULT_MAPPING_DEPTH,
                     ),
                 )
                 .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
@@ -1281,8 +1301,7 @@ pub(super) fn target_overlay(
     let state = view.state.as_ref()?;
     let bank = state.project.device(device)?.modulation();
     let parameter = target.descriptor.id;
-    if bank.routes().len() >= hex_project::MAX_MODULATION_ROUTES_PER_DEVICE
-        || !target.enabled
+    if !target.enabled
         || !target
             .semantics
             .is_some_and(|semantics| semantics.modulation == ParameterModulation::SampleRate)
@@ -1290,7 +1309,7 @@ pub(super) fn target_overlay(
     {
         return None;
     }
-    let assigned = bank.routes().iter().any(|route| {
+    let assigned = bank.routes().iter().find(|route| {
         source.owns(route)
             && matches!(
                 route.destination,
@@ -1298,40 +1317,25 @@ pub(super) fn target_overlay(
                     if id == parameter
             )
     });
-    if is_pressure_source(bank.sources(), source.source)
-        && (!hex_engine::fm4_note_pressure_parameter_supported(parameter)
-            || (!assigned && bank.routes().iter().any(|route| source.owns(route))))
+    if assigned.is_none()
+        && (bank.routes().len() >= hex_project::MAX_MODULATION_ROUTES_PER_DEVICE
+            || (is_pressure_source(bank.sources(), source.source)
+                && (!hex_engine::fm4_note_pressure_parameter_supported(parameter)
+                    || bank.routes().iter().any(|route| source.owns(route)))))
     {
         return None;
     }
-    let generation = view.project_generation;
-    let revision = state.revision;
-    let selector = format!("map-target-{}-{}", device.value(), parameter.value());
-    Some(
-        div()
-            .id(ElementId::Name(selector.clone().into()))
-            .debug_selector(move || selector.clone())
-            .absolute()
-            .inset_0()
-            .border_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
-            .cursor_pointer()
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_click(cx.listener(move |view, _, _, cx| {
-                cx.stop_propagation();
-                if !assigned {
-                    submit(
-                        view,
-                        generation,
-                        revision,
-                        device,
-                        Edit::Map(source, MappingTarget::Device(parameter)),
-                    );
-                    cx.notify();
-                }
-            }))
-            .into_any_element(),
-    )
+    Some(target_drag::overlay(
+        view,
+        cx,
+        target_drag::Target {
+            device,
+            source,
+            parameter,
+        },
+        assigned,
+        state.revision,
+    ))
 }
 
 fn is_pressure_source(sources: &[Modulator], id: ModulationSourceId) -> bool {
@@ -1609,7 +1613,7 @@ fn apply(
             settings.seed = settings.seed.wrapping_add(0xd1b5_4a32_d192_ed03);
             source.state = settings.encode().map_err(unsupported)?;
         }
-        Edit::Map(source, target) => {
+        Edit::Map(source, target, depth) => {
             if !sources.iter().any(|slot| source.valid_for(slot)) {
                 return Err(Invalid("modulator source output is unsupported"));
             }
@@ -1686,7 +1690,7 @@ fn apply(
                 source: source.source,
                 output: source.output,
                 destination,
-                amount: ModulationAmount::new(0.1)?,
+                amount: ModulationAmount::new(depth)?,
                 range: if pressure {
                     unipolar_range()?
                 } else {
@@ -1695,6 +1699,7 @@ fn apply(
                 enabled: true,
             });
         }
+        Edit::SetDepth(id, depth) => find_route(&mut routes, id)?.amount = depth,
         Edit::Adjust(id, change) => {
             let route = find_route(&mut routes, id)?;
             route.amount = ModulationAmount::new((route.amount.get() + change).clamp(-1.0, 1.0))?;
@@ -1773,7 +1778,11 @@ mod tests {
         let mapped = apply(
             editor.project(),
             device,
-            Edit::Map(MappingOutput::main(first), MappingTarget::Macro(second)),
+            Edit::Map(
+                MappingOutput::main(first),
+                MappingTarget::Macro(second),
+                DEFAULT_MAPPING_DEPTH,
+            ),
         )
         .unwrap();
         let mut routes = mapped.routes().to_vec();

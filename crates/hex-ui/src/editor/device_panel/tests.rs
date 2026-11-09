@@ -6411,7 +6411,7 @@ fn modulation_panel_maps_loaded_sampler_gain_through_its_authored_control(cx: &m
     visual.run_until_parked();
     assert_eq!(
         visual.rendered_cursor_style(),
-        Some(gpui::CursorStyle::PointingHand)
+        Some(gpui::CursorStyle::ResizeUpDown)
     );
     visual.simulate_click(target, Modifiers::default());
     visual.run_until_parked();
@@ -6506,6 +6506,134 @@ fn modulation_panel_adds_and_maps_an_lfo_without_editing_base_values(cx: &mut Te
         hex_engine::lfo_modulator::TYPE_ID,
         &[parameter::GAIN, parameter::WIDTH],
     );
+}
+
+#[gpui::test]
+fn modulation_panel_drags_signed_depth_and_keeps_released_preview_until_ack(
+    cx: &mut TestAppContext,
+) {
+    use hex_devices::utility::parameter::GAIN;
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let base = state.project.device(device).unwrap().state().clone();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let bank = |view: &EditorView| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .modulation()
+            .clone()
+    };
+    click_modulator_control(&mut visual, "device-modulator-toggle".into(), false);
+    add_modulator_from_menu(&mut visual, device, "lfo");
+    pump_until(&editor, cx, |view| bank(view).sources().len() == 1);
+    let (source, revision) = editor.read_with(cx, |view, _| {
+        (
+            bank(view).sources()[0].id,
+            view.state.as_ref().unwrap().revision,
+        )
+    });
+    visual.run_until_parked();
+    click_modulator_control(&mut visual, format!("lfo-{}-map", source.value()), true);
+    let target: &'static str =
+        Box::leak(format!("map-target-{}-{}", device.value(), GAIN.value()).into_boxed_str());
+    let selector = |label| -> &'static str {
+        Box::leak(format!("map-depth-{}-{}-{label}", device.value(), GAIN.value()).into_boxed_str())
+    };
+    let negative_depth = selector("-30%");
+    let positive_depth = selector("+30%");
+    let bounds = visual.debug_bounds(target).unwrap();
+    let start = bounds.center();
+    let down = point(start.x, start.y + px(30.0));
+    assert!(!bounds.contains(&down));
+    let modifiers = Modifiers::default();
+    visual.simulate_mouse_down(start, MouseButton::Left, modifiers);
+    visual.run_until_parked();
+    visual.simulate_mouse_move(down, Some(MouseButton::Left), modifiers);
+    visual.run_until_parked();
+    let preview = visual.debug_bounds(negative_depth).unwrap();
+    assert!(editor.read_with(cx, |view, _| bank(view).routes().is_empty()));
+
+    visual.simulate_mouse_up(down, MouseButton::Left, modifiers);
+    // Leave the worker terminal queued while completing additional repaints.
+    for _ in 0..3 {
+        editor.update(cx, |_, cx| cx.notify());
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds(negative_depth), Some(preview));
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().revision, revision);
+            assert!(bank(view).routes().is_empty());
+        });
+    }
+    pump_until(&editor, cx, |view| {
+        view.state.as_ref().unwrap().revision == revision + 1
+    });
+    visual.run_until_parked();
+    let first = editor.read_with(cx, |view, _| bank(view).routes()[0]);
+    assert_eq!(first.amount.get(), -0.3);
+    assert_eq!(visual.debug_bounds(negative_depth), Some(preview));
+
+    let start = visual.debug_bounds(target).unwrap().center();
+    let up = point(start.x, start.y - px(60.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, modifiers);
+    visual.run_until_parked();
+    visual.simulate_mouse_move(up, Some(MouseButton::Left), modifiers);
+    visual.run_until_parked();
+    assert!(visual.debug_bounds(positive_depth).is_some());
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(up, MouseButton::Left, modifiers);
+    visual.run_until_parked();
+    assert!(visual.debug_bounds(positive_depth).is_none());
+    assert!(editor.read_with(cx, |view, _| !view.edit_pending()));
+
+    let start = visual.debug_bounds(target).unwrap().center();
+    let up = point(start.x, start.y - px(60.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, modifiers);
+    visual.simulate_mouse_move(up, Some(MouseButton::Left), modifiers);
+    visual.run_until_parked();
+    editor.update(cx, |view, cx| {
+        view.device_panel.mapping_source = None;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_mouse_up(up, MouseButton::Left, modifiers);
+    assert!(editor.read_with(cx, |view, _| !view.edit_pending()));
+    click_modulator_control(&mut visual, format!("lfo-{}-map", source.value()), true);
+
+    let start = visual.debug_bounds(target).unwrap().center();
+    let up = point(start.x, start.y - px(60.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, modifiers);
+    visual.run_until_parked();
+    visual.simulate_mouse_up(up, MouseButton::Left, modifiers);
+    pump_until(&editor, cx, |view| {
+        view.state.as_ref().unwrap().revision == revision + 2
+    });
+    editor.read_with(cx, |view, _| {
+        let bank = bank(view);
+        assert_eq!(bank.routes().len(), 1);
+        let route = bank.routes()[0];
+        assert_eq!(route.id, first.id);
+        assert_eq!(route.amount.get(), 0.3);
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .unwrap()
+                .state(),
+            &base
+        );
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| bank(view).routes() == [first]);
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| bank(view).routes().is_empty());
 }
 
 #[gpui::test]
