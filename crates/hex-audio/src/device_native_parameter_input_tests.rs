@@ -1000,11 +1000,21 @@ fn unlaned_fm4_carrier_touch_and_clear_reach_compensated_main_without_restarting
         )
         .unwrap(),
     );
+    let (mut baseline_control, mut baseline_callback, _) =
+        publish_armed_revision(Arc::clone(&revision), |_| {});
     let (mut control, mut callback, target) = publish_armed_revision(revision, |_| {});
+    let mut baseline = [[0.0; 2]; 64];
+    let mut baseline_render = |len| {
+        let frames = &mut baseline[..len];
+        let result = render(&mut baseline_callback, frames);
+        assert!(write(&mut baseline_callback, frames, &result, 2));
+        baseline
+    };
     let mut pcm = [[0.0; 2]; 64];
     for _ in 0..8 {
         let rendered = render(&mut callback, &mut pcm);
         assert!(write(&mut callback, &mut pcm, &rendered, 2));
+        assert_eq!(pcm, baseline_render(64));
     }
     assert!(
         pcm.iter().any(|frame| frame[0].abs() > 0.001),
@@ -1025,10 +1035,19 @@ fn unlaned_fm4_carrier_touch_and_clear_reach_compensated_main_without_restarting
     for len in [64, 64, 64, 64, 32] {
         let rendered = render(&mut callback, &mut pcm[..len]);
         assert!(write(&mut callback, &mut pcm[..len], &rendered, 2));
+        assert_eq!(&pcm[..len], &baseline_render(len)[..len]);
         assert!(control.native_parameter_input.try_receipt().is_none());
     }
     let rendered = render(&mut callback, &mut pcm[..1]);
-    assert_eq!(pcm[0], [0.0; 2]);
+    let unchanged = baseline_render(1)[0];
+    assert!(unchanged[0].abs() > 0.01);
+    // FM4 applies the first of 240 ramp samples at the delivered origin.
+    for (actual, base) in pcm[0].into_iter().zip(unchanged) {
+        assert!(
+            (actual - base * (239.0 / 240.0)).abs() < 1.0e-5,
+            "{actual} vs {base}"
+        );
+    }
     assert!(control.native_parameter_input.try_receipt().is_none());
     assert!(write(&mut callback, &mut pcm[..1], &rendered, 2));
     let Some(Receipt::Applied {
@@ -1043,6 +1062,12 @@ fn unlaned_fm4_carrier_touch_and_clear_reach_compensated_main_without_restarting
     assert_eq!(application.performance_frame, begin);
     assert_eq!(application.arrangement_frame, begin);
     assert_eq!(application.remaining_latency_frames, delay);
+    for _ in 0..4 {
+        let rendered = render(&mut callback, &mut pcm);
+        assert!(write(&mut callback, &mut pcm, &rendered, 2));
+        assert!(control.native_parameter_input.try_receipt().is_none());
+    }
+    assert_eq!(pcm[63], [0.0; 2]);
     control.native_parameter_input.release().unwrap();
     for len in [64, 64, 64, 64, 32] {
         let rendered = render(&mut callback, &mut pcm[..len]);
@@ -1104,4 +1129,5 @@ fn unlaned_fm4_carrier_touch_and_clear_reach_compensated_main_without_restarting
     );
     assert!(control.native_parameter_input.try_receipt().is_none());
     shutdown(&mut control, &mut callback);
+    shutdown(&mut baseline_control, &mut baseline_callback);
 }
