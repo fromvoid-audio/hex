@@ -193,7 +193,13 @@ impl EditorView {
                                             "no tracks · import audio or add a track"
                                         },
                                     )),
-                            ),
+                            )
+                            .children([loop_guides(
+                                &state,
+                                self,
+                                empty_viewport,
+                                self.track_header_width(),
+                            )]),
                     ),
                     cx,
                 )]);
@@ -270,6 +276,12 @@ impl EditorView {
                 window.scale_factor(),
             )])
             .child(rows);
+        content = content.children([loop_guides(
+            &state,
+            self,
+            viewport,
+            self.track_header_width(),
+        )]);
         content = content.children(self.edit_cursor_layer(viewport, clip_move_guide, cx));
         content = content.children(self.track_reorder_line());
         let upper = div()
@@ -1148,6 +1160,47 @@ pub(super) fn timeline_grid_elements(
             )
         })
         .collect()
+}
+
+fn loop_guides(state: &ViewState, view: &EditorView, viewport: Viewport, header_width: f32) -> Div {
+    let region = super::loop_rail::displayed_region(view, state);
+    let mut layer = div()
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .left_0()
+        .right(px(header_width));
+    if let Some(region) = region
+        && let Some(end) = viewport.end()
+        && viewport.length > 0
+    {
+        let color = theme::color(if region.enabled() {
+            theme::PaletteRole::Text
+        } else {
+            theme::PaletteRole::Muted
+        });
+        for (frame, name) in [
+            (region.start(), "loop-guide-start"),
+            (region.end(), "loop-guide-end"),
+        ] {
+            if (viewport.start..=end).contains(&frame) {
+                let position = (frame - viewport.start) as f64 / viewport.length as f64;
+                layer = layer.child(
+                    div()
+                        .debug_selector(move || name.into())
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .w(px(1.0))
+                        .when(position == 1.0, |d| d.right_0())
+                        .when(position != 1.0, |d| d.left(relative(position as f32)))
+                        .bg(rgb(color))
+                        .opacity(if region.enabled() { 0.94 } else { 0.62 }),
+                );
+            }
+        }
+    }
+    layer
 }
 
 fn timeline_grid_layer(
