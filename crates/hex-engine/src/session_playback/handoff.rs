@@ -393,6 +393,11 @@ impl SessionPlayback {
         live: bool,
         fenced_restart: bool,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        if !self.source_effects.is_empty() || !previous.source_effects.is_empty() {
+            return Err(SessionPlaybackError::Arrangement(
+                "source effect handoff is not supported yet",
+            ));
+        }
         if !(retained_path_roles_match(&previous.revision, &self.revision)
             || fenced_restart && live && self.live_restart && self.candidate_admission_open)
         {
