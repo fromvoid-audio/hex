@@ -12,6 +12,25 @@ use hex_session::service::{
 #[test]
 fn native_toggle_and_choice_take_keeps_only_the_delivered_step() {
     let _native = native_fixture();
+    let render = |h: &ResidentHarness| {
+        let mut pcm = [[0.0; 2]; 64];
+        let mut host = [0.0; 128];
+        let mut slot = h.callback.lock().unwrap();
+        let callback = slot.as_mut().unwrap();
+        let counts = allocation_counter::measure(|| {
+            callback.render_native_direct(&mut pcm, &mut host).unwrap();
+        });
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        pcm
+    };
     for (parameter, value) in [
         (8, ParameterValue::Bool(true)),
         (4, ParameterValue::Choice(3)),
@@ -49,9 +68,9 @@ fn native_toggle_and_choice_take_keeps_only_the_delivered_step() {
             .as_mut()
             .unwrap()
             .control
-            .command(PlaybackCommand::Play)
+            .command(PlaybackCommand::PlayFrom(0))
             .unwrap();
-        let base = (0..4).map(|_| h.render()[63]).last().unwrap();
+        let base = (0..4).map(|_| render(&h)[63]).last().unwrap();
         assert!(base[0] > 0.01 && base[1] < -0.01);
         let status = h.audio.as_ref().unwrap().status().unwrap();
         let source = status.recording_source().unwrap();
@@ -100,7 +119,7 @@ fn native_toggle_and_choice_take_keeps_only_the_delivered_step() {
             .unwrap();
         let receipt = |h: &mut ResidentHarness| {
             for _ in 0..8 {
-                let pcm = h.render();
+                let pcm = render(h);
                 if let Some(receipt) = h.audio.as_mut().unwrap().control.native_parameter_receipt()
                 {
                     return (receipt, pcm[63]);
@@ -207,12 +226,12 @@ fn native_toggle_and_choice_take_keeps_only_the_delivered_step() {
             .as_mut()
             .unwrap()
             .control
-            .command(PlaybackCommand::Play)
+            .command(PlaybackCommand::PlayFrom(0))
             .unwrap();
         let start = usize::try_from(application.arrangement_frame).unwrap();
         let end = usize::try_from(restored.arrangement_frame).unwrap();
         assert!((1..8192).contains(&start) && (start + 1..8192).contains(&end));
-        let pcm = (0..=end / 64).flat_map(|_| h.render()).collect::<Vec<_>>();
+        let pcm = (0..=end / 64).flat_map(|_| render(&h)).collect::<Vec<_>>();
         assert_eq!(pcm[start - 1], base);
         assert!(pcm[start..end].iter().all(|sample| *sample == touched));
         assert_eq!(pcm[end], base);
