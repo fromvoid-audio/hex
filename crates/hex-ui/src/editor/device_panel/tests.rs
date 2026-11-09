@@ -6821,24 +6821,41 @@ fn modulation_panel_edits_steps_and_reopens_the_exact_signed_pattern(cx: &mut Te
         assert_eq!(&reopened, project.as_ref());
     });
 
-    let current = editor.read_with(cx, |view, _| bank(view));
-    let mut slots = current.sources().to_vec();
-    expected.timing = Timing::Arrangement { steps_per_beat: 4 };
-    slots[0].state = expected.encode().unwrap();
-    editor.update(cx, |view, _| {
-        assert!(
-            view.enqueue(Request::Edit(Command::ReplaceDeviceModulation {
-                device,
-                modulation: hex_project::DeviceModulation::new(slots, current.routes().to_vec())
-                    .unwrap(),
-            }))
-        );
-    });
+    let free = editor.read_with(cx, |view, _| bank(view));
+    click(
+        &mut visual,
+        format!("steps-{}-timing-mode", source.value()),
+        true,
+    );
+    expected.timing = Timing::DEFAULT_ARRANGEMENT;
     pump_until(&editor, cx, |view| read(view) == expected);
     visual.run_until_parked();
     let key = |suffix| Box::leak(format!("steps-{}-{suffix}", source.value()).into_boxed_str());
     assert!(visual.debug_bounds(key("arrangement-time")).is_some());
     assert!(visual.debug_bounds(key("step time-shorter")).is_none());
+
+    click(
+        &mut visual,
+        format!("steps-{}-division-shorter", source.value()),
+        true,
+    );
+    expected.timing = Timing::Arrangement { steps_per_beat: 8 };
+    pump_until(&editor, cx, |view| read(view) == expected);
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(bank(view).routes(), free.routes());
+        assert_eq!(
+            hex_storage::schema_version_for(project),
+            hex_storage::ARRANGEMENT_STEPS_SCHEMA_VERSION
+        );
+        let reopened = hex_storage::decode(&hex_storage::encode(project).unwrap()).unwrap();
+        assert_eq!(&reopened, project.as_ref());
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    expected.timing = Timing::DEFAULT_ARRANGEMENT;
+    pump_until(&editor, cx, |view| read(view) == expected);
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| bank(view) == free);
 }
 
 #[gpui::test]
@@ -7196,6 +7213,11 @@ fn modulation_panel_maps_only_the_fm4_host_output_stage(cx: &mut TestAppContext)
     exercise_fm4_modulation_mapper(cx, Fm4MappingFixture::HostOutput);
 }
 
+#[gpui::test]
+fn modulation_panel_keeps_fm4_steps_free_running(cx: &mut TestAppContext) {
+    exercise_fm4_modulation_mapper(cx, Fm4MappingFixture::FreeSteps);
+}
+
 enum Fm4MappingFixture {
     Carriers,
     Pressure,
@@ -7207,6 +7229,7 @@ enum Fm4MappingFixture {
     OscillatorPhases,
     ConnectionDepths,
     HostOutput,
+    FreeSteps,
 }
 
 fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFixture) {
@@ -7305,6 +7328,38 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
             .modulation()
             .clone()
     };
+    if matches!(fixture, Fm4MappingFixture::FreeSteps) {
+        click(
+            &mut visual,
+            format!("add-modulator-{}", device.value()),
+            true,
+        );
+        let index = editor.read_with(cx, |view, _| {
+            view.context_menu
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .position(|item| item.label == "steps")
+                .unwrap()
+        });
+        for _ in 0..index {
+            visual.simulate_keystrokes("down");
+        }
+        visual.simulate_keystrokes("enter");
+        pump_until(&editor, cx, |view| bank(view).sources().len() == 1);
+        visual.run_until_parked();
+        let source = editor.read_with(cx, |view, _| {
+            let bank = bank(view);
+            let source = &bank.sources()[0];
+            assert_eq!(source.state.type_id(), hex_engine::steps_modulator::TYPE_ID);
+            source.id
+        });
+        let key = |suffix| Box::leak(format!("steps-{}-{suffix}", source.value()).into_boxed_str());
+        assert!(visual.debug_bounds(key("timing-mode")).is_none());
+        assert!(visual.debug_bounds(key("step time-shorter")).is_some());
+        return;
+    }
     let kind = if pressure || counter || ramp || ahd_release || adsr {
         click(
             &mut visual,
