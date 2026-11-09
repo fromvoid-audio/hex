@@ -6454,6 +6454,206 @@ fn modulation_panel_maps_continuous_and_discrete_eq8_controls_without_editing_au
 }
 
 #[gpui::test]
+fn modulation_panel_maps_all_fm4_carriers_through_the_scrolled_instrument_body(
+    cx: &mut TestAppContext,
+) {
+    use hex_devices::fm4::device::{FM4_DEFINITION, FM4_TYPE_ID, parameter};
+    use hex_lattice_contract::NativeDeviceMetadata;
+    use hex_project::{DeviceAutomationTarget, ModulationDestination};
+
+    let service = Service::new(48_000, 8, 8_000_000).unwrap();
+    receive_service_event(&service);
+    let original = FM4_DEFINITION.default_state().unwrap();
+    service
+        .submit(Request::Edit(Command::InsertTrackWithDevice {
+            name: "fm4 track".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: original.clone(),
+        }))
+        .unwrap();
+    let event = receive_service_event(&service);
+    let Some(Created::Track(track)) = event.created else {
+        panic!("track fixture: {:?}", event.error);
+    };
+    let device = event
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let (handle, editor) = actor_editor_window(cx, service, event.state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1500.0), px(650.0)));
+    visual.run_until_parked();
+    let click = click_modulator_control;
+    click(&mut visual, "device-modulator-toggle".into(), false);
+    for kind in ["follower", "audio rate"] {
+        assert!(
+            visual
+                .debug_bounds(Box::leak(
+                    format!("add-{kind}-{}", device.value()).into_boxed_str()
+                ))
+                .is_none()
+        );
+    }
+    let bank = |view: &EditorView| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .modulation()
+            .clone()
+    };
+    click(&mut visual, format!("add-lfo-{}", device.value()), true);
+    pump_until(&editor, cx, |view| bank(view).sources().len() == 1);
+    visual.run_until_parked();
+    let source = editor.read_with(cx, |view, _| bank(view).sources()[0].id);
+    click(&mut visual, format!("lfo-{}-map", source.value()), true);
+    editor.update(cx, |view, cx| {
+        view.device_panel.parameter_rows[&device]
+            .scroll
+            .set_offset(point(px(0.0), px(-1_000_000.0)));
+        cx.notify();
+    });
+    visual.run_until_parked();
+
+    let map_key = |parameter: hex_lattice_contract::ParameterId| {
+        format!("map-target-{}-{}", device.value(), parameter.value())
+    };
+    let release_control = Box::leak(
+        format!(
+            "device-{}-parameter-{}-slider",
+            device.value(),
+            parameter::RELEASE.value()
+        )
+        .into_boxed_str(),
+    );
+    assert!(visual.debug_bounds(release_control).is_some());
+    assert!(
+        visual
+            .debug_bounds(Box::leak(map_key(parameter::RELEASE).into_boxed_str()))
+            .is_none()
+    );
+
+    let targets = [1, 2, 3, 4].map(parameter::carrier);
+    let body = Box::leak(format!("device-body-{}", device.value()).into_boxed_str());
+    let shell = Box::leak(format!("device-shell-{}", device.value()).into_boxed_str());
+    let viewport = |visual: &mut VisualTestContext| {
+        visual
+            .debug_bounds(body)
+            .unwrap()
+            .intersect(&visual.debug_bounds(shell).unwrap())
+    };
+    for (index, target) in targets.into_iter().enumerate() {
+        let key = map_key(target);
+        let selector = Box::leak(key.clone().into_boxed_str());
+        // The inner row window overscans its scroll area. The outer housing
+        // can also clip it when the modulator strip is open.
+        for _ in 0..3 {
+            let bounds = viewport(&mut visual);
+            let position = visual.debug_bounds(selector).unwrap().center();
+            if bounds.contains(&position) {
+                break;
+            }
+            visual.simulate_event(gpui::ScrollWheelEvent {
+                position: bounds.center(),
+                delta: gpui::ScrollDelta::Pixels(point(px(0.0), bounds.center().y - position.y)),
+                ..Default::default()
+            });
+            visual.run_until_parked();
+        }
+        let bounds = viewport(&mut visual);
+        let position = visual.debug_bounds(selector).unwrap().center();
+        assert!(
+            bounds.contains(&position),
+            "{key} at {position:?} outside {bounds:?}"
+        );
+        click(&mut visual, key, false);
+        assert!(
+            editor.read_with(cx, |view, _| {
+                view.worker_requests_pending > 0
+                    || !view.pending_requests.is_empty()
+                    || bank(view).routes().len() == index + 1
+            }),
+            "carrier {} did not dispatch: {:?}",
+            target.value(),
+            editor.read_with(cx, |view, _| view.error.clone())
+        );
+        pump_until(&editor, cx, |view| bank(view).routes().len() == index + 1);
+        visual.run_until_parked();
+    }
+
+    let mapped = editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        let current = project.device(device).unwrap();
+        for (route, target) in current.modulation().routes().iter().zip(targets) {
+            assert_eq!(route.source, source);
+            assert_eq!(
+                route.destination,
+                ModulationDestination::Device {
+                    device_type: FM4_TYPE_ID,
+                    target: DeviceAutomationTarget::Parameter(target),
+                    vst3_class: None,
+                }
+            );
+        }
+        assert_eq!(current.state(), &original);
+        let reopened = hex_storage::decode(&hex_storage::encode(project).unwrap()).unwrap();
+        assert_eq!(&reopened, project.as_ref());
+        current.modulation().clone()
+    });
+    let route = mapped.routes()[0].id;
+    for _ in 0..3 {
+        let strip = visual.debug_bounds("device-modulator-scroll").unwrap();
+        let housing = visual.debug_bounds(shell).unwrap();
+        if housing.contains(&strip.origin) {
+            break;
+        }
+        let position = viewport(&mut visual).center();
+        visual.simulate_event(gpui::ScrollWheelEvent {
+            position,
+            delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(1000.0))),
+            ..Default::default()
+        });
+        visual.run_until_parked();
+    }
+    let housing = visual.debug_bounds(shell).unwrap();
+    let strip = visual.debug_bounds("device-modulator-scroll").unwrap();
+    assert!(
+        housing.contains(&strip.origin),
+        "the modulator strip is clipped"
+    );
+    for expected in [0.05, 0.0, -0.05] {
+        click(
+            &mut visual,
+            format!("modulation-route-{}-less", route.value()),
+            true,
+        );
+        let adjusted =
+            |view: &EditorView| (bank(view).routes()[0].amount.get() - expected).abs() < 1e-6;
+        assert!(
+            editor.read_with(cx, |view, _| {
+                view.worker_requests_pending > 0
+                    || !view.pending_requests.is_empty()
+                    || adjusted(view)
+            }),
+            "the depth adjustment did not dispatch"
+        );
+        pump_until(&editor, cx, adjusted);
+        visual.run_until_parked();
+    }
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        bank(view).routes()[0].amount.get() == 0.0
+    });
+}
+
+#[gpui::test]
 fn modulation_panel_adds_and_maps_an_envelope_follower(cx: &mut TestAppContext) {
     assert_modulation_mapping(
         cx,
