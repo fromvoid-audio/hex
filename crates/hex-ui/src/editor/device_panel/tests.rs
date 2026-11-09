@@ -6683,6 +6683,76 @@ fn modulation_panel_maps_all_fm4_carriers_through_the_scrolled_instrument_body(
 }
 
 #[gpui::test]
+fn modulation_panel_duplicates_a_mapped_source_and_undoes_it_in_one_edit(cx: &mut TestAppContext) {
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let click = click_modulator_control;
+    let bank = |view: &EditorView| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .modulation()
+            .clone()
+    };
+    click(&mut visual, "device-modulator-toggle".into(), false);
+    click(&mut visual, format!("add-lfo-{}", device.value()), true);
+    pump_until(&editor, cx, |view| bank(view).sources().len() == 1);
+    visual.run_until_parked();
+    let source = editor.read_with(cx, |view, _| bank(view).sources()[0].id);
+    click(&mut visual, format!("lfo-{}-map", source.value()), true);
+    click(
+        &mut visual,
+        format!(
+            "map-target-{}-{}",
+            device.value(),
+            hex_devices::utility::parameter::GAIN.value()
+        ),
+        false,
+    );
+    pump_until(&editor, cx, |view| bank(view).routes().len() == 1);
+    visual.run_until_parked();
+    let original = editor.read_with(cx, |view, _| bank(view));
+    click(
+        &mut visual,
+        format!("lfo-{}-duplicate", source.value()),
+        true,
+    );
+    assert!(editor.read_with(cx, |view, _| {
+        view.worker_requests_pending > 0
+            || !view.pending_requests.is_empty()
+            || bank(view).sources().len() == 2
+    }));
+    pump_until(&editor, cx, |view| bank(view).sources().len() == 2);
+    let duplicate = editor.read_with(cx, |view, _| {
+        let bank = bank(view);
+        assert_eq!(bank.sources()[0], original.sources()[0]);
+        assert_ne!(bank.sources()[1].id, source);
+        assert!(!bank.sources()[1].enabled);
+        assert_eq!(bank.sources()[1].state, original.sources()[0].state);
+        assert_eq!(bank.routes()[0], original.routes()[0]);
+        assert_ne!(bank.routes()[1].id, original.routes()[0].id);
+        assert_eq!(bank.routes()[1].source, bank.sources()[1].id);
+        assert_eq!(
+            bank.routes()[1].destination,
+            original.routes()[0].destination
+        );
+        let project = &view.state.as_ref().unwrap().project;
+        let reopened = hex_storage::decode(&hex_storage::encode(project).unwrap()).unwrap();
+        assert_eq!(reopened.device(device).unwrap().modulation(), &bank);
+        bank
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| bank(view) == original);
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+    pump_until(&editor, cx, |view| bank(view) == duplicate);
+}
+
+#[gpui::test]
 fn modulation_panel_adds_and_maps_an_envelope_follower(cx: &mut TestAppContext) {
     assert_modulation_mapping(
         cx,

@@ -213,6 +213,64 @@ impl DeviceModulation {
         Ok(next)
     }
 
+    /// Copy one slot and its incident assignments into a revision-bound draft.
+    /// The copy starts disabled. Inserting the draft with the existing bank
+    /// command validates the project cursor and commits one history entry.
+    pub fn duplicate_source(
+        &self,
+        source: ModulationSourceId,
+        next_identity: u64,
+    ) -> Result<Self, Invalid> {
+        let index = self
+            .sources
+            .iter()
+            .position(|slot| slot.id == source)
+            .ok_or(Invalid("modulator no longer exists"))?;
+        let related = |route: &&DeviceModulationRoute| {
+            route.source == source
+                || matches!(
+                    route.destination,
+                    ModulationDestination::Modulator { source: target, .. } if target == source
+                )
+        };
+        let added = self.routes.iter().filter(related).count();
+        let count = self.routes.len() + added;
+        if self.sources.len() >= MAX_MODULATORS_PER_DEVICE
+            || count > MAX_MODULATION_ROUTES_PER_DEVICE
+        {
+            return Err(Invalid("device modulation capacity reached"));
+        }
+        next_identity
+            .checked_add(added as u64 + 1)
+            .ok_or(Invalid("project identity capacity reached"))?;
+        let copy = ModulationSourceId::new(next_identity)
+            .map_err(|_| Invalid("invalid modulator identity"))?;
+        let mut slot = self.sources[index].clone();
+        slot.id = copy;
+        slot.enabled = false;
+        let mut sources = Vec::with_capacity(self.sources.len() + 1);
+        sources.extend_from_slice(&self.sources[..=index]);
+        sources.push(slot);
+        sources.extend_from_slice(&self.sources[index + 1..]);
+
+        let mut routes = Vec::with_capacity(count);
+        routes.extend_from_slice(&self.routes);
+        for (index, route) in self.routes.iter().filter(related).enumerate() {
+            let mut route = *route;
+            route.id = ModulationRouteId::new(next_identity + index as u64 + 1)?;
+            if route.source == source {
+                route.source = copy;
+            }
+            if let ModulationDestination::Modulator { source: target, .. } = &mut route.destination
+                && *target == source
+            {
+                *target = copy;
+            }
+            routes.push(route);
+        }
+        Self::new(sources, routes)
+    }
+
     pub fn sources(&self) -> &[Modulator] {
         &self.sources
     }
