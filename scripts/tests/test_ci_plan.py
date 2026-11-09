@@ -1779,13 +1779,24 @@ class ModuleScopeTests(unittest.TestCase):
                       "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
                       "targets": [{"kind": ["lib"]}]}]
         names = ["editor::device_panel::numeric_display::"]
-        for path in ("crates/hex-ui/src/editor/device_panel/numeric_display.rs", "crates/hex-ui/tests/unit_device.rs"):
-            self.assertEqual(plan.module_test_filters(root, [path], inventory, [owner]), {owner: names})
+        self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/editor/device_panel/numeric_display.rs"], inventory, [owner]),
+                         {owner: names})
+        eq = "editor::device_panel::eq_panel::state_edit::"
+        for path in ("crates/hex-ui/src/editor/device_panel/eq_panel/state_edit.rs",
+                     "crates/hex-ui/src/editor/device_panel/eq_panel/state_edit/legacy.rs"):
+            self.assertEqual(plan.module_test_filters(root, [path], inventory, [owner]), {owner: [eq]})
+        self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_device.rs"], inventory, [owner]),
+                         {owner: [eq, *names]})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
                     "single_run": {owner: "ui-test-support"}, "module_filters": {owner: names}}
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
                                   "cargo_inventory": inventory, "paths": []})
         self.assertEqual(sum("unit_device" in step.argv for step in steps), 1)
+        boundary["module_filters"] = {owner: [eq]}
+        eq_steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                     "cargo_inventory": inventory, "paths": []})
+        self.assertEqual(sum("unit_device" in step.argv for step in eq_steps), 1)
+        self.assertTrue(any(eq in step.argv for step in eq_steps if "unit_device" in step.argv))
         self.assertFalse(any("unit_automation" in step.argv or "unit_session" in step.argv or
                              "unit_timeline" in step.argv or "unit_piano_roll" in step.argv for step in steps))
         self.assertTrue(any(step.step_id == "ui-device-unit-tests" for step in ci.planned_steps({"scope": "full"})))
