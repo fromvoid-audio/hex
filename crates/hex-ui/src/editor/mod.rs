@@ -202,6 +202,7 @@ mod recovery_state;
 #[cfg(test)]
 mod recovery_state_integration_tests;
 mod refresh;
+mod refresh_state;
 mod render;
 mod return_tracks;
 mod routing_controls;

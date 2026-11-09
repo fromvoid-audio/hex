@@ -1765,6 +1765,7 @@ class ModuleScopeTests(unittest.TestCase):
                          {owner: ["editor::audio_import_settings::admission::",
                                   "editor::controller::audio_event_correlation::",
                                   "editor::controller::sampler_native_ui_protocol_tests::",
+                                  "editor::output_meter_ui_test::", "editor::refresh_state::",
                                   "editor::session_navigation::", "editor::session_navigation_ui_test::",
                                   "editor::session_route_view::", "editor::track_defaults::", *names]})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_session.rs"], inventory, [owner]), {})
@@ -1962,6 +1963,25 @@ class ModuleScopeTests(unittest.TestCase):
                                       "cargo_inventory": inventory, "paths": []})
             self.assertTrue(any(expected[0] in step.argv for step in steps if "unit_editor_logic" in step.argv))
             self.assertTrue(any(window in step.argv for step in steps if step.step_id == "ui-feature-tests"))
+
+    def test_refresh_state_keeps_unit_and_window_coverage(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::refresh_state::"
+        window = "editor::output_meter_ui_test::"
+        names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/refresh_state.rs"], inventory, [owner])
+        self.assertEqual(names, {owner: [window, unit]})
+        self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/editor/refresh.rs"], inventory, [owner]),
+                         {owner: ["editor::"]})
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
+                    "single_run": {owner: "ui-test-support"}, "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": []})
+        self.assertTrue(any(unit in step.argv for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(window in step.argv for step in steps if step.step_id == "ui-feature-tests"))
 
     def test_timeline_target_follows_its_viewport_dependencies(self):
         root = SCRIPTS.parent
