@@ -96,6 +96,7 @@ fn cancelled_picker_and_stale_responses_cannot_release_the_original() {
     let mut flow = Recovery {
         phase: Phase::Choosing { scope, picker: 5 },
         request: None,
+        saved: None,
     };
     flow.finish_picker(scope, 4, Some(destination.clone()));
     assert!(flow.matches_picker(scope, 5));
@@ -136,10 +137,91 @@ fn cancelled_picker_and_stale_responses_cannot_release_the_original() {
     let kept = Progress::CopyKept(destination.clone());
     assert_eq!(flow.settle(10, &kept), None);
     assert!(flow.unresolved());
-    assert_eq!(flow.settle(11, &kept), Some(scope));
+    assert_eq!(flow.settle(11, &kept), Some(Resolution::Kept(scope)));
+    assert!(flow.saved.is_none(), "interrupted copies cannot be applied");
     assert_eq!(flow.settle(11, &kept), None);
     assert!(!flow.unresolved());
     assert!(original.is_file() && destination.is_file());
+
+    use hex_engine::{NativeParameterApplication, NativeTransientOperation, NativeTransientValue};
+    let applied = NativeParameterApplication {
+        identity: target.identity(),
+        operation: NativeTransientOperation::Set(NativeTransientValue::HostOutputGain(
+            hex_lattice_contract::HostGain::from_normalized(0.25).unwrap(),
+        )),
+        arrangement_frame: 4,
+        performance_frame: 8,
+        loop_pass: 0,
+        remaining_latency_frames: 4,
+    };
+    let path = directory.0.join("finished");
+    let receipt = copy_native_recovery_on_control(
+        &outcome,
+        &path,
+        DraftReadLimits {
+            max_source_bytes: 64 * 1024,
+        },
+        1,
+        scope,
+        DeviceAutomationSource {
+            target: scope.target,
+            sample_rate: stamp.sample_rate,
+            output_identity: stamp.output_identity,
+            audio_revision: stamp.audio_revision,
+            transport_epoch: stamp.transport_epoch,
+            section_loop: None,
+        },
+        &NativeRecoveryContinuation {
+            applications: Arc::from([(1, applied)]),
+            terminal: NativeRecoveryTerminal::Restored(NativeParameterApplication {
+                operation: NativeTransientOperation::Clear(target.target()),
+                arrangement_frame: 12,
+                performance_frame: 16,
+                ..applied
+            }),
+        },
+    )
+    .unwrap();
+    flow.phase = Phase::Keeping {
+        scope,
+        copy: Verified {
+            path: path.clone(),
+            receipt,
+        },
+    };
+    flow.request = Some(12);
+    assert_eq!(
+        flow.settle(12, &Progress::CopyKept(path.clone())),
+        Some(Resolution::Kept(scope))
+    );
+    assert!(
+        !flow.unresolved(),
+        "a kept file no longer owns close custody"
+    );
+    let (saved_scope, copy) = flow
+        .saved
+        .take()
+        .expect("finished copy offered for explicit apply");
+    assert_eq!(saved_scope, scope);
+    assert_eq!(copy.path, path);
+    assert_eq!(copy.receipt, receipt);
+    flow.phase = Phase::Applying { scope, copy };
+    flow.request = Some(13);
+    assert_eq!(flow.settle(12, &Progress::Committed), None);
+    assert!(
+        flow.unresolved(),
+        "stale success cannot retire the pending edit"
+    );
+    assert_eq!(flow.settle(13, &Progress::Refused), None);
+    let (_, copy) = flow.saved.take().expect("refused apply remains retryable");
+    flow.phase = Phase::Applying { scope, copy };
+    flow.request = Some(14);
+    assert_eq!(
+        flow.settle(14, &Progress::Committed),
+        Some(Resolution::Applied)
+    );
+    assert!(flow.saved.is_none());
+    assert!(!flow.unresolved());
 }
 
 #[test]
@@ -150,6 +232,7 @@ fn only_the_ordered_plugin_query_selects_the_original_scope() {
             until: Instant::now() + Duration::from_secs(1),
         },
         request: Some(1),
+        saved: None,
     };
     let found = Progress::FailedPluginCustody {
         scope: Box::new(scope),

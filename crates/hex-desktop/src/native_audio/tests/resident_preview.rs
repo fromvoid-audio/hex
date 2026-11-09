@@ -2341,6 +2341,7 @@ fn sealed_native_take_recovery_uses_canonical_publication_and_one_undo() {
         expected: scope.stamp,
         path: path.clone(),
         context,
+        receipt: None,
     });
     assert_eq!(
         recovered.device_automation_take_complete.unwrap().progress,
