@@ -14,9 +14,11 @@
 //! as phase, and graph inheritance retains the new graph's prepared timing mode.
 use crate::{
     NativeInstrumentClock, NativeInstrumentEvent, SourceModulationParameter,
+    modulation_adsr::Adsr,
     modulation_ahd_release::AhdRelease,
     modulation_note_counter::NoteCounter,
     modulation_note_events::validate_events,
+    modulation_note_gate::NoteGate,
     modulation_ramp::{ModulationRampCurve, Ramp},
     modulation_source_routes::PreparedSourceRoute,
 };
@@ -138,6 +140,7 @@ enum SourceState {
     Mix(MixControls),
     NoteCounter(NoteCounter),
     Ramp(Ramp),
+    Adsr(Adsr),
     AhdRelease(AhdRelease),
     Random(RandomHold),
 }
@@ -170,6 +173,7 @@ impl SourceState {
             (Self::AudioRate, Self::AudioRate) => {}
             (Self::NoteCounter(counter), Self::NoteCounter(old)) => counter.inherit(old),
             (Self::Ramp(ramp), Self::Ramp(old)) => ramp.inherit(old),
+            (Self::Adsr(envelope), Self::Adsr(old)) => envelope.inherit(old),
             (Self::AhdRelease(envelope), Self::AhdRelease(old)) => envelope.inherit(old),
             (Self::Random(random), Self::Random(old)) => random.inherit_history(&old),
             _ => return false,
@@ -242,8 +246,15 @@ impl PreparedModulationSource {
     pub fn reads_note_events(&self) -> bool {
         matches!(
             self.initial,
-            SourceState::NoteCounter(_) | SourceState::Ramp(_) | SourceState::AhdRelease(_)
+            SourceState::NoteCounter(_)
+                | SourceState::Ramp(_)
+                | SourceState::AhdRelease(_)
+                | SourceState::Adsr(_)
         )
+    }
+
+    pub(crate) fn reads_note_gate(&self) -> bool {
+        matches!(self.initial, SourceState::Adsr(_))
     }
 
     pub fn sample_rate(&self) -> f64 {
@@ -488,6 +499,29 @@ impl PreparedModulationSource {
         })
     }
 
+    /// Prepare an aggregate note-gate envelope. Durations are attack,
+    /// decay and release in frames. A zero duration skips its segment.
+    pub fn adsr(
+        id: ModulationSourceId,
+        sample_rate: u32,
+        durations: [u32; 3],
+        sustain: f32,
+        single_trigger: bool,
+    ) -> Result<Self, Error> {
+        if !(8_000..=192_000).contains(&sample_rate)
+            || !(0.0..=1.0).contains(&sustain)
+            || durations.iter().any(|&frames| frames > 60 * sample_rate)
+        {
+            return Err(Error::InvalidParameterValue);
+        }
+        Ok(Self {
+            id,
+            output: ModulationOutputId::MAIN,
+            initial: SourceState::Adsr(Adsr::new(durations, sustain, single_trigger)),
+            sample_rate: f64::from(sample_rate),
+        })
+    }
+
     /// Prepare a free-running, seeded sample-and-hold source.
     pub fn random_hold(
         id: ModulationSourceId,
@@ -519,6 +553,7 @@ struct Source {
 pub struct ModulationSourceBank {
     sources: Vec<Source>,
     tempo_cache: Vec<u32>,
+    note_gate: Option<Box<NoteGate>>,
     chunk_frames: usize,
     last_frames: usize,
     active: bool,
@@ -526,7 +561,11 @@ pub struct ModulationSourceBank {
     follows_notes: bool,
 }
 impl ModulationSourceBank {
-    pub(crate) fn quoted_heap_bytes(sources: usize, frames: usize) -> Option<usize> {
+    pub(crate) fn quoted_heap_bytes(
+        sources: usize,
+        frames: usize,
+        note_gate: bool,
+    ) -> Option<usize> {
         sources
             .checked_mul(std::mem::size_of::<Source>())?
             .checked_add(
@@ -538,6 +577,13 @@ impl ModulationSourceBank {
                 0
             } else {
                 frames.checked_mul(std::mem::size_of::<u32>())?
+            })
+            .and_then(|bytes| {
+                bytes.checked_add(if note_gate {
+                    NoteGate::quoted_heap_bytes(frames)?
+                } else {
+                    0
+                })
             })
     }
     pub(crate) fn matches_prepared(
@@ -578,9 +624,15 @@ impl ModulationSourceBank {
         {
             return Err(Error::RuntimeBudgetExceeded);
         }
-        let minimum = Self::quoted_heap_bytes(sources.len(), chunk_frames)
-            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>()))
-            .ok_or(Error::RuntimeBudgetExceeded)?;
+        let minimum = Self::quoted_heap_bytes(
+            sources.len(),
+            chunk_frames,
+            sources
+                .iter()
+                .any(PreparedModulationSource::reads_note_gate),
+        )
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>()))
+        .ok_or(Error::RuntimeBudgetExceeded)?;
         if minimum > MAX_MODULATION_SOURCE_STORAGE_BYTES {
             return Err(Error::RuntimeBudgetExceeded);
         }
@@ -623,9 +675,15 @@ impl ModulationSourceBank {
             .try_reserve_exact(cache_frames)
             .map_err(|_| Error::RuntimeAllocation)?;
         tempo_cache.resize(cache_frames, 0);
+        let note_gate = sources
+            .iter()
+            .any(PreparedModulationSource::reads_note_gate)
+            .then(|| NoteGate::new(chunk_frames))
+            .transpose()?;
         let bank = Self {
             sources: prepared,
             tempo_cache,
+            note_gate,
             chunk_frames,
             last_frames: 0,
             active: false,
@@ -670,6 +728,12 @@ impl ModulationSourceBank {
                 .and_then(|size| size.checked_add(bytes))
                 .ok_or(Error::RuntimeBudgetExceeded)?;
         }
+        if let Some(note_gate) = &self.note_gate {
+            bytes = note_gate
+                .storage_bytes()
+                .and_then(|gate| bytes.checked_add(gate))
+                .ok_or(Error::RuntimeBudgetExceeded)?;
+        }
         Ok(bytes)
     }
 
@@ -699,6 +763,9 @@ impl ModulationSourceBank {
     pub fn begin(&mut self) {
         for source in &mut self.sources {
             source.scratch = source.committed;
+        }
+        if let Some(gate) = &mut self.note_gate {
+            gate.begin();
         }
         self.last_frames = 0;
         self.active = true;
@@ -786,6 +853,11 @@ impl ModulationSourceBank {
                 }
             }
         }
+        let gate = self
+            .note_gate
+            .as_mut()
+            .map(|gate| gate.render(frames, note_events.ok_or(Error::InvalidParameterValue)?))
+            .transpose()?;
         for (index, source) in self.sources.iter_mut().enumerate() {
             if target_mask & (1 << index) != 0 {
                 continue;
@@ -833,6 +905,9 @@ impl ModulationSourceBank {
                 }
                 SourceState::AhdRelease(envelope) => {
                     envelope.render(note_events.ok_or(Error::InvalidParameterValue)?, output);
+                }
+                SourceState::Adsr(envelope) => {
+                    envelope.render(gate.ok_or(Error::InvalidParameterValue)?, output);
                 }
                 SourceState::Random(random) => random.render(output),
             }
@@ -1015,6 +1090,9 @@ impl ModulationSourceBank {
         for source in &mut self.sources {
             source.committed = source.scratch;
         }
+        if let Some(gate) = &mut self.note_gate {
+            gate.commit();
+        }
         self.active = false;
         self.last_frames = 0;
         Ok(())
@@ -1030,6 +1108,9 @@ impl ModulationSourceBank {
         for source in &mut self.sources {
             source.committed = source.initial;
             source.scratch = source.initial;
+        }
+        if let Some(gate) = &mut self.note_gate {
+            gate.reset();
         }
         self.active = false;
         self.last_frames = 0;
@@ -1054,6 +1135,12 @@ impl ModulationSourceBank {
                 && source.committed.inherit_history(old.committed)
             {
                 source.scratch = source.committed;
+            }
+        }
+        if let Some(gate) = &mut self.note_gate {
+            gate.reset();
+            if let Some(previous) = &previous.note_gate {
+                gate.inherit(previous);
             }
         }
         self.active = false;

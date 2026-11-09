@@ -937,6 +937,91 @@ mod tests {
     }
 
     #[test]
+    fn adsr_tracks_overlapping_notes_and_transactional_gate_history() {
+        let fixture = prepared(6_000.0);
+        let id = ParameterId::from_static(1);
+        let target = ModulationTarget {
+            descriptor: fixture.program().descriptor(id).unwrap(),
+            semantics: fixture.program().semantics(id).unwrap(),
+            base: ParameterValue::Float(0.5),
+        };
+        let program = PreparedModulation::new(
+            &[target],
+            &[ModulationRoute {
+                source: 0,
+                target: id,
+                amount: 0.5,
+                range: [-1.0, 1.0],
+            }],
+            1,
+        )
+        .unwrap();
+        let stable_id = ModulationSourceId::new(1).unwrap();
+        assert!(
+            PreparedModulationSource::adsr(stable_id, 48_000, [0; 3], f32::NAN, false).is_err()
+        );
+        let on = |frame_offset, occurrence_id| NativeInstrumentEvent::NoteOn {
+            frame_offset,
+            occurrence_id,
+            pitch: 60,
+            velocity: 100,
+        };
+        let off = |frame_offset, occurrence_id| NativeInstrumentEvent::NoteOff {
+            frame_offset,
+            occurrence_id,
+        };
+        let check = |runtime: &mut ModulationRuntime,
+                     events: &[NativeInstrumentEvent],
+                     expected: &[f32]| {
+            runtime
+                .render_instrument_chunk(expected.len(), None, None, events, |block| {
+                    for (offset, &sample) in expected.iter().enumerate() {
+                        assert_eq!(
+                            block.value_at(id, offset),
+                            Some(ParameterValue::Float(sample))
+                        );
+                    }
+                    Ok(())
+                })
+                .unwrap();
+        };
+        for (single, expected) in [
+            (true, [0.5, 0.75, 1.0, 0.875, 0.75, 0.75, 0.75, 0.625, 0.5]),
+            (false, [0.5, 0.75, 1.0, 1.0, 1.0, 1.0, 1.0, 0.75, 0.5]),
+        ] {
+            let adsr =
+                PreparedModulationSource::adsr(stable_id, 48_000, [2; 3], 0.5, single).unwrap();
+            let declaration =
+                crate::PreparedModulationState::new(vec![adsr], program.clone(), 16).unwrap();
+            let mut runtime = declaration.prepare().unwrap();
+            assert!(
+                runtime.heap_storage_bytes().unwrap()
+                    <= declaration.quoted_runtime_heap_bytes().unwrap()
+            );
+            runtime.begin();
+            check(&mut runtime, &[on(0, 1), on(3, 2)], &expected[..4]);
+            runtime.rollback();
+            runtime.begin();
+            check(&mut runtime, &[on(0, 1), on(3, 2)], &expected[..4]);
+            runtime.commit().unwrap();
+            let mut next = declaration.prepare().unwrap();
+            next.inherit_committed(&runtime).unwrap();
+            next.begin();
+            check(&mut next, &[off(1, 1), off(2, 2)], &expected[4..]);
+            next.commit().unwrap();
+            next.reset_all();
+            next.begin();
+            check(&mut next, &[off(0, 1)], &[0.5; 2]);
+            check(
+                &mut next,
+                &[on(0, 1), on(3, 2), off(5, 1), off(6, 2)],
+                &expected,
+            );
+            next.commit().unwrap();
+        }
+    }
+
+    #[test]
     fn oversized_chunks_and_mismatched_inventory_are_refused() {
         let mut current = runtime(6_000.0);
         assert_eq!(current.chunk_frames(), 8);
