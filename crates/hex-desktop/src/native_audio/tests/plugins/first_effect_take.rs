@@ -90,19 +90,29 @@ fn records_first_raw_zero_effect_lane_without_mutating_the_base() {
         .control
         .command(PlaybackCommand::Play)
         .unwrap();
-    let peak = |h: &ResidentHarness| {
-        (0..4)
-            .map(|_| {
-                instruments::render_completed_block(h)
-                    .into_iter()
-                    .flatten()
-                    .map(f32::abs)
-                    .fold(0.0, f32::max)
-            })
-            .last()
-            .unwrap()
+    let slope = |h: &ResidentHarness| {
+        // Variant 92 scales each successful SDK block by 0.5 + block/8.
+        // Once the pipeline is settled, consecutive PCM peaks isolate the
+        // processor gain from that intentionally advancing fixture clock.
+        let peak = || {
+            instruments::render_completed_block(h)
+                .into_iter()
+                .flatten()
+                .map(f32::abs)
+                .fold(0.0, f32::max)
+        };
+        for _ in 0..4 {
+            peak();
+        }
+        let before = peak();
+        let after = peak();
+        assert!(
+            before > 0.001,
+            "the original SDK must be processing the imported clip"
+        );
+        after - before
     };
-    let base = peak(&h);
+    let base = slope(&h);
     assert!(base > 0.001);
     let send = |h: &mut ResidentHarness, client: &mut GestureClient| {
         let request = client.next_request().unwrap();
@@ -161,7 +171,7 @@ fn records_first_raw_zero_effect_lane_without_mutating_the_base() {
         send(&mut h, &mut client).state.project,
         before.state.project
     );
-    let touched = peak(&h);
+    let touched = slope(&h);
     assert!(
         (touched - base * 2.0).abs() < 1.0e-6,
         "effect PCM: base={base}, touched={touched}, position={}",
@@ -193,7 +203,7 @@ fn records_first_raw_zero_effect_lane_without_mutating_the_base() {
             .collect::<Vec<_>>(),
         [0.5, 0.75]
     );
-    assert!((peak(&h) - base).abs() < 1.0e-6);
+    assert!((slope(&h) - base).abs() < 1.0e-6);
     let undo = automation::edit_with_running_callback(&mut h, Request::Undo);
     assert_eq!(undo.state.project, before.state.project);
     let applied = h.applied(applied).0;
