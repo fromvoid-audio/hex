@@ -17,7 +17,7 @@ if _PYTHON_SPEC is None or _PYTHON_SPEC.loader is None:
 python_tests = importlib.util.module_from_spec(_PYTHON_SPEC)
 _PYTHON_SPEC.loader.exec_module(python_tests)
 
-POLICY_VERSION = 28
+POLICY_VERSION = 29
 UI_PACKAGES = {"hex-ui", "hex-widgets"}
 # Opaque state reaches storage through runtime type IDs, not a Cargo dependency.
 # Changes here must be reviewed with the real registration/codec consumers.
@@ -248,6 +248,7 @@ UI_UNIT_TARGETS = {"editor::audio_admission::": "unit_editor_state",
                    "editor::clip_content_cache::profile::navigation::selection::": "unit_editor_state",
                    "editor::cpu_meter::": "unit_editor_state",
                    "editor::device_automation::plot_geometry::": "unit_automation",
+                   "editor::device_panel::numeric_display::": "unit_device",
                    "editor::disk_overload::": "unit_editor_state",
                    "editor::midi_drag::": "unit_piano_roll",
                    "editor::midi_group_drag::": "unit_piano_roll",
@@ -267,7 +268,7 @@ UI_UNIT_TARGETS = {"editor::audio_admission::": "unit_editor_state",
                    "editor::signed_frame_viewport::": "unit_timeline",
                    "editor::track_meters::scale::": "unit_editor_state",
                    "editor::viewport::": "unit_editor_state"}
-UI_UNIT_FEATURES = {"unit_piano_roll": "ui-unit-tier", "unit_timeline": "ui-unit-tier", "unit_session": "ui-unit-tier", "unit_automation": "ui-unit-tier"}
+UI_UNIT_FEATURES = {"unit_piano_roll": "ui-unit-tier", "unit_timeline": "ui-unit-tier", "unit_session": "ui-unit-tier", "unit_automation": "ui-unit-tier", "unit_device": "ui-unit-tier"}
 # These geometry modules call one another; a change to one must exercise the
 # complete pure boundary rather than only its own test-name prefix.
 UI_UNIT_COHORTS = [{"editor::midi_drag::", "editor::midi_group_drag::", "editor::midi_scene::", "editor::midi_selection::", "editor::midi_stroke::", "editor::midi_velocity::", "editor::midi_viewport_grid::"},
