@@ -3,7 +3,7 @@
 //! Prepared declarations borrow no project data and never enter project history.
 use hex_devices::modulation::{
     audio_rate, button, buttons, envelope_follower, lfo, macro_four, macro_value, math, mix,
-    note_pressure, random_hold,
+    note_counter, note_pressure, random_hold,
 };
 use hex_lattice::{
     HostGainModulationRoute, MAX_MODULATION_SOURCES, ModulationRoute, ModulationTarget,
@@ -53,6 +53,27 @@ fn loaded_sampler_modulation_supported(state: &NativeDeviceState) -> bool {
     state.type_id() == hex_devices::sampler::state::TYPE_ID
         && state.asset_references().len() == 1
         && !hex_devices::sampler::state::is_empty_state(state)
+}
+
+fn instrument_note_events_supported(source: &hex_project::NativeSource) -> bool {
+    fm4_modulation_supported(source)
+        || source.receiver().is_some()
+            && loaded_sampler_modulation_supported(source.instrument().state())
+}
+
+/// Instrument owners whose current prepared runtime supplies ordered note events.
+pub fn project_device_has_modulation_note_events(project: &Project, device: DeviceId) -> bool {
+    let Some(location) = project.device_location(device) else {
+        return false;
+    };
+    let (DeviceUnitClass::Instrument, DeviceOwner::Source(source)) =
+        (location.class, location.owner)
+    else {
+        return false;
+    };
+    project
+        .native_source(source)
+        .is_some_and(instrument_note_events_supported)
 }
 
 /// Remaining device-local prepared signal buffers. Occurrence pressure is
@@ -109,13 +130,9 @@ pub fn project_device_modulation_target_supported(
     };
     let device = location.device;
     let eligible = match (location.class, location.owner) {
-        (DeviceUnitClass::Instrument, DeviceOwner::Source(source)) => {
-            project.native_source(source).is_some_and(|source| {
-                fm4_modulation_supported(source)
-                    || source.receiver().is_some()
-                        && loaded_sampler_modulation_supported(device.state())
-            })
-        }
+        (DeviceUnitClass::Instrument, DeviceOwner::Source(source)) => project
+            .native_source(source)
+            .is_some_and(instrument_note_events_supported),
         (DeviceUnitClass::Effect, DeviceOwner::Source(_)) => {
             effect_location_supported(project, location)
                 && source_provider_mapping_supported(device.state(), parameter)
@@ -341,7 +358,7 @@ impl EffectModulation {
         sample_rate: u32,
         automation: &[ParameterId],
     ) -> Result<Option<Self>, Invalid> {
-        Self::plan_without_voice_source(device, project, sample_rate, automation, None)
+        Self::plan_bank(device, project, sample_rate, automation, None, false)
     }
 
     pub(super) fn plan_instrument(
@@ -355,21 +372,23 @@ impl EffectModulation {
             .iter()
             .find(|slot| slot.state.type_id() == note_pressure::TYPE_ID)
             .map(|slot| slot.id);
-        Self::plan_without_voice_source(
+        Self::plan_bank(
             device,
             Some(project),
             project.sample_rate(),
             automation,
             voice_source,
+            true,
         )
     }
 
-    fn plan_without_voice_source(
+    fn plan_bank(
         device: &Device,
         project: Option<&Project>,
         sample_rate: u32,
         automation: &[ParameterId],
         voice_source: Option<hex_lattice_contract::ModulationSourceId>,
+        instrument_events: bool,
     ) -> Result<Option<Self>, Invalid> {
         let bank = device.modulation();
         if bank.is_empty() {
@@ -450,11 +469,16 @@ impl EffectModulation {
                     .and_then(|settings| settings.prepare(source.id, sample_rate)),
                 mix::TYPE_ID => mix::Settings::decode(&source.state)
                     .and_then(|settings| settings.prepare(source.id, sample_rate)),
+                note_counter::TYPE_ID => note_counter::Settings::decode(&source.state)
+                    .and_then(|settings| settings.prepare(source.id, sample_rate)),
                 random_hold::TYPE_ID => random_hold::Settings::decode(&source.state)
                     .and_then(|settings| settings.prepare(source.id, sample_rate)),
                 _ => return Err(Invalid("modulator state or rate is unsupported")),
             }
             .map_err(invalid_source)?;
+            if prepared.reads_note_events() && !instrument_events {
+                return Err(Invalid("this modulator requires instrument note events"));
+            }
             retain(ModulationOutputId::MAIN, prepared);
         }
         if sources.is_empty() {

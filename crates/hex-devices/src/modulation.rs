@@ -9,5 +9,6 @@ pub mod macro_four;
 pub mod macro_value;
 pub mod math;
 pub mod mix;
+pub mod note_counter;
 pub mod note_pressure;
 pub mod random_hold;

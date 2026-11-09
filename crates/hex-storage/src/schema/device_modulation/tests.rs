@@ -1198,3 +1198,80 @@ fn mix_reader_floor_keeps_previous_buttons_and_three_input_assignments() {
     assert!(crate::decode(&serde_json::to_vec(&wrong).unwrap()).is_err());
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn note_counter_reader_floor_preserves_settings_and_its_instrument_route() {
+    let mut editor = Editor::new(legacy_fixture(), 8).unwrap();
+    let instrument_type = DeviceTypeId::from_static("hex.instrument.fm4");
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "counter instrument".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: NativeDeviceState::new(instrument_type, 1, vec![0; 144]).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("instrument track");
+    };
+    let device = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let root = temp_dir();
+    let previous = root.join("previous.hex");
+    crate::save_new(&previous, editor.project()).unwrap();
+    let (opened, token) = crate::load_with_token(&previous).unwrap();
+    assert_eq!(opened, *editor.project());
+    let original = std::fs::read(&previous).unwrap();
+    let next = editor.project().next_identity();
+    let source = ModulationSourceId::new(next).unwrap();
+    let slot = Modulator {
+        id: source,
+        color: ElementColor::Cyan,
+        enabled: true,
+        state: NativeDeviceState::new(
+            DeviceTypeId::from_static("hex.modulator.note-counter"),
+            1,
+            vec![12, 0, 5, 0, 1],
+        )
+        .unwrap(),
+    };
+    let route = DeviceModulationRoute {
+        id: ModulationRouteId::new(next + 1).unwrap(),
+        source,
+        output: ModulationOutputId::MAIN,
+        destination: ModulationDestination::Device {
+            device_type: instrument_type,
+            target: DeviceAutomationTarget::Parameter(ParameterId::from_static(29)),
+            vst3_class: None,
+        },
+        amount: ModulationAmount::new(0.25).unwrap(),
+        range: ModulationRange::default(),
+        enabled: true,
+    };
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device,
+            modulation: DeviceModulation::new(vec![slot], vec![route]).unwrap(),
+        })
+        .unwrap();
+    let project = editor.project();
+    assert_eq!(
+        crate::schema_version_for(project),
+        crate::NOTE_COUNTER_MODULATOR_SCHEMA_VERSION
+    );
+    assert!(token.requires_save_confirmation(project).unwrap());
+    let path = root.join("counter.hex");
+    crate::save_new(&path, project).unwrap();
+    assert_eq!(crate::load(&path).unwrap(), *project);
+    assert_eq!(std::fs::read(&previous).unwrap(), original);
+    let mut wrong: serde_json::Value =
+        serde_json::from_slice(&crate::encode(project).unwrap()).unwrap();
+    wrong["version"] = crate::MIX_MODULATOR_SCHEMA_VERSION.into();
+    assert!(crate::decode(&serde_json::to_vec(&wrong).unwrap()).is_err());
+    std::fs::remove_dir_all(root).unwrap();
+}

@@ -723,3 +723,176 @@ fn exercise_saved_fm4_routes(oscillator_levels: bool) {
         assert_eq!(*frame, expected, "session frame {index}");
     }
 }
+
+#[test]
+fn saved_note_counter_changes_a_real_fm4_carrier_at_each_onset_sample() {
+    use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
+    use hex_devices::{
+        fm4::device::{FM4_DEFINITION, FM4_TYPE_ID, parameter},
+        modulation::note_counter,
+        utility::UTILITY_DEFINITION,
+    };
+    use hex_lattice::{
+        DevicePreparationContext, EMPTY_DEVICE_RESOURCES, NativeInstrumentDefinition,
+    };
+    use hex_project::{
+        DeviceModulation, DeviceModulationRoute, ModulationAmount, ModulationDestination,
+        ModulationOutputId, ModulationRange, ModulationRouteId, ModulationSourceId, Modulator,
+    };
+    use std::{collections::BTreeMap, sync::Arc};
+
+    const RATE: u32 = 48_000;
+    const SECOND: usize = 16;
+    let carrier = parameter::carrier(1);
+    let state = |value| {
+        FM4_DEFINITION
+            .patch_parameter(
+                &FM4_DEFINITION.default_state().unwrap(),
+                carrier,
+                ParameterValue::Float(value),
+            )
+            .unwrap()
+    };
+    let authored = state(0.0);
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "counter fm4".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: authored.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("FM4 track");
+    };
+    let device = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("MIDI clip");
+    };
+    let beat = |frame| BeatTime::from_ratio(frame as u64, 24_000).unwrap();
+    for (frame, pitch) in [(0, 60), (SECOND, 64)] {
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: beat(frame),
+                duration: beat(120),
+                pitch,
+                channel: 0,
+                velocity: 127,
+            })
+            .unwrap();
+    }
+    let Created::Device(effect) = editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: UTILITY_DEFINITION.default_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("Utility effect");
+    };
+    let next = editor.project().next_identity();
+    let source = ModulationSourceId::new(next).unwrap();
+    let slot = Modulator {
+        id: source,
+        enabled: true,
+        color: Default::default(),
+        state: note_counter::Settings {
+            steps: 3,
+            increment: 1,
+            bipolar: false,
+        }
+        .encode()
+        .unwrap(),
+    };
+    let table = Arc::new(crate::SineTable::new());
+    let prepare = |project: &Project| {
+        PreparedRevision::prepare(project, &BTreeMap::new(), Arc::clone(&table), None).map(Arc::new)
+    };
+    let before = editor.project().clone();
+    assert!(
+        editor
+            .execute_prepared(
+                Command::ReplaceDeviceModulation {
+                    device: effect,
+                    modulation: DeviceModulation::new(vec![slot.clone()], vec![]).unwrap(),
+                },
+                prepare,
+            )
+            .is_err()
+    );
+    assert_eq!(*editor.project(), before);
+    let route = DeviceModulationRoute {
+        id: ModulationRouteId::new(next + 1).unwrap(),
+        source,
+        output: ModulationOutputId::MAIN,
+        destination: ModulationDestination::Device {
+            device_type: FM4_TYPE_ID,
+            target: DeviceAutomationTarget::Parameter(carrier),
+            vst3_class: None,
+        },
+        amount: ModulationAmount::new(0.5).unwrap(),
+        range: ModulationRange::default(),
+        enabled: true,
+    };
+    let (_, revision) = editor
+        .execute_prepared(
+            Command::ReplaceDeviceModulation {
+                device,
+                modulation: DeviceModulation::new(vec![slot], vec![route]).unwrap(),
+            },
+            prepare,
+        )
+        .unwrap();
+    assert_eq!(editor.project().device(device).unwrap().state(), &authored);
+
+    let context = DevicePreparationContext {
+        sample_rate: RATE,
+        tuning: &hex_lattice::TuningTable::default(),
+        resources: &EMPTY_DEVICE_RESOURCES,
+    };
+    let note = |carrier, pitch| {
+        FM4_DEFINITION
+            .prepare_instrument(&state(carrier), &context)
+            .unwrap()
+            .prepare_note(pitch, 127)
+            .unwrap()
+    };
+    let first_half = note(0.5, 60);
+    let first_full = note(1.0, 60);
+    let second = note(1.0, 64);
+    let render_note = |note: &hex_lattice::PreparedAnalyticNote, frame: usize| {
+        note.sample(frame as u64, u64::MAX, &EMPTY_DEVICE_RESOURCES)
+    };
+    let mut playback = SessionPlayback::new(revision).unwrap();
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut output = [[0.0; 2]; 43];
+    for block in output.chunks_mut(11) {
+        playback.render(block).unwrap();
+    }
+    for (frame, actual) in output.into_iter().enumerate() {
+        let expected = if frame < SECOND {
+            render_note(&first_half, frame)
+        } else {
+            let [a, b] = render_note(&first_full, frame);
+            let [c, d] = render_note(&second, frame - SECOND);
+            [a + c, b + d]
+        };
+        assert_eq!(actual, expected, "onset automation frame {frame}");
+    }
+}
