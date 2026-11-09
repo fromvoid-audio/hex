@@ -92,6 +92,7 @@ pub(super) enum EditorContextAction {
         before: Option<SceneId>,
     },
     UtilityMode(UtilityModeAction),
+    AddModulator(device_panel::AddModulatorAction),
     DeviceComparison(super::device_comparison::Intent),
     DevicePreset(super::device_preset::Intent),
     RenameTrackName {
@@ -700,6 +701,7 @@ impl EditorView {
             EditorContextAction::DeviceComparison(target) => {
                 self.perform_device_comparison(target, cx)
             }
+            EditorContextAction::AddModulator(action) => action.perform(self),
             EditorContextAction::DevicePreset(target) => {
                 self.perform_device_preset_action(target, cx)
             }
@@ -936,6 +938,7 @@ impl EditorView {
                 EditorContextAction::DeviceComparison(target) => {
                     !super::device_comparison::current(self, target)
                 }
+                EditorContextAction::AddModulator(action) => !action.current(self),
                 EditorContextAction::DevicePreset(target) => {
                     !super::device_preset::current(self, target)
                 }

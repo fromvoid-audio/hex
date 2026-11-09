@@ -1,7 +1,9 @@
 //! Native modulator controls. The panel renders canonical assignments and emits
 //! revision-bound edits. A selected mapping source is view state only.
 use super::*;
-use gpui::{AnyElement, SharedString};
+use crate::context_menu::{MenuItem, PopupMenu};
+use crate::editor::context_menu::EditorContextAction;
+use gpui::{AnyElement, Point, SharedString};
 use hex_engine::{
     audio_rate_modulator as audio_rate, follower_modulator as follower, lfo_modulator as lfo,
     macro_modulator as manual, random_modulator as random,
@@ -128,6 +130,90 @@ enum Edit {
     Range(ModulationRouteId),
     ToggleRoute(ModulationRouteId),
     RemoveRoute(ModulationRouteId),
+}
+
+#[derive(Clone, Copy)]
+struct AddModulatorTarget {
+    generation: u64,
+    revision: u64,
+    owner: Option<DevicePanelOwner>,
+    device: DeviceId,
+}
+
+impl AddModulatorTarget {
+    fn current(self, view: &EditorView) -> bool {
+        self.generation == view.project_generation
+            && self.owner == view.device_panel.owner
+            && view.state.as_ref().is_some_and(|state| {
+                state.revision == self.revision && state.project.device(self.device).is_some()
+            })
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::editor) struct AddModulatorAction {
+    target: AddModulatorTarget,
+    kind: SourceKind,
+}
+
+impl AddModulatorAction {
+    pub(in crate::editor) fn current(self, view: &EditorView) -> bool {
+        self.target.current(view)
+    }
+
+    pub(in crate::editor) fn perform(self, view: &mut EditorView) {
+        if self.current(view) {
+            let AddModulatorTarget {
+                generation,
+                revision,
+                device,
+                ..
+            } = self.target;
+            submit(view, generation, revision, device, Edit::Add(self.kind));
+        }
+    }
+}
+
+fn open_add_menu(
+    view: &mut EditorView,
+    target: AddModulatorTarget,
+    allow_audio_input: bool,
+    position: Point<Pixels>,
+    window: &mut Window,
+    cx: &mut Context<EditorView>,
+) {
+    if !target.current(view) || !finalize_controls(view, cx) {
+        return;
+    }
+    let previous_focus = view
+        .context_menu
+        .take()
+        .and_then(|menu| menu.previous_focus)
+        .or_else(|| window.focused(cx));
+    let focus = cx.focus_handle();
+    window.focus(&focus);
+    let items = SourceKind::ALL
+        .into_iter()
+        .filter(|kind| {
+            allow_audio_input || !matches!(kind, SourceKind::Follower | SourceKind::AudioRate)
+        })
+        .map(|kind| MenuItem {
+            label: kind.label(),
+            swatch: None,
+            checked: false,
+            action: EditorContextAction::AddModulator(AddModulatorAction { target, kind }),
+        })
+        .collect();
+    view.context_menu = Some(PopupMenu {
+        scroll: gpui::ScrollHandle::new(),
+        icon_grid: None,
+        position,
+        items,
+        selected: 0,
+        focus,
+        previous_focus,
+    });
+    cx.notify();
 }
 
 pub(super) struct HostGainMappingAvailability {
@@ -262,26 +348,33 @@ pub(super) fn panel(
             cx.notify();
         }))
     };
-    let mut header = div().flex().flex_wrap().items_center().gap(px(4.0));
+    let mut body = div().flex().flex_col().flex_shrink_0().gap(px(3.0));
     if bank.sources().len() < hex_project::MAX_MODULATORS_PER_DEVICE {
-        for kind in SourceKind::ALL.into_iter().filter(|kind| {
-            allow_audio_input || !matches!(kind, SourceKind::Follower | SourceKind::AudioRate)
-        }) {
-            let name = kind.label();
-            header = header.child(button(
-                cx,
-                format!("add-{name}-{}", id.value()),
-                theme::text(format!("+ {name}")),
-                Edit::Add(kind),
-            ));
-        }
+        let target = AddModulatorTarget {
+            generation,
+            revision,
+            owner: view.device_panel.owner,
+            device: id,
+        };
+        let add_button = action(
+            format!("add-modulator-{}", id.value()),
+            theme::text("+ modulator"),
+        )
+        .on_click(
+            cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
+                cx.stop_propagation();
+                open_add_menu(
+                    view,
+                    target,
+                    allow_audio_input,
+                    event.position(),
+                    window,
+                    cx,
+                );
+            }),
+        );
+        body = body.child(add_button);
     }
-    let mut body = div()
-        .flex()
-        .flex_col()
-        .flex_shrink_0()
-        .gap(px(3.0))
-        .child(header);
     if let Some(source) = selected
         && host_gain_available
         && bank.routes().len() < hex_project::MAX_MODULATION_ROUTES_PER_DEVICE

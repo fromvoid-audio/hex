@@ -13,6 +13,10 @@ impl DraftTarget {
                 device,
                 target: target @ DeviceAutomationTarget::Vst3 { .. },
             } => target_class(source, device, target).map(Some),
+            Self::Vst3Group(group) => {
+                group.validate_source(source)?;
+                Ok(Some(group.class()))
+            }
             _ => Ok(None),
         }
     }
