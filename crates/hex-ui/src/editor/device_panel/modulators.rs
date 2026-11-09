@@ -92,7 +92,7 @@ pub(super) fn panel(
         let follower = follower::Settings::decode(&source.state).ok();
         let (label, prefix) = match (lfo, follower) {
             (Some(_), _) => ("lfo", "lfo"),
-            (_, Some(_)) => ("envelope follower", "follower"),
+            (_, Some(_)) => ("follower", "follower"),
             _ => continue,
         };
         let mapping = selected == Some(source_id);
