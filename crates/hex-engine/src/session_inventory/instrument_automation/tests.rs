@@ -439,15 +439,26 @@ fn native_quote_does_not_charge_opaque_foreign_source_programs() {
 
 #[test]
 fn saved_fm4_routes_compose_with_authored_curves_and_keep_phase_at_live_handoff() {
-    exercise_saved_fm4_routes(false);
+    exercise_saved_fm4_routes(Fm4RouteTargets::Carriers);
 }
 
 #[test]
 fn saved_fm4_oscillator_levels_modulate_the_fm_signal_at_sample_rate() {
-    exercise_saved_fm4_routes(true);
+    exercise_saved_fm4_routes(Fm4RouteTargets::Levels);
 }
 
-fn exercise_saved_fm4_routes(oscillator_levels: bool) {
+#[test]
+fn saved_fm4_connection_depths_change_the_real_fm_signal_at_sample_rate() {
+    exercise_saved_fm4_routes(Fm4RouteTargets::Edges);
+}
+
+enum Fm4RouteTargets {
+    Carriers,
+    Levels,
+    Edges,
+}
+
+fn exercise_saved_fm4_routes(targets: Fm4RouteTargets) {
     use crate::{LaunchQuantization, PreparedRevision, SessionPlayback, SessionPlaybackCommand};
     use hex_devices::{
         fm4::device::{FM4_DEFINITION, FM4_TYPE_ID, parameter},
@@ -467,21 +478,25 @@ fn exercise_saved_fm4_routes(oscillator_levels: bool) {
     const RATE: u32 = 48_000;
     const HANDOFF: usize = 11;
     const FRAMES: usize = 137;
-    let (ids, automation, route_scale) = if oscillator_levels {
-        (
+    let (ids, automation, route_scale) = match targets {
+        Fm4RouteTargets::Carriers => ([parameter::carrier(1), parameter::carrier(2)], 0.625, 1.0),
+        Fm4RouteTargets::Levels => (
             [
                 parameter::oscillator_level(1),
                 parameter::oscillator_level(2),
             ],
             0.03125,
             0.25,
-        )
-    } else {
-        ([parameter::carrier(1), parameter::carrier(2)], 0.625, 1.0)
+        ),
+        Fm4RouteTargets::Edges => (
+            [parameter::modulation(2, 1), parameter::modulation(3, 2)],
+            0.515625,
+            0.125,
+        ),
     };
     let with_controls = |values: [f32; 2]| {
         let mut state = FM4_DEFINITION.default_state().unwrap();
-        if oscillator_levels {
+        if matches!(targets, Fm4RouteTargets::Levels) {
             state = FM4_DEFINITION
                 .patch_parameter(
                     &state,
@@ -497,7 +512,8 @@ fn exercise_saved_fm4_routes(oscillator_levels: bool) {
         }
         state
     };
-    let original = with_controls([0.5; 2]);
+    let edges = matches!(targets, Fm4RouteTargets::Edges);
+    let original = with_controls(if edges { [0.25; 2] } else { [0.5; 2] });
     let mut editor =
         hex_project::Editor::new(hex_project::Project::new(RATE).unwrap(), 16).unwrap();
     let Created::Track(track) = editor
@@ -619,7 +635,11 @@ fn exercise_saved_fm4_routes(oscillator_levels: bool) {
     let mut ungranted = edited;
     ungranted[0].destination = ModulationDestination::Device {
         device_type: FM4_TYPE_ID,
-        target: DeviceAutomationTarget::Parameter(parameter::RELEASE),
+        target: DeviceAutomationTarget::Parameter(if edges {
+            parameter::modulation(1, 2)
+        } else {
+            parameter::RELEASE
+        }),
         vst3_class: None,
     };
     let authored = editor.project().clone();
@@ -666,8 +686,17 @@ fn exercise_saved_fm4_routes(oscillator_levels: bool) {
             .prepare_note(60, 127)
             .unwrap()
     };
-    let before = [note([0.75, 0.0]), note([0.25, 0.5])];
-    let after = [note([1.0, 0.0]), note([0.0, 0.5])];
+    let (before, after) = if edges {
+        (
+            [note([0.5, 0.0]), note([0.0, 0.5])],
+            [note([0.75, 0.0]), note([-0.25, 0.5])],
+        )
+    } else {
+        (
+            [note([0.75, 0.0]), note([0.25, 0.5])],
+            [note([1.0, 0.0]), note([0.0, 0.5])],
+        )
+    };
     let expected: [[f32; 2]; FRAMES] = std::array::from_fn(|index| {
         let note = if index < HANDOFF { &before } else { &after };
         note[usize::from(index % 4 >= 2)].sample(index as u64, u64::MAX, &EMPTY_DEVICE_RESOURCES)
