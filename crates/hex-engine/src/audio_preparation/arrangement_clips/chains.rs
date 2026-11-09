@@ -80,11 +80,15 @@ impl ChainCustody {
                 let migrated = hex_devices::utility::UTILITY_DEFINITION
                     .migrate_state(state)
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?;
-                let processor = if device.modulation().routes().is_empty()
-                    && !device
-                        .automation()
-                        .iter()
-                        .any(|lane| lane.target.provider_parameter().is_some())
+                let processor = if !device.modulation().routes().iter().any(|route| {
+                    matches!(
+                        route.destination, hex_project::ModulationDestination::Device { target, .. }
+                            if target.provider_parameter().is_some()
+                    )
+                }) && !device
+                    .automation()
+                    .iter()
+                    .any(|lane| lane.target.provider_parameter().is_some())
                     && !native_input.is_some_and(|input| {
                         input.device() == device.id()
                             && input.target().provider_parameter().is_some()
