@@ -490,7 +490,9 @@ fn paired_editor_values_and_independent_restores_are_confirmed_only_at_main() {
         samples.extend(physical_block::<5>(&mut f));
         samples.extend(physical_block::<3>(&mut f));
         replacement::wait_for_blocks(&root, f.binding, block + 1);
-        while let Some(receipt) = f.control.try_native_source_editor_delivery_on_control() {
+        while confirmed.len() < 2
+            && let Some(receipt) = f.control.try_native_source_editor_delivery_on_control()
+        {
             let Receipt::Confirmed(quantum) = receipt else {
                 panic!("premature group abort: {receipt:?}");
             };
@@ -500,9 +502,22 @@ fn paired_editor_values_and_independent_restores_are_confirmed_only_at_main() {
         }
         assert_eq!(
             confirmed.len(),
-            due.iter().filter(|&&frame| frame / 8 <= block).count()
+            due.iter()
+                .filter(|&&frame| frame / 8 <= block)
+                .count()
+                .min(2)
         );
     }
+    // Leave the last already audible restore in the existing receipt queue
+    // across priority Stop. It precedes the reserved invalidation terminal.
+    f.control.stop();
+    physical_block::<4>(&mut f);
+    let Some(Receipt::Confirmed(second)) = f.control.try_native_source_editor_delivery_on_control()
+    else {
+        panic!("priority Stop lost a restoration already delivered to Main");
+    };
+    assert_eq!(second.target, target);
+    confirmed.push(second);
     let [held, first, second] = confirmed.as_slice() else {
         panic!("one paired value and two individual restores");
     };
@@ -566,8 +581,6 @@ fn paired_editor_values_and_independent_restores_are_confirmed_only_at_main() {
     for &(frame, value) in expected {
         assert_eq!(samples[frame - 16], value, "exact Main frame {frame}");
     }
-    f.control.stop();
-    physical_block::<4>(&mut f);
     assert_eq!(
         f.control.try_native_source_editor_delivery_on_control(),
         Some(Receipt::Aborted {
