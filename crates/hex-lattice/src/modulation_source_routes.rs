@@ -1,5 +1,6 @@
 //! Control-prepared dependency order for routes between device-local sources.
-//! The host resolves stable IDs to sorted bank indices. A source with incoming
+//! The host resolves stable source and output IDs to sorted bank indices.
+//! A source with incoming
 //! edges renders only after its upstream sources. Authored source values remain
 //! independent of the resulting per-sample phase steps or macro output.
 use crate::{
@@ -12,6 +13,8 @@ use hex_lattice_contract::DeviceContractError as Error;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SourceModulationParameter {
     MacroValue,
+    MathA,
+    MathB,
     /// Signed full depth shifts the authored free rate by four octaves.
     /// Zero rate stays stopped and the effective step saturates at Nyquist.
     FreeLfoRate,

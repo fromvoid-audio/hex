@@ -451,6 +451,103 @@ mod tests {
     }
 
     #[test]
+    fn two_math_inputs_follow_distinct_upstream_samples_and_reset_as_a_bank() {
+        use crate::{LfoWaveform, ModulationMathOperation as Op, SourceModulationParameter};
+
+        let fixture = prepared(6_000.0);
+        let id = ParameterId::from_static(1);
+        let target = ModulationTarget {
+            descriptor: fixture.program().descriptor(id).unwrap(),
+            semantics: fixture.program().semantics(id).unwrap(),
+            base: ParameterValue::Float(0.5),
+        };
+        let program = PreparedModulation::new(
+            &[target],
+            &[ModulationRoute {
+                source: 1,
+                target: id,
+                amount: 0.25,
+                range: [-1.0, 1.0],
+            }],
+            3,
+        )
+        .unwrap();
+        let stable_id = |value| ModulationSourceId::new(value).unwrap();
+        let square = |value, phase| {
+            PreparedModulationSource::free_with_waveform(
+                stable_id(value),
+                48_000.0,
+                12_000.0,
+                phase,
+                LfoWaveform::Square,
+            )
+            .unwrap()
+        };
+        let math = PreparedModulationSource::math(stable_id(2), 48_000, [0.0, 0.25], Op::Subtract)
+            .unwrap();
+        let incoming = [
+            crate::SourceModulationRoute {
+                source: 2,
+                target: 1,
+                parameter: SourceModulationParameter::MathB,
+                amount: 0.125,
+                range: [-1.0, 1.0],
+            },
+            crate::SourceModulationRoute {
+                source: 0,
+                target: 1,
+                parameter: SourceModulationParameter::MathA,
+                amount: 0.25,
+                range: [-1.0, 1.0],
+            },
+        ];
+        let sources = vec![square(1, 0.0), math, square(3, 0.25)];
+        let mut invalid = incoming;
+        invalid[0].parameter = SourceModulationParameter::MacroValue;
+        assert!(
+            crate::PreparedModulationState::with_source_routes(
+                sources.clone(),
+                program.clone(),
+                8,
+                &invalid,
+            )
+            .is_err()
+        );
+        let declaration =
+            crate::PreparedModulationState::with_source_routes(sources, program, 8, &incoming)
+                .unwrap();
+        let mut runtime = declaration.prepare().unwrap();
+        let check = |runtime: &mut ModulationRuntime, expected: &[f32]| {
+            runtime
+                .render_chunk(expected.len(), None, |block| {
+                    for (offset, &sample) in expected.iter().enumerate() {
+                        assert_eq!(
+                            block.value_at(id, offset),
+                            Some(ParameterValue::Float(sample))
+                        );
+                    }
+                    Ok(())
+                })
+                .unwrap();
+        };
+        runtime.begin();
+        check(&mut runtime, &[0.5, 0.625, 0.375]);
+        runtime.rollback();
+        runtime.begin();
+        check(&mut runtime, &[0.5, 0.625, 0.375]);
+        runtime.commit().unwrap();
+        let mut next = declaration.prepare().unwrap();
+        next.inherit_committed(&runtime).unwrap();
+        next.begin();
+        check(&mut next, &[0.25, 0.5, 0.625]);
+        next.commit().unwrap();
+        next.reset_all();
+        next.begin();
+        check(&mut next, &[0.5, 0.625, 0.375, 0.25]);
+        next.commit().unwrap();
+    }
+
+    #[test]
     fn oversized_chunks_and_mismatched_inventory_are_refused() {
         let mut current = runtime(6_000.0);
         assert_eq!(current.chunk_frames(), 8);
