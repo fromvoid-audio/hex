@@ -55,6 +55,27 @@ fn loaded_sampler_modulation_supported(state: &NativeDeviceState) -> bool {
         && !hex_devices::sampler::state::is_empty_state(state)
 }
 
+fn instrument_note_events_supported(source: &hex_project::NativeSource) -> bool {
+    fm4_modulation_supported(source)
+        || source.receiver().is_some()
+            && loaded_sampler_modulation_supported(source.instrument().state())
+}
+
+/// Instrument owners whose current prepared runtime supplies ordered note events.
+pub fn project_device_has_modulation_note_events(project: &Project, device: DeviceId) -> bool {
+    let Some(location) = project.device_location(device) else {
+        return false;
+    };
+    let (DeviceUnitClass::Instrument, DeviceOwner::Source(source)) =
+        (location.class, location.owner)
+    else {
+        return false;
+    };
+    project
+        .native_source(source)
+        .is_some_and(instrument_note_events_supported)
+}
+
 /// Remaining device-local prepared signal buffers. Occurrence pressure is
 /// owned by the instrument and does not use a bank signal buffer.
 pub fn device_available_modulation_outputs(device: &Device) -> usize {
@@ -109,13 +130,9 @@ pub fn project_device_modulation_target_supported(
     };
     let device = location.device;
     let eligible = match (location.class, location.owner) {
-        (DeviceUnitClass::Instrument, DeviceOwner::Source(source)) => {
-            project.native_source(source).is_some_and(|source| {
-                fm4_modulation_supported(source)
-                    || source.receiver().is_some()
-                        && loaded_sampler_modulation_supported(device.state())
-            })
-        }
+        (DeviceUnitClass::Instrument, DeviceOwner::Source(source)) => project
+            .native_source(source)
+            .is_some_and(instrument_note_events_supported),
         (DeviceUnitClass::Effect, DeviceOwner::Source(_)) => {
             effect_location_supported(project, location)
                 && source_provider_mapping_supported(device.state(), parameter)
