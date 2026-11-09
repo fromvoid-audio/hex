@@ -1014,7 +1014,7 @@ impl MutableInstrumentTrackRuntime {
         if let Some(modulation) = &mut self.modulation {
             let mut processed = Ok(());
             modulation
-                .render_chunk_with_clock(frames.len(), automation, clock, |values| {
+                .render_instrument_chunk(frames.len(), automation, clock, events, |values| {
                     processed = self.pair.process_block_with_clock_and_automation(
                         events,
                         frames,

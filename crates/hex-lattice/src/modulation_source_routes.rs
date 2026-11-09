@@ -136,7 +136,7 @@ mod tests {
         .unwrap();
         let mut bank = ModulationSourceBank::new(&sources, 4).unwrap();
         bank.begin();
-        bank.render_chunk_with_routes(4, None, None, &routes, target_mask(&routes))
+        bank.render_chunk_with_routes(4, None, None, None, &routes, target_mask(&routes))
             .unwrap();
         assert_eq!(
             bank.samples(sources[0].id).unwrap(),
@@ -148,7 +148,7 @@ mod tests {
         );
         bank.rollback();
         bank.begin();
-        bank.render_chunk_with_routes(4, None, None, &routes, target_mask(&routes))
+        bank.render_chunk_with_routes(4, None, None, None, &routes, target_mask(&routes))
             .unwrap();
         assert_eq!(
             bank.samples(sources[0].id).unwrap(),
@@ -198,7 +198,7 @@ mod tests {
         let mut whole = ModulationSourceBank::new(&sources, 13).unwrap();
         whole.begin();
         whole
-            .render_chunk_with_routes(13, None, None, &routes, mask)
+            .render_chunk_with_routes(13, None, None, None, &routes, mask)
             .unwrap();
         assert_eq!(whole.samples(id(1)).unwrap(), expected);
         whole.rollback();
@@ -207,7 +207,7 @@ mod tests {
         let mut start = 0;
         for count in [1, 7, 5] {
             whole
-                .render_chunk_with_routes(count, None, None, &routes, mask)
+                .render_chunk_with_routes(count, None, None, None, &routes, mask)
                 .unwrap();
             let samples = &expected[start..start + count];
             assert_eq!(whole.samples(id(1)).unwrap(), samples);

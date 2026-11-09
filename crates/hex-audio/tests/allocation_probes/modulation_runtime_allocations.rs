@@ -170,6 +170,64 @@ fn math_with_two_incoming_signals_does_not_allocate_or_free() {
 }
 
 #[test]
+fn note_counter_reads_the_borrowed_events_without_allocating_or_freeing() {
+    use hex_lattice::{NativeInstrumentEvent, PreparedModulationState};
+
+    let source = PreparedModulationSource::note_counter(
+        ModulationSourceId::new(1).unwrap(),
+        48_000,
+        16,
+        3,
+        true,
+    )
+    .unwrap();
+    let target = gain_target();
+    let id = target.descriptor.id;
+    let program = PreparedModulation::new(
+        &[target],
+        &[ModulationRoute {
+            source: 0,
+            target: id,
+            amount: 0.25,
+            range: [-1.0, 1.0],
+        }],
+        1,
+    )
+    .unwrap();
+    let declaration = PreparedModulationState::new(vec![source], program, 128).unwrap();
+    let mut runtime = declaration.prepare().unwrap();
+    let events: [NativeInstrumentEvent; 128] =
+        std::array::from_fn(|offset| NativeInstrumentEvent::NoteOn {
+            frame_offset: offset,
+            occurrence_id: offset as u64 + 1,
+            pitch: 60,
+            velocity: 100,
+        });
+    let counts = allocation_counter::measure(|| {
+        runtime.begin();
+        runtime
+            .render_instrument_chunk(128, None, None, &events, |block| {
+                for frame in 0..128 {
+                    black_box(block.value_at(id, frame));
+                }
+                Ok(())
+            })
+            .unwrap();
+        runtime.commit().unwrap();
+        runtime.reset_all();
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+}
+
+#[test]
 fn utility_graph_modulation_transactions_do_not_allocate_or_free() {
     probe_utility_graph(None, false);
 }
