@@ -10,7 +10,8 @@ use crate::parameter_automation::Mapping;
 use crate::{NativeParameterAutomation, NormalizedAutomationValue};
 use hex_lattice_contract::{
     DeviceContractError as Error, HostGain, ParameterAccess, ParameterChangeImpact,
-    ParameterDescriptor, ParameterId, ParameterSemantics, ParameterStepping, ParameterValue,
+    ParameterDescriptor, ParameterId, ParameterModulation, ParameterSemantics, ParameterStepping,
+    ParameterValue,
 };
 
 /// Bounds apply to one device-local prepared program and its borrowed blocks.
@@ -91,6 +92,80 @@ impl RangeContribution {
 
     pub(crate) fn sample(self, bipolar: f32) -> f64 {
         f64::from(bipolar) * self.scale + self.offset
+    }
+}
+
+/// One inline route for an occurrence-owned pressure input. The provider
+/// admits the real destination and owns the pressure and its lifetime.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PreparedPressureRoute {
+    descriptor: ParameterDescriptor,
+    semantics: ParameterSemantics,
+    mapping: Mapping,
+    contribution: RangeContribution,
+}
+
+impl PreparedPressureRoute {
+    pub fn new(
+        descriptor: ParameterDescriptor,
+        semantics: ParameterSemantics,
+        amount: f32,
+        range: [f32; 2],
+    ) -> Result<Self, Error> {
+        semantics.validate(descriptor)?;
+        if semantics.access != ParameterAccess::ReadWrite
+            || semantics.change_impact != ParameterChangeImpact::ValueOnly
+            || semantics.modulation != ParameterModulation::SampleRate
+            || semantics.stepping == ParameterStepping::Unspecified
+        {
+            return Err(Error::InvalidDescriptor);
+        }
+        Ok(Self {
+            descriptor,
+            semantics,
+            mapping: Mapping::prepare(descriptor, semantics)?,
+            contribution: RangeContribution::prepare(amount, range)?,
+        })
+    }
+
+    pub const fn descriptor(&self) -> ParameterDescriptor {
+        self.descriptor
+    }
+
+    pub const fn semantics(&self) -> ParameterSemantics {
+        self.semantics
+    }
+
+    /// A pressure of 0/127 selects the first/last authored range endpoint.
+    /// Add its signed contribution to the source-global value before the
+    /// final clamp. Absent a global route, normalize the provider's base.
+    pub fn compose(
+        &self,
+        base: ParameterValue,
+        normalized_before_clamp: Option<f64>,
+        pressure: u8,
+    ) -> Result<ParameterValue, Error> {
+        if pressure > 127 || normalized_before_clamp.is_some_and(|value| !value.is_finite()) {
+            return Err(Error::InvalidParameterValue);
+        }
+        self.descriptor.validate(base)?;
+        let bipolar = f32::from(pressure) * (2.0 / 127.0) - 1.0;
+        let contribution = self.contribution.sample(bipolar);
+        if contribution == 0.0 {
+            return Ok(base);
+        }
+        let normalized = match normalized_before_clamp {
+            Some(value) => value,
+            None => f64::from(
+                self.semantics
+                    .normalization
+                    .normalize(self.descriptor, base)?,
+            ),
+        };
+        self.mapping
+            .value((normalized + contribution).clamp(0.0, 1.0) as f32)?
+            .provider()
+            .ok_or(Error::InvalidDescriptor)
     }
 }
 
@@ -414,6 +489,17 @@ impl ModulationBlock<'_> {
         Ok(sum)
     }
 
+    fn selected_value(&self, target: &Target, offset: usize) -> Option<ParameterValue> {
+        let id = target.authored.descriptor.id;
+        self.upstream.and_then(|input| {
+            input
+                .parameter_ids()
+                .binary_search(&id)
+                .ok()
+                .and_then(|_| input.value_at(id, offset))
+        })
+    }
+
     fn sample(&self, index: usize, offset: usize) -> Result<ParameterValue, Error> {
         if offset >= self.frames {
             return Err(Error::InvalidParameterValue);
@@ -424,13 +510,7 @@ impl ModulationBlock<'_> {
             .get(index)
             .ok_or(Error::UnknownParameter)?;
         let authored = target.authored;
-        let selected = self.upstream.and_then(|input| {
-            input
-                .parameter_ids()
-                .binary_search(&authored.descriptor.id)
-                .ok()
-                .and_then(|_| input.value_at(authored.descriptor.id, offset))
-        });
+        let selected = self.selected_value(target, offset);
         let base = selected.unwrap_or(authored.base);
         let sum = self.sum_routes(target.route_start..target.route_end, offset)?;
         if sum == 0.0 {
@@ -454,6 +534,30 @@ impl ModulationBlock<'_> {
     }
 }
 impl NativeParameterAutomation for ModulationBlock<'_> {
+    fn normalized_before_clamp(&self, id: ParameterId, offset: usize) -> Option<f64> {
+        if offset >= self.frames {
+            return None;
+        }
+        let index = self.program.ids.binary_search(&id).ok()?;
+        let target = self.program.targets.get(index)?;
+        let routes = target.route_start..target.route_end;
+        if routes.is_empty() {
+            return None;
+        }
+        let base = self.selected_value(target, offset).map_or(
+            Some(target.normalized_base),
+            |selected| {
+                target
+                    .authored
+                    .semantics
+                    .normalization
+                    .normalize(target.authored.descriptor, selected)
+                    .ok()
+            },
+        )?;
+        Some(f64::from(base) + self.sum_routes(routes, offset).ok()?)
+    }
+
     fn parameter_ids(&self) -> &[ParameterId] {
         &self.program.ids
     }

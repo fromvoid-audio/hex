@@ -59,6 +59,7 @@ pub use meter::{DeviceMeter, DevicePeaks, DynamicsMeter, RenderWorkMeter, Render
 pub use modulation::{
     HostGainModulationRoute, MAX_MODULATION_BLOCK_FRAMES, MAX_MODULATION_ROUTES,
     MAX_MODULATION_SOURCES, ModulationBlock, ModulationRoute, ModulationTarget, PreparedModulation,
+    PreparedPressureRoute,
 };
 pub use modulation_runtime::ModulationRuntime;
 pub use modulation_source_routes::{SourceModulationParameter, SourceModulationRoute};
