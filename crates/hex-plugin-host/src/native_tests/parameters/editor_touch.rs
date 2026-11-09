@@ -203,7 +203,7 @@ fn actual_editor_takeover_restores_reading_and_unlaned_values_without_cutting_no
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn sdk_group_performs_wait_together_for_real_physical_capacity() {
-    for pattern in ["held", "split", "overflow"] {
+    for pattern in ["held", "split", "repeat", "overflow"] {
         let case = Case::new();
         let setup = case.setup_restore(148);
         let end = case.root.join("group-end");
@@ -240,7 +240,7 @@ fn sdk_group_performs_wait_together_for_real_physical_capacity() {
                     .iter()
                     .any(|edit| edit.kind == ParameterEditKind::GroupAborted)
             } else {
-                batch.ready >= 4
+                batch.ready >= if pattern == "repeat" { 8 } else { 4 }
             };
             if ready {
                 break;
@@ -321,6 +321,19 @@ fn sdk_group_performs_wait_together_for_real_physical_capacity() {
         assert_eq!((second.id, second.normalized), (11, 0.5));
         assert_eq!(actual.block.pcm[..64], [[0.75, -1.5]; 64]);
 
+        if pattern == "repeat" {
+            let mut next = request(instance.configuration(), 2);
+            next.pcm[..64].fill(input);
+            let actual = instance
+                .exchange_armed_authored_with_editor_on_worker(next, None)
+                .unwrap();
+            let [first, second] = actual.performs.as_slice() else {
+                panic!("the later overlapping cohort must get its own physical quantum")
+            };
+            assert_eq!((first.id, first.normalized), (0, 0.25));
+            assert_eq!((second.id, second.normalized), (11, 0.25));
+            assert_eq!(actual.block.pcm[..64], [input; 64]);
+        }
         fs::write(&end, b"admit the real late mouse-up").unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);
         while ordered
@@ -345,18 +358,25 @@ fn sdk_group_performs_wait_together_for_real_physical_capacity() {
             .iter()
             .filter(|edit| edit.kind == ParameterEditKind::Perform)
             .collect();
-        assert_eq!(performs.len(), 2);
-        assert!(performs.iter().all(|edit| edit.first_frame == 64));
+        assert_eq!(performs.len(), if pattern == "repeat" { 4 } else { 2 });
+        for (index, edit) in performs.iter().enumerate() {
+            assert_eq!(edit.first_frame, if index < 2 { 64 } else { 128 });
+        }
         let ends: Vec<_> = ordered
             .iter()
             .filter(|edit| edit.kind == ParameterEditKind::End)
             .collect();
-        assert!(ends.iter().all(|edit| edit.first_frame == 128));
+        let release_frame = if pattern == "repeat" { 192 } else { 128 };
+        assert!(ends.iter().all(|edit| edit.first_frame == release_frame));
         assert_eq!(
             (performs[0].gesture, performs[1].gesture),
             (ends[0].gesture, ends[1].gesture)
         );
-        let cohort_count = if pattern == "split" { 3 } else { 1 };
+        let cohort_count = match pattern {
+            "repeat" => 4,
+            "split" => 3,
+            _ => 1,
+        };
         assert_eq!(
             ordered
                 .iter()

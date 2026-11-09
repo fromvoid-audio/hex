@@ -451,6 +451,10 @@ int main(int argc,char** argv) {
                         const auto index=last_editor_edit(id);
                         return index<applying_edit_count?applying_edits[index].sequence:0;
                     };
+                    const auto conflicts_with_prior_cohort=[&](const hex_instance::EditEvent& event) {
+                        const auto index=last_editor_edit(event.id);
+                        return index<applying_edit_count && applying_edits[index].cohort!=event.cohort;
+                    };
                     enum class BatchFit { Ready, Wait, Invalid };
                     const auto preflight_group=[&](const hex_instance::EditEvent& first,size_t later_points,
                             const hex_instance::ParameterPoint* later,const hex_instance::EditorTouch* touch) {
@@ -467,6 +471,9 @@ int main(int argc,char** argv) {
                                 return BatchFit::Invalid;
                             if(preview && !preview->can_stage(event)) return BatchFit::Wait;
                             if(event.kind==hex_instance::Perform) {
+                                // Each ParamID has one sample-zero input per quantum.
+                                // A later SDK cohort must never erase an earlier one.
+                                if(conflicts_with_prior_cohort(event)) return BatchFit::Wait;
                                 const auto* info=processing_parameters.find(event.id);
                                 if(!info || (info->flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden)))
                                     return BatchFit::Invalid;
@@ -511,6 +518,7 @@ int main(int argc,char** argv) {
                                 break;
                             }
                             if(event.kind==hex_instance::Perform) {
+                                if(!remaining_group && conflicts_with_prior_cohort(event)) break;
                                 const auto* info=processing_parameters.find(event.id);
                                 if(!info || (info->flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden))) return false;
                                 const bool takes=touch && touch->would_capture(event) && !touch->masks(event.id);
