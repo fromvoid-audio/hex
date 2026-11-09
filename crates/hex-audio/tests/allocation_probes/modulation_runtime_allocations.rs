@@ -677,3 +677,72 @@ fn probe_utility_graph(rate_route: Option<SourceModulationParameter>, audio_rate
         (0, 0, 0, 0)
     );
 }
+
+#[test]
+fn foreign_dense_chunk_transactions_do_not_allocate_or_free() {
+    use hex_lattice::{ForeignModulationRoute, PreparedForeignModulation};
+
+    let source =
+        PreparedModulationSource::free(ModulationSourceId::new(1).unwrap(), 48_000.0, 7.0, 0.0)
+            .unwrap();
+    let mut runtime = PreparedForeignModulation::new(
+        0,
+        0.500_000_000_000_000_1,
+        vec![source],
+        &[ForeignModulationRoute {
+            source: 0,
+            amount: 0.25,
+            range: [-1.0, 1.0],
+        }],
+        &[],
+        256,
+    )
+    .unwrap()
+    .prepare(48_000)
+    .unwrap();
+    let mut pcm = [[0.25, -0.25]; 256];
+    let mut normalized = [0.0; 256];
+    let counts = allocation_counter::measure(|| {
+        runtime.begin();
+        runtime
+            .render_chunk(
+                &mut pcm[..93],
+                None,
+                &mut normalized[..93],
+                |_, id, values| {
+                    black_box((id, values));
+                    Ok(())
+                },
+            )
+            .unwrap();
+        runtime
+            .render_chunk(
+                &mut pcm[93..],
+                None,
+                &mut normalized[93..],
+                |_, id, values| {
+                    black_box((id, values));
+                    Ok(())
+                },
+            )
+            .unwrap();
+        runtime.commit().unwrap();
+        runtime.begin();
+        assert_eq!(
+            runtime.render_chunk(&mut pcm, None, &mut normalized, |_, _, _| {
+                Err(DeviceContractError::ForeignProcessingUnavailable)
+            }),
+            Err(DeviceContractError::ForeignProcessingUnavailable)
+        );
+        runtime.rollback();
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current,
+        ),
+        (0, 0, 0, 0)
+    );
+}

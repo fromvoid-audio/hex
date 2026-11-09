@@ -40,6 +40,14 @@ pub struct ModulationRoute {
     pub range: [f32; 2],
 }
 
+/// A signed normalized offset to the one foreign target of a prepared bank.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ForeignModulationRoute {
+    pub source: usize,
+    pub amount: f32,
+    pub range: [f32; 2],
+}
+
 /// A device-local source route to one of the two host gain stages.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HostGainModulationRoute {
@@ -349,6 +357,32 @@ impl PreparedModulation {
         })
     }
 
+    pub(crate) fn for_foreign_target(
+        routes: &[ForeignModulationRoute],
+        source_count: usize,
+    ) -> Result<Self, Error> {
+        if routes.len() > MAX_MODULATION_ROUTES || source_count > MAX_MODULATION_SOURCES {
+            return Err(Error::RuntimeBudgetExceeded);
+        }
+        let mut program = Self::new(&[], &[], source_count)?;
+        program
+            .routes
+            .try_reserve_exact(routes.len())
+            .map_err(|_| Error::RuntimeAllocation)?;
+        for (order, route) in routes.iter().enumerate() {
+            if route.source >= source_count {
+                return Err(Error::InvalidParameterValue);
+            }
+            program.routes.push(Route {
+                source: route.source,
+                target_index: 0,
+                order,
+                contribution: RangeContribution::prepare(route.amount, route.range)?,
+            });
+        }
+        Ok(program)
+    }
+
     /// Reserved vector capacities, excluding inline state and allocator bookkeeping.
     /// The owning graph must include this quote in its own admission budget.
     pub fn storage_bytes(&self) -> Option<usize> {
@@ -495,6 +529,22 @@ impl ModulationBlock<'_> {
         let sum = self.sum_routes(target.route_start..target.route_end, offset)?;
         let final_value = (f64::from(base) + sum).clamp(0.0, 1.0) as f32;
         HostGain::from_normalized(final_value)
+    }
+
+    pub(crate) fn compose_foreign_target(
+        &self,
+        normalized_base: f64,
+        output: &mut [f64],
+    ) -> Result<(), Error> {
+        if output.len() != self.frames {
+            return Err(Error::InvalidParameterValue);
+        }
+        let routes = 0..self.program.routes.len();
+        for (offset, value) in output.iter_mut().enumerate() {
+            let sum = self.sum_routes(routes.clone(), offset)?;
+            *value = (normalized_base + sum).clamp(0.0, 1.0);
+        }
+        Ok(())
     }
 
     fn sum_routes(&self, routes: std::ops::Range<usize>, offset: usize) -> Result<f64, Error> {
