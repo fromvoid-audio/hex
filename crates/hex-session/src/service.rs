@@ -491,6 +491,14 @@ pub enum DeviceClipboardAction {
 pub enum Request {
     /// Source-bound Arrangement paint; resolves through the canonical overwrite command.
     PaintMidiClip(PaintMidiClip),
+    /// Replace one device's bank against the displayed canonical revision.
+    /// Resolve before touching a gesture or preparing a new playback graph.
+    ReplaceDeviceModulation {
+        project_generation: u64,
+        revision: u64,
+        device: hex_project::DeviceId,
+        modulation: hex_project::DeviceModulation,
+    },
     DeviceClipboard {
         project_generation: u64,
         revision: u64,
@@ -3010,13 +3018,18 @@ fn run_worker(
                         *scope,
                         gesture_active,
                     )
-                } else if let DeviceAutomationTakeAction::KeepFailedPluginCopy { max_events } =
-                    action
+                } else if let DeviceAutomationTakeAction::KeepFailedPluginCopy {
+                    path,
+                    receipt,
+                    max_events,
+                } = action
                 {
                     plugin_recording::keep_failed_copy(
                         &mut plugin_recording,
                         &mut native_automation_take,
                         *scope,
+                        path,
+                        *receipt,
                         *max_events,
                         gesture_active,
                     )
@@ -3355,6 +3368,26 @@ fn run_worker(
                         *before,
                     )
                     .and_then(|command| device_defaults::initialize(command, *class, defaults_root))
+                },
+            ),
+            Request::ReplaceDeviceModulation {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                device,
+                modulation,
+            } => Some(
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    Err("modulation edit cancelled · project changed".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Err("finish or cancel the active gesture before editing modulation".into())
+                } else {
+                    Ok(Command::ReplaceDeviceModulation {
+                        device: *device,
+                        modulation: modulation.clone(),
+                    })
                 },
             ),
             Request::PaintMidiClip(intent) => Some(intent.resolve(
@@ -4644,6 +4677,9 @@ fn run_worker(
                 }
                 Request::PaintMidiClip(_) => {
                     error = Some("clip paint target was not resolved".into());
+                }
+                Request::ReplaceDeviceModulation { .. } => {
+                    error = Some("modulation target was not resolved".into());
                 }
                 Request::MoveExistingClips { .. } => {
                     error = Some("clip move target was not resolved".into());

@@ -163,6 +163,8 @@ pub enum DeviceAutomationTakeAction {
     /// Explicitly keep the verified copy instead of adopting its trajectory.
     /// Release original memory custody only after revalidation; keep both files.
     KeepFailedPluginCopy {
+        path: PathBuf,
+        receipt: RecoveryCopyReceipt,
         max_events: u64,
     },
     /// Quiesce an exact native writer after its caller has retired the input.
@@ -207,6 +209,12 @@ pub enum DeviceAutomationTakeProgress {
     /// Device automation custody is active, retained or being copied.
     CloseBlocked,
     Retained(PathBuf),
+    /// Poll found a failed native writer that still owns original observations.
+    /// Retain the caller's exact take scope for explicit recovery.
+    NativeWriterRetained {
+        path: PathBuf,
+        reason: String,
+    },
     VerifiedCopy {
         path: PathBuf,
         receipt: RecoveryCopyReceipt,
@@ -737,13 +745,19 @@ impl Lane {
         outcome: DraftWorkerOutcome,
     ) -> Result<Step, String> {
         if let Some(reason) = outcome.failure.as_deref() {
-            let error = retained_error(&outcome.path, reason);
+            let path = outcome.path.clone();
+            let reason = reason.to_owned();
             self.failed = Some(Failed {
                 scope,
                 source,
                 outcome: Arc::new(outcome),
             });
-            return Err(error);
+            if scope.target.native().is_some() {
+                return Ok(Step::Progress(
+                    DeviceAutomationTakeProgress::NativeWriterRetained { path, reason },
+                ));
+            }
+            return Err(retained_error(&path, &reason));
         }
         if !matches!(outcome.requested_terminal, DraftTerminal::Finished(_))
             || outcome.admitted_events == 0

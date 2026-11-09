@@ -220,6 +220,7 @@ impl EditorView {
             || self.play_intent.desired_playing(actual_playing)
             || self.edit_pending()
             || self.automation_close_preflight.waiting()
+            || self.automation_take_recovery.polling()
             || super::device_panel::vst3_parameters::query_pending(self)
             || self.transport_pending()
     }

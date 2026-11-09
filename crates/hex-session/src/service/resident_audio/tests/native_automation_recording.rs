@@ -164,10 +164,7 @@ fn successive_native_takes_keep_the_arm_and_refusals_keep_the_recovery_file() {
     assert_eq!(no_output_progress, Progress::Refused);
     assert!(no_output.error.is_some());
     assert_eq!(no_output.state.revision, revision);
-    let (no_custody, no_custody_progress) = send(
-        initial_scope,
-        Action::KeepFailedPluginCopy { max_events: 2 },
-    );
+    let (no_custody, no_custody_progress) = send(initial_scope, Action::InspectFailedPluginCopy);
     assert_eq!(no_custody_progress, Progress::Refused);
     assert!(
         no_custody
@@ -386,6 +383,58 @@ fn successive_native_takes_keep_the_arm_and_refusals_keep_the_recovery_file() {
     assert_eq!(std::fs::read(first_path).unwrap(), first_bytes);
     receipt.verify_on_control(&path, limits, 2).unwrap();
 
+    #[cfg(feature = "recording-fault-test-support")]
+    {
+        let sealing_scope = scope();
+        record_with_fault(sealing_scope, 8, true);
+        assert_eq!(send(sealing_scope, Action::Interrupt).1, Progress::Sealing);
+        let (failed, progress) = wait(sealing_scope);
+        let Progress::NativeWriterRetained {
+            path: failed_path,
+            reason,
+        } = progress
+        else {
+            panic!(
+                "expected typed writer custody, got {progress:?}: {:?}",
+                failed.error
+            );
+        };
+        assert!(!reason.is_empty());
+        assert!(failed_path.starts_with(&draft_directory));
+        let bytes = std::fs::read(&failed_path).unwrap();
+        assert_eq!(failed.state.project, authored.state.project);
+        assert_eq!(failed.state.revision, revision);
+        assert_eq!(close_safety(), Progress::CloseBlocked);
+        assert_eq!(send(sealing_scope, Action::Begin).1, Progress::Refused);
+        assert_eq!(
+            send(
+                sealing_scope,
+                Action::CopyNativeRecovery {
+                    destination: scratch.0.join("native-copy-after-poll"),
+                    max_events: 2,
+                    continuation: NativeRecoveryContinuation {
+                        applications: Arc::from([]),
+                        terminal: NativeRecoveryTerminal::Interrupted,
+                    },
+                }
+            )
+            .1,
+            Progress::Pending,
+        );
+        let (copied, progress) = wait_for(sealing_scope, || Action::PollFailedCopy);
+        let Progress::VerifiedCopy { path, receipt } = progress else {
+            panic!("failed writer copy: {:?}", copied.error);
+        };
+        assert_eq!(receipt.events(), 1);
+        assert_eq!(receipt.terminal(), DraftTerminal::Interrupted);
+        assert_eq!(
+            keep(sealing_scope, &path, receipt).1,
+            Progress::CopyKept(path)
+        );
+        assert_eq!(std::fs::read(failed_path).unwrap(), bytes);
+        assert_eq!(close_safety(), Progress::CloseSafe);
+    }
+
     let refused_scope = scope();
     record(refused_scope, 8);
     let finish = |scope, frame| {
@@ -476,7 +525,7 @@ fn successive_native_takes_keep_the_arm_and_refusals_keep_the_recovery_file() {
             .unwrap()
             .candidates
             .len(),
-        5,
-        "include the original interrupted draft retained after keep-copy"
+        5 + usize::from(cfg!(feature = "recording-fault-test-support")),
+        "include the originals retained after keep-copy"
     );
 }
