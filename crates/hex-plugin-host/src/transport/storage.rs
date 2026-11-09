@@ -32,6 +32,27 @@ pub fn channel_storage_bound() -> Option<ConstructorStorage> {
     })
 }
 
+/// Additional exact backing for the independently reserved dense input.
+pub fn dense_channel_storage_bound() -> Option<ConstructorStorage> {
+    let ring = QUEUE_CAPACITY
+        .checked_mul(std::mem::size_of::<DenseParameterRequest>())?
+        .checked_add(std::mem::size_of::<RingBuffer<DenseParameterRequest>>())?;
+    channel_storage_bound()?.with_dense(ring)
+}
+
+impl ConstructorStorage {
+    fn with_dense(self, ring: usize) -> Option<Self> {
+        Some(Self {
+            data_bytes: self
+                .data_bytes
+                .checked_add(ring)?
+                .checked_add(std::mem::size_of::<DenseStaging>())?,
+            shared_groups: self.shared_groups.checked_add(1)?,
+            shared_handle_bound: self.shared_handle_bound.checked_add(2)?,
+        })
+    }
+}
+
 impl Callback {
     /// Visit only this channel's actual rings and revocation payload. Equal
     /// binding/quantum values from another construction do not establish pairing.
@@ -47,12 +68,17 @@ impl Callback {
                 .checked_mul(std::mem::size_of::<T>())?
                 .checked_add(std::mem::size_of_val(ring))
         }
-        Some(ConstructorStorage {
+        let storage = ConstructorStorage {
             data_bytes: ring_bytes(self.requests.buffer())?
                 .checked_add(ring_bytes(self.replies.buffer())?)?
                 .checked_add(std::mem::size_of_val(self.revoked.as_ref()))?,
             shared_groups: 3,
             shared_handle_bound: 8,
-        })
+        };
+        if let Some(dense) = &self.dense_staging {
+            storage.with_dense(ring_bytes(dense.sender.buffer())?)
+        } else {
+            Some(storage)
+        }
     }
 }

@@ -37,6 +37,16 @@ fn wait_for_latency_restart(instance: &mut Prepared) -> std::num::NonZeroU64 {
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn native_dense_authored_request_preserves_every_sample_of_the_raw_zero_parameter() {
+    exercise_native_dense_request(false);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn native_reserved_dense_sidecar_reaches_the_original_armed_worker() {
+    exercise_native_dense_request(true);
+}
+
+fn exercise_native_dense_request(reserved: bool) {
     let case = Case::new();
     let mut settings = options();
     settings.preparation.quantum = 256;
@@ -55,16 +65,56 @@ fn native_dense_authored_request_preserves_every_sample_of_the_raw_zero_paramete
     let input = request(instance.configuration(), 0);
     let normalized: [f64; 256] =
         std::array::from_fn(|frame| if frame % 2 == 0 { 0.75 } else { 0.125 });
-    let reply = instance
-        .exchange_dense_authored_on_worker(
-            input,
-            &metadata,
-            crate::transport::DenseParameterLane {
-                id: 0,
-                normalized: &normalized,
-            },
-        )
-        .unwrap();
+    let lane = crate::transport::DenseParameterLane {
+        id: 0,
+        normalized: &normalized,
+    };
+    let reply = if reserved {
+        use crate::transport::{
+            EffectSegmentOrigins, SegmentTiming, dense_effect_channel_from_completed_prefix,
+        };
+        instance
+            .arm_authored_parameter_metadata_on_control(metadata)
+            .unwrap();
+        let (_control, mut callback, mut worker) =
+            dense_effect_channel_from_completed_prefix(input.binding, input.frames, 0).unwrap();
+        callback.begin_physical_callback(256).unwrap();
+        callback
+            .stage_effect_segment(
+                0,
+                &input.pcm,
+                &[],
+                &[],
+                &mut [[0.0; 2]; 256],
+                SegmentTiming {
+                    playing: None,
+                    at: |_| None,
+                },
+                EffectSegmentOrigins {
+                    dense: Some(lane),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(worker.receive_request().unwrap().is_none());
+        callback.finish(true).unwrap();
+        let request = worker.receive_request().unwrap().unwrap();
+        let reply = instance
+            .exchange_armed_dense_on_worker(
+                request.block,
+                request.dense_parameter.as_ref().unwrap().lane(),
+                None,
+                false,
+            )
+            .unwrap()
+            .block;
+        worker.complete(reply).unwrap();
+        reply
+    } else {
+        instance
+            .exchange_dense_authored_on_worker(input, &metadata, lane)
+            .unwrap()
+    };
     for (frame, &normalized) in normalized.iter().enumerate() {
         assert_eq!(
             reply.pcm[frame],

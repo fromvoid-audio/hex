@@ -9,6 +9,169 @@ const BINDING: Binding = Binding {
 };
 
 #[test]
+fn dense_input_retains_each_sample_through_physical_and_timing_cuts() {
+    let (control, mut callback, mut worker) =
+        dense_effect_channel_from_completed_prefix(BINDING, MAX_FRAMES as u16, 0).unwrap();
+    assert_eq!(
+        callback.constructor_storage_on_control(&control),
+        dense_channel_storage_bound()
+    );
+    let values: [f64; MAX_FRAMES] =
+        std::array::from_fn(|index| if index % 2 == 0 { 0.125 } else { 0.75 });
+    let cut = 96;
+    let mut stage = || {
+        for (start, end, playing) in [(0, cut, true), (cut, MAX_FRAMES, false)] {
+            let frames = end - start;
+            callback.begin_physical_callback(frames).unwrap();
+            callback
+                .stage_effect_segment(
+                    0,
+                    &[[0.25; 2]; MAX_FRAMES][..frames],
+                    &[],
+                    &[ParameterPoint {
+                        frame: 3,
+                        id: 11,
+                        normalized: 0.5,
+                    }],
+                    &mut [[0.0; 2]; MAX_FRAMES][..frames],
+                    SegmentTiming {
+                        playing: Some(playing),
+                        at: |_: usize| {
+                            Some(ProcessTiming {
+                                arrangement_frame: start as i64,
+                                playing,
+                                arrangement_beat_raw: None,
+                                tempo_micro_bpm: None,
+                                meter: None,
+                                cycle_beats_raw: None,
+                            })
+                        },
+                    },
+                    EffectSegmentOrigins {
+                        dense: Some(DenseParameterLane {
+                            id: 0,
+                            normalized: &values[start..end],
+                        }),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            assert!(worker.receive_request().unwrap().is_none());
+            callback.finish(true).unwrap();
+        }
+    };
+    #[cfg(feature = "allocation-probe")]
+    {
+        let measured = allocation_counter::measure(&mut stage);
+        assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
+        assert_eq!((measured.count_current, measured.bytes_current), (0, 0));
+    }
+    #[cfg(not(feature = "allocation-probe"))]
+    stage();
+    let request = worker.receive_request().unwrap().unwrap();
+    let lane = request.dense_parameter.as_ref().unwrap().lane();
+    let block = request.block;
+    assert_eq!(lane.id, 0);
+    assert_eq!(lane.normalized, &values);
+    assert_eq!(block.timing_changes.as_slice()[0].frame, cut as u16);
+    assert_eq!(
+        block
+            .parameters
+            .as_slice()
+            .iter()
+            .map(|point| point.frame)
+            .collect::<Vec<_>>(),
+        [3, cut as u16 + 3]
+    );
+}
+
+#[test]
+fn dense_input_refuses_a_changed_parameter_before_dispatch() {
+    let (_control, mut callback, mut worker) =
+        dense_effect_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
+    for id in [7, 8] {
+        callback.begin_physical_callback(4).unwrap();
+        let staged = callback.stage_effect_segment(
+            0,
+            &[[0.25; 2]; 4],
+            &[],
+            &[],
+            &mut [[0.0; 2]; 4],
+            SegmentTiming {
+                playing: None,
+                at: |_| None,
+            },
+            EffectSegmentOrigins {
+                dense: Some(DenseParameterLane {
+                    id,
+                    normalized: &[0.5; 4],
+                }),
+                ..Default::default()
+            },
+        );
+        if id == 7 {
+            staged.unwrap();
+            callback.finish(true).unwrap();
+        } else {
+            assert!(matches!(staged, Err(Fault::InvalidParameters)));
+        }
+        assert!(worker.requests.pop().is_err());
+    }
+    assert!(callback.is_revoked());
+}
+
+#[test]
+fn dense_sidecar_refusal_and_saturation_publish_no_unpaired_request() {
+    let reserve = || dense_effect_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
+    let stage = |callback: &mut Callback| {
+        callback.begin_physical_callback(8).unwrap();
+        callback.stage_effect_segment(
+            0,
+            &[[0.25; 2]; 8],
+            &[],
+            &[],
+            &mut [[0.0; 2]; 8],
+            SegmentTiming {
+                playing: None,
+                at: |_| None,
+            },
+            EffectSegmentOrigins {
+                dense: Some(DenseParameterLane {
+                    id: 17,
+                    normalized: &[0.5; 8],
+                }),
+                ..Default::default()
+            },
+        )
+    };
+
+    let (_control, mut callback, worker) = reserve();
+    stage(&mut callback).unwrap();
+    assert_eq!(callback.finish(false), Err(Fault::Protocol));
+    assert!(worker.requests.is_empty());
+    assert!(worker.dense_requests.as_ref().unwrap().is_empty());
+
+    let (_control, mut callback, mut worker) = reserve();
+    let (sender, receiver) = RingBuffer::new(1);
+    callback.dense_staging.as_mut().unwrap().sender = sender;
+    worker.dense_requests = Some(receiver);
+    stage(&mut callback).unwrap();
+    callback.finish(true).unwrap();
+    assert_eq!(worker.pending_requests_for_test(), 1);
+    stage(&mut callback).unwrap();
+    assert_eq!(callback.finish(true), Err(Fault::Saturated));
+    assert_eq!(worker.pending_requests_for_test(), 1);
+    assert!(matches!(worker.receive_request(), Err(Fault::Revoked)));
+
+    let (_control, mut callback, worker) = channel(BINDING, 8).unwrap();
+    assert!(matches!(
+        stage(&mut callback),
+        Err(Fault::InvalidParameters)
+    ));
+    assert!(worker.requests.is_empty());
+}
+
+#[test]
 fn control_input_capacity_follows_whole_physical_callback_across_quantum_and_segment_boundaries() {
     let (_control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
     callback

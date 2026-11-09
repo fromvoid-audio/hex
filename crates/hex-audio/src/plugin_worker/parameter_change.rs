@@ -621,6 +621,7 @@ impl State {
         parameter_capacity: usize,
         authored: bool,
         manual_origin_available: bool,
+        dense_id: Option<u32>,
     ) -> Result<Option<ParameterPoint>, Fault> {
         let work = &mut self.parameter_change;
         let pending = work.ordinal.is_none() && signal.parameter_change_requested.load(Acquire);
@@ -687,6 +688,10 @@ impl State {
             }
         };
 
+        if dense_id == Some(point.id) {
+            work.result = Some(Terminal::Refused);
+            return Ok(None);
+        }
         let parameters = match start {
             Some(hold) => without_parameter(&original, hold.id)?,
             None => block.parameters,

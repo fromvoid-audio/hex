@@ -29,6 +29,9 @@ use std::sync::{
 mod authored;
 use authored::AuthoredOrigins;
 pub use authored::{AuthoredParameterProgram, AuthoredSegment};
+mod dense;
+pub use dense::DenseParameterRequest;
+use dense::DenseStaging;
 mod parameters;
 mod storage;
 pub use parameters::{MAX_PARAMETER_POINTS, ParameterPoint, Parameters};
@@ -37,7 +40,7 @@ mod editor_tests;
 #[cfg(test)]
 mod parameter_tests;
 pub mod wire;
-pub use storage::{ConstructorStorage, channel_storage_bound};
+pub use storage::{ConstructorStorage, channel_storage_bound, dense_channel_storage_bound};
 
 pub const MAX_FRAMES: usize = 256;
 pub const MAX_EVENTS: usize = 64;
@@ -636,18 +639,23 @@ pub struct ManualParameterOrigin {
 
 /// Borrow the compensated graph origins for one segment. Authored playback
 /// needs the per-sample view. Manual correlation only reads the quantum start.
+/// A dense lane requires a reserved endpoint and covers the entire quantum.
 #[derive(Default)]
 pub struct EffectSegmentOrigins<'a> {
     pub authored: Option<AuthoredSegment<'a>>,
     pub manual: Option<&'a dyn Fn(usize) -> Option<ManualParameterOrigin>>,
+    pub dense: Option<DenseParameterLane<'a>>,
 }
+
+const _: () = assert!(MAX_PARAMETER_POINTS <= u8::MAX as usize);
 
 #[derive(Clone, Copy)]
 struct InputRequest {
     block: Block,
     // Minimum spare capacity of every physical callback contributing to this
     // quantum. Control-originated input may consume it only after acceptance.
-    parameter_capacity: usize,
+    parameter_capacity: u8,
+    has_dense: bool,
     authored_program: Option<NonZeroU64>,
     manual_origin: Option<ManualParameterOrigin>,
     editor_scope: Option<NonZeroU64>,
@@ -656,6 +664,7 @@ struct InputRequest {
 pub struct WorkerRequest {
     pub block: Block,
     pub parameter_capacity: usize,
+    pub dense_parameter: Option<DenseParameterRequest>,
     /// Program frozen at the accepted physical quantum opening.
     pub authored_program: Option<NonZeroU64>,
     /// The exact accepted quantum starts on a known compensated Arrangement
@@ -824,6 +833,7 @@ pub struct Callback {
     // Only the prefix below the staged position is read. Rejection permanently
     // revokes the endpoint, so origin scratch does not need a rollback copy.
     authored_origins: AuthoredOrigins,
+    dense_staging: Option<Box<DenseStaging>>,
 }
 
 /// Serialized worker endpoint; process at most one received block at a time.
@@ -836,6 +846,7 @@ pub struct Worker {
     revoked: Arc<Revocation>,
     sequence: u64,
     in_flight: Option<InFlight>,
+    dense_requests: Option<Consumer<DenseParameterRequest>>,
 }
 
 struct InFlight {
@@ -858,7 +869,7 @@ pub fn channel_from_completed_prefix(
     quantum: u16,
     completed_blocks: u64,
 ) -> Result<(Control, Callback, Worker), Fault> {
-    channel_with_policy(binding, quantum, completed_blocks, false)
+    channel_with_policy(binding, quantum, completed_blocks, false, false)
 }
 
 /// The native instrument wire carries PCM and parameter observations but no
@@ -869,7 +880,16 @@ pub fn instrument_channel_from_completed_prefix(
     quantum: u16,
     completed_blocks: u64,
 ) -> Result<(Control, Callback, Worker), Fault> {
-    channel_with_policy(binding, quantum, completed_blocks, true)
+    channel_with_policy(binding, quantum, completed_blocks, true, false)
+}
+
+/// Prepare an effect endpoint with a separate eight-slot dense input ring.
+pub fn dense_effect_channel_from_completed_prefix(
+    binding: Binding,
+    quantum: u16,
+    completed_blocks: u64,
+) -> Result<(Control, Callback, Worker), Fault> {
+    channel_with_policy(binding, quantum, completed_blocks, false, true)
 }
 
 fn channel_with_policy(
@@ -877,6 +897,7 @@ fn channel_with_policy(
     quantum: u16,
     completed_blocks: u64,
     conceal_instrument_gap: bool,
+    reserve_dense: bool,
 ) -> Result<(Control, Callback, Worker), Fault> {
     if !binding.is_valid() || quantum == 0 || usize::from(quantum) > MAX_FRAMES {
         return Err(Fault::Configuration);
@@ -887,6 +908,12 @@ fn channel_with_policy(
     let first_reply_sequence = completed_blocks.checked_add(2).ok_or(Fault::Exhausted)?;
     let (request_tx, request_rx) = RingBuffer::new(QUEUE_CAPACITY);
     let (reply_tx, reply_rx) = RingBuffer::new(QUEUE_CAPACITY);
+    let (dense_staging, dense_requests) = if reserve_dense {
+        let (send, receive) = RingBuffer::new(QUEUE_CAPACITY);
+        (Some(Box::new(DenseStaging::new(send))), Some(receive))
+    } else {
+        (None, None)
+    };
     let revoked = Arc::new(Revocation::new(binding));
     let empty = Block::empty(binding, quantum);
     Ok((
@@ -919,6 +946,7 @@ fn channel_with_policy(
             accepted_editor: None,
             committed_quantum: None,
             authored_origins: AuthoredOrigins::default(),
+            dense_staging,
         },
         Worker {
             binding,
@@ -928,6 +956,7 @@ fn channel_with_policy(
             revoked,
             sequence: completed_blocks,
             in_flight: None,
+            dense_requests,
         },
     ))
 }
@@ -1140,6 +1169,7 @@ impl Callback {
             EffectSegmentOrigins {
                 authored: Some(authored),
                 manual: None,
+                dense: None,
             },
         )
     }
@@ -1226,7 +1256,19 @@ impl Callback {
             return Err(Fault::InvalidParameters);
         }
         let q = u64::from(self.quantum);
-        let EffectSegmentOrigins { authored, manual } = origins;
+        let EffectSegmentOrigins {
+            authored,
+            manual,
+            dense,
+        } = origins;
+        if dense.is_some_and(|lane| parameters.iter().any(|point| point.id == lane.id)) {
+            return Err(Fault::InvalidParameters);
+        }
+        if let Some(staging) = &mut self.dense_staging {
+            staging.stage(stage.state.position, self.quantum, input.len(), dense)?;
+        } else if dense.is_some() {
+            return Err(Fault::InvalidParameters);
+        }
         if authored.is_some() && !parameters.is_empty() {
             return Err(Fault::InvalidParameters);
         }
@@ -1413,7 +1455,8 @@ impl Callback {
                 }
                 stage.request = Some(InputRequest {
                     block: stage.state.input,
-                    parameter_capacity: stage.state.parameter_capacity,
+                    parameter_capacity: stage.state.parameter_capacity as u8,
+                    has_dense: false,
                     authored_program: self.authored_origins.program,
                     manual_origin: stage.state.input_manual_origin,
                     editor_scope: stage.state.input_editor_scope,
@@ -1451,7 +1494,28 @@ impl Callback {
         }
         let remaining = MAX_PARAMETER_POINTS - stage.input_parameters;
         if let Some(mut request) = stage.request {
-            request.parameter_capacity = request.parameter_capacity.min(remaining);
+            request.parameter_capacity = request.parameter_capacity.min(remaining as u8);
+            if let Some(staging) = &mut self.dense_staging
+                && let Some(dense) = staging.pending.take()
+            {
+                if dense.sequence != request.block.sequence
+                    || request
+                        .block
+                        .parameters
+                        .as_slice()
+                        .iter()
+                        .any(|point| point.id == dense.lane().id)
+                {
+                    return self.fail(Fault::InvalidParameters);
+                }
+                // Publish the sidecar before its commit record. The worker
+                // only reads a sidecar after acquiring that sparse request.
+                // A refused request leaves no DSP-visible orphan.
+                if staging.sender.push(dense).is_err() {
+                    return self.fail(Fault::Saturated);
+                }
+                request.has_dense = true;
+            }
             if self.requests.push(request).is_err() {
                 return self.fail(Fault::Saturated);
             }
@@ -1573,7 +1637,9 @@ impl Worker {
     /// still be checked before adding input.
     pub fn receive_with_parameter_capacity(&mut self) -> Result<Option<(Block, usize)>, Fault> {
         match self.receive_request()? {
-            Some(request) if request.authored_program.is_some() => {
+            Some(request)
+                if request.authored_program.is_some() || request.dense_parameter.is_some() =>
+            {
                 self.fail(Fault::InvalidParameters)
             }
             Some(request) => Ok(Some((request.block, request.parameter_capacity))),
@@ -1593,13 +1659,28 @@ impl Worker {
         let Ok(request) = self.requests.pop() else {
             return Ok(None);
         };
-        if request.parameter_capacity > MAX_PARAMETER_POINTS {
+        if usize::from(request.parameter_capacity) > MAX_PARAMETER_POINTS {
             return self.fail(Fault::InvalidParameters);
         }
         let block = request.block;
         if let Err(fault) = block.valid(self.binding, self.quantum, self.sequence) {
             return self.fail(fault);
         }
+        let dense_parameter = if request.has_dense {
+            let Some(dense) = self
+                .dense_requests
+                .as_mut()
+                .and_then(|requests| requests.pop().ok())
+            else {
+                return self.fail(Fault::Protocol);
+            };
+            if dense.sequence != block.sequence || !dense.lane().valid(usize::from(block.frames)) {
+                return self.fail(Fault::InvalidParameters);
+            }
+            Some(dense)
+        } else {
+            None
+        };
         if let Err(fault) = self
             .revoked
             .record_received_program(self.sequence, request.authored_program)
@@ -1612,7 +1693,8 @@ impl Worker {
         });
         Ok(Some(WorkerRequest {
             block,
-            parameter_capacity: request.parameter_capacity,
+            parameter_capacity: usize::from(request.parameter_capacity),
+            dense_parameter,
             authored_program: request.authored_program,
             manual_origin_available: request.manual_origin.is_some(),
             editor_scope: request.editor_scope,
