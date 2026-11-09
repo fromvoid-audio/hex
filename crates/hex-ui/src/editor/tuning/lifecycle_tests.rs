@@ -156,13 +156,21 @@ fn review_lifecycle_close_and_quit_confirm_acknowledged_uncommitted_tuning(
                 } else {
                     assert!(!view.request_window_close(window, cx));
                 }
-                assert!(view.close_prompt_open);
+                assert!(view.automation_close_preflight.frozen());
                 assert!(view.tuning.client.has_pending_terminal());
             });
         })
         .unwrap();
+        super::super::close::wait_for_close_prompt(&editor, cx);
         assert!(cx.has_pending_prompt());
         cx.simulate_prompt_answer("cancel");
+        cx.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            let state = view.state.as_ref().unwrap();
+            assert!(state.unsaved);
+            assert_eq!(state.project.tuning(), tuning(333.0));
+            assert!(!view.close_prompt_open);
+        });
     }
 }
 #[gpui::test]

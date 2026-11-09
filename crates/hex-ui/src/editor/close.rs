@@ -109,6 +109,31 @@ impl AutomationClosePreflight {
 /// otherwise be cut off; the UI never waits longer than this.
 const QUIT_SHUTDOWN_BOUND: Duration = Duration::from_secs(1);
 
+/// Drive the actual worker and window events until close reaches its prompt.
+#[cfg(all(test, feature = "ui-test-support"))]
+pub(super) fn wait_for_close_prompt(
+    editor: &gpui::Entity<EditorView>,
+    cx: &mut gpui::TestAppContext,
+) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(6);
+    loop {
+        editor.update(cx, |view, cx| {
+            if view.tick(cx) {
+                cx.notify();
+            }
+        });
+        cx.run_until_parked();
+        if cx.has_pending_prompt() {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "close prompt did not arrive"
+        );
+        std::thread::yield_now();
+    }
+}
+
 /// App-wide quit custody shared by Hex's own Quit paths and OS termination
 /// requests (Dock Quit, logout, restart, shutdown), which macOS delivers through
 /// the patched GPUI `App::on_should_quit` hook.
