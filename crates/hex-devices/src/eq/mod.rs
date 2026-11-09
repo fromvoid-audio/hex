@@ -207,6 +207,9 @@ impl EqDefinition {
     }
 }
 impl NativeDeviceDefinition for EqDefinition {
+    fn source_effect_factory_bytes(&self) -> Option<usize> {
+        Some(runtime::PreparedEq::source_factory_bytes_bound())
+    }
     fn supports_parameter_automation(
         &self,
         state: &NativeDeviceState,
