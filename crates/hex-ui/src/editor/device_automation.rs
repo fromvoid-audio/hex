@@ -712,14 +712,7 @@ impl EditorView {
         let target = entry.target;
         let supported = matches!(
             entry.metadata,
-            EntryMetadata::HostGain
-                | EntryMetadata::Provider {
-                    descriptor: ParameterDescriptor {
-                        kind: ParameterKind::Float { .. },
-                        ..
-                    },
-                    ..
-                }
+            EntryMetadata::HostGain | EntryMetadata::Provider { .. }
         );
         (supported
             && self.state.as_ref().is_some_and(|state| {

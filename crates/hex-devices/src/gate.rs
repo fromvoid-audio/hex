@@ -123,7 +123,6 @@ struct GateSettings {
     release_ms: f32,
 }
 
-// The other two controls share the return <= threshold invariant.
 const MODULATED_SCALAR: hex_lattice_contract::ParameterSemantics =
     hex_lattice_contract::ParameterSemantics {
         modulation: hex_lattice_contract::ParameterModulation::SampleRate,
@@ -132,13 +131,13 @@ const MODULATED_SCALAR: hex_lattice_contract::ParameterSemantics =
 const BINDINGS: [crate::parameter_binding::Binding<GateSettings>; 6] = [
     crate::parameter_binding::Binding::float(
         DESCRIPTORS[0],
-        crate::parameter_binding::SCALAR_ENVELOPE,
+        MODULATED_SCALAR,
         |c| c.threshold_db,
         |c, v| c.threshold_db = v,
     ),
     crate::parameter_binding::Binding::float(
         DESCRIPTORS[1],
-        crate::parameter_binding::SCALAR_ENVELOPE,
+        MODULATED_SCALAR,
         |c| c.return_db,
         |c, v| c.return_db = v,
     ),

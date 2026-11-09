@@ -80,12 +80,20 @@ impl NativeTransientOperation {
     }
 }
 
-/// Borrowed final canonical values, independent of their producing control
-/// source. The historical automation name remains the shared delivery seam for
-/// future host composition; providers never inspect envelopes or modulators.
-/// IDs remain stable throughout this borrow. None selects immutable base.
+/// Borrowed final canonical values from the host's shared composition seam.
+/// Providers receive typed values and route presence while the host owns the
+/// envelopes, modulator graph, and clocks. IDs stay stable during this borrow.
+/// None selects immutable base.
 pub trait NativeParameterAutomation {
     fn parameter_ids(&self) -> &[ParameterId];
+
+    /// Whether an active sample-rate route targets this value in the block.
+    /// A route remains present at zero offset. Authored automation alone
+    /// never reports a modulation route.
+    fn has_sample_rate_modulation(&self, _parameter: ParameterId) -> bool {
+        false
+    }
+
     /// Canonical units at this segment's sample offset. None means no authored
     /// lane or unavailable content origin; callers use their immutable base.
     fn value_at(&self, parameter: ParameterId, sample_offset: usize) -> Option<ParameterValue>;

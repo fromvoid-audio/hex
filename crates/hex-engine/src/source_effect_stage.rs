@@ -59,7 +59,9 @@ fn validate_recipes(project: &Project, recipes: &[PreparedSourceEffects]) -> Res
             ));
         }
         if instances.iter().any(|instance| {
-            instance.sample_rate != project.sample_rate() || !native_zero_latency(instance)
+            instance.sample_rate != project.sample_rate()
+                || !native_zero_latency(instance)
+                || !instance.automation.is_empty()
         }) {
             return Err(Invalid(
                 "source effects require native zero-latency processors at the project rate",
@@ -91,14 +93,20 @@ fn validate_runtime_budget(
     const OVER_BUDGET: Invalid =
         Invalid("source effects exceed the aggregate graph runtime budget");
     let mut pair_bytes = 0usize;
-    for (index, factory) in effects
-        .filter_map(|device| device.definition.as_ref())
-        .enumerate()
-    {
-        pair_bytes = pair_bytes
-            .checked_add(factory.declared_pair_bytes().ok_or(OVER_BUDGET)?)
-            .ok_or(OVER_BUDGET)?;
-        if index >= hex_lattice::MAX_STATEFUL_PROCESSORS
+    let mut stateful = 0;
+    for device in effects {
+        if let Some(factory) = &device.definition {
+            stateful += 1;
+            pair_bytes = pair_bytes
+                .checked_add(factory.declared_pair_bytes().ok_or(OVER_BUDGET)?)
+                .ok_or(OVER_BUDGET)?;
+        }
+        if let Some(program) = &device.modulation {
+            pair_bytes = pair_bytes
+                .checked_add(program.quoted_runtime_heap_bytes().ok_or(OVER_BUDGET)?)
+                .ok_or(OVER_BUDGET)?;
+        }
+        if stateful > hex_lattice::MAX_STATEFUL_PROCESSORS
             || pair_bytes > hex_lattice::MAX_PROCESSOR_BANK_RUNTIME_BYTES * 2
         {
             return Err(OVER_BUDGET);
@@ -148,13 +156,7 @@ impl SourceEffectStages {
             .map_err(|_| Invalid("source effect runtime allocation failed"))?;
         chains.resize_with(project.tracks.len(), || None);
         for recipe in recipes {
-            let instances = recipe.instances.as_ref();
-            let mut prepared = Vec::new();
-            prepared
-                .try_reserve_exact(instances.len())
-                .map_err(|_| Invalid("source effect recipe allocation failed"))?;
-            prepared.extend(instances.iter().cloned());
-            let chain = NativeRuntimeChain::new_prepared(prepared)
+            let chain = NativeRuntimeChain::new_from_source_recipe(&recipe.instances)
                 .map_err(|_| Invalid("source effect runtime preparation failed"))?;
             chains[recipe.receiver] = Some(SourceEffectStage {
                 source: recipe.source,

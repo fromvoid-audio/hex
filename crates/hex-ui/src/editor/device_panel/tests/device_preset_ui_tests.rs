@@ -98,7 +98,7 @@ fn sidebar_menu_keyboard_saves_default_to_configured_disk_and_retires_when_hidde
     assert!(root.starts_with(&directory.0));
     let file = root.join("device-defaults/v1/effect/device-hex.utility.hex-device-preset.json");
     let json: serde_json::Value = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
-    assert_eq!(json["payload"], serde_json::json!(expected));
+    assert_eq!(json["nodes"][0]["payload"], serde_json::json!(expected));
     visual.run_until_parked();
     let button = save_button(&mut visual, device);
     visual.simulate_click(button.center(), Modifiers::default());
@@ -226,7 +226,10 @@ fn return_and_main_menu_ownership_refuses_a_stale_action_and_saves_the_main_stat
         .unwrap(),
     )
     .unwrap();
-    assert_eq!(json["payload"], serde_json::json!(main_state.payload()));
+    assert_eq!(
+        json["nodes"][0]["payload"],
+        serde_json::json!(main_state.payload())
+    );
 }
 
 #[gpui::test]
