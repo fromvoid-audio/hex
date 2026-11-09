@@ -116,6 +116,10 @@ pub(super) enum Action {
         target: Target,
         revision: u64,
     },
+    ToggleVst3EditorArm {
+        target: Target,
+        revision: u64,
+    },
     Shape(Target, AutomationInterpolation),
 }
 
@@ -768,6 +772,15 @@ impl EditorView {
                 "arm automation recording"
             };
             actions.push((label, Action::ToggleVst3Arm { target, revision }));
+            let editor_label = if self.vst3_editor_arm_selected(device, class, parameter) {
+                "disarm plug-in editor recording"
+            } else {
+                "arm plug-in editor recording"
+            };
+            actions.push((
+                editor_label,
+                Action::ToggleVst3EditorArm { target, revision },
+            ));
         }
         self.open_automation_menu(position, actions, window, cx);
         true
@@ -872,12 +885,15 @@ impl EditorView {
                     .identity_current(&state.project, self.project_generation)
                     .is_none()
             }),
-            Action::ToggleVst3Arm { target, revision } => self.state.as_ref().is_none_or(|state| {
-                state.revision != *revision
-                    || target
-                        .identity_current(&state.project, self.project_generation)
-                        .is_none()
-            }),
+            Action::ToggleVst3Arm { target, revision }
+            | Action::ToggleVst3EditorArm { target, revision } => {
+                self.state.as_ref().is_none_or(|state| {
+                    state.revision != *revision
+                        || target
+                            .identity_current(&state.project, self.project_generation)
+                            .is_none()
+                })
+            }
             Action::Pick { generation, owner }
             | Action::Reveal {
                 generation, owner, ..
@@ -1149,6 +1165,13 @@ impl EditorView {
                     (target.vst3_class, target.kind)
                 {
                     self.toggle_vst3_automation_arm(target.device, class, parameter);
+                }
+            }
+            Action::ToggleVst3EditorArm { target, .. } => {
+                if let (Some(class), DeviceAutomationTarget::Vst3 { parameter }) =
+                    (target.vst3_class, target.kind)
+                {
+                    self.toggle_vst3_editor_arm(target.device, class, parameter);
                 }
             }
             Action::Clear(target) => {

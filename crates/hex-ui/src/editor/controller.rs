@@ -3548,6 +3548,8 @@ impl EditorView {
             && !matches!(
                 &request,
                 Request::DeviceAutomationTake { .. }
+                    | Request::StartPluginEditorRecording { .. }
+                    | Request::StopPluginEditorRecording { .. }
                     | Request::RestartAudio { .. }
                     | Request::RestartRecovery(_)
             )
