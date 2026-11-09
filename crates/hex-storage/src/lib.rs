@@ -78,7 +78,7 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = LFO_SHAPE_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = LFO_RATE_ROUTE_SCHEMA_VERSION;
 
 /// Schema70 stores an independent original source span for signed musical event placement.
 pub const MUSICAL_EVENT_SOURCE_SCHEMA_VERSION: u32 = 70;
@@ -113,6 +113,8 @@ pub const MODULATION_SLOT_COLOR_SCHEMA_VERSION: u32 = 82;
 pub const BOUND_SOURCE_EFFECT_SCHEMA_VERSION: u32 = 83;
 /// Schema84 admits newer LFO payloads and retains full slot colors and bound units.
 pub const LFO_SHAPE_SCHEMA_VERSION: u32 = 84;
+/// Schema85 admits the typed free LFO rate destination in the existing source bank.
+pub const LFO_RATE_ROUTE_SCHEMA_VERSION: u32 = 85;
 
 fn contains_larger_device_state(project: &Project) -> bool {
     schema::device_assets::authored_states(project)
@@ -169,8 +171,11 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// Serial membership uses schema80 over its exact compatible flat envelope.
 /// Bound source effects use schema83 over their existing membership and state codecs.
 /// Non-sine LFOs use schema84 with complete slot colors and any bound source effects.
+/// Free LFO rate assignments require schema85 regardless of oscillator shape.
 pub fn schema_version_for(project: &Project) -> u32 {
-    if schema::device_modulation::contains_newer_lfo(project) {
+    if schema::device_modulation::contains_lfo_rate_route(project) {
+        LFO_RATE_ROUTE_SCHEMA_VERSION
+    } else if schema::device_modulation::contains_newer_lfo(project) {
         LFO_SHAPE_SCHEMA_VERSION
     } else if schema::bound_source_effects::contains(project) {
         BOUND_SOURCE_EFFECT_SCHEMA_VERSION
@@ -390,7 +395,9 @@ impl From<serde_json::Error> for StorageError {
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 /// Nonempty serial units use schema80; flat projects retain their prior layout.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    if schema::device_modulation::contains_newer_lfo(project) {
+    if schema::device_modulation::contains_lfo_rate_route(project)
+        || schema::device_modulation::contains_newer_lfo(project)
+    {
         encode_document(&schema::device_modulation::encode(project)?)
     } else if schema::bound_source_effects::contains(project) {
         encode_document(&schema::bound_source_effects::encode(project)?)
@@ -677,7 +684,8 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
         }
         DEVICE_MODULATION_SCHEMA_VERSION
         | MODULATION_SLOT_COLOR_SCHEMA_VERSION
-        | LFO_SHAPE_SCHEMA_VERSION => schema::device_modulation::decode(bytes, header.version),
+        | LFO_SHAPE_SCHEMA_VERSION
+        | LFO_RATE_ROUTE_SCHEMA_VERSION => schema::device_modulation::decode(bytes, header.version),
         SERIAL_DEVICE_SCHEMA_VERSION => schema::serial_units::decode(bytes),
         DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION | VST3_AUTOMATION_TOUCH_SCHEMA_VERSION => {
             schema::device_automation_touch::decode(bytes, header.version)
