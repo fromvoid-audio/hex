@@ -1659,7 +1659,16 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/src/editor/navigation_profile/selection.rs"], inventory, [owner]),
             {owner: [navigation]})
-        all_modules = [admission, navigation, cpu, disk, thumbnail, "editor::pending_edit::", scale, viewport]
+        recovery = "editor::recovery_state::"
+        recovery_integration = "editor::recovery_state_integration_tests::"
+        self.assertEqual(plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/recovery_state.rs"], inventory, [owner]),
+            {owner: [recovery, recovery_integration]})
+        self.assertEqual(plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/recovery_state_integration_tests.rs"], inventory, [owner]),
+            {owner: [recovery, recovery_integration]})
+        all_modules = [admission, navigation, cpu, disk, thumbnail, "editor::pending_edit::",
+                       recovery, recovery_integration, scale, viewport]
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/tests/unit_editor_state.rs"], inventory, [owner]),
             {owner: all_modules})
@@ -1669,6 +1678,7 @@ class ModuleScopeTests(unittest.TestCase):
             root, ["crates/hex-ui/tests/unit_pending_edit.rs"], inventory, [owner]), {})
         for names, expected in ((filters[owner], True), ([viewport], True), ([disk], True), ([cpu], True),
                                 ([thumbnail], True), ([scale], True), ([admission], True), ([navigation], True),
+                                ([recovery, recovery_integration], True),
                                 (["editor::clip_content_cache::"], True),
                                 (["editor::track_meters::"], True),
                                 (all_modules, True), (["editor::"], True),
@@ -1684,7 +1694,11 @@ class ModuleScopeTests(unittest.TestCase):
             if unit:
                 self.assertTrue(ci.module_scoped(unit[0].argv))
                 for name in names:
-                    self.assertIn(name, unit[0].argv)
+                    if name != recovery_integration:
+                        self.assertIn(name, unit[0].argv)
+                if recovery in names:
+                    library = next(step for step in steps if step.step_id == "ui-feature-tests")
+                    self.assertIn(recovery_integration, library.argv)
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
                     "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
                     "module_filters": {}}
