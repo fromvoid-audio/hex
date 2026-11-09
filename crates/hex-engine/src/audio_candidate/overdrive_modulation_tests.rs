@@ -22,6 +22,7 @@ use std::collections::BTreeMap;
 
 const RATE: u32 = 8_000;
 const FRAMES: usize = 97;
+const LATENCY: usize = 11;
 const IDS: [ParameterId; 6] = [
     parameter::FREQUENCY,
     parameter::BANDWIDTH,
@@ -175,6 +176,9 @@ fn overdrive_modulation_matches_independent_sample_frames_in_both_compilers() {
             &EMPTY_DEVICE_RESOURCES,
         )
         .unwrap();
+    // The track fader opens once the compensated content origin arrives.
+    // The underlying oversampler has a response before its group delay.
+    expected[..LATENCY].fill([0.0; 2]);
     let compare = |output: &[[f32; 2]; FRAMES]| {
         for (index, (actual, reference)) in output.iter().zip(expected).enumerate() {
             for (actual, reference) in actual.iter().zip(reference) {
@@ -187,6 +191,7 @@ fn overdrive_modulation_matches_independent_sample_frames_in_both_compilers() {
     };
     let media = BTreeMap::from([(asset, audio.clone())]);
     let graph = crate::compile::project(project, &media).unwrap();
+    assert_eq!(graph.main_latency_frames(), LATENCY as u32);
     let mut renderer = Renderer::new(&graph);
     renderer.play();
     let mut output = [[0.0; 2]; FRAMES];
