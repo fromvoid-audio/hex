@@ -6,5 +6,6 @@ pub mod envelope_follower;
 pub mod lfo;
 pub mod macro_four;
 pub mod macro_value;
+pub mod math;
 pub mod note_pressure;
 pub mod random_hold;

@@ -660,3 +660,123 @@ fn macro_four_routes_each_output_and_applies_an_incoming_signal_per_sample() {
         );
     }
 }
+
+#[test]
+fn saved_math_inputs_drive_native_gain_in_ordinary_and_closed_graphs() {
+    use hex_devices::modulation::{lfo, math};
+
+    let mut editor = Editor::new(crate::audio_preparation::candidate_test_project(), 4).unwrap();
+    let track = editor.project().tracks()[0].id();
+    let asset = editor.project().assets().next().unwrap().id();
+    let base = UTILITY_DEFINITION.default_state().unwrap();
+    let Created::Device(device) = editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: base.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("utility");
+    };
+    let next = editor.project().next_identity();
+    let identity = |offset| ModulationSourceId::new(next + offset).unwrap();
+    let source = identity(1);
+    let square = |offset, phase| Modulator {
+        id: identity(offset),
+        color: Default::default(),
+        enabled: true,
+        state: lfo::Settings {
+            rate: lfo::Rate::Hertz(12_000.0),
+            phase,
+            waveform: lfo::Waveform::Square,
+        }
+        .encode()
+        .unwrap(),
+    };
+    let slots = vec![
+        square(0, 0.0),
+        Modulator {
+            id: source,
+            color: Default::default(),
+            enabled: true,
+            state: math::Settings {
+                operation: math::Operation::Subtract,
+                inputs: [0.0, 0.25],
+            }
+            .encode()
+            .unwrap(),
+        },
+        square(2, 0.25),
+    ];
+    let route = |id, source, destination, amount| DeviceModulationRoute {
+        id: ModulationRouteId::new(next + id).unwrap(),
+        source,
+        output: ModulationOutputId::MAIN,
+        destination,
+        amount: ModulationAmount::new(amount).unwrap(),
+        range: ModulationRange::default(),
+        enabled: true,
+    };
+    let input = |parameter| ModulationDestination::Modulator {
+        source,
+        module_type: math::TYPE_ID,
+        parameter,
+    };
+    let routes = [
+        route(3, identity(2), input(math::INPUT_B), 0.125),
+        route(4, identity(0), input(math::INPUT_A), 0.25),
+        route(
+            5,
+            source,
+            ModulationDestination::Device {
+                device_type: UTILITY_TYPE_ID,
+                target: DeviceAutomationTarget::Parameter(parameter::GAIN),
+                vst3_class: None,
+            },
+            0.25 / MAX_UTILITY_GAIN,
+        ),
+    ];
+    let edit = |routes| Command::ReplaceDeviceModulation {
+        device,
+        modulation: DeviceModulation::new(slots.clone(), routes).unwrap(),
+    };
+    let dry = [0.125, -0.25];
+    let audio = Audio::new(48_000, vec![dry; 8]).unwrap();
+    let media = BTreeMap::from([(asset, audio.clone())]);
+    let prepare = |project: &hex_project::Project| {
+        PreparedRevision::prepare(project, &media, Arc::new(SineTable::new()), None)
+    };
+    let (_, revision) = editor
+        .execute_prepared(edit(routes.to_vec()), prepare)
+        .unwrap();
+    let stable = editor.project().clone();
+    let mut invalid = routes;
+    invalid[0].destination = input(hex_lattice_contract::ParameterId::from_static(3));
+    assert!(
+        editor
+            .execute_prepared(edit(invalid.to_vec()), prepare)
+            .is_err()
+    );
+    assert_eq!(*editor.project(), stable);
+    assert_eq!(editor.project().device(device).unwrap().state(), &base);
+    let mut playback = Playback::try_from_prepared_with_session(Arc::new(revision)).unwrap();
+    playback
+        .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
+        .unwrap();
+    let mut output = [[0.0; 2]; 8];
+    playback.render(&mut output[..3]).unwrap();
+    playback.render(&mut output[3..]).unwrap();
+    let gains = [1.0, 1.125, 0.875, 0.75];
+    let check = |output: &[[f32; 2]]| {
+        for (&frame, &gain) in output.iter().zip(gains.iter().cycle()) {
+            for (&actual, expected) in frame.iter().zip(dry.map(|sample| sample * gain)) {
+                assert!((actual - expected).abs() < 1e-6, "{frame:?}");
+            }
+        }
+    };
+    check(&output);
+    if render_sealed(editor.project(), asset, &audio, &mut output) {
+        check(&output);
+    }
+}
