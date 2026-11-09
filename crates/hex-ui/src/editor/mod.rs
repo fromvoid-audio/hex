@@ -198,6 +198,8 @@ mod project_spectrum;
 mod recent_projects;
 mod recovery;
 mod recovery_state;
+#[cfg(test)]
+mod recovery_state_integration_tests;
 mod refresh;
 mod render;
 mod return_tracks;

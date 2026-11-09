@@ -16,6 +16,10 @@ mod midi_thumbnail_state;
 mod navigation_selection_state;
 #[path = "../src/editor/pending_edit.rs"]
 mod receipt;
+// Runtime-only methods remain in the library consumer.
+#[allow(dead_code)]
+#[path = "../src/editor/recovery_state.rs"]
+mod recovery_state;
 #[path = "../src/editor/track_meters/scale.rs"]
 mod track_meter_scale_state;
 #[path = "../src/editor/viewport.rs"]
@@ -804,6 +808,121 @@ mod editor {
                         }
                     }
                 }
+            }
+        }
+    }
+    mod recovery_state {
+        use crate::recovery_state::*;
+        mod tests {
+            use super::RecoveryState;
+
+            #[test]
+            fn recovery_requires_exact_success_not_a_later_terminal() {
+                use hex_audio::prepared::{ActionOutcome, ActionOutcomeReceipt};
+                let mut state = RecoveryState::default();
+                let generation = state.begin(64).unwrap();
+                assert!(state.opened(generation));
+                assert!(state.restored(generation));
+                state.seeking(3);
+                state.observe_receipt(ActionOutcomeReceipt {
+                    ticket: 4,
+                    outcome: ActionOutcome::Applied,
+                });
+                assert!(!state.complete_exact(true, 64, false));
+                state.observe_receipt(ActionOutcomeReceipt {
+                    ticket: 3,
+                    outcome: ActionOutcome::Rejected(
+                        hex_engine::PlaybackActionRejection::OutputFailed,
+                    ),
+                });
+                assert!(state.seek_failed());
+                assert!(!state.complete_exact(true, 64, false));
+            }
+
+            #[test]
+            fn prepared_recovery_requires_exact_attempt_request_and_actual_stopped_ack() {
+                let mut state = RecoveryState::default();
+                let generation = state.begin(129).unwrap();
+                assert!(!state.permits_seek(None));
+                assert!(!state.permits_seek(Some(generation)));
+                state.opened(generation);
+                state.restored(generation);
+                assert!(state.permits_seek(Some(generation)));
+                assert!(!state.permits_seek(Some(generation + 1)));
+                assert!(!state.prepared_seeking(generation + 1, 7));
+                assert!(state.prepared_seeking(generation, 7));
+                assert!(!state.prepared_seeking(generation, 8));
+                assert_eq!(state.seek_needed(true), None);
+                assert!(
+                    !state.complete(true, u64::MAX, 129, false),
+                    "command tickets cannot apply prepared recovery"
+                );
+                assert!(!state.complete_prepared(true, None, 9, 129, false));
+                assert!(!state.complete_prepared(true, Some((8, 9)), 9, 129, false));
+                assert!(!state.complete_prepared(true, Some((7, 9)), 8, 129, false));
+                assert!(!state.complete_prepared(true, Some((7, 9)), 10, 129, false));
+                assert!(!state.complete_prepared(true, Some((7, 9)), 9, 128, false));
+                assert!(!state.complete_prepared(true, Some((7, 9)), 9, 129, true));
+                assert!(!state.complete_prepared(false, Some((7, 9)), 9, 129, false));
+                state.prepared_published(8, 10);
+                assert_eq!(state.prepared_revision(), None);
+                state.prepared_published(7, 9);
+                assert_eq!(state.prepared_revision(), Some(9));
+                assert!(state.complete_prepared(true, Some((7, 9)), 9, 129, false));
+                assert!(state.permits_seek(None));
+                assert!(!state.permits_seek(Some(generation)));
+
+                let next = state.begin(129).unwrap();
+                state.opened(next);
+                state.restored(next);
+                state.prepared_seeking(next, 11);
+                state.prepared_published(11, 12);
+                state.stop();
+                assert_eq!(state.prepared_request(), None);
+                assert_eq!(state.prepared_revision(), None);
+                assert_eq!(state.seek_needed(true), Some(0));
+                assert!(!state.complete_prepared(true, Some((11, 12)), 12, 129, false));
+                state.seeking(13);
+                assert!(state.complete(true, 13, 0, false));
+            }
+
+            #[test]
+            fn obsolete_completion_and_old_acknowledgments_do_not_enable_play() {
+                let mut state = RecoveryState::default();
+                let first = state.begin(640).expect("first recovery");
+                assert!(state.begin(640).is_err());
+                state.fail();
+                let current = state.begin(640).expect("retry");
+                assert!(!state.opened(first));
+                assert!(!state.restored(first));
+                assert!(state.opened(current));
+                assert!(state.restored(current));
+                // A huge prior stream acknowledgment is insufficient without a new seek.
+                assert!(!state.complete(true, 1000, 640, false));
+                assert_eq!(state.seek_needed(true), Some(640));
+                state.seeking(1);
+                assert!(!state.complete(false, 1, 640, false));
+                assert!(!state.complete(true, 0, 640, false));
+                assert!(!state.complete(true, 1, 0, false));
+                assert!(!state.complete(true, 1, 640, true));
+                assert!(state.complete(true, 1, 640, false));
+                assert!(state.generation().is_none());
+            }
+
+            #[test]
+            fn stop_supersedes_saved_cursor_and_requires_a_fresh_seek() {
+                let mut state = RecoveryState::default();
+                let generation = state.begin(960).expect("recovery");
+                state.opened(generation);
+                state.restored(generation);
+                state.seeking(1);
+                state.stop();
+                assert_eq!(state.position(), Some(0));
+                assert!(!state.complete(true, 1, 960, false));
+                assert_eq!(state.seek_needed(true), Some(0));
+                state.seeking(2);
+                assert!(!state.complete(true, 1, 0, false));
+                assert!(state.complete(true, 2, 0, false));
             }
         }
     }
