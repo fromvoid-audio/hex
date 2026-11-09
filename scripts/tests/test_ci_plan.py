@@ -1729,6 +1729,26 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertNotIn("--test", feature.argv)
         self.assertTrue(any(step.step_id == "ui-piano-unit-tests" for step in steps))
         self.assertTrue(any(step.step_id == "ui-timeline-unit-tests" for step in steps))
+        self.assertTrue(any(step.step_id == "ui-session-unit-tests" for step in steps))
+
+    def test_session_route_unit_target_follows_its_owner(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        names = ["editor::session_route_view::"]
+        for path in ("crates/hex-ui/src/editor/session_route_view.rs", "crates/hex-ui/tests/unit_session.rs"):
+            self.assertEqual(plan.module_test_filters(root, [path], inventory, [owner]), {owner: names})
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
+                    "single_run": {owner: "ui-test-support"}, "module_filters": {owner: names}}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": []})
+        self.assertEqual(sum("unit_session" in step.argv for step in steps), 1)
+        self.assertFalse(any("unit_timeline" in step.argv or "unit_piano_roll" in step.argv for step in steps))
+        self.assertTrue(any(step.step_id == "ui-session-unit-tests" for step in ci.planned_steps({"scope": "full"})))
+        health = ci.planned_steps({"scope": "rust", "health": {"python": False, "workspace_inputs": True, "packages": []}})
+        self.assertTrue(any(step.step_id == "health-ui-session-unit" for step in health))
 
     def test_timeline_target_follows_its_viewport_dependencies(self):
         root = SCRIPTS.parent
