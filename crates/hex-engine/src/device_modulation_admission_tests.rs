@@ -108,6 +108,16 @@ fn saved_lfos_modulate_automation_per_sample_in_arrangement_session_and_sealed_p
     else {
         panic!("utility fixture");
     };
+    assert!(crate::project_device_modulation_target_supported(
+        editor.project(),
+        device,
+        parameter::GAIN,
+    ));
+    assert!(!crate::project_device_modulation_target_supported(
+        editor.project(),
+        device,
+        hex_lattice_contract::ParameterId::from_static(u32::MAX),
+    ));
     editor
         .execute(Command::ReplaceDeviceAutomation {
             device,

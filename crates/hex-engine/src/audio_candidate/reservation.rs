@@ -156,7 +156,7 @@ impl AudioCandidateReservationQuote {
                 .checked_add(largest)
                 .ok_or(AudioStorageError::Overflow)?;
         }
-        let mut modulation_workspace = 0;
+        let mut modulation_workspace = 0usize;
         for device in project
             .tracks()
             .iter()
@@ -175,7 +175,9 @@ impl AudioCandidateReservationQuote {
                 .metadata_data_bytes
                 .checked_add(retained)
                 .ok_or(AudioStorageError::Overflow)?;
-            modulation_workspace = modulation_workspace.max(overlap);
+            modulation_workspace = modulation_workspace
+                .checked_add(overlap)
+                .ok_or(AudioStorageError::Overflow)?;
         }
         quote.compiler_workspace_bytes = quote
             .compiler_workspace_bytes
@@ -269,16 +271,10 @@ impl AudioCandidateReservationQuote {
             .metadata_data_bytes
             .checked_add(crate::compensation::MAX_COMPENSATION_BYTES)
             .ok_or(AudioStorageError::Overflow)?;
-        let (retained, _) = crate::device_modulation::EffectModulation::quote_counts(
+        let (retained, overlap) = crate::device_modulation::EffectModulation::quote_counts(
             hex_project::MAX_PROJECT_MODULATORS,
             hex_project::MAX_PROJECT_MODULATION_ROUTES,
             hex_project::MAX_PROJECT_MODULATORS,
-        )
-        .ok_or(AudioStorageError::Overflow)?;
-        let (_, overlap) = crate::device_modulation::EffectModulation::quote_counts(
-            hex_project::MAX_MODULATORS_PER_DEVICE,
-            hex_project::MAX_MODULATION_ROUTES_PER_DEVICE,
-            1,
         )
         .ok_or(AudioStorageError::Overflow)?;
         quote.metadata_data_bytes = quote

@@ -13,6 +13,35 @@ use hex_project::{Device, Invalid, ModulationDestination, ModulationOutputId, Pr
 /// Small chunks keep device-local scratch independent of the host callback size.
 const CHUNK_FRAMES: usize = 128;
 
+/// State-aware eligibility for native device-panel mapping. Ownership is
+/// resolved from the current project. Preparation independently validates the
+/// actual factory, runtime binding and source program before publication.
+pub fn project_device_modulation_target_supported(
+    project: &Project,
+    device: hex_project::DeviceId,
+    parameter: ParameterId,
+) -> bool {
+    let Some(device) = crate::device_automation::effect_devices(project)
+        .find(|candidate| candidate.id() == device)
+    else {
+        return false;
+    };
+    let Ok(registry) = hex_devices::native_registry() else {
+        return false;
+    };
+    let Some(definition) = registry.definition(device.state().type_id()) else {
+        return false;
+    };
+    let state = device.state();
+    hex_lattice_contract::validated_parameter_semantics(definition, state, parameter)
+        .ok()
+        .flatten()
+        .is_some_and(|semantics| semantics.modulation == ParameterModulation::SampleRate)
+        && definition
+            .parameter_enabled(state, parameter)
+            .unwrap_or(false)
+}
+
 pub(super) fn validate_source_owners(project: &Project) -> Result<(), Invalid> {
     if project.native_sources().iter().any(|source| {
         source
