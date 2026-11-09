@@ -41,6 +41,7 @@ fn original_editor_perform_is_delivered_once_with_its_exact_pcm() {
                                 loop_pass: frame / 8,
                             })
                         }),
+                        dense: None,
                     },
                 )
                 .unwrap();

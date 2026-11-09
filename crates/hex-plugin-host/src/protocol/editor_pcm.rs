@@ -223,17 +223,9 @@ mod tests {
     use super::*;
 
     fn packet(config: &Configuration, sequence: u64, points: &[EditorPerform]) -> Vec<u8> {
-        let pcm = Block {
-            binding: config.binding,
-            sequence,
-            first_frame: sequence * u64::from(config.quantum),
-            frames: config.quantum,
-            pcm: [[0.0; 2]; MAX_FRAMES],
-            events: Default::default(),
-            parameters: Default::default(),
-            timing: None,
-            timing_changes: Default::default(),
-        };
+        let mut pcm = Block::empty(config.binding, config.quantum);
+        pcm.sequence = sequence;
+        pcm.first_frame = sequence * u64::from(config.quantum);
         let mut bytes = Vec::new();
         crate::transport::wire::write(&mut bytes, &pcm).unwrap();
         bytes[5] = (EDITOR_PCM_BIT >> 8) as u8;

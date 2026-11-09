@@ -308,25 +308,19 @@ mod tests {
 
     #[test]
     fn parameter_packet_framing_consumes_exact_payload_without_eating_the_successor() {
-        use crate::transport::{Block, Events, ParameterPoint, Parameters};
+        use crate::transport::{Block, ParameterPoint, Parameters};
         use hex_lattice_contract::ForeignProcessorBinding;
         let (stream, mut peer) = UnixStream::pair().unwrap();
-        let mut block = Block {
-            binding: ForeignProcessorBinding {
+        let mut block = Block::empty(
+            ForeignProcessorBinding {
                 root: 1,
                 instance: 2,
                 graph: 3,
                 epoch: 4,
             },
-            sequence: 0,
-            first_frame: 0,
-            frames: 8,
-            pcm: [[0.5; 2]; crate::transport::MAX_FRAMES],
-            events: Events::default(),
-            parameters: Parameters::default(),
-            timing: None,
-            timing_changes: Default::default(),
-        };
+            8,
+        );
+        block.pcm.fill([0.5; 2]);
         block
             .parameters
             .push(ParameterPoint {

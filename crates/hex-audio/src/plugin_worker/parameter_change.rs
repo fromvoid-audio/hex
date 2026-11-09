@@ -687,6 +687,13 @@ impl State {
             }
         };
 
+        if block
+            .dense_parameter()
+            .is_some_and(|dense| dense.id == point.id)
+        {
+            work.result = Some(Terminal::Refused);
+            return Ok(None);
+        }
         let parameters = match start {
             Some(hold) => without_parameter(&original, hold.id)?,
             None => block.parameters,

@@ -1,6 +1,5 @@
 //! Original owned SDK modules only; never installed plug-ins or the Hex UI.
 use super::*;
-use crate::transport::Events;
 use hex_plugin_state::decode;
 use std::path::PathBuf;
 
@@ -51,17 +50,9 @@ fn options() -> Options {
     }
 }
 fn request(config: &Configuration, n: u64) -> Block {
-    let mut block = Block {
-        binding: config.binding,
-        sequence: n,
-        first_frame: n * u64::from(config.quantum),
-        frames: config.quantum,
-        pcm: [[0.0; 2]; 256],
-        events: Events::default(),
-        parameters: crate::transport::Parameters::default(),
-        timing: None,
-        timing_changes: Default::default(),
-    };
+    let mut block = Block::empty(config.binding, config.quantum);
+    block.sequence = n;
+    block.first_frame = n * u64::from(config.quantum);
     for (i, frame) in block.pcm[..usize::from(block.frames)]
         .iter_mut()
         .enumerate()
