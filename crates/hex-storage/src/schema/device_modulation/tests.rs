@@ -994,6 +994,65 @@ fn loaded_sampler_bank_migrates_opaque_inventory_and_saves_with_its_new_reader_f
 }
 
 #[test]
+fn operator_bank_reopens_an_opaque_prior_inventory_and_preserves_its_reader_upgrade() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let device_type = DeviceTypeId::from_static("hex.instrument.operator");
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "vector".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: NativeDeviceState::new(device_type, 1, vec![7]).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("vector");
+    };
+    let device = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let next = editor.project().next_identity();
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device,
+            modulation: bank(device_type, next),
+        })
+        .unwrap();
+    let project = editor.project();
+    assert_eq!(
+        crate::schema_version_for(project),
+        crate::OPERATOR_MODULATION_SCHEMA_VERSION
+    );
+    let current = crate::encode(project).unwrap();
+    assert_eq!(crate::decode(&current).unwrap(), *project);
+
+    let mut old_document: serde_json::Value = serde_json::from_slice(&current).unwrap();
+    // The historical colored-bank wrapper could store the opaque provider.
+    old_document["version"] = crate::MODULATION_SLOT_COLOR_SCHEMA_VERSION.into();
+    let old_bytes = serde_json::to_vec(&old_document).unwrap();
+    let root = temp_dir();
+    let old_path = root.join("legacy-operator-bank.hex");
+    std::fs::write(&old_path, &old_bytes).unwrap();
+    let (opened, token) = crate::load_with_token(&old_path).unwrap();
+    assert_eq!(&opened, project);
+    assert!(token.requires_save_confirmation(&opened).unwrap());
+    let new_path = root.join("operator-modulation.hex");
+    crate::save_new(&new_path, &opened).unwrap();
+    assert_eq!(crate::load(&new_path).unwrap(), opened);
+    assert_eq!(std::fs::read(&old_path).unwrap(), old_bytes);
+    std::fs::remove_dir_all(root).unwrap();
+
+    let mut spurious = old_document;
+    spurious["version"] = crate::OPERATOR_MODULATION_SCHEMA_VERSION.into();
+    spurious["device_modulation"] = serde_json::json!([]);
+    assert!(crate::decode(&serde_json::to_vec(&spurious).unwrap()).is_err());
+}
+
+#[test]
 fn math_schema_preserves_two_named_inputs_and_requires_reader_upgrade() {
     let mut editor = Editor::new(legacy_fixture(), 8).unwrap();
     let device = editor.project().main_devices()[0].id();

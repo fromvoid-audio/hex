@@ -7180,6 +7180,10 @@ fn modulation_panel_maps_vector_output_and_preserves_the_authored_state(cx: &mut
             }
         );
         assert_eq!(current.state(), &original);
+        assert_eq!(
+            hex_storage::schema_version_for(project),
+            hex_storage::OPERATOR_MODULATION_SCHEMA_VERSION,
+        );
         let reopened = hex_storage::decode(&hex_storage::encode(project).unwrap()).unwrap();
         assert_eq!(&reopened, project.as_ref());
     });
