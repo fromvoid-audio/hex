@@ -1639,7 +1639,11 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/src/editor/disk_overload.rs"], inventory, [owner]),
             {owner: [disk]})
-        all_modules = [disk, "editor::pending_edit::", viewport]
+        cpu = "editor::cpu_meter::"
+        self.assertEqual(plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/cpu_meter.rs"], inventory, [owner]),
+            {owner: [cpu]})
+        all_modules = [cpu, disk, "editor::pending_edit::", viewport]
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/tests/unit_editor_state.rs"], inventory, [owner]),
             {owner: all_modules})
@@ -1647,7 +1651,7 @@ class ModuleScopeTests(unittest.TestCase):
         # a subset; this migration uses an explicitly reviewed check set.
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/tests/unit_pending_edit.rs"], inventory, [owner]), {})
-        for names, expected in ((filters[owner], True), ([viewport], True), ([disk], True),
+        for names, expected in ((filters[owner], True), ([viewport], True), ([disk], True), ([cpu], True),
                                 (all_modules, True), (["editor::"], True),
                                 (["editor::save::"], False)):
             boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
