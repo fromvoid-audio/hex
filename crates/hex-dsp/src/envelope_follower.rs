@@ -66,6 +66,11 @@ impl EnvelopeFollower {
         Ok(())
     }
 
+    /// Carry signal history while keeping this follower's configured timing.
+    pub fn inherit_envelope(&mut self, previous: &Self) {
+        self.envelope = previous.envelope;
+    }
+
     /// Seek or explicit reset clears prior signal history.
     pub fn reset(&mut self) {
         self.envelope = 0.0;

@@ -33,14 +33,14 @@ pub(super) fn visit<'a>(
 mod tests {
     use super::*;
     use hex_lattice::{
-        ModulationSourceId, PreparedLfoSource, PreparedModulation, PreparedModulationState,
+        ModulationSourceId, PreparedModulationSource, PreparedModulation, PreparedModulationState,
         ProcessorChainOwner, StereoMatrix,
     };
     use hex_lattice_contract::NativeDeviceMetadata;
     use std::sync::Arc;
 
     fn instance(frames: usize, frequency: f64) -> PreparedRuntimeInstance {
-        let source = PreparedLfoSource::free(
+        let source = PreparedModulationSource::free(
             ModulationSourceId::new(1).unwrap(),
             48_000.0,
             frequency,

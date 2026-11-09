@@ -2,7 +2,7 @@
 //! Control preparation resolves stable IDs and validates real factory bindings.
 //! Prepared declarations borrow no project data and never enter project history.
 use hex_lattice::{
-    ModulationRoute, ModulationTarget, PreparedLfoSource, PreparedModulation,
+    ModulationRoute, ModulationTarget, PreparedModulation, PreparedModulationSource,
     PreparedModulationState, PreparedProcessorFactory,
 };
 use hex_lattice_contract::{
@@ -54,7 +54,7 @@ pub(super) fn validate_source_owners(project: &Project) -> Result<(), Invalid> {
 }
 
 pub(super) struct EffectModulation {
-    sources: Vec<PreparedLfoSource>,
+    sources: Vec<PreparedModulationSource>,
     routes: Vec<ModulationRoute>,
     parameters: Vec<ParameterId>,
 }
@@ -96,11 +96,16 @@ impl EffectModulation {
         let mut sources = reserved(ordered.len())?;
         let mut ids = reserved(ordered.len())?;
         for source in ordered {
-            let prepared = hex_devices::modulation::lfo::Settings::decode(&source.state)
-                .and_then(|settings| {
+            use hex_devices::modulation::{envelope_follower, lfo};
+            let prepared = match source.state.type_id() {
+                lfo::TYPE_ID => lfo::Settings::decode(&source.state).and_then(|settings| {
                     settings.prepare(source.id, sample_rate, fallback_bpm, maximum_bpm)
-                })
-                .map_err(invalid_source)?;
+                }),
+                envelope_follower::TYPE_ID => envelope_follower::Settings::decode(&source.state)
+                    .and_then(|settings| settings.prepare(source.id, sample_rate)),
+                _ => return Err(Invalid("modulator state or rate is unsupported")),
+            }
+            .map_err(invalid_source)?;
             if source.enabled {
                 ids.push(source.id);
                 sources.push(prepared);
