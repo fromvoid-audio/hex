@@ -404,6 +404,15 @@ fn utility_graph_with_bipolar_audio_rate_modulation_does_not_allocate_or_free() 
 
 #[test]
 fn utility_graph_with_steps_replays_exact_pcm_without_allocating_or_freeing() {
+    probe_utility_steps(false);
+}
+
+#[test]
+fn utility_graph_with_transport_steps_replays_exact_pcm_without_allocating_or_freeing() {
+    probe_utility_steps(true);
+}
+
+fn probe_utility_steps(transport: bool) {
     use hex_devices::utility::{
         MAX_UTILITY_GAIN, UTILITY_DEFINITION, UTILITY_TYPE_ID, UtilityDefinition, parameter::GAIN,
     };
@@ -437,13 +446,29 @@ fn utility_graph_with_steps_replays_exact_pcm_without_allocating_or_freeing() {
         1,
     )
     .unwrap();
-    let steps = PreparedModulationSource::steps(
-        ModulationSourceId::new(1).unwrap(),
-        48_000,
-        &[-32767, 32767],
-        5,
-        ModulationStepDirection::Forward,
-    )
+    const BEATS_PER_STEP: u64 = 1 << 30;
+    struct ArrangementClock(usize);
+    impl hex_lattice::NativeInstrumentClock for ArrangementClock {
+        fn beat_at_offset(&self, _: usize) -> Option<u64> {
+            None
+        }
+        fn arrangement_beat_at_offset(&self, offset: usize) -> Option<u64> {
+            Some((self.0 + offset) as u64 * BEATS_PER_STEP / 5)
+        }
+    }
+    let id = ModulationSourceId::new(1).unwrap();
+    let pattern = &[-32767, 32767];
+    let steps = if transport {
+        PreparedModulationSource::transport_steps(
+            id,
+            48_000,
+            pattern,
+            BEATS_PER_STEP,
+            ModulationStepDirection::Forward,
+        )
+    } else {
+        PreparedModulationSource::steps(id, 48_000, pattern, 5, ModulationStepDirection::Forward)
+    }
     .unwrap();
     let prepared = PreparedRuntimeInstance {
         modulation: Some(PreparedModulationState::new(vec![steps], program, 7).unwrap()),
@@ -471,12 +496,13 @@ fn utility_graph_with_steps_replays_exact_pcm_without_allocating_or_freeing() {
         for commit in [false, true] {
             let mut frames = [input; 16];
             chain.begin_block();
-            chain
-                .process_range_with_clock(0..1, black_box(&mut frames[..9]), None, None)
-                .unwrap();
-            chain
-                .process_range_with_clock(0..1, black_box(&mut frames[9..]), None, None)
-                .unwrap();
+            for range in [0..9, 9..16] {
+                let clock = ArrangementClock(range.start);
+                let clock = transport.then_some(&clock as &dyn hex_lattice::NativeInstrumentClock);
+                chain
+                    .process_range_with_clock(0..1, black_box(&mut frames[range]), clock, clock)
+                    .unwrap();
+            }
             assert_eq!(frames, expected);
             if commit {
                 chain.commit_block();
