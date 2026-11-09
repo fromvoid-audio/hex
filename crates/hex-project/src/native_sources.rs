@@ -53,6 +53,9 @@ impl SourceBinding {
     pub(crate) fn receiver(&self) -> Option<TrackId> {
         self.0.receiver()
     }
+    pub(crate) fn devices(&self) -> impl Iterator<Item = &Device> {
+        self.0.devices()
+    }
 }
 impl NativeSource {
     pub fn id(&self) -> SourceId {
@@ -484,5 +487,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
 
 #[cfg(test)]
 mod binding_tests;
+#[cfg(test)]
+mod clipboard_tests;
 #[cfg(test)]
 mod tests;
