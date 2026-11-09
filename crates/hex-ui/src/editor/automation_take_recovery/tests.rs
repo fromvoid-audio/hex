@@ -200,7 +200,11 @@ fn plugin_scope() -> Scope {
     }
 }
 
-#[cfg(feature = "ui-test-support")]
+#[cfg(all(
+    feature = "ui-test-support",
+    target_os = "macos",
+    target_arch = "aarch64"
+))]
 #[gpui::test]
 fn rendered_copy_action_can_cancel_without_releasing_the_close_fence(
     cx: &mut gpui::TestAppContext,
@@ -217,7 +221,8 @@ fn rendered_copy_action_can_cancel_without_releasing_the_close_fence(
         assert!(Instant::now() < deadline);
         std::thread::yield_now();
     };
-    cx.update(|cx| crate::theme::load_fonts(cx).unwrap());
+    cx.use_native_text_system().expect("native text shaping");
+    cx.update(|cx| crate::theme::load_fonts(cx).expect("bundled ioskeley mono"));
     let window: AnyWindowHandle = *cx.add_window(|_, _| Empty);
     let editor = cx
         .update_window(window, |_, window, cx| {
