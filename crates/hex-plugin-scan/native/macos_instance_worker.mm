@@ -442,6 +442,7 @@ int main(int argc,char** argv) {
                         ++edit_query_operation;completed_edit_count=0;return true;
                     };
                     std::array<hex_instance::EditEvent,hex_instance::HOST_EDIT_COUNT> applying_edits{};size_t applying_edit_count=0;
+                    std::array<bool,hex_instance::HOST_EDIT_COUNT> editor_capture{};
                     const auto last_editor_edit=[&](ParamID id) {
                         for(size_t n=applying_edit_count;n>0;--n)
                             if(applying_edits[n-1].kind==hex_instance::Perform && applying_edits[n-1].id==id) return n-1;
@@ -521,7 +522,9 @@ int main(int argc,char** argv) {
                                 if(!remaining_group && conflicts_with_prior_cohort(event)) break;
                                 const auto* info=processing_parameters.find(event.id);
                                 if(!info || (info->flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden))) return false;
-                                const bool takes=touch && touch->would_capture(event) && !touch->masks(event.id);
+                                const bool captures=touch && touch->would_capture(event);
+                                editor_capture[applying_edit_count]=captures;
+                                const bool takes=captures && !touch->masks(event.id);
                                 bool duplicate=false;
                                 size_t projected=parameter_input.size()+later_points;
                                 for(size_t n=0;n<parameter_input.size();++n) {
@@ -1015,12 +1018,13 @@ int main(int argc,char** argv) {
                         }
                         if(touch) packet.editor_restore=editor_touch.processed();
                         if(packet.observe_editor_pcm) {
+                            const bool group=packet.editor_touch && packet.editor_touch->count>1;
                             // An overwritten offset-zero value never entered
                             // the SDK, even though its editor callback was consumed.
                             for(size_t n=0;n<applying_edit_count;++n) {
                                 const auto& edit=applying_edits[n];
                                 if(edit.kind==hex_instance::Perform && last_editor_edit(edit.id)==n &&
-                                    !packet.append_editor_perform(edit)) {
+                                    (!group || editor_capture[n]) && !packet.append_editor_perform(edit)) {
                                     worker_failure.store(ProtocolFailure);break;
                                 }
                             }
