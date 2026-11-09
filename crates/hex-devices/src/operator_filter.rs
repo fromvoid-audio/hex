@@ -1,4 +1,5 @@
 //! Original pre-envelope carrier filter. No analog circuit emulation claim.
+mod response;
 use hex_lattice_contract::{
     DeviceContractError, ParameterDescriptor, ParameterId, ParameterKind, ParameterPresentation,
     ParameterValue,

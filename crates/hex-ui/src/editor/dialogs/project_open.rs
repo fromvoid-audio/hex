@@ -205,10 +205,10 @@ impl EditorView {
         });
     }
 
-    fn begin_selected_project(&mut self, intent: Intent) {
+    fn begin_selected_project(&mut self, intent: Intent, cx: &mut Context<Self>) {
         match intent.destination {
             Destination::New => self.begin_new_project(intent.mode),
-            Destination::Open(path) => self.begin_open(path, intent.mode),
+            Destination::Open(path) => self.begin_open(path, intent.mode, cx),
         }
     }
 
@@ -242,7 +242,7 @@ impl EditorView {
             || self.tuning.client.snapshot().is_some();
         if !dirty {
             self.project_open.phase = Phase::Idle;
-            self.begin_selected_project(intent);
+            self.begin_selected_project(intent, cx);
             cx.notify();
             return;
         }
@@ -298,7 +298,7 @@ impl EditorView {
                             }
                             Some(1) => {
                                 view.project_open.phase = Phase::Idle;
-                                view.begin_selected_project(intent);
+                                view.begin_selected_project(intent, cx);
                             }
                             _ => {
                                 view.cancel_open_after_save();
@@ -319,7 +319,12 @@ impl EditorView {
         self.pending_open_mode = None;
     }
 
-    pub(in crate::editor) fn complete_open_save(&mut self, succeeded: bool, revision: u64) {
+    pub(in crate::editor) fn complete_open_save(
+        &mut self,
+        succeeded: bool,
+        revision: u64,
+        cx: &mut Context<Self>,
+    ) {
         let Phase::Saving(intent) = &self.project_open.phase else {
             return;
         };
@@ -331,7 +336,7 @@ impl EditorView {
         let intent = intent.clone();
         self.cancel_open_after_save();
         if current {
-            self.begin_selected_project(intent);
+            self.begin_selected_project(intent, cx);
         } else if succeeded {
             self.error = Some(
                 format!(
@@ -413,6 +418,7 @@ mod tests {
                 sequence: 0,
                 accepted: true,
                 preview_retained: false,
+                source_lost: false,
                 reason: None,
             }));
             let accepted = view.device_gesture.snapshot().unwrap();
@@ -437,6 +443,7 @@ mod tests {
                     sequence: terminal.sequence(),
                     accepted: false,
                     preview_retained: true,
+                    source_lost: false,
                     reason: Some("audio publication queue full".into()),
                 },
                 Some(accepted)

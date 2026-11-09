@@ -10,37 +10,45 @@ pub(super) fn replacement_spans(
 ) -> Vec<(u64, u64)> {
     let mut excluded_id = None;
     let mut excluded_range = None;
-    let target = match *operation {
-        AudioEventEdit::Move { event, start } => {
-            let Some(source) = events.events.iter().find(|e| e.id == event) else {
-                return Vec::new();
-            };
-            if source.start == start {
-                return Vec::new();
-            }
-            excluded_id = Some(event);
-            start.checked_add(source.length()).map(|end| (start, end))
+    let move_target = match *operation {
+        AudioEventEdit::Move { event, start } => Some((event, start)),
+        AudioEventEdit::Place { event, start } => {
+            u64::try_from(start).ok().map(|start| (event, start))
         }
-        AudioEventEdit::Trim { event, start, end } => {
-            excluded_id = Some(event);
-            Some((start, end))
-        }
-        AudioEventEdit::MoveRange {
-            start,
-            end,
-            destination,
-        } => {
-            if start == destination {
-                return Vec::new();
-            }
-            excluded_range = Some((start, end));
-            end.checked_sub(start)
-                .and_then(|span| destination.checked_add(span))
-                .map(|end| (destination, end))
-        }
-        AudioEventEdit::Paste { at, length, .. } => at.checked_add(length).map(|end| (at, end)),
-        // Insert moves existing content instead of replacing it.
         _ => None,
+    };
+    let target = if let Some((event, start)) = move_target {
+        let Some(source) = events.events.iter().find(|e| e.id == event) else {
+            return Vec::new();
+        };
+        if source.start == start {
+            return Vec::new();
+        }
+        excluded_id = Some(event);
+        start.checked_add(source.length()).map(|end| (start, end))
+    } else {
+        match *operation {
+            AudioEventEdit::Trim { event, start, end } => {
+                excluded_id = Some(event);
+                Some((start, end))
+            }
+            AudioEventEdit::MoveRange {
+                start,
+                end,
+                destination,
+            } => {
+                if start == destination {
+                    return Vec::new();
+                }
+                excluded_range = Some((start, end));
+                end.checked_sub(start)
+                    .and_then(|span| destination.checked_add(span))
+                    .map(|end| (destination, end))
+            }
+            AudioEventEdit::Paste { at, length, .. } => at.checked_add(length).map(|end| (at, end)),
+            // Insert moves existing content instead of replacing it.
+            _ => None,
+        }
     };
     let Some((start, end)) = target.filter(|(a, b)| a < b) else {
         return Vec::new();
@@ -80,6 +88,7 @@ mod tests {
                 .into_iter()
                 .map(|(id, start, end)| AudioEvent {
                     active: true,
+                    gain: hex_project::ClipGain::UNITY,
                     source: 0,
                     id,
                     start,

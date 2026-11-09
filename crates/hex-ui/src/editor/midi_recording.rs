@@ -6,6 +6,10 @@ use hex_engine::midi_capture::MidiCaptureBinding;
 use hex_session::midi_recording::{MidiTake, MidiTakeBinding, RecordedMidiNote};
 use std::sync::{Arc, atomic::Ordering::Acquire};
 
+#[cfg(feature = "ui-test-support")]
+#[path = "midi_recording_pressure_fixture.rs"]
+pub(crate) mod pressure_fixture;
+
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 enum Mode {
     #[default]
@@ -530,7 +534,13 @@ impl EditorView {
                         take.interrupt();
                     }
                     self.midi_recorder.mode = Mode::Interrupted;
-                    self.error = Some(format!("midi recording interrupted · {reason:?} · take retained; discard explicitly").to_lowercase().into());
+                    self.error = Some(
+                        format!(
+                            "midi recording interrupted · {} · take retained; discard explicitly",
+                            super::user_errors::midi_abort(reason)
+                        )
+                        .into(),
+                    );
                 }
             }
         }
@@ -542,7 +552,7 @@ impl EditorView {
 mod tests {
     use super::super::midi_canvas::creation_tests::{fixture, pump};
     use super::*;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     #[gpui::test]
     fn midi_take_survives_delayed_commit_and_refusal_while_document_actions_are_blocked(
@@ -609,7 +619,7 @@ mod tests {
                 cx.notify();
             });
             visual.run_until_parked();
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = crate::test_wait::hang_deadline();
             let event = loop {
                 if let Ok(event) = editor.update(&mut visual, |view, _| view.service.try_event()) {
                     break event;
@@ -664,13 +674,13 @@ mod tests {
 mod lifecycle_tests {
     use super::super::midi_canvas::creation_tests::{fixture, pump};
     use super::*;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     fn open_output() -> (
         hex_audio::WorkerPreparedOutput,
         hex_audio::worker_fixture::HeadlessBackend,
     ) {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             match hex_audio::worker_fixture::open(48_000) {
                 Ok((mut output, backend)) => {
@@ -822,201 +832,225 @@ mod lifecycle_tests {
         backend.close();
     }
 
-    #[gpui::test]
-    fn midi_recording_waits_for_its_root_installation_and_retains_take_on_same_tick_output_replacement(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn exercise_midi_recording_terminal(cx: &mut gpui::TestAppContext, case: u8) {
         let _output_fixture_guard = crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
-        for case in 0..3 {
-            let (mut visual, editor, _environment, clip) = fixture(cx);
-            editor.update(&mut visual, |view, _| {
-                assert!(view.enqueue(Request::Edit(Command::InsertInstrument {
-                    track: view.selected_track.unwrap(),
-                    state: hex_project::default_instrument_state().unwrap()
-                })));
-            });
-            pump(&editor, &mut visual);
-            let (project, revision, generation, track) = editor.read_with(&visual, |view, _| {
-                (
-                    Arc::clone(&view.state.as_ref().unwrap().project),
-                    view.state.as_ref().unwrap().revision,
-                    view.project_generation,
-                    view.selected_track.unwrap(),
-                )
-            });
-            let context = hex_engine::AudioSourceContext {
-                project_generation: generation,
-                editor_revision: revision,
-            };
-            let prepared = Arc::new(
-                hex_engine::PreparedRevision::prepare(
-                    &project,
-                    &Default::default(),
-                    Arc::new(hex_engine::SineTable::new()),
-                    None,
-                )
-                .unwrap(),
-            );
-            let (mut output, mut backend) = open_output();
-            let client = output.take_client().unwrap();
-            let old_input = Arc::new(client.new_computer_keyboard_input_on_control().unwrap());
-            let mut old = hex_engine::playback::Playback::try_from_prepared_with_session(
-                Arc::clone(&prepared),
+        let (mut visual, editor, _environment, clip) = fixture(cx);
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::InsertInstrument {
+                track: view.selected_track.unwrap(),
+                state: hex_project::default_instrument_state().unwrap()
+            })));
+        });
+        pump(&editor, &mut visual);
+        let (project, revision, generation, track) = editor.read_with(&visual, |view, _| {
+            (
+                Arc::clone(&view.state.as_ref().unwrap().project),
+                view.state.as_ref().unwrap().revision,
+                view.project_generation,
+                view.selected_track.unwrap(),
+            )
+        });
+        let context = hex_engine::AudioSourceContext {
+            project_generation: generation,
+            editor_revision: revision,
+        };
+        let prepared = Arc::new(
+            hex_engine::PreparedRevision::prepare(
+                &project,
+                &Default::default(),
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let (mut output, mut backend) = open_output();
+        let client = output.take_client().unwrap();
+        let old_input = Arc::new(client.new_computer_keyboard_input_on_control().unwrap());
+        let mut old =
+            hex_engine::playback::Playback::try_from_prepared_with_session(Arc::clone(&prepared))
+                .unwrap();
+        old.prepare_computer_keyboard(&project, track, old_input)
+            .unwrap();
+        let old_revision = output
+            .publication
+            .control()
+            .unwrap()
+            .publish_with_admission_and_source_on_control(
+                old,
+                hex_audio::prepared::PublicationPolicy::InheritRuntime,
+                context,
+                |_| Ok::<_, ()>(()),
             )
             .unwrap();
-            old.prepare_computer_keyboard(&project, track, old_input)
-                .unwrap();
-            let old_revision = output
-                .publication
-                .control()
+        let mut frames = [[0.0; 2]; 64];
+        let mut host = [0.0; 128];
+        backend.render_direct(&mut frames, &mut host).unwrap();
+        let input = Arc::new(
+            client
+                .new_computer_keyboard_input_on_control()
                 .unwrap()
-                .publish_with_admission_and_source_on_control(
-                    old,
-                    hex_audio::prepared::PublicationPolicy::InheritRuntime,
-                    context,
-                    |_| Ok::<_, ()>(()),
-                )
-                .unwrap();
-            let mut frames = [[0.0; 2]; 64];
-            let mut host = [0.0; 128];
-            backend.render_direct(&mut frames, &mut host).unwrap();
-            let input = Arc::new(
-                client
-                    .new_computer_keyboard_input_on_control()
+                .with_recording_support()
+                .unwrap(),
+        );
+        let mut next =
+            hex_engine::playback::Playback::try_from_prepared_with_session(prepared).unwrap();
+        next.prepare_computer_keyboard(&project, track, Arc::clone(&input))
+            .unwrap();
+        let new_revision = output
+            .publication
+            .control()
+            .unwrap()
+            .publish_with_admission_and_source_on_control(
+                next,
+                hex_audio::prepared::PublicationPolicy::InheritRuntime,
+                context,
+                |_| Ok::<_, ()>(()),
+            )
+            .unwrap();
+        editor.update(&mut visual, |view, _| {
+            view.audio = Some(audio(client));
+            view.computer_keyboard.enabled = true;
+            view.computer_keyboard.prepared = true; // worker submission has completed
+            view.computer_keyboard.request_id = 42;
+            view.computer_keyboard.input = Some(Arc::clone(&input));
+            view.midi_recorder.mode = Mode::Preparing;
+            view.midi_recorder.binding = Some(Arc::new(
+                MidiTakeBinding::capture(&project, track, clip).unwrap(),
+            ));
+            view.midi_recorder.generation = generation;
+            view.midi_recorder.revision = revision;
+            view.midi_recorder.output_identity =
+                view.audio.as_ref().unwrap().control.output_identity();
+            view.midi_recording_published(context, Some(42), new_revision);
+            assert_eq!(
+                view.audio
+                    .as_ref()
                     .unwrap()
-                    .with_recording_support()
-                    .unwrap(),
+                    .status()
+                    .unwrap()
+                    .recording_source()
+                    .unwrap()
+                    .audio_revision,
+                old_revision
             );
-            let mut next =
-                hex_engine::playback::Playback::try_from_prepared_with_session(prepared).unwrap();
-            next.prepare_computer_keyboard(&project, track, Arc::clone(&input))
-                .unwrap();
-            let new_revision = output
-                .publication
-                .control()
+            assert!(!view.arm_prepared_midi_take().unwrap());
+            assert!(view.audio.as_ref().unwrap().control.midi_target().is_none());
+        });
+        backend.render_direct(&mut frames, &mut host).unwrap();
+        editor.update(&mut visual, |view, _| {
+            view.audio
+                .as_mut()
                 .unwrap()
-                .publish_with_admission_and_source_on_control(
-                    next,
-                    hex_audio::prepared::PublicationPolicy::InheritRuntime,
-                    context,
-                    |_| Ok::<_, ()>(()),
-                )
+                .control
+                .command(hex_engine::PlaybackCommand::Play)
                 .unwrap();
+        });
+        backend.render_direct(&mut frames, &mut host).unwrap();
+        editor.update(&mut visual, |view, _| {
+            assert!(view.arm_prepared_midi_take().unwrap());
+        });
+        input.set_key(0, Some((60, 100, 1))).unwrap();
+        input.set_key(0, None).unwrap();
+        backend.render_direct(&mut frames, &mut host).unwrap();
+        let captured = editor.update(&mut visual, |view, _| {
+            assert!(view.tick_midi_recording());
+            let notes = view.midi_recorder.take.as_ref().unwrap().notes().to_vec();
+            assert_eq!(notes.len(), 1);
+            // Close and replace without any tick seeing an absent endpoint.
+            if case == 0 {
+                view.audio.as_mut().unwrap().control.close();
+            }
+            notes
+        });
+        if case != 0 {
+            if case == 1 {
+                input.cancel();
+            } // disconnect before Stop, without a callback
             editor.update(&mut visual, |view, _| {
-                view.audio = Some(audio(client));
-                view.computer_keyboard.enabled = true;
-                view.computer_keyboard.prepared = true; // worker submission has completed
-                view.computer_keyboard.request_id = 42;
-                view.computer_keyboard.input = Some(Arc::clone(&input));
-                view.midi_recorder.mode = Mode::Preparing;
-                view.midi_recorder.binding = Some(Arc::new(
-                    MidiTakeBinding::capture(&project, track, clip).unwrap(),
-                ));
-                view.midi_recorder.generation = generation;
-                view.midi_recorder.revision = revision;
-                view.midi_recorder.output_identity =
-                    view.audio.as_ref().unwrap().control.output_identity();
-                view.midi_recording_published(context, Some(42), new_revision);
-                assert_eq!(
+                view.stop();
+                if case == 2 {
+                    view.stop();
+                }
+            });
+            backend.render_direct(&mut frames, &mut host).unwrap();
+            editor.update(&mut visual, |view, _| {
+                if case == 1 {
+                    let before = view.state.as_ref().unwrap().project.snapshot();
+                    let revision = view.state.as_ref().unwrap().revision;
+                    assert!(view.tick_midi_recording());
+                    assert!(view.midi_recorder.mode == Mode::Interrupted);
+                    assert!(view.midi_recorder.blocks_edits());
+                    assert!(view.midi_recorder.pending_commit.is_none());
+                    assert!(view.error.as_ref().unwrap().contains("cancelled"));
+                    assert_eq!(view.state.as_ref().unwrap().revision, revision);
+                    assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+                } else {
+                    let terminal = view.audio.as_mut().unwrap().control.midi_receipt().unwrap();
+                    assert!(matches!(terminal, Receipt::Finished { clock: Some(_), .. }));
+                }
+                assert!(
                     view.audio
+                        .as_mut()
+                        .unwrap()
+                        .control
+                        .midi_receipt()
+                        .is_none()
+                );
+                assert_eq!(view.midi_recorder.take.as_ref().unwrap().notes(), captured);
+                assert!(
+                    view.state
                         .as_ref()
                         .unwrap()
-                        .status()
+                        .project
+                        .midi_clip(clip)
                         .unwrap()
-                        .recording_source()
-                        .unwrap()
-                        .audio_revision,
-                    old_revision
+                        .notes()
+                        .is_empty()
                 );
-                assert!(!view.arm_prepared_midi_take().unwrap());
-                assert!(view.audio.as_ref().unwrap().control.midi_target().is_none());
-            });
-            backend.render_direct(&mut frames, &mut host).unwrap();
-            editor.update(&mut visual, |view, _| {
-                view.audio
-                    .as_mut()
-                    .unwrap()
-                    .control
-                    .command(hex_engine::PlaybackCommand::Play)
-                    .unwrap();
-            });
-            backend.render_direct(&mut frames, &mut host).unwrap();
-            editor.update(&mut visual, |view, _| {
-                assert!(view.arm_prepared_midi_take().unwrap());
-            });
-            input.set_key(0, Some((60, 100, 1))).unwrap();
-            input.set_key(0, None).unwrap();
-            backend.render_direct(&mut frames, &mut host).unwrap();
-            let captured = editor.update(&mut visual, |view, _| {
-                assert!(view.tick_midi_recording());
-                let notes = view.midi_recorder.take.as_ref().unwrap().notes().to_vec();
-                assert_eq!(notes.len(), 1);
-                // Close and replace without any tick seeing an absent endpoint.
-                if case == 0 {
-                    view.audio.as_mut().unwrap().control.close();
-                }
-                notes
-            });
-            if case != 0 {
                 if case == 1 {
-                    input.cancel();
-                } // disconnect before Stop, without a callback
-                editor.update(&mut visual, |view, _| {
-                    view.stop();
-                    if case == 2 {
-                        view.stop();
-                    }
-                });
-                backend.render_direct(&mut frames, &mut host).unwrap();
-                editor.update(&mut visual, |view, _| {
-                    let terminal = view.audio.as_mut().unwrap().control.midi_receipt().unwrap();
-                    if case == 1 {
-                        assert!(matches!(
-                            terminal,
-                            Receipt::Aborted {
-                                reason: hex_audio::midi_recording::AbortReason::Cancelled,
-                                ..
-                            }
-                        ));
-                    } else {
-                        assert!(matches!(terminal, Receipt::Finished { clock: Some(_), .. }));
-                    }
-                    assert_eq!(view.midi_recorder.take.as_ref().unwrap().notes(), captured);
-                    assert!(
-                        view.state
-                            .as_ref()
-                            .unwrap()
-                            .project
-                            .midi_clip(clip)
-                            .unwrap()
-                            .notes()
-                            .is_empty()
-                    );
+                    view.discard_midi_take();
+                    assert!(!view.midi_recorder.blocks_edits());
+                } else {
                     view.midi_recorder.clear();
-                    view.audio.as_mut().unwrap().control.close();
-                    view.audio = None;
-                });
-                backend.close();
-                drop(output);
-                continue;
-            }
-            backend.close();
-            drop(output);
-            let (mut replacement, mut replacement_backend) = open_output();
-            let replacement_client = replacement.take_client().unwrap();
-            editor.update(&mut visual, |view, _| {
-                view.audio = Some(audio(replacement_client));
-                assert!(view.audio.as_ref().unwrap().status().is_some());
-                assert!(view.tick_midi_recording());
-                assert!(view.midi_recorder.mode == Mode::Interrupted);
-                assert_eq!(view.midi_recorder.take.as_ref().unwrap().notes(), captured);
-                view.discard_midi_take();
-                assert!(!view.midi_recorder.blocks_edits());
+                }
                 view.audio.as_mut().unwrap().control.close();
                 view.audio = None;
             });
-            replacement_backend.close();
+            backend.close();
+            drop(output);
+            return;
         }
+        backend.close();
+        drop(output);
+        let (mut replacement, mut replacement_backend) = open_output();
+        let replacement_client = replacement.take_client().unwrap();
+        editor.update(&mut visual, |view, _| {
+            view.audio = Some(audio(replacement_client));
+            assert!(view.audio.as_ref().unwrap().status().is_some());
+            assert!(view.tick_midi_recording());
+            assert!(view.midi_recorder.mode == Mode::Interrupted);
+            assert_eq!(view.midi_recorder.take.as_ref().unwrap().notes(), captured);
+            view.discard_midi_take();
+            assert!(!view.midi_recorder.blocks_edits());
+            view.audio.as_mut().unwrap().control.close();
+            view.audio = None;
+        });
+        replacement_backend.close();
+    }
+
+    #[gpui::test]
+    fn midi_recording_retains_take_on_same_tick_output_replacement(cx: &mut gpui::TestAppContext) {
+        exercise_midi_recording_terminal(cx, 0);
+    }
+
+    #[gpui::test]
+    fn midi_recording_retains_take_when_input_disconnect_races_stop(cx: &mut gpui::TestAppContext) {
+        exercise_midi_recording_terminal(cx, 1);
+    }
+
+    #[gpui::test]
+    fn midi_recording_stop_twice_finishes_once(cx: &mut gpui::TestAppContext) {
+        exercise_midi_recording_terminal(cx, 2);
     }
 }
 

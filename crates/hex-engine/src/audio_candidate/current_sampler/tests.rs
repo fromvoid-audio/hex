@@ -70,8 +70,38 @@ fn fixture() -> (Project, hex_project::AssetId) {
 }
 #[test]
 fn current_sampler_actual_constructor_has_literal_pcm_stop_replay_and_closed_custody() {
+    sampler_constructor_case(false);
+}
+#[test]
+fn grouped_sampler_constructor_routes_live_monitor_and_authored_playback() {
+    sampler_constructor_case(true);
+}
+fn sampler_constructor_case(grouped: bool) {
     assert!(crate::audio_storage_constructor_layout_supported());
     let (project, asset) = fixture();
+    let project = if grouped {
+        let mut editor = Editor::new(project, 8).unwrap();
+        let track = editor.project().tracks()[0].id();
+        let Created::Track(group) = editor
+            .execute(Command::GroupTracks {
+                tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group")
+        };
+        editor
+            .execute(Command::Gain {
+                track: group,
+                gain: 0.5,
+            })
+            .unwrap();
+        editor.project().clone()
+    } else {
+        project
+    };
+    let gain = if grouped { 0.5 } else { 1.0 };
     assert!(crate::native_device_resources::current_sampler::validate_project(&project).unwrap());
     let quote = AudioCandidateReservationQuote::for_project(&project, 1).unwrap();
     let limits = quote.storage_reservation(65536).unwrap();
@@ -148,8 +178,13 @@ fn current_sampler_actual_constructor_has_literal_pcm_stop_replay_and_closed_cus
     );
     // The constructor-born live pair borrows that same source scope while the
     // transport is stopped, without consuming the authored frame-zero note.
-    let track = project.tracks()[0].id();
-    let device = project.tracks()[0].instrument().unwrap().id();
+    let sampler = project
+        .tracks()
+        .iter()
+        .find(|track| track.instrument().is_some())
+        .unwrap();
+    let track = sampler.id();
+    let device = sampler.instrument().unwrap().id();
     let words = std::array::from_fn(|i| {
         if i == 0 {
             (1 << 16) | (127 << 8) | 61
@@ -186,6 +221,7 @@ fn current_sampler_actual_constructor_has_literal_pcm_stop_replay_and_closed_cus
             [0.0, 0.0],
             [0.0, 0.0],
         ]
+        .map(|frame| frame.map(|sample| sample * gain))
     );
     assert_eq!(before_monitor, owner.test_transport());
     owner
@@ -229,6 +265,7 @@ fn current_sampler_actual_constructor_has_literal_pcm_stop_replay_and_closed_cus
             [0.0, 0.0],
             [0.0, 0.0]
         ]
+        .map(|frame| frame.map(|sample| sample * gain))
     );
     let before = owner.test_transport();
     assert!(

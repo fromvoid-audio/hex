@@ -4,6 +4,86 @@ use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px}
 use std::sync::Arc;
 
 #[gpui::test]
+fn g_groups_midi_clips_with_different_legacy_curves(cx: &mut TestAppContext) {
+    use super::drag::group_drag_ui_test::{click, fixture, pump};
+    use hex_project::{BeatTime, MidiClipGain, MidiClipVolume, MidiClipVolumePoint};
+    let (_files, handle, editor, _) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::AddMidiTrack {
+            name: "notes".into(),
+        })));
+    });
+    pump(&editor, &mut visual);
+    let track = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.tracks()[1].id()
+    });
+    let mut clips = Vec::new();
+    for (start, gain) in [(BeatTime::ZERO, 0.5), (BeatTime::from_raw(3 << 32), 2.0)] {
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::PlaceMidiClip {
+                track,
+                start,
+                length: BeatTime::ONE,
+            })));
+        });
+        pump(&editor, &mut visual);
+        let clip = editor.read_with(&visual, |view, _| {
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .midi_clips()
+                .last()
+                .unwrap()
+                .id()
+        });
+        editor.update(&mut visual, |view, _| {
+            assert!(
+                view.enqueue(Request::Edit(Command::ReplaceMidiClipVolume {
+                    clip,
+                    volume: MidiClipVolume::new(
+                        vec![MidiClipVolumePoint::linear(
+                            BeatTime::ZERO,
+                            MidiClipGain::new(gain).unwrap()
+                        )],
+                        BeatTime::ONE,
+                    )
+                    .unwrap(),
+                }))
+            );
+        });
+        pump(&editor, &mut visual);
+        clips.push(clip);
+    }
+    click(&mut visual, clips[0], false);
+    click(&mut visual, clips[1], true);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.selected_clip_ids(), clips)
+    });
+    visual.update(|window, cx| editor.read_with(cx, |view, _| view.focus.focus(window)));
+    visual.simulate_keystrokes("g");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        let row = view.state.as_ref().unwrap().project.track(track).unwrap();
+        assert_eq!(row.midi_clips().len(), 1);
+        let volume = row.midi_clips()[0].volume();
+        assert_eq!(volume.gain_at(BeatTime::ZERO).linear(), 0.5);
+        assert_eq!(volume.gain_at(BeatTime::from_raw(3 << 32)).linear(), 2.0);
+        assert!(view.error.is_none(), "{:?}", view.error);
+    });
+}
+
+#[gpui::test]
+fn midi_clip_has_no_audio_gain_handle(cx: &mut TestAppContext) {
+    let (mut visual, _editor, _environment, clip) = midi_canvas::creation_tests::fixture(cx);
+    let selector = Box::leak(format!("clip-gain-handle-{}", clip.value()).into_boxed_str());
+    assert!(visual.debug_bounds(selector).is_none());
+}
+
+#[gpui::test]
 fn audio_top_edge_gain_changes_only_gain_and_releases_one_command(cx: &mut TestAppContext) {
     let (project, _, _, clip) = clip_drag_ui_test::audio_project();
     let original = project.clip(clip).unwrap().clone();
@@ -55,7 +135,7 @@ fn audio_top_edge_gain_changes_only_gain_and_releases_one_command(cx: &mut TestA
 }
 
 fn pump(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let until = crate::test_wait::hang_deadline();
     loop {
         let ready = editor.update(&mut *visual, |v, cx| {
             if v.tick(cx) {
@@ -75,15 +155,15 @@ fn terminal(
     editor: &gpui::Entity<EditorView>,
     visual: &mut VisualTestContext,
 ) -> hex_session::service::Event {
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let until = crate::test_wait::hang_deadline();
     loop {
-        if let Ok(event) = editor.read_with(&*visual, |v, _| v.service.try_event()) {
-            if event.request_complete {
-                return event;
-            }
-            // Deliberately withhold installation until the request terminal.
-            // The offline refusal fixture also retains its initial worker event.
+        if let Ok(event) = editor.read_with(&*visual, |v, _| v.service.try_event())
+            && event.request_complete
+        {
+            return event;
         }
+        // Deliberately withhold installation until the request terminal.
+        // The offline refusal fixture also retains its initial worker event.
         assert!(std::time::Instant::now() < until, "gain worker terminal");
         std::thread::yield_now();
     }

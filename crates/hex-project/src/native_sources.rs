@@ -13,6 +13,8 @@ use crate::{
 };
 use std::{ops::Deref, sync::Arc};
 
+mod unit_parent;
+
 // The preceding format allowed256 retained sources PLUS256 track instruments.
 // Migration retains both; the existing global device budget is unchanged.
 pub const MAX_NATIVE_SOURCES: usize = crate::MAX_TRACKS * 2;
@@ -51,6 +53,9 @@ impl SourceBinding {
     pub(crate) fn receiver(&self) -> Option<TrackId> {
         self.0.receiver()
     }
+    pub(crate) fn devices(&self) -> impl Iterator<Item = &Device> {
+        self.0.devices()
+    }
 }
 impl NativeSource {
     pub fn id(&self) -> SourceId {
@@ -68,6 +73,10 @@ impl NativeSource {
     pub fn receiver(&self) -> Option<TrackId> {
         self.definition.receiver
     }
+    /// Effects in authored order after the designated instrument.
+    pub fn post_instrument_effects(&self) -> &[Device] {
+        &self.definition.effects[self.instrument_index()..]
+    }
     pub fn devices(&self) -> impl Iterator<Item = &Device> {
         let index = self.instrument_index();
         self.definition
@@ -75,7 +84,7 @@ impl NativeSource {
             .iter()
             .take(index)
             .chain(std::iter::once(self.instrument()))
-            .chain(self.definition.effects.iter().skip(index))
+            .chain(self.post_instrument_effects())
     }
     pub(crate) fn from_parts(
         id: SourceId,
@@ -134,6 +143,8 @@ impl From<&NativeSource> for NativeSourceSnapshot {
             devices: source
                 .devices()
                 .map(|d| DeviceSnapshot {
+                    modulation: d.modulation.clone(),
+                    parent: d.parent.map(|id| id.value()),
                     automation: d.automation().to_vec(),
                     id: d.id().value(),
                     state: d.state().clone(),
@@ -162,11 +173,11 @@ impl Project {
         self.native_sources.iter().find(|s| s.id() == source)
     }
 
-    /// Tracks that share a binding to this retained source, in track order.
+    /// MIDI-contributing tracks bound to this retained source, in track order.
     pub fn source_contributors(&self, source: SourceId) -> impl Iterator<Item = &crate::Track> {
         self.tracks
             .iter()
-            .filter(move |track| track.source_id() == Some(source))
+            .filter(move |track| track.source_id() == Some(source) && !track.retained_source_path())
     }
 }
 
@@ -199,13 +210,12 @@ impl Project {
         id: SourceId,
         receiver: Option<TrackId>,
     ) -> Result<(), Invalid> {
-        if let Some(track) = receiver {
-            if self
+        if let Some(track) = receiver
+            && self
                 .track(track)
                 .is_none_or(|track| track.source_id() != Some(id))
-            {
-                return Err(Invalid("source receiver must be a bound track"));
-            }
+        {
+            return Err(Invalid("source receiver must be a bound track"));
         }
         self.edit_native_source(id, |definition| {
             definition.receiver = receiver;
@@ -231,9 +241,53 @@ impl Project {
         binding: &SourceBinding,
         receiver: TrackId,
     ) -> Result<SourceBinding, Invalid> {
-        let mut device = Device::clone(binding);
-        device.id = DeviceId(self.allocate_id()?);
-        self.register_instrument(binding.0.name().to_owned(), device, receiver)
+        let source = &binding.0;
+        let count = source.devices().count();
+        if self.native_sources.len() >= MAX_NATIVE_SOURCES {
+            return Err(Invalid("native source limit reached"));
+        }
+        if crate::returns::device_count(self)?
+            .checked_add(count)
+            .is_none_or(|count| count > crate::MAX_DEVICES)
+        {
+            return Err(Invalid("project device limit reached"));
+        }
+        let mut devices = Vec::new();
+        devices
+            .try_reserve_exact(count)
+            .map_err(|_| Invalid("could not reserve copied source devices"))?;
+        devices.extend(source.devices().cloned());
+        self.native_sources
+            .try_reserve(1)
+            .map_err(|_| Invalid("could not reserve copied source"))?;
+        let identities = count
+            .checked_add(1)
+            .ok_or(Invalid("source identity count overflow"))?;
+        let (first, _) = self.allocate_id_range(identities)?;
+        for (index, device) in devices.iter_mut().enumerate() {
+            // The reserved inclusive range covers the source plus every node.
+            // Resolve parents against the frozen original, not rewritten IDs.
+            device.parent = device
+                .parent()
+                .map(|parent| {
+                    source
+                        .devices()
+                        .position(|item| item.id() == parent)
+                        .map(|index| DeviceId(first + 1 + index as u64))
+                        .ok_or(Invalid("copied source parent is missing"))
+                })
+                .transpose()?;
+            device.id = DeviceId(first + 1 + index as u64);
+        }
+        let copied = NativeSource::from_parts(
+            SourceId(first),
+            source.name().to_owned(),
+            devices,
+            source.instrument_index(),
+            Some(receiver),
+        )?;
+        self.native_sources.push(copied.clone());
+        Ok(SourceBinding(copied))
     }
     pub(crate) fn bind_track_source(
         &mut self,
@@ -295,6 +349,9 @@ impl Project {
     }
     pub(crate) fn validate_source_bindings(&self) -> Result<(), Invalid> {
         for track in self.tracks() {
+            if track.retained_source_path() && !track.receives_source_audio() {
+                return Err(Invalid("retained source path requires its bound receiver"));
+            }
             if let Some(binding) = &track.instrument {
                 let source = self
                     .native_source(binding.source_id())
@@ -371,6 +428,8 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 .map(|(index, state)| {
                     // allocate_id_range proved this complete inclusive range fits.
                     Device {
+                        modulation: Default::default(),
+                        parent: None,
                         automation: Vec::new(),
                         id: DeviceId(first + 1 + index as u64),
                         state,
@@ -428,5 +487,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
 
 #[cfg(test)]
 mod binding_tests;
+#[cfg(test)]
+mod clipboard_tests;
 #[cfg(test)]
 mod tests;

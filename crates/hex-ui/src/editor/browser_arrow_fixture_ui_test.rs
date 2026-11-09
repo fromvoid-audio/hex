@@ -52,7 +52,7 @@ fn with_environment(
         v.refresh_sample_catalog(cx);
         v.request_browser_scan(samples.clone(), cx);
     });
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         let ready = editor.update(cx, |v, cx| {
             v.tick(cx);
@@ -142,7 +142,7 @@ fn browser_arrows_fixture_catalog_job_owns_root_after_caller_and_view_drop(
     assert!(gate.root_present_during_save.load(Ordering::Relaxed));
     visual.update(|_, _| {});
     assert!(weak.upgrade().is_none());
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     while root.exists() {
         assert!(std::time::Instant::now() < deadline, "owned root cleanup");
         std::thread::yield_now();

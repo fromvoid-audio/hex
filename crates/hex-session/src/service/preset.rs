@@ -81,6 +81,60 @@ pub(super) fn save(
     .map_err(|error| error.to_string())
 }
 
+/// Read only on the worker. Both active and inactive native payloads must be
+/// understood by this application before a default can be consumed/replaced.
+pub(super) fn load_default(
+    root: &Path,
+    class: NativeDeviceClass,
+    type_id: DeviceTypeId,
+) -> Result<Option<Preset>, String> {
+    validate_default_root(root)?;
+    let preset = hex_storage::preset::defaults::load(root, storage_class(class), type_id)
+        .map_err(|error| error.to_string())?;
+    if let Some(preset) = &preset {
+        crate::device_comparison::validate_states(class, &preset.state, preset.comparison.as_ref())
+            .map_err(|error| format!("device default refused · {error}"))?;
+    }
+    Ok(preset)
+}
+
+pub(super) fn save_default(
+    session: &Session,
+    generation: u64,
+    revision: u64,
+    owner: Owner,
+    root: &Path,
+) -> Result<(), String> {
+    validate_default_root(root)?;
+    validate_owner(session, generation, revision, owner)?;
+    let device = session
+        .project()
+        .device(owner.device)
+        .ok_or("device is missing")?;
+    crate::device_comparison::validate_states(owner.class, device.state(), device.comparison())
+        .map_err(|error| format!("device default refused · {error}"))?;
+    // Refuse future or malformed native payloads already on disk before the
+    // storage layer's atomic replacement. Opaque envelope validation is not
+    // evidence that this version understands a provider's settings.
+    load_default(root, owner.class, owner.type_id)?;
+    hex_storage::preset::defaults::save(
+        root,
+        &Preset {
+            class: storage_class(owner.class),
+            state: device.state().clone(),
+            comparison: device.comparison().cloned(),
+        },
+    )
+    .map_err(|error| error.to_string())
+}
+
+pub(super) fn validate_default_root(root: &Path) -> Result<(), String> {
+    if root.as_os_str().is_empty() || root.as_os_str().len() > 4096 {
+        return Err("device default data folder must contain 1–4096 bytes".into());
+    }
+    Ok(())
+}
+
 pub(super) fn load_command(
     session: &Session,
     generation: u64,
@@ -129,5 +183,7 @@ pub(super) fn load_command(
     })
 }
 
+#[cfg(test)]
+mod defaults_tests;
 #[cfg(test)]
 mod tests;

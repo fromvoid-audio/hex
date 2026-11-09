@@ -1,5 +1,31 @@
 //! Finite hostile-wire contracts; actual SDK behavior is tested separately.
 use super::*;
+
+#[test]
+fn editor_receipt_requires_exact_controller_operation_and_discriminant() {
+    let config = config();
+    let request = ControllerRequest::ToggleEditor;
+    let wire = parameter_page_request(&config, 1, 7, request, false).unwrap();
+    assert_eq!(&wire[..4], b"HXVM");
+    assert_eq!(wire[82], 6);
+    assert!(wire[83..].iter().all(|byte| *byte == 0));
+    let mut reply = Vec::new();
+    stamp(&mut reply, config.binding);
+    for value in [1_u64, u64::from(config.quantum), 7] {
+        reply.extend(value.to_le_bytes());
+    }
+    reply.extend([4, 1]);
+    assert_eq!(
+        parameter_page(&reply, &config, 1, 7, request).unwrap(),
+        ParameterPageProgress::Editor(PluginEditorState::Open)
+    );
+    assert!(parameter_page(&reply, &config, 1, 8, request).is_err());
+    assert!(parameter_page(&reply, &config, 1, 7, ParameterPageQuery::default()).is_err());
+    reply.push(0);
+    assert!(parameter_page(&reply, &config, 1, 7, request).is_err());
+}
+#[path = "protocol_tests/conversion.rs"]
+mod conversion;
 use crate::transport::{Events, MidiEvent};
 use hex_plugin_state::{BinaryIdentity, ClassId, State};
 fn config() -> Configuration {
@@ -52,10 +78,10 @@ fn live_capture_poll_binds_current_exchange_and_rejects_partial_or_stale_state()
     for value in [9_u64, 72, 2] {
         body.extend(value.to_le_bytes());
     }
-    body.extend([0, 0, 0]);
+    body.extend([0; 5]);
     assert_eq!(live_captured_state(&body, &config, 9, 2).unwrap(), None);
     body[58] = 1;
-    body[59..61].copy_from_slice(&(state.payload().len() as u16).to_le_bytes());
+    body[59..63].copy_from_slice(&(state.payload().len() as u32).to_le_bytes());
     body.extend(state.payload());
     assert_eq!(
         live_captured_state(&body, &config, 9, 2).unwrap(),
@@ -66,7 +92,7 @@ fn live_capture_poll_binds_current_exchange_and_rejects_partial_or_stale_state()
     for end in 0..body.len() {
         assert!(live_captured_state(&body[..end], &config, 9, 2).is_err());
     }
-    for offset in [2, 10, 18, 26, 34, 42, 50, 58, 59, 65, 69, 85, 117] {
+    for offset in [2, 10, 18, 26, 34, 42, 50, 58, 59, 63, 67, 87, 119] {
         let mut invalid = body.clone();
         invalid[offset] ^= 128;
         assert!(
@@ -79,6 +105,19 @@ fn live_capture_poll_binds_current_exchange_and_rejects_partial_or_stale_state()
         live_captured_state(&body, &config, 9, 2).is_err(),
         "pending cannot carry bytes"
     );
+}
+
+#[test]
+fn stopped_restore_changes_only_instrument_quiescence_version() {
+    let mut config = config();
+    let ordinary = quiesce(&config, 3).unwrap();
+    assert_eq!(quiesce_for_stopped_restore(&config, 3).unwrap(), ordinary);
+    config.input_channels = 0;
+    assert_eq!(quiesce(&config, 3).unwrap(), ordinary);
+    let mut release = ordinary;
+    release[4..6].copy_from_slice(&2_u16.to_le_bytes());
+    assert_eq!(quiesce_for_stopped_restore(&config, 3).unwrap(), release);
+    assert!(quiesce_for_stopped_restore(&config, u64::MAX).is_err());
 }
 
 #[test]
@@ -102,7 +141,7 @@ fn quiescent_capture_binds_source_pcm_prefix_and_operation_before_copying_state(
     for word in [3_u64, 24, 2] {
         body.extend(word.to_le_bytes());
     }
-    body.extend((state.payload().len() as u16).to_le_bytes());
+    body.extend((state.payload().len() as u32).to_le_bytes());
     body.extend(state.payload());
     assert_eq!(captured_state(&body, &config, 3, 2).unwrap(), state);
     assert!(captured_state(&body, &config, 3, 1).is_err());
@@ -125,7 +164,7 @@ fn quiescent_capture_binds_source_pcm_prefix_and_operation_before_copying_state(
     })
     .unwrap();
     body.truncate(58);
-    body.extend((absent.payload().len() as u16).to_le_bytes());
+    body.extend((absent.payload().len() as u32).to_le_bytes());
     body.extend(absent.payload());
     assert!(
         captured_state(&body, &config, 3, 2).is_err(),
@@ -186,7 +225,7 @@ fn ready_body_with_state(config: &Configuration, state: &NativeDeviceState) -> V
     out.extend(91_u32.to_le_bytes());
     out.push(u8::from(config.restore.is_some()));
     out.push(1); // component state exists
-    out.extend((state.payload().len() as u16).to_le_bytes());
+    out.extend((state.payload().len() as u32).to_le_bytes());
     out.extend(state.payload());
     out
 }
@@ -204,10 +243,7 @@ fn protocol_frames_allocate_once_with_exact_bounded_capacity_and_capture_fits() 
         controller: None,
     })
     .unwrap();
-    assert_eq!(
-        state.payload().len(),
-        hex_lattice_contract::MAX_NATIVE_DEVICE_STATE_BYTES
-    );
+    assert_eq!(state.payload().len(), hex_plugin_state::MAX_ENVELOPE_BYTES);
     config.restore = Some(state.clone());
     let body = vec![0; CONTROL_LIMIT];
     for presentation in [None, known()] {
@@ -256,7 +292,7 @@ fn protocol_frames_allocate_once_with_exact_bounded_capacity_and_capture_fits() 
         i64::try_from(measured.bytes_total).unwrap() - measured.bytes_current,
         state.payload().len() as i64
     );
-    assert!(PACKET_LIMIT + 2 * state.payload().len() <= MAX_WORKING_DATA_BYTES);
+    assert!(CONFIG_LIMIT + 2 * state.payload().len() <= MAX_WORKING_DATA_BYTES);
 }
 
 #[cfg(feature = "allocation-probe")]
@@ -325,6 +361,8 @@ fn immutable_request_bounds_and_failed_reply_never_fabricate_pcm() {
         pcm: [[0.5; 2]; 256],
         events: Events::default(),
         parameters: crate::transport::Parameters::default(),
+        timing: None,
+        timing_changes: Default::default(),
     };
     config.validate_block(&block, 0).unwrap();
     let mut bytes = Vec::new();
@@ -344,9 +382,29 @@ fn immutable_request_bounds_and_failed_reply_never_fabricate_pcm() {
             frame: 0,
             bytes: [0x90, 60, 100],
             len: 3,
+            note_id: None,
         })
         .unwrap();
     assert!(config.validate_block(&event, 0).is_err());
+    let mut instrument = config.clone();
+    instrument.input_channels = 0;
+    assert!(
+        instrument.validate_block(&event, 0).is_err(),
+        "instrument PCM input must be zero"
+    );
+    event.pcm.fill([0.0; 2]);
+    instrument.validate_block(&event, 0).unwrap();
+    event.events = Events::default();
+    event
+        .events
+        .push(MidiEvent {
+            frame: 0,
+            bytes: [0xb0, 64, 127],
+            len: 3,
+            note_id: None,
+        })
+        .unwrap();
+    assert!(instrument.validate_block(&event, 0).is_err());
     let mut bad = config.clone();
     bad.quantum = u16::MAX;
     assert!(bad.validate_block(&block, 0).is_err());
@@ -376,7 +434,7 @@ fn facts_require_exact_source_format_and_interface_presence_and_do_not_acknowled
     body.extend(u32::MAX.to_le_bytes());
     body.extend(0_u32.to_le_bytes());
     body.push(1);
-    body.extend([0, 0, 0]);
+    body.extend([0; 5]);
     assert_eq!(
         Facts::decode(&body, &config).unwrap(),
         Facts {
@@ -407,23 +465,38 @@ fn facts_require_exact_source_format_and_interface_presence_and_do_not_acknowled
     assert_eq!(zero.len(), 12 + 43);
     assert_ne!(absent, zero);
     assert!(Ready::decode(&ready_body(&config), &config, None).is_err());
+    let unknown = presentation_request(config.binding, PresentationPlan::AllowUnknown).unwrap();
+    assert_eq!(unknown.len(), absent.len());
+    assert_ne!(unknown, absent);
+    let mut receipt = ready_body(&config);
+    receipt[70..72].copy_from_slice(&[2, 0]);
+    receipt.drain(72..80);
+    assert_eq!(
+        Ready::decode(&receipt, &config, PresentationPlan::AllowUnknown)
+            .unwrap()
+            .presentation,
+        Presentation::Unknown
+    );
+    assert!(Ready::decode(&receipt, &config, None).is_err());
+    assert!(Ready::decode(&receipt, &config, known()).is_err());
 }
 
 #[test]
 fn startup_restore_requires_current_source_and_exact_facts_and_final_acknowledgement() {
     let mut config = config();
+    let component = vec![42; 65_536];
     let state = hex_plugin_state::encode(State {
         identity: config.identity,
-        component: Some(&[]),
+        component: Some(&component),
         controller: Some(&[7, 8]),
     })
     .unwrap();
     let original = state.clone();
     config.restore = Some(state);
     let request = config.startup_request().unwrap();
-    assert_eq!(&request[..8], b"HXVIST01");
-    assert_eq!(&request[46..49], &[1, 98, 0]); // presence + full source envelope size
-    assert_eq!(&request[49..], original.payload());
+    assert_eq!(&request[..8], b"HXVIST02");
+    assert_eq!(&request[46..51], &[1, 98, 0, 1, 0]); // presence + full source envelope size
+    assert_eq!(&request[51..], original.payload());
     let mut facts = Vec::new();
     stamp(&mut facts, config.binding);
     facts.extend(config.identity.class.bytes());
@@ -437,6 +510,10 @@ fn startup_restore_requires_current_source_and_exact_facts_and_final_acknowledge
     facts.push(1); // real optional presentation interface
     facts.extend(&request[46..]);
     assert!(Facts::decode(&facts, &config).unwrap().restored);
+    let mut epoch = facts.clone();
+    epoch.extend(3_u64.to_le_bytes());
+    epoch.extend(24_u64.to_le_bytes());
+    assert!(quiescent_facts(&epoch, &config, 3).unwrap().restored);
     let last = facts.len() - 1;
     facts[last] ^= 1;
     assert!(
@@ -527,6 +604,47 @@ fn epoch_body(config: &Configuration, sequence: u64) -> Vec<u8> {
     body.extend(sequence.to_le_bytes());
     body.extend((sequence * u64::from(config.quantum)).to_le_bytes());
     body
+}
+#[test]
+fn reactivation_binds_source_completed_prefix_and_unique_operation() {
+    let config = config();
+    let request = reactivate(&config, 3, 2).unwrap();
+    assert_eq!(&request[..4], b"HXVA");
+    assert_eq!(
+        &request[48..],
+        &[
+            3_u64.to_le_bytes(),
+            24_u64.to_le_bytes(),
+            2_u64.to_le_bytes()
+        ]
+        .concat()
+    );
+    assert!(reactivate(&config, 3, 0).is_err());
+    assert!(reactivate(&config, u64::MAX, 2).is_err());
+    let mut body = epoch_body(&config, 3);
+    body.extend(2_u64.to_le_bytes());
+    assert_eq!(
+        reactivated_facts(&body, &config, 3, 2)
+            .unwrap()
+            .algorithmic_latency_frames,
+        3
+    );
+    for end in 0..body.len() {
+        assert!(reactivated_facts(&body[..end], &config, 3, 2).is_err());
+    }
+    for offset in [0, 32, 48, 80, 112, 120, 134, 135, 138, 146, 154] {
+        let mut bad = body.clone();
+        bad[offset] ^= 128;
+        assert!(
+            reactivated_facts(&bad, &config, 3, 2).is_err(),
+            "offset {offset}"
+        );
+    }
+    assert!(reactivated_facts(&body, &config, 2, 2).is_err());
+    assert!(reactivated_facts(&body, &config, 3, 1).is_err());
+    assert!(reactivated_facts(&body, &config, 3, 0).is_err());
+    body.push(0);
+    assert!(reactivated_facts(&body, &config, 3, 2).is_err());
 }
 #[test]
 fn epoch_acknowledgements_bind_exact_source_prefix_facts_and_presentation() {
@@ -704,6 +822,41 @@ fn stopped_flush_request_and_ack_bind_source_prefix_operation_and_complete_value
 }
 
 #[test]
+fn recovery_edit_receipts_keep_exact_prefix_and_versioned_ordinal() {
+    let config = config();
+    let request = recovery_edit_request(&config, 2, 3).unwrap();
+    assert_eq!(&request[..6], b"HXVG\x02\0");
+    assert_eq!(&request[6..], &edit_request(&config, 2, 3).unwrap()[6..]);
+    assert!(recovery_edit_request(&config, 2, 0).is_err());
+    let mut body = Vec::new();
+    stamp(&mut body, config.binding);
+    for field in [2_u64, 16, 3] {
+        body.extend(field.to_le_bytes());
+    }
+    body.extend([0; 6]);
+    body.extend(9_u64.to_le_bytes());
+    let response = recovery_edits(&body, &config, 2, 3, (0, 0)).unwrap();
+    assert!(response.edits.as_slice().is_empty());
+    assert_eq!(response.pending_latency_restart.unwrap().get(), 9);
+    for end in 0..body.len() {
+        assert!(recovery_edits(&body[..end], &config, 2, 3, (0, 0)).is_err());
+    }
+    for offset in [2, 10, 18, 26, 34, 42, 50, 58, 60, 62] {
+        let mut bad = body.clone();
+        bad[offset] ^= 128;
+        assert!(recovery_edits(&bad, &config, 2, 3, (0, 0)).is_err());
+    }
+    assert!(parameter_edits(&body, &config, 2, 3, (0, 0)).is_err());
+    body[64..].fill(0);
+    assert!(
+        recovery_edits(&body, &config, 2, 3, (0, 0))
+            .unwrap()
+            .pending_latency_restart
+            .is_none()
+    );
+}
+
+#[test]
 fn edit_receipts_bind_source_prefix_operation_order_and_gesture_without_coalescing() {
     let config = config();
     let request = edit_request(&config, 2, 3).unwrap();
@@ -732,6 +885,10 @@ fn edit_receipts_bind_source_prefix_operation_order_and_gesture_without_coalesci
     assert_eq!(result.as_slice().len(), 3);
     assert_eq!(result.as_slice()[1].kind, ParameterEditKind::Perform);
     assert_eq!(result.as_slice()[1].id, 0);
+    let mut backlogged = body.clone();
+    backlogged[58..60].copy_from_slice(&72_u16.to_le_bytes());
+    let backlog = parameter_edits(&backlogged, &config, 2, 3, (0, 0)).unwrap();
+    assert_eq!(backlog.pending, 72);
     for end in 0..body.len() {
         assert!(parameter_edits(&body[..end], &config, 2, 3, (0, 0)).is_err());
     }
@@ -740,7 +897,7 @@ fn edit_receipts_bind_source_prefix_operation_order_and_gesture_without_coalesci
         (34, 1),
         (42, 15),
         (50, 2),
-        (58, 25),
+        (58, 73),
         (60, 1),
         (62, 9),
         (64, 0),
@@ -766,4 +923,399 @@ fn edit_receipts_bind_source_prefix_operation_order_and_gesture_without_coalesci
     let mut bad = body;
     bad[80..88].copy_from_slice(&f64::NAN.to_le_bytes());
     assert!(parameter_edits(&bad, &config, 2, 3, (0, 0)).is_err());
+}
+
+#[test]
+fn controller_pages_preserve_sdk_ids_text_and_explicit_conversion_states() {
+    fn text(out: &mut Vec<u8>, value: &str) {
+        let mut units = [0_u16; 128];
+        for (slot, unit) in units.iter_mut().zip(value.encode_utf16()) {
+            *slot = unit;
+        }
+        for unit in units {
+            out.extend(unit.to_le_bytes());
+        }
+    }
+    fn record(out: &mut Vec<u8>, id: u32, flags: u32) {
+        for value in [id, flags, 3, 0] {
+            out.extend(value.to_le_bytes());
+        }
+        out.extend(0.0_f64.to_le_bytes());
+        out.extend(0.25_f64.to_le_bytes());
+        out.push(1); // Explicit negative infinity, not unchecked numeric input.
+        out.extend(0_u64.to_le_bytes());
+        out.push(0);
+        out.extend(1.0_f64.to_le_bytes());
+        text(out, "gain 𝄞");
+        text(out, "gain");
+        text(out, "db");
+        out.push(3);
+        text(out, "−∞ db");
+        text(out, "sdk default");
+    }
+    let config = config();
+    let query = ParameterPageQuery {
+        first: 0,
+        revision: 9,
+        conversion: None,
+    };
+    let request = parameter_page_request(&config, 1, 7, query, false).unwrap();
+    assert_eq!(&request[..4], b"HXVM");
+    assert_eq!(&request[64..72], &7_u64.to_le_bytes());
+    assert_eq!(&request[72..74], &0_u16.to_le_bytes());
+    assert_eq!(&request[74..82], &9_u64.to_le_bytes());
+    assert!(request[82..].iter().all(|byte| *byte == 0));
+    assert_eq!(
+        &parameter_page_request(&config, 1, 7, query, true).unwrap()[..4],
+        b"HXVN"
+    );
+    let mut prefix = Vec::new();
+    stamp(&mut prefix, config.binding);
+    for value in [1_u64, 8, 7] {
+        prefix.extend(value.to_le_bytes());
+    }
+    let mut pending = prefix.clone();
+    pending.push(0);
+    assert_eq!(
+        parameter_page(&pending, &config, 1, 7, query).unwrap(),
+        ParameterPageProgress::Pending
+    );
+    let mut body = prefix.clone();
+    body.push(1);
+    body.extend(9_u64.to_le_bytes());
+    body.extend(1_u16.to_le_bytes());
+    body.extend(0_u16.to_le_bytes());
+    body.push(1);
+    record(&mut body, 0, 1);
+    body.extend(0_u8..32);
+    let selected = ControllerRequest::SelectedParameters { first: 8 };
+    let encoded = parameter_page_request(&config, 1, 7, selected, false).unwrap();
+    assert_eq!(&encoded[72..74], &8_u16.to_le_bytes());
+    assert!(encoded[74..82].iter().all(|byte| *byte == 0));
+    assert_eq!(encoded[82], 8);
+    assert!(encoded[83..].iter().all(|byte| *byte == 0));
+    let mut fresh = body.clone();
+    fresh[59..67].copy_from_slice(&11_u64.to_le_bytes());
+    fresh[67..69].copy_from_slice(&9_u16.to_le_bytes());
+    fresh[69..71].copy_from_slice(&8_u16.to_le_bytes());
+    let ParameterPageProgress::Page(selected_page) =
+        parameter_page(&fresh, &config, 1, 7, selected).unwrap()
+    else {
+        panic!("fresh selected page")
+    };
+    assert_eq!((selected_page.revision, selected_page.first), (11, 8));
+    assert_eq!(selected_page.as_slice()[0].id, 0);
+    assert!(parameter_page(&fresh, &config, 1, 7, query).is_err());
+    assert!(
+        parameter_page(
+            &fresh,
+            &config,
+            1,
+            7,
+            ControllerRequest::SelectedParameters { first: 4 }
+        )
+        .is_err()
+    );
+    assert!(
+        parameter_page_request(
+            &config,
+            1,
+            7,
+            ControllerRequest::SelectedParameters {
+                first: MAX_CONTROLLER_PARAMETERS + 1
+            },
+            false
+        )
+        .is_err()
+    );
+    let ParameterPageProgress::Page(page) = parameter_page(&body, &config, 1, 7, query).unwrap()
+    else {
+        panic!("completed metadata page")
+    };
+    assert_eq!((page.revision, page.total, page.first), (9, 1, 0));
+    assert_eq!(page.descriptor_signature, std::array::from_fn(|n| n as u8));
+    let value = page.as_slice()[0];
+    assert_eq!(value.id, 0);
+    assert!(value.is_editable());
+    assert!(value.supports_authored_automation());
+    assert_eq!(value.plain, ParameterPlainValue::NegativeInfinity);
+    assert_eq!(value.default_plain, ParameterPlainValue::Finite(1.0));
+    assert_eq!(
+        value.title.as_utf16(),
+        "gain 𝄞".encode_utf16().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        value.display.unwrap().as_utf16(),
+        "−∞ db".encode_utf16().collect::<Vec<_>>()
+    );
+    let mut unknown = body.clone();
+    unknown[76..80].copy_from_slice(&(1_u32 << 29).to_le_bytes());
+    let ParameterPageProgress::Page(page) = parameter_page(&unknown, &config, 1, 7, query).unwrap()
+    else {
+        panic!("unknown flags remain observable")
+    };
+    assert_eq!(page.as_slice()[0].flags, 1 << 29);
+    assert!(!page.as_slice()[0].is_editable());
+
+    // Four records fit the existing control bound without truncating strings.
+    let mut full = body[..72].to_vec();
+    full[67..69].copy_from_slice(&4_u16.to_le_bytes());
+    full[71] = 4;
+    for id in [9, 0, 3, 17] {
+        record(&mut full, id, 1);
+    }
+    full.extend(0_u8..32);
+    assert!(full.len() < CONTROL_LIMIT);
+    let ParameterPageProgress::Page(page) = parameter_page(&full, &config, 1, 7, query).unwrap()
+    else {
+        panic!("full page")
+    };
+    assert_eq!(
+        page.as_slice().iter().map(|p| p.id).collect::<Vec<_>>(),
+        [9, 0, 3, 17]
+    );
+
+    for end in 0..body.len() {
+        assert!(parameter_page(&body[..end], &config, 1, 7, query).is_err());
+    }
+    let mut oversized = body.clone();
+    oversized[67..69].copy_from_slice(&(MAX_CONTROLLER_PARAMETERS + 1).to_le_bytes());
+    assert!(parameter_page(&oversized, &config, 1, 7, query).is_err());
+    for (offset, value) in [
+        (2, 8),
+        (34, 2),
+        (42, 7),
+        (50, 8),
+        (59, 8),
+        (69, 1),
+        (71, 5),
+        (75, 128),
+        (76, 3),
+        (83, 128),
+        (104, 4),
+        (105, 1),
+        (122, 0),
+        (890, 4),
+    ] {
+        let mut bad = body.clone();
+        bad[offset] = value;
+        assert!(
+            parameter_page(&bad, &config, 1, 7, query).is_err(),
+            "field{offset}"
+        );
+    }
+    for (offset, value) in [(88, f64::NAN), (96, f64::INFINITY), (96, 1.1)] {
+        let mut bad = body.clone();
+        bad[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        assert!(parameter_page(&bad, &config, 1, 7, query).is_err());
+    }
+    let mut invalid_utf16 = body.clone();
+    invalid_utf16[122..124].copy_from_slice(&0xD800_u16.to_le_bytes());
+    assert!(parameter_page(&invalid_utf16, &config, 1, 7, query).is_err());
+    let mut changed = prefix;
+    changed.push(2);
+    changed.extend(10_u64.to_le_bytes());
+    changed.extend(1_u16.to_le_bytes());
+    assert_eq!(
+        parameter_page(&changed, &config, 1, 7, query).unwrap(),
+        ParameterPageProgress::Changed {
+            revision: 10,
+            total: 1
+        }
+    );
+    changed[59..67].copy_from_slice(&9_u64.to_le_bytes());
+    assert!(parameter_page(&changed, &config, 1, 7, query).is_err());
+    assert!(parameter_page_request(&config, 1, 0, query, false).is_err());
+    assert!(parameter_page_request(&config, u64::MAX, 7, query, false).is_err());
+    assert!(
+        parameter_page_request(
+            &config,
+            1,
+            7,
+            ParameterPageQuery {
+                first: 1,
+                revision: 0,
+                conversion: None,
+            },
+            false
+        )
+        .is_err()
+    );
+}
+
+fn refusal_prefix(config: &Configuration, sequence: u64, operation: u64, reason: u8) -> Vec<u8> {
+    let mut body = Vec::new();
+    stamp(&mut body, config.binding);
+    let frames = sequence * u64::from(config.quantum);
+    for word in [sequence, frames, operation] {
+        body.extend(word.to_le_bytes());
+    }
+    body.push(reason);
+    body
+}
+
+fn refusal_body(config: &Configuration, sequence: u64, operation: u64, observed: u32) -> Vec<u8> {
+    let mut body = refusal_prefix(config, sequence, operation, 1);
+    body.extend(observed.to_le_bytes());
+    body
+}
+
+#[test]
+fn capture_refusal_binds_exact_operation_and_reports_lowercase_limit() {
+    let config = config();
+    let limit = hex_plugin_state::MAX_OPAQUE_BYTES as u32;
+    let body = refusal_body(&config, 3, 2, limit + 1);
+    let refusal = capture_refusal(&body, &config, 3, 2).unwrap();
+    assert_eq!(
+        refusal,
+        StateCaptureRefusal::ExceedsLimit {
+            observed_bytes: limit + 1
+        }
+    );
+    let message = crate::Error::CaptureRefused(refusal).to_string();
+    assert_eq!(
+        message,
+        "plugin state exceeds the 524192-byte limit · not saved · plugin keeps running"
+    );
+    // Stale operation, PCM prefix, epoch and identity mismatches are malformed.
+    assert!(capture_refusal(&body, &config, 3, 1).is_err());
+    assert!(capture_refusal(&body, &config, 2, 2).is_err());
+    assert!(capture_refusal(&body, &config, 3, 0).is_err());
+    let mut other = config.clone();
+    other.binding.epoch += 1;
+    assert!(capture_refusal(&body, &other, 3, 2).is_err());
+    for end in 0..body.len() {
+        assert!(capture_refusal(&body[..end], &config, 3, 2).is_err());
+    }
+    let mut trailing = body.clone();
+    trailing.push(0);
+    assert!(capture_refusal(&trailing, &config, 3, 2).is_err());
+    let mut reason = body.clone();
+    reason[58] = 3;
+    assert!(
+        capture_refusal(&reason, &config, 3, 2).is_err(),
+        "unknown reason"
+    );
+    for observed in [0, limit] {
+        assert!(
+            capture_refusal(&refusal_body(&config, 3, 2, observed), &config, 3, 2).is_err(),
+            "a state that fits is never refused as oversized: {observed}"
+        );
+    }
+}
+
+#[test]
+fn still_changing_refusal_is_exact_fieldless_and_versioned() {
+    let config = config();
+    let body = refusal_prefix(&config, 3, 2, 2);
+    let refusal = capture_refusal(&body, &config, 3, 2).unwrap();
+    assert_eq!(refusal, StateCaptureRefusal::StillChanging);
+    assert_eq!(
+        crate::Error::CaptureRefused(refusal).to_string(),
+        "plugin state kept changing during capture · not saved · plugin keeps running"
+    );
+    // Reason 2 carries no fields; a stale operation or prefix is malformed.
+    let mut trailing = body.clone();
+    trailing.extend(0_u32.to_le_bytes());
+    assert!(capture_refusal(&trailing, &config, 3, 2).is_err());
+    assert!(capture_refusal(&body, &config, 3, 1).is_err());
+    assert!(capture_refusal(&body, &config, 4, 2).is_err());
+    // The version 01 frame (reason 1 only) is no longer a refusal frame.
+    assert_eq!(&CAPTURE_REFUSAL_MAGIC, b"HXVICR02");
+}
+
+#[test]
+fn live_capture_reply_separates_refusal_from_terminal_frames() {
+    let config = config();
+    let refusal = refusal_prefix(&config, 9, 2, 2);
+    assert!(matches!(
+        live_capture_reply(&CAPTURE_REFUSAL_MAGIC, &refusal, &config, 9, 2),
+        Err(crate::Error::CaptureRefused(
+            StateCaptureRefusal::StillChanging
+        ))
+    ));
+    // A refusal for another operation is malformed, never a retirement.
+    assert!(matches!(
+        live_capture_reply(&CAPTURE_REFUSAL_MAGIC, &refusal, &config, 9, 3),
+        Err(crate::Error::Protocol(_))
+    ));
+    assert!(matches!(
+        live_capture_reply(b"HXVICR01", &refusal, &config, 9, 2),
+        Err(crate::Error::Protocol(
+            "missing live capture acknowledgement"
+        ))
+    ));
+    let mut pending = Vec::new();
+    stamp(&mut pending, config.binding);
+    for word in [9_u64, 72, 2] {
+        pending.extend(word.to_le_bytes());
+    }
+    pending.extend([0; 5]);
+    assert!(matches!(
+        live_capture_reply(b"HXVLCA02", &pending, &config, 9, 2),
+        Ok(None)
+    ));
+}
+
+#[test]
+fn refusal_frame_reads_through_the_channel_and_keeps_its_successor() {
+    use crate::channel::{Channel, Packet, end_after};
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+    let config = config();
+    let (stream, mut peer) = UnixStream::pair().unwrap();
+    let refusal = refusal_body(&config, 9, 2, 524288);
+    peer.write_all(&control(CAPTURE_REFUSAL_MAGIC, &refusal).unwrap())
+        .unwrap();
+    let mut pending = Vec::new();
+    stamp(&mut pending, config.binding);
+    for word in [9_u64, 72, 3] {
+        pending.extend(word.to_le_bytes());
+    }
+    pending.extend([0; 5]);
+    peer.write_all(&control(*b"HXVLCA02", &pending).unwrap())
+        .unwrap();
+    drop(peer);
+    let mut channel = Channel::new(stream).unwrap();
+    let mut packet = Packet::new().unwrap();
+    let until = end_after(std::time::Duration::from_secs(2)).unwrap();
+    channel.read(&mut packet, until, &mut || Ok(())).unwrap();
+    assert_eq!(packet.magic(), CAPTURE_REFUSAL_MAGIC);
+    assert_eq!(
+        capture_refusal(packet.body().unwrap(), &config, 9, 2).unwrap(),
+        StateCaptureRefusal::ExceedsLimit {
+            observed_bytes: 524288
+        }
+    );
+    channel.read(&mut packet, until, &mut || Ok(())).unwrap();
+    assert_eq!(packet.magic(), b"HXVLCA02");
+    assert_eq!(
+        live_captured_state(packet.body().unwrap(), &config, 9, 3).unwrap(),
+        None,
+        "the next capture operation still exchanges on the same channel"
+    );
+}
+
+#[test]
+fn authored_parameter_permission_is_stricter_than_edit_permission() {
+    for (flags, editable, automatable) in [
+        (0, true, false),
+        (1, true, true),
+        (2, false, false),
+        (2 | 16, false, false),
+        (1 | 1 << 15, true, false),
+        (1 | 1 << 16, true, true),
+        (1 | 1 << 29, false, false),
+    ] {
+        let parameter = ControllerParameter {
+            flags,
+            ..ControllerParameter::default()
+        };
+        assert_eq!(parameter.is_editable(), editable, "flags {flags:#x}");
+        assert_eq!(
+            parameter.supports_authored_automation(),
+            automatable,
+            "flags {flags:#x}"
+        );
+    }
 }

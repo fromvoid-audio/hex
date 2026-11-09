@@ -93,6 +93,47 @@ fn group_fixture() -> (
 }
 
 #[test]
+fn retained_event_gain_matches_edit_before_group_and_undo() {
+    let (mut editor, ids, media) = group_fixture();
+    let mut reference = Editor::new(editor.project().clone(), 32).unwrap();
+    let context = isolated(16 * 1024 * 1024, 8 * 1024 * 1024, 16);
+    let gain = hex_project::ClipGain::new(-6000).unwrap();
+    reference
+        .execute(Command::EditAudioEvents {
+            clip: ids[0],
+            operation: hex_project::AudioEventEdit::SetGain { event: 1, gain },
+        })
+        .unwrap();
+    reference.execute(Command::GroupClips(ids.clone())).unwrap();
+    let expected = render(&prepare(&reference, &media, &context), 0, 16000, 127);
+    let Created::Clip(group) = editor.execute(Command::GroupClips(ids)).unwrap() else {
+        panic!("group")
+    };
+    let baseline = render(&prepare(&editor, &media, &context), 0, 16000, 127);
+    let source = editor.project().clip(group).unwrap().audio_events().events[0].source;
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: group,
+            operation: hex_project::AudioEventEdit::SetRetainedGain {
+                sources: vec![source],
+                event: 1,
+                gain,
+            },
+        })
+        .unwrap();
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 16000, 257),
+        expected
+    );
+    assert_ne!(expected, baseline);
+    assert!(editor.undo());
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 16000, 64),
+        baseline
+    );
+}
+
+#[test]
 fn retained_source_event_can_be_reactivated_without_losing_processing() {
     let (mut editor, ids, media) = group_fixture();
     let context = isolated(16 * 1024 * 1024, 8 * 1024 * 1024, 16);
@@ -1005,7 +1046,7 @@ fn grouped_child_and_event_fades_keep_source_phase_through_move_and_history() {
 }
 
 #[test]
-fn thousand_pasted_frame_groups_share_one_rendered_sample_and_keep_history_pcm() {
+fn thousand_group_instances_share_one_rendered_sample_and_keep_history_pcm() {
     let (mut editor, ids, media) = group_fixture();
     let Created::Clip(group) = editor.execute(Command::GroupClips(ids)).unwrap() else {
         panic!("group");
@@ -1017,32 +1058,57 @@ fn thousand_pasted_frame_groups_share_one_rendered_sample_and_keep_history_pcm()
     let expected = render(&original, 0, 15_000, 127);
     let track = editor.project().tracks()[0].id();
     let clipboard = Arc::new(editor.project().capture_clips(&[group]).unwrap());
-    for index in 1..=1_000_u64 {
-        editor
-            .execute(Command::PasteClips {
-                clipboard: Arc::clone(&clipboard),
-                track,
-                frame: index * 15_000,
-                insert: false,
-            })
-            .unwrap();
-        if index == 1 || index == 1_000 {
-            let prepared = prepare(&editor, &media, &context);
-            assert_eq!(
-                context.retained_pcm_bytes(),
-                pcm_bytes,
-                "copying a frame group must retain references, not new destination-sized PCM"
-            );
-            assert!(
-                prepared
-                    .arrangement()
-                    .audio_clip_views()
-                    .iter()
-                    .all(|view| view.audio.shares_pcm_with(&audio))
-            );
-            assert_eq!(render(&prepared, index * 15_000, 15_000, 63), expected);
-        }
+    // Check a real paste before constructing the large population.
+    let paste = |index: u64| Command::PasteClips {
+        clipboard: Arc::clone(&clipboard),
+        track,
+        frame: index * 15_000,
+        insert: false,
+    };
+    editor.execute(paste(1)).unwrap();
+    let first = prepare(&editor, &media, &context);
+    assert_eq!(context.retained_pcm_bytes(), pcm_bytes);
+    assert!(
+        first
+            .arrangement()
+            .audio_clip_views()
+            .iter()
+            .all(|view| view.audio.shares_pcm_with(&audio))
+    );
+    assert_eq!(render(&first, 15_000, 15_000, 63), expected);
+    // Populate from the actual pasted instance; the last paste stays a real
+    // editor command so history still removes and restores precisely that copy.
+    let mut snapshot = editor.project().snapshot();
+    let copied = snapshot.tracks[0]
+        .audio_clips_mut()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    for index in 2..1_000_u64 {
+        let mut instance = copied.clone();
+        instance.id = snapshot.next_id;
+        snapshot.next_id += 1;
+        instance.start = index * 15_000;
+        snapshot.tracks[0].audio_clips_mut().unwrap().push(instance);
     }
+    editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 32).unwrap();
+    editor.execute(paste(1_000)).unwrap();
+    let prepared = prepare(&editor, &media, &context);
+    assert_eq!(prepared.arrangement().audio_clip_views().len(), 1_001);
+    assert_eq!(
+        context.retained_pcm_bytes(),
+        pcm_bytes,
+        "copying a frame group must retain references, not new destination-sized PCM"
+    );
+    assert!(
+        prepared
+            .arrangement()
+            .audio_clip_views()
+            .iter()
+            .all(|view| view.audio.shares_pcm_with(&audio))
+    );
+    assert_eq!(render(&prepared, 15_000_000, 15_000, 63), expected);
     assert!(editor.undo());
     let undone = prepare(&editor, &media, &context);
     assert!(
@@ -1054,4 +1120,219 @@ fn thousand_pasted_frame_groups_share_one_rendered_sample_and_keep_history_pcm()
     let redone = prepare(&editor, &media, &context);
     assert_eq!(render(&redone, 15_000_000, 15_000, 257), expected);
     assert_eq!(context.retained_pcm_bytes(), pcm_bytes);
+}
+
+#[test]
+fn split_and_copied_repeating_group_pieces_share_one_composite_root() {
+    let (mut editor, ids, media) = group_fixture();
+    let Created::Clip(group) = editor.execute(Command::GroupClips(ids)).unwrap() else {
+        panic!("group");
+    };
+    let mut snapshot = editor.project().snapshot();
+    let row = snapshot.tracks[0]
+        .audio_clips_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|row| row.id == group.value())
+        .unwrap();
+    let edit = row.edit.as_mut().unwrap();
+    edit.view_start = 2_000;
+    edit.view_end = 9_000;
+    edit.placement = Some(hex_project::AudioViewPlacement {
+        mode: hex_project::AudioViewMode::Repeat,
+        outer_length: AudioDomainClock::Frames(40_000),
+        cycle_phase: 1_500,
+    });
+    row.duration = 40_000;
+    row.fade = hex_project::ClipFade::neutral(row.duration).unwrap();
+    let start = row.start;
+    let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 32).unwrap();
+    let context = isolated(16 * 1024 * 1024, 8 * 1024 * 1024, 16);
+    let unsplit = prepare(&editor, &media, &context);
+    let expected = render(&unsplit, start, 40_000, 127);
+    assert!(expected.iter().any(|frame| *frame != [0.0; 2]));
+    let root = unsplit.arrangement().audio_clip_views()[0].audio.clone();
+    // The composite root plus its pitched child render; no outer placement PCM.
+    let retained = context.retained_pcm_bytes();
+    assert!(retained < 40_000 * std::mem::size_of::<crate::Frame>());
+    let Created::Clip(tail) = editor
+        .execute(Command::SplitClip {
+            clip: group,
+            frame: start + 23_456,
+        })
+        .unwrap()
+    else {
+        panic!("split")
+    };
+    let track = editor.project().tracks()[0].id();
+    let clipboard = Arc::new(editor.project().capture_clips(&[tail]).unwrap());
+    for copy in 0..8 {
+        editor
+            .execute(Command::PasteClips {
+                clipboard: Arc::clone(&clipboard),
+                track,
+                frame: start + 40_000 + copy * 16_544,
+                insert: false,
+            })
+            .unwrap();
+    }
+    let copied = prepare(&editor, &media, &context);
+    assert!(
+        copied
+            .arrangement()
+            .audio_clip_views()
+            .iter()
+            .all(|view| view.audio.shares_pcm_with(&root))
+    );
+    assert_eq!(context.retained_pcm_bytes(), retained);
+    assert_eq!(render(&copied, start, 40_000, 257), expected);
+    assert_eq!(
+        render(&copied, start + 40_000 + 7 * 16_544, 16_544, 31),
+        expected[23_456..]
+    );
+}
+
+#[test]
+fn distant_events_do_not_increase_finite_once_playback_pcm_budget() {
+    use hex_project::AudioEventEdit;
+    for destination in [-1_000_000_i64, 1_000_000] {
+        let (mut editor, clip, media) = fixture(false);
+        let reference_context = isolated(128 * 1024, 0, 0);
+        let original = render(&prepare(&editor, &media, &reference_context), 0, 8_032, 57);
+        for operation in [
+            AudioEventEdit::Split { at: 1_000 },
+            AudioEventEdit::Place {
+                event: 1,
+                start: destination,
+            },
+        ] {
+            editor
+                .execute(Command::EditAudioEvents { clip, operation })
+                .unwrap();
+        }
+        let first = editor
+            .project()
+            .clip(clip)
+            .unwrap()
+            .audio_event_root()
+            .view_start;
+        editor
+            .execute(Command::ResizeAudioClipView {
+                clip,
+                operation: hex_project::AudioViewResizeOperation::CycleRange {
+                    start: first,
+                    end: first + 4_000,
+                    looping: false,
+                },
+            })
+            .unwrap();
+        let context = isolated(128 * 1024, 0, 0);
+        let prepared = prepare(&editor, &media, &context);
+        assert_eq!(
+            context.retained_pcm_bytes(),
+            8_000 * std::mem::size_of::<crate::Frame>()
+        );
+        for block in [1, 57, 512] {
+            let actual = render(&prepared, 0, 8_032, block);
+            assert!(actual[..1_000].iter().all(|sample| *sample == [0.0; 2]));
+            assert_eq!(actual[1_000..4_000], original[1_000..4_000]);
+            assert!(actual[4_000..].iter().all(|sample| *sample == [0.0; 2]));
+        }
+        // A moved event straddles the beginning of the gate. The retained
+        // source advances by the omitted samples, and the container fade
+        // remains at its Arrangement position.
+        let placed = editor.project().clip(clip).unwrap();
+        let start = placed.audio_event_root().view_start as i64 - 100;
+        let fade = placed.audio_event_root().domain.fade;
+        editor
+            .execute(Command::EditAudioEvents {
+                clip,
+                operation: AudioEventEdit::Place { event: 1, start },
+            })
+            .unwrap();
+        drop(prepared);
+        let prepared = prepare(&editor, &media, &context);
+        let actual = render(&prepared, 0, 8_032, 57);
+        let source = media.values().next().unwrap();
+        for (frame, sample) in actual[..900].iter().enumerate() {
+            assert_eq!(
+                *sample,
+                source.frames()[frame + 100].map(|x| x * fade.gain_at(frame as u64))
+            );
+        }
+        assert!(actual[900..1_000].iter().all(|sample| *sample == [0.0; 2]));
+        assert_eq!(actual[1_000..4_000], original[1_000..4_000]);
+        assert!(actual[4_000..].iter().all(|sample| *sample == [0.0; 2]));
+    }
+}
+
+#[test]
+fn sparse_one_shot_keeps_occupied_pcm_and_reads_both_sides_of_its_gate() {
+    use hex_project::{AudioEventEdit, TrimEdge};
+    for destination in [32_000_i64, 4_000_000] {
+        let (mut editor, clip, media) = fixture(false);
+        let reference = isolated(128 * 1024, 0, 0);
+        let original = render(&prepare(&editor, &media, &reference), 0, 8_000, 79);
+        for operation in [
+            AudioEventEdit::Split { at: 1_000 },
+            AudioEventEdit::Place {
+                event: 1,
+                start: destination,
+            },
+        ] {
+            editor
+                .execute(Command::EditAudioEvents { clip, operation })
+                .unwrap();
+        }
+        let context = isolated(128 * 1024, 0, 0);
+        let accepted = prepare(&editor, &media, &context);
+        let view = &accepted.arrangement().audio_clip_views()[0];
+        let map = view.sparse.as_ref().unwrap();
+        assert_eq!(map.extent(), destination as usize + 1_000);
+        assert_eq!(
+            context.retained_pcm_bytes(),
+            8_000 * size_of::<crate::Frame>()
+        );
+        let actual = render(&accepted, 0, 8_017, 57);
+        assert!(actual[..1_000].iter().all(|frame| *frame == [0.0; 2]));
+        assert_eq!(actual[1_000..8_000], original[1_000..]);
+        assert!(actual[8_000..].iter().all(|frame| *frame == [0.0; 2]));
+        assert_eq!(
+            render(&accepted, destination as u64 - 7, 32, 7),
+            [[0.0; 2]; 32]
+        );
+        drop(accepted);
+
+        editor
+            .execute(Command::TrimClipEdge {
+                clip,
+                edge: TrimEdge::Right,
+                frame: destination as u64 + 1_000,
+            })
+            .unwrap();
+        let accepted = prepare(&editor, &media, &context);
+        let source = media.values().next().unwrap();
+        let fade = editor
+            .project()
+            .clip(clip)
+            .unwrap()
+            .audio_event_root()
+            .domain
+            .fade;
+        for block in [1, 57, 512] {
+            let actual = render(&accepted, destination as u64 - 7, 1_019, block);
+            assert_eq!(actual[..7], [[0.0; 2]; 7]);
+            for (i, sample) in actual[7..1_007].iter().enumerate() {
+                assert_eq!(
+                    *sample,
+                    source.frames()[i].map(|s| s * fade.gain_at(destination as u64 + i as u64))
+                );
+            }
+            assert_eq!(actual[1_007..], [[0.0; 2]; 12]);
+        }
+        assert_eq!(
+            context.retained_pcm_bytes(),
+            8_000 * size_of::<crate::Frame>()
+        );
+    }
 }

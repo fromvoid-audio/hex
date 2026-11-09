@@ -1,5 +1,5 @@
 //! Border assertions read completed GPUI scene quads, including retained scenes.
-use super::{
+use crate::editor::{
     EditorView,
     clip_drag_ui_test::{audio_project, editor_window},
     viewport::Viewport,
@@ -8,6 +8,133 @@ use crate::theme;
 use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext};
 use hex_project::{BeatTime, ClipId, Command, Created, Editor};
 use std::sync::Arc;
+/// Real scene probe shared by preview consumers; source/input tests own the gesture.
+pub(in crate::editor) fn assert_open_upper_right(
+    visual: &mut VisualTestContext,
+    selector: &'static str,
+    trailing: &'static str,
+    title: Option<&'static str>,
+) {
+    let bounds = visual
+        .debug_bounds(selector)
+        .expect("actual preview surface");
+    assert!(bounds.size.width > gpui::px(2.0) && bounds.size.height > gpui::px(2.0));
+    let scale = visual.update(|window, _| window.scale_factor());
+    let cut = 5.0_f32
+        .min(f32::from(bounds.size.width) / 2.0)
+        .min(f32::from(bounds.size.height) / 2.0);
+    let corner = gpui::point(
+        bounds.right() - gpui::px(0.25),
+        bounds.top() + gpui::px(cut * 0.5),
+    )
+    .scale(scale);
+    // Match the surface/header's own completed quads, not an underlying clip
+    // that the transparent cut is correctly allowed to reveal.
+    for paint_selector in std::iter::once(selector).chain(title) {
+        let layers = visual.rendered_quad_paint_layers(paint_selector, false);
+        assert!(!layers.is_empty(), "actual completed surface/header paint");
+        assert!(
+            layers.iter().all(|(_, mask)| !mask.contains(&corner)),
+            "preview fill and title must leave the actual cut open"
+        );
+    }
+    let edge = visual
+        .debug_bounds(trailing)
+        .expect("physical trailing column");
+    assert_eq!(edge.left(), bounds.right());
+    assert_eq!(f64::from(edge.scale(scale).size.width), 1.0);
+    let layers = visual.rendered_quad_paint_layers(trailing, false);
+    assert!(!layers.is_empty());
+    assert!(
+        layers
+            .iter()
+            .all(|(_, mask)| mask.top() >= (bounds.top() + gpui::px(cut)).scale(scale)),
+        "edge must begin below the cut"
+    );
+}
+
+#[gpui::test]
+fn pixel_ghosts_keep_authored_endpoints_on_shared_physical_columns(cx: &mut TestAppContext) {
+    use gpui::{Context, Div, Render, Window, div, prelude::*, px};
+    struct Ghosts;
+    impl Render for Ghosts {
+        fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl gpui::IntoElement {
+            let stroke = 1.0 / window.scale_factor().max(1.0);
+            let mut root = div().relative().w(px(240.0)).h(px(80.0));
+            for (name, tail, left, width, native) in [
+                ("pixel-narrow", "pixel-narrow-tail", 13.25, 0.75, false),
+                ("pixel-normal", "pixel-normal-tail", 96.75, 80.0, true),
+                (
+                    "pixel-fractional",
+                    "pixel-fractional-tail",
+                    183.25,
+                    43.75,
+                    true,
+                ),
+            ] {
+                let body: Div = hex_widgets::rectangle_surface_pixels(left, 20.25, width, 32.0)
+                    .debug_selector(move || name.into())
+                    .left_0()
+                    .top_0()
+                    .w_full()
+                    .h_full()
+                    .border_l(px(if native { stroke } else { 0.0 }))
+                    .border_r(px(0.0))
+                    .bg(gpui::rgb(0x856050));
+                root = root.child(super::pixel_backdrop_shell(
+                    body,
+                    gpui::Bounds::new(
+                        gpui::point(px(left), px(20.25)),
+                        gpui::size(px(width), px(32.0)),
+                    ),
+                    super::Backdrop {
+                        body: 0x856050,
+                        header: 0x856050,
+                        outline: 0x222222,
+                        hover_outline: 0x222222,
+                        stroke,
+                        bottom_radius: 0.0,
+                        header_height: 14.0,
+                        notch: super::Notch::new(native),
+                    },
+                    native,
+                    move || tail.into(),
+                ));
+            }
+            root
+        }
+    }
+    let handle = *cx.add_window(|_, _| Ghosts);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let scale = visual.update(|window, _| window.scale_factor());
+    for (name, tail, left, width) in [
+        ("pixel-narrow", "pixel-narrow-tail", 13.25, 0.75),
+        ("pixel-normal", "pixel-normal-tail", 96.75, 80.0),
+        ("pixel-fractional", "pixel-fractional-tail", 183.25, 43.75),
+    ] {
+        let bounds = visual.debug_bounds(name).unwrap();
+        assert!((f32::from(bounds.left()) - left).abs() <= 0.5);
+        assert!((f32::from(bounds.size.width) - width).abs() <= 0.5);
+        assert!((f32::from(bounds.top()) - 20.25).abs() <= 0.5);
+        assert_eq!(bounds.size.height, px(32.0));
+        let edge = visual.debug_bounds(tail).unwrap();
+        assert_eq!(
+            edge.left(),
+            bounds.right(),
+            "edge shares the projected endpoint, not a rounded nested offset"
+        );
+        assert_eq!(f64::from(edge.scale(scale).size.width), 1.0);
+    }
+    assert_open_upper_right(&mut visual, "pixel-normal", "pixel-normal-tail", None);
+    assert_open_upper_right(
+        &mut visual,
+        "pixel-fractional",
+        "pixel-fractional-tail",
+        None,
+    );
+}
+
 fn click(visual: &mut VisualTestContext, clip: ClipId, modifiers: Modifiers) {
     let selector = Box::leak(format!("clip-name-{}", clip.value()).into_boxed_str());
     let bounds = visual.debug_bounds(selector).unwrap();
@@ -19,7 +146,7 @@ fn click(visual: &mut VisualTestContext, clip: ClipId, modifiers: Modifiers) {
 fn selected_audio_midi_borders_cover_visible_bounds_and_restore_each_member(
     cx: &mut TestAppContext,
 ) {
-    cx.update(super::bind_editor_keys);
+    cx.update(crate::editor::bind_editor_keys);
     let (project, track, _, imported) = audio_project();
     let asset = project.clip(imported).unwrap().asset();
     let mut canonical = Editor::new(project, 16).unwrap();
@@ -73,9 +200,14 @@ fn selected_audio_midi_borders_cover_visible_bounds_and_restore_each_member(
             start: 18_000,
             length: 144_000,
         });
-        view.snap_grid = super::musical_time::SnapGrid::Off;
+        view.snap_grid = crate::editor::musical_time::SnapGrid::Off;
         cx.notify();
     });
+    visual.run_until_parked();
+    // Inject after the editor loads its stored theme; a non-black role
+    // proves every unselected outline reads the palette.
+    let _outline = theme::inject_test_clip_outline(0x2a4b6c);
+    editor.update(&mut visual, |_, cx| cx.notify());
     visual.run_until_parked();
     let selectors = clips
         .iter()
@@ -144,7 +276,7 @@ fn selected_audio_midi_borders_cover_visible_bounds_and_restore_each_member(
                 gpui::Hsla::from(gpui::rgb(if selected {
                     theme::color(theme::PaletteRole::Primary)
                 } else {
-                    0x000000
+                    theme::color(theme::PaletteRole::ClipOutline)
                 })),
                 "{id:?} selected border"
             );
@@ -178,6 +310,29 @@ fn selected_audio_midi_borders_cover_visible_bounds_and_restore_each_member(
             assert_eq!(trailing.left(), current.right());
             let scale = visual.update(|window, _| window.scale_factor());
             assert_eq!(f64::from(trailing.scale(scale).size.width), 1.0);
+            if index != 4 {
+                let expected = (current.top() + gpui::px(5.0)).scale(scale);
+                let layers = visual.rendered_quad_paint_layers(edge_name, false);
+                assert!(!layers.is_empty());
+                assert!(
+                    layers.iter().all(|(_, mask)| mask.top() >= expected),
+                    "raised edge must leave the corner open"
+                );
+                let body_color = visual.rendered_background(selector).unwrap();
+                let corner = gpui::point(
+                    current.right() - gpui::px(0.25),
+                    current.top() + gpui::px(0.25),
+                )
+                .scale(scale);
+                assert!(
+                    visual
+                        .rendered_filled_quads(selector)
+                        .iter()
+                        .filter(|(_, fill)| *fill == body_color)
+                        .all(|(bounds, _)| !bounds.contains(&corner)),
+                    "the cut must be transparent, not a covering triangle"
+                );
+            }
             let fill = editor.read_with(&visual, |view: &EditorView, _| {
                 let source = view.state.as_ref().unwrap().project.track(track).unwrap();
                 let flavor = source
@@ -193,7 +348,10 @@ fn selected_audio_midi_borders_cover_visible_bounds_and_restore_each_member(
                             .unwrap()
                             .flavor()
                     });
-                theme::clip_fill(source.color(), flavor, selected)
+                theme::arrangement_clip_body_fill(
+                    theme::clip_fill(source.color(), flavor, false),
+                    selected,
+                )
             });
             assert_eq!(
                 visual.rendered_background(selector),
@@ -245,7 +403,7 @@ fn selected_audio_midi_borders_cover_visible_bounds_and_restore_each_member(
 }
 
 type BorderFixture = (
-    super::external_audio_drop_ui_test::BatchFiles,
+    crate::editor::external_audio_drop_ui_test::BatchFiles,
     gpui::AnyWindowHandle,
     gpui::Entity<EditorView>,
     hex_project::TrackId,
@@ -257,18 +415,21 @@ fn bottom_border_fixture(cx: &mut TestAppContext) -> BorderFixture {
     use gpui::AppContext;
     use hex_session::service::{Event, Request, Service};
     fn next(service: &Service) -> Event {
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let until = crate::test_wait::hang_deadline();
         loop {
             if let Ok(event) = service.try_event() {
                 assert!(event.error.is_none(), "{:?}", event.error);
                 return event;
             }
-            assert!(std::time::Instant::now() < until);
+            assert!(
+                std::time::Instant::now() < until,
+                "next: hang guard expired"
+            );
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
     }
-    cx.update(super::bind_editor_keys);
-    let files = super::external_audio_drop_ui_test::BatchFiles::new();
+    cx.update(crate::editor::bind_editor_keys);
+    let files = crate::editor::external_audio_drop_ui_test::BatchFiles::new();
     let wav = files.wav("border.wav", 48_000, 96_000);
     let directory = wav.parent().unwrap();
     std::fs::create_dir(directory.join("samples")).unwrap();
@@ -347,6 +508,11 @@ fn all_four_clip_edges_paint_above_actual_row_separator_without_geometry_changes
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.update(|window, _| window.activate_window());
     visual.run_until_parked();
+    // Inject after the editor loads its stored theme; a non-black role
+    // proves every unselected outline reads the palette.
+    let _outline = theme::inject_test_clip_outline(0x2a4b6c);
+    editor.update(&mut visual, |_, cx| cx.notify());
+    visual.run_until_parked();
     let original = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
     let lane_selector = Box::leak(format!("arrangement-lane-{}", track.value()).into_boxed_str());
     let separator_selector =
@@ -418,7 +584,7 @@ fn all_four_clip_edges_paint_above_actual_row_separator_without_geometry_changes
                     gpui::rgb(if selected {
                         theme::color(theme::PaletteRole::Primary)
                     } else {
-                        0x000000
+                        theme::color(theme::PaletteRole::ClipOutline)
                     })
                     .into()
                 );
@@ -439,7 +605,7 @@ fn all_four_clip_edges_paint_above_actual_row_separator_without_geometry_changes
                     (
                         scaled.left(),
                         scaled.top(),
-                        scaled.right(),
+                        scaled.right() - gpui::px(if i == 4 { 0.0 } else { 5.0 }).scale(scale),
                         scaled.top() + widths.top,
                     ),
                     (
@@ -558,10 +724,10 @@ fn all_four_clip_edges_paint_above_actual_row_separator_without_geometry_changes
 }
 
 #[gpui::test]
-fn selected_track_header_outline_is_complete_and_color_strip_stays_distinct(
+fn selected_track_header_has_no_selection_outline_and_color_strip_stays_distinct(
     cx: &mut TestAppContext,
 ) {
-    let (_files, handle, editor) = super::clip_drag_ui_test::upper_rail_owned_fixture(cx);
+    let (_files, handle, editor) = crate::editor::clip_drag_ui_test::upper_rail_owned_fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let tracks = editor.read_with(&visual, |view, _| {
@@ -585,27 +751,7 @@ fn selected_track_header_outline_is_complete_and_color_strip_stays_distinct(
         visual.simulate_click(target, Modifiers::default());
         visual.run_until_parked();
         let outline = Box::leak(format!("track-selection-outline-{}", id.value()).into_boxed_str());
-        let outline_bounds = visual
-            .debug_bounds(outline)
-            .expect("selected header outline");
-        assert_eq!(
-            outline_bounds.origin,
-            bounds.origin + gpui::point(gpui::px(1.), gpui::px(1.))
-        );
-        assert_eq!(
-            outline_bounds.size,
-            bounds.size - gpui::size(gpui::px(2.), gpui::px(2.))
-        );
-        let (stroke, widths, _) = visual.rendered_border(outline).unwrap();
-        let zero = gpui::ScaledPixels::default();
-        assert!(
-            widths.top > zero && widths.bottom > zero && widths.left > zero && widths.right > zero,
-            "selected header needs all four painted edges: {widths:?}"
-        );
-        assert_eq!(
-            stroke,
-            gpui::rgb(theme::color(theme::PaletteRole::Primary)).into()
-        );
+        assert!(visual.debug_bounds(outline).is_none());
         assert_eq!(
             visual.debug_bounds(header).unwrap(),
             bounds,
@@ -617,20 +763,13 @@ fn selected_track_header_outline_is_complete_and_color_strip_stays_distinct(
             visual.rendered_background(strip).unwrap(),
             gpui::rgb(theme::element_colors(color).accent).into()
         );
-        let outline_layers = visual.rendered_quad_paint_layers(outline, true);
-        let strip_layers = visual.rendered_quad_paint_layers(strip, false);
-        assert!(
-            outline_layers.iter().map(|(order, _)| order).max()
-                > strip_layers.iter().map(|(order, _)| order).max(),
-            "selection is painted above assigned color, not behind it"
-        );
         editor.read_with(&visual, |view, _| {
             assert_eq!(view.selected_track, Some(id));
             assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
         });
     }
     editor.update(&mut visual, |view, cx| {
-        view.mode = super::EditorMode::Session;
+        view.mode = crate::editor::EditorMode::Session;
         cx.notify();
     });
     visual.run_until_parked();
@@ -770,4 +909,30 @@ fn adjacent_clip_edges_share_one_grid_pixel(cx: &mut TestAppContext) {
         selected_order > next_order,
         "selected seam remains visible above an unselected neighbor"
     );
+}
+
+#[test]
+fn corner_geometry_is_bounded_and_resolves_again_after_resize() {
+    use super::{Notch, corner_extent};
+    assert_eq!(corner_extent(100.0, 44.0), 5.0);
+    assert_eq!(corner_extent(6.0, 44.0), 3.0);
+    assert_eq!(corner_extent(100.0, 4.0), 2.0);
+    assert_eq!(corner_extent(0.0, 44.0), 0.0);
+    assert_eq!(corner_extent(-1.0, 44.0), 0.0);
+    assert_eq!(corner_extent(f32::NAN, 44.0), 0.0);
+    let notch = Notch::new(true);
+    let edge = notch.clone();
+    for width in [100.0, 6.0, 100.0] {
+        notch.observe(gpui::Bounds::new(
+            gpui::point(gpui::px(10.0), gpui::px(20.0)),
+            gpui::size(gpui::px(width), gpui::px(44.0)),
+        ));
+        assert_eq!(edge.extent(), corner_extent(width, 44.0));
+    }
+    let cropped = Notch::default();
+    cropped.observe(gpui::Bounds::new(
+        gpui::point(gpui::px(0.0), gpui::px(0.0)),
+        gpui::size(gpui::px(100.0), gpui::px(44.0)),
+    ));
+    assert_eq!(cropped.extent(), 0.0);
 }

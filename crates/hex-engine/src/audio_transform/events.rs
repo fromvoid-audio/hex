@@ -3,8 +3,17 @@ use crate::{Frame, Invalid};
 use hex_project::{AudioClipEdit, AudioDomainClock, TempoMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// The finite PCM root and the authored destination coordinate corresponding
+/// to its source zero. Both clocks use the same units, but their extents and
+/// tempo origins may differ.
+pub(super) struct EventSource<'a> {
+    pub(super) frames: &'a [Frame],
+    pub(super) root: &'a AudioClipEdit,
+    pub(super) zero_in_destination: u64,
+}
+
 pub(super) fn compose(
-    source: &[Frame],
+    source: EventSource<'_>,
     edit: &AudioClipEdit,
     tempo: &TempoMap,
     cancelled: &AtomicBool,
@@ -15,12 +24,49 @@ pub(super) fn compose(
         .as_ref()
         .ok_or(Invalid("audio event sequence missing"))?;
     events.validate(edit.domain.clock.length())?;
+    let frames_clock = matches!(edit.domain.clock, AudioDomainClock::Frames(_));
+    let (length, aligned_zero) =
+        if std::ptr::eq(edit, source.root) && source.zero_in_destination == 0 {
+            (source.frames.len(), Some(0))
+        } else {
+            if frames_clock != matches!(source.root.domain.clock, AudioDomainClock::Frames(_)) {
+                return Err(Invalid(
+                    "audio event source and destination clock units differ",
+                ));
+            }
+            let (_, source_length, _, _) = source.root.projected_domain(tempo)?;
+            if source_length != source.frames.len() as u64 {
+                return Err(Invalid("audio event PCM differs from its source clock"));
+            }
+            let (_, length, _, _) = edit.projected_domain(tempo)?;
+            let aligned = frames_clock
+                || (edit.processing_tempo(tempo) == source.root.processing_tempo(tempo)
+                    && edit
+                        .processing_origin()?
+                        .checked_add(i128::from(source.zero_in_destination))
+                        == Some(source.root.processing_origin()?));
+            let zero = aligned
+                .then(|| edit.root_frame_at(source.zero_in_destination, tempo))
+                .transpose()?;
+            (
+                usize::try_from(length).map_err(|_| Invalid("audio event destination overflow"))?,
+                zero,
+            )
+        };
     let mut output = Vec::new();
     output
-        .try_reserve_exact(source.len())
+        .try_reserve_exact(length)
         .map_err(|_| Invalid("audio event composition allocation failed"))?;
-    output.resize(source.len(), [0.0, 0.0]);
+    output.resize(length, [0.0, 0.0]);
     for event in &events.events {
+        if event.source != 0
+            || event
+                .source_start
+                .checked_add(event.length())
+                .is_none_or(|end| end > source.root.domain.clock.length())
+        {
+            return Err(Invalid("audio event exceeds its retained source clock"));
+        }
         if !event.active {
             continue;
         }
@@ -36,22 +82,24 @@ pub(super) fn compose(
         // read the same faded samples rather than restarting a destination ramp.
         let fade = event
             .fade
-            .map(|fade| fade.reproject(|at| edit.root_frame_at(at, tempo)))
+            .map(|fade| fade.reproject(|at| source.root.root_frame_at(at, tempo)))
             .transpose()?;
-        if fade.is_none() && event.source_start == event.start {
-            destination.copy_from_slice(
-                source
-                    .get(start..end)
-                    .ok_or(Invalid("audio event source exceeds prepared root"))?,
-            );
-        } else if fade.is_none() && matches!(edit.domain.clock, AudioDomainClock::Frames(_)) {
-            let offset = usize::try_from(event.source_start)
-                .map_err(|_| Invalid("audio event source overflow"))?;
+        let affine_start = if frames_clock {
+            Some(event.source_start)
+        } else if source.zero_in_destination.checked_add(event.source_start) == Some(event.start) {
+            aligned_zero.and_then(|zero| (start as u64).checked_sub(zero))
+        } else {
+            None
+        };
+        if let (None, Some(offset)) = (fade.as_ref(), affine_start) {
+            let offset =
+                usize::try_from(offset).map_err(|_| Invalid("audio event source overflow"))?;
             let source_end = offset
                 .checked_add(destination.len())
                 .ok_or(Invalid("audio event source overflow"))?;
             destination.copy_from_slice(
                 source
+                    .frames
                     .get(offset..source_end)
                     .ok_or(Invalid("audio event source exceeds prepared root"))?,
             );
@@ -60,11 +108,8 @@ pub(super) fn compose(
                 if index % 4096 == 0 && cancelled.load(Ordering::Relaxed) {
                     return Err(Invalid("audio event preparation cancelled"));
                 }
-                let source_frame = if event.source_start == event.start {
-                    (start + index) as u64
-                } else if matches!(edit.domain.clock, AudioDomainClock::Frames(_)) {
-                    event
-                        .source_start
+                let source_frame = if let Some(offset) = affine_start {
+                    offset
                         .checked_add(index as u64)
                         .ok_or(Invalid("audio event source position overflow"))?
                 } else {
@@ -73,9 +118,10 @@ pub(super) fn compose(
                         .source_start
                         .checked_add(position.saturating_sub(event.start))
                         .ok_or(Invalid("audio event source position overflow"))?;
-                    edit.root_frame_at(source_position, tempo)?
+                    source.root.root_frame_at(source_position, tempo)?
                 };
                 *sample = *source
+                    .frames
                     .get(
                         usize::try_from(source_frame)
                             .map_err(|_| Invalid("audio event sample overflow"))?,
@@ -93,9 +139,24 @@ pub(super) fn compose(
                 }
             }
         }
+        let gain = event.gain.linear();
+        if gain != 1.0 {
+            for (index, sample) in destination.iter_mut().enumerate() {
+                if index % 4096 == 0 && cancelled.load(Ordering::Relaxed) {
+                    return Err(Invalid("audio event preparation cancelled"));
+                }
+                for channel in sample {
+                    *channel *= gain;
+                }
+            }
+        }
         if cancelled.load(Ordering::Relaxed) {
             return Err(Invalid("audio event preparation cancelled"));
         }
     }
     Ok(output)
 }
+
+#[cfg(test)]
+#[path = "events_tests.rs"]
+mod tests;

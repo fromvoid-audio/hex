@@ -31,7 +31,7 @@ fn gesture_bounds_from(bounds: Bounds<gpui::Pixels>) -> [f32; 4] {
 fn beat_at_x(
     x: f32,
     width: f32,
-    view_start: BeatTime,
+    view_start: i128,
     beat_span: BeatTime,
     clip_length: BeatTime,
     grid: midi_drag::MidiGrid,
@@ -46,7 +46,7 @@ fn beat_at_x(
         return None;
     }
     let offset = (f64::from(x / width) * beat_span.raw() as f64) as u64;
-    let raw = view_start.raw().saturating_add(offset);
+    let raw = u64::try_from(view_start.checked_add(i128::from(offset))?).ok()?;
     if raw >= clip_length.raw() {
         return None;
     }
@@ -60,8 +60,8 @@ fn beat_at_x(
     (beat.raw() < clip_length.raw()).then_some(beat)
 }
 
-fn beat_label(raw: u64) -> String {
-    let value = raw as f64 / BeatTime::ONE.raw() as f64;
+fn beat_label(raw: impl Into<i128>) -> String {
+    let value = raw.into() as f64 / BeatTime::ONE.raw() as f64;
     let mut text = format!("{value:.4}");
     while text.ends_with('0') {
         text.pop();
@@ -128,12 +128,9 @@ impl EditorView {
             }
             self.piano_zoom_wheel_accum = 0.0;
             self.piano_pitch_wheel_accum = 0.0;
-            self.piano_beat_start = BeatTime::ZERO;
+            self.piano_beat_start = 0;
             self.piano_beat_span =
                 BeatTime::from_raw(super::midi_scene::fit_span(length, BeatTime::ONE.raw()));
-        }
-        if self.midi_volume.enabled {
-            return self.midi_volume_editor(cx);
         }
         let state = std::sync::Arc::clone(self.state.as_ref()?);
         let clip_id = self.detail_clip_id()?;
@@ -159,7 +156,7 @@ impl EditorView {
             generation,
             revision,
             clip: clip_id,
-            beat_start: beat_start.raw(),
+            beat_start,
             beat_span: beat_span.raw(),
             pitch_low,
             pitch_rows,
@@ -211,8 +208,24 @@ impl EditorView {
                 |note| {
                     let data = preview.filter(|_| selected == Some(note.id()));
                     let (pitch, start, duration) = data.map_or_else(
-                        || (note.pitch(), note.start().raw(), note.duration().raw()),
-                        |item| (item.pitch, item.start, item.duration),
+                        || {
+                            (
+                                note.pitch(),
+                                i128::from(note.start().raw()),
+                                note.duration().raw(),
+                            )
+                        },
+                        |item| {
+                            (
+                                item.pitch,
+                                i128::from(item.start)
+                                    - i128::from(
+                                        self.displayed_midi_note_gesture()
+                                            .map_or(0, |g| g.source_prefix),
+                                    ),
+                                item.duration,
+                            )
+                        },
                     );
                     format!(
                         "p{pitch} · t{} · g{} · v{}",
@@ -228,7 +241,7 @@ impl EditorView {
         let draw_selected = selected_ids;
         let draw_preview = self
             .displayed_midi_note_gesture()
-            .map(|gesture| (gesture.note, gesture.preview));
+            .map(|gesture| (gesture.note, gesture.preview, gesture.source_prefix));
         let draw_group = self
             .displayed_midi_group_gesture()
             .map(|gesture| (gesture.shared_originals(), gesture.clone()));
@@ -411,22 +424,20 @@ impl EditorView {
                     window.set_cursor_style(cursor, &hitbox);
                 }
                 if let Some((first, last)) = draw_time {
-                    let end = beat_start.raw().saturating_add(beat_span.raw());
-                    let first = first.max(beat_start.raw());
-                    let last = last.min(end);
+                    let end = beat_start.saturating_add(i128::from(beat_span.raw()));
+                    let first = i128::from(first).max(beat_start);
+                    let last = i128::from(last).min(end);
                     if first < last {
-                        let left = ((first - beat_start.raw()) as f64 / beat_span.raw() as f64)
-                            as f32
-                            * width;
-                        let right = ((last - beat_start.raw()) as f64 / beat_span.raw() as f64)
-                            as f32
-                            * width;
+                        let left =
+                            ((first - beat_start) as f64 / beat_span.raw() as f64) as f32 * width;
+                        let right =
+                            ((last - beat_start) as f64 / beat_span.raw() as f64) as f32 * width;
                         window.paint_quad(fill(
                             Bounds::new(
                                 point(bounds.origin.x + px(left), bounds.origin.y),
                                 size(px(right - left), bounds.size.height),
                             ),
-                            gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Secondary)))
+                            gpui::Hsla::from(rgb(theme::time_selection_fill()))
                                 .opacity(theme::TIME_SELECTION_OPACITY),
                         ));
                     }
@@ -461,41 +472,38 @@ impl EditorView {
                     );
                 }
                 let raw_span = beat_span.raw();
-                let grid_step = grid.step_raw().unwrap_or(BeatTime::ONE.raw()).max(1);
-                let first = beat_start.raw() / grid_step;
-                let last = beat_start.raw().saturating_add(raw_span) / grid_step;
-                let beat_count = last.saturating_sub(first).saturating_add(1);
-                let stride = beat_count.saturating_add(255).saturating_div(256).max(1);
-                let first_tick = first
-                    .saturating_add(stride - 1)
-                    .saturating_div(stride)
-                    .saturating_mul(stride);
-                for index in 0..256_u64 {
-                    let beat = first_tick.saturating_add(index.saturating_mul(stride));
-                    if beat > last {
-                        break;
+                let step = grid.step_raw().unwrap_or(BeatTime::ONE.raw()).max(1);
+                if let Some(ticks) =
+                    super::midi_viewport_grid::ticks(beat_start, raw_span, step, 256)
+                {
+                    let grid_step = i128::from(step);
+                    for index in 0..256_i128 {
+                        let beat = ticks.first + index * i128::from(ticks.stride);
+                        if beat > ticks.last {
+                            break;
+                        }
+                        let raw = beat.saturating_mul(grid_step);
+                        let x = (raw.saturating_sub(beat_start) as f64 / raw_span as f64) as f32
+                            * width;
+                        quad(
+                            x,
+                            0.0,
+                            1.0,
+                            height,
+                            if raw % i128::from(super::midi_viewport_grid::ACCENT_PERIOD) == 0 {
+                                theme::color(theme::PaletteRole::Border)
+                            } else {
+                                theme::color(theme::PaletteRole::Grid)
+                            },
+                        );
                     }
-                    let raw = beat.saturating_mul(grid_step);
-                    let x = (raw.saturating_sub(beat_start.raw()) as f64 / raw_span as f64) as f32
-                        * width;
-                    quad(
-                        x,
-                        0.0,
-                        1.0,
-                        height,
-                        if raw % (4 * BeatTime::ONE.raw()) == 0 {
-                            theme::color(theme::PaletteRole::Border)
-                        } else {
-                            theme::color(theme::PaletteRole::Grid)
-                        },
-                    );
                 }
                 for note in canvas_scene.notes() {
                     if draw_selected.binary_search(&note.id).is_ok()
                         || draw_stroke
                             .as_ref()
                             .is_some_and(|stroke| stroke.removed.binary_search(&note.id).is_ok())
-                        || draw_preview.is_some_and(|(id, _)| id == note.id)
+                        || draw_preview.is_some_and(|(id, _, _)| id == note.id)
                         || draw_group.as_ref().is_some_and(|(originals, gesture)| {
                             !gesture.is_copy()
                                 && originals
@@ -542,7 +550,7 @@ impl EditorView {
                     }
                 }
                 for id in draw_selected.iter().copied() {
-                    if draw_preview.is_some_and(|(preview_id, _)| preview_id == id)
+                    if draw_preview.is_some_and(|(preview_id, _, _)| preview_id == id)
                         || draw_stroke
                             .as_ref()
                             .is_some_and(|stroke| stroke.removed.binary_search(&id).is_ok())
@@ -633,36 +641,21 @@ impl EditorView {
                         );
                     }
                 }
-                if let Some((id, mut item)) = draw_preview
-                    && let Some(duration) = draw_overwrite
-                        .as_ref()
-                        .map_or(Some(BeatTime::from_raw(item.duration)), |preview| {
-                            preview.authored_duration(0)
-                        })
+                if let Some((id, item, prefix)) = draw_preview
+                    && let Some(note) = canvas_scene.rebased_preview_geometry(id, item, prefix)
+                    && let Some((x, right)) = super::midi_scene::pixel_bounds(note, width)
                 {
-                    item.duration = duration.raw();
-                    if let Some(note) = canvas_scene.preview_geometry(
-                        id,
-                        item.start,
-                        item.duration,
-                        item.pitch,
-                        0,
-                        100,
-                    ) {
-                        if let Some((x, right)) = super::midi_scene::pixel_bounds(note, width) {
-                            quad(
-                                x,
-                                note.y * height + 1.0,
-                                right - x,
-                                (height / f32::from(pitch_rows) - 2.0).max(1.0),
-                                theme::color(if canvas_scene.note(id).is_some_and(|n| !n.active) {
-                                    theme::PaletteRole::Muted
-                                } else {
-                                    theme::PaletteRole::Primary
-                                }),
-                            );
-                        }
-                    }
+                    quad(
+                        x,
+                        note.y * height + 1.0,
+                        right - x,
+                        (height / f32::from(pitch_rows) - 2.0).max(1.0),
+                        theme::color(if canvas_scene.note(id).is_some_and(|n| !n.active) {
+                            theme::PaletteRole::Muted
+                        } else {
+                            theme::PaletteRole::Primary
+                        }),
+                    );
                 }
 
                 if let Some((originals, gesture)) = &draw_group {
@@ -670,22 +663,26 @@ impl EditorView {
                         let Some(mut preview) = gesture.preview(original.id) else {
                             continue;
                         };
-                        let Some(duration) = draw_overwrite
-                            .as_ref()
-                            .map_or(Some(BeatTime::from_raw(preview.duration)), |plan| {
-                                plan.authored_duration(index)
-                            })
-                        else {
+                        let Some(duration) = (if gesture.source_prefix() > 0 {
+                            Some(BeatTime::from_raw(preview.duration))
+                        } else {
+                            draw_overwrite
+                                .as_ref()
+                                .map_or(Some(BeatTime::from_raw(preview.duration)), |plan| {
+                                    plan.authored_duration(index)
+                                })
+                        }) else {
                             continue;
                         };
                         preview.duration = duration.raw();
-                        let Some(note) = canvas_scene.preview_geometry(
+                        let Some(note) = canvas_scene.rebased_preview_geometry(
                             original.id,
-                            preview.start,
-                            preview.duration,
-                            preview.pitch,
-                            preview.channel,
-                            preview.velocity,
+                            NotePreview {
+                                start: preview.start,
+                                duration: preview.duration,
+                                pitch: preview.pitch,
+                            },
+                            gesture.source_prefix(),
                         ) else {
                             continue;
                         };
@@ -776,17 +773,15 @@ impl EditorView {
                     {
                         continue;
                     }
-                    let first = note.start.raw().max(beat_start.raw());
-                    let last = note
-                        .start
-                        .raw()
-                        .saturating_add(note.duration.raw())
-                        .min(beat_start.raw().saturating_add(raw_span));
+                    let first = i128::from(note.start.raw()).max(beat_start);
+                    let last = i128::from(note.start.raw())
+                        .saturating_add(i128::from(note.duration.raw()))
+                        .min(beat_start.saturating_add(i128::from(raw_span)));
                     if first >= last {
                         continue;
                     }
-                    let left = ((first - beat_start.raw()) as f64 / raw_span as f64) as f32 * width;
-                    let right = ((last - beat_start.raw()) as f64 / raw_span as f64) as f32 * width;
+                    let left = ((first - beat_start) as f64 / raw_span as f64) as f32 * width;
+                    let right = ((last - beat_start) as f64 / raw_span as f64) as f32 * width;
                     let row = pitch_low.saturating_add(pitch_rows - 1) - note.pitch;
                     let y = (f32::from(row) + 0.5) * height / f32::from(pitch_rows);
                     quad(
@@ -799,13 +794,12 @@ impl EditorView {
                 }
 
                 // Draw the insertion position last so sustained notes cannot hide it.
-                if let Some(marker) = draw_marker
-                    && marker >= beat_start.raw()
-                    && marker < beat_start.raw().saturating_add(raw_span)
+                if let Some(marker) = draw_marker.map(i128::from)
+                    && marker >= beat_start
+                    && marker < beat_start.saturating_add(i128::from(raw_span))
                 {
-                    let x = (marker.saturating_sub(beat_start.raw()) as f64 / raw_span as f64)
-                        as f32
-                        * width;
+                    let x =
+                        (marker.saturating_sub(beat_start) as f64 / raw_span as f64) as f32 * width;
                     quad(x, 0.0, 1.0, height, theme::color(theme::PaletteRole::Text));
                     let cap_left = (x - 3.0).max(0.0);
                     quad(
@@ -817,11 +811,11 @@ impl EditorView {
                     );
                 }
 
-                if let Some(playhead) = draw_playhead
-                    && playhead >= beat_start.raw()
-                    && playhead < beat_start.raw().saturating_add(raw_span)
+                if let Some(playhead) = draw_playhead.map(i128::from)
+                    && playhead >= beat_start
+                    && playhead < beat_start.saturating_add(i128::from(raw_span))
                 {
-                    let x = ((playhead - beat_start.raw()) as f64 / raw_span as f64) as f32 * width;
+                    let x = ((playhead - beat_start) as f64 / raw_span as f64) as f32 * width;
                     quad(
                         x,
                         0.0,
@@ -843,7 +837,7 @@ impl EditorView {
                     effective_grid: grid,
                     snap_modifier: false,
                     pitch_modifier: false,
-                    view_start: beat_start.raw(),
+                    view_start: beat_start,
                     view_span: beat_span.raw(),
                     pitch_low,
                     pitch_rows,
@@ -870,24 +864,29 @@ impl EditorView {
                     if !phase.capture() || !bounds.contains(&event.position) {
                         return;
                     }
-                    let delta = -f32::from(event.physical_delta().pixel_delta(px(80.0)).y);
-                    if !delta.is_finite() || delta == 0.0 {
+                    let Some(nav) = super::midi_wheel::resolve(
+                        event.modifiers,
+                        event.delta,
+                        event.physical_delta(),
+                    ) else {
                         return;
-                    }
+                    };
                     cx.stop_propagation();
                     wheel_entity.update(cx, |view, cx| {
-                        let changed = if event.modifiers.alt {
-                            view.zoom_piano_pitch_wheel_at(
-                                gesture_bounds_from(bounds),
-                                f32::from(event.position.y),
-                                delta,
-                            )
-                        } else {
-                            view.zoom_piano_wheel_at(
-                                gesture_bounds_from(bounds),
-                                f32::from(event.position.x),
-                                delta,
-                            )
+                        let canvas = gesture_bounds_from(bounds);
+                        let changed = match nav {
+                            super::midi_wheel::WheelNav::Scroll { pitch, time } => {
+                                view.scroll_piano_wheel(canvas, pitch, time)
+                            }
+                            super::midi_wheel::WheelNav::ZoomTime(delta) => {
+                                view.zoom_piano_wheel_at(canvas, f32::from(event.position.x), delta)
+                            }
+                            super::midi_wheel::WheelNav::ZoomPitch(delta) => view
+                                .zoom_piano_pitch_wheel_at(
+                                    canvas,
+                                    f32::from(event.position.y),
+                                    delta,
+                                ),
                         };
                         if changed {
                             cx.notify();
@@ -1078,7 +1077,7 @@ impl EditorView {
                                             f32::from(event.position.y),
                                         ],
                                         bounds: gesture_bounds,
-                                        beat_start: beat_start.raw(),
+                                        beat_start,
                                         beat_span: beat_span.raw(),
                                         pitch_low,
                                         pitch_rows,
@@ -1118,7 +1117,7 @@ impl EditorView {
                                 kind,
                                 pointer: [f32::from(event.position.x), f32::from(event.position.y)],
                                 bounds: gesture_bounds,
-                                beat_start: beat_start.raw(),
+                                beat_start,
                                 beat_span: beat_span.raw(),
                                 clip_length: clip_len.raw(),
                                 pitch_low,
@@ -1156,41 +1155,31 @@ impl EditorView {
                             ) else {
                                 return;
                             };
-                            if event.modifiers.shift {
-                                view.cancel_midi_audition();
-                                view.clear_midi_time_selection();
-                                view.midi_time_selection.cancel();
-                                view.midi_marker = Some(local_beat.raw());
-                                if let Some(marquee) = view
-                                    .midi_marquee_context(rendered_context.bounds)
-                                    .and_then(|context| {
-                                        super::midi_selection::Marquee::begin(
-                                            context,
-                                            [x, y],
-                                            true,
-                                            &view.midi_selection,
-                                        )
-                                    })
-                                    && view.capture_midi_marquee_pointer(
-                                        &marquee,
-                                        super::midi_marquee::Surface::Piano(std::sync::Arc::clone(
-                                            &event_scene,
-                                        )),
-                                        window,
-                                        view_cx,
+                            view.cancel_midi_audition();
+                            view.clear_midi_time_selection();
+                            view.midi_time_selection.cancel();
+                            view.midi_marker = Some(local_beat.raw());
+                            if let Some(marquee) = view
+                                .midi_marquee_context(rendered_context.bounds)
+                                .and_then(|context| {
+                                    super::midi_selection::Marquee::begin(
+                                        context,
+                                        [x, y],
+                                        event.modifiers.shift,
+                                        &view.midi_selection,
                                     )
-                                {
-                                    view.midi_marquee = Some(marquee);
-                                    view_cx.stop_propagation();
-                                }
-                            } else {
-                                view.begin_midi_grid_time_selection(
-                                    rendered_context.bounds,
-                                    f32::from(event.position.x),
-                                    event.modifiers.platform,
+                                })
+                                && view.capture_midi_marquee_pointer(
+                                    &marquee,
+                                    super::midi_marquee::Surface::Piano(std::sync::Arc::clone(
+                                        &event_scene,
+                                    )),
                                     window,
                                     view_cx,
-                                );
+                                )
+                            {
+                                view.midi_marquee = Some(marquee);
+                                view_cx.stop_propagation();
                             }
                             view_cx.notify();
                             return;
@@ -1426,7 +1415,6 @@ impl EditorView {
                     "toggle source looping · disabled loop markers are retained",
                     "toggle source looping · disabled loop markers are retained",
                 ))]);
-        let mode_control = self.volume_mode_button(cx);
         let toolbar = div()
             .h(px(28.0))
             .flex_shrink_0()
@@ -1434,14 +1422,13 @@ impl EditorView {
             .items_center()
             .gap_1()
             .px_1()
-            .child(mode_control)
             .child(theme::text("piano roll"))
             .children([self.midi_button(
                 grid.label(),
                 if cfg!(target_os = "macos") {
-                    "cycle midi grid: 1/4, 1/8, 1/16, 1/32, off · hold cmd to invert snapping"
+                    "cycle midi grid: 1/4, 1/8, 1/16, 1/32, off · hold cmd to invert snapping · note ends drag free, hold cmd to snap"
                 } else {
-                    "cycle midi grid: 1/4, 1/8, 1/16, 1/32, off · hold control to invert snapping"
+                    "cycle midi grid: 1/4, 1/8, 1/16, 1/32, off · hold control to invert snapping · note ends drag free, hold control to snap"
                 },
                 cx.listener(|v, _, _, cx| {
                     v.cycle_midi_grid();
@@ -1479,16 +1466,7 @@ impl EditorView {
                     cx.notify();
                 }),
             ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))])
-            .children([self.midi_button(
-                if self.midi_audition.enabled { "a+" } else { "a" },
-                "toggle note audition · selection plays up to 17 notes · computer and hardware input take priority",
-                cx.listener(|v, _, window, cx| {
-                    v.midi_audition.enabled = !v.midi_audition.enabled;
-                    v.cancel_midi_audition();
-                    v.midi_focus.focus(window);
-                    cx.notify();
-                }),
-            ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))])
+            .children([self.midi_audition_button(cx)])
             .children([self.midi_button(
                 if self.midi_step.enabled { "st" } else { "s" },
                 "toggle step entry · enable computer keyboard with m · hold notes and press right · no notes inserts a rest",
@@ -1758,19 +1736,19 @@ impl EditorView {
 
     pub(super) fn pan_piano(&mut self, right: bool) {
         self.cancel_midi_note_gesture();
-        let clip_length = self
-            .midi_clip()
-            .map_or(0, |clip| clip.source_length().raw());
+        if self.midi_clip().is_none() {
+            return;
+        }
         let span = self
             .piano_beat_span
             .raw()
             .max((BeatTime::ONE.raw() / 16).max(1));
-        let current = self.piano_beat_start.raw();
-        self.piano_beat_start = BeatTime::from_raw(if right {
-            super::midi_scene::clamp_start(current.saturating_add(span / 2), clip_length, span)
+        let current = self.piano_beat_start;
+        self.piano_beat_start = if right {
+            super::midi_scene::clamp_start(current.saturating_add(i128::from(span / 2)), span)
         } else {
-            super::midi_scene::clamp_start(current.saturating_sub(span / 2), clip_length, span)
-        });
+            super::midi_scene::clamp_start(current.saturating_sub(i128::from(span / 2)), span)
+        };
     }
 
     pub(super) fn cycle_midi_grid(&mut self) {
@@ -1832,10 +1810,10 @@ impl EditorView {
         else {
             return false;
         };
-        let Some(anchor) = midi_drag::beat_at_point(
+        let Some(anchor) = midi_drag::signed_beat_at_point(
             x,
             bounds,
-            self.piano_beat_start.raw(),
+            self.piano_beat_start,
             self.piano_beat_span.raw(),
         ) else {
             return false;
@@ -1847,7 +1825,7 @@ impl EditorView {
             return false;
         }
         self.piano_zoom_wheel_accum -= f32::from(steps) * 80.0;
-        let current = (self.piano_beat_start.raw(), self.piano_beat_span.raw());
+        let current = (self.piano_beat_start, self.piano_beat_span.raw());
         let mut next = current;
         for _ in 0..steps.unsigned_abs() {
             next = super::midi_scene::wheel_zoom(next.0, next.1, length, anchor, steps < 0);
@@ -1856,7 +1834,7 @@ impl EditorView {
             return false;
         }
         self.cancel_midi_note_gesture();
-        self.piano_beat_start = BeatTime::from_raw(next.0);
+        self.piano_beat_start = next.0;
         self.piano_beat_span = BeatTime::from_raw(next.1);
         true
     }
@@ -1873,11 +1851,8 @@ impl EditorView {
             BeatTime::ONE.raw(),
             inward,
         ));
-        self.piano_beat_start = BeatTime::from_raw(super::midi_scene::clamp_start(
-            self.piano_beat_start.raw(),
-            clip_length,
-            self.piano_beat_span.raw(),
-        ));
+        self.piano_beat_start =
+            super::midi_scene::clamp_start(self.piano_beat_start, self.piano_beat_span.raw());
     }
 
     /// Modifier events belong to the focused editor dispatch path. A listener
@@ -1914,6 +1889,11 @@ impl EditorView {
 
     fn update_midi_copy_modifier(&mut self, copy: bool) -> bool {
         if copy && let Some(note) = self.midi_note_gesture {
+            if note.source_prefix > 0 {
+                self.midi_note_gesture = None;
+                self.error = Some("copying a note before source zero is not available".into());
+                return true;
+            }
             match super::midi_group_drag::GroupGesture::from_note_copy(
                 note,
                 self.midi_selection.epoch(),
@@ -1932,13 +1912,22 @@ impl EditorView {
                 }
             }
         }
+        if copy
+            && self
+                .midi_group_gesture
+                .as_ref()
+                .is_some_and(|gesture| gesture.source_prefix() > 0)
+        {
+            self.midi_group_gesture = None;
+            self.error = Some("copying notes before source zero is not available".into());
+            return true;
+        }
         self.midi_group_gesture
             .as_mut()
             .is_some_and(|gesture| gesture.set_copy(copy))
     }
 
     pub(super) fn cancel_midi_note_gesture(&mut self) -> bool {
-        let volume = self.cancel_midi_volume_input();
         let ruler = self.midi_ruler.cancel() | self.midi_time_selection.cancel();
         let pan = self.midi_pan.gesture.take().is_some();
         let marquee = self.cancel_all_midi_marquees();
@@ -1949,8 +1938,7 @@ impl EditorView {
         let note = self.midi_note_gesture.take().is_some();
         let group = self.midi_group_gesture.take().is_some();
         let stroke = self.cancel_midi_stroke();
-        volume
-            || ruler
+        ruler
             || pan
             || velocity
             || pending_selection
@@ -2046,23 +2034,37 @@ impl EditorView {
                 move |bounds, _, window, _| {
                     let wheel_entity = entity.clone();
                     window.on_mouse_event(move |event: &ScrollWheelEvent, phase, _, cx| {
-                        if !phase.capture()
-                            || !event.modifiers.alt
-                            || !bounds.contains(&event.position)
-                        {
+                        if !phase.capture() || !bounds.contains(&event.position) {
                             return;
                         }
-                        let delta = -f32::from(event.physical_delta().pixel_delta(px(80.0)).y);
-                        if !delta.is_finite() || delta == 0.0 {
-                            return;
-                        }
+                        // The keyboard owns only the pitch axis: Alt zooms it and a
+                        // plain wheel scrolls it; time pan and Cmd zoom are ignored.
+                        let (zoom, delta) = match super::midi_wheel::resolve(
+                            event.modifiers,
+                            event.delta,
+                            event.physical_delta(),
+                        ) {
+                            Some(super::midi_wheel::WheelNav::ZoomPitch(delta)) => (true, delta),
+                            Some(super::midi_wheel::WheelNav::Scroll { pitch, .. })
+                                if pitch != 0.0 =>
+                            {
+                                (false, pitch)
+                            }
+                            _ => return,
+                        };
                         cx.stop_propagation();
                         wheel_entity.update(cx, |view, cx| {
-                            if view.zoom_piano_pitch_wheel_at(
-                                gesture_bounds_from(bounds),
-                                f32::from(event.position.y),
-                                delta,
-                            ) {
+                            let canvas = gesture_bounds_from(bounds);
+                            let changed = if zoom {
+                                view.zoom_piano_pitch_wheel_at(
+                                    canvas,
+                                    f32::from(event.position.y),
+                                    delta,
+                                )
+                            } else {
+                                view.scroll_piano_wheel(canvas, delta, 0.0)
+                            };
+                            if changed {
                                 cx.notify();
                             }
                         });
@@ -2072,6 +2074,43 @@ impl EditorView {
             .absolute()
             .size_full(),
         )
+    }
+
+    fn midi_audition_button(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        const HINT: &str = "toggle note audition · selection plays up to 17 notes · computer and hardware input take priority";
+        let mut style = theme::action_style();
+        if self.midi_audition.enabled {
+            let control = theme::control_style();
+            style.background = control.accent;
+            style.text = control.accent_text;
+            style.hover_background = control.accent;
+            style.hover_text = Some(control.accent_text);
+        }
+        let ink = style.text;
+        hex_widgets::action_surface(style)
+            .id(HINT)
+            .debug_selector(|| HINT.into())
+            .w(px(25.0))
+            .h(px(22.0))
+            .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+            .children([gpui::svg()
+                .path("icons/midi/audition.svg")
+                .size(px(14.0))
+                .text_color(rgb(ink))
+                .debug_selector(|| "midi-audition-speaker".into())])
+            .tooltip(|_, cx| {
+                cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
+                    description: HINT.into(),
+                })
+                .into()
+            })
+            .on_click(cx.listener(|v, _, window, cx| {
+                v.midi_audition.enabled = !v.midi_audition.enabled;
+                v.cancel_midi_audition();
+                v.midi_focus.focus(window);
+                cx.notify();
+            }))
     }
 
     pub(super) fn midi_button(
@@ -2119,7 +2158,7 @@ mod tests {
             beat_at_x(
                 25.0,
                 100.0,
-                BeatTime::ZERO,
+                0,
                 BeatTime::from_quarters(4).unwrap(),
                 clip,
                 midi_drag::MidiGrid::Sixteenth,
@@ -2131,7 +2170,7 @@ mod tests {
             beat_at_x(
                 100.0,
                 100.0,
-                BeatTime::ZERO,
+                0,
                 BeatTime::from_quarters(4).unwrap(),
                 clip,
                 midi_drag::MidiGrid::Sixteenth,
@@ -2142,7 +2181,7 @@ mod tests {
             beat_at_x(
                 f32::NAN,
                 100.0,
-                BeatTime::ZERO,
+                0,
                 BeatTime::from_quarters(4).unwrap(),
                 clip,
                 midi_drag::MidiGrid::Sixteenth,
@@ -2184,9 +2223,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                beat_at_x(x, 100.0, BeatTime::ZERO, span, clip, grid)
-                    .unwrap()
-                    .raw(),
+                beat_at_x(x, 100.0, 0, span, clip, grid).unwrap().raw(),
                 expected
             );
         }
@@ -2196,14 +2233,12 @@ mod tests {
         let snapped_from_free = midi_drag::effective_grid(midi_drag::MidiGrid::Off, true);
         assert_eq!(free, midi_drag::MidiGrid::Off);
         assert_eq!(snapped_from_free, midi_drag::MidiGrid::Sixteenth);
-        let free_start = beat_at_x(x, 100.0, BeatTime::ZERO, span, clip, free)
-            .unwrap()
-            .raw();
+        let free_start = beat_at_x(x, 100.0, 0, span, clip, free).unwrap().raw();
         assert!(free_start > BeatTime::ONE.raw() + BeatTime::ONE.raw() * 239 / 1000);
         assert!(free_start < BeatTime::ONE.raw() + BeatTime::ONE.raw() * 241 / 1000);
         assert_ne!(free_start, BeatTime::ONE.raw() + BeatTime::ONE.raw() / 4);
         assert_eq!(
-            beat_at_x(x, 100.0, BeatTime::ZERO, span, clip, snapped_from_free)
+            beat_at_x(x, 100.0, 0, span, clip, snapped_from_free)
                 .unwrap()
                 .raw(),
             BeatTime::ONE.raw()

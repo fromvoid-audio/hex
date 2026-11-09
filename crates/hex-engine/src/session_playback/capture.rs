@@ -1,4 +1,7 @@
 //! Bounded control plans and borrowed, transactional canonical output buffers.
+#[cfg(feature = "instrument-test-support")]
+pub(super) mod window_probe;
+
 use super::{SessionPlayback, SessionPlaybackError};
 use crate::{Frame, PreparedRevision};
 use hex_project::{ReturnId, TrackId};
@@ -22,11 +25,12 @@ pub enum OutputCaptureId {
     Return(ReturnId),
 }
 
-/// Actual direct post-device/post-fader track output, or Main including Returns
-/// and master gain. Monitor-only metronome/browser audio is outside this tap.
+/// Actual direct post-device/post-fader Track or Return output, or Main
+/// including Returns and master gain. Monitor-only audio is outside this tap.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProjectSignal {
     Track(u64),
+    Return(ReturnId),
     Master,
     /// This runtime cannot supply the requested current canonical owners.
     Unavailable,
@@ -38,16 +42,30 @@ pub enum ProjectSignal {
 pub type ProjectSignalObserver<'observer> =
     dyn for<'frames> FnMut(ProjectSignal, usize, &'frames [Frame]) + 'observer;
 
+/// Speculative contiguous Arrangement clock span, in output-frame coordinates.
+pub type ProjectTimingObserver<'observer> =
+    dyn FnMut(usize, u64, usize, &crate::PreparedTempoMap) + 'observer;
+
 /// Borrowed, bounded live selection. Unlike the offline capture plan, this does
-/// not change scheduling or restrict loops/Session launches. IDs must be sorted,
-/// distinct canonical TrackIds; callers validate them against the active source.
+/// not change scheduling or restrict loops/Session launches. Each owner list
+/// must be sorted by ascending ID with no duplicates. Callers validate owners
+/// against the active source. Track and Return spans can overlap within an
+/// owner (for example a detached effect tail) and must be summed.
 pub struct ProjectOutputTap<'a, 'observer> {
     tracks: &'a [u64],
+    returns: &'a [ReturnId],
     observer: &'a mut ProjectSignalObserver<'observer>,
+    timing: Option<&'a mut ProjectTimingObserver<'observer>>,
+    // Callback-relative start of the current render part. `Playback` splits a
+    // callback only at a transport declick boundary and restores zero after.
+    part_offset: usize,
 }
 impl<'a, 'observer> ProjectOutputTap<'a, 'observer> {
-    pub fn tracks(&self) -> &[u64] {
+    pub fn tracks(&self) -> &'a [u64] {
         self.tracks
+    }
+    pub fn returns(&self) -> &'a [ReturnId] {
+        self.returns
     }
     /// Forward a speculative borrowed span through a chunk-offset adapter.
     pub fn observe(&mut self, signal: ProjectSignal, offset: usize, frames: &[Frame]) {
@@ -57,13 +75,38 @@ impl<'a, 'observer> ProjectOutputTap<'a, 'observer> {
         tracks: &'a [u64],
         observer: &'a mut ProjectSignalObserver<'observer>,
     ) -> Option<Self> {
+        Self::with_returns(tracks, &[], observer)
+    }
+
+    /// Observe selected Track and Return outputs as well as Main.
+    pub fn with_returns(
+        tracks: &'a [u64],
+        returns: &'a [ReturnId],
+        observer: &'a mut ProjectSignalObserver<'observer>,
+    ) -> Option<Self> {
         (tracks.len() <= hex_project::MAX_TRACKS
             && tracks.iter().all(|id| *id != 0)
-            && tracks.windows(2).all(|pair| pair[0] < pair[1]))
-        .then_some(Self { tracks, observer })
+            && tracks.windows(2).all(|pair| pair[0] < pair[1])
+            && returns.len() <= hex_project::MAX_RETURN_TRACKS
+            && returns.windows(2).all(|pair| pair[0] < pair[1]))
+        .then_some(Self {
+            tracks,
+            returns,
+            observer,
+            timing: None,
+            part_offset: 0,
+        })
+    }
+    /// Observe the playing transport alongside PCM. Stopped output has no clock.
+    pub fn with_timing(mut self, timing: &'a mut ProjectTimingObserver<'observer>) -> Self {
+        self.timing = Some(timing);
+        self
+    }
+    pub(crate) fn set_part_offset(&mut self, offset: usize) {
+        self.part_offset = offset;
     }
     pub(crate) fn main(&mut self, frames: &[Frame]) {
-        (self.observer)(ProjectSignal::Master, 0, frames);
+        (self.observer)(ProjectSignal::Master, self.part_offset, frames);
     }
     pub(crate) fn unavailable(&mut self) {
         (self.observer)(ProjectSignal::Unavailable, 0, &[]);
@@ -78,12 +121,45 @@ pub(super) trait CaptureSink {
         offset: usize,
         frames: &[Frame],
     ) -> Result<(), SessionPlaybackError>;
+    /// The compensated graph can supply its current owner slot as a lookup
+    /// hint. Historical tails use stable IDs alone.
+    fn add_prepared_frame(
+        &mut self,
+        _owner: crate::signal_graph::Owner,
+        id: OutputCaptureId,
+        offset: usize,
+        frame: Frame,
+    ) -> Result<(), SessionPlaybackError> {
+        self.add(id, offset, &[frame])
+    }
+    fn observes_timing(&self) -> bool {
+        false
+    }
+    fn timing(
+        &mut self,
+        _offset: usize,
+        _start: u64,
+        _frames: usize,
+        _map: &crate::PreparedTempoMap,
+    ) {
+    }
     fn commit(&mut self, _frames: usize) {}
     fn invalidate(&mut self) {}
 }
 impl CaptureSink for ProjectOutputTap<'_, '_> {
+    fn observes_timing(&self) -> bool {
+        self.timing.is_some()
+    }
+    fn timing(&mut self, offset: usize, start: u64, frames: usize, map: &crate::PreparedTempoMap) {
+        if let Some(observer) = self.timing.as_mut() {
+            observer(self.part_offset.saturating_add(offset), start, frames, map);
+        }
+    }
     fn selects(&self, id: OutputCaptureId) -> bool {
-        matches!(id, OutputCaptureId::Track(id) if self.tracks.binary_search(&id.value()).is_ok())
+        match id {
+            OutputCaptureId::Track(id) => self.tracks.binary_search(&id.value()).is_ok(),
+            OutputCaptureId::Return(id) => self.returns.binary_search(&id).is_ok(),
+        }
     }
     fn add(
         &mut self,
@@ -91,10 +167,12 @@ impl CaptureSink for ProjectOutputTap<'_, '_> {
         offset: usize,
         frames: &[Frame],
     ) -> Result<(), SessionPlaybackError> {
-        if let OutputCaptureId::Track(id) = id
-            && self.selects(OutputCaptureId::Track(id))
-        {
-            (self.observer)(ProjectSignal::Track(id.value()), offset, frames);
+        if self.selects(id) {
+            let signal = match id {
+                OutputCaptureId::Track(id) => ProjectSignal::Track(id.value()),
+                OutputCaptureId::Return(id) => ProjectSignal::Return(id),
+            };
+            (self.observer)(signal, self.part_offset.saturating_add(offset), frames);
         }
         Ok(())
     }

@@ -230,6 +230,44 @@ impl PendingStreamDomain {
         readiness: Option<StreamReadinessReservation>,
         allowance: StreamPreparationAllowance,
     ) -> Result<Self, StreamRuntimeError> {
+        Self::try_start_inner(
+            config,
+            definitions,
+            scalar_definitions,
+            readiness,
+            allowance,
+            #[cfg(feature = "test-support")]
+            None,
+        )
+    }
+
+    /// Test-only held-page construction through the ordinary reserved custody path.
+    #[cfg(feature = "test-support")]
+    pub fn try_start_with_page_gate_on_control(
+        config: StreamConfig,
+        definitions: Vec<SourceDefinition>,
+        readiness: Option<StreamReadinessReservation>,
+        allowance: StreamPreparationAllowance,
+        gate: crate::test_support::PageGate,
+    ) -> Result<Self, StreamRuntimeError> {
+        Self::try_start_inner(
+            config,
+            definitions,
+            Vec::new(),
+            readiness,
+            allowance,
+            Some(gate),
+        )
+    }
+
+    fn try_start_inner(
+        config: StreamConfig,
+        definitions: Vec<SourceDefinition>,
+        scalar_definitions: Vec<ScalarSourceDefinition>,
+        readiness: Option<StreamReadinessReservation>,
+        allowance: StreamPreparationAllowance,
+        #[cfg(feature = "test-support")] page_gate: Option<crate::test_support::PageGate>,
+    ) -> Result<Self, StreamRuntimeError> {
         let bound = Self::preparation_bound_with_scalar_sources(
             config,
             &definitions,
@@ -251,6 +289,8 @@ impl PendingStreamDomain {
             true,
             #[cfg(test)]
             None,
+            #[cfg(feature = "test-support")]
+            page_gate,
         )?;
         Ok(Self {
             runtime,
@@ -456,6 +496,123 @@ mod tests {
             assert!(Instant::now() < deadline);
             std::thread::yield_now();
         }
+    }
+
+    #[cfg(feature = "test-support")]
+    fn gated_prepared_domain(release_page: bool) {
+        use hex_engine::MediaPages;
+        let fixture = crate::worker::tests::Fixture::pcm16_frames(8192);
+        let limits = hex_media::VerifiedWavReaderLimits::new(
+            hex_media::WavReaderLimits::new(1024 * 1024, 8192, 128, 8192),
+            1024 * 1024,
+        );
+        let reader = hex_media::VerifiedWavReader::open(&fixture.0, limits).unwrap();
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 2).unwrap();
+        let hex_project::Created::Asset(asset) = editor
+            .execute(hex_project::Command::AddAsset {
+                path: "source.wav".into(),
+                sample_rate: 48_000,
+                frames: 8192,
+            })
+            .unwrap()
+        else {
+            panic!("asset")
+        };
+        let key = hex_engine::StreamSourceKey::new(71, asset);
+        let metadata = hex_engine::StreamedSourceMetadata::new(
+            key,
+            48_000,
+            48_000,
+            8192,
+            8192,
+            hex_project::IDENTITY_CONVERSION,
+            *reader.fingerprint(),
+        )
+        .unwrap();
+        let definitions = vec![SourceDefinition::new(fixture.0.clone(), metadata, limits)];
+        let config = StreamConfig::with_pool_pages(4);
+        let readiness = Some(StreamReadinessReservation {
+            extents_per_role: 2,
+        });
+        let bound = PendingStreamDomain::preparation_bound(
+            config,
+            &definitions,
+            definitions.capacity(),
+            readiness,
+        )
+        .unwrap();
+        let page = crate::PageKey {
+            source: key,
+            page_index: 1,
+        };
+        let (gate, entered, release) = crate::test_support::PageGate::new(page);
+        let mut pending = PendingStreamDomain::try_start_with_page_gate_on_control(
+            config,
+            definitions,
+            readiness,
+            allowance(bound),
+            gate,
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut domain = loop {
+            if let Some(domain) = pending.try_seal_on_control().unwrap() {
+                break domain;
+            }
+            assert!(Instant::now() < deadline, "catalog did not seal");
+            std::thread::yield_now();
+        };
+        let mut loan = domain.loan_pages_on_control().unwrap();
+        loan.pages.request_page(key, 0);
+        loop {
+            loan.pages.pump_ready(8);
+            if loan.pages.page(key, 0).is_some() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "first page did not arrive");
+            std::thread::yield_now();
+        }
+        assert_eq!(loan.pages.page(key, 0).unwrap().frames[0], [0.0; 2]);
+        loan.pages.request_page(key, 1);
+        entered.recv_timeout(Duration::from_secs(3)).unwrap();
+        loan.pages.pump_ready(8);
+        assert!(loan.pages.page(key, 1).is_none());
+        if release_page {
+            release.send(()).unwrap();
+            loop {
+                loan.pages.pump_ready(8);
+                if let Some(page) = loan.pages.page(key, 1) {
+                    assert_eq!(page.frames[0], [0.125, -0.125]);
+                    break;
+                }
+                assert!(Instant::now() < deadline, "held page did not arrive");
+                std::thread::yield_now();
+            }
+        }
+        let mut loan = Some(loan);
+        domain.return_pages_on_control(&mut loan).unwrap();
+        loop {
+            if let Some(report) = domain.advance_disposal_on_control().unwrap() {
+                assert!(report.worker_joined && report.accounting_complete);
+                assert_eq!(report.page_buffers, 4);
+                break;
+            }
+            assert!(Instant::now() < deadline, "domain did not retire");
+            std::thread::yield_now();
+        }
+    }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn prepared_gate_releases_later_page_through_original_custody() {
+        gated_prepared_domain(true);
+    }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn prepared_gate_shutdown_joins_while_later_page_is_held() {
+        gated_prepared_domain(false);
     }
     #[test]
     fn prebound_exact_pair_survives_verification_and_cancellation_with_full_pool_conservation() {

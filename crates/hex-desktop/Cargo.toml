@@ -8,8 +8,13 @@ publish.workspace = true
 [features]
 # Constructor/adapter integration only; no physical device is opened by fixtures.
 allocation-probe = ["hex-audio/allocation-probe", "hex-ui/ui-test-support"]
+# Explicit signed recording-failure fixtures only.
+recording-fault-test-support = ["hex-session/recording-fault-test-support"]
 
 [dependencies]
+fs2 = "=0.4.3"
+serde_json = "=1.0.151"
+sha2 = "=0.11.0"
 hex-mts = { path = "../hex-mts" }
 hex-midi = { path = "../hex-midi" }
 hex-diagnostics = { path = "../hex-diagnostics" }
@@ -23,6 +28,9 @@ hex-media = { path = "../hex-media" }
 hex-plugin-catalog = { path = "../hex-plugin-catalog" }
 hex-preferences = { path = "../hex-preferences" }
 gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "macos-blade"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "=0.31.3", features = ["signal", "process"] }
 
 [dev-dependencies]
 hex-plugin-state = { path = "../hex-plugin-state" }
