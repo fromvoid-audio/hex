@@ -26,15 +26,33 @@ const IDS: [ParameterId; 4] = [
     parameter::RELEASE,
 ];
 
-struct Expected;
-impl NativeParameterAutomation for Expected {
+struct Expected<'a>(&'a [ParameterId]);
+impl NativeParameterAutomation for Expected<'_> {
     fn parameter_ids(&self) -> &[ParameterId] {
-        &IDS
+        self.0
     }
 
     fn value_at(&self, id: ParameterId, frame: usize) -> Option<ParameterValue> {
-        let delta = f64::from(DEPTH) * if frame % 4 < 2 { 1.0 } else { -1.0 };
+        let wave = if frame % 4 < 2 { 1.0 } else { -1.0 };
+        let delta = f64::from(DEPTH) * wave;
+        let threshold_mapped = self.0.contains(&parameter::THRESHOLD);
+        let return_mapped = self.0.contains(&parameter::RETURN);
+        let threshold = -40.0
+            - if threshold_mapped {
+                72.0 * f64::from(0.3_f32) * wave
+            } else {
+                0.0
+            };
+        let return_level = -45.0
+            + if return_mapped {
+                84.0 * f64::from(0.3_f32) * wave
+            } else {
+                0.0
+            };
         let value = match id {
+            parameter::THRESHOLD if return_mapped => threshold,
+            parameter::THRESHOLD => threshold.max(return_level),
+            parameter::RETURN => return_level.min(threshold),
             parameter::FLOOR => -60.0 + 80.0 * delta,
             parameter::ATTACK => 1000.0_f64.powf(delta),
             parameter::HOLD => 20.0 + 2000.0 * delta,
@@ -47,6 +65,21 @@ impl NativeParameterAutomation for Expected {
 
 #[test]
 fn gate_modulation_uses_the_same_frame_values_in_ordinary_and_sealed_playback() {
+    check_gate_routes(&IDS);
+}
+
+#[test]
+fn gate_modulation_keeps_the_detector_ordered_with_independent_and_opposing_routes() {
+    for ids in [
+        &[parameter::THRESHOLD][..],
+        &[parameter::RETURN][..],
+        &[parameter::THRESHOLD, parameter::RETURN][..],
+    ] {
+        check_gate_routes(ids);
+    }
+}
+
+fn check_gate_routes(ids: &[ParameterId]) {
     let mut editor = Editor::new(Project::new(RATE).unwrap(), 8).unwrap();
     let Created::Imported { track, asset, .. } = editor
         .execute(Command::ImportAudioTrack {
@@ -77,8 +110,8 @@ fn gate_modulation_uses_the_same_frame_values_in_ordinary_and_sealed_playback() 
         panic!("effect fixture");
     };
 
-    let factory = GateDefinition::prepare_owned(&state, RATE, &IDS).unwrap();
-    for id in IDS {
+    let factory = GateDefinition::prepare_owned(&state, RATE, ids).unwrap();
+    for &id in ids {
         let semantics = factory.parameter_modulation_semantics(id).unwrap();
         assert_eq!(semantics.modulation, ParameterModulation::SampleRate);
         assert_eq!(
@@ -96,14 +129,14 @@ fn gate_modulation_uses_the_same_frame_values_in_ordinary_and_sealed_playback() 
     assert!(!crate::project_device_modulation_target_supported(
         editor.project(),
         device,
-        parameter::THRESHOLD
+        ParameterId::from_static(7)
     ));
     assert!(GateDefinition::prepare_owned(&state, RATE, &[ParameterId::from_static(7)]).is_err());
-    assert!(GateDefinition::prepare_owned(&state, RATE - 1, &IDS).is_err());
+    assert!(GateDefinition::prepare_owned(&state, RATE - 1, ids).is_err());
     let malformed =
         hex_lattice_contract::NativeDeviceState::new(GATE_TYPE_ID, state.state_version(), vec![0])
             .unwrap();
-    assert!(GateDefinition::prepare_owned(&malformed, RATE, &IDS).is_err());
+    assert!(GateDefinition::prepare_owned(&malformed, RATE, ids).is_err());
 
     let next = editor.project().next_identity();
     let source = ModulationSourceId::new(next).unwrap();
@@ -120,7 +153,8 @@ fn gate_modulation_uses_the_same_frame_values_in_ordinary_and_sealed_playback() 
             .encode()
             .unwrap(),
         }],
-        IDS.into_iter()
+        ids.iter()
+            .copied()
             .enumerate()
             .map(|(offset, id)| DeviceModulationRoute {
                 id: ModulationRouteId::new(next + offset as u64 + 1).unwrap(),
@@ -131,7 +165,12 @@ fn gate_modulation_uses_the_same_frame_values_in_ordinary_and_sealed_playback() 
                     target: DeviceAutomationTarget::Parameter(id),
                     vst3_class: None,
                 },
-                amount: ModulationAmount::new(DEPTH).unwrap(),
+                amount: ModulationAmount::new(match id {
+                    parameter::THRESHOLD => -0.3,
+                    parameter::RETURN => 0.3,
+                    _ => DEPTH,
+                })
+                .unwrap(),
                 range: ModulationRange::default(),
                 enabled: true,
             })
@@ -156,7 +195,7 @@ fn gate_modulation_uses_the_same_frame_values_in_ordinary_and_sealed_playback() 
     let mut expected: [[f32; 2]; FRAMES] = dry;
     factory
         .create_runtime()
-        .process_block_with_automation(&mut expected, None, &Expected, &EMPTY_DEVICE_RESOURCES)
+        .process_block_with_automation(&mut expected, None, &Expected(ids), &EMPTY_DEVICE_RESOURCES)
         .unwrap();
     assert!(expected[..65].iter().zip(&dry).any(|(a, b)| a != b));
     assert!(expected[65..270].contains(&dry[80]));

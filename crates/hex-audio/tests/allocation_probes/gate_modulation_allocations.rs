@@ -16,7 +16,8 @@ fn gate_sealed_factory_render_and_rollback_do_not_allocate_or_free() {
         parameter::HOLD,
         parameter::RELEASE,
     ];
-    for parameters in [ids.as_slice(), &[]] {
+    let coupled = [parameter::THRESHOLD, parameter::RETURN];
+    for parameters in [ids.as_slice(), coupled.as_slice(), &[]] {
         let state = GATE_DEFINITION.default_state().unwrap();
         let factory = GateDefinition::prepare_owned(&state, 48_000, parameters).unwrap();
         let modulation = if parameters.is_empty() {
@@ -35,7 +36,11 @@ fn gate_sealed_factory_render_and_rollback_do_not_allocate_or_free() {
                 .map(|&target| ModulationRoute {
                     source: 0,
                     target,
-                    amount: 0.008,
+                    amount: match target {
+                        parameter::THRESHOLD => -0.3,
+                        parameter::RETURN => 0.3,
+                        _ => 0.008,
+                    },
                     range: [-1.0, 1.0],
                 })
                 .collect::<Vec<_>>();
