@@ -762,12 +762,7 @@ fn create_parameter_control(
                     return;
                 }
                 view.remember_automation_parameter(key.device, automation_target(key.parameter));
-                let value = ParameterValue::Bool(event.checked);
-                view.device_panel.pending_values.insert(target, value);
-                if !view.manual_device_parameter_request(target.device, target.parameter, value)
-                        .is_ok_and(|request| view.enqueue_device_barrier(request)) {
-                    view.device_panel.pending_values.remove(&target);
-                }
+                apply_discrete_parameter(view, target, ParameterValue::Bool(event.checked));
                 cx.notify();
             });
             view.device_panel.controls.insert(
@@ -830,12 +825,7 @@ fn create_parameter_control(
                         return;
                     }
                     view.remember_automation_parameter(key.device, automation_target(key.parameter));
-                    let value = ParameterValue::Choice(value);
-                    view.device_panel.pending_values.insert(target, value);
-                    if !view.manual_device_parameter_request(target.device, target.parameter, value)
-                        .is_ok_and(|request| view.enqueue_device_barrier(request)) {
-                        view.device_panel.pending_values.remove(&target);
-                    }
+                    apply_discrete_parameter(view, target, ParameterValue::Choice(value));
                     cx.notify();
                 });
             view.device_panel.controls.insert(
@@ -851,6 +841,28 @@ fn create_parameter_control(
             Some(())
         }
         _ => None,
+    }
+}
+
+fn apply_discrete_parameter(view: &mut EditorView, target: ParameterKey, value: ParameterValue) {
+    let gesture = GestureTarget::DeviceParameter {
+        device: target.device,
+        parameter: target.parameter,
+    };
+    match view.begin_native_automation_step(gesture, value) {
+        Ok(true) => return,
+        Err(reason) => {
+            view.error = Some(reason.into());
+            return;
+        }
+        Ok(false) => {}
+    }
+    view.device_panel.pending_values.insert(target, value);
+    if !view
+        .manual_device_parameter_request(target.device, target.parameter, value)
+        .is_ok_and(|request| view.enqueue_device_barrier(request))
+    {
+        view.device_panel.pending_values.remove(&target);
     }
 }
 
