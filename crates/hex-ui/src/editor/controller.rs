@@ -745,10 +745,11 @@ impl EditorView {
                     binding,
                     device,
                     parameter,
-                    sequence,
+                    value,
+                    ..
                 } => {
                     super::device_panel::vst3_parameters::touched(
-                        self, source, binding, device, parameter, sequence,
+                        self, source, binding, device, parameter, value,
                     );
                     changed = true;
                 }

@@ -412,6 +412,10 @@ impl DraftWriter {
         })
     }
 
+    pub fn has_group_records(&self) -> bool {
+        self.group.is_some()
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }
