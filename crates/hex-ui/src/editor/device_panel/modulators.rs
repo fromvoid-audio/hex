@@ -70,12 +70,12 @@ impl HostGainTarget {
             Self::Input => (
                 DeviceAutomationTarget::HostInputGain,
                 "input-gain",
-                "host input gain",
+                "input trim",
             ),
             Self::Output => (
                 DeviceAutomationTarget::HostOutputGain,
                 "output-gain",
-                "host output gain",
+                "output trim",
             ),
         }
     }
