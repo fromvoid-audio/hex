@@ -429,6 +429,7 @@ impl ArrangementRootAssembly {
                 tempo_map: None,
                 tempo_max_micro_bpm: 0,
                 midi_routing: Vec::new(),
+                source_effects: Vec::new(),
                 sample_rate: scalars.sample_rate,
                 main_device_chain,
                 tracks: mem::take(&mut self.tracks),
@@ -467,6 +468,7 @@ impl ArrangementRootAssembly {
             tempo_map: _,
             tempo_max_micro_bpm: _,
             midi_routing: _,
+            source_effects: _,
             sample_rate: _,
             main_device_chain,
             tracks,
@@ -609,6 +611,7 @@ impl ArrangementRootAssembly {
                 tempo_map: _,
                 tempo_max_micro_bpm: _,
                 midi_routing,
+                source_effects,
                 main_device_chain: _,
                 loop_region: _,
                 master_gain: _,
@@ -617,6 +620,9 @@ impl ArrangementRootAssembly {
                 requires_scalar_automation: _,
                 shared_contexts: _,
             } = project;
+            if !source_effects.is_empty() {
+                return Err(AudioStorageError::UnsupportedGraph);
+            }
             l.vec(audio_clip_views)?;
             l.vec(tracks)?;
             l.vec(return_buses)?;
