@@ -17,7 +17,7 @@ if _PYTHON_SPEC is None or _PYTHON_SPEC.loader is None:
 python_tests = importlib.util.module_from_spec(_PYTHON_SPEC)
 _PYTHON_SPEC.loader.exec_module(python_tests)
 
-POLICY_VERSION = 49
+POLICY_VERSION = 50
 UI_PACKAGES = {"hex-ui", "hex-widgets"}
 # Opaque state reaches storage through runtime type IDs, not a Cargo dependency.
 # Changes here must be reviewed with the real registration/codec consumers.
@@ -254,7 +254,8 @@ def module_declarations(source_root: Path) -> dict[Path, list[tuple[Path, list[s
 TEST_ATTRIBUTE = re.compile(r"#\[(?:gpui::)?test\b")
 # Unit test targets which compile the owning source directly. Keep their libtest
 # names under the original module path so scoped coverage remains observable.
-UI_UNIT_TARGETS = {"editor::audio_admission::": "unit_editor_state",
+UI_UNIT_TARGETS = {"editor::computer_keyboard::state::": "unit_editor_logic",
+                   "editor::audio_admission::": "unit_editor_state",
                    "editor::audio_import_settings::admission::": "unit_editor_logic",
                    "editor::clip_content_cache::profile::navigation::selection::": "unit_editor_state",
                    "editor::controller::audio_event_correlation::": "unit_editor_logic",
@@ -311,7 +312,8 @@ UI_UNIT_COHORTS = [{"editor::midi_drag::", "editor::midi_group_drag::", "editor:
                    {"section_appearance::", "section_reorder::"}]
 # Recovery's real prepared-audio test is a sibling so importing its state into
 # the unit binary cannot also compile and run the integration fixture there.
-UI_INTEGRATION_PAIRS = {"editor::recovery_state::": "editor::recovery_state_integration_tests::",
+UI_INTEGRATION_PAIRS = {"editor::computer_keyboard::state::": "editor::computer_keyboard::tests::",
+                        "editor::recovery_state::": "editor::recovery_state_integration_tests::",
                         "editor::audio_import_settings::admission::": "editor::track_defaults::",
                         "editor::controller::audio_event_correlation::": "editor::controller::sampler_native_ui_protocol_tests::",
                         "editor::fade_calculation::": "editor::fades::",
