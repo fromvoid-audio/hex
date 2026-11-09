@@ -15,6 +15,8 @@ pub enum SourceModulationParameter {
     /// Signed full depth shifts the authored free rate by four octaves.
     /// Zero rate stays stopped and the effective step saturates at Nyquist.
     FreeLfoRate,
+    /// Apply the same signed rate law to the sample's tempo-derived step.
+    TempoLfoRate,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
