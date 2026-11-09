@@ -1747,13 +1747,24 @@ class ModuleScopeTests(unittest.TestCase):
         for path in ("section_appearance.rs", "section_reorder.rs"):
             self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/" + path], inventory, [owner]),
                              {owner: reorder})
+        for name in ("section_input", "section_selection"):
+            self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/" + name + ".rs"], inventory, [owner]),
+                             {owner: [name + "::"]})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_section.rs"], inventory, [owner]),
-                         {owner: ["section_appearance::", "section_hit::", "section_reorder::"]})
+                         {owner: ["section_appearance::", "section_hit::", "section_input::", "section_reorder::",
+                                  "section_selection::"]})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
                     "single_run": {owner: "ui-test-support"}, "module_filters": {owner: names}}
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
                                   "cargo_inventory": inventory, "paths": []})
         self.assertEqual(sum("unit_section" in step.argv for step in steps), 1)
+        for name in ("section_input::", "section_selection::"):
+            boundary["module_filters"] = {owner: [name]}
+            scoped = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                       "cargo_inventory": inventory, "paths": []})
+            unit = [step for step in scoped if "unit_section" in step.argv]
+            self.assertEqual(len(unit), 1)
+            self.assertIn(name, unit[0].argv)
         self.assertFalse(any("unit_device" in step.argv or "unit_automation" in step.argv or
                              "unit_session" in step.argv or "unit_timeline" in step.argv or
                              "unit_piano_roll" in step.argv for step in steps))
