@@ -280,6 +280,20 @@ impl ModulationSourceBank {
             })
     }
 
+    pub(crate) fn same_declaration(&self, other: &Self) -> bool {
+        self.chunk_frames == other.chunk_frames
+            && self.sources.len() == other.sources.len()
+            && self
+                .sources
+                .iter()
+                .zip(&other.sources)
+                .all(|(left, right)| {
+                    left.id == right.id
+                        && left.sample_rate == right.sample_rate
+                        && left.initial == right.initial
+                })
+    }
+
     pub(crate) fn validate_sources(
         sources: &[PreparedModulationSource],
         chunk_frames: usize,
