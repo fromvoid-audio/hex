@@ -17,7 +17,7 @@ if _PYTHON_SPEC is None or _PYTHON_SPEC.loader is None:
 python_tests = importlib.util.module_from_spec(_PYTHON_SPEC)
 _PYTHON_SPEC.loader.exec_module(python_tests)
 
-POLICY_VERSION = 21
+POLICY_VERSION = 22
 UI_PACKAGES = {"hex-ui", "hex-widgets"}
 # Opaque state reaches storage through runtime type IDs, not a Cargo dependency.
 # Changes here must be reviewed with the real registration/codec consumers.
@@ -251,6 +251,7 @@ UI_UNIT_TARGETS = {"editor::audio_admission::": "unit_editor_state",
                    "editor::midi_drag::": "unit_piano_roll",
                    "editor::midi_group_drag::": "unit_piano_roll",
                    "editor::midi_scene::": "unit_piano_roll",
+                   "editor::midi_selection::": "unit_piano_roll",
                    "editor::midi_stroke::": "unit_piano_roll",
                    "editor::midi_thumbnail::": "unit_editor_state",
                    "editor::midi_viewport_grid::": "unit_piano_roll",
@@ -262,7 +263,7 @@ UI_UNIT_TARGETS = {"editor::audio_admission::": "unit_editor_state",
 UI_UNIT_FEATURES = {"unit_piano_roll": "ui-unit-tier"}
 # These geometry modules call one another; a change to one must exercise the
 # complete pure boundary rather than only its own test-name prefix.
-UI_UNIT_COHORTS = [{"editor::midi_drag::", "editor::midi_group_drag::", "editor::midi_scene::", "editor::midi_stroke::", "editor::midi_viewport_grid::"}]
+UI_UNIT_COHORTS = [{"editor::midi_drag::", "editor::midi_group_drag::", "editor::midi_scene::", "editor::midi_selection::", "editor::midi_stroke::", "editor::midi_viewport_grid::"}]
 # Recovery's real prepared-audio test is a sibling so importing its state into
 # the unit binary cannot also compile and run the integration fixture there.
 UI_INTEGRATION_PAIRS = {"editor::recovery_state::": "editor::recovery_state_integration_tests::"}
