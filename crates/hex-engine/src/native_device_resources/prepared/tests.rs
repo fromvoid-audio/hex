@@ -1325,4 +1325,33 @@ fn ordinary_sampler_gain_on_control() {
         })
     );
     assert_eq!(console.device_resource_leases().count(), 1);
+
+    let offline_sources = ControlSamplerSources::prepare_on_control(
+        &store,
+        &stable,
+        20_000_000,
+        8 * pcm.len() as u64,
+        &cancel,
+    )
+    .unwrap();
+    let offline = Arc::new(
+        PreparedRevision::prepare_control_sampler_export(
+            &stable,
+            &BTreeMap::new(),
+            table,
+            &crate::audio_transform::AudioTransformPreparation::default(),
+            &offline_sources,
+        )
+        .unwrap(),
+    );
+    let mut offline =
+        SessionPlayback::new_control_sampler_export(offline, &offline_sources).unwrap();
+    offline.apply(SessionPlaybackCommand::Play).unwrap();
+    offline
+        .render_control_sampler_export(&mut actual, &offline_sources)
+        .unwrap();
+    assert_eq!(
+        actual,
+        std::array::from_fn(|index| { if index % 4 < 2 { pcm[index] } else { [0.0; 2] } })
+    );
 }
