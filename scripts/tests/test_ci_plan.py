@@ -1667,8 +1667,12 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/src/editor/recovery_state_integration_tests.rs"], inventory, [owner]),
             {owner: [recovery, recovery_integration]})
+        play_intent = "editor::play_intent::"
+        self.assertEqual(plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/play_intent.rs"], inventory, [owner]),
+            {owner: [play_intent]})
         all_modules = [admission, navigation, cpu, disk, thumbnail, "editor::pending_edit::",
-                       recovery, recovery_integration, scale, viewport]
+                       play_intent, recovery, recovery_integration, scale, viewport]
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/tests/unit_editor_state.rs"], inventory, [owner]),
             {owner: all_modules})
@@ -1678,6 +1682,7 @@ class ModuleScopeTests(unittest.TestCase):
             root, ["crates/hex-ui/tests/unit_pending_edit.rs"], inventory, [owner]), {})
         for names, expected in ((filters[owner], True), ([viewport], True), ([disk], True), ([cpu], True),
                                 ([thumbnail], True), ([scale], True), ([admission], True), ([navigation], True),
+                                ([play_intent], True),
                                 ([recovery, recovery_integration], True),
                                 (["editor::clip_content_cache::"], True),
                                 (["editor::track_meters::"], True),
