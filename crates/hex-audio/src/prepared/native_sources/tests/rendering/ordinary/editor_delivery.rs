@@ -379,7 +379,13 @@ fn paired_editor_values_and_independent_restores_are_confirmed_only_at_main() {
             .execute(Command::ReplaceDeviceAutomationTarget {
                 device,
                 target: hex_project::DeviceAutomationTarget::Vst3 { parameter: id },
-                points: [(0, 0.25), (20, 0.5)][..if id == 23 { 2 } else { 1 }]
+                // Raw 11 has no authored lane. Its prepared canonical
+                // Base point still owns the exact restoration budget.
+                points: [(0, 0.25), (20, 0.5)][..match id {
+                    11 => 0,
+                    23 => 2,
+                    _ => 1,
+                }]
                     .iter()
                     .map(|&(frame, value)| hex_project::AutomationPoint {
                         beat: hex_project::BeatTime::from_ratio(frame, 24_000).unwrap(),
@@ -560,7 +566,7 @@ fn paired_editor_values_and_independent_restores_are_confirmed_only_at_main() {
     for &(frame, value) in expected {
         assert_eq!(samples[frame - 16], value, "exact Main frame {frame}");
     }
-    f.control.command(PlaybackCommand::Stop).unwrap();
+    f.control.stop();
     physical_block::<4>(&mut f);
     assert_eq!(
         f.control.try_native_source_editor_delivery_on_control(),
