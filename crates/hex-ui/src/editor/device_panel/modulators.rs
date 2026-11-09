@@ -5,11 +5,12 @@ use crate::context_menu::{MenuItem, PopupMenu};
 use crate::editor::context_menu::EditorContextAction;
 use gpui::{AnyElement, Point, SharedString};
 use hex_engine::{
-    audio_rate_modulator as audio_rate, button_modulator as manual_button,
-    buttons_modulator as buttons, follower_modulator as follower, lfo_modulator as lfo,
-    macro_four_modulator as macro_four, macro_modulator as manual, math_modulator as math,
-    mix_modulator as mix, note_counter_modulator as note_counter,
-    note_pressure_modulator as pressure, ramp_modulator as ramp, random_modulator as random,
+    ahd_release_modulator as ahd_release, audio_rate_modulator as audio_rate,
+    button_modulator as manual_button, buttons_modulator as buttons,
+    follower_modulator as follower, lfo_modulator as lfo, macro_four_modulator as macro_four,
+    macro_modulator as manual, math_modulator as math, mix_modulator as mix,
+    note_counter_modulator as note_counter, note_pressure_modulator as pressure,
+    ramp_modulator as ramp, random_modulator as random,
 };
 use hex_lattice_contract::{ParameterId, ParameterModulation};
 use hex_project::{
@@ -33,10 +34,11 @@ enum SourceKind {
     Mix,
     NoteCounter,
     Ramp,
+    AhdRelease,
 }
 
 impl SourceKind {
-    const ALL: [Self; 13] = [
+    const ALL: [Self; 14] = [
         Self::Lfo,
         Self::Follower,
         Self::Macro,
@@ -50,6 +52,7 @@ impl SourceKind {
         Self::Mix,
         Self::NoteCounter,
         Self::Ramp,
+        Self::AhdRelease,
     ];
 
     fn label(self) -> &'static str {
@@ -67,6 +70,7 @@ impl SourceKind {
             Self::Mix => "mix",
             Self::NoteCounter => "note counter",
             Self::Ramp => "ramp",
+            Self::AhdRelease => "ahd on release",
         }
     }
 
@@ -94,6 +98,7 @@ impl SourceKind {
             Self::Mix => mix::Settings::default().encode(),
             Self::NoteCounter => note_counter::Settings::default().encode(),
             Self::Ramp => ramp::Settings::default().encode(),
+            Self::AhdRelease => ahd_release::Settings::default().encode(),
             Self::Macro => manual::Settings::default().encode(),
             Self::MacroFour => macro_four::Settings::default().encode(),
             Self::Random => random::Settings {
@@ -235,6 +240,47 @@ enum RampEdit {
 }
 
 #[derive(Clone, Copy)]
+enum AhdEdit {
+    Duration {
+        segment: usize,
+        longer: bool,
+    },
+    Curve {
+        index: usize,
+        curve: ahd_release::Curve,
+    },
+    ToggleSingleTrigger,
+}
+
+fn duration_text(micros: u32) -> String {
+    if micros < 1000 {
+        format!("{micros} µs")
+    } else {
+        format!("{:.3} ms", f64::from(micros) / 1000.0)
+    }
+}
+
+fn curve_control(curve: ramp::Curve) -> (&'static str, ramp::Curve) {
+    match curve {
+        ramp::Curve::Linear => ("linear", ramp::Curve::EaseIn),
+        ramp::Curve::EaseIn => ("ease in", ramp::Curve::EaseOut),
+        ramp::Curve::EaseOut => ("ease out", ramp::Curve::Linear),
+    }
+}
+
+fn duration_step(micros: u32, longer: bool) -> u32 {
+    if longer {
+        micros
+            .saturating_mul(2)
+            .clamp(ramp::MIN_MICROS, ramp::MAX_MICROS)
+    } else if micros <= ramp::MIN_MICROS {
+        0
+    } else {
+        (micros / 2).max(ramp::MIN_MICROS)
+    }
+}
+
+#[derive(Clone, Copy)]
 enum Edit {
     Add(SourceKind),
     ToggleSource(ModulationSourceId),
@@ -242,6 +288,7 @@ enum Edit {
     ToggleButtons(MappingOutput),
     NoteCounter(ModulationSourceId, CounterEdit),
     Ramp(ModulationSourceId, RampEdit),
+    AhdRelease(ModulationSourceId, AhdEdit),
     DuplicateSource(ModulationSourceId),
     RemoveSource(ModulationSourceId),
     Rate(ModulationSourceId, f64),
@@ -342,7 +389,9 @@ fn open_add_menu(
         .filter(|kind| match kind {
             SourceKind::Follower | SourceKind::AudioRate => allow_audio_input,
             SourceKind::NotePressure => allow_note_pressure,
-            SourceKind::NoteCounter | SourceKind::Ramp => allow_note_events,
+            SourceKind::NoteCounter | SourceKind::Ramp | SourceKind::AhdRelease => {
+                allow_note_events
+            }
             _ => true,
         })
         .map(|kind| MenuItem {
@@ -609,6 +658,7 @@ pub(super) fn panel(
             mix::TYPE_ID => SourceKind::Mix,
             note_counter::TYPE_ID => SourceKind::NoteCounter,
             ramp::TYPE_ID => SourceKind::Ramp,
+            ahd_release::TYPE_ID => SourceKind::AhdRelease,
             _ => continue,
         };
         let label = kind.label();
@@ -756,16 +806,8 @@ pub(super) fn panel(
         if let SourceKind::Ramp = kind
             && let Ok(settings) = ramp::Settings::decode(&source.state)
         {
-            let duration = if settings.duration_micros < 1000 {
-                format!("{} µs", settings.duration_micros)
-            } else {
-                format!("{:.3} ms", f64::from(settings.duration_micros) / 1000.0)
-            };
-            let (curve, next) = match settings.curve {
-                ramp::Curve::Linear => ("linear", ramp::Curve::EaseIn),
-                ramp::Curve::EaseIn => ("ease in", ramp::Curve::EaseOut),
-                ramp::Curve::EaseOut => ("ease out", ramp::Curve::Linear),
-            };
+            let duration = duration_text(settings.duration_micros);
+            let (curve, next) = curve_control(settings.curve);
             row = row
                 .child(
                     div()
@@ -808,6 +850,72 @@ pub(super) fn panel(
                     theme::text(if settings.looping { "loop" } else { "one shot" }),
                     Edit::Ramp(source_id, RampEdit::ToggleLoop),
                 ));
+        }
+        if let SourceKind::AhdRelease = kind
+            && let Ok(settings) = ahd_release::Settings::decode(&source.state)
+        {
+            for (index, (name, curve_index)) in
+                [("attack", Some(0)), ("hold", None), ("decay", Some(1))]
+                    .into_iter()
+                    .enumerate()
+            {
+                let duration = duration_text(settings.durations_micros[index]);
+                let mut controls = div()
+                    .flex()
+                    .items_center()
+                    .gap(px(2.0))
+                    .child(theme::text(format!("{name} {duration}")))
+                    .child(button(
+                        cx,
+                        source_key(&format!("{name}-shorter")),
+                        theme::text("−"),
+                        Edit::AhdRelease(
+                            source_id,
+                            AhdEdit::Duration {
+                                segment: index,
+                                longer: false,
+                            },
+                        ),
+                    ))
+                    .child(button(
+                        cx,
+                        source_key(&format!("{name}-longer")),
+                        theme::text("+"),
+                        Edit::AhdRelease(
+                            source_id,
+                            AhdEdit::Duration {
+                                segment: index,
+                                longer: true,
+                            },
+                        ),
+                    ));
+                if let Some(curve_index) = curve_index {
+                    let (curve, next) = curve_control(settings.curves[curve_index]);
+                    controls = controls.child(button(
+                        cx,
+                        source_key(&format!("{name}-curve")),
+                        theme::text(curve),
+                        Edit::AhdRelease(
+                            source_id,
+                            AhdEdit::Curve {
+                                index: curve_index,
+                                curve: next,
+                            },
+                        ),
+                    ));
+                }
+                row = row.child(controls);
+            }
+            row = row.child(button(
+                cx,
+                source_key("single-trigger"),
+                theme::text(if settings.single_trigger {
+                    "single trigger"
+                } else {
+                    "retrigger"
+                }),
+                Edit::AhdRelease(source_id, AhdEdit::ToggleSingleTrigger),
+            ));
         }
         if matches!(kind, SourceKind::NotePressure) {
             row = row.child(theme::text("one carrier"));
@@ -1408,8 +1516,10 @@ fn apply(
                     "one note pressure source is supported on an fm4 receiver",
                 ));
             }
-            if matches!(kind, SourceKind::NoteCounter | SourceKind::Ramp)
-                && !hex_engine::project_device_has_modulation_note_events(project, id)
+            if matches!(
+                kind,
+                SourceKind::NoteCounter | SourceKind::Ramp | SourceKind::AhdRelease
+            ) && !hex_engine::project_device_has_modulation_note_events(project, id)
             {
                 return Err(Invalid("this modulator requires instrument note events"));
             }
@@ -1462,16 +1572,37 @@ fn apply(
             let mut settings = ramp::Settings::decode(&source.state).map_err(unsupported)?;
             match edit {
                 RampEdit::Duration { longer } => {
-                    let micros = if longer {
-                        settings.duration_micros.saturating_mul(2)
-                    } else {
-                        settings.duration_micros / 2
-                    };
-                    settings.duration_micros = micros.clamp(ramp::MIN_MICROS, ramp::MAX_MICROS);
+                    settings.duration_micros =
+                        duration_step(settings.duration_micros, longer).max(ramp::MIN_MICROS);
                 }
                 RampEdit::Curve(curve) => settings.curve = curve,
                 RampEdit::ToggleDirection => settings.falling = !settings.falling,
                 RampEdit::ToggleLoop => settings.looping = !settings.looping,
+            }
+            source.state = settings.encode().map_err(unsupported)?;
+        }
+        Edit::AhdRelease(id, edit) => {
+            let source = find_source(&mut sources, id)?;
+            let mut settings = ahd_release::Settings::decode(&source.state).map_err(unsupported)?;
+            match edit {
+                AhdEdit::Duration { segment, longer } => {
+                    let micros = settings
+                        .durations_micros
+                        .get_mut(segment)
+                        .ok_or(Invalid("envelope segment is unsupported"))?;
+                    *micros = duration_step(*micros, longer);
+                    if settings.durations_micros == [0; 3] {
+                        settings.durations_micros[segment] = ramp::MIN_MICROS;
+                    }
+                }
+                AhdEdit::Curve { index, curve } => {
+                    let control = settings
+                        .curves
+                        .get_mut(index)
+                        .ok_or(Invalid("envelope curve is unsupported"))?;
+                    *control = curve;
+                }
+                AhdEdit::ToggleSingleTrigger => settings.single_trigger = !settings.single_trigger,
             }
             source.state = settings.encode().map_err(unsupported)?;
         }
