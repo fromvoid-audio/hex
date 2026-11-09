@@ -287,7 +287,7 @@ impl ControlSamplerSources {
         }
         Ok(Box::new(
             hex_devices::sampler::catalog::PreparedSamplerInstrument::from_runtime_on_control(
-                c.prepared.clone(),
+                c.prepared.clone().with_sample_rate_gain(),
             ),
         ))
     }
