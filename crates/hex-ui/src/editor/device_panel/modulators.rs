@@ -813,9 +813,9 @@ pub(super) fn target_overlay(
                     if id == parameter
             )
     });
-    if !assigned
-        && is_pressure_source(bank.sources(), source)
-        && bank.routes().iter().any(|route| route.source == source)
+    if is_pressure_source(bank.sources(), source)
+        && (!is_fm4_carrier(parameter)
+            || (!assigned && bank.routes().iter().any(|route| route.source == source)))
     {
         return None;
     }
@@ -847,6 +847,11 @@ pub(super) fn target_overlay(
             }))
             .into_any_element(),
     )
+}
+
+fn is_fm4_carrier(parameter: ParameterId) -> bool {
+    use hex_devices::fm4::device::parameter::carrier;
+    (carrier(1)..=carrier(4)).contains(&parameter)
 }
 
 fn is_pressure_source(sources: &[Modulator], id: ModulationSourceId) -> bool {
@@ -1014,7 +1019,7 @@ fn apply(
         Edit::Map(source, target) => {
             let pressure = is_pressure_source(&sources, source);
             if pressure
-                && (!matches!(target, MappingTarget::Device(_))
+                && (!matches!(target, MappingTarget::Device(id) if is_fm4_carrier(id))
                     || routes.iter().any(|route| route.source == source))
             {
                 return Err(Invalid("note pressure supports one carrier assignment"));

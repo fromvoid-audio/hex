@@ -14,12 +14,31 @@ use std::hint::black_box;
 
 #[test]
 fn fm4_carriers_follow_sample_routes_and_retry_without_allocating() {
+    exercise_fm4_sample_routes(false);
+}
+
+#[test]
+fn fm4_oscillator_levels_follow_sample_routes_and_retry_without_allocating() {
+    exercise_fm4_sample_routes(true);
+}
+
+fn exercise_fm4_sample_routes(oscillator_levels: bool) {
     let context = DevicePreparationContext {
         sample_rate: 48_000,
         tuning: &TuningTable::default(),
         resources: &EMPTY_DEVICE_RESOURCES,
     };
-    let ids = [parameter::carrier(1), parameter::carrier(2)];
+    let (ids, route_scale) = if oscillator_levels {
+        (
+            [
+                parameter::oscillator_level(1),
+                parameter::oscillator_level(2),
+            ],
+            0.25,
+        )
+    } else {
+        ([parameter::carrier(1), parameter::carrier(2)], 1.0)
+    };
     let patch = |state: &NativeDeviceState, weights: [f32; 2]| {
         let snapshot = DeviceParameterSnapshot::new(&[
             (ids[0], ParameterValue::Float(weights[0])),
@@ -28,7 +47,16 @@ fn fm4_carriers_follow_sample_routes_and_retry_without_allocating() {
         .unwrap();
         FM4_DEFINITION.patch_parameters(state, &snapshot).unwrap()
     };
-    let original = FM4_DEFINITION.default_state().unwrap();
+    let mut original = FM4_DEFINITION.default_state().unwrap();
+    if oscillator_levels {
+        original = FM4_DEFINITION
+            .patch_parameter(
+                &original,
+                parameter::modulation(2, 1),
+                ParameterValue::Float(0.25),
+            )
+            .unwrap();
+    }
     let state = patch(&original, [0.5; 2]);
     let factory = FM4_DEFINITION
         .prepare_carrier_runtime(&state, &context)
@@ -40,7 +68,7 @@ fn fm4_carriers_follow_sample_routes_and_retry_without_allocating() {
         assert_eq!(prepared, metadata);
         assert_eq!(
             prepared.is_some(),
-            (29..=32).contains(&descriptor.id.value())
+            matches!(descriptor.id.value(), 2 | 5 | 8 | 11 | 29..=32)
         );
     }
     let targets = ids.map(|id| ModulationTarget {
@@ -55,7 +83,7 @@ fn fm4_carriers_follow_sample_routes_and_retry_without_allocating() {
     let routes = std::array::from_fn::<_, 2, _>(|index| ModulationRoute {
         source: 0,
         target: ids[index],
-        amount: [0.125, -0.25][index],
+        amount: [0.125, -0.25][index] * route_scale,
         range: [-1.0, 1.0],
     });
     let source = PreparedModulationSource::free_with_waveform(

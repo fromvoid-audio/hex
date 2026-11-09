@@ -439,6 +439,15 @@ fn native_quote_does_not_charge_opaque_foreign_source_programs() {
 
 #[test]
 fn saved_fm4_routes_compose_with_authored_curves_and_keep_phase_at_live_handoff() {
+    exercise_saved_fm4_routes(false);
+}
+
+#[test]
+fn saved_fm4_oscillator_levels_modulate_the_fm_signal_at_sample_rate() {
+    exercise_saved_fm4_routes(true);
+}
+
+fn exercise_saved_fm4_routes(oscillator_levels: bool) {
     use crate::{LaunchQuantization, PreparedRevision, SessionPlayback, SessionPlaybackCommand};
     use hex_devices::{
         fm4::device::{FM4_DEFINITION, FM4_TYPE_ID, parameter},
@@ -458,9 +467,29 @@ fn saved_fm4_routes_compose_with_authored_curves_and_keep_phase_at_live_handoff(
     const RATE: u32 = 48_000;
     const HANDOFF: usize = 11;
     const FRAMES: usize = 137;
-    let ids = [parameter::carrier(1), parameter::carrier(2)];
-    let with_carriers = |values: [f32; 2]| {
+    let (ids, automation, route_scale) = if oscillator_levels {
+        (
+            [
+                parameter::oscillator_level(1),
+                parameter::oscillator_level(2),
+            ],
+            0.03125,
+            0.25,
+        )
+    } else {
+        ([parameter::carrier(1), parameter::carrier(2)], 0.625, 1.0)
+    };
+    let with_controls = |values: [f32; 2]| {
         let mut state = FM4_DEFINITION.default_state().unwrap();
+        if oscillator_levels {
+            state = FM4_DEFINITION
+                .patch_parameter(
+                    &state,
+                    parameter::modulation(2, 1),
+                    ParameterValue::Float(0.25),
+                )
+                .unwrap();
+        }
         for (id, value) in ids.into_iter().zip(values) {
             state = FM4_DEFINITION
                 .patch_parameter(&state, id, ParameterValue::Float(value))
@@ -468,7 +497,7 @@ fn saved_fm4_routes_compose_with_authored_curves_and_keep_phase_at_live_handoff(
         }
         state
     };
-    let original = with_carriers([0.5; 2]);
+    let original = with_controls([0.5; 2]);
     let mut editor =
         hex_project::Editor::new(hex_project::Project::new(RATE).unwrap(), 16).unwrap();
     let Created::Track(track) = editor
@@ -529,14 +558,14 @@ fn saved_fm4_routes_compose_with_authored_curves_and_keep_phase_at_live_handoff(
             })
             .unwrap();
     }
-    // 0.625 normalized equals 0.25 canonical in the carrier's ±1 domain.
+    // Each lane starts at canonical 0.25 in its own normalized domain.
     editor
         .execute(Command::ReplaceDeviceAutomation {
             device,
             parameter: ids[1],
             points: vec![AutomationPoint {
                 beat: BeatTime::ZERO,
-                value: AutomationValue::new(0.625).unwrap(),
+                value: AutomationValue::new(automation).unwrap(),
                 outgoing: AutomationInterpolation::Step,
             }],
         })
@@ -565,7 +594,7 @@ fn saved_fm4_routes_compose_with_authored_curves_and_keep_phase_at_live_handoff(
             target: DeviceAutomationTarget::Parameter(ids[index]),
             vst3_class: None,
         },
-        amount: ModulationAmount::new([0.125, -0.125][index]).unwrap(),
+        amount: ModulationAmount::new([0.125, -0.125][index] * route_scale).unwrap(),
         range: ModulationRange::default(),
         enabled: true,
     });
@@ -580,7 +609,7 @@ fn saved_fm4_routes_compose_with_authored_curves_and_keep_phase_at_live_handoff(
     editor.execute_prepared(edit(routes), prepare).unwrap();
     let old = prepare(editor.project()).unwrap();
     let mut edited = routes;
-    edited[0].amount = ModulationAmount::new(0.25).unwrap();
+    edited[0].amount = ModulationAmount::new(0.25 * route_scale).unwrap();
     editor.execute_prepared(edit(edited), prepare).unwrap();
     let new = prepare(editor.project()).unwrap();
     let prepared = new.session().instrument_modulation(track).unwrap();
@@ -632,7 +661,7 @@ fn saved_fm4_routes_compose_with_authored_curves_and_keep_phase_at_live_handoff(
     };
     let note = |values| {
         FM4_DEFINITION
-            .prepare_instrument(&with_carriers(values), &context)
+            .prepare_instrument(&with_controls(values), &context)
             .unwrap()
             .prepare_note(60, 127)
             .unwrap()
