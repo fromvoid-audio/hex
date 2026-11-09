@@ -6469,6 +6469,15 @@ fn modulation_panel_maps_continuous_and_discrete_eq8_controls_without_editing_au
 fn modulation_panel_maps_all_fm4_carriers_through_the_scrolled_instrument_body(
     cx: &mut TestAppContext,
 ) {
+    exercise_fm4_modulation_mapper(cx, false);
+}
+
+#[gpui::test]
+fn modulation_panel_maps_unipolar_fm4_pressure_to_one_carrier(cx: &mut TestAppContext) {
+    exercise_fm4_modulation_mapper(cx, true);
+}
+
+fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, pressure: bool) {
     use hex_devices::fm4::device::{FM4_DEFINITION, FM4_TYPE_ID, parameter};
     use hex_lattice_contract::NativeDeviceMetadata;
     use hex_project::{DeviceAutomationTarget, ModulationDestination};
@@ -6517,7 +6526,7 @@ fn modulation_panel_maps_all_fm4_carriers_through_the_scrolled_instrument_body(
                 .map(|item| item.label)
                 .collect::<Vec<_>>()
         }),
-        ["lfo", "macro", "random"],
+        ["lfo", "macro", "random", "note pressure"],
     );
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
@@ -6532,11 +6541,47 @@ fn modulation_panel_maps_all_fm4_carriers_through_the_scrolled_instrument_body(
             .modulation()
             .clone()
     };
-    add_modulator_from_menu(&mut visual, device, "lfo");
+    let kind = if pressure {
+        click(
+            &mut visual,
+            format!("add-modulator-{}", device.value()),
+            true,
+        );
+        visual.simulate_keystrokes("down down down enter");
+        visual.run_until_parked();
+        "note pressure"
+    } else {
+        add_modulator_from_menu(&mut visual, device, "lfo");
+        "lfo"
+    };
     pump_until(&editor, cx, |view| bank(view).sources().len() == 1);
     visual.run_until_parked();
     let source = editor.read_with(cx, |view, _| bank(view).sources()[0].id);
-    click(&mut visual, format!("lfo-{}-map", source.value()), true);
+    if pressure {
+        assert!(
+            visual
+                .debug_bounds(Box::leak(
+                    format!("note pressure-{}-duplicate", source.value()).into_boxed_str()
+                ))
+                .is_none()
+        );
+        click(
+            &mut visual,
+            format!("add-modulator-{}", device.value()),
+            true,
+        );
+        assert!(editor.read_with(cx, |view, _| {
+            view.context_menu
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .all(|item| item.label != "note pressure")
+        }));
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+    }
+    click(&mut visual, format!("{kind}-{}-map", source.value()), true);
     editor.update(cx, |view, cx| {
         view.device_panel.parameter_rows[&device]
             .scroll
@@ -6563,7 +6608,12 @@ fn modulation_panel_maps_all_fm4_carriers_through_the_scrolled_instrument_body(
             .is_none()
     );
 
-    let targets = [1, 2, 3, 4].map(parameter::carrier);
+    let carriers = [1, 2, 3, 4].map(parameter::carrier);
+    let targets = if pressure {
+        &carriers[..1]
+    } else {
+        &carriers[..]
+    };
     let body = Box::leak(format!("device-body-{}", device.value()).into_boxed_str());
     let shell = Box::leak(format!("device-shell-{}", device.value()).into_boxed_str());
     let viewport = |visual: &mut VisualTestContext| {
@@ -6572,7 +6622,7 @@ fn modulation_panel_maps_all_fm4_carriers_through_the_scrolled_instrument_body(
             .unwrap()
             .intersect(&visual.debug_bounds(shell).unwrap())
     };
-    for (index, target) in targets.into_iter().enumerate() {
+    for (index, &target) in targets.iter().enumerate() {
         let key = map_key(target);
         let selector = Box::leak(key.clone().into_boxed_str());
         // The inner row window overscans its scroll area. The outer housing
@@ -6611,11 +6661,27 @@ fn modulation_panel_maps_all_fm4_carriers_through_the_scrolled_instrument_body(
         visual.run_until_parked();
     }
 
+    if pressure {
+        for target in &carriers[1..] {
+            assert!(
+                visual
+                    .debug_bounds(Box::leak(map_key(*target).into_boxed_str()))
+                    .is_none()
+            );
+        }
+    }
     let mapped = editor.read_with(cx, |view, _| {
         let project = &view.state.as_ref().unwrap().project;
         let current = project.device(device).unwrap();
-        for (route, target) in current.modulation().routes().iter().zip(targets) {
+        for (route, &target) in current.modulation().routes().iter().zip(targets) {
             assert_eq!(route.source, source);
+            if pressure {
+                assert_eq!([route.range.start.get(), route.range.end.get()], [0.0, 1.0]);
+                assert_eq!(
+                    current.modulation().sources()[0].state.type_id(),
+                    hex_engine::note_pressure_modulator::TYPE_ID
+                );
+            }
             assert_eq!(
                 route.destination,
                 ModulationDestination::Device {
@@ -6783,6 +6849,14 @@ fn modulation_panel_closes_the_add_menu_when_its_device_is_removed(cx: &mut Test
         true,
     );
     assert!(visual.debug_bounds("context-menu-panel").is_some());
+    assert!(editor.read_with(cx, |view, _| {
+        view.context_menu
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .all(|item| item.label != "note pressure")
+    }));
 
     editor.update(cx, |view, cx| {
         assert!(view.enqueue(Request::Edit(Command::RemoveDevice(device))));

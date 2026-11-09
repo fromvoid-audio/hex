@@ -453,6 +453,16 @@ impl PreparedNativeInstrument for PreparedFm4Instrument {
         Ok(Some(Box::new(self.runtime)))
     }
 
+    fn prepare_mutable_note_pressure(
+        &self,
+        source: hex_lattice_contract::ModulationSourceId,
+        route: Option<hex_lattice::PreparedPressureRoute>,
+    ) -> Result<Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>, DeviceContractError> {
+        Ok(Box::new(
+            self.runtime.with_note_pressure(Some(source), route)?,
+        ))
+    }
+
     fn algorithmic_latency_frames(&self) -> Option<u32> {
         Some(0)
     }

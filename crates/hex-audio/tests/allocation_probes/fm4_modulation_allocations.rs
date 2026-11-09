@@ -507,3 +507,210 @@ fn fm4_pressure_modulates_only_its_voice_and_preserves_release_and_retry() {
         (0, 0, 0, 0)
     );
 }
+
+#[test]
+fn saved_fm4_note_pressure_keeps_its_unclamped_source_value_during_detachment() {
+    use hex_audio::prepared;
+    use hex_devices::{
+        fm4::device::FM4_TYPE_ID,
+        modulation::{macro_value, note_pressure},
+    };
+    use hex_engine::{
+        PreparedRevision, SineTable,
+        computer_keyboard::{ComputerKeyboardInput, LiveNoteEvent},
+        playback::{Playback, PlaybackCommand},
+    };
+    use hex_project::{
+        Command, Created, DeviceAutomationTarget, DeviceModulation, DeviceModulationRoute, Editor,
+        ModulationAmount, ModulationDestination, ModulationOutputId, ModulationRange,
+        ModulationRouteId, ModulationSourceId, Modulator, Project,
+    };
+    use std::{collections::BTreeMap, sync::Arc};
+
+    const RATE: u32 = 48_000;
+    const DETACH: u64 = 17;
+    let context = DevicePreparationContext {
+        sample_rate: RATE,
+        tuning: &TuningTable::default(),
+        resources: &EMPTY_DEVICE_RESOURCES,
+    };
+    let state = FM4_DEFINITION.default_state().unwrap();
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 8).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "expressive fm4".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: state.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    let device = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let next = editor.project().next_identity();
+    let manual = ModulationSourceId::new(next).unwrap();
+    let pressure = ModulationSourceId::new(next + 1).unwrap();
+    let slot = |id, state| Modulator {
+        id,
+        color: Default::default(),
+        enabled: true,
+        state,
+    };
+    let slots = vec![
+        slot(
+            manual,
+            macro_value::Settings { value: 1.0 }.encode().unwrap(),
+        ),
+        slot(pressure, note_pressure::default_state().unwrap()),
+    ];
+    let target = parameter::carrier(1);
+    let route = |id, source, amount, range| DeviceModulationRoute {
+        id: ModulationRouteId::new(id).unwrap(),
+        source,
+        output: ModulationOutputId::MAIN,
+        destination: ModulationDestination::Device {
+            device_type: FM4_TYPE_ID,
+            target: DeviceAutomationTarget::Parameter(target),
+            vst3_class: None,
+        },
+        amount: ModulationAmount::new(amount).unwrap(),
+        range,
+        enabled: true,
+    };
+    let routes = [
+        route(next + 2, manual, 0.125, ModulationRange::default()),
+        route(
+            next + 3,
+            pressure,
+            -0.25,
+            ModulationRange {
+                start: ModulationAmount::new(0.0).unwrap(),
+                end: ModulationAmount::new(1.0).unwrap(),
+            },
+        ),
+    ];
+    let edit = |routes| Command::ReplaceDeviceModulation {
+        device,
+        modulation: DeviceModulation::new(slots.clone(), routes).unwrap(),
+    };
+    let table = Arc::new(SineTable::new());
+    let prepare = |project: &Project| {
+        PreparedRevision::prepare(project, &BTreeMap::new(), Arc::clone(&table), None)
+    };
+    let (_, revision) = editor
+        .execute_prepared(edit(routes.to_vec()), prepare)
+        .unwrap();
+    let authored = editor.project().clone();
+    let mut invalid = routes;
+    invalid[1].destination = ModulationDestination::Device {
+        device_type: FM4_TYPE_ID,
+        target: DeviceAutomationTarget::Parameter(parameter::RELEASE),
+        vst3_class: None,
+    };
+    assert!(
+        editor
+            .execute_prepared(edit(invalid.to_vec()), prepare)
+            .is_err()
+    );
+    assert_eq!(editor.project(), &authored);
+
+    let mut playback = Playback::try_from_prepared_with_session(Arc::new(revision)).unwrap();
+    let input = Arc::new(ComputerKeyboardInput::default().with_live_notes().unwrap());
+    playback
+        .prepare_computer_keyboard(editor.project(), track, Arc::clone(&input))
+        .unwrap();
+    let queue = input.live_notes().unwrap();
+    let activation = queue.current_activation_on_control().unwrap();
+    let (mut control, mut callback) = prepared::channel(RATE).unwrap();
+    assert!(control.publish(playback).is_ok());
+    control.command(PlaybackCommand::Play).unwrap();
+
+    let on = |channel, velocity| LiveNoteEvent::NoteOn {
+        channel,
+        pitch: 60,
+        velocity,
+    };
+    for event in [
+        on(0, 100),
+        on(1, 80),
+        LiveNoteEvent::PolyPressure {
+            channel: 0,
+            pitch: 60,
+            value: 127,
+        },
+    ] {
+        queue.publish(activation, event).unwrap();
+    }
+    let mut actual = [[0.0; 2]; DETACH as usize];
+    let counts = allocation_counter::measure(|| {
+        callback.begin_block();
+        callback.render(&mut actual).unwrap();
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    let note = |carrier, velocity| {
+        let state = FM4_DEFINITION
+            .patch_parameter(&state, target, ParameterValue::Float(carrier))
+            .unwrap();
+        FM4_DEFINITION
+            .prepare_instrument(&state, &context)
+            .unwrap()
+            .prepare_note(60, velocity)
+            .unwrap()
+    };
+    let first = [note(1.0, 100), note(0.75, 100)];
+    let second = note(1.0, 80);
+    let sum = |a: [f32; 2], b: [f32; 2]| [(f64::from(a[0]) + f64::from(b[0])) as f32; 2];
+    let expected: [[f32; 2]; DETACH as usize] = std::array::from_fn(|index| {
+        let a =
+            first[usize::from(index >= 2)].sample(index as u64, u64::MAX, &EMPTY_DEVICE_RESOURCES);
+        let b = index.checked_sub(1).map_or([0.0; 2], |age| {
+            second.sample(age as u64, u64::MAX, &EMPTY_DEVICE_RESOURCES)
+        });
+        sum(a, b)
+    });
+    assert_eq!(actual, expected);
+
+    editor.execute(Command::RemoveTrack(track)).unwrap();
+    let detached =
+        Playback::try_from_prepared_with_session(Arc::new(prepare(editor.project()).unwrap()))
+            .unwrap();
+    assert!(control.publish(detached).is_ok());
+    let mut tail = [[0.0; 2]; 31];
+    let counts = allocation_counter::measure(|| {
+        callback.begin_block();
+        callback.render(&mut tail).unwrap();
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    for (index, frame) in tail.into_iter().enumerate() {
+        let age = DETACH + index as u64;
+        let expected = sum(
+            first[1].sample(age, DETACH, &EMPTY_DEVICE_RESOURCES),
+            second.sample(age - 1, DETACH - 1, &EMPTY_DEVICE_RESOURCES),
+        );
+        assert_eq!(frame, expected, "detached frame {index}");
+    }
+    assert!(control.status.rejected_revision().is_none());
+}
