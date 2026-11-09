@@ -6249,6 +6249,95 @@ fn modulation_panel_adds_and_maps_an_lfo_without_editing_base_values(cx: &mut Te
 }
 
 #[gpui::test]
+fn modulation_panel_maps_delay_feedback_and_mix_without_changing_authored_values(
+    cx: &mut TestAppContext,
+) {
+    use hex_devices::delay::{DRY_WET, FEEDBACK, TIME, TYPE_ID};
+    use hex_lattice_contract::ParameterId;
+    use hex_project::{DeviceAutomationTarget, ModulationDestination};
+    let (service, state, track, device) = actor_native_effect_fixture(TYPE_ID);
+    let original = state.project.device(device).unwrap().state().clone();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1500.0), px(650.0)));
+    visual.run_until_parked();
+    let click = click_modulator_control;
+    click(&mut visual, "device-modulator-toggle".into(), false);
+    click(&mut visual, format!("add-lfo-{}", device.value()), true);
+    let slot = |view: &EditorView| {
+        view.state
+            .as_ref()?
+            .project
+            .device(device)?
+            .modulation()
+            .sources()
+            .first()
+            .map(|row| row.id)
+    };
+    pump_until(&editor, cx, |view| slot(view).is_some());
+    visual.run_until_parked();
+    let source = editor.read_with(cx, |view, _| slot(view).unwrap());
+    click(&mut visual, format!("lfo-{}-map", source.value()), true);
+    let key = |id: ParameterId| format!("map-target-{}-{}", device.value(), id.value());
+    assert!(
+        visual
+            .debug_bounds(Box::leak(key(TIME).into_boxed_str()))
+            .is_none()
+    );
+    let routes = |view: &EditorView| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .modulation()
+            .routes()
+            .to_vec()
+    };
+    assert_eq!(
+        editor.read_with(cx, |view, _| view.device_panel.mapping_source),
+        Some((device, source))
+    );
+    let strip = visual.debug_bounds("device-modulator-panel").unwrap();
+    visual.simulate_event(gpui::ScrollWheelEvent {
+        position: point(strip.center().x, strip.bottom() + px(5.0)),
+        delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-100.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    for (index, parameter) in [FEEDBACK, DRY_WET].into_iter().enumerate() {
+        let bounds = visual
+            .debug_bounds(Box::leak(key(parameter).into_boxed_str()))
+            .unwrap();
+        click(&mut visual, key(parameter), false);
+        assert!(
+            editor.read_with(cx, |view, _| view.worker_requests_pending > 0
+                || !view.pending_requests.is_empty()
+                || routes(view).len() == index + 1),
+            "Delay parameter {parameter:?} at {bounds:?} did not dispatch",
+        );
+        pump_until(&editor, cx, |view| routes(view).len() == index + 1);
+        visual.run_until_parked();
+    }
+    editor.read_with(cx, |view, _| {
+        let current = view.state.as_ref().unwrap().project.device(device).unwrap();
+        assert_eq!(current.state(), &original);
+        for (route, id) in routes(view).iter().zip([FEEDBACK, DRY_WET]) {
+            assert_eq!(route.source, source);
+            assert_eq!(
+                route.destination,
+                ModulationDestination::Device {
+                    device_type: TYPE_ID,
+                    target: DeviceAutomationTarget::Parameter(id),
+                    vst3_class: None,
+                }
+            );
+        }
+    });
+}
+
+#[gpui::test]
 fn modulation_panel_maps_continuous_and_discrete_eq8_controls_without_editing_authored_values(
     cx: &mut TestAppContext,
 ) {
