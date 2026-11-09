@@ -6253,6 +6253,7 @@ fn modulation_panel_maps_delay_feedback_and_mix_without_changing_authored_values
     cx: &mut TestAppContext,
 ) {
     use hex_devices::delay::{DRY_WET, FEEDBACK, TIME, TYPE_ID};
+    use hex_lattice_contract::ParameterId;
     use hex_project::{DeviceAutomationTarget, ModulationDestination};
     let (service, state, track, device) = actor_native_effect_fixture(TYPE_ID);
     let original = state.project.device(device).unwrap().state().clone();
