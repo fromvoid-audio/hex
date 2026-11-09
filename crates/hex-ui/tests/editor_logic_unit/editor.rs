@@ -14,3 +14,6 @@ mod session_navigation;
 
 #[path = "controller.rs"]
 mod controller;
+
+#[path = "audio_import_settings.rs"]
+mod audio_import_settings;

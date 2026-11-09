@@ -1762,10 +1762,11 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/editor/user_errors.rs"], inventory, [owner]),
                          {owner: names})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_editor_logic.rs"], inventory, [owner]),
-                         {owner: ["editor::controller::audio_event_correlation::",
+                         {owner: ["editor::audio_import_settings::admission::",
+                                  "editor::controller::audio_event_correlation::",
                                   "editor::controller::sampler_native_ui_protocol_tests::",
                                   "editor::session_navigation::", "editor::session_navigation_ui_test::",
-                                  "editor::session_route_view::", *names]})
+                                  "editor::session_route_view::", "editor::track_defaults::", *names]})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_session.rs"], inventory, [owner]), {})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
                     "single_run": {owner: "ui-test-support"}, "module_filters": {owner: names}}
@@ -1941,6 +1942,26 @@ class ModuleScopeTests(unittest.TestCase):
                                   "cargo_inventory": inventory, "paths": []})
         self.assertTrue(any(unit in step.argv for step in steps if "unit_editor_logic" in step.argv))
         self.assertTrue(any(window in step.argv for step in steps if step.step_id == "ui-feature-tests"))
+
+    def test_import_admission_keeps_unit_and_window_coverage(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::audio_import_settings::admission::"
+        parent = "editor::audio_import_settings::"
+        window = "editor::track_defaults::"
+        for path, expected in (("audio_import_settings.rs", [parent, window]),
+                               ("audio_import_settings/admission.rs", [unit, window])):
+            names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            self.assertEqual(names, {owner: expected})
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
+                        "single_run": {owner: "ui-test-support"}, "module_filters": names}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                      "cargo_inventory": inventory, "paths": []})
+            self.assertTrue(any(expected[0] in step.argv for step in steps if "unit_editor_logic" in step.argv))
+            self.assertTrue(any(window in step.argv for step in steps if step.step_id == "ui-feature-tests"))
 
     def test_timeline_target_follows_its_viewport_dependencies(self):
         root = SCRIPTS.parent
