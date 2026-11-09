@@ -12,6 +12,7 @@
 //! control owns preparation and final destruction.
 mod native_effect_storage;
 mod serial_effect_power;
+mod source_effect_stage;
 pub use hex_devices::SineTable;
 pub use hex_devices::auto_pan::{
     AutoPanWaveformPreview, waveform_preview as native_auto_pan_waveform_preview,
@@ -2823,6 +2824,7 @@ impl PreparedMasterGain {
 
 pub(crate) struct RendererRuntime {
     device_chains: Vec<hex_lattice::NativeRuntimeChain>,
+    source_effects: source_effect_stage::SourceEffectStages,
     return_chains: Vec<hex_lattice::NativeRuntimeChain>,
     main_chain: hex_lattice::NativeRuntimeChain,
     return_scratch: Vec<[Frame; 256]>,
@@ -2831,10 +2833,27 @@ pub(crate) struct RendererRuntime {
 }
 impl RendererRuntime {
     pub(crate) fn new(project: &Project) -> Self {
+        Self::with_prepared_source_effects(project, &[])
+    }
+
+    /// Offline control-side stage construction. The live linear owner still
+    /// uses `new` with an empty suffix until source handoff is supported.
+    fn with_prepared_source_effects(
+        project: &Project,
+        recipes: &[source_effect_stage::PreparedSourceEffects<'_>],
+    ) -> Self {
         let mut device_chains = Vec::new();
         let mut return_chains = Vec::new();
         let mut return_scratch = Vec::new();
         let mut runtime_error = None;
+        let source_effects =
+            match source_effect_stage::SourceEffectStages::prepare(project, recipes) {
+                Ok(stages) => stages,
+                Err(error) => {
+                    runtime_error = Some(error.0);
+                    source_effect_stage::SourceEffectStages::default()
+                }
+            };
         let main_chain = match project.new_main_device_runtime() {
             Ok(chain) => chain,
             Err(_) => {
@@ -2888,6 +2907,7 @@ impl RendererRuntime {
                         runtime_error = Some("return device allocation failed");
                         return Self {
                             device_chains,
+                            source_effects,
                             return_chains,
                             main_chain,
                             return_scratch,
@@ -2913,6 +2933,7 @@ impl RendererRuntime {
         }
         Self {
             device_chains,
+            source_effects,
             return_chains,
             main_chain,
             return_scratch,
@@ -2926,6 +2947,9 @@ impl RendererRuntime {
             compensation.delays.reset_epoch();
         }
         for chain in &mut self.device_chains {
+            chain.reset();
+        }
+        for chain in self.source_effects.chains_mut() {
             chain.reset();
         }
         for chain in &mut self.return_chains {
@@ -3070,6 +3094,7 @@ impl RendererRuntime {
 
     pub(crate) fn has_stateful_processors(&self) -> bool {
         self.main_chain.has_stateful_processors()
+            || self.source_effects.has_stateful_processors()
             || self
                 .device_chains
                 .iter()
@@ -3341,6 +3366,9 @@ impl RendererRuntime {
         for chain in &mut self.device_chains {
             chain.begin_block();
         }
+        for chain in self.source_effects.chains_mut() {
+            chain.begin_block();
+        }
         self.main_chain.begin_block();
         let has_return_routes = !project.return_buses.is_empty()
             || project.tracks.iter().any(|track| !track.sends.is_empty());
@@ -3368,6 +3396,9 @@ impl RendererRuntime {
             for chain in &mut self.device_chains {
                 chain.commit_block();
             }
+            for chain in self.source_effects.chains_mut() {
+                chain.commit_block();
+            }
             for chain in &mut self.return_chains {
                 chain.commit_block();
             }
@@ -3381,6 +3412,7 @@ impl RendererRuntime {
             let ordered = track.requires_ordered_processing();
             let render_direct_stateless_track = !stateful
                 && !ordered
+                && !self.source_effects.has_chain(index)
                 && !track.has_mutable_instrument()
                 && !track.has_gain_automation()
                 && !track.source_id().is_some_and(|source| {
@@ -3440,7 +3472,13 @@ impl RendererRuntime {
                         track.apply_ordered_prefix(target);
                     }
                     track.apply_instrument_input_gain(target);
-                    render_source_generators(project, index, start, end, target, volume_timing)?;
+                    self.source_effects.add_generator(
+                        project,
+                        index,
+                        start..end,
+                        target,
+                        volume_timing,
+                    )?;
                     track.apply_instrument_output_gain(target);
                     if stateful {
                         let chain = self
@@ -3474,7 +3512,13 @@ impl RendererRuntime {
                         .map_err(|_| Invalid("prepared effect segment is invalid"))?;
                 }
                 if !ordered {
-                    render_source_generators(project, index, start, end, target, volume_timing)?;
+                    self.source_effects.add_generator(
+                        project,
+                        index,
+                        start..end,
+                        target,
+                        volume_timing,
+                    )?;
                 }
                 for (frame_index, (destination, source)) in output[offset..offset + count]
                     .iter_mut()
@@ -3504,6 +3548,9 @@ impl RendererRuntime {
         )
         .map_err(|_| Invalid("main effect runtime failed"))?;
         for chain in &mut self.device_chains {
+            chain.commit_block();
+        }
+        for chain in self.source_effects.chains_mut() {
             chain.commit_block();
         }
         self.main_chain.commit_block();
@@ -3563,11 +3610,10 @@ impl RendererRuntime {
                         track.apply_ordered_prefix(rendered);
                     }
                     track.apply_instrument_input_gain(rendered);
-                    render_source_generators(
+                    self.source_effects.add_generator(
                         project,
                         track_index,
-                        start,
-                        end,
+                        start..end,
                         rendered,
                         volume_timing,
                     )?;
@@ -3604,11 +3650,10 @@ impl RendererRuntime {
                         .map_err(|_| Invalid("prepared effect segment is invalid"))?;
                 }
                 if !ordered {
-                    render_source_generators(
+                    self.source_effects.add_generator(
                         project,
                         track_index,
-                        start,
-                        end,
+                        start..end,
                         rendered,
                         volume_timing,
                     )?;
@@ -3787,6 +3832,7 @@ impl<'a> Renderer<'a> {
             .runtime
             .device_chains
             .iter_mut()
+            .chain(self.runtime.source_effects.chains_mut())
             .chain(self.runtime.return_chains.iter_mut())
             .chain(std::iter::once(&mut self.runtime.main_chain))
         {

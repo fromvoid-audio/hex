@@ -16,6 +16,16 @@ use std::path::{Path, PathBuf};
 mod vst3;
 pub use vst3::{Vst3ApplicationValue, Vst3CaptureTarget, Vst3ParameterApplication};
 
+pub(in crate::service) fn native_application_clock(
+    application: NativeParameterApplication,
+) -> DraftClock {
+    DraftClock {
+        performance_frame: application.performance_frame,
+        content_frame: application.arrangement_frame,
+        loop_pass: application.loop_pass,
+    }
+}
+
 enum Capture {
     Native {
         target: NativeParameterInputTarget,
@@ -107,14 +117,7 @@ impl DeviceDraftInput {
                     .value(application)
                     .map_err(|error| error.0)?
                     .ok_or("native capture application restored the lane")?;
-                Ok((
-                    DraftClock {
-                        performance_frame: application.performance_frame,
-                        content_frame: application.arrangement_frame,
-                        loop_pass: application.loop_pass,
-                    },
-                    value,
-                ))
+                Ok((native_application_clock(application), value))
             },
         )
     }
@@ -137,11 +140,10 @@ impl DeviceDraftInput {
         {
             return Err("native capture terminal did not restore the lane");
         }
-        self.input.finish(DraftTerminal::Finished(DraftClock {
-            performance_frame: restoration.performance_frame,
-            content_frame: restoration.arrangement_frame,
-            loop_pass: restoration.loop_pass,
-        }))
+        self.input
+            .finish(DraftTerminal::Finished(native_application_clock(
+                restoration,
+            )))
     }
 
     pub fn abort_delivered(

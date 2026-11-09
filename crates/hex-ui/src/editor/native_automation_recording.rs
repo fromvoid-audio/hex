@@ -1,5 +1,8 @@
 //! GPUI owns one pointer gesture and a bounded delivery batch. Session owns
 //! the draft and history. The callback owns actual application and restoration.
+//! Refused submissions leave the original batch and any unread endpoint or
+//! retired receipts with this recorder. Cancel stops new input; neither a
+//! callback terminal nor an unavailable worker resolves that recovery custody.
 use super::EditorView;
 use hex_audio::{
     native_parameter_input::{AbortReason, Receipt, Target},
@@ -41,6 +44,7 @@ enum Phase {
     Delivering,
     Sealing,
     Orphaned,
+    Retained,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -95,9 +99,7 @@ impl Touch {
                 ..
             } => {
                 self.delivered_sequence = self.delivered_sequence.max(sequence);
-                if self.phase != Phase::Orphaned {
-                    self.batch.push((sequence, application));
-                }
+                self.batch.push((sequence, application));
             }
             Receipt::Superseded { .. } => {}
             Receipt::Finished { application, .. } => {
@@ -170,7 +172,7 @@ impl Touch {
             return None;
         }
         match self.phase {
-            Phase::Starting | Phase::Orphaned => None,
+            Phase::Starting | Phase::Orphaned | Phase::Retained => None,
             Phase::Delivering if !self.batch.is_empty() => Some((
                 Submission::Append,
                 Action::Append(Arc::from(self.batch.as_slice())),
@@ -187,6 +189,16 @@ impl Touch {
             }),
             Phase::Sealing => Some((Submission::Poll, Action::Poll)),
         }
+    }
+
+    fn retain_after_refusal(&mut self) {
+        self.phase = if self.terminal.is_some() {
+            Phase::Retained
+        } else {
+            Phase::Orphaned
+        };
+        self.end = Some(End::Cancel);
+        self.in_flight = None;
     }
 
     fn release_ready(&self) -> bool {
@@ -576,16 +588,12 @@ impl EditorView {
             (Submission::Begin, _) => return,
             (Submission::Append, Progress::Appended) => touch.batch.clear(),
             (Submission::Append, Progress::Backpressured) => {}
-            (Submission::Append, _) => {
-                // A permanent refusal cannot be retried into another take.
-                // Session preserves its durable prefix and reports failure.
-                touch.batch.clear();
-                touch.end = Some(End::Cancel);
-            }
-            (Submission::Terminal, _) => {
+            (Submission::Append, _) => touch.retain_after_refusal(),
+            (Submission::Terminal, Progress::Sealing) => {
                 touch.terminal = None;
                 touch.phase = Phase::Sealing;
             }
+            (Submission::Terminal, _) => touch.retain_after_refusal(),
             (Submission::Poll, Progress::Pending) => {}
             (Submission::Poll, Progress::Committed) => {
                 if let Some(arm) = self.native_automation_recorder.arm.as_mut()
@@ -616,7 +624,11 @@ impl EditorView {
         self.native_automation_recorder.touch = Some(touch);
     }
 
-    pub(super) fn native_automation_request_not_submitted(&mut self, request: &Request) {
+    pub(super) fn native_automation_request_not_submitted(
+        &mut self,
+        request: &Request,
+        worker_closed: bool,
+    ) {
         let Request::DeviceAutomationTake { request_id, .. } = request else {
             return;
         };
@@ -628,15 +640,16 @@ impl EditorView {
         else {
             return;
         };
-        if matches!(touch.phase, Phase::Starting | Phase::Sealing) || touch.terminal.is_some() {
+        if touch.phase == Phase::Starting {
             self.native_automation_recorder.touch = None;
+        } else if worker_closed {
+            // Submission refusal is not a writer receipt. Retain originals
+            // while releasing the actual endpoint and awaiting recovery.
+            touch.retain_after_refusal();
         } else {
-            // No worker terminal will arrive. Release the audio endpoint's
-            // real credit and preserve the draft prefix already in Session.
-            touch.phase = Phase::Orphaned;
-            touch.end = Some(End::Cancel);
+            // The request never reached the worker. Retry the exact batch or
+            // terminal at normal poll cadence when queue pressure clears.
             touch.in_flight = None;
-            touch.batch.clear();
         }
     }
 
@@ -670,7 +683,8 @@ impl EditorView {
             }
         }
         if touch.phase == Phase::Orphaned && touch.terminal.is_some() {
-            return true;
+            touch.phase = Phase::Retained;
+            changed = true;
         }
         let proposal = touch.next_submission();
         let scope = touch.scope;
@@ -830,5 +844,124 @@ mod tests {
         assert!(
             matches!(touch.next_submission(), Some((Submission::Terminal, Action::Finish(value))) if value == restored)
         );
+    }
+
+    #[cfg(feature = "ui-test-support")]
+    #[gpui::test]
+    fn refused_and_lost_submissions_keep_delivered_receipts_until_recovery(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::{AnyWindowHandle, AppContext, Empty};
+        use hex_session::service::{DeviceAutomationTakeCompletion, Service};
+        use std::time::Instant;
+
+        let service = Service::new(48_000, 32, 8_000_000).unwrap();
+        let deadline = crate::test_wait::hang_deadline();
+        let mut event = loop {
+            if let Ok(event) = service.try_event() {
+                break event;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        };
+        event.device_automation_take_complete = Some(DeviceAutomationTakeCompletion {
+            request_id: 2,
+            progress: Progress::Refused,
+        });
+        let visual = cx.add_window(|_, _| Empty);
+        let handle: AnyWindowHandle = *visual;
+        cx.update_window(handle, |_, window, cx| {
+            let editor = window.replace_root(cx, |window, cx| {
+                EditorView::new(window, cx, service, Err("offline fixture".into()))
+            });
+            for worker_closed in [false, true] {
+                editor.update(cx, |view, cx| {
+                    let mut capture = touch();
+                    let application = NativeParameterApplication {
+                        identity: capture.audio.input.identity(),
+                        operation: NativeTransientOperation::Set(
+                            NativeTransientValue::HostOutputGain(HostGain::ZERO),
+                        ),
+                        arrangement_frame: 19,
+                        performance_frame: 23,
+                        loop_pass: 0,
+                        remaining_latency_frames: 4,
+                    };
+                    capture.phase = Phase::Delivering;
+                    capture.in_flight = Some((2, Submission::Append));
+                    capture.receipt(Receipt::Applied {
+                        target: capture.audio,
+                        sequence: 1,
+                        application,
+                    });
+                    view.native_automation_recorder.touch = Some(capture);
+                    if worker_closed {
+                        let capture = view.native_automation_recorder.touch.as_ref().unwrap();
+                        let request = Request::DeviceAutomationTake {
+                            request_id: 2,
+                            scope: capture.scope,
+                            action: Action::Append(Arc::from(capture.batch.as_slice())),
+                        };
+                        view.native_automation_request_not_submitted(&request, false);
+                        let capture = view.native_automation_recorder.touch.as_mut().unwrap();
+                        let Some((Submission::Append, Action::Append(retry))) =
+                            capture.next_submission()
+                        else {
+                            panic!("temporary pressure must retry the original batch");
+                        };
+                        assert_eq!(retry.as_ref(), &[(1, application)]);
+                        capture.in_flight = Some((2, Submission::Append));
+                        view.native_automation_request_not_submitted(&request, true);
+                    } else {
+                        view.native_automation_take_completion(&event);
+                    }
+                    let capture = view.native_automation_recorder.touch.as_mut().unwrap();
+                    assert_eq!(capture.batch, [(1, application)]);
+                    assert!(capture.end == Some(End::Cancel));
+                    let late = NativeParameterApplication {
+                        arrangement_frame: 27,
+                        performance_frame: 31,
+                        ..application
+                    };
+                    capture.receipt(Receipt::Applied {
+                        target: capture.audio,
+                        sequence: 2,
+                        application: late,
+                    });
+                    assert_eq!(capture.batch, [(1, application), (2, late)]);
+                    capture.receipt(Receipt::Aborted {
+                        target: capture.audio,
+                        reason: AbortReason::Cancelled,
+                    });
+                    view.tick_native_automation_recording();
+                    assert!(view.native_automation_recorder.busy());
+                    let capture = view.native_automation_recorder.touch.as_ref().unwrap();
+                    assert_eq!(capture.batch.len(), 2);
+                    assert!(capture.terminal.is_some());
+                    assert!(capture.next_submission().is_none());
+                    let (gesture, latest) = (capture.gesture, capture.latest);
+                    assert!(view.begin_native_automation_touch(gesture, latest).is_err());
+                    view.request_window_close(window, cx);
+                    assert!(view.error.as_ref().unwrap().contains("recover"));
+                });
+            }
+            editor.update(cx, |view, _| {
+                let mut capture = touch();
+                let terminal = Action::Abort(
+                    hex_session::service::automation_draft::DraftAbortReason::Cancelled,
+                );
+                capture.phase = Phase::Delivering;
+                capture.in_flight = Some((2, Submission::Terminal));
+                capture.terminal = Some(terminal);
+                view.native_automation_recorder.touch = Some(capture);
+                view.native_automation_take_completion(&event);
+                assert!(view.native_automation_recorder.busy());
+                let capture = view.native_automation_recorder.touch.as_ref().unwrap();
+                assert!(matches!(capture.terminal, Some(Action::Abort(_))));
+                assert!(capture.next_submission().is_none());
+            });
+            window.remove_window();
+        })
+        .unwrap();
     }
 }

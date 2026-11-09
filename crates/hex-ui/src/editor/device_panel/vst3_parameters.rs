@@ -8,8 +8,9 @@ use hex_engine::AudioSourceContext;
 use hex_session::device_gesture::{GestureKey, PluginParameterOrigin, PluginParameterValue};
 use hex_session::service::{PluginParameterQuery, PluginParameterResult, PluginParameterRow};
 use hex_widgets::{
-    NumericControl, NumericControlConfig, NumericControlEvent, NumericControlPresentation,
-    NumericEventPhase, NumericGestureId, NumericScale, NumericSpec, TextInput,
+    ControlAvailability, NumericControl, NumericControlConfig, NumericControlEvent,
+    NumericControlPresentation, NumericEventPhase, NumericGestureId, NumericScale, NumericSpec,
+    TextInput,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -92,6 +93,7 @@ struct Knob {
     steps: u32,
     control: Entity<NumericControl>,
     origin: Rc<Cell<PluginParameterOrigin>>,
+    drag: Rc<KnobDrag>,
     _subscription: Subscription,
 }
 impl Knob {
@@ -110,17 +112,26 @@ impl Knob {
             && self.matches_descriptor(row)
     }
 
+    fn owns(&self, key: GestureKey) -> bool {
+        self.drag
+            .borrow()
+            .as_ref()
+            .is_some_and(|(_, owner)| *owner == key)
+    }
+
     fn renew(
         &self,
         query: PluginParameterQuery,
         row: &PluginParameterRow,
         enabled: bool,
+        active: Option<GestureKey>,
         cx: &mut Context<EditorView>,
     ) -> Option<Entity<NumericControl>> {
         self.origin.set(parameter_origin(query, row)?);
+        let busy = active.is_some_and(|key| !self.owns(key));
         self.control.update(cx, |control, cx| {
             let _ = control.set_external_value(row.normalized, cx);
-            control.set_enabled(enabled, cx);
+            control.set_availability(ControlAvailability::for_edit(enabled, busy), cx);
         });
         Some(self.control.clone())
     }
@@ -366,8 +377,9 @@ fn queue_native_touch(panel: &mut Panel, touch: TouchObservation) {
         panel.queued_touch = None;
         panel.pending_touch = None;
         panel.pending_touch_request = None;
+        // Prioritize the known target at the next scheduled read. Repeated
+        // Perform callbacks must not bypass the refresh cadence.
         panel.priority_page = Some(page);
-        panel.next_query_at = Instant::now();
     } else {
         panel.queued_touch = Some(touch);
         panel.pending_touch_request = None;
@@ -765,14 +777,8 @@ fn apply_result(
     panel.next_query_at = Instant::now() + PAGE_REFRESH_INTERVAL;
     let rows = match result.rows {
         Ok(rows) => rows,
-        Err(error) if is_refresh_yield(&error) => {
-            panel.cache_error = None;
-            panel.retry_count = 0;
-            panel.next_query_at = Instant::now();
-            return;
-        }
         Err(error) => {
-            record_error(panel, error);
+            record_refresh_failure(panel, error);
             return;
         }
     };
@@ -978,6 +984,18 @@ fn interactions_active(view: &EditorView, cx: &Context<EditorView>) -> bool {
                         .as_ref()
                         .is_some_and(|(_, knob)| knob.control.read(cx).is_interacting())
             })
+}
+
+fn record_refresh_failure(panel: &mut Panel, error: String) {
+    if is_refresh_yield(&error) {
+        panel.cache_error = None;
+        panel.retry_count = 0;
+        panel.next_query_at = Instant::now();
+    } else if error != "vst3 controller is busy · try again" {
+        record_error(panel, error);
+    }
+    // A controller operation owns the mailbox briefly. Keep the last
+    // presentation and retry at the normal page cadence.
 }
 
 fn record_error(panel: &mut Panel, error: String) {
@@ -1727,8 +1745,10 @@ fn follow_display(
     let Some(panel) = view.device_panel.vst3_parameters.panels.get(&device) else {
         return (None, None, Some("no vst parameter touched"));
     };
+    let active = view.device_gesture.snapshot().map(|gesture| gesture.key);
     if let Some((id, knob)) = panel.follow_knob.as_ref()
         && knob.control.read(cx).is_interacting()
+        && active.is_none_or(|key| knob.owns(key))
     {
         let row = panel
             .rows()
@@ -1786,11 +1806,11 @@ fn follow_display(
             .is_none()
             .then_some("automation unavailable")
     };
-    let control = follow_knob(view, device, query, &row, cx);
-    if let Some(control) = &control {
-        control.update(cx, |control, cx| control.set_enabled(!refreshing, cx));
-    }
-    (control, Some(row), status)
+    (
+        follow_knob(view, device, query, &row, cx),
+        Some(row),
+        status,
+    )
 }
 
 fn show_automation_menu(
@@ -1984,13 +2004,14 @@ fn knob(
     row: &PluginParameterRow,
     cx: &mut Context<EditorView>,
 ) -> Option<Entity<NumericControl>> {
+    let active = view.device_gesture.snapshot().map(|gesture| gesture.key);
     let panel = view.device_panel.vst3_parameters.panels.get(&device)?;
     if let Some(knob) = panel.knobs.get(&row.id)
         && knob.matches_source(panel.source?, query, row)
     {
-        return knob.renew(query, row, true, cx);
+        return knob.renew(query, row, true, active, cx);
     }
-    let knob = create_knob(view, device, query, row, "row", cx)?;
+    let knob = create_knob(view, device, query, row, "row", true, cx)?;
     let control = knob.control.clone();
     view.device_panel
         .vst3_parameters
@@ -2008,19 +2029,16 @@ fn follow_knob(
     row: &PluginParameterRow,
     cx: &mut Context<EditorView>,
 ) -> Option<Entity<NumericControl>> {
+    let active = view.device_gesture.snapshot().map(|gesture| gesture.key);
     let panel = view.device_panel.vst3_parameters.panels.get(&device)?;
+    let enabled = panel.pending_touch.is_none() && panel.queued_touch.is_none();
     if let Some((id, knob)) = panel.follow_knob.as_ref()
         && *id == row.id
         && knob.matches_source(panel.source?, query, row)
     {
-        return knob.renew(
-            query,
-            row,
-            panel.pending_touch.is_none() && panel.queued_touch.is_none(),
-            cx,
-        );
+        return knob.renew(query, row, enabled, active, cx);
     }
-    let knob = create_knob(view, device, query, row, "follow", cx)?;
+    let knob = create_knob(view, device, query, row, "follow", enabled, cx)?;
     let control = knob.control.clone();
     view.device_panel
         .vst3_parameters
@@ -2036,6 +2054,7 @@ fn create_knob(
     query: PluginParameterQuery,
     row: &PluginParameterRow,
     role: &str,
+    enabled: bool,
     cx: &mut Context<EditorView>,
 ) -> Option<Knob> {
     let source = view
@@ -2068,10 +2087,17 @@ fn create_knob(
         theme::control_style(),
     )
     .ok()?;
-    let control = cx.new(|cx| NumericControl::from_config(cx, config));
+    let availability =
+        ControlAvailability::for_edit(enabled, view.device_gesture.snapshot().is_some());
+    let control = cx.new(|cx| {
+        let mut control = NumericControl::from_config(cx, config);
+        control.set_availability(availability, cx);
+        control
+    });
     let origin = Rc::new(Cell::new(origin));
     let event_origin = Rc::clone(&origin);
     let drag = Rc::new(RefCell::new(None));
+    let event_drag = Rc::clone(&drag);
     let steps = row.steps;
     let is_follow = role == "follow";
     let subscription =
@@ -2083,6 +2109,9 @@ fn create_knob(
                 // pointer gesture must still reach its existing terminal owner.
                 let continuing_pointer =
                     event.phase != NumericEventPhase::Begin && event.gesture.is_some();
+                if !continuing_pointer && view.device_gesture.snapshot().is_some() {
+                    return;
+                }
                 let current =
                     view.device_panel
                         .vst3_parameters
@@ -2120,7 +2149,7 @@ fn create_knob(
                 if !current || current_context(view) != Some(origin.context) {
                     return;
                 }
-                if let Err(reason) = knob_event(view, origin, event, steps, &drag) {
+                if let Err(reason) = knob_event(view, origin, event, steps, &event_drag) {
                     view.error = Some(reason.into());
                 }
                 if event.phase == NumericEventPhase::Begin {
@@ -2138,6 +2167,7 @@ fn create_knob(
         steps: row.steps,
         control,
         origin,
+        drag,
         _subscription: subscription,
     })
 }
@@ -2644,6 +2674,12 @@ mod tests {
                 false,
                 Some("cache failed"),
             ),
+            (
+                layout_row(0.8, true, 7),
+                Some(7),
+                false,
+                Some("vst3 controller is busy · try again"),
+            ),
             (layout_row(0.8, true, 7), Some(7), false, None),
         ] {
             editor.update(&mut visual, |view, cx| {
@@ -2675,8 +2711,17 @@ mod tests {
                     binding,
                     parameter: 7,
                 });
-                panel.cache_error = error.map(str::to_owned);
-                panel.retry_count = u8::from(error.is_some());
+                panel.cache_error = None;
+                panel.retry_count = 0;
+                let refresh_due = Instant::now() + PAGE_REFRESH_INTERVAL;
+                panel.next_query_at = refresh_due;
+                if let Some(error) = error {
+                    record_refresh_failure(panel, error.into());
+                    if error == "vst3 controller is busy · try again" {
+                        assert_eq!(panel.next_query_at, refresh_due);
+                        assert_eq!(panel.retry_count, 0);
+                    }
+                }
                 panel.queued_touch = None;
                 cx.notify();
             });
@@ -2685,7 +2730,7 @@ mod tests {
             if touched.is_some() {
                 assert!(visual.debug_bounds("vst3-last-touch-label").is_some());
             }
-            if error.is_some() {
+            if error == Some("cache failed") {
                 assert!(visual.debug_bounds("vst3-parameter-retry").is_some());
             } else {
                 assert_eq!(
@@ -2694,6 +2739,67 @@ mod tests {
                 );
             }
         }
+        // A local pointer cannot capture another dial while the prior edit's
+        // terminal is outstanding. Deliver the typed ACKs in this headless
+        // card without starting a plug-in or publishing audio.
+        let (active, other_control) = editor.update(&mut visual, |view, cx| {
+            let panel = &view.device_panel.vst3_parameters.panels[&device];
+            let origin = parameter_origin(panel.query, &panel.rows().unwrap()[0]).unwrap();
+            let other = panel.knobs[&8].control.entity_id();
+            let active = view.device_gesture.begin_plugin(origin).unwrap();
+            view.device_gesture.finish_plugin(origin.initial).unwrap();
+            cx.notify();
+            (active, other)
+        });
+        visual.run_until_parked();
+        let other_selector =
+            Box::leak(format!("vst3-knob-{}-8-knob", device.value()).into_boxed_str());
+        let other_dial = visual.debug_bounds(other_selector).unwrap().center();
+        visual.simulate_mouse_down(other_dial, gpui::MouseButton::Left, modifiers);
+        visual.simulate_mouse_move(
+            gpui::point(other_dial.x, other_dial.y - px(20.0)),
+            gpui::MouseButton::Left,
+            modifiers,
+        );
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, cx| {
+            let knob = &view.device_panel.vst3_parameters.panels[&device].knobs[&8];
+            assert_eq!(knob.control.entity_id(), other_control);
+            let control = knob.control.read(cx);
+            assert!(!control.is_interacting());
+            assert_eq!(control.value(), 0.35);
+            assert_eq!(view.device_gesture.snapshot().unwrap().key, active);
+            assert!(view.device_gesture.has_pending_terminal());
+        });
+        visual.simulate_mouse_up(other_dial, gpui::MouseButton::Left, modifiers);
+        editor.update(&mut visual, |view, cx| {
+            use hex_session::device_gesture::{GestureAck, GesturePhase};
+            for phase in [GesturePhase::Begin, GesturePhase::Commit] {
+                let request = view.device_gesture.next_request().unwrap();
+                assert_eq!((request.key(), request.phase()), (active, phase));
+                view.device_gesture.mark_submitted();
+                assert!(view.device_gesture.acknowledge(&GestureAck {
+                    preview_retained: false,
+                    source_lost: false,
+                    key: active,
+                    phase,
+                    sequence: request.sequence(),
+                    accepted: true,
+                    reason: None,
+                }));
+            }
+            assert!(view.device_gesture.snapshot().is_none());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        visual.simulate_mouse_down(other_dial, gpui::MouseButton::Left, modifiers);
+        editor.read_with(&visual, |view, cx| {
+            let knob = &view.device_panel.vst3_parameters.panels[&device].knobs[&8];
+            assert_eq!(knob.control.entity_id(), other_control);
+            assert!(knob.control.read(cx).is_interacting());
+        });
+        visual.simulate_mouse_up(other_dial, gpui::MouseButton::Left, modifiers);
+        visual.run_until_parked();
         let (previous_control, previous_value) = editor.update(&mut visual, |view, cx| {
             let control = follow_display(view, device, cx).0.unwrap();
             (control.entity_id(), control.read(cx).value())
@@ -3215,12 +3321,15 @@ mod tests {
             .expect("an in-flight page can resolve before the touch stream ends");
             assert_eq!(observed.normalized, 0.4);
             panel.result = Some(Arc::new(vec![intermediate]));
+            let refresh_due = Instant::now() + PAGE_REFRESH_INTERVAL;
+            panel.next_query_at = refresh_due;
             for _ in 0..8 {
                 queue_native_touch(panel, touch);
                 assert_eq!(panel.last_touched, Some(7));
                 assert_eq!(panel.pending_touch, None);
                 assert_eq!(panel.queued_touch, None);
                 assert_eq!(panel.priority_page, Some(0));
+                assert_eq!(panel.next_query_at, refresh_due);
             }
             // Different raw IDs and source identities must restart validation.
             let other = TouchObservation {
