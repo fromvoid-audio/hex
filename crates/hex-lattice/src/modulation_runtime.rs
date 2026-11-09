@@ -5,8 +5,8 @@
 //! A failed consumer abandons the entire source transaction; later host failures
 //! must call `rollback` before beginning the next block.
 use crate::{
-    MAX_MODULATION_BLOCK_FRAMES, MAX_MODULATION_SOURCES, ModulationSourceBank, ModulationSourceId,
-    NativeParameterAutomation, PreparedModulation, PreparedModulationSource,
+    MAX_MODULATION_BLOCK_FRAMES, MAX_MODULATION_SOURCES, ModulationBlock, ModulationSourceBank,
+    ModulationSourceId, NativeParameterAutomation, PreparedModulation, PreparedModulationSource,
     modulation_source_routes::PreparedSourceRoute,
 };
 use hex_lattice_contract::DeviceContractError as Error;
@@ -113,7 +113,7 @@ impl ModulationRuntime {
         consume: impl FnOnce(&dyn NativeParameterAutomation) -> Result<(), Error>,
     ) -> Result<(), Error> {
         self.render_sources(frames, upstream, clock, None)?;
-        self.consume_values(frames, upstream, consume)
+        self.consume_values(frames, upstream, |values| consume(values))
     }
 
     /// Render against the input immediately before the owning device consumes
@@ -124,10 +124,7 @@ impl ModulationRuntime {
         input: &mut [crate::StereoFrame],
         upstream: Option<&dyn NativeParameterAutomation>,
         clock: Option<&dyn crate::NativeInstrumentClock>,
-        consume: impl FnOnce(
-            &mut [crate::StereoFrame],
-            &dyn NativeParameterAutomation,
-        ) -> Result<(), Error>,
+        consume: impl FnOnce(&mut [crate::StereoFrame], &ModulationBlock<'_>) -> Result<(), Error>,
     ) -> Result<(), Error> {
         let frames = input.len();
         self.render_sources(frames, upstream, clock, Some(input))?;
@@ -166,7 +163,7 @@ impl ModulationRuntime {
         &mut self,
         frames: usize,
         upstream: Option<&dyn NativeParameterAutomation>,
-        consume: impl FnOnce(&dyn NativeParameterAutomation) -> Result<(), Error>,
+        consume: impl FnOnce(&ModulationBlock<'_>) -> Result<(), Error>,
     ) -> Result<(), Error> {
         let result = (|| {
             let mut sources: [&[f32]; MAX_MODULATION_SOURCES] = [&[]; MAX_MODULATION_SOURCES];

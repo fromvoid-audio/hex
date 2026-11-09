@@ -16,6 +16,8 @@ mod gate_modulation_tests;
 #[cfg(test)]
 mod grouped_audio_tests;
 #[cfg(test)]
+mod host_output_modulation_tests;
+#[cfg(test)]
 mod overdrive_modulation_tests;
 #[cfg(test)]
 mod overdrive_storage_tests;

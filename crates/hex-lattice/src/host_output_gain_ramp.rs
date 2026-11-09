@@ -13,9 +13,12 @@
 //! Copy state lives in the existing committed/scratch transaction and is charged
 //! by RuntimeEntry storage accounting. Settled blocks use one constant multiply.
 use hex_dsp::StereoFrame;
-use hex_lattice_contract::{DeviceAutomationTarget, DeviceContractError};
+use hex_lattice_contract::{DeviceAutomationTarget, DeviceContractError, HostGain};
 
-use crate::{NativeTransientOperation, NativeTransientValue, RuntimeEntry};
+use crate::{
+    ModulationBlock, NativeTransientOperation, NativeTransientValue, NormalizedAutomationValue,
+    ParameterAutomationBlock, RuntimeEntry,
+};
 
 /// Apply an already validated command to the current output stage. Repeated
 /// delivery of the same request must not restart a partially rendered ramp.
@@ -25,7 +28,7 @@ pub(super) fn stage_transient(
 ) -> Result<(), DeviceContractError> {
     let next = match operation {
         NativeTransientOperation::Set(NativeTransientValue::HostOutputGain(gain)) => {
-            TransientGain::Held(gain.linear())
+            TransientGain::Held(gain)
         }
         NativeTransientOperation::Clear(DeviceAutomationTarget::HostOutputGain)
             if matches!(entry.scratch_transient_output_gain, TransientGain::Held(_)) =>
@@ -43,7 +46,7 @@ pub(super) fn stage_transient(
     if next != entry.scratch_transient_output_gain {
         let from = entry.scratch_host_gains[1];
         entry.scratch_output_gain_ramp = match next {
-            TransientGain::Held(target) if target == from => OutputGainRamp::INACTIVE,
+            TransientGain::Held(target) if target.linear() == from => OutputGainRamp::INACTIVE,
             _ => OutputGainRamp::start(from, entry.sample_rate),
         };
         entry.scratch_transient_output_gain = next;
@@ -72,7 +75,7 @@ pub(super) fn invalidate_transient(entry: &mut RuntimeEntry) {
 pub(super) enum TransientGain {
     #[default]
     Follow,
-    Held(f32),
+    Held(HostGain),
     Releasing,
 }
 
@@ -166,6 +169,39 @@ impl OutputGainRamp {
         last
     }
 }
+/// Apply modulated output after the provider using the same scratch gain
+/// ramp. The upstream block is indexed at its output origin.
+pub(super) fn apply_modulated(
+    ramp: &mut OutputGainRamp,
+    transient: TransientGain,
+    automation: &ParameterAutomationBlock<'_>,
+    values: &ModulationBlock<'_>,
+    offset: usize,
+    frames: &mut [StereoFrame],
+) -> Result<Option<f32>, DeviceContractError> {
+    let held = match transient {
+        TransientGain::Held(gain) => Some(NormalizedAutomationValue::new(gain.normalized())?),
+        _ => None,
+    };
+    let mut last = None;
+    for (frame_offset, frame) in frames.iter_mut().enumerate() {
+        let upstream = held.or_else(|| {
+            automation.host_gain_normalized_at(
+                DeviceAutomationTarget::HostOutputGain,
+                offset + frame_offset,
+            )
+        });
+        let gain = values
+            .host_output_gain_at(frame_offset, upstream)?
+            .ok_or(DeviceContractError::InvalidDescriptor)?;
+        let gain = ramp.next(gain.linear());
+        frame[0] *= gain;
+        frame[1] *= gain;
+        last = Some(gain);
+    }
+    Ok(last)
+}
+
 /// Carry a canonical static output stage using the existing host-stage donor
 /// lookup. Ordinary DSP/source inheritance still owns eligibility; this adds no
 /// search pass, source fact, or transient Set/Clear interpretation.

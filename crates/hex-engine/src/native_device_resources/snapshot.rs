@@ -66,18 +66,7 @@ impl ControlSamplerSources {
             metadata_bytes,
             max_scan_frames,
             cancel,
-            |asset| {
-                if stage.staged.asset.0 == asset {
-                    Some(&stage.staged.asset.1)
-                } else {
-                    stage
-                        .store
-                        .assets
-                        .iter()
-                        .find(|(id, _)| *id == asset)
-                        .map(|(_, source)| source)
-                }
-            },
+            |asset| stage.loan(asset),
         )
     }
     fn prepare_with_source_on_control<'a>(
