@@ -1054,7 +1054,6 @@ fn manual_marker_requires_the_aligned_accepted_physical_callback() {
                             EffectSegmentOrigins {
                                 authored: None,
                                 manual: Some(&origin),
-                                dense: None,
                             },
                         )
                         .unwrap();

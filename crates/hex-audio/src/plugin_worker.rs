@@ -549,7 +549,7 @@ fn transport_runner_with_setup(
                     manual_origin_available,
                     editor_scope,
                 })) => {
-                    let authored = authored_program.is_some() || block.dense_parameter().is_some();
+                    let authored = authored_program.is_some();
                     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
                     let _ = (parameter_capacity, manual_origin_available);
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

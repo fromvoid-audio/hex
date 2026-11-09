@@ -358,8 +358,17 @@ fn ready_requires_complete_source_config_and_state_presence_without_sizing_from_
 #[test]
 fn immutable_request_bounds_and_failed_reply_never_fabricate_pcm() {
     let config = config();
-    let mut block = Block::empty(config.binding, 8);
-    block.pcm.fill([0.5; 2]);
+    let block = Block {
+        binding: config.binding,
+        sequence: 0,
+        first_frame: 0,
+        frames: 8,
+        pcm: [[0.5; 2]; 256],
+        events: Events::default(),
+        parameters: crate::transport::Parameters::default(),
+        timing: None,
+        timing_changes: Default::default(),
+    };
     config.validate_block(&block, 0).unwrap();
     let mut bytes = Vec::new();
     crate::transport::wire::write(&mut bytes, &block).unwrap();

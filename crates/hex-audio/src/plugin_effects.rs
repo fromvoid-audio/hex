@@ -803,7 +803,6 @@ impl ForeignProcessors for NativeEffectCallback {
                     origin: &authored_origin,
                 }),
                 manual: Some(&manual_origin),
-                dense: None,
             },
         );
         if result.is_err() {

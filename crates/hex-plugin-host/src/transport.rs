@@ -354,14 +354,14 @@ impl ProcessTiming {
     }
 }
 
-/// One borrowed normalized value per sample for the same raw SDK parameter.
+/// One authored raw SDK parameter with a normalized value at every sample.
 #[derive(Clone, Copy)]
-pub struct DenseParameterSegment<'a> {
+pub struct DenseParameterLane<'a> {
     pub id: u32,
     pub normalized: &'a [f64],
 }
-impl DenseParameterSegment<'_> {
-    fn valid(self, frames: usize) -> bool {
+impl DenseParameterLane<'_> {
+    pub(crate) fn valid(self, frames: usize) -> bool {
         parameters::valid_id(self.id)
             && self.normalized.len() == frames
             && self
@@ -369,12 +369,6 @@ impl DenseParameterSegment<'_> {
                 .iter()
                 .all(|value| (0.0..=1.0).contains(value))
     }
-}
-
-#[derive(Clone, Copy)]
-struct DenseParameterInput {
-    id: u32,
-    normalized: [f64; MAX_FRAMES],
 }
 
 /// Inline wire payload; dropping it never reclaims a resource.
@@ -387,12 +381,11 @@ pub struct Block {
     pub pcm: [Frame; MAX_FRAMES],
     pub events: InputEvents,
     pub parameters: Parameters,
-    dense_input: Option<DenseParameterInput>,
     pub timing: Option<ProcessTiming>,
     pub timing_changes: TimingChanges,
 }
 impl Block {
-    pub(crate) fn empty(binding: Binding, quantum: u16) -> Self {
+    fn empty(binding: Binding, quantum: u16) -> Self {
         Self {
             binding,
             sequence: 0,
@@ -401,29 +394,9 @@ impl Block {
             pcm: [[0.0; 2]; MAX_FRAMES],
             events: Events::default(),
             parameters: Parameters::default(),
-            dense_input: None,
             timing: None,
             timing_changes: TimingChanges::default(),
         }
-    }
-
-    /// The dense input lane is request-only and is never read from feedback.
-    pub fn dense_parameter(&self) -> Option<DenseParameterSegment<'_>> {
-        let dense = self.dense_input.as_ref()?;
-        Some(DenseParameterSegment {
-            id: dense.id,
-            normalized: dense.normalized.get(..usize::from(self.frames))?,
-        })
-    }
-
-    fn dense_input_matches_sparse(&self) -> bool {
-        self.dense_input.as_ref().is_none_or(|dense| {
-            !self
-                .parameters
-                .as_slice()
-                .iter()
-                .any(|point| point.id == dense.id)
-        })
     }
 
     fn latest_timing(&self) -> Option<ProcessTiming> {
@@ -475,13 +448,7 @@ impl Block {
         if !self.events.valid(usize::from(quantum)) {
             return Err(Fault::InvalidEvents);
         }
-        if !self.parameters.valid(usize::from(quantum))
-            || !self.dense_input_matches_sparse()
-            || (self.dense_input.is_some()
-                && !self
-                    .dense_parameter()
-                    .is_some_and(|dense| dense.valid(usize::from(quantum))))
-        {
+        if !self.parameters.valid(usize::from(quantum)) {
             return Err(Fault::InvalidParameters);
         }
         if self.timing.is_some_and(|timing| !timing.is_valid()) {
@@ -506,7 +473,7 @@ impl Block {
         if self.events.len > MAX_EVENTS {
             return Err(Fault::InvalidEvents);
         }
-        if !self.timing_changes.as_slice().is_empty() || self.dense_input.is_some() {
+        if !self.timing_changes.as_slice().is_empty() {
             return Err(Fault::Protocol);
         }
         self.valid(binding, quantum, sequence)
@@ -669,12 +636,10 @@ pub struct ManualParameterOrigin {
 
 /// Borrow the compensated graph origins for one segment. Authored playback
 /// needs the per-sample view. Manual correlation only reads the quantum start.
-/// Dense input must supply the same parameter throughout the complete quantum.
 #[derive(Default)]
 pub struct EffectSegmentOrigins<'a> {
     pub authored: Option<AuthoredSegment<'a>>,
     pub manual: Option<&'a dyn Fn(usize) -> Option<ManualParameterOrigin>>,
-    pub dense: Option<DenseParameterSegment<'a>>,
 }
 
 #[derive(Clone, Copy)]
@@ -1175,7 +1140,6 @@ impl Callback {
             EffectSegmentOrigins {
                 authored: Some(authored),
                 manual: None,
-                dense: None,
             },
         )
     }
@@ -1262,16 +1226,7 @@ impl Callback {
             return Err(Fault::InvalidParameters);
         }
         let q = u64::from(self.quantum);
-        let EffectSegmentOrigins {
-            authored,
-            manual,
-            dense,
-        } = origins;
-        if dense.is_some_and(|dense| {
-            !dense.valid(input.len()) || parameters.iter().any(|point| point.id == dense.id)
-        }) {
-            return Err(Fault::InvalidParameters);
-        }
+        let EffectSegmentOrigins { authored, manual } = origins;
         if authored.is_some() && !parameters.is_empty() {
             return Err(Fault::InvalidParameters);
         }
@@ -1309,10 +1264,6 @@ impl Callback {
                 stage.state.input = Block::empty(self.binding, self.quantum);
                 stage.state.input.sequence = sequence;
                 stage.state.input.first_frame = position;
-                stage.state.input.dense_input = dense.map(|dense| DenseParameterInput {
-                    id: dense.id,
-                    normalized: [0.0; MAX_FRAMES],
-                });
                 stage.state.input_manual_origin = manual.and_then(|origin| origin(index));
                 let editor_scope = self.revoked.editor_scope.load(Acquire);
                 stage.state.input_editor_scope = if editor_scope & 1 != 0 {
@@ -1389,13 +1340,6 @@ impl Callback {
                 stage.state.input.add_timing_change(offset as u16, change)?;
             }
             stage.state.input.pcm[offset] = *source;
-            match (&mut stage.state.input.dense_input, dense) {
-                (Some(input), Some(segment)) if input.id == segment.id => {
-                    input.normalized[offset] = segment.normalized[index];
-                }
-                (None, None) => {}
-                _ => return Err(Fault::InvalidParameters),
-            }
             while let Some(event) = events
                 .get(event_index)
                 .filter(|e| usize::from(e.frame) == index)
@@ -1466,9 +1410,6 @@ impl Callback {
                         return Err(Fault::InvalidParameters);
                     }
                     stage.state.input.parameters = points;
-                }
-                if !stage.state.input.dense_input_matches_sparse() {
-                    return Err(Fault::InvalidParameters);
                 }
                 stage.request = Some(InputRequest {
                     block: stage.state.input,

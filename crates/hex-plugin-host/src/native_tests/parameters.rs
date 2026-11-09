@@ -36,6 +36,60 @@ fn wait_for_latency_restart(instance: &mut Prepared) -> std::num::NonZeroU64 {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn native_dense_authored_request_preserves_every_sample_of_the_raw_zero_parameter() {
+    let case = Case::new();
+    let mut settings = options();
+    settings.preparation.quantum = 256;
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        settings,
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup_restore(80),
+    )
+    .unwrap();
+    let class = instance.configuration().identity.class;
+    let metadata = instance
+        .read_authored_parameter_metadata_on_control(class, &[0])
+        .unwrap();
+    let input = request(instance.configuration(), 0);
+    let normalized: [f64; 256] =
+        std::array::from_fn(|frame| if frame % 2 == 0 { 0.75 } else { 0.125 });
+    let reply = instance
+        .exchange_dense_authored_on_worker(
+            input,
+            &metadata,
+            crate::transport::DenseParameterLane {
+                id: 0,
+                normalized: &normalized,
+            },
+        )
+        .unwrap();
+    for (frame, &normalized) in normalized.iter().enumerate() {
+        assert_eq!(
+            reply.pcm[frame],
+            input.pcm[frame].map(|sample| sample * (normalized * 2.0) as f32)
+        );
+    }
+    assert_eq!(
+        reply.parameters.as_slice(),
+        [ParameterPoint {
+            frame: 255,
+            id: 0,
+            normalized: 0.125
+        }]
+    );
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_latency_restart_survives_receipt_reads_and_newer_activation_request() {
     let case = Case::new();
     let mut instance = Prepared::prepare(

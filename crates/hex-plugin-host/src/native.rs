@@ -675,14 +675,14 @@ impl Prepared {
     /// Only on the existing joining transport worker. A failed operation
     /// permanently faults this lease; no foreign DSP retry/replay is possible.
     pub fn exchange_on_worker(&mut self, block: Block) -> Result<Block> {
-        self.exchange_on_worker_with_metadata(block, None, None, false, None)
+        self.exchange_on_worker_with_metadata(block, None, None, false, None, None)
             .map(|reply| reply.block)
     }
 
     /// Opt this exchange into facts about the effective editor input. This
     /// does not drain or acknowledge the ordered editor receipt reader.
     pub fn exchange_editor_on_worker(&mut self, block: Block) -> Result<protocol::EditorPcm> {
-        self.exchange_on_worker_with_metadata(block, None, None, true, None)
+        self.exchange_on_worker_with_metadata(block, None, None, true, None, None)
     }
     /// Apply an eligible unlaned editor touch with the original normalized base.
     /// The caller must bind this plan to the actual canonical source.
@@ -702,6 +702,7 @@ impl Prepared {
             None,
             true,
             Some(EditorTouchMode::Single(plan)),
+            None,
         )
     }
 
@@ -714,6 +715,21 @@ impl Prepared {
         metadata: &AuthoredParameterMetadata,
     ) -> Result<Block> {
         self.exchange_authored_with_manual_on_worker(block, metadata, None, false, None)
+            .map(|reply| reply.block)
+    }
+
+    /// Deliver one dense authored lane using metadata from this exact lease.
+    /// The worker rechecks the raw ID and SDK step count before applying it.
+    pub fn exchange_dense_authored_on_worker(
+        &mut self,
+        block: Block,
+        metadata: &AuthoredParameterMetadata,
+        dense: crate::transport::DenseParameterLane<'_>,
+    ) -> Result<Block> {
+        if !metadata.matches(self) {
+            return Err(Error::Protocol("authored parameter source differs"));
+        }
+        self.exchange_on_worker_with_metadata(block, Some(metadata), None, false, None, Some(dense))
             .map(|reply| reply.block)
     }
 
@@ -734,6 +750,7 @@ impl Prepared {
             manual_parameter,
             observe_editor,
             editor_touch,
+            None,
         )
     }
     /// Retain the exact capability observation with the lease that will run
@@ -830,6 +847,7 @@ impl Prepared {
             None,
             true,
             Some(EditorTouchMode::Group(plan)),
+            None,
         )
     }
 
@@ -915,6 +933,7 @@ impl Prepared {
         manual_parameter: Option<crate::transport::ParameterPoint>,
         observe_editor: bool,
         editor_touch: Option<EditorTouchMode<'_>>,
+        dense: Option<crate::transport::DenseParameterLane<'_>>,
     ) -> Result<protocol::EditorPcm> {
         if self.faulted || self.retired.is_some() {
             return Err(Error::Protocol("instance lease is retired or faulted"));
@@ -925,6 +944,7 @@ impl Prepared {
             manual_parameter,
             observe_editor,
             editor_touch,
+            dense,
         );
         if result.is_err() {
             self.faulted = true;
@@ -939,6 +959,7 @@ impl Prepared {
         manual_parameter: Option<crate::transport::ParameterPoint>,
         observe_editor: bool,
         editor_touch: Option<EditorTouchMode<'_>>,
+        dense: Option<crate::transport::DenseParameterLane<'_>>,
     ) -> Result<protocol::EditorPcm> {
         self.check_live_capture_deadline()?;
         self.check_parameter_page_deadline()?;
@@ -947,15 +968,23 @@ impl Prepared {
             .sequence
             .checked_add(1)
             .ok_or(Error::Protocol("instance sequence exhausted"))?;
-        let mut bytes = [0; crate::transport::wire::MAX_PACKET_BYTES
+        let mut bytes = [0; crate::transport::wire::MAX_DENSE_PACKET_BYTES
             + protocol::EditorTouchPlanSet::WIRE_BYTES];
         let mut cursor = Cursor::new(bytes.as_mut_slice());
-        if let Some(metadata) = metadata {
-            crate::transport::wire::write_authored(&mut cursor, &block, manual_parameter, &|id| {
-                metadata.step_count(id)
-            })
-        } else {
-            crate::transport::wire::write(&mut cursor, &block)
+        match (metadata, dense) {
+            (Some(metadata), Some(dense)) => {
+                crate::transport::wire::write_dense_authored(&mut cursor, &block, dense, &|id| {
+                    metadata.step_count(id)
+                })
+            }
+            (Some(metadata), None) => crate::transport::wire::write_authored(
+                &mut cursor,
+                &block,
+                manual_parameter,
+                &|id| metadata.step_count(id),
+            ),
+            (None, None) => crate::transport::wire::write(&mut cursor, &block),
+            (None, Some(_)) => return Err(Error::Protocol("dense parameter metadata is missing")),
         }
         .map_err(Error::Io)?;
         let mut length = cursor.position() as usize;
