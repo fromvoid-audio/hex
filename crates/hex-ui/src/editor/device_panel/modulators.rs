@@ -383,14 +383,14 @@ pub(super) fn panel(
                 lfo::Waveform::Square => ("square", lfo::Waveform::Sine),
             };
             let destination = lfo_rate_destination(source_id);
-            let rate_label = theme::text(format!("{rate:.2} {units}"));
+            let rate_text = format!("{rate:.2} {units}");
             let rate_control = if matches!(settings.rate, lfo::Rate::Hertz(_))
                 && let Some(mapping_source) = mapping_source_for(source_id, destination)
             {
                 button(
                     cx,
                     format!("map-lfo-rate-{}-{}", id.value(), source_id.value()),
-                    rate_label,
+                    theme::text(rate_text),
                     Edit::Map(mapping_source, MappingTarget::LfoRate(source_id)),
                 )
                 .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
@@ -404,10 +404,16 @@ pub(super) fn panel(
                 div()
                     .px(px(4.0))
                     .h(px(15.0))
-                    .child(rate_label)
+                    .child(theme::text(rate_text))
                     .into_any_element()
             } else {
-                button(cx, source_key("sync"), rate_label, Edit::Sync(source_id)).into_any_element()
+                button(
+                    cx,
+                    source_key("sync"),
+                    theme::text(rate_text),
+                    Edit::Sync(source_id),
+                )
+                .into_any_element()
             };
             row = row
                 .child(button(
