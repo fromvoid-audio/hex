@@ -462,3 +462,72 @@ fn removed_source_and_route_ids_cannot_be_reused_after_edits_or_history_branchin
     invalid.next_id = fresh.sources()[0].id.value();
     assert!(Project::from_snapshot(invalid).is_err());
 }
+
+#[test]
+fn duplicating_a_slot_reserves_new_ids_and_copies_only_its_assignments() {
+    let (mut editor, device) = fixture();
+    let first = editor.project().next_identity();
+    let original = bank_at(first);
+    let id = original.sources()[1].id;
+    let inbound = ModulationDestination::Modulator {
+        source: id,
+        module_type: original.sources()[1].state.type_id(),
+        parameter: ParameterId::from_static(1),
+    };
+    let mut routes = original.routes().to_vec();
+    routes.push(route(first + 4, first + 1, inbound));
+    let original = DeviceModulation::new(original.sources().to_vec(), routes).unwrap();
+    let replace = |modulation| Command::ReplaceDeviceModulation { device, modulation };
+    editor.execute(replace(original.clone())).unwrap();
+    let next = editor.project().next_identity();
+    let copy = original.duplicate_source(id, next).unwrap();
+    let new_source = copy.sources()[2].id;
+    assert_eq!(new_source.value(), next);
+    assert_eq!(copy.sources()[..2], *original.sources());
+    assert!(!copy.sources()[2].enabled);
+    assert_eq!(copy.sources()[2].state, original.sources()[1].state);
+    assert_eq!(copy.routes()[..3], *original.routes());
+    assert_eq!(
+        copy.routes()[3],
+        DeviceModulationRoute {
+            id: ModulationRouteId::new(next + 1).unwrap(),
+            source: new_source,
+            ..original.routes()[0]
+        }
+    );
+    assert_eq!(
+        copy.routes()[4],
+        DeviceModulationRoute {
+            id: ModulationRouteId::new(next + 2).unwrap(),
+            destination: ModulationDestination::Modulator {
+                source: new_source,
+                module_type: original.sources()[1].state.type_id(),
+                parameter: ParameterId::from_static(1),
+            },
+            ..original.routes()[2]
+        }
+    );
+
+    editor.execute(replace(copy.clone())).unwrap();
+    let restored = |editor: &Editor| {
+        editor
+            .project()
+            .device(device)
+            .unwrap()
+            .modulation()
+            .clone()
+    };
+    assert_eq!(restored(&editor), copy);
+    assert!(editor.undo());
+    assert_eq!(restored(&editor), original);
+    assert!(editor.redo());
+    assert_eq!(restored(&editor), copy);
+    assert!(original.duplicate_source(new_source, next).is_err());
+    assert!(original.duplicate_source(id, u64::MAX).is_err());
+    let full = DeviceModulation::new(
+        (1..=MAX_MODULATORS_PER_DEVICE as u64).map(source).collect(),
+        vec![],
+    )
+    .unwrap();
+    assert!(full.duplicate_source(full.sources()[0].id, 100).is_err());
+}
