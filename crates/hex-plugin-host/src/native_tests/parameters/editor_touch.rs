@@ -100,7 +100,7 @@ fn actual_editor_takeover_restores_reading_and_unlaned_values_without_cutting_no
             }
         };
         let start = exchange(&mut instance, 0, instrument.then_some(0x92));
-        assert!(start.performs.as_slice().is_empty() && start.restoration.is_none());
+        assert!(start.performs.as_slice().is_empty() && start.restorations.as_slice().is_empty());
         fs::write(case.release(), b"admit the original editor gesture").unwrap();
         let mut ordered = Vec::new();
         let until = Instant::now() + Duration::from_secs(2);
@@ -122,7 +122,7 @@ fn actual_editor_takeover_restores_reading_and_unlaned_values_without_cutting_no
         };
         assert_eq!((point.id, point.normalized), (7, 0.75));
         assert!(
-            held.restoration.is_none(),
+            held.restorations.as_slice().is_empty(),
             "End cannot remove the same block's last point"
         );
         let velocity = 64.0_f32 / 127.0;
@@ -154,7 +154,10 @@ fn actual_editor_takeover_restores_reading_and_unlaned_values_without_cutting_no
         let restored = exchange(&mut instance, 2, None);
         assert!(restored.performs.as_slice().is_empty());
         let end = restored
-            .restoration
+            .restorations
+            .as_slice()
+            .first()
+            .copied()
             .expect("the next actual PCM exchange restored the read or base");
         assert_eq!((end.gesture, end.parameter), (point.gesture, point.id));
         ordered.extend_from_slice(
@@ -177,7 +180,7 @@ fn actual_editor_takeover_restores_reading_and_unlaned_values_without_cutting_no
             assert_eq!(restored.block.pcm[4], [2.0 * velocity; 2]);
             let off = exchange(&mut instance, 3, Some(0x82));
             assert_eq!(off.block.pcm[..8], [[0.0; 2]; 8]);
-            assert!(off.restoration.is_none());
+            assert!(off.restorations.as_slice().is_empty());
         } else {
             assert_eq!(restored.block.pcm[0], [0.375, -0.1875]);
             assert_eq!(
@@ -188,7 +191,12 @@ fn actual_editor_takeover_restores_reading_and_unlaned_values_without_cutting_no
                     [0.375, -0.1875]
                 }
             );
-            assert!(exchange(&mut instance, 3, None).restoration.is_none());
+            assert!(
+                exchange(&mut instance, 3, None)
+                    .restorations
+                    .as_slice()
+                    .is_empty()
+            );
         }
         assert!(
             instance
@@ -391,6 +399,258 @@ fn sdk_group_performs_wait_together_for_real_physical_capacity() {
                 .count(),
             cohort_count
         );
+        assert!(
+            instance
+                .stop_and_reap_on_control()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn grouped_editor_touch_restores_each_target_on_its_actual_late_end() {
+    use crate::protocol::{EditorRestoration, EditorTouchPlanSet, EditorTouchTarget};
+
+    for (pattern, instrument) in [("held", false), ("staggered", true), ("abort-held", false)] {
+        let case = Case::new();
+        let setup = case.setup_restore(if instrument { 149 } else { 148 });
+        let end = case.root.join("group-end");
+        let second_end = case.root.join("second-end");
+        let mut opts = options();
+        opts.preparation.quantum = 64;
+        if instrument {
+            opts.preparation.input_channels = 0;
+        }
+        let mut instance = Prepared::prepare(
+            &build(),
+            source(),
+            opts,
+            PreparationCancellation::new_on_control().unwrap(),
+            |command| {
+                setup(command);
+                command
+                    .arg("--test-grouped-editor")
+                    .env("HEX_ORIGINAL_GROUPED_EDITOR_PATTERN", pattern)
+                    .env("HEX_ORIGINAL_EDITOR_END_RELEASE", &end)
+                    .env("HEX_ORIGINAL_EDITOR_SECOND_END_RELEASE", &second_end);
+            },
+        )
+        .unwrap();
+        let metadata = instance
+            .read_authored_parameter_metadata_on_control(
+                class(),
+                if instrument { &[0, 11, 23] } else { &[0, 11] },
+            )
+            .unwrap();
+        instance
+            .arm_authored_parameter_metadata_on_control(metadata)
+            .unwrap();
+        let plan = EditorTouchPlanSet::new(
+            NonZeroU64::MIN,
+            &[
+                EditorTouchTarget {
+                    parameter: 0,
+                    base: 0.25,
+                    reading: true,
+                },
+                EditorTouchTarget {
+                    parameter: 11,
+                    base: 0.25,
+                    reading: false,
+                },
+            ],
+        )
+        .unwrap();
+        let pcm = |instance: &Prepared, sequence, note, reading, other| {
+            let mut block = request(instance.configuration(), sequence);
+            if !instrument {
+                block.pcm[..64].fill([0.125, -0.25]);
+            }
+            if let Some(status) = note {
+                block
+                    .events
+                    .push(MidiEvent {
+                        frame: 0,
+                        bytes: [status, 60, 64],
+                        len: 3,
+                        note_id: None,
+                    })
+                    .unwrap();
+            }
+            block
+                .parameters
+                .push(ParameterPoint {
+                    frame: 0,
+                    id: 0,
+                    normalized: reading,
+                })
+                .unwrap();
+            if instrument {
+                block
+                    .parameters
+                    .push(ParameterPoint {
+                        frame: 0,
+                        id: 23,
+                        normalized: other,
+                    })
+                    .unwrap();
+            }
+            block
+        };
+        let exchange = |instance: &mut Prepared, sequence, note, reading, other| {
+            let block = pcm(instance, sequence, note, reading, other);
+            instance
+                .exchange_armed_authored_with_editor_group_touch_on_worker(block, &plan, None)
+                .unwrap()
+        };
+        let expect = |actual: &EditorPcm, factor: f32| {
+            let sample = if instrument {
+                [factor * (64.0_f32 / 127.0); 2]
+            } else {
+                [factor * 0.125, factor * -0.25]
+            };
+            assert_eq!(actual.block.pcm[..64], [sample; 64], "pattern={pattern}");
+        };
+        if !instrument {
+            let mut dense = pcm(&instance, 0, None, 0.25, 0.25);
+            for frame in 1..64 {
+                dense
+                    .parameters
+                    .push(ParameterPoint {
+                        frame,
+                        id: 0,
+                        normalized: 0.25,
+                    })
+                    .unwrap();
+            }
+            assert!(
+                instance
+                    .exchange_armed_authored_with_editor_group_touch_on_worker(dense, &plan, None)
+                    .is_err(),
+                "reserve the unlaned restore before sending or mutating the worker"
+            );
+        }
+        expect(
+            &exchange(&mut instance, 0, instrument.then_some(0x92), 0.25, 0.25),
+            1.0,
+        );
+        fs::write(case.release(), b"admit grouped editor takeover").unwrap();
+        let mut ordered = Vec::new();
+        let poll =
+            |instance: &mut Prepared,
+             ordered: &mut Vec<crate::protocol::ParameterEdit>,
+             until: &dyn Fn(&[crate::protocol::ParameterEdit], u16) -> bool| {
+                let deadline = Instant::now() + Duration::from_secs(2);
+                loop {
+                    let batch = instance.poll_parameter_edits_on_worker().unwrap();
+                    ordered.extend_from_slice(batch.as_slice());
+                    if until(ordered, batch.ready) {
+                        break;
+                    }
+                    assert!(
+                        Instant::now() < deadline,
+                        "missing grouped editor callbacks: {pattern}"
+                    );
+                    thread::yield_now();
+                }
+            };
+        poll(&mut instance, &mut ordered, &|_, ready| ready >= 4);
+        let held = exchange(
+            &mut instance,
+            1,
+            None,
+            0.25,
+            if instrument { 0.5 } else { 0.25 },
+        );
+        let [primary, axis] = held.performs.as_slice() else {
+            panic!("paired actual editor inputs");
+        };
+        assert_eq!(
+            (primary.id, primary.normalized, axis.id, axis.normalized),
+            (0, 0.75, 11, 0.5)
+        );
+        assert!(held.restorations.as_slice().is_empty());
+        expect(&held, if instrument { 12.0 } else { 6.0 });
+
+        fs::write(&end, b"release first grouped target").unwrap();
+        let wait_for = if pattern == "abort-held" {
+            ParameterEditKind::GroupAborted
+        } else {
+            ParameterEditKind::End
+        };
+        let required = if pattern == "held" { 2 } else { 1 };
+        poll(&mut instance, &mut ordered, &|rows, _| {
+            rows.iter().filter(|row| row.kind == wait_for).count() >= required
+        });
+        let restored = exchange(
+            &mut instance,
+            2,
+            None,
+            0.5,
+            if instrument { 0.125 } else { 0.25 },
+        );
+        assert!(restored.performs.as_slice().is_empty());
+        expect(&restored, 2.0);
+        let end_fact = |ordered: &[crate::protocol::ParameterEdit], id, gesture, frame| {
+            let end = ordered
+                .iter()
+                .find(|row| row.kind == ParameterEditKind::End && row.id == id)
+                .unwrap();
+            assert_eq!((end.gesture, end.first_frame), (gesture, frame));
+            EditorRestoration {
+                parameter: id,
+                gesture,
+                sequence: end.sequence,
+            }
+        };
+        match pattern {
+            "held" => assert_eq!(
+                restored.restorations.as_slice(),
+                [
+                    end_fact(&ordered, 0, primary.gesture, 128),
+                    end_fact(&ordered, 11, axis.gesture, 128),
+                ]
+            ),
+            "abort-held" => {
+                assert!(restored.restorations.as_slice().is_empty());
+                assert!(!ordered.iter().any(|row| row.kind == ParameterEditKind::End));
+                assert_eq!(
+                    ordered
+                        .iter()
+                        .filter(|row| row.kind == ParameterEditKind::Perform)
+                        .count(),
+                    2
+                );
+            }
+            "staggered" => {
+                assert_eq!(
+                    restored.restorations.as_slice(),
+                    [end_fact(&ordered, 0, primary.gesture, 128)]
+                );
+                // The first target is reading again, while the second still
+                // owns its previously applied value. A third authored lane
+                // independently changes the audible held MIDI note.
+                expect(&exchange(&mut instance, 3, None, 0.25, 0.25), 2.0);
+                fs::write(&second_end, b"release second grouped target").unwrap();
+                poll(&mut instance, &mut ordered, &|rows, _| {
+                    rows.iter()
+                        .any(|row| row.kind == ParameterEditKind::End && row.id == 11)
+                });
+                let second = exchange(&mut instance, 4, None, 0.5, 0.25);
+                assert_eq!(
+                    second.restorations.as_slice(),
+                    [end_fact(&ordered, 11, axis.gesture, 256)]
+                );
+                expect(&second, 2.0);
+                let off = exchange(&mut instance, 5, Some(0x82), 0.5, 0.25);
+                assert_eq!(off.block.pcm[..64], [[0.0; 2]; 64]);
+                assert!(off.restorations.as_slice().is_empty());
+            }
+            _ => unreachable!(),
+        }
         assert!(
             instance
                 .stop_and_reap_on_control()

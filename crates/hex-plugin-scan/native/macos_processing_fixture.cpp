@@ -100,18 +100,21 @@ static void arm_main_thread_tail(){static thread_local MainThreadTail tail;tail.
 const TUID restore_controller_id={0x48,0x45,0x58,0x43,1,2,3,4,5,6,7,8,9,10,11,12};
 // Original one-parameter SDK fixtures preserve the same opaque state shape.
 // Distinct variants exercise actual metadata and processing, not host guesses.
-constexpr int grouped_effect_variant=148;
+constexpr int grouped_effect_variant=148, grouped_instrument_variant=149;
+static bool grouped_editor(int variant) {
+    return variant==grouped_effect_variant || variant==grouped_instrument_variant;
+}
 static ParamID parameter_id(int variant) {
-    return variant==80 || variant==89 || variant==92 || variant==grouped_effect_variant?0u:7u;
+    return variant==80 || variant==89 || variant==92 || grouped_editor(variant)?0u:7u;
 }
 constexpr int authored_instrument_variant=145, held_instrument_variant=146;
 // Original GUI callback + automatable controller fixture for desktop follow/lane
 // integration. It permits live-worker zero-frame flushes while transport is idle.
 constexpr int touched_automation_variant=147;
 static bool held_parameter_input(int variant) {
-    return variant==144 || variant==held_instrument_variant || variant==grouped_effect_variant;
+    return variant==144 || variant==held_instrument_variant || grouped_editor(variant);
 }
-constexpr ParamID drag_axis_id=11;
+constexpr ParamID drag_axis_id=11, independent_id=23;
 constexpr int mixed_input_fixture=143;
 static bool mixed_parameter_input(int variant) { return variant==mixed_input_fixture || held_parameter_input(variant); }
 static bool saturated_editor_drag(int variant) { return variant==87 || variant==131; }
@@ -134,18 +137,22 @@ IComponentHandler* latency_handler=nullptr;
 class RestoreController final : public IEditController {
     std::atomic<uint32> refs{1};
     const int fault=next_fault;
-    const int32 inventory_size=(saturated_editor_drag(fault) || mixed_parameter_input(fault))?2:parameter_inventory_size();
+    const int32 inventory_size=fault==grouped_instrument_variant?3:
+        ((saturated_editor_drag(fault) || mixed_parameter_input(fault))?2:parameter_inventory_size());
     FUnknown* context=nullptr;
     IComponentHandler* handler=nullptr;
     float component_gain=0;uint32 scroll=7;
-    ParamValue drag_axis=0.25;
-    CFRunLoopTimerRef edit_timer=nullptr;bool edits_sent=false;
+    ParamValue drag_axis=0.25,independent=0.25;
+    CFRunLoopTimerRef edit_timer=nullptr;bool edits_sent=false,first_group_end_sent=false;
     void grouped_edit_tick() {
         const auto* pattern=std::getenv("HEX_ORIGINAL_GROUPED_EDITOR_PATTERN");
         const bool repeat=pattern && !std::strcmp(pattern,"repeat");
-        const bool split=repeat || (pattern && !std::strcmp(pattern,"split"));
+        const bool staggered=pattern && !std::strcmp(pattern,"staggered");
+        const bool abort_held=pattern && !std::strcmp(pattern,"abort-held");
+        const bool split=repeat || staggered || (pattern && !std::strcmp(pattern,"split"));
         const bool overflow=pattern && !std::strcmp(pattern,"overflow");
-        const auto* end=std::getenv("HEX_ORIGINAL_EDITOR_END_RELEASE");
+        const auto* end=std::getenv(first_group_end_sent?
+            "HEX_ORIGINAL_EDITOR_SECOND_END_RELEASE":"HEX_ORIGINAL_EDITOR_END_RELEASE");
         if(edits_sent && (!end || std::strlen(end)>4096 || ::access(end,F_OK)!=0)) return;
         void* queried=nullptr;
         if(handler->queryInterface(INLINE_UID_OF(IComponentHandler2),&queried)!=kResultOk || !queried) {
@@ -176,11 +183,18 @@ class RestoreController final : public IEditController {
                     check(group->finishGroupEdit());
                 }
             }
+        } else if(abort_held) {
+            if(handler->beginEdit(0)!=kResultFalse || group->finishGroupEdit()!=kResultFalse) ok=false;
+            CFRunLoopTimerInvalidate(edit_timer);
         } else {
             if(split) check(group->startGroupEdit());
-            check(handler->endEdit(0));check(handler->endEdit(drag_axis_id));
+            if(!first_group_end_sent) check(handler->endEdit(0));
+            if(!staggered || first_group_end_sent) {
+                check(handler->endEdit(drag_axis_id));
+                CFRunLoopTimerInvalidate(edit_timer);
+            }
+            first_group_end_sent=true;
             check(group->finishGroupEdit());
-            CFRunLoopTimerInvalidate(edit_timer);
         }
         group->release();
         if(!ok) ++observed.violations;
@@ -189,7 +203,7 @@ class RestoreController final : public IEditController {
         auto* self=static_cast<RestoreController*>(context);
         const auto* release=std::getenv("HEX_ORIGINAL_INSTANCE_RELEASE");
         if(!self || !release || std::strlen(release)>4096 || ::access(release,F_OK)!=0) return;
-        if(self->fault==grouped_effect_variant) {self->grouped_edit_tick();return;}
+        if(grouped_editor(self->fault)) {self->grouped_edit_tick();return;}
         const auto* end_release=(self->fault==touched_automation_variant || self->fault==held_instrument_variant)
             ?std::getenv("HEX_ORIGINAL_EDITOR_END_RELEASE"):nullptr;
         if(self->edits_sent) {
@@ -290,7 +304,7 @@ public:
         if (!control() || !context || (value && handler)) return kResultFalse;
         if(value)value->addRef();if(handler)handler->release();handler=value;
         if(fault==104 || fault==105 || fault==118 || fault==119) latency_handler=handler;
-        if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116 || (fault>=131 && fault<=135) || fault==141 || fault==142 || fault==touched_automation_variant || fault==grouped_effect_variant ||
+        if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116 || (fault>=131 && fault<=135) || fault==141 || fault==142 || fault==touched_automation_variant || grouped_editor(fault) ||
             (fault==held_instrument_variant && std::getenv("HEX_ORIGINAL_EDITOR_TOUCH")))) {
             CFRunLoopTimerContext timer_context{};timer_context.info=this;
             edit_timer=CFRunLoopTimerCreate(nullptr,CFAbsoluteTimeGetCurrent(),0.001,0,0,edit_tick,&timer_context);
@@ -368,6 +382,10 @@ public:
         // Keep the low gain ID last to exercise SDK page order separately
         // from the host's sorted processing lookup.
         if(inventory_size>1 && index<inventory_size-1) {
+            if(fault==grouped_instrument_variant && index==0) {
+                info.id=independent_id;info.flags=ParameterInfo::kCanAutomate;
+                return kResultOk;
+            }
             if(saturated_editor_drag(fault) || mixed_parameter_input(fault)) {
                 info.id=drag_axis_id;
                 if(held_parameter_input(fault)) info.flags=ParameterInfo::kCanAutomate;
@@ -393,6 +411,7 @@ public:
     }
     ParamValue PLUGIN_API getParamNormalized(ParamID id) override {
         if(control() && context && (saturated_editor_drag(fault) || mixed_parameter_input(fault)) && id==drag_axis_id) return drag_axis;
+        if(control() && context && fault==grouped_instrument_variant && id==independent_id) return independent;
         if(control() && context && id>1000 && id<static_cast<ParamID>(1000+inventory_size)) return 0.25;
         if (!control() || !context || id!=parameter_id(fault)) {++observed.violations;return 0;}
         ++restoration.value_reads;trace(19);
@@ -448,6 +467,7 @@ public:
         // deliberately later authored value, but rejects replay of 0.25.
         if(fault==135 && edits_sent && value!=0.875 && value!=0.5) return kResultFalse;
         if((saturated_editor_drag(fault) || mixed_parameter_input(fault)) && id==drag_axis_id) {drag_axis=value;return kResultOk;}
+        if(fault==grouped_instrument_variant && id==independent_id) {independent=value;return kResultOk;}
         if(id!=parameter_id(fault)) return kInvalidArgument;
         if(fault==76 && observed.flushes.load()) return kResultFalse;
         component_gain=static_cast<float>(parameter_value(fault,value)*4.0);
@@ -463,7 +483,8 @@ class ProcessingProcessor final : public Processor,public IAudioPresentationLate
     const int fault=next_fault;
     const bool multiple_outputs=fault>=128 && fault<=130;
     const bool silent_input=fault==120 || fault==136;
-    const bool midi_instrument=fault==115 || silent_input || fault==127 || multiple_outputs || (fault==authored_instrument_variant || fault==held_instrument_variant);
+    const bool midi_instrument=fault==115 || silent_input || fault==127 || multiple_outputs ||
+        fault==authored_instrument_variant || fault==held_instrument_variant || fault==grouped_instrument_variant;
     const int mode=midi_instrument?1:next_mode;
     bool initialized=false, arranged=false, setup=false, active=false;
     std::atomic<bool> processing{false};
@@ -481,7 +502,7 @@ class ProcessingProcessor final : public Processor,public IAudioPresentationLate
     double sample_rate=0;
     int32 process_mode=kRealtime;
     std::atomic<float> gain{1};
-    std::atomic<double> manual_gain{1.0};
+    std::atomic<double> manual_gain{1.0},independent_gain{1.0};
     uint32 input_latency=0,output_latency=0,restored_latency=0;
     std::array<std::array<double,2>,32> delay{};uint32 delay_cursor=0;
 #if HEX_FIXTURE_RESIDUAL_ECHO
@@ -910,12 +931,13 @@ public:
                 return left_value+(right.second-left_value)*static_cast<double>(frame-left_offset)/
                     static_cast<double>(right.first-left_offset);
             }
-        } primary,secondary;
+        } primary,secondary,independent;
         primary.left_value=static_cast<double>(gain.load())/4.0;
         secondary.left_value=manual_gain.load()/4.0;
+        independent.left_value=independent_gain.load()/4.0;
         if(data.inputParameterChanges) {
             const auto count=data.inputParameterChanges->getParameterCount();
-            if(count<1 || count>(mixed_parameter_input(fault)?2:1)) return kInvalidArgument;
+            if(count<1 || count>(fault==grouped_instrument_variant?3:(mixed_parameter_input(fault)?2:1))) return kInvalidArgument;
             for(int32 index=0;index<count;++index) {
                 auto* queue=data.inputParameterChanges->getParameterData(index);
                 if(!queue) return kInvalidArgument;
@@ -923,6 +945,8 @@ public:
                     if(!secondary.read(*queue,data.numSamples) ||
                         (fault==mixed_input_fixture &&
                             (secondary.count!=1 || secondary.points[0].first!=0))) return kInvalidArgument;
+                } else if(fault==grouped_instrument_variant && queue->getParameterId()==independent_id) {
+                    if(!independent.read(*queue,data.numSamples)) return kInvalidArgument;
                 } else if(queue->getParameterId()!=parameter_id(fault) ||
                     !primary.read(*queue,data.numSamples)) return kInvalidArgument;
             }
@@ -968,6 +992,7 @@ public:
             }
             if(point_count) current_gain=parameter_value(fault,primary.at(frame))*4.0;
             if(secondary.count) manual_gain.store(secondary.at(frame)*4.0);
+            if(independent.count) independent_gain.store(independent.at(frame)*4.0);
             // Independent internal change at offset0; later host automation
             // still reaches its endpoint at the end of this actual SDK block.
             if(fault==79 && point_count && frame==0) current_gain=1.0;
@@ -977,7 +1002,7 @@ public:
             const double left=mode==1?(midi_instrument?note_output:0.25):(input?(precision==kSample32?data.inputs[0].channelBuffers32[0][frame]:data.inputs[0].channelBuffers64[0][frame]):0.0);
             const double right=mode==1?left:(input && inputs==2?(precision==kSample32?data.inputs[0].channelBuffers32[1][frame]:data.inputs[0].channelBuffers64[1][frame]):left);
             if (output) for (int32 channel=0;channel<outputs;++channel) {
-                double value=(channel?right:left)*(fault==82?(current_gain>=2.0?1.0:scale):scale*current_gain)*manual_gain.load();
+                double value=(channel?right:left)*(fault==82?(current_gain>=2.0?1.0:scale):scale*current_gain)*manual_gain.load()*independent_gain.load();
 #if HEX_FIXTURE_RESIDUAL_ECHO
                 // Original three-frame FIR echo. Store the immediate sample,
                 // not the summed result: zero input has a genuinely finite tail.
@@ -1087,7 +1112,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>grouped_effect_variant) return false;next_fault=value;
+        if (value>grouped_instrument_variant) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

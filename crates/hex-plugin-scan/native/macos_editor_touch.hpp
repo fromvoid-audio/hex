@@ -1,21 +1,41 @@
-// One opt-in exact editor takeover. The serialized instance worker owns this
-// state. No graph, DSP pointer, worker lease or second edit reader is retained.
+// The serialized SDK worker owns exact, bounded editor takeover. A plan
+// names one original worker scope; no graph, DSP pointer or lease is retained.
 #pragma once
 #include "macos_host.hpp"
 #include <optional>
 
 namespace hex_instance {
-struct EditorTouchPlan {
-    uint64_t scope=0;
+struct EditorTouchTarget {
     ParamID parameter=0;
     ParamValue base=0;
     bool reading=false;
 
     bool valid() const {
-        return scope && parameter<=0x7fffffffu && std::isfinite(base) && base>=0 && base<=1;
+        return parameter<=0x7fffffffu && std::isfinite(base) && base>=0 && base<=1;
     }
-    bool matches(const EditorTouchPlan& other) const {
-        return scope==other.scope && parameter==other.parameter && base==other.base && reading==other.reading;
+    bool matches(const EditorTouchTarget& other) const {
+        return parameter==other.parameter && base==other.base && reading==other.reading;
+    }
+};
+struct EditorTouchPlanSet {
+    uint64_t scope=0;
+    size_t count=0;
+    std::array<EditorTouchTarget,HOST_EDIT_COUNT> targets{};
+
+    bool valid() const {
+        if(!scope || !count || count>targets.size()) return false;
+        for(size_t n=0;n<count;++n)
+            if(!targets[n].valid() || (n && targets[n-1].parameter>=targets[n].parameter)) return false;
+        return true;
+    }
+    const EditorTouchTarget* find(ParamID id) const {
+        for(size_t n=0;n<count;++n) if(targets[n].parameter==id) return &targets[n];
+        return nullptr;
+    }
+    bool matches(const EditorTouchPlanSet& other) const {
+        if(scope!=other.scope || count!=other.count) return false;
+        for(size_t n=0;n<count;++n) if(!targets[n].matches(other.targets[n])) return false;
+        return true;
     }
 };
 struct EditorRestoration {
@@ -26,60 +46,96 @@ struct EditorRestoration {
 
 class EditorTouch {
     struct Held {
-        EditorTouchPlan plan{};
-        uint64_t gesture=0;
-        uint64_t end_sequence=0;
+        EditorTouchTarget target{};
+        uint64_t scope=0,gesture=0,end_sequence=0;
+        bool restoring=false,cancelled=false;
     };
-    std::optional<EditorTouchPlan> current;
-    std::optional<Held> held;
-    bool restoring=false;
+    std::optional<EditorTouchPlanSet> current;
+    std::array<Held,HOST_EDIT_COUNT> held{};
     uint64_t last_scope=0;
+    bool scope_aborted=false;
+    bool in_current_scope(const Held& row) const {
+        if(!current || row.scope!=current->scope) return false;
+        const auto* target=current->find(row.target.parameter);
+        return target && target->matches(row.target);
+    }
+    const Held* find(ParamID id) const {
+        for(const auto& row:held) if(row.gesture && row.target.parameter==id) return &row;
+        return nullptr;
+    }
 public:
     // End never clears a value in the quantum where its last Perform may
     // enter DSP. Release is eligible at the next real PCM boundary.
-    bool open_quantum(const std::optional<EditorTouchPlan>& requested) {
+    bool open_quantum(const std::optional<EditorTouchPlanSet>& requested) {
         if(requested && (!current || !requested->matches(*current))) {
             if(requested->scope<=last_scope) return false;
-            last_scope=requested->scope;
+            last_scope=requested->scope;scope_aborted=false;
         }
         current=requested;
-        restoring=held && (held->end_sequence || !current || !current->matches(held->plan));
+        for(auto& row:held) if(row.gesture)
+            row.restoring=row.end_sequence || row.cancelled || !in_current_scope(row);
         return true;
     }
     bool would_capture(const EditEvent& edit) const {
-        return !restoring && current && edit.kind==Perform && edit.id==current->parameter &&
-            (!held || (held->gesture==edit.gesture && !held->end_sequence));
+        if(scope_aborted || !current || edit.kind!=Perform || !current->find(edit.id)) return false;
+        const auto* row=find(edit.id);
+        return !row || (!row->restoring && row->gesture==edit.gesture && !row->end_sequence);
     }
     bool can_stage(const EditEvent& edit) const {
         if(is_group_marker(edit.kind)) return true;
-        if(restoring && current && edit.id==current->parameter) return false;
-        if(!held || edit.id!=held->plan.parameter) return true;
-        // Do not let a queued new gesture collide with the actual release.
-        // The original ordered FIFO retains it until the following quantum.
-        return !restoring && (!held->end_sequence || edit.gesture==held->gesture);
+        // Preserve single-target behavior when an old scope is restoring.
+        if(current && current->count==1 && current->find(edit.id) && has_restorations()) return false;
+        if(const auto* row=find(edit.id)) {
+            // A queued edit cannot collide with the actual restoration.
+            return !row->restoring && (!row->end_sequence || edit.gesture==row->gesture);
+        }
+        if(would_capture(edit)) {
+            for(const auto& row:held) if(!row.gesture) return true;
+            return false;
+        }
+        return true;
     }
     void applied(const EditEvent& edit) {
-        if(would_capture(edit) && !held) held=Held{*current,edit.gesture,0};
-        if(held && !restoring && edit.kind==End && edit.id==held->plan.parameter &&
-            edit.gesture==held->gesture) held->end_sequence=edit.sequence;
+        if(edit.kind==GroupAborted && current && current->count>1) {
+            // The take cannot succeed after an abort. Release retained values
+            // on the next real quantum without fabricating any End.
+            scope_aborted=true;
+            for(auto& row:held) if(row.scope==current->scope) row.cancelled=true;
+        }
+        if(would_capture(edit) && !find(edit.id)) {
+            for(auto& row:held) if(!row.gesture) {
+                row={*current->find(edit.id),current->scope,edit.gesture,0,false,false};
+                break;
+            }
+        }
+        if(edit.kind==End) for(auto& row:held)
+            if(!row.restoring && row.target.parameter==edit.id && row.gesture==edit.gesture)
+                row.end_sequence=edit.sequence;
     }
     bool masks(ParamID id) const {
-        return held && !restoring && held->plan.parameter==id;
+        const auto* row=find(id);
+        return row && !row->restoring;
     }
-    std::optional<EditorTouchPlan> restore_target() const {
-        return restoring && held?std::optional{held->plan}:std::nullopt;
+    bool has_restorations() const {
+        for(const auto& row:held) if(row.restoring) return true;
+        return false;
     }
-    bool ending_in_scope() const {
-        return restoring && held && current && current->matches(held->plan) && held->end_sequence;
+    template<typename Visit>
+    void each_restoration(Visit visit) const {
+        for(const auto& row:held) if(row.restoring)
+            visit(row.target,!row.cancelled && row.end_sequence && in_current_scope(row));
     }
-    std::optional<EditorRestoration> processed() {
-        if(!restoring || !held) return {};
-        const auto old=*held;
-        held.reset();restoring=false;
-        // A cancellation is not a successful recorded gesture end. It may
-        // restore sound, but only the ordered End permits a terminal fact.
-        if(!current || !current->matches(old.plan) || !old.end_sequence) return {};
-        return EditorRestoration{old.end_sequence,old.gesture,old.plan.parameter};
+    auto processed() {
+        std::array<EditorRestoration,HOST_EDIT_COUNT> reply{};
+        size_t count=0;
+        for(auto& row:held) if(row.restoring) {
+            if(!row.cancelled && row.end_sequence && in_current_scope(row))
+                reply[count++]={row.end_sequence,row.gesture,row.target.parameter};
+            row={};
+        }
+        std::sort(reply.begin(),reply.begin()+count,
+            [](const auto& left,const auto& right) {return left.sequence<right.sequence;});
+        return reply;
     }
 };
 } // namespace hex_instance
