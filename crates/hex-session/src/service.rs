@@ -617,6 +617,14 @@ pub enum Request {
         owner: preset::Owner,
         path: PathBuf,
     },
+    SaveDeviceUnitPreset {
+        owner: preset::Owner,
+        path: PathBuf,
+    },
+    SaveDeviceUnitDefault {
+        owner: preset::Owner,
+        root: PathBuf,
+    },
     /// Save provider settings on the control worker, without changing the project.
     /// Root is the configured app data directory, never an external preset path.
     SaveDeviceDefault {
@@ -1050,6 +1058,8 @@ impl Request {
                 | Request::SaveCurrentWithFormatUpgrade { .. }
                 | Request::SaveDevicePreset { .. }
                 | Request::SaveDeviceDefault { .. }
+                | Request::SaveDeviceUnitPreset { .. }
+                | Request::SaveDeviceUnitDefault { .. }
                 | Request::LoadDevicePreset { .. }
                 | Request::CompareDevice { .. }
                 | Request::Export(_)
@@ -6752,6 +6762,30 @@ fn run_worker(
                 Request::SaveDeviceDefault { owner, root } => {
                     match preset::save_default(&session, project_generation, revision, owner, &root)
                     {
+                        Ok(()) => status = Some("device default saved".into()),
+                        Err(reason) => error = Some(reason),
+                    }
+                }
+                Request::SaveDeviceUnitPreset { owner, path } => {
+                    match preset::save_complete(
+                        &session,
+                        project_generation,
+                        revision,
+                        owner,
+                        preset::CompleteDestination::Preset(&path),
+                    ) {
+                        Ok(()) => status = Some("device preset saved".into()),
+                        Err(reason) => error = Some(reason),
+                    }
+                }
+                Request::SaveDeviceUnitDefault { owner, root } => {
+                    match preset::save_complete(
+                        &session,
+                        project_generation,
+                        revision,
+                        owner,
+                        preset::CompleteDestination::Default(&root),
+                    ) {
                         Ok(()) => status = Some("device default saved".into()),
                         Err(reason) => error = Some(reason),
                     }

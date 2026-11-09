@@ -77,12 +77,19 @@ pub fn project_device_host_gain_modulation_supported(
 }
 
 pub(super) fn validate_source_owners(project: &Project) -> Result<(), Invalid> {
-    if project.native_sources().iter().any(|source| {
-        source
+    for source in project.native_sources() {
+        if source
             .devices()
+            .take(source.instrument_index() + 1)
             .any(|device| !device.modulation().is_empty())
-    }) {
-        return Err(Invalid("source-owned device modulation is unsupported"));
+        {
+            return Err(Invalid(
+                "modulation requires a post-instrument source effect",
+            ));
+        }
+        for device in source.post_instrument_effects() {
+            EffectModulation::validate(device, project)?;
+        }
     }
     Ok(())
 }
