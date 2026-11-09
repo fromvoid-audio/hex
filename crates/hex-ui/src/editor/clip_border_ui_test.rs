@@ -1181,6 +1181,8 @@ fn resolved_edge_scene_witness_distinguishes_occlusion_order(cx: &mut TestAppCon
     edge_above.set(true);
     selected.set(true);
     check(&mut visual, true);
+    let unmasked = visual.rendered_quad_paint_layers("edge-witness", false);
+    assert!(unmasked[0].1.top() < body.center().y.scale(scale));
     assert!(
         visual
             .rendered_filled_quads("edge-witness-lane")
