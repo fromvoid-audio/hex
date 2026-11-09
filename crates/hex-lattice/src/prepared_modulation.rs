@@ -95,9 +95,15 @@ impl PreparedModulationState {
     /// Requested runtime capacity before allocation; graph admission must also
     /// verify the actual capacities after construction.
     pub fn quoted_runtime_heap_bytes(&self) -> Option<usize> {
-        ModulationSourceBank::quoted_heap_bytes(self.sources.len(), self.chunk_frames)?
-            .checked_add(self.program.storage_bytes()?)?
-            .checked_add(Self::quoted_source_route_bytes(self.source_routes.len())?)
+        ModulationSourceBank::quoted_heap_bytes(
+            self.sources.len(),
+            self.chunk_frames,
+            self.sources
+                .iter()
+                .any(PreparedModulationSource::reads_note_gate),
+        )?
+        .checked_add(self.program.storage_bytes()?)?
+        .checked_add(Self::quoted_source_route_bytes(self.source_routes.len())?)
     }
 
     pub(crate) fn matches_runtime(&self, runtime: &ModulationRuntime) -> bool {
