@@ -1086,10 +1086,16 @@ impl Render for EditorView {
                 view.cancel_arrangement_pan();
                 view.cancel_track_reorder();
                 view.device_panel.navigation.cancel();
+                view.cancel_modulation_target_drag();
                 view.stop();
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &CancelDragOrStop, window, cx| {
+                if view.cancel_modulation_target_drag() {
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
                 if view.pending_plugin_effect.is_some() {
                     view.cancel_plugin_effect();
                     cx.stop_propagation();
