@@ -1603,11 +1603,15 @@ fn loop_brace_matches_retained_source_coordinates_during_zoom_and_pan(cx: &mut T
         assert_eq!((body.left(), body.size.width), (bar.left(), bar.size.width));
         let a = visual.debug_bounds("audio-loop-start-marker").unwrap();
         let b = visual.debug_bounds("audio-loop-end-marker").unwrap();
+        // Layout rounds the independently positioned edges to physical pixels.
+        let pixel = 1.0 / visual.update(|window, _| window.scale_factor());
         assert!(
-            (f32::from(a.left() - bar.left()) - f32::from(bar.size.width) * first).abs() < 0.05
+            (f32::from(a.left() - bar.left()) - f32::from(bar.size.width) * first).abs() <= pixel,
+            "bar={bar:?} a={a:?} first={first}"
         );
         assert!(
-            (f32::from(b.right() - bar.left()) - f32::from(bar.size.width) * last).abs() < 0.05
+            (f32::from(b.right() - bar.left()) - f32::from(bar.size.width) * last).abs() <= pixel,
+            "bar={bar:?} b={b:?} last={last}"
         );
     }
 }
