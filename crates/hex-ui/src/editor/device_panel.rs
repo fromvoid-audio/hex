@@ -2807,7 +2807,8 @@ fn render_instrument(
             Ok(device_view) => {
                 if is_operator && device_view.type_id.as_str() == Ok("hex.instrument.operator") {
                     let body = operator_panel::render_body(view, cx, device_id, device_view);
-                    device_frame(
+                    let modulation = modulators::panel(view, cx, device, device_view, false);
+                    hex_widgets::device_frame_with_modulators(
                         device_drag_title(
                             view,
                             cx,
@@ -2819,6 +2820,7 @@ fn render_instrument(
                         leading,
                         header_actions,
                         body,
+                        modulation,
                     )
                 } else {
                     let body = parameter_rows::body(

@@ -17,6 +17,89 @@ use hex_project::{
 use std::{collections::BTreeMap, sync::Arc};
 
 #[test]
+fn vector_output_trim_refuses_legacy_non_unity_and_input_routes() {
+    use hex_devices::operator_state::{OPERATOR_METADATA, OPERATOR_TYPE_ID, parameter};
+    use hex_lattice_contract::ParameterValue;
+    use hex_project::{Project, TrackDeviceSlot};
+
+    let current = OPERATOR_METADATA.default_state().unwrap();
+    let legacy = OPERATOR_METADATA
+        .patch_parameter(&current, parameter::GLOBAL_MODE, ParameterValue::Choice(0))
+        .unwrap();
+    let attenuated = current.clone().with_output_gain_millidb(-3000).unwrap();
+    for (state, target, output_available) in [
+        (legacy, DeviceAutomationTarget::HostOutputGain, false),
+        (attenuated, DeviceAutomationTarget::HostOutputGain, false),
+        (current, DeviceAutomationTarget::HostInputGain, true),
+    ] {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::InsertTrackWithDevice {
+                name: "vector".into(),
+                before_track: None,
+                slot: TrackDeviceSlot::Instrument,
+                state,
+            })
+            .unwrap()
+        else {
+            panic!("vector track");
+        };
+        let device = editor
+            .project()
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        assert_eq!(
+            crate::project_device_instrument_output_modulation_supported(editor.project(), device),
+            output_available,
+        );
+        let next = editor.project().next_identity();
+        let source = ModulationSourceId::new(next).unwrap();
+        let edit = Command::ReplaceDeviceModulation {
+            device,
+            modulation: DeviceModulation::new(
+                vec![Modulator {
+                    id: source,
+                    color: Default::default(),
+                    enabled: true,
+                    state: Settings { value: 1.0 }.encode().unwrap(),
+                }],
+                vec![DeviceModulationRoute {
+                    id: ModulationRouteId::new(next + 1).unwrap(),
+                    source,
+                    output: ModulationOutputId::MAIN,
+                    destination: ModulationDestination::Device {
+                        device_type: OPERATOR_TYPE_ID,
+                        target,
+                        vst3_class: None,
+                    },
+                    amount: ModulationAmount::new(0.25).unwrap(),
+                    range: ModulationRange::default(),
+                    enabled: true,
+                }],
+            )
+            .unwrap(),
+        };
+        let stable = editor.project().clone();
+        assert!(
+            editor
+                .execute_prepared(edit, |project| {
+                    PreparedRevision::prepare(
+                        project,
+                        &BTreeMap::new(),
+                        Arc::new(SineTable::new()),
+                        None,
+                    )
+                })
+                .is_err()
+        );
+        assert_eq!(*editor.project(), stable);
+    }
+}
+
+#[test]
 fn macro_value_updates_active_sample_frames_and_matches_the_sealed_graph() {
     let mut editor = Editor::new(crate::audio_preparation::candidate_test_project(), 4).unwrap();
     let track = editor.project().tracks()[0].id();
