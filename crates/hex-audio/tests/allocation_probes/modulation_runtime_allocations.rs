@@ -100,24 +100,64 @@ fn chunk_transactions_do_not_allocate_or_free() {
 
 #[test]
 fn math_with_two_incoming_signals_does_not_allocate_or_free() {
-    use hex_lattice::{ModulationMathOperation, PreparedModulationState, SourceModulationRoute};
+    use hex_lattice::ModulationMathOperation;
+
+    let math = PreparedModulationSource::math(
+        ModulationSourceId::new(4).unwrap(),
+        48_000,
+        [0.125, 0.75],
+        ModulationMathOperation::Multiply,
+    )
+    .unwrap();
+    probe_routed_composition(
+        math,
+        &[
+            SourceModulationParameter::MathA,
+            SourceModulationParameter::MathB,
+        ],
+    );
+}
+
+#[test]
+fn mix_with_three_incoming_signals_does_not_allocate_or_free() {
+    let mix = PreparedModulationSource::mix(
+        ModulationSourceId::new(4).unwrap(),
+        48_000,
+        [0.125, 0.75],
+        0.5,
+    )
+    .unwrap();
+    probe_routed_composition(
+        mix,
+        &[
+            SourceModulationParameter::MixA,
+            SourceModulationParameter::MixB,
+            SourceModulationParameter::MixBlend,
+        ],
+    );
+}
+
+fn probe_routed_composition(
+    composition: PreparedModulationSource,
+    parameters: &[SourceModulationParameter],
+) {
+    use hex_lattice::{PreparedModulationState, SourceModulationRoute};
+
     let id = |value| ModulationSourceId::new(value).unwrap();
-    let sources = vec![
+    let mut sources = vec![
         PreparedModulationSource::free(id(1), 48_000.0, 7.0, 0.0).unwrap(),
         PreparedModulationSource::free(id(2), 48_000.0, 11.0, 0.25).unwrap(),
-        PreparedModulationSource::math(
-            id(3),
-            48_000,
-            [0.125, 0.75],
-            ModulationMathOperation::Multiply,
-        )
-        .unwrap(),
     ];
+    if parameters.len() == 3 {
+        sources.push(PreparedModulationSource::free(id(3), 48_000.0, 17.0, 0.5).unwrap());
+    }
+    let composition_index = sources.len();
+    sources.push(composition);
     let target = gain_target();
     let program = PreparedModulation::new(
         &[target],
         &[ModulationRoute {
-            source: 2,
+            source: composition_index,
             target: target.descriptor.id,
             amount: 0.25,
             range: [-1.0, 1.0],
@@ -125,17 +165,18 @@ fn math_with_two_incoming_signals_does_not_allocate_or_free() {
         sources.len(),
     )
     .unwrap();
-    let incoming = [
-        (0, SourceModulationParameter::MathA),
-        (1, SourceModulationParameter::MathB),
-    ]
-    .map(|(source, parameter)| SourceModulationRoute {
-        source,
-        target: 2,
-        parameter,
-        amount: 0.25,
-        range: [-1.0, 1.0],
-    });
+    let incoming: Vec<_> = parameters
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(source, parameter)| SourceModulationRoute {
+            source,
+            target: composition_index,
+            parameter,
+            amount: 0.25,
+            range: [-1.0, 1.0],
+        })
+        .collect();
     let prepared =
         PreparedModulationState::with_source_routes(sources, program, 128, &incoming).unwrap();
     let mut runtime = prepared.prepare().unwrap();

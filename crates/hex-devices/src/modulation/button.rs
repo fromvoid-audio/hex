@@ -6,6 +6,11 @@ use hex_lattice_contract::{DeviceContractError as Error, DeviceTypeId, NativeDev
 pub const TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.modulator.button");
 const VERSION: u32 = 1;
 
+/// Binary sources retain their actual zero and one at every assignment.
+pub fn uses_identity_range(device_type: DeviceTypeId) -> bool {
+    matches!(device_type, TYPE_ID | super::buttons::TYPE_ID)
+}
+
 pub fn encode(on: bool) -> Result<NativeDeviceState, Error> {
     NativeDeviceState::new(TYPE_ID, VERSION, vec![u8::from(on)])
 }

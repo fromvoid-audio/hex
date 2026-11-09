@@ -566,6 +566,93 @@ mod tests {
     }
 
     #[test]
+    fn three_mix_inputs_follow_distinct_samples_across_splits_and_reset() {
+        use crate::{LfoWaveform, SourceModulationParameter, SourceModulationRoute};
+
+        let fixture = prepared(6_000.0);
+        let id = ParameterId::from_static(1);
+        let target = ModulationTarget {
+            descriptor: fixture.program().descriptor(id).unwrap(),
+            semantics: fixture.program().semantics(id).unwrap(),
+            base: ParameterValue::Float(0.5),
+        };
+        let program = PreparedModulation::new(
+            &[target],
+            &[ModulationRoute {
+                source: 1,
+                target: id,
+                amount: 0.25,
+                range: [-1.0, 1.0],
+            }],
+            4,
+        )
+        .unwrap();
+        let stable_id = |value| ModulationSourceId::new(value).unwrap();
+        let square = |value, phase| {
+            PreparedModulationSource::free_with_waveform(
+                stable_id(value),
+                48_000.0,
+                12_000.0,
+                phase,
+                LfoWaveform::Square,
+            )
+            .unwrap()
+        };
+        let mix = PreparedModulationSource::mix(stable_id(2), 48_000, [-0.25, 0.5], 0.5).unwrap();
+        let sources = vec![square(1, 0.0), mix, square(3, 0.25), square(4, 0.5)];
+        let incoming = [
+            (3, SourceModulationParameter::MixBlend, 0.25),
+            (0, SourceModulationParameter::MixA, 0.5),
+            (2, SourceModulationParameter::MixB, 0.25),
+        ]
+        .map(|(source, parameter, amount)| SourceModulationRoute {
+            source,
+            target: 1,
+            parameter,
+            amount,
+            range: [-1.0, 1.0],
+        });
+        let mut invalid = incoming;
+        invalid[1].parameter = SourceModulationParameter::MathA;
+        assert!(
+            crate::PreparedModulationState::with_source_routes(
+                sources.clone(),
+                program.clone(),
+                8,
+                &invalid,
+            )
+            .is_err()
+        );
+        let declaration =
+            crate::PreparedModulationState::with_source_routes(sources, program, 8, &incoming)
+                .unwrap();
+        let mut runtime = declaration.prepare().unwrap();
+        let expected = [0.703125, 0.640625, 0.4375, 0.625];
+        let check = |runtime: &mut ModulationRuntime, expected: &[f32]| {
+            runtime.begin();
+            runtime
+                .render_chunk(expected.len(), None, |block| {
+                    for (offset, &sample) in expected.iter().enumerate() {
+                        assert_eq!(
+                            block.value_at(id, offset),
+                            Some(ParameterValue::Float(sample))
+                        );
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            runtime.commit().unwrap();
+        };
+        check(&mut runtime, &expected[..3]);
+        let mut successor = declaration.prepare().unwrap();
+        successor.inherit_committed(&runtime).unwrap();
+        check(&mut successor, &expected[3..]);
+        check(&mut successor, &expected);
+        successor.reset_all();
+        check(&mut successor, &expected);
+    }
+
+    #[test]
     fn note_counter_follows_sample_offsets_and_transaction_custody() {
         use crate::NativeInstrumentExpression;
         use std::num::NonZeroU64;

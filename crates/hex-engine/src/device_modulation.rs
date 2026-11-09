@@ -2,8 +2,8 @@
 //! Control preparation resolves stable IDs and validates real factory bindings.
 //! Prepared declarations borrow no project data and never enter project history.
 use hex_devices::modulation::{
-    audio_rate, button, envelope_follower, lfo, macro_four, macro_value, math, note_pressure,
-    random_hold,
+    audio_rate, button, buttons, envelope_follower, lfo, macro_four, macro_value, math,
+    note_pressure, random_hold,
 };
 use hex_lattice::{
     HostGainModulationRoute, MAX_MODULATION_SOURCES, ModulationRoute, ModulationTarget,
@@ -406,6 +406,12 @@ impl EffectModulation {
         let mut sources = reserved(output_count)?;
         let mut outputs = reserved(output_count)?;
         for source in ordered {
+            let mut retain = |output, prepared| {
+                if source.enabled {
+                    outputs.push((source.id, output));
+                    sources.push(prepared);
+                }
+            };
             if source.state.type_id() == macro_four::TYPE_ID {
                 let settings =
                     macro_four::Settings::decode(&source.state).map_err(invalid_source)?;
@@ -415,10 +421,18 @@ impl EffectModulation {
                     let prepared = settings
                         .prepare(source.id, sample_rate, output)
                         .map_err(invalid_source)?;
-                    if source.enabled {
-                        outputs.push((source.id, output));
-                        sources.push(prepared);
-                    }
+                    retain(output, prepared);
+                }
+                continue;
+            }
+            if source.state.type_id() == buttons::TYPE_ID {
+                let settings = buttons::Settings::decode(&source.state).map_err(invalid_source)?;
+                for number in 1..=buttons::OUTPUT_COUNT as u32 {
+                    let output = ModulationOutputId::new(number).map_err(invalid_source)?;
+                    let prepared = settings
+                        .prepare(source.id, sample_rate, output)
+                        .map_err(invalid_source)?;
+                    retain(output, prepared);
                 }
                 continue;
             }
@@ -439,10 +453,7 @@ impl EffectModulation {
                 _ => return Err(Invalid("modulator state or rate is unsupported")),
             }
             .map_err(invalid_source)?;
-            if source.enabled {
-                outputs.push((source.id, ModulationOutputId::MAIN));
-                sources.push(prepared);
-            }
+            retain(ModulationOutputId::MAIN, prepared);
         }
         if sources.is_empty() {
             return Ok(None);
@@ -485,10 +496,9 @@ impl EffectModulation {
             let amount = route.amount.get();
             let range = [route.range.start.get(), route.range.end.get()];
             if range != [-1.0, 1.0]
-                && bank
-                    .sources()
-                    .iter()
-                    .any(|slot| slot.id == route.source && slot.state.type_id() == button::TYPE_ID)
+                && bank.sources().iter().any(|slot| {
+                    slot.id == route.source && button::uses_identity_range(slot.state.type_id())
+                })
             {
                 return Err(Invalid("button assignments use the original on/off values"));
             }
@@ -774,10 +784,10 @@ impl EffectModulation {
 }
 
 fn source_output_count(device_type: hex_lattice_contract::DeviceTypeId) -> usize {
-    if device_type == macro_four::TYPE_ID {
-        macro_four::VALUE_PARAMETERS.len()
-    } else {
-        1
+    match device_type {
+        macro_four::TYPE_ID => macro_four::VALUE_PARAMETERS.len(),
+        buttons::TYPE_ID => buttons::OUTPUT_COUNT,
+        _ => 1,
     }
 }
 

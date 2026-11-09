@@ -15,6 +15,9 @@ pub enum SourceModulationParameter {
     MacroValue,
     MathA,
     MathB,
+    MixA,
+    MixB,
+    MixBlend,
     /// Signed full depth shifts the authored free rate by four octaves.
     /// Zero rate stays stopped and the effective step saturates at Nyquist.
     FreeLfoRate,
