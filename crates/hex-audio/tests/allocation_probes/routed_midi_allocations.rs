@@ -405,15 +405,6 @@ fn source_delay_history_survives_live_receiver_move_without_callback_allocations
         })
         .unwrap();
 
-    let mut definitions = Editor::new(editor.project().clone(), 8).unwrap();
-    for track in [receiver, contributor] {
-        definitions
-            .execute(Command::BindTrackSource {
-                track,
-                source: None,
-            })
-            .unwrap();
-    }
     let mut state = delay::DEFINITION.default_state().unwrap();
     for (parameter, value) in [
         (delay::LEFT_SYNC, ParameterValue::Bool(false)),
@@ -426,7 +417,7 @@ fn source_delay_history_survives_live_receiver_move_without_callback_allocations
             .patch_parameter(&state, parameter, value)
             .unwrap();
     }
-    let Created::Device(child) = definitions
+    let Created::Device(child) = editor
         .execute(Command::InsertNestedDevice { parent, state })
         .unwrap()
     else {
@@ -441,8 +432,8 @@ fn source_delay_history_survives_live_receiver_move_without_callback_allocations
         &cancel,
     )
     .unwrap();
-    let prepare = |project: &Project, retained: &Project| {
-        let mut revision = PreparedRevision::prepare_with_device_resources(
+    let prepare = |project: &Project| {
+        let revision = PreparedRevision::prepare_with_device_resources(
             project,
             &BTreeMap::new(),
             Arc::clone(&table),
@@ -453,39 +444,26 @@ fn source_delay_history_survives_live_receiver_move_without_callback_allocations
             &cancel,
         )
         .unwrap();
-        revision
-            .test_install_compiled_source_effects(retained)
-            .unwrap();
         Arc::new(revision)
     };
-    let first = prepare(editor.project(), definitions.project());
+    let first = prepare(editor.project());
     editor
         .execute(Command::SetNativeSourceReceiver {
             source,
             track: Some(contributor),
         })
         .unwrap();
-    let moved = prepare(editor.project(), definitions.project());
-    let dry = Arc::new(
-        PreparedRevision::prepare_with_device_resources(
-            editor.project(),
-            &BTreeMap::new(),
-            Arc::clone(&table),
-            None,
-            &hex_engine::audio_transform::AudioTransformPreparation::default(),
-            &resources,
-            0,
-            &cancel,
-        )
-        .unwrap(),
-    );
-    definitions
+    let moved = prepare(editor.project());
+    let mut dry_editor = Editor::new(editor.project().clone(), 2).unwrap();
+    dry_editor.execute(Command::RemoveDevice(child)).unwrap();
+    let dry = prepare(dry_editor.project());
+    editor
         .execute(Command::SetDeviceBypass {
             device: child,
             bypassed: true,
         })
         .unwrap();
-    let changed = prepare(editor.project(), definitions.project());
+    let changed = prepare(editor.project());
 
     let mut reference =
         hex_engine::SessionPlayback::new_with_device_resources(Arc::clone(&first), &resources)
