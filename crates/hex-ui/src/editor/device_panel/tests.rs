@@ -803,6 +803,10 @@ fn return_device_control_click_selects_without_stealing_its_gesture(cx: &mut Tes
     let body_paint = visual
         .rendered_background(body)
         .expect("return device body paint");
+    let shell: &'static str =
+        Box::leak(format!("device-shell-{}", device.value()).into_boxed_str());
+    let border_before = visual.rendered_border(shell).expect("return device frame");
+    let header_paint = visual.rendered_background("device-frame-header");
     let knob = visual
         .debug_bounds(Box::leak(
             format!("device-{}-parameter-1-knob", device.value()).into_boxed_str(),
@@ -821,10 +825,13 @@ fn return_device_control_click_selects_without_stealing_its_gesture(cx: &mut Tes
     assert_eq!(visual.rendered_background(body), Some(body_paint));
     assert_eq!(
         visual.rendered_background("device-frame-header"),
-        Some(gpui::Background::from(gpui::rgb(
-            device_layout_style().accent
-        )))
+        header_paint
     );
+    let border = visual
+        .rendered_border(shell)
+        .expect("selected return device frame");
+    assert_eq!(border.0, gpui::rgb(device_layout_style().accent).into());
+    assert_eq!(border.1, border_before.1);
     editor.read_with(cx, |view, _| {
         assert_eq!(view.device_panel.selected_device, Some(device))
     });
