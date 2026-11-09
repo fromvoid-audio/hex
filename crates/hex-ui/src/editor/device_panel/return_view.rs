@@ -368,7 +368,7 @@ pub(super) fn render_return_effect(
                 leading,
                 actions,
                 body,
-                super::modulators::panel(view, cx, device, device_view),
+                super::modulators::panel(view, cx, device, device_view, true),
             )
         }
         Err(error) => {
