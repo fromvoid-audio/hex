@@ -213,10 +213,10 @@ fn long_sparse_touch_replays_late_knots_and_the_exclusive_restore() {
     let program = program(&map, &[span(&map, first, end, &values)], 0, 64, Some(0.375));
     let last = values.last().unwrap().0;
     for (frame, before, after) in [(last, 0.25, 0.75), (end, 0.75, 0.375)] {
-        let origins: Vec<_> = (frame - 3..frame + 4).map(Some).collect();
+        let origins: Vec<_> = (frame - 3..frame + 61).map(Some).collect();
         let points = rendered(&program, &origins, &[]);
         assert!(points.len() <= MAX_POINTS);
-        for offset in 0..7 {
+        for offset in 0..64 {
             assert_eq!(
                 sample(&points, offset),
                 if offset < 3 { before } else { after }

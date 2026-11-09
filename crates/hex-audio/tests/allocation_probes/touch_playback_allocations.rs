@@ -173,8 +173,14 @@ fn long_native_device_touch_replays_late_steps_without_callback_allocation() {
         .publish(Playback::try_from_prepared_with_session(revision).unwrap())
         .unwrap();
     let origin = (COUNT - 1) * STRIDE - 4;
-    control.command(PlaybackCommand::Seek(origin)).unwrap();
+    // Clear the normal transport ramp before comparing exact dry values at
+    // the late automation step and its exclusive restoration boundary.
+    control
+        .command(PlaybackCommand::Seek(origin - 256))
+        .unwrap();
     control.command(PlaybackCommand::Play).unwrap();
+    callback.begin_block();
+    callback.render(&mut [[0.0; 2]; 256]).unwrap();
     let mut output = [[0.0; 2]; 40];
     let counts = measure(|| {
         callback.begin_block();
