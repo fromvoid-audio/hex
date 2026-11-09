@@ -7,6 +7,9 @@ use hex_lattice::{ModulationSourceId, PreparedModulationSource};
 use hex_lattice_contract::{DeviceContractError as Error, DeviceTypeId, NativeDeviceState};
 
 pub const TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.modulator.lfo");
+/// Stable canonical route destination for the free-running frequency.
+pub const RATE_PARAMETER: hex_lattice_contract::ParameterId =
+    hex_lattice_contract::ParameterId::from_static(1);
 const SINE_VERSION: u32 = 1;
 const SHAPE_VERSION: u32 = 2;
 

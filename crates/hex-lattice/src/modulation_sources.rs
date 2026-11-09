@@ -102,10 +102,8 @@ pub struct PreparedModulationSource {
     sample_rate: f64,
 }
 impl PreparedModulationSource {
-    pub(crate) fn supports_modulation_parameter(
-        &self,
-        parameter: SourceModulationParameter,
-    ) -> bool {
+    /// Validate the target against the prepared source class and timing mode.
+    pub fn supports_modulation_parameter(&self, parameter: SourceModulationParameter) -> bool {
         matches!(
             (parameter, self.initial),
             (SourceModulationParameter::MacroValue, SourceState::Macro(_))

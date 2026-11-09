@@ -285,3 +285,115 @@ fn saved_source_routes_deliver_sample_rate_pcm_and_preserve_authored_macro_value
         &sources
     );
 }
+
+#[test]
+fn saved_free_lfo_rate_route_doubles_the_phase_step_in_both_graphs() {
+    use hex_devices::modulation::{lfo, macro_value};
+    let mut editor = Editor::new(crate::audio_preparation::candidate_test_project(), 4).unwrap();
+    let track = editor.project().tracks()[0].id();
+    let asset = editor.project().assets().next().unwrap().id();
+    let state = UTILITY_DEFINITION.default_state().unwrap();
+    let Created::Device(device) = editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: state.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("utility fixture");
+    };
+    let next = editor.project().next_identity();
+    let manual_id = ModulationSourceId::new(next).unwrap();
+    let lfo_id = ModulationSourceId::new(next + 1).unwrap();
+    let manual = Modulator {
+        color: Default::default(),
+        id: manual_id,
+        enabled: true,
+        state: macro_value::Settings { value: 0.25 }.encode().unwrap(),
+    };
+    let oscillator = |rate| Modulator {
+        color: Default::default(),
+        id: lfo_id,
+        enabled: true,
+        state: lfo::Settings {
+            rate,
+            phase: 0.0,
+            waveform: lfo::Waveform::RisingRamp,
+        }
+        .encode()
+        .unwrap(),
+    };
+    let route = |offset, source, destination, amount| DeviceModulationRoute {
+        id: ModulationRouteId::new(next + offset).unwrap(),
+        source,
+        output: ModulationOutputId::MAIN,
+        destination,
+        amount: ModulationAmount::new(amount).unwrap(),
+        range: ModulationRange::default(),
+        enabled: true,
+    };
+    let routes = vec![
+        route(
+            2,
+            manual_id,
+            ModulationDestination::Modulator {
+                source: lfo_id,
+                module_type: lfo::TYPE_ID,
+                parameter: lfo::RATE_PARAMETER,
+            },
+            1.0,
+        ),
+        route(
+            3,
+            lfo_id,
+            ModulationDestination::Device {
+                device_type: UTILITY_TYPE_ID,
+                target: DeviceAutomationTarget::Parameter(parameter::GAIN),
+                vst3_class: None,
+            },
+            0.5 / MAX_UTILITY_GAIN,
+        ),
+    ];
+    let command = |rate| Command::ReplaceDeviceModulation {
+        device,
+        modulation: DeviceModulation::new(vec![manual.clone(), oscillator(rate)], routes.clone())
+            .unwrap(),
+    };
+    let audio = Audio::new(48_000, vec![[0.125, -0.25]; 8]).unwrap();
+    let media = BTreeMap::from([(asset, audio.clone())]);
+    let prepare = |project: &hex_project::Project| {
+        PreparedRevision::prepare(project, &media, Arc::new(SineTable::new()), None)
+    };
+    let untouched = editor.project().clone();
+    assert!(
+        editor
+            .execute_prepared(command(lfo::Rate::BeatsPerCycle(1.0)), prepare)
+            .is_err()
+    );
+    assert_eq!(editor.project(), &untouched);
+
+    let (_, revision) = editor
+        .execute_prepared(command(lfo::Rate::Hertz(6_000.0)), prepare)
+        .unwrap();
+    let mut playback = Playback::try_from_prepared_with_session(Arc::new(revision)).unwrap();
+    playback.apply(PlaybackCommand::Play);
+    let mut pcm = [[0.0; 2]; 8];
+    playback.render(&mut pcm[..3]).unwrap();
+    playback.render(&mut pcm[3..]).unwrap();
+    let compare = |pcm: &[[f32; 2]; 8]| {
+        for (index, frame) in pcm.iter().enumerate() {
+            // A 0.25 macro at full depth adds one octave to 6 kHz.
+            let gain = 0.5 + (index % 4) as f32 * 0.25;
+            assert!((frame[0] - 0.125 * gain).abs() < 1e-6, "{frame:?}");
+            assert!((frame[1] + 0.25 * gain).abs() < 1e-6, "{frame:?}");
+        }
+    };
+    compare(&pcm);
+    if render_sealed(editor.project(), asset, &audio, &mut pcm) {
+        compare(&pcm);
+    }
+    let bank = editor.project().device(device).unwrap().modulation();
+    assert_eq!(bank.routes(), routes);
+    assert_eq!(bank.sources()[1], oscillator(lfo::Rate::Hertz(6_000.0)));
+}
