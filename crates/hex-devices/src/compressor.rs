@@ -168,6 +168,7 @@ const BINDINGS: [crate::parameter_binding::Binding<CompressorSettings>; 8] = [
     crate::parameter_binding::Binding::float(
         DESCRIPTORS[0],
         hex_lattice_contract::ParameterSemantics {
+            modulation: hex_lattice_contract::ParameterModulation::SampleRate,
             smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
             ..crate::parameter_binding::SCALAR_ENVELOPE
         },
@@ -177,6 +178,7 @@ const BINDINGS: [crate::parameter_binding::Binding<CompressorSettings>; 8] = [
     crate::parameter_binding::Binding::float(
         DESCRIPTORS[1],
         hex_lattice_contract::ParameterSemantics {
+            modulation: hex_lattice_contract::ParameterModulation::SampleRate,
             smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
             ..crate::parameter_binding::SCALAR_ENVELOPE
         },
@@ -186,6 +188,7 @@ const BINDINGS: [crate::parameter_binding::Binding<CompressorSettings>; 8] = [
     crate::parameter_binding::Binding::float(
         DESCRIPTORS[2],
         hex_lattice_contract::ParameterSemantics {
+            modulation: hex_lattice_contract::ParameterModulation::SampleRate,
             smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
             normalization: hex_lattice_contract::ParameterNormalization::PositiveLogarithmic,
             ..crate::parameter_binding::SCALAR_ENVELOPE
@@ -196,6 +199,7 @@ const BINDINGS: [crate::parameter_binding::Binding<CompressorSettings>; 8] = [
     crate::parameter_binding::Binding::float(
         DESCRIPTORS[3],
         hex_lattice_contract::ParameterSemantics {
+            modulation: hex_lattice_contract::ParameterModulation::SampleRate,
             smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
             normalization: hex_lattice_contract::ParameterNormalization::PositiveLogarithmic,
             ..crate::parameter_binding::SCALAR_ENVELOPE
@@ -206,6 +210,7 @@ const BINDINGS: [crate::parameter_binding::Binding<CompressorSettings>; 8] = [
     crate::parameter_binding::Binding::float(
         DESCRIPTORS[4],
         hex_lattice_contract::ParameterSemantics {
+            modulation: hex_lattice_contract::ParameterModulation::SampleRate,
             smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
             ..crate::parameter_binding::SCALAR_ENVELOPE
         },
@@ -215,6 +220,7 @@ const BINDINGS: [crate::parameter_binding::Binding<CompressorSettings>; 8] = [
     crate::parameter_binding::Binding::float(
         DESCRIPTORS[5],
         hex_lattice_contract::ParameterSemantics {
+            modulation: hex_lattice_contract::ParameterModulation::SampleRate,
             smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
             ..crate::parameter_binding::SCALAR_ENVELOPE
         },
@@ -224,6 +230,7 @@ const BINDINGS: [crate::parameter_binding::Binding<CompressorSettings>; 8] = [
     crate::parameter_binding::Binding::float(
         DESCRIPTORS[6],
         hex_lattice_contract::ParameterSemantics {
+            modulation: hex_lattice_contract::ParameterModulation::SampleRate,
             smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
             ..crate::parameter_binding::SCALAR_ENVELOPE
         },
@@ -233,6 +240,7 @@ const BINDINGS: [crate::parameter_binding::Binding<CompressorSettings>; 8] = [
     crate::parameter_binding::Binding::choice(
         DESCRIPTORS[7],
         hex_lattice_contract::ParameterSemantics {
+            modulation: hex_lattice_contract::ParameterModulation::SampleRate,
             smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
             ..crate::parameter_binding::CHOICE_ENVELOPE
         },
@@ -400,6 +408,18 @@ impl NativeDeviceMetadata for CompressorDefinition {
     }
 }
 
+impl CompressorDefinition {
+    /// Closed fixed-inline factory for the same native detector, smoothing and
+    /// auxiliary-input paths as the registered runtime.
+    pub fn prepare_owned(
+        state: &NativeDeviceState,
+        sample_rate: u32,
+        parameters: &[ParameterId],
+    ) -> Result<PreparedCompressor, DeviceContractError> {
+        PreparedCompressor::new(state, sample_rate, parameters)
+    }
+}
+
 impl NativeDeviceDefinition for CompressorDefinition {
     fn source_effect_factory_bytes(&self) -> Option<usize> {
         // The prepared factory contains only inline settings and coefficients.
@@ -459,8 +479,9 @@ impl NativeDeviceDefinition for CompressorDefinition {
     }
 }
 
+/// Closed native Compressor factory with fixed inline settings.
 #[derive(Clone, Copy)]
-struct PreparedCompressor {
+pub struct PreparedCompressor {
     admitted: [bool; 8],
     settings: CompressorSettings,
     sample_rate: u32,
@@ -480,6 +501,19 @@ impl PreparedNativeProcessor for PreparedCompressor {
             .filter(|_| self.supports(id))
             .map(|b| b.descriptor)
     }
+    fn parameter_modulation_semantics(
+        &self,
+        id: ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        crate::parameter_binding::binding(&BINDINGS, id)
+            .ok()
+            .filter(|binding| {
+                self.supports(id)
+                    && binding.semantics.modulation
+                        == hex_lattice_contract::ParameterModulation::SampleRate
+            })
+            .map(|binding| binding.semantics)
+    }
     fn supports_smoothed_bypass(&self) -> bool {
         true
     }
@@ -490,7 +524,7 @@ impl PreparedNativeProcessor for PreparedCompressor {
         std::mem::size_of::<CompressorRuntime>()
     }
     fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
-        Box::new(CompressorRuntime {
+        let runtime = CompressorRuntime {
             base: *self,
             controls: crate::parameter_binding::Controls::new(self.settings, self.admitted),
             settings: self.settings,
@@ -506,7 +540,9 @@ impl PreparedNativeProcessor for PreparedCompressor {
             gain_db: f64::from(self.settings.makeup_db),
             mix: f64::from(self.settings.dry_wet),
             mix_remaining: 0,
-        })
+        };
+        runtime.check_inline_ownership();
+        Box::new(runtime)
     }
     fn algorithmic_latency_frames(&self) -> Option<u32> {
         Some(0)
@@ -516,7 +552,8 @@ impl PreparedNativeProcessor for PreparedCompressor {
     }
 }
 
-struct CompressorRuntime {
+/// Exact inline runtime recognized by the sealed constructor's storage ledger.
+pub struct CompressorRuntime {
     base: PreparedCompressor,
     controls: crate::parameter_binding::Controls<CompressorSettings, 8>,
     settings: CompressorSettings,

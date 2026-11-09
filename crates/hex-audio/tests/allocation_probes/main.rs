@@ -6,6 +6,7 @@ mod audio_event_placement_allocations;
 
 mod callback_allocations;
 mod callback_session_batch;
+mod compressor_modulation_allocations;
 mod controller_keyboard_allocations;
 mod delay_timing_fork_allocations;
 mod eq8_audition_allocations;
