@@ -6642,6 +6642,87 @@ fn modulation_panel_drags_signed_depth_and_keeps_released_preview_until_ack(
 }
 
 #[gpui::test]
+fn modulation_panel_drags_host_input_and_output_depths_independently(cx: &mut TestAppContext) {
+    use hex_project::{DeviceAutomationTarget, ModulationDestination};
+
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let original = state.project.device(device).unwrap().state().clone();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let bank = |view: &EditorView| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .modulation()
+            .clone()
+    };
+    click_modulator_control(&mut visual, "device-modulator-toggle".into(), false);
+    add_modulator_from_menu(&mut visual, device, "lfo");
+    pump_until(&editor, cx, |view| bank(view).sources().len() == 1);
+    let source = editor.read_with(cx, |view, _| bank(view).sources()[0].id);
+    visual.run_until_parked();
+    click_modulator_control(&mut visual, format!("lfo-{}-map", source.value()), true);
+
+    let drag = |visual: &mut VisualTestContext, name, delta| {
+        let key = Box::leak(format!("map-{name}-gain-{}", device.value()).into_boxed_str());
+        let bounds = visual
+            .debug_bounds(key)
+            .unwrap_or_else(|| panic!("missing {key}"));
+        let start = bounds.center();
+        assert!(
+            visual
+                .debug_bounds("device-modulator-scroll")
+                .unwrap()
+                .contains(&start)
+        );
+        let end = point(start.x, start.y + px(delta));
+        assert!(!bounds.contains(&end));
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+    };
+    drag(&mut visual, "input", -40.0);
+    pump_until(&editor, cx, |view| bank(view).routes().len() == 1);
+    visual.run_until_parked();
+    drag(&mut visual, "output", 25.0);
+    pump_until(&editor, cx, |view| bank(view).routes().len() == 2);
+    visual.run_until_parked();
+    let first = editor.read_with(cx, |view, _| bank(view));
+    for (route, (target, amount)) in first.routes().iter().zip([
+        (DeviceAutomationTarget::HostInputGain, 0.4),
+        (DeviceAutomationTarget::HostOutputGain, -0.25),
+    ]) {
+        assert_eq!(route.source, source);
+        assert_eq!(route.amount.get(), amount);
+        assert!(
+            matches!(route.destination, ModulationDestination::Device { target: actual, .. } if actual == target)
+        );
+    }
+    drag(&mut visual, "output", -75.0);
+    pump_until(&editor, cx, |view| {
+        bank(view).routes()[1].amount.get() == 0.5
+    });
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        let bank = bank(view);
+        assert_eq!(bank.routes()[0], first.routes()[0]);
+        assert_eq!(bank.routes()[1].id, first.routes()[1].id);
+        assert_eq!(project.device(device).unwrap().state(), &original);
+        let reopened = hex_storage::decode(&hex_storage::encode(project).unwrap()).unwrap();
+        assert_eq!(&reopened, project.as_ref());
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| bank(view) == first);
+}
+
+#[gpui::test]
 fn modulation_panel_maps_delay_feedback_mix_and_oscillator_without_changing_authored_values(
     cx: &mut TestAppContext,
 ) {
@@ -6904,6 +6985,11 @@ fn modulation_panel_maps_fm4_adsr_and_edits_all_controls(cx: &mut TestAppContext
     exercise_fm4_modulation_mapper(cx, Fm4MappingFixture::Adsr);
 }
 
+#[gpui::test]
+fn modulation_panel_maps_authored_fm4_connection_depths(cx: &mut TestAppContext) {
+    exercise_fm4_modulation_mapper(cx, Fm4MappingFixture::ConnectionDepths);
+}
+
 enum Fm4MappingFixture {
     Carriers,
     Pressure,
@@ -6913,6 +6999,7 @@ enum Fm4MappingFixture {
     Adsr,
     OscillatorLevels,
     OscillatorPhases,
+    ConnectionDepths,
 }
 
 fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFixture) {
@@ -6927,9 +7014,18 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
     let adsr = matches!(fixture, Fm4MappingFixture::Adsr);
     let levels = matches!(fixture, Fm4MappingFixture::OscillatorLevels);
     let phases = matches!(fixture, Fm4MappingFixture::OscillatorPhases);
+    let edges = matches!(fixture, Fm4MappingFixture::ConnectionDepths);
+    let edge_targets = [parameter::modulation(2, 1), parameter::modulation(3, 2)];
     let service = Service::new(48_000, 8, 8_000_000).unwrap();
     receive_service_event(&service);
-    let original = FM4_DEFINITION.default_state().unwrap();
+    let mut original = FM4_DEFINITION.default_state().unwrap();
+    if edges {
+        for id in edge_targets {
+            original = FM4_DEFINITION
+                .patch_parameter(&original, id, ParameterValue::Float(0.25))
+                .unwrap();
+        }
+    }
     service
         .submit(Request::Edit(Command::InsertTrackWithDevice {
             name: "fm4 track".into(),
@@ -7205,7 +7301,7 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
         visual.run_until_parked();
     }
     click(&mut visual, format!("{kind}-{}-map", source.value()), true);
-    if !levels && !phases {
+    if !levels && !phases && !edges {
         editor.update(cx, |view, cx| {
             view.device_panel.parameter_rows[&device]
                 .scroll
@@ -7226,7 +7322,7 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
         )
         .into_boxed_str(),
     );
-    if !levels && !phases {
+    if !levels && !phases && !edges {
         assert!(visual.debug_bounds(release_control).is_some());
     }
     assert!(
@@ -7242,7 +7338,9 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
     } else {
         [1, 2, 3, 4].map(parameter::carrier)
     };
-    let targets = if pressure || counter || ramp || ahd_release || adsr {
+    let targets = if edges {
+        &edge_targets[..]
+    } else if pressure || counter || ramp || ahd_release || adsr {
         &controls[..1]
     } else {
         &controls[..]
@@ -7275,7 +7373,10 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
             visual.run_until_parked();
         }
         let bounds = viewport(&mut visual);
-        let position = visual.debug_bounds(selector).unwrap().center();
+        let position = visual
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("missing {key} in {bounds:?}"))
+            .center();
         assert!(
             bounds.contains(&position),
             "{key} at {position:?} outside {bounds:?}"

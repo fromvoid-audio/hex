@@ -1,4 +1,4 @@
-//! Pointer capture and released depth display for native parameter assignments.
+//! Pointer capture and released depth display for modulation assignments.
 //! The project owns routes. A held pointer edits a local depth; one bank
 //! replacement on release takes display custody through its worker receipt.
 use super::{DEFAULT_MAPPING_DEPTH, DevicePanelOwner, Edit, MappingOutput, MappingTarget, apply};
@@ -6,13 +6,10 @@ use crate::editor::{
     EditorMode, EditorView,
     pending_edit::{Disposition, Receipt},
 };
-use crate::theme;
 use gpui::{
-    AnyElement, Context, CursorStyle, ElementId, FocusHandle, InteractiveElement, IntoElement,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point,
-    Styled, Window, canvas, div, px, rgb,
+    Context, CursorStyle, Div, FocusHandle, InteractiveElement, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Stateful, Styled, Window, canvas,
 };
-use hex_lattice_contract::ParameterId;
 use hex_project::{
     DeviceId, DeviceModulation, DeviceModulationRoute, ModulationAmount, ModulationRouteId,
 };
@@ -26,7 +23,7 @@ const PIXELS_PER_UNIT: f32 = 100.0;
 pub(super) struct Target {
     pub(super) device: DeviceId,
     pub(super) source: MappingOutput,
-    pub(super) parameter: ParameterId,
+    pub(super) mapping: MappingTarget,
 }
 
 #[derive(Clone, Copy)]
@@ -109,13 +106,25 @@ impl State {
     }
 }
 
-pub(super) fn overlay(
+pub(super) fn displayed_depth(
+    view: &EditorView,
+    target: Target,
+    route: Option<&DeviceModulationRoute>,
+) -> Option<f32> {
+    view.device_panel
+        .modulation_target_drag
+        .displayed_depth(view, target)
+        .or_else(|| route.map(|route| route.amount.get()))
+}
+
+pub(super) fn attach(
     view: &EditorView,
     cx: &mut Context<EditorView>,
+    control: Stateful<Div>,
     target: Target,
     route: Option<&DeviceModulationRoute>,
     revision: u64,
-) -> AnyElement {
+) -> Stateful<Div> {
     let origin = Origin {
         target,
         revision,
@@ -124,24 +133,8 @@ pub(super) fn overlay(
         mode: view.mode,
     };
     let route = route.map(|route| (route.id, route.amount.get()));
-    let displayed = view
-        .device_panel
-        .modulation_target_drag
-        .displayed_depth(view, target)
-        .or_else(|| route.map(|(_, depth)| depth));
-    let selector = format!(
-        "map-target-{}-{}",
-        target.device.value(),
-        target.parameter.value()
-    );
     let entity = cx.entity();
-    div()
-        .id(ElementId::Name(selector.clone().into()))
-        .debug_selector(move || selector.clone())
-        .absolute()
-        .inset_0()
-        .border_1()
-        .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
+    control
         .cursor(CURSOR)
         .on_mouse_down(
             MouseButton::Left,
@@ -150,24 +143,6 @@ pub(super) fn overlay(
                 begin(view, event, window, cx, origin, route);
             }),
         )
-        .children(displayed.map(|depth| {
-            let label = format!("{:+.0}%", depth * 100.0);
-            let selector = format!(
-                "map-depth-{}-{}-{label}",
-                target.device.value(),
-                target.parameter.value()
-            );
-            div()
-                .absolute()
-                .top_0()
-                .right_0()
-                .px(px(2.0))
-                .text_size(px(9.0))
-                .bg(rgb(theme::color(theme::PaletteRole::Background)))
-                .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
-                .debug_selector(move || selector.clone())
-                .child(theme::text(label))
-        }))
         .child(
             canvas(
                 |_, _, _| (),
@@ -191,7 +166,6 @@ pub(super) fn overlay(
             .absolute()
             .inset_0(),
         )
-        .into_any_element()
 }
 
 fn begin(
@@ -298,14 +272,7 @@ fn update(
             } else {
                 DEFAULT_MAPPING_DEPTH
             };
-            (
-                Edit::Map(
-                    target.source,
-                    MappingTarget::Device(target.parameter),
-                    depth,
-                ),
-                depth,
-            )
+            (Edit::Map(target.source, target.mapping, depth), depth)
         }
     };
     let Some(state) = view.state.as_ref() else {

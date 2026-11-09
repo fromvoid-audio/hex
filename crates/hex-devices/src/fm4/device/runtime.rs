@@ -16,6 +16,9 @@
 //! Each sample's oscillator levels are selected before pruning or rendering.
 //! Unpruned effective levels remain available to a newly audible carrier and
 //! to a detached release.
+//! Connection values replace coefficients of authored edges in their existing
+//! acyclic order. Pruning uses the authored topology so an edge can cross zero
+//! without losing ancestors. Missing values restore the authored coefficient.
 //! Sample-rate phases are absolute offsets in turns before the tuned
 //! phase step and any per-voice retune correction. An unassigned phase
 //! resumes the authored offset at the first sample of that segment.
@@ -68,7 +71,21 @@ const LEVELS: [ParameterDescriptor; 4] =
     [PARAMETERS[1], PARAMETERS[4], PARAMETERS[7], PARAMETERS[10]];
 const PHASES: [ParameterDescriptor; 4] =
     [PARAMETERS[2], PARAMETERS[5], PARAMETERS[8], PARAMETERS[11]];
-const TARGETS: [ParameterDescriptor; 12] = [
+const EDGES: [ParameterDescriptor; 12] = [
+    PARAMETERS[12],
+    PARAMETERS[13],
+    PARAMETERS[14],
+    PARAMETERS[15],
+    PARAMETERS[16],
+    PARAMETERS[17],
+    PARAMETERS[18],
+    PARAMETERS[19],
+    PARAMETERS[20],
+    PARAMETERS[21],
+    PARAMETERS[22],
+    PARAMETERS[23],
+];
+const TARGETS: [ParameterDescriptor; 24] = [
     LEVELS[0],
     PHASES[0],
     LEVELS[1],
@@ -77,6 +94,18 @@ const TARGETS: [ParameterDescriptor; 12] = [
     PHASES[2],
     LEVELS[3],
     PHASES[3],
+    EDGES[0],
+    EDGES[1],
+    EDGES[2],
+    EDGES[3],
+    EDGES[4],
+    EDGES[5],
+    EDGES[6],
+    EDGES[7],
+    EDGES[8],
+    EDGES[9],
+    EDGES[10],
+    EDGES[11],
     CARRIERS[0],
     CARRIERS[1],
     CARRIERS[2],
@@ -230,6 +259,18 @@ struct Config {
     pressure_source: Option<hex_lattice_contract::ModulationSourceId>,
 }
 impl Config {
+    fn modulation_semantics(
+        &self,
+        id: ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        if modulation_edge(id)
+            .is_some_and(|(source, target)| self.full.routing.modulation[source][target] == 0.0)
+        {
+            return None;
+        }
+        modulation_semantics(id)
+    }
+
     fn accepts_note_pressure(&self) -> bool {
         self.pressure_source.is_some() || self.pressure.is_some()
     }
@@ -318,6 +359,7 @@ struct Runtime {
     controls: [Control; 4],
     levels: [f64; 4],
     phase_targets: [f32; 4],
+    edge_values_selected: bool,
     effective: PreparedFmConfiguration,
     unclamped_pressure_target: Option<(ParameterId, f64)>,
     cold: bool,
@@ -334,6 +376,7 @@ impl Runtime {
             }),
             levels: config.full.levels,
             phase_targets: config.authored_phases,
+            edge_values_selected: false,
             effective: config.base,
             unclamped_pressure_target: None,
             cold: true,
@@ -498,6 +541,24 @@ impl Runtime {
             self.phase_targets = self.config.authored_phases;
             self.effective.phases = self.config.full.phases;
         }
+        let mut edge_lanes = [(ParameterId::from_static(0), 0, 0); EDGES.len()];
+        let mut edge_lane_count = 0;
+        if let Some(values) = values {
+            let active = values.parameter_ids().iter().filter_map(|&id| {
+                let (source, target) = modulation_edge(id)?;
+                (self.config.full.routing.modulation[source][target] != 0.0)
+                    .then_some((id, source, target))
+            });
+            for (slot, lane) in edge_lanes.iter_mut().zip(active) {
+                *slot = lane;
+                edge_lane_count += 1;
+            }
+        }
+        if self.edge_values_selected {
+            self.effective.routing.modulation = self.config.full.routing.modulation;
+        }
+        self.edge_values_selected = edge_lane_count != 0;
+        let edge_values = values.filter(|_| self.edge_values_selected);
         let modulated = CARRIERS.map(|descriptor| {
             values.is_some_and(|values| values.has_sample_rate_modulation(descriptor.id))
         });
@@ -536,6 +597,15 @@ impl Runtime {
                         self.phase_targets[index] = turns;
                         self.effective.phases[index] = phase_from_turns(f64::from(turns));
                     }
+                }
+            }
+            if let Some(values) = edge_values {
+                for &(id, source, target) in &edge_lanes[..edge_lane_count] {
+                    self.effective.routing.modulation[source][target] =
+                        match values.value_at(id, offset) {
+                            Some(ParameterValue::Float(value)) => f64::from(value),
+                            _ => self.config.full.routing.modulation[source][target],
+                        };
                 }
             }
             self.cold = false;
@@ -651,7 +721,7 @@ impl PreparedMutableInstrumentRuntime for Factory {
         &self,
         parameter: ParameterId,
     ) -> Option<hex_lattice_contract::ParameterSemantics> {
-        modulation_semantics(parameter)
+        self.config.modulation_semantics(parameter)
     }
     fn supports_active_occurrence_ids(&self) -> bool {
         true
@@ -796,6 +866,7 @@ impl MutableInstrumentRuntime for Runtime {
             self.controls = previous.controls;
             self.levels = previous.levels;
             self.phase_targets = previous.phase_targets;
+            self.edge_values_selected = previous.edge_values_selected;
             self.effective = previous.effective;
             self.cold = previous.cold;
         }
@@ -859,6 +930,7 @@ impl MutableInstrumentRuntime for Runtime {
                 previous.controls.map(|control| control.current),
             );
             self.phase_targets = self.config.authored_phases;
+            self.edge_values_selected = false;
             self.cold = previous.cold;
         }
     }
@@ -878,7 +950,8 @@ impl InstrumentParameterRuntime for Runtime {
         if output.len() != TARGETS.len() {
             return Err(Error::InvalidParameterAutomation);
         }
-        let (oscillators, carriers) = output.split_at_mut(LEVELS.len() + PHASES.len());
+        let (oscillators, routing) = output.split_at_mut(LEVELS.len() + PHASES.len());
+        let (edges, carriers) = routing.split_at_mut(EDGES.len());
         for ((slots, level), phase) in oscillators
             .chunks_exact_mut(2)
             .zip(self.levels)
@@ -886,6 +959,13 @@ impl InstrumentParameterRuntime for Runtime {
         {
             slots[0] = Some(ParameterValue::Float(level as f32));
             slots[1] = Some(ParameterValue::Float(phase));
+        }
+        for (slot, descriptor) in edges.iter_mut().zip(EDGES) {
+            let (source, target) =
+                modulation_edge(descriptor.id).ok_or(Error::InvalidParameterAutomation)?;
+            *slot = Some(ParameterValue::Float(
+                self.effective.routing.modulation[source][target] as f32,
+            ));
         }
         for (slot, control) in carriers.iter_mut().zip(self.controls) {
             *slot = Some(ParameterValue::Float(control.target as f32));
@@ -900,7 +980,7 @@ impl InstrumentParameterRuntime for Runtime {
         &self,
         parameter: ParameterId,
     ) -> Option<hex_lattice_contract::ParameterSemantics> {
-        modulation_semantics(parameter)
+        self.config.modulation_semantics(parameter)
     }
     fn preflight(
         &self,
@@ -911,6 +991,20 @@ impl InstrumentParameterRuntime for Runtime {
         values: &dyn NativeParameterAutomation,
         _: &dyn DeviceResources,
     ) -> Result<(), Error> {
+        // Frozen views also carry zero for absent edges. Refuse any borrowed
+        // value that would introduce an edge beyond the prepared topology.
+        for &id in values.parameter_ids() {
+            if let Some((source, target)) = modulation_edge(id)
+                && self.config.full.routing.modulation[source][target] == 0.0
+                && (0..frames).any(|offset| {
+                    values
+                        .value_at(id, offset)
+                        .is_some_and(|value| value != ParameterValue::Float(0.0))
+                })
+            {
+                return Err(Error::InvalidParameterAutomation);
+            }
+        }
         if let Some(pressure) = self.config.pressure {
             let id = pressure.route.descriptor().id;
             if (0..frames).any(|offset| {
