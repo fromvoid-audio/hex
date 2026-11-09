@@ -97,6 +97,8 @@ pub use audio_only_inputs::{
     ResidentSourceRefusal, StreamedSourceRefusal,
 };
 pub mod native_device_resources;
+/// The loaded Sampler's existing authored gain control.
+pub use hex_devices::sampler::catalog::GAIN as SAMPLER_GAIN_PARAMETER;
 mod owned_shared;
 mod pcm_arc;
 mod sparse_audio;
