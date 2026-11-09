@@ -313,6 +313,75 @@ fn probe_instrument_event_source(source: PreparedModulationSource, release: bool
 }
 
 #[test]
+fn adsr_and_held_note_gate_render_without_allocating_or_freeing() {
+    use hex_lattice::{NativeInstrumentEvent, PreparedModulationState};
+
+    let source = PreparedModulationSource::adsr(
+        ModulationSourceId::new(1).unwrap(),
+        48_000,
+        [3, 4, 8],
+        0.5,
+        true,
+    )
+    .unwrap();
+    let target = gain_target();
+    let id = target.descriptor.id;
+    let program = PreparedModulation::new(
+        &[target],
+        &[ModulationRoute {
+            source: 0,
+            target: id,
+            amount: 0.25,
+            range: [-1.0, 1.0],
+        }],
+        1,
+    )
+    .unwrap();
+    let declaration = PreparedModulationState::new(vec![source], program, 128).unwrap();
+    let mut runtime = declaration.prepare().unwrap();
+    let mut successor = declaration.prepare().unwrap();
+    let events: [NativeInstrumentEvent; 128] = std::array::from_fn(|offset| {
+        let occurrence_id = (offset % 64) as u64 + 1;
+        if offset < 64 {
+            NativeInstrumentEvent::NoteOn {
+                frame_offset: offset,
+                occurrence_id,
+                pitch: 60,
+                velocity: 100,
+            }
+        } else {
+            NativeInstrumentEvent::NoteOff {
+                frame_offset: offset,
+                occurrence_id,
+            }
+        }
+    });
+    let counts = allocation_counter::measure(|| {
+        runtime.begin();
+        runtime
+            .render_instrument_chunk(128, None, None, &events, |block| {
+                for offset in 0..128 {
+                    black_box(block.value_at(id, offset));
+                }
+                Ok(())
+            })
+            .unwrap();
+        runtime.commit().unwrap();
+        successor.inherit_committed(&runtime).unwrap();
+        successor.reset_all();
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0),
+    );
+}
+
+#[test]
 fn utility_graph_modulation_transactions_do_not_allocate_or_free() {
     probe_utility_graph(None, false);
 }
