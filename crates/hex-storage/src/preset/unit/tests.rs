@@ -10,7 +10,7 @@ use hex_project::{
 };
 use serde_json::{Value, json};
 
-fn fixture() -> PortableDeviceUnit {
+pub(in crate::preset) fn fixture() -> PortableDeviceUnit {
     let generator = DeviceTypeId::from_static("hex.instrument.sampler");
     let effect = DeviceTypeId::from_static("hex.effect.delay");
     let sampler_state = |version, asset| {

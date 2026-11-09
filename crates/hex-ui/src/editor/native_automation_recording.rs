@@ -591,27 +591,39 @@ impl EditorView {
         )
     }
 
-    pub(super) fn observe_vst3_automation_arm(&mut self, event: &Event) {
+    pub(super) fn owns_vst3_recording(&self, key: GestureKey) -> bool {
+        self.native_automation_recorder
+            .plugin_take
+            .is_some_and(|(recording, _)| recording == key)
+    }
+
+    pub(super) fn observe_vst3_automation_arm(
+        &mut self,
+        project_replaced: bool,
+        ack: Option<&hex_session::device_gesture::GestureAck>,
+        active: bool,
+        revision: u64,
+    ) {
         let Some((key, mut arm)) = self.native_automation_recorder.plugin_take else {
             return;
         };
-        if event.project_replaced {
+        if project_replaced {
             self.native_automation_recorder.plugin_take = None;
             return;
         }
-        let Some(ack) = event.gesture_ack.as_ref().filter(|ack| ack.key == key) else {
+        let Some(ack) = ack.filter(|ack| ack.key == key) else {
             return;
         };
-        if event.active_device_gesture.is_some() {
+        if active {
             return;
         }
         self.native_automation_recorder.plugin_take = None;
         if ack.accepted
             && ack.phase == GesturePhase::Commit
-            && arm.revision.checked_add(1) == Some(event.state.revision)
+            && arm.revision.checked_add(1) == Some(revision)
             && self.native_automation_recorder.arm == Some(arm)
         {
-            arm.revision = event.state.revision;
+            arm.revision = revision;
             self.native_automation_recorder.arm = Some(arm);
         }
     }
