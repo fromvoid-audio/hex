@@ -7111,13 +7111,34 @@ fn modulation_panel_maps_authored_fm4_connection_depths(cx: &mut TestAppContext)
 
 #[gpui::test]
 fn modulation_panel_maps_vector_output_and_preserves_the_authored_state(cx: &mut TestAppContext) {
-    use hex_devices::operator_state::{OPERATOR_METADATA, OPERATOR_TYPE_ID};
+    exercise_vector_modulation_mapper(cx, Some("lfo"));
+}
+
+#[gpui::test]
+fn modulation_panel_maps_vector_adsr_and_keeps_occurrence_pressure_fm4_only(
+    cx: &mut TestAppContext,
+) {
+    exercise_vector_modulation_mapper(cx, Some("adsr"));
+}
+
+#[gpui::test]
+fn modulation_panel_omits_note_sources_on_legacy_vector(cx: &mut TestAppContext) {
+    exercise_vector_modulation_mapper(cx, None);
+}
+
+fn exercise_vector_modulation_mapper(cx: &mut TestAppContext, kind: Option<&str>) {
+    use hex_devices::operator_state::{OPERATOR_METADATA, OPERATOR_TYPE_ID, parameter};
     use hex_lattice_contract::NativeDeviceMetadata;
     use hex_project::{DeviceAutomationTarget, ModulationDestination};
 
     let service = Service::new(48_000, 8, 8_000_000).unwrap();
     receive_service_event(&service);
-    let original = OPERATOR_METADATA.default_state().unwrap();
+    let mut original = OPERATOR_METADATA.default_state().unwrap();
+    if kind.is_none() {
+        original = OPERATOR_METADATA
+            .patch_parameter(&original, parameter::GLOBAL_MODE, ParameterValue::Choice(0))
+            .unwrap();
+    }
     service
         .submit(Request::Edit(Command::InsertTrackWithDevice {
             name: "vector".into(),
@@ -7153,11 +7174,33 @@ fn modulation_panel_maps_vector_output_and_preserves_the_authored_state(cx: &mut
             .clone()
     };
     click_modulator_control(&mut visual, "device-modulator-toggle".into(), false);
-    add_modulator_from_menu(&mut visual, device, "lfo");
+    let Some(kind) = kind else {
+        assert!(visual.debug_bounds("device-modulator-scroll").is_none());
+        return;
+    };
+    click_modulator_control(
+        &mut visual,
+        format!("add-modulator-{}", device.value()),
+        true,
+    );
+    let index = editor.read_with(cx, |view, _| {
+        let items = &view.context_menu.as_ref().unwrap().items;
+        assert!(
+            ["note counter", "ramp", "ahd on release", "adsr"]
+                .into_iter()
+                .all(|label| items.iter().any(|item| item.label == label))
+        );
+        assert!(!items.iter().any(|item| item.label == "note pressure"));
+        items.iter().position(|item| item.label == kind).unwrap()
+    });
+    for _ in 0..index {
+        visual.simulate_keystrokes("down");
+    }
+    visual.simulate_keystrokes("enter");
     pump_until(&editor, cx, |view| bank(view).sources().len() == 1);
     visual.run_until_parked();
     let source = editor.read_with(cx, |view, _| bank(view).sources()[0].id);
-    click_modulator_control(&mut visual, format!("lfo-{}-map", source.value()), true);
+    click_modulator_control(&mut visual, format!("{kind}-{}-map", source.value()), true);
     let input = Box::leak(format!("map-input-gain-{}", device.value()).into_boxed_str());
     assert!(visual.debug_bounds(input).is_none());
     click_modulator_control(

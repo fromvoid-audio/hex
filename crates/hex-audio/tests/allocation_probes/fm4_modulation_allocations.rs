@@ -420,6 +420,165 @@ fn probe_saved_instrument_bank(
 }
 
 #[test]
+fn vector_adsr_follows_ordered_note_events_without_callback_allocations() {
+    use hex_audio::prepared;
+    use hex_devices::{
+        modulation::adsr,
+        operator_state::{OPERATOR_METADATA, OPERATOR_TYPE_ID},
+    };
+    use hex_engine::{
+        PreparedRevision, SineTable,
+        playback::{Playback, PlaybackCommand},
+    };
+    use hex_lattice_contract::HostGain;
+    use hex_project::{
+        BeatTime, Command, Created, DeviceAutomationTarget, DeviceModulation,
+        DeviceModulationRoute, Editor, ModulationAmount, ModulationDestination, ModulationOutputId,
+        ModulationRange, ModulationRouteId, ModulationSourceId, Modulator, Project,
+    };
+    use std::{collections::BTreeMap, sync::Arc};
+
+    const RATE: u32 = 48_000;
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 8).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "vector".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: OPERATOR_METADATA.default_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("vector track");
+    };
+    let device = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("vector midi clip");
+    };
+    let beat = |frames| BeatTime::from_ratio(frames, 24_000).unwrap();
+    for (start, pitch) in [(0, 60), (8, 67)] {
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: beat(start),
+                duration: beat(24),
+                pitch,
+                channel: 0,
+                velocity: 127,
+            })
+            .unwrap();
+    }
+    let table = Arc::new(SineTable::new());
+    let prepare = |project: &Project| {
+        PreparedRevision::prepare(project, &BTreeMap::new(), Arc::clone(&table), None)
+    };
+    let mut reference =
+        Playback::try_from_prepared_with_session(Arc::new(prepare(editor.project()).unwrap()))
+            .unwrap();
+    reference.apply(PlaybackCommand::Play);
+    let next = editor.project().next_identity();
+    let source = ModulationSourceId::new(next).unwrap();
+    let (_, revision) = editor
+        .execute_prepared(
+            Command::ReplaceDeviceModulation {
+                device,
+                modulation: DeviceModulation::new(
+                    vec![Modulator {
+                        id: source,
+                        enabled: true,
+                        color: Default::default(),
+                        state: adsr::Settings {
+                            durations_micros: [125; 3],
+                            sustain: 0.5,
+                            single_trigger: true,
+                        }
+                        .encode()
+                        .unwrap(),
+                    }],
+                    vec![DeviceModulationRoute {
+                        id: ModulationRouteId::new(next + 1).unwrap(),
+                        source,
+                        output: ModulationOutputId::MAIN,
+                        destination: ModulationDestination::Device {
+                            device_type: OPERATOR_TYPE_ID,
+                            target: DeviceAutomationTarget::HostOutputGain,
+                            vst3_class: None,
+                        },
+                        amount: ModulationAmount::new(12.0 / 84.0).unwrap(),
+                        range: ModulationRange::default(),
+                        enabled: true,
+                    }],
+                )
+                .unwrap(),
+            },
+            prepare,
+        )
+        .unwrap();
+    let (mut control, mut callback) = prepared::channel(RATE).unwrap();
+    assert!(
+        control
+            .publish(Playback::try_from_prepared_with_session(Arc::new(revision)).unwrap())
+            .is_ok()
+    );
+    control.command(PlaybackCommand::Play).unwrap();
+
+    let mut actual = [[0.0; 2]; 49];
+    let mut original = actual;
+    for (block, unmodulated) in actual.chunks_mut(7).zip(original.chunks_mut(7)) {
+        reference.render(unmodulated).unwrap();
+        let counts = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(black_box(block)).unwrap();
+        });
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0),
+        );
+    }
+    assert!(
+        original[24..38]
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 1e-4)
+    );
+    for (frame, (actual, original)) in actual.into_iter().zip(original).enumerate() {
+        let level = match frame {
+            0..=5 => frame as f32 / 6.0,
+            6..=11 => 1.0 - (frame - 6) as f32 / 12.0,
+            12..=31 => 0.5,
+            32..=37 => 0.5 - (frame - 32) as f32 / 12.0,
+            _ => 0.0,
+        };
+        let gain = HostGain::from_db(12.0 * level).unwrap().linear();
+        for (sample, expected) in actual.into_iter().zip(original.map(|v| v * gain)) {
+            assert!(
+                (sample - expected).abs() < 1e-6,
+                "frame {frame}: {sample} != {expected}"
+            );
+        }
+    }
+    assert!(control.status.rejected_revision().is_none());
+}
+
+#[test]
 fn fm4_pressure_modulates_only_its_voice_and_preserves_release_and_retry() {
     use hex_lattice::{NativeInstrumentRuntimeError, PreparedPressureRoute};
     use std::num::NonZeroU64;
