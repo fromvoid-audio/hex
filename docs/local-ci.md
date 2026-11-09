@@ -93,9 +93,10 @@ unit tests. The counter stays dev-only and native worker I/O stays off callback.
 
 ## Merge selection
 
-The pure pending-edit receipt tests run in the small `hex-ui` target
-`unit_pending_edit`; the selector includes it for the receipt and enclosing editor
-module. Run it directly with `cargo test -p hex-ui --test unit_pending_edit --locked`.
+The pure pending-edit receipt and viewport tests run in the small `hex-ui` targets
+`unit_pending_edit` and `unit_viewport`; the selector includes each for its owner
+and enclosing editor module. Run the viewport tests with
+`cargo test -p hex-ui --test unit_viewport --locked`.
 Other `hex-ui` tests have not yet been classified into separate tiers; in
 particular, the real-window receipt and delayed-acknowledgement tests remain in
 the `ui-test-support` library suite.
