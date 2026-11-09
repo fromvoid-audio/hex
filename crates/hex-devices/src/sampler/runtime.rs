@@ -479,6 +479,9 @@ impl SamplerRuntime {
         gain_at: &dyn Fn(u64) -> f64,
     ) -> Result<(), Error> {
         match event {
+            NativeInstrumentEvent::NotePressure { .. } => {
+                return Err(Error::UnsupportedNotePressure);
+            }
             NativeInstrumentEvent::Expression { expression, .. } => {
                 if !expression.is_valid() {
                     return Err(Error::InvalidEventBatch);

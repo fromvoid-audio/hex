@@ -80,6 +80,7 @@ impl MutableInstrumentRuntime for FiniteTailRuntime {
                 let position = match event {
                     NativeInstrumentEvent::NoteOn { frame_offset, .. }
                     | NativeInstrumentEvent::NoteOff { frame_offset, .. }
+                    | NativeInstrumentEvent::NotePressure { frame_offset, .. }
                     | NativeInstrumentEvent::Expression { frame_offset, .. } => *frame_offset,
                 };
                 if position != offset {
