@@ -12,7 +12,8 @@
 //!
 //! The dry path is delayed by exactly the declared [`LATENCY_FRAMES`], so a
 //! settled drive of zero returns the delayed input bit-exactly. Drive moves
-//! through a 20 ms one-pole smoother that snaps to its target. Each runtime owns
+//! through a 20 ms one-pole smoother that snaps to its target. The native host
+//! can supply a new drive target each frame, including sample-rate modulation. Each runtime owns
 //! its own noise generator with a fixed seed, so renders are deterministic and
 //! independent of block size. Non-finite input is silenced before it enters
 //! recursive history, recursive states flush denormals, and long exact silence
@@ -61,6 +62,7 @@ pub mod parameter {
 const SMOOTHED_ENVELOPE: hex_lattice_contract::ParameterSemantics =
     hex_lattice_contract::ParameterSemantics {
         smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+        modulation: hex_lattice_contract::ParameterModulation::SampleRate,
         ..crate::parameter_binding::SCALAR_ENVELOPE
     };
 const BINDINGS: [crate::parameter_binding::Binding<RattleSettings>; 1] =
@@ -367,6 +369,12 @@ impl PreparedNativeProcessor for PreparedRattle {
     }
     fn supports_parameter_automation(&self, parameter: ParameterId) -> bool {
         self.supports(parameter)
+    }
+    fn parameter_modulation_semantics(
+        &self,
+        parameter: ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        self.supports(parameter).then_some(SMOOTHED_ENVELOPE)
     }
     fn runtime_version(&self) -> u32 {
         1
