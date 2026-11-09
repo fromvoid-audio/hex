@@ -6,6 +6,16 @@ use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue};
 #[test]
 fn eq8_gain_automation_callback_publication_history_and_save_reopen() -> Result<(), Box<dyn Error>>
 {
+    eq8_gain_callback(false)
+}
+
+#[test]
+fn eq8_gain_and_band_modulation_with_automation_publication_is_allocation_free()
+-> Result<(), Box<dyn Error>> {
+    eq8_gain_callback(true)
+}
+
+fn eq8_gain_callback(with_modulation: bool) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
     let Created::Imported { track, asset, .. } =
         editor.execute(Command::ImportPreparedAudioTrack {
@@ -53,6 +63,53 @@ fn eq8_gain_automation_callback_publication_history_and_save_reopen() -> Result<
         })
     };
     editor.execute(lane(1.0 / 16.0)?)?; // unity preserves the initial canonical gain.
+    if with_modulation {
+        use hex_devices::modulation::lfo::{Rate, Settings};
+        use hex_project::{
+            DeviceAutomationTarget, DeviceModulation, DeviceModulationRoute, ModulationAmount,
+            ModulationDestination, ModulationOutputId, ModulationRange, ModulationRouteId,
+            ModulationSourceId, Modulator,
+        };
+        let identity = editor.project().next_identity();
+        let source = ModulationSourceId::new(identity)?;
+        let modulation = DeviceModulation::new(
+            vec![Modulator {
+                id: source,
+                enabled: true,
+                color: Default::default(),
+                state: Settings {
+                    rate: Rate::Hertz(12_000.0),
+                    ..Settings::default()
+                }
+                .encode()?,
+            }],
+            [
+                p::OUTPUT_GAIN,
+                p::frequency(0, 1),
+                p::gain(0, 1),
+                p::q(0, 1),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, parameter)| {
+                Ok(DeviceModulationRoute {
+                    id: ModulationRouteId::new(identity + 1 + index as u64)?,
+                    source,
+                    output: ModulationOutputId::MAIN,
+                    destination: ModulationDestination::Device {
+                        device_type: EQ8_TYPE_ID,
+                        target: DeviceAutomationTarget::Parameter(parameter),
+                        vst3_class: None,
+                    },
+                    amount: ModulationAmount::new(0.015625)?,
+                    range: ModulationRange::default(),
+                    enabled: true,
+                })
+            })
+            .collect::<Result<Vec<_>, hex_project::Invalid>>()?,
+        )?;
+        editor.execute(Command::ReplaceDeviceModulation { device, modulation })?;
+    }
     let table = Arc::new(SineTable::new());
     let prepare = |project: &Project| -> Result<Arc<PreparedRevision>, Box<dyn Error>> {
         Ok(Arc::new(PreparedRevision::prepare(
@@ -139,7 +196,7 @@ fn eq8_gain_automation_callback_publication_history_and_save_reopen() -> Result<
         ],
     })?;
     let path = std::env::temp_dir().join(format!(
-        "hex-eq8_gain-automation-{}.hex",
+        "hex-eq8_gain-automation-{}-{with_modulation}.hex",
         std::process::id()
     ));
     hex_storage::save_new(&path, editor.project())?;
