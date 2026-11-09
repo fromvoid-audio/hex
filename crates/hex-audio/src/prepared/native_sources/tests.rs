@@ -184,6 +184,11 @@ fn source_for_profile_with_authored(
     let info_digest = hex_digest(identity_bytes.binary.info_sha256);
     let path = fixture_path(fixture);
     let hosting = crate::plugin_effects::Hosting::from_test_build(build, preparation.limits);
+    let hosting = if std::env::var_os("HEX_ORDINARY_GROUP_EDITOR_MAIN_DRIVER").is_some() {
+        hosting.with_grouped_editor_callbacks()
+    } else {
+        hosting
+    };
     let binding = hosting
         .begin_on_control(
             control,

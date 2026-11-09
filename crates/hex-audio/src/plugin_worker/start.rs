@@ -180,6 +180,7 @@ impl NativeWorker {
     pub fn start_retained_on_control(
         instance: Prepared,
     ) -> Result<(Self, Callback), NativeWorkerStartFailure> {
+        let grouped_editor_callbacks = instance.grouped_editor_callbacks_enabled();
         Self::start_retained_with(instance, spawn_transport)
     }
     #[allow(clippy::result_large_err)] // Same fixed custody return as the public constructor; no late allocation.
@@ -231,6 +232,7 @@ impl NativeWorker {
                     binding,
                     quantum,
                     retirement_requested: false,
+                    grouped_editor_callbacks,
                     source_storage: Some(source_storage),
                 },
                 callback,

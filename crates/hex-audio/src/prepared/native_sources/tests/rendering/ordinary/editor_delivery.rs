@@ -232,7 +232,7 @@ fn verify_editor_delivery(reading: bool) {
         )
     );
     assert_eq!(actual_perform.first_frame, 16);
-    assert_eq!(confirmed.input.restoration, None);
+    assert!(confirmed.input.restorations.as_slice().is_empty());
     assert!(!confirmed.input.lost_origin);
     // Starting the authored clock at physical frame 11 splits SDK quantum 1.
     // The fixture's call-dependent gain therefore advances once more in reading mode.
@@ -282,12 +282,12 @@ fn verify_editor_delivery(reading: bool) {
             .find(|point| point.kind == ParameterEditKind::End)
             .unwrap();
         assert_eq!(
-            end.input.restoration,
-            Some(hex_plugin_host::protocol::EditorRestoration {
+            end.input.restorations.as_slice(),
+            [hex_plugin_host::protocol::EditorRestoration {
                 sequence: ended.sequence,
                 gesture: point.gesture,
                 parameter: 7,
-            })
+            }]
         );
         assert!(retired.try_receipt_on_control().is_none());
         Some(retired)
@@ -317,5 +317,222 @@ fn verify_editor_delivery(reading: bool) {
         f.control.status.reserve_native_parameter_input().unwrap();
         f.control.status.native_parameter_input_end();
     }
+    dispose(f);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn paired_editor_values_and_independent_restores_are_confirmed_only_at_main() {
+    use hex_plugin_host::protocol::EditorTouchTarget;
+    const CHILD: &str = "HEX_ORDINARY_GROUP_EDITOR_MAIN_DRIVER";
+    if std::env::var_os(CHILD).is_none() {
+        let temporary = std::env::temp_dir().join(format!("hex-group-main-{}", std::process::id()));
+        std::fs::create_dir(&temporary).unwrap();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+            ])
+            .env(CHILD, &temporary)
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "148")
+            .env("HEX_ORIGINAL_GROUPED_EDITOR_PATTERN", "staggered")
+            .env("HEX_ORIGINAL_INSTANCE_RELEASE", temporary.join("perform"))
+            .env("HEX_ORIGINAL_EDITOR_END_RELEASE", temporary.join("end"))
+            .env(
+                "HEX_ORIGINAL_EDITOR_SECOND_END_RELEASE",
+                temporary.join("second"),
+            )
+            .output()
+            .unwrap();
+        std::fs::remove_dir_all(temporary).unwrap();
+        assert!(
+            result.status.success() && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let _serial = serial();
+    let gate = std::path::PathBuf::from(std::env::var_os(CHILD).unwrap());
+    let mut f = fixture_with_authored("processing", 2, 8, &[0, 11]);
+    let device = f.editor.project().main_devices()[0].id();
+    for id in [0, 11] {
+        f.editor
+            .execute(Command::ReplaceDeviceAutomationTarget {
+                device,
+                target: hex_project::DeviceAutomationTarget::Vst3 { parameter: id },
+                points: vec![hex_project::AutomationPoint {
+                    beat: hex_project::BeatTime::ZERO,
+                    value: hex_project::AutomationValue::new(0.25).unwrap(),
+                    outgoing: hex_project::AutomationInterpolation::Step,
+                }],
+            })
+            .unwrap();
+    }
+    let overdrive = &hex_devices::overdrive::OVERDRIVE_DEFINITION;
+    let dry = overdrive
+        .patch_parameter(
+            &overdrive.default_state().unwrap(),
+            hex_devices::overdrive::parameter::DRY_WET,
+            ParameterValue::Float(0.0),
+        )
+        .unwrap();
+    for before in [Some(device), None] {
+        f.editor
+            .execute(Command::InsertMainDevice {
+                before,
+                state: dry.clone(),
+            })
+            .unwrap();
+    }
+    let playback = compile(&f, true);
+    assert_eq!(playback.main_output_latency_frames(), 38);
+    publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
+    let root = f.control.native_candidate_root();
+    f.control.command(PlaybackCommand::Play).unwrap();
+    for block in 0..2 {
+        physical_block::<5>(&mut f);
+        physical_block::<3>(&mut f);
+        replacement::wait_for_blocks(&root, f.binding, block + 1);
+    }
+    let (source, epoch) = f.control.status.live_native_parameter_source().unwrap();
+    let targets = [0, 11].map(|parameter| EditorTouchTarget {
+        parameter,
+        base: 0.25,
+        reading: true,
+    });
+    assert!(
+        f.control
+            .arm_native_source_editor_group_delivery_on_control(
+                source,
+                epoch + 1,
+                f.binding,
+                &targets,
+            )
+            .is_err()
+    );
+    let target = f
+        .control
+        .arm_native_source_editor_group_delivery_on_control(source, epoch, f.binding, &targets)
+        .unwrap();
+
+    let mut ordered = Vec::new();
+    let mut confirmed = Vec::new();
+    let mut samples = Vec::new();
+    for block in 2..8 {
+        if let Some(name) = match block {
+            2 => Some("perform"),
+            3 => Some("end"),
+            4 => Some("second"),
+            _ => None,
+        } {
+            std::fs::write(gate.join(name), b"original sdk group gate").unwrap();
+            let until = Instant::now() + Duration::from_secs(2);
+            loop {
+                let ready = match f
+                    .control
+                    .poll_native_source_parameter_edits_on_control(f.binding)
+                {
+                    Ok(Some(batch)) => {
+                        ordered.extend_from_slice(batch.as_slice());
+                        match block {
+                            2 => batch.ready >= 4,
+                            3 => ordered
+                                .iter()
+                                .any(|edit| edit.kind == ParameterEditKind::End && edit.id == 0),
+                            _ => ordered
+                                .iter()
+                                .any(|edit| edit.kind == ParameterEditKind::End && edit.id == 11),
+                        }
+                    }
+                    Ok(None)
+                    | Err("native preparation is busy" | "native edit observation is busy") => {
+                        false
+                    }
+                    Err(reason) => panic!("{reason}"),
+                };
+                if ready {
+                    break;
+                }
+                assert!(Instant::now() < until, "group gate {name}");
+                std::thread::yield_now();
+            }
+        }
+        samples.extend(physical_block::<5>(&mut f));
+        samples.extend(physical_block::<3>(&mut f));
+        replacement::wait_for_blocks(&root, f.binding, block + 1);
+        while let Some(receipt) = f.control.try_native_source_editor_delivery_on_control() {
+            let Receipt::Confirmed(quantum) = receipt else {
+                panic!("premature group abort: {receipt:?}");
+            };
+            assert_eq!(quantum.target, target);
+            assert_eq!(quantum.main_performance_frame / 8, block);
+            confirmed.push(quantum);
+        }
+        assert_eq!(confirmed.len(), block.saturating_sub(4) as usize);
+    }
+    let [held, first, second] = confirmed.as_slice() else {
+        panic!("one paired value and two individual restores");
+    };
+    assert_eq!(
+        [
+            held.main_performance_frame,
+            first.main_performance_frame,
+            second.main_performance_frame
+        ],
+        [43, 51, 59]
+    );
+    assert_eq!(
+        [held.input, first.input, second.input]
+            .map(|input| input.origin.unwrap().arrangement_frame),
+        [5, 13, 21]
+    );
+    let [gain, axis] = held.input.performs.as_slice() else {
+        panic!("paired effective values");
+    };
+    assert_eq!(
+        (gain.id, gain.normalized, axis.id, axis.normalized),
+        (0, 0.75, 11, 0.5)
+    );
+    for (restored, point) in [(first, gain), (second, axis)] {
+        let end = ordered
+            .iter()
+            .find(|edit| edit.kind == ParameterEditKind::End && edit.id == point.id)
+            .unwrap();
+        assert_eq!(
+            restored.input.restorations.as_slice(),
+            [hex_plugin_host::protocol::EditorRestoration {
+                sequence: end.sequence,
+                gesture: point.gesture,
+                parameter: point.id,
+            }]
+        );
+    }
+    for (frame, value) in [
+        (42, [0.25, -0.5]),
+        (43, [1.5, -3.0]),
+        (50, [1.5, -3.0]),
+        (51, [0.5, -1.0]),
+        (58, [0.5, -1.0]),
+        (59, [0.25, -0.5]),
+    ] {
+        assert_eq!(samples[frame - 16], value, "exact Main frame {frame}");
+    }
+    f.control.command(PlaybackCommand::Stop).unwrap();
+    physical_block::<4>(&mut f);
+    assert_eq!(
+        f.control.try_native_source_editor_delivery_on_control(),
+        Some(Receipt::Aborted {
+            target,
+            reason: AbortReason::SourceChanged,
+        })
+    );
+    assert!(
+        f.control
+            .try_native_source_editor_delivery_on_control()
+            .is_none()
+    );
     dispose(f);
 }
