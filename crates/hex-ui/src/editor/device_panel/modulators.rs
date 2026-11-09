@@ -97,12 +97,7 @@ pub(super) fn panel(
             cx.notify();
         }))
     };
-    let mut header = div()
-        .flex()
-        .flex_wrap()
-        .items_center()
-        .gap(px(4.0))
-        .child(theme::text("modulators"));
+    let mut header = div().flex().flex_wrap().items_center().gap(px(4.0));
     if bank.sources().len() < hex_project::MAX_MODULATORS_PER_DEVICE {
         for kind in SourceKind::ALL {
             let name = kind.label();
@@ -124,6 +119,13 @@ pub(super) fn panel(
         .into_iter()
         .flat_map(|source| bank.source_route_ancestors(source))
         .collect();
+    let multiple_macros = bank
+        .sources()
+        .iter()
+        .filter(|source| source.state.type_id() == manual::TYPE_ID)
+        .take(2)
+        .count()
+        > 1;
     for (slot, source) in bank.sources().iter().enumerate() {
         let source_id = source.id;
         let kind = match source.state.type_id() {
@@ -133,7 +135,7 @@ pub(super) fn panel(
             _ => continue,
         };
         let label = kind.label();
-        let title = if matches!(kind, SourceKind::Macro) {
+        let title = if multiple_macros && matches!(kind, SourceKind::Macro) {
             theme::text(format!("macro {}", slot + 1))
         } else {
             theme::text(label)
@@ -299,7 +301,11 @@ pub(super) fn panel(
                     else {
                         continue;
                     };
-                    theme::text(format!("macro {} value", slot + 1))
+                    if multiple_macros {
+                        theme::text(format!("macro {} value", slot + 1))
+                    } else {
+                        theme::text("macro value")
+                    }
                 }
                 _ => continue,
             };

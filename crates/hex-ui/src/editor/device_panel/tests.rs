@@ -6284,12 +6284,15 @@ fn modulation_panel_maps_an_lfo_into_a_macro_and_then_a_device_parameter(cx: &mu
     };
     let click = |visual: &mut VisualTestContext, key: String, in_strip: bool| {
         let key = Box::leak(key.into_boxed_str());
-        let target = visual
-            .debug_bounds(key)
-            .unwrap_or_else(|| panic!("missing {key}"));
         if in_strip {
-            let strip = visual.debug_bounds("device-modulator-scroll").unwrap();
-            if !strip.contains(&target.center()) {
+            for _ in 0..3 {
+                let target = visual
+                    .debug_bounds(key)
+                    .unwrap_or_else(|| panic!("missing {key}"));
+                let strip = visual.debug_bounds("device-modulator-scroll").unwrap();
+                if strip.contains(&target.center()) {
+                    break;
+                }
                 visual.simulate_event(gpui::ScrollWheelEvent {
                     position: strip.center(),
                     delta: gpui::ScrollDelta::Pixels(point(
@@ -6304,7 +6307,7 @@ fn modulation_panel_maps_an_lfo_into_a_macro_and_then_a_device_parameter(cx: &mu
             let strip = visual.debug_bounds("device-modulator-scroll").unwrap();
             assert!(
                 strip.contains(&target.center()),
-                "{key} is outside the strip"
+                "{key} at {target:?} outside {strip:?}"
             );
         }
         let target = visual.debug_bounds(key).unwrap();
