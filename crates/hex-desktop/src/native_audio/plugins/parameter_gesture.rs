@@ -232,7 +232,7 @@ impl Plugins {
                         && row.normalized == origin.initial.normalized()
                 })
                 .ok_or_else(|| refused("vst3 parameter metadata changed · refresh the list"))?;
-            let binding = self
+            let source = self
                 .sources
                 .iter()
                 .rev()
@@ -242,8 +242,16 @@ impl Plugins {
                         && source.project_generation == origin.context.project_generation
                         && source.device == origin.device.value()
                 })
-                .ok_or_else(lost)?
-                .binding;
+                .ok_or_else(lost)?;
+            if source
+                .authored
+                .as_ref()
+                .and_then(AuthoredSelection::dense_parameter)
+                == Some(origin.parameter)
+            {
+                return Err(refused("vst3 parameter is owned by its modulation lane"));
+            }
+            let binding = source.binding;
             if !edits::original_state(control, binding, cancellation)
                 .map_err(refused)?
                 .processing_eq(input.canonical_state())

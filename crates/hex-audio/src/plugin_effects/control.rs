@@ -8,13 +8,16 @@ use crate::plugin_worker::{
 
 fn arm_editor(
     worker: &mut NativeWorker,
-    capabilities: &automation::SourceCapabilities,
+    configuration: &Configuration,
     scope: std::num::NonZeroU64,
     touch: Option<crate::foreign_parameter_delivery::editor::TouchAdmission<'_>>,
 ) -> Result<(hex_plugin_host::transport::EditorScope, u16), &'static str> {
     use crate::foreign_parameter_delivery::editor::TouchAdmission;
     use hex_plugin_host::protocol::{EditorTouchPlan, EditorTouchPlanSet};
 
+    if touch.is_some() && configuration.dense_raw_id.is_some() {
+        return Err("vst3 editor touch needs a source without dense modulation");
+    }
     let armed = match touch {
         None => worker.arm_editor_pcm_on_control(scope),
         Some(TouchAdmission::Single(touch)) => {
@@ -30,10 +33,14 @@ fn arm_editor(
             // prepared constant Base point. Neither adds a restore event.
             if targets.iter().any(|target| {
                 !target.reading
-                    || !capabilities.parameters().iter().any(|capability| {
-                        capability.id == target.parameter
-                            && capability.normalized_base_bits == target.base.to_bits()
-                    })
+                    || !configuration
+                        .authored
+                        .parameters()
+                        .iter()
+                        .any(|capability| {
+                            capability.id == target.parameter
+                                && capability.normalized_base_bits == target.base.to_bits()
+                        })
             }) {
                 return Err("vst3 editor group has no prepared restoration for every target");
             }
@@ -45,6 +52,22 @@ fn arm_editor(
     armed
         .map(|armed| (armed, worker.quantum_frames()))
         .map_err(|error| error.message())
+}
+
+impl Configuration {
+    fn admit_parameter_input(&self, id: u32) -> Result<(), &'static str> {
+        if self.dense_raw_id == Some(id) {
+            return Err("vst3 parameter is owned by its dense modulation lane");
+        }
+        Ok(())
+    }
+
+    fn admit_parameter_hold(&self, command: &NativeParameterHold<'_>) -> Result<(), &'static str> {
+        if let NativeParameterHold::Begin { id, .. } = command {
+            self.admit_parameter_input(*id)?;
+        }
+        Ok(())
+    }
 }
 
 pub(crate) struct NativeEffectControl {
@@ -59,6 +82,7 @@ impl NativeEffect {
         &mut self,
         command: NativeParameterHold<'_>,
     ) -> Result<NativeWorkerParameterChange, &'static str> {
+        self.callback.configuration.admit_parameter_hold(&command)?;
         self.worker.parameter_hold_on_control(command)
     }
     pub(crate) fn parameter_hold_with_before<T>(
@@ -66,6 +90,7 @@ impl NativeEffect {
         command: NativeParameterHold<'_>,
         before_publish: impl FnOnce(&NativeWorkerParameterChange) -> Result<T, &'static str>,
     ) -> Result<(NativeWorkerParameterChange, T), &'static str> {
+        self.callback.configuration.admit_parameter_hold(&command)?;
         self.worker
             .parameter_hold_with_before(command, true, before_publish)
     }
@@ -75,6 +100,7 @@ impl NativeEffect {
         normalized: f64,
         before_publish: impl FnOnce(&NativeWorkerParameterChange) -> Result<T, &'static str>,
     ) -> Result<(NativeWorkerParameterChange, T), &'static str> {
+        self.callback.configuration.admit_parameter_input(id)?;
         self.worker
             .parameter_change_with_before(id, normalized, true, before_publish)
     }
@@ -84,6 +110,7 @@ impl NativeEffect {
         normalized: f64,
         idle: bool,
     ) -> Result<crate::plugin_worker::NativeWorkerParameterChange, &'static str> {
+        self.callback.configuration.admit_parameter_input(id)?;
         self.worker.begin_parameter_change(id, normalized, idle)
     }
     pub(crate) fn withdraw_parameter_change(
@@ -130,12 +157,7 @@ impl NativeEffect {
         scope: std::num::NonZeroU64,
         touch: Option<crate::foreign_parameter_delivery::editor::TouchAdmission<'_>>,
     ) -> Result<(hex_plugin_host::transport::EditorScope, u16), &'static str> {
-        arm_editor(
-            &mut self.worker,
-            &self.callback.configuration.authored,
-            scope,
-            touch,
-        )
+        arm_editor(&mut self.worker, &self.callback.configuration, scope, touch)
     }
 
     pub(crate) fn poll_parameter_edits(
@@ -192,6 +214,7 @@ impl NativeEffectControl {
         &mut self,
         command: NativeParameterHold<'_>,
     ) -> Result<NativeWorkerParameterChange, &'static str> {
+        self.configuration.admit_parameter_hold(&command)?;
         self.worker.parameter_hold_on_control(command)
     }
     pub(crate) fn parameter_hold_with_before<T>(
@@ -199,6 +222,7 @@ impl NativeEffectControl {
         command: NativeParameterHold<'_>,
         before_publish: impl FnOnce(&NativeWorkerParameterChange) -> Result<T, &'static str>,
     ) -> Result<(NativeWorkerParameterChange, T), &'static str> {
+        self.configuration.admit_parameter_hold(&command)?;
         self.worker
             .parameter_hold_with_before(command, true, before_publish)
     }
@@ -208,6 +232,7 @@ impl NativeEffectControl {
         normalized: f64,
         before_publish: impl FnOnce(&NativeWorkerParameterChange) -> Result<T, &'static str>,
     ) -> Result<(NativeWorkerParameterChange, T), &'static str> {
+        self.configuration.admit_parameter_input(id)?;
         self.worker
             .parameter_change_with_before(id, normalized, true, before_publish)
     }
@@ -217,6 +242,7 @@ impl NativeEffectControl {
         normalized: f64,
         idle: bool,
     ) -> Result<crate::plugin_worker::NativeWorkerParameterChange, &'static str> {
+        self.configuration.admit_parameter_input(id)?;
         self.worker.begin_parameter_change(id, normalized, idle)
     }
     pub(crate) fn withdraw_parameter_change(
@@ -260,7 +286,7 @@ impl NativeEffectControl {
         scope: std::num::NonZeroU64,
         touch: Option<crate::foreign_parameter_delivery::editor::TouchAdmission<'_>>,
     ) -> Result<(hex_plugin_host::transport::EditorScope, u16), &'static str> {
-        arm_editor(&mut self.worker, &self.configuration.authored, scope, touch)
+        arm_editor(&mut self.worker, &self.configuration, scope, touch)
     }
 
     pub(crate) fn poll_parameter_edits(
