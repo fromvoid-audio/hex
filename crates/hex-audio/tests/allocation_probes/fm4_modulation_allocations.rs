@@ -14,30 +14,47 @@ use std::hint::black_box;
 
 #[test]
 fn fm4_carriers_follow_sample_routes_and_retry_without_allocating() {
-    exercise_fm4_sample_routes(false);
+    exercise_fm4_sample_routes(Fm4Targets::Carriers);
 }
 
 #[test]
 fn fm4_oscillator_levels_follow_sample_routes_and_retry_without_allocating() {
-    exercise_fm4_sample_routes(true);
+    exercise_fm4_sample_routes(Fm4Targets::Levels);
 }
 
-fn exercise_fm4_sample_routes(oscillator_levels: bool) {
+#[test]
+fn fm4_oscillator_phases_follow_sample_routes_and_retry_without_allocating() {
+    exercise_fm4_sample_routes(Fm4Targets::Phases);
+}
+
+enum Fm4Targets {
+    Carriers,
+    Levels,
+    Phases,
+}
+
+fn exercise_fm4_sample_routes(targets: Fm4Targets) {
     let context = DevicePreparationContext {
         sample_rate: 48_000,
         tuning: &TuningTable::default(),
         resources: &EMPTY_DEVICE_RESOURCES,
     };
-    let (ids, route_scale) = if oscillator_levels {
-        (
+    let (ids, route_scale) = match targets {
+        Fm4Targets::Carriers => ([parameter::carrier(1), parameter::carrier(2)], 1.0),
+        Fm4Targets::Levels => (
             [
                 parameter::oscillator_level(1),
                 parameter::oscillator_level(2),
             ],
             0.25,
-        )
-    } else {
-        ([parameter::carrier(1), parameter::carrier(2)], 1.0)
+        ),
+        Fm4Targets::Phases => (
+            [
+                parameter::oscillator_phase(1),
+                parameter::oscillator_phase(2),
+            ],
+            2.0,
+        ),
     };
     let patch = |state: &NativeDeviceState, weights: [f32; 2]| {
         let snapshot = DeviceParameterSnapshot::new(&[
@@ -48,7 +65,7 @@ fn exercise_fm4_sample_routes(oscillator_levels: bool) {
         FM4_DEFINITION.patch_parameters(state, &snapshot).unwrap()
     };
     let mut original = FM4_DEFINITION.default_state().unwrap();
-    if oscillator_levels {
+    if !matches!(targets, Fm4Targets::Carriers) {
         original = FM4_DEFINITION
             .patch_parameter(
                 &original,
@@ -68,10 +85,13 @@ fn exercise_fm4_sample_routes(oscillator_levels: bool) {
         assert_eq!(prepared, metadata);
         assert_eq!(
             prepared.is_some(),
-            matches!(descriptor.id.value(), 2 | 5 | 8 | 11 | 29..=32)
+            matches!(
+                descriptor.id.value(),
+                2 | 3 | 5 | 6 | 8 | 9 | 11 | 12 | 29..=32
+            )
         );
     }
-    let targets = ids.map(|id| ModulationTarget {
+    let declared = ids.map(|id| ModulationTarget {
         descriptor: *factory
             .parameter_automation_descriptors()
             .iter()
@@ -94,7 +114,7 @@ fn exercise_fm4_sample_routes(oscillator_levels: bool) {
         LfoWaveform::Square,
     )
     .unwrap();
-    let program = PreparedModulation::new(&targets, &routes, 1).unwrap();
+    let program = PreparedModulation::new(&declared, &routes, 1).unwrap();
     let mut modulation = PreparedModulationState::new(vec![source], program, 32)
         .unwrap()
         .prepare()
@@ -117,8 +137,19 @@ fn exercise_fm4_sample_routes(oscillator_levels: bool) {
             .prepare_note(60, 127)
             .unwrap()
     };
-    let high = note([0.75, 0.0]);
-    let low = note([0.25, 1.0]);
+    let (high, low) = if matches!(targets, Fm4Targets::Phases) {
+        let max = f64::from(f32::from_bits(0x3f7f_ffff));
+        let base = f64::from((0.5 / max) as f32);
+        let phase = |sign: f64| {
+            [0.25, -0.5].map(|depth| {
+                let normalized = (base + depth * sign).clamp(0.0, 1.0) as f32;
+                (f64::from(normalized) * max) as f32
+            })
+        };
+        (note(phase(1.0)), note(phase(-1.0)))
+    } else {
+        (note([0.75, 0.0]), note([0.25, 1.0]))
+    };
     let expected: [[f32; 2]; 41] = std::array::from_fn(|index| {
         let oracle = if index % 4 < 2 { &high } else { &low };
         oracle.sample(index as u64, 41, &EMPTY_DEVICE_RESOURCES)
