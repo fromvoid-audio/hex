@@ -179,6 +179,29 @@ pub fn project_device_modulation_target_supported(
             .unwrap_or(false)
 }
 
+fn fm4_unity_output_modulation_supported(state: &NativeDeviceState) -> bool {
+    state.type_id() == hex_devices::fm4::device::FM4_TYPE_ID && state.output_gain_millidb() == 0
+}
+
+/// A receiving FM4 can modulate the existing unity trim after its voices mix.
+pub fn project_device_instrument_output_modulation_supported(
+    project: &Project,
+    device: DeviceId,
+) -> bool {
+    let Some(location) = project.device_location(device) else {
+        return false;
+    };
+    let (DeviceUnitClass::Instrument, DeviceOwner::Source(source)) =
+        (location.class, location.owner)
+    else {
+        return false;
+    };
+    project.native_source(source).is_some_and(|source| {
+        source.receiver().is_some()
+            && fm4_unity_output_modulation_supported(source.instrument().state())
+    })
+}
+
 /// Control-side mapping eligibility for both native host gain stages.
 /// The closed provider's actual factory supplies the latency. No render
 /// runtime or audio resources are constructed by this query.
@@ -786,9 +809,7 @@ impl EffectModulation {
         let output = if self.host_output_routes.is_empty() {
             None
         } else {
-            if state.type_id() != hex_devices::fm4::device::FM4_TYPE_ID
-                || state.output_gain_millidb() != 0
-            {
+            if !fm4_unity_output_modulation_supported(state) {
                 return Err(Invalid(
                     "instrument output modulation requires an fm4 unity trim",
                 ));

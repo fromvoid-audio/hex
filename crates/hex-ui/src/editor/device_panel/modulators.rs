@@ -451,7 +451,22 @@ pub(super) struct HostGainMappingAvailability {
     device: DeviceId,
     generation: u64,
     revision: u64,
-    eligible: bool,
+    stages: HostGainStages,
+}
+
+#[derive(Clone, Copy, Default)]
+struct HostGainStages {
+    input: bool,
+    output: bool,
+}
+
+impl HostGainStages {
+    fn supports(self, stage: HostGainTarget) -> bool {
+        match stage {
+            HostGainTarget::Input => self.input,
+            HostGainTarget::Output => self.output,
+        }
+    }
 }
 
 pub(super) const SOURCE_EFFECT_CARD_WIDTH: f32 = 172.0;
@@ -549,26 +564,35 @@ pub(super) fn panel(
             *device == id && bank.sources().iter().any(|slot| source.valid_for(slot))
         })
         .map(|(_, source)| source);
-    let host_gain_available = if selected.is_some() || (!has_target && bank.is_empty()) {
+    let host_gains = if selected.is_some() || (!has_target && bank.is_empty()) {
         let cache = &mut view.device_panel.host_gain_mapping_availability;
         if let Some(cached) = cache.as_ref().filter(|entry| {
             entry.device == id && entry.generation == generation && entry.revision == revision
         }) {
-            cached.eligible
+            cached.stages
         } else {
-            let eligible =
+            let effect =
                 hex_engine::project_device_host_gain_modulation_supported(&state.project, id);
+            let stages = HostGainStages {
+                input: effect,
+                output: effect
+                    || hex_engine::project_device_instrument_output_modulation_supported(
+                        &state.project,
+                        id,
+                    ),
+            };
             *cache = Some(HostGainMappingAvailability {
                 device: id,
                 generation,
                 revision,
-                eligible,
+                stages,
             });
-            eligible
+            stages
         }
     } else {
-        false
+        HostGainStages::default()
     };
+    let host_gain_available = host_gains.input || host_gains.output;
     if !has_target && !host_gain_available && bank.is_empty() {
         return None;
     }
@@ -611,9 +635,11 @@ pub(super) fn panel(
     }
     if let Some(source) = selected
         && host_gain_available
+        && !is_pressure_source(bank.sources(), source.source)
     {
         let targets = [HostGainTarget::Input, HostGainTarget::Output]
             .into_iter()
+            .filter(|&stage| host_gains.supports(stage))
             .filter_map(|stage| {
                 let (parameter, key, label) = stage.mapping();
                 let route = bank.routes().iter().find(|route| {
@@ -2028,8 +2054,14 @@ fn apply(
                     }
                 }
                 MappingTarget::HostGain(stage) => {
-                    if !hex_engine::project_device_host_gain_modulation_supported(project, id) {
-                        return Err(Invalid("this device does not support host gain modulation"));
+                    let available = hex_engine::project_device_host_gain_modulation_supported(
+                        project, id,
+                    ) || (matches!(stage, HostGainTarget::Output)
+                        && hex_engine::project_device_instrument_output_modulation_supported(
+                            project, id,
+                        ));
+                    if !available {
+                        return Err(Invalid("this device does not support this host gain stage"));
                     }
                     ModulationDestination::Device {
                         device_type: device.state().type_id(),
