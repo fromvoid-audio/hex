@@ -2,10 +2,27 @@
 //! The audio host admits the actual source and capability, owns the borrowed
 //! output scratch and decides when the surrounding callback commits.
 use crate::{
-    ForeignModulationRoute, ModulationRuntime, NativeInstrumentClock, PreparedModulation,
-    PreparedModulationSource, PreparedModulationState, SourceModulationRoute, StereoFrame,
+    ForeignModulationRoute, ForeignProcessorNode, ForeignProcessors, ModulationRuntime,
+    NativeInstrumentClock, OffsetClock, PreparedModulation, PreparedModulationSource,
+    PreparedModulationState, SourceModulationRoute, StereoFrame,
 };
-use hex_lattice_contract::DeviceContractError as Error;
+use hex_lattice_contract::{DeviceContractError as Error, ForeignProcessorBinding};
+
+pub(crate) const MAX_FOREIGN_MODULATION_CHUNK: usize = 256;
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ForeignEffectTarget {
+    pub binding: ForeignProcessorBinding,
+    pub raw_id: u32,
+    pub normalized_base: f64,
+}
+
+/// Per-frame normalized SDK values for one exact borrowed effect segment.
+#[derive(Clone, Copy)]
+pub struct ForeignModulationSamples<'a> {
+    pub id: u32,
+    pub normalized: &'a [f64],
+}
 
 /// One foreign raw ID and its exact restored f64 base, paired with a validated
 /// effect-local bank. The provider host still proves that this target exists,
@@ -53,13 +70,29 @@ impl PreparedForeignModulation {
         self.state.quoted_runtime_heap_bytes()
     }
 
-    pub fn prepare(&self, sample_rate: u32) -> Result<ForeignModulationRuntime, Error> {
-        self.state.validate_sample_rate(sample_rate)?;
-        Ok(ForeignModulationRuntime {
+    /// Bind the declaration to a specific prepared effect endpoint. The
+    /// provider must still admit the exact source and raw parameter capability.
+    pub fn into_effect_modulation(
+        self,
+        binding: ForeignProcessorBinding,
+    ) -> Result<PreparedModulationState, Error> {
+        if !binding.is_valid() {
+            return Err(Error::InvalidId);
+        }
+        Ok(self.state.bind_foreign_effect(ForeignEffectTarget {
+            binding,
             raw_id: self.raw_id,
             normalized_base: self.normalized_base,
-            runtime: self.state.prepare()?,
-        })
+        }))
+    }
+
+    pub fn prepare(&self, sample_rate: u32) -> Result<ForeignModulationRuntime, Error> {
+        self.state.validate_sample_rate(sample_rate)?;
+        Ok(ForeignModulationRuntime::new(
+            self.raw_id,
+            self.normalized_base,
+            self.state.prepare()?,
+        ))
     }
 }
 
@@ -69,11 +102,57 @@ pub struct ForeignModulationRuntime {
     raw_id: u32,
     normalized_base: f64,
     runtime: ModulationRuntime,
+    committed_value: f64,
+    staged_value: f64,
 }
 
 impl ForeignModulationRuntime {
+    pub(crate) fn new(raw_id: u32, normalized_base: f64, runtime: ModulationRuntime) -> Self {
+        Self {
+            raw_id,
+            normalized_base,
+            runtime,
+            committed_value: normalized_base,
+            staged_value: normalized_base,
+        }
+    }
+
+    pub(crate) fn storage_bytes(&self) -> Option<usize> {
+        std::mem::size_of::<Self>().checked_add(self.runtime.heap_storage_bytes()?)
+    }
+
+    pub(crate) fn matches_prepared(&self, prepared: &PreparedModulationState) -> bool {
+        prepared.foreign_effect().is_some_and(|target| {
+            self.raw_id == target.raw_id
+                && self.normalized_base.to_bits() == target.normalized_base.to_bits()
+        }) && prepared.matches_runtime(&self.runtime)
+    }
+
+    pub(crate) fn same_declaration(&self, other: &Self) -> bool {
+        self.raw_id == other.raw_id
+            && self.normalized_base.to_bits() == other.normalized_base.to_bits()
+            && self.runtime.same_declaration(&other.runtime)
+    }
+
+    pub(crate) fn target_id(&self) -> u32 {
+        self.raw_id
+    }
+
+    pub(crate) fn inherit_committed(&mut self, previous: &Self) {
+        self.runtime.inherit_graph_committed(&previous.runtime);
+        self.committed_value = previous.committed_value;
+        self.staged_value = self.committed_value;
+    }
+
+    pub(crate) fn reset(&mut self) {
+        self.runtime.reset_all();
+        self.committed_value = self.normalized_base;
+        self.staged_value = self.normalized_base;
+    }
+
     pub fn begin(&mut self) {
         self.runtime.begin();
+        self.staged_value = self.committed_value;
     }
 
     /// Lend one normalized value per input frame. A refused consumer abandons
@@ -91,15 +170,62 @@ impl ForeignModulationRuntime {
             .render_audio_chunk(input, None, None, clock, |input, values| {
                 values.compose_foreign_target(base, output)?;
                 consume(input, raw_id, output)
-            })
+            })?;
+        if let Some(&value) = output.last() {
+            self.staged_value = value;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn process_effect_segment(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        frame_offset: usize,
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn NativeInstrumentClock>,
+        foreign: &mut dyn ForeignProcessors,
+        frozen: bool,
+    ) -> Result<(), Error> {
+        let mut normalized = [0.0; MAX_FOREIGN_MODULATION_CHUNK];
+        let chunk_frames = self.runtime.chunk_frames().min(normalized.len());
+        for (index, frames) in frames.chunks_mut(chunk_frames).enumerate() {
+            let offset = index * chunk_frames;
+            let physical_offset = frame_offset
+                .checked_add(offset)
+                .ok_or(Error::InvalidDescriptor)?;
+            let shifted = clock.map(|clock| OffsetClock { clock, offset });
+            let chunk_clock = shifted
+                .as_ref()
+                .map(|value| value as &dyn NativeInstrumentClock);
+            let normalized = &mut normalized[..frames.len()];
+            let mut stage = |frames: &mut [StereoFrame], id, normalized: &[f64]| {
+                foreign.process_segment_with_modulation(
+                    node,
+                    physical_offset,
+                    frames,
+                    ForeignModulationSamples { id, normalized },
+                    chunk_clock,
+                )
+            };
+            if frozen {
+                normalized.fill(self.committed_value);
+                stage(frames, self.raw_id, normalized)?;
+            } else {
+                self.render_chunk(frames, chunk_clock, normalized, stage)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn commit(&mut self) -> Result<(), Error> {
-        self.runtime.commit()
+        self.runtime.commit()?;
+        self.committed_value = self.staged_value;
+        Ok(())
     }
 
     pub fn rollback(&mut self) {
         self.runtime.rollback();
+        self.staged_value = self.committed_value;
     }
 }
 

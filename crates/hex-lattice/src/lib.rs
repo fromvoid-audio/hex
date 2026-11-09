@@ -56,7 +56,9 @@ pub use parameter_automation::{
 pub use tail_split::{TailSplit, TailSplitObserver};
 mod resources;
 mod runtime_ownership;
-pub use foreign_modulation::{ForeignModulationRuntime, PreparedForeignModulation};
+pub use foreign_modulation::{
+    ForeignModulationRuntime, ForeignModulationSamples, PreparedForeignModulation,
+};
 pub use hex_dsp::LfoWaveform;
 pub use hex_lattice_contract::ModulationSourceId;
 use hex_lattice_contract::{
@@ -1028,7 +1030,8 @@ impl<'a> NativeRuntimeEntryStorage<'a> {
         self.entry
             .modulation
             .as_ref()
-            .map_or(Some(0), ModulationRuntime::heap_storage_bytes)
+            .map_or(Some(0), ModulationRuntime::heap_storage_bytes)?
+            .checked_add(self.entry.runtime.foreign_modulation_bytes()?)
     }
     pub fn runtime_box_identities(&self) -> (Option<usize>, Option<usize>) {
         self.entry
@@ -1093,9 +1096,22 @@ impl<'a> NativeRuntimeEntryStorage<'a> {
             .is_some_and(|(a, b)| a.as_any().is::<T>() && b.as_any().is::<T>())
     }
     pub fn matches_prepared_runtime_storage(&self, prepared: &PreparedRuntimeInstance) -> bool {
-        (match (&self.entry.modulation, &prepared.modulation) {
-            (Some(runtime), Some(declaration)) => declaration.matches_runtime(runtime),
-            (None, None) => true,
+        (match (
+            &self.entry.modulation,
+            self.entry.runtime.foreign_modulation(),
+            &prepared.modulation,
+        ) {
+            (Some(runtime), None, Some(declaration)) => {
+                declaration.foreign_effect().is_none() && declaration.matches_runtime(runtime)
+            }
+            (None, Some(runtime), Some(declaration)) => {
+                declaration.foreign_effect().is_some_and(|target| {
+                    self.foreign_processor()
+                        .and_then(PreparedForeignProcessor::binding)
+                        == Some(target.binding)
+                }) && runtime.matches_prepared(declaration)
+            }
+            (None, None, None) => true,
             _ => false,
         }) && self.entry.automation == prepared.automation
             && self.entry.owner == prepared.owner
@@ -1113,6 +1129,7 @@ impl<'a> NativeRuntimeEntryStorage<'a> {
     /// returns or clones either shared owning field.
     pub fn matches_prepared_storage(&self, prepared: &PreparedProcessorInstance) -> bool {
         self.entry.modulation.is_none()
+            && self.entry.runtime.foreign_modulation().is_none()
             && self.entry.owner == prepared.owner
             && self.entry.device_id == prepared.device_id
             && self.entry.device_type == prepared.device_type
@@ -1183,6 +1200,10 @@ impl NativeRuntimeChain {
         if instances.iter().any(|instance| {
             !matches!(instance.owner, ProcessorChainOwner::Source(_))
                 || instance.automation.foreign().is_some()
+                || instance
+                    .modulation
+                    .as_ref()
+                    .is_some_and(|modulation| modulation.foreign_effect().is_some())
         }) {
             return Err(DeviceContractError::UnsupportedProcessingClass);
         }
@@ -1341,10 +1362,39 @@ impl NativeRuntimeChain {
             } else {
                 (None, None)
             };
-            let runtime = RuntimeOwnership::prepare(instance.definition.as_ref())?;
-            let modulation = prepared_modulation
-                .map(PreparedModulationState::prepare)
-                .transpose()?;
+            let mut runtime = RuntimeOwnership::prepare(instance.definition.as_ref())?;
+            let modulation = match prepared_modulation {
+                Some(prepared) if prepared.foreign_effect().is_some() => {
+                    let (RuntimeOwnership::Foreign(effect), Some(target)) =
+                        (&mut runtime, prepared.foreign_effect())
+                    else {
+                        return Err(DeviceContractError::ForeignProcessingUnavailable);
+                    };
+                    if effect.prepared.binding() != Some(target.binding)
+                        || target.binding.instance != instance.device_id
+                        || matches!(instance.owner, ProcessorChainOwner::Source(_))
+                        || effect.prepared.is_instrument_profile()
+                        || usize::from(effect.prepared.quantum_frames())
+                            > foreign_modulation::MAX_FOREIGN_MODULATION_CHUNK
+                        || !instance.automation.parameter_ids().is_empty()
+                    {
+                        return Err(DeviceContractError::ForeignProcessingUnavailable);
+                    }
+                    let modulation = prepared.prepare_foreign_effect()?;
+                    automation_bytes = automation_bytes
+                        .checked_add(
+                            modulation
+                                .storage_bytes()
+                                .ok_or(DeviceContractError::RuntimeBudgetExceeded)?,
+                        )
+                        .filter(|bytes| *bytes <= MAX_PROCESSOR_BANK_RUNTIME_BYTES * 2)
+                        .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
+                    effect.modulation = Some(Box::new(modulation));
+                    None
+                }
+                Some(prepared) => Some(prepared.prepare()?),
+                None => None,
+            };
             if let Some(modulation) = &modulation {
                 let input = modulation.program().host_input_base();
                 let output = modulation.program().host_output_base();
@@ -1519,7 +1569,8 @@ impl NativeRuntimeChain {
                             .modulation
                             .as_ref()
                             .map_or(Some(0), ModulationRuntime::heap_storage_bytes)?,
-                    )
+                    )?
+                    .checked_add(entry.runtime.foreign_modulation_bytes()?)
             })?)
     }
 
@@ -1850,6 +1901,8 @@ impl NativeRuntimeChain {
                                     })
                                 && self
                                     .can_retarget_parameters_from_range(previous, index..index + 1))
+                        && (allow_control_edit
+                            || left.runtime.same_foreign_modulation(&right.runtime))
                         && (allow_control_edit
                             || match (&left.modulation, &right.modulation) {
                                 (None, None) => true,
@@ -3372,7 +3425,18 @@ impl NativeRuntimeChain {
             } else {
                 clock
             };
-            foreign.process_segment(node, frame_offset, frames, clock)?;
+            if let Some(modulation) = &mut runtime.modulation {
+                modulation.process_effect_segment(
+                    node,
+                    frame_offset,
+                    frames,
+                    clock,
+                    foreign,
+                    entry.automation_frozen,
+                )?;
+            } else {
+                foreign.process_segment(node, frame_offset, frames, clock)?;
+            }
             runtime.scratch_drained =
                 matches!(runtime.prepared.output_tail(), OutputTail::Finite { .. })
                     && foreign.committed_tail_is_drained(node);

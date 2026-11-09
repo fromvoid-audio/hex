@@ -5,6 +5,7 @@
 use crate::{
     MAX_MODULATION_ROUTES, ModulationRuntime, ModulationSourceBank, PreparedModulation,
     PreparedModulationSource, SourceModulationRoute,
+    foreign_modulation::{ForeignEffectTarget, ForeignModulationRuntime},
     modulation_source_routes::{self, PreparedSourceRoute},
 };
 use hex_lattice_contract::DeviceContractError as Error;
@@ -18,6 +19,7 @@ pub struct PreparedModulationState {
     program: PreparedModulation,
     chunk_frames: usize,
     source_routes: Vec<PreparedSourceRoute>,
+    foreign_effect: Option<ForeignEffectTarget>,
 }
 
 impl PreparedModulationState {
@@ -52,6 +54,7 @@ impl PreparedModulationState {
             program,
             chunk_frames,
             source_routes,
+            foreign_effect: None,
         };
         if prepared
             .storage_bytes()
@@ -76,6 +79,13 @@ impl PreparedModulationState {
 
     /// Construct separately owned runtime storage on control, before publication.
     pub fn prepare(&self) -> Result<ModulationRuntime, Error> {
+        if self.foreign_effect.is_some() {
+            return Err(Error::UnsupportedProcessingClass);
+        }
+        self.prepare_bank()
+    }
+
+    fn prepare_bank(&self) -> Result<ModulationRuntime, Error> {
         let mut source_routes = Vec::new();
         source_routes
             .try_reserve_exact(self.source_routes.len())
@@ -88,6 +98,26 @@ impl PreparedModulationState {
         )
     }
 
+    pub(crate) fn bind_foreign_effect(mut self, target: ForeignEffectTarget) -> Self {
+        self.foreign_effect = Some(target);
+        self
+    }
+
+    pub(crate) fn foreign_effect(&self) -> Option<ForeignEffectTarget> {
+        self.foreign_effect
+    }
+
+    pub(crate) fn prepare_foreign_effect(&self) -> Result<ForeignModulationRuntime, Error> {
+        let target = self
+            .foreign_effect
+            .ok_or(Error::UnsupportedProcessingClass)?;
+        Ok(ForeignModulationRuntime::new(
+            target.raw_id,
+            target.normalized_base,
+            self.prepare_bank()?,
+        ))
+    }
+
     pub fn program(&self) -> &PreparedModulation {
         &self.program
     }
@@ -95,6 +125,11 @@ impl PreparedModulationState {
     /// Requested runtime capacity before allocation; graph admission must also
     /// verify the actual capacities after construction.
     pub fn quoted_runtime_heap_bytes(&self) -> Option<usize> {
+        let inline = if self.foreign_effect.is_some() {
+            std::mem::size_of::<ForeignModulationRuntime>()
+        } else {
+            0
+        };
         ModulationSourceBank::quoted_heap_bytes(
             self.sources.len(),
             self.chunk_frames,
@@ -103,7 +138,8 @@ impl PreparedModulationState {
                 .any(PreparedModulationSource::reads_note_gate),
         )?
         .checked_add(self.program.storage_bytes()?)?
-        .checked_add(Self::quoted_source_route_bytes(self.source_routes.len())?)
+        .checked_add(Self::quoted_source_route_bytes(self.source_routes.len())?)?
+        .checked_add(inline)
     }
 
     pub(crate) fn matches_runtime(&self, runtime: &ModulationRuntime) -> bool {

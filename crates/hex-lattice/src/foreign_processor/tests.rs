@@ -6,6 +6,7 @@ use crate::{
 };
 use std::sync::Arc;
 
+mod modulation;
 mod program_history;
 
 const TYPE: DeviceTypeId = DeviceTypeId::from_static("test.foreign");

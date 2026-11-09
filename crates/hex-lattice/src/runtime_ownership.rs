@@ -1,6 +1,6 @@
 use crate::{
-    NativeProcessorRuntime, OwnedProcessorRuntime, PreparedProcessorFactory,
-    ProcessorAuditionSelection,
+    ForeignModulationRuntime, NativeProcessorRuntime, OwnedProcessorRuntime,
+    PreparedProcessorFactory, ProcessorAuditionSelection,
 };
 use hex_lattice_contract::DeviceContractError;
 
@@ -9,6 +9,7 @@ use hex_lattice_contract::DeviceContractError;
 /// DSP state, source owner or acceptance authority is copied into the chain.
 pub(super) struct ForeignRuntime {
     pub(super) prepared: crate::PreparedForeignProcessor,
+    pub(super) modulation: Option<Box<ForeignModulationRuntime>>,
     pub(super) committed_drained: bool,
     pub(super) scratch_drained: bool,
 }
@@ -22,6 +23,26 @@ pub(super) enum RuntimeOwnership {
     Foreign(ForeignRuntime),
 }
 impl RuntimeOwnership {
+    pub(super) fn foreign_modulation(&self) -> Option<&ForeignModulationRuntime> {
+        match self {
+            Self::Foreign(value) => value.modulation.as_deref(),
+            _ => None,
+        }
+    }
+
+    pub(super) fn same_foreign_modulation(&self, other: &Self) -> bool {
+        match (self.foreign_modulation(), other.foreign_modulation()) {
+            (Some(left), Some(right)) => left.same_declaration(right),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
+    pub(super) fn foreign_modulation_bytes(&self) -> Option<usize> {
+        self.foreign_modulation()
+            .map_or(Some(0), ForeignModulationRuntime::storage_bytes)
+    }
+
     // The caller must retain the owner; this scalar does not provide custody.
     pub(super) fn owned_identity(&self) -> Option<usize> {
         match self {
@@ -104,6 +125,7 @@ impl RuntimeOwnership {
             None => Ok(Self::Memoryless),
             Some(PreparedProcessorFactory::Foreign(v)) => Ok(Self::Foreign(ForeignRuntime {
                 prepared: *v,
+                modulation: None,
                 committed_drained: false,
                 scratch_drained: false,
             })),
@@ -178,7 +200,17 @@ impl RuntimeOwnership {
             (Self::Memoryless, Self::Memoryless) => true,
             // Only scalar graph views are inherited here. Actual source/DSP
             // custody remains with the host's separately admitted endpoints.
-            (Self::Foreign(new), Self::Foreign(old)) => new.prepared == old.prepared,
+            (Self::Foreign(new), Self::Foreign(old)) => {
+                new.prepared == old.prepared
+                    && new
+                        .modulation
+                        .as_deref()
+                        .map(ForeignModulationRuntime::target_id)
+                        == old
+                            .modulation
+                            .as_deref()
+                            .map(ForeignModulationRuntime::target_id)
+            }
             (Self::Legacy { primary, scratch }, Self::Legacy { primary: old, .. }) => {
                 primary.can_copy_history_from(old.as_ref())
                     && scratch.can_copy_history_from(old.as_ref())
@@ -204,7 +236,17 @@ impl RuntimeOwnership {
     }
     pub(super) fn foreign_configuration_matches(&self, old: &Self) -> bool {
         match (self, old) {
-            (Self::Foreign(new), Self::Foreign(old)) => new.prepared == old.prepared,
+            (Self::Foreign(new), Self::Foreign(old)) => {
+                new.prepared == old.prepared
+                    && new
+                        .modulation
+                        .as_deref()
+                        .map(ForeignModulationRuntime::target_id)
+                        == old
+                            .modulation
+                            .as_deref()
+                            .map(ForeignModulationRuntime::target_id)
+            }
             (Self::Foreign(_), _) | (_, Self::Foreign(_)) => false,
             _ => true,
         }
@@ -250,6 +292,11 @@ impl RuntimeOwnership {
             (Self::Foreign(new), Self::Foreign(old)) if new.prepared == old.prepared => {
                 new.committed_drained = old.committed_drained;
                 new.scratch_drained = old.committed_drained;
+                if let (Some(current), Some(previous)) = (&mut new.modulation, &old.modulation)
+                    && current.target_id() == previous.target_id()
+                {
+                    current.inherit_committed(previous);
+                }
             }
             (Self::Legacy { primary, scratch }, Self::Legacy { primary: old, .. }) => {
                 if primary.can_copy_history_from(old.as_ref())
@@ -294,7 +341,12 @@ impl RuntimeOwnership {
                 }
             }
             Self::Owned(v) => v.begin_block(),
-            Self::Foreign(value) => value.scratch_drained = value.committed_drained,
+            Self::Foreign(value) => {
+                value.scratch_drained = value.committed_drained;
+                if let Some(modulation) = &mut value.modulation {
+                    modulation.begin();
+                }
+            }
             Self::Memoryless => {}
         }
     }
@@ -302,13 +354,24 @@ impl RuntimeOwnership {
         match self {
             Self::Legacy { primary, scratch } => std::mem::swap(primary, scratch),
             Self::Owned(v) => v.commit_block(),
-            Self::Foreign(value) => value.committed_drained = value.scratch_drained,
+            Self::Foreign(value) => {
+                value.committed_drained = value.scratch_drained;
+                if let Some(modulation) = &mut value.modulation {
+                    let _ = modulation.commit();
+                }
+            }
             Self::Memoryless => {}
         }
     }
     pub(super) fn rollback(&mut self) {
         match self {
             Self::Owned(v) => v.rollback_block(),
+            Self::Foreign(value) => {
+                value.scratch_drained = value.committed_drained;
+                if let Some(modulation) = &mut value.modulation {
+                    modulation.rollback();
+                }
+            }
             _ => self.begin(),
         }
     }
@@ -322,6 +385,9 @@ impl RuntimeOwnership {
             Self::Foreign(value) => {
                 value.committed_drained = false;
                 value.scratch_drained = false;
+                if let Some(modulation) = &mut value.modulation {
+                    modulation.reset();
+                }
             }
             Self::Memoryless => {}
         }
