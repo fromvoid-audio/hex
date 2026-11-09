@@ -1,6 +1,6 @@
 //! Shared typed targets reuse EQ8's existing designer, smoother and routing.
 //! A fixed Copy model retains every bank. Derived coefficient targets are staged
-//! before controls install; immutable canonical coefficient Arcs never change.
+//! before controls install; the fixed canonical coefficients never change.
 use super::*;
 use crate::parameter_binding::{BOOLEAN_ENVELOPE, Binding, CHOICE_ENVELOPE, SCALAR_ENVELOPE};
 pub(super) mod routing;
@@ -146,7 +146,7 @@ pub(super) fn prepare(
     }
     Ok(prepared)
 }
-fn selected(mode: ChannelMode) -> [usize; 2] {
+pub(super) fn selected(mode: ChannelMode) -> [usize; 2] {
     match mode {
         ChannelMode::Stereo => [0, 0],
         ChannelMode::LeftRight => [1, 2],
@@ -173,10 +173,9 @@ fn design(
     Ok([left, right])
 }
 impl Eq8Runtime {
-    pub(super) fn current_target(&self) -> &[[[Coefficients; 4]; BAND_COUNT]; 2] {
-        self.automated_target
-            .as_ref()
-            .unwrap_or(self.target.as_ref())
+    pub(super) fn current_target(&self) -> [&CoefficientBank; 2] {
+        self.routing
+            .effective_target(self.automated_target.as_ref(), self.canonical_mode)
     }
     fn enable_admitted(&self, bank: usize, band: usize) -> bool {
         slot(parameter::enabled(bank, band)).is_some_and(|i| self.controls.admitted(i))
@@ -215,7 +214,10 @@ impl Eq8Runtime {
         }
     }
     pub(super) fn set_automation_target(&mut self, target: Option<[[BandStages; BAND_COUNT]; 2]>) {
-        let changed = target.as_ref().unwrap_or(self.target.as_ref()) != self.current_target();
+        let changed = self
+            .routing
+            .effective_target(target.as_ref(), self.canonical_mode)
+            != self.current_target();
         let replaced = target.is_some() || self.automated_target.is_some();
         self.automated_target = target;
         if changed {
@@ -228,10 +230,11 @@ impl Eq8Runtime {
     pub(super) fn restore_canonical_controls(&mut self) {
         self.controls.reset();
         let base = self.controls.base();
-        let target = self
-            .routing
-            .as_mut()
-            .and_then(|route| route.restore_canonical(base, self.mode));
+        let target = if self.controls.admitted(MODE_SLOT) {
+            self.routing.restore_canonical(base, self.mode)
+        } else {
+            None
+        };
         self.install_enabled_bands(&base.banks);
         self.set_automation_target(target);
         self.band_targets_pending = self.band_automation_admitted;
@@ -266,15 +269,13 @@ impl Eq8Runtime {
                 } else {
                     None
                 };
-                let pending = self
-                    .routing
-                    .as_ref()
-                    .map(|route| route.stage(next_values, self.mode, self.sample_rate))
-                    .transpose()?;
-                self.controls.install(next);
-                if let Some(route) = self.routing.as_mut() {
-                    route.install(pending.flatten());
+                if self.controls.admitted(MODE_SLOT) {
+                    let pending = self
+                        .routing
+                        .stage(next_values, self.mode, self.sample_rate)?;
+                    self.routing.install(pending);
                 }
+                self.controls.install(next);
                 self.install_enabled_bands(&next_values.banks);
                 if let Some(target) = target {
                     self.set_automation_target(Some(target));
@@ -704,7 +705,7 @@ mod tests {
                 }
                 assert_eq!(output, expected);
                 // A held authored value equal to the former base still overrides a
-                // changed canonical field in the incoming factory's coefficient Arc.
+                // changed canonical field in the incoming factory's canonical coefficients.
                 let id = parameter::frequency(selected(actual.mode)[0], 0);
                 let old = EQ8_DEFINITION.read_parameter(&base, id).unwrap();
                 let held = Values {
