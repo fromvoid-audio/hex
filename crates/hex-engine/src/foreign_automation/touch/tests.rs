@@ -197,6 +197,35 @@ fn tempo_cut_loop_seek_and_missing_origin_chases_are_independent_of_quantum_size
 }
 
 #[test]
+fn long_sparse_touch_replays_late_knots_and_the_exclusive_restore() {
+    let map = tempo(true);
+    let first = 128;
+    let stride = 256;
+    let values: Vec<_> = (0..1_101)
+        .map(|index| {
+            (
+                first + index * stride,
+                if index % 2 == 0 { 0.75 } else { 0.25 },
+            )
+        })
+        .collect();
+    let end = first + values.len() as u64 * stride;
+    let program = program(&map, &[span(&map, first, end, &values)], 0, 64, Some(0.375));
+    let last = values.last().unwrap().0;
+    for (frame, before, after) in [(last, 0.25, 0.75), (end, 0.75, 0.375)] {
+        let origins: Vec<_> = (frame - 3..frame + 4).map(Some).collect();
+        let points = rendered(&program, &origins, &[]);
+        assert!(points.len() <= MAX_POINTS);
+        for offset in 0..7 {
+            assert_eq!(
+                sample(&points, offset),
+                if offset < 3 { before } else { after }
+            );
+        }
+    }
+}
+
+#[test]
 fn malformed_spans_and_excess_density_are_refused_without_changing_the_base() {
     let map = tempo(false);
     let base = [Knot {

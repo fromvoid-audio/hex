@@ -17,6 +17,9 @@ pub use touch::{
 
 pub const MAX_DEVICE_AUTOMATION_LANES: usize = 256;
 pub const MAX_DEVICE_AUTOMATION_POINTS_PER_LANE: usize = 1_024;
+/// Recorded touches have an independent lane budget. Authored point limits and
+/// the total project budget still apply; this is not a callback event budget.
+pub const MAX_DEVICE_AUTOMATION_TOUCH_STEPS_PER_LANE: usize = 16_384;
 pub const MAX_DEVICE_AUTOMATION_POINTS: usize = 65_536;
 
 /// A finite normalized parameter value, including a canonical positive zero.
@@ -131,7 +134,7 @@ pub fn validate_device_automation(lanes: &[DeviceAutomation]) -> Result<(), Inva
         if lane.touch.is_empty() || !lane.points.is_empty() {
             validate_points(&lane.points)?;
         }
-        touch::validate(&lane.touch, lane.points.len())?;
+        touch::validate(&lane.touch)?;
     }
     Ok(())
 }
@@ -384,7 +387,7 @@ impl Project {
             {
                 Ok(index) => {
                     let lane = &mut entry.automation[index];
-                    lane.touch = touch::splice(&lane.touch, spans, lane.points.len())?;
+                    lane.touch = touch::splice(&lane.touch, spans)?;
                     lane.read_selection = AutomationReadSelection::Authored;
                 }
                 Err(index) => {
@@ -397,7 +400,7 @@ impl Project {
                             target,
                             vst3_class,
                             points: Vec::new(),
-                            touch: touch::splice(&[], spans, 0)?,
+                            touch: touch::splice(&[], spans)?,
                             read_selection: AutomationReadSelection::Authored,
                         },
                     );
