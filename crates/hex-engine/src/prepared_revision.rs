@@ -1564,6 +1564,7 @@ impl PreparedRevision {
                 .checked_add(crate::PreparedSourceRouting::construction_bytes(project))?
                 .checked_add(crate::source_effect_stage::metadata::construction_bytes(
                     project,
+                    native_input,
                 )?)
         })();
         let programs = crate::foreign_automation::candidate::quote_instruments(project)

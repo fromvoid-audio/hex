@@ -505,8 +505,14 @@ fn registry_suffix_respects_order_and_power_without_processing_receiver_clips() 
         resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
     };
     let prepare = |compiled: &Project| {
-        crate::compile::prepare_source_effect_recipes(compiled, editor.project(), &native, &context)
-            .unwrap()
+        crate::compile::prepare_source_effect_recipes(
+            compiled,
+            editor.project(),
+            &native,
+            &context,
+            None,
+        )
+        .unwrap()
     };
     compiled.source_effects = prepare(&compiled);
     let mut receiver_only = compiled.clone();
@@ -518,7 +524,10 @@ fn registry_suffix_respects_order_and_power_without_processing_receiver_clips() 
         metadata::retained_bytes(&prepare(&receiver_only)).unwrap()
     );
     assert!(metadata::construction_for([2].into_iter()).unwrap() >= retained);
-    assert_eq!(metadata::construction_bytes(editor.project()), Some(0));
+    assert_eq!(
+        metadata::construction_bytes(editor.project(), None),
+        Some(0)
+    );
     assert_eq!(compiled.source_effects.len(), 1);
     let plan = &compiled.source_effects[0];
     assert_eq!(plan.source, source);
@@ -1350,7 +1359,10 @@ fn authored_modulated_suffix(
             modulation: bank,
         })
         .unwrap();
-    assert_eq!(metadata::construction_bytes(editor.project()), Some(0));
+    assert_eq!(
+        metadata::construction_bytes(editor.project(), None),
+        Some(0)
+    );
     for track in [receiver, contributor] {
         editor
             .execute(Command::BindTrackSource {
@@ -1385,7 +1397,8 @@ fn a_bound_native_suffix_modulates_only_generator_audio_and_preserves_phase_on_h
     assert_eq!(recipes[0].receiver, 0);
     assert!(recipes[0].instances[0].modulation.is_some());
     assert!(
-        metadata::construction_bytes(model).unwrap() >= metadata::retained_bytes(recipes).unwrap()
+        metadata::construction_bytes(model, None).unwrap()
+            >= metadata::retained_bytes(recipes).unwrap()
     );
 
     let mut dry = [[0.0; 2]; WIDTH];
@@ -1747,7 +1760,7 @@ fn bound_source_automation_reads_step_linear_and_loop_on_the_shared_signal() {
     assert_eq!(recipes[0].receiver, 0);
     assert_eq!(recipes[0].instances[0].device_id, device.value());
     assert!(
-        metadata::construction_bytes(editor.project()).unwrap()
+        metadata::construction_bytes(editor.project(), None).unwrap()
             >= metadata::retained_bytes(recipes).unwrap()
     );
     let bound = editor.project().clone();
@@ -1869,4 +1882,47 @@ fn bound_source_automation_reads_step_linear_and_loop_on_the_shared_signal() {
             assert!((got[channel] - want[channel]).abs() < 1e-6);
         }
     }
+}
+
+#[test]
+fn native_source_effect_recording_target_follows_the_exact_receiver() {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    use hex_project::DeviceAutomationTarget;
+
+    let kind = DeviceAutomationTarget::Parameter(parameter::MUTE);
+    let (mut editor, _, device) = authored_modulated_suffix(
+        UTILITY_DEFINITION.default_state().unwrap(),
+        kind,
+        0.0,
+        false,
+    );
+    let source = editor.project().tracks()[0].source_id().unwrap();
+    let other = editor.project().tracks()[1].id();
+    let input = crate::native_parameter_input_target(editor.project(), device, kind).unwrap();
+    let value = crate::NativeTransientValue::Parameter {
+        id: parameter::MUTE,
+        value: ParameterValue::Bool(true),
+    };
+    assert_eq!(input.validate_set(editor.project(), value), Ok(value));
+
+    editor
+        .execute(Command::SetNativeSourceReceiver {
+            source,
+            track: Some(other),
+        })
+        .unwrap();
+    let next = crate::native_parameter_input_target(editor.project(), device, kind).unwrap();
+    assert_ne!(next, input);
+    assert_eq!(next.identity(), input.identity());
+    assert!(input.validate_set(editor.project(), value).is_err());
+    assert_eq!(next.validate_set(editor.project(), value), Ok(value));
+
+    editor
+        .execute(Command::SetNativeSourceReceiver {
+            source,
+            track: None,
+        })
+        .unwrap();
+    assert!(crate::native_parameter_input_target(editor.project(), device, kind).is_err());
 }

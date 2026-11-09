@@ -65,7 +65,11 @@ fn device_inline_bytes() -> Option<usize> {
         .checked_add(arc_bytes(Layout::new::<NativeDeviceState>())?)
 }
 
-pub(crate) fn construction_bytes(project: &hex_project::Project) -> Option<usize> {
+pub(crate) fn construction_bytes(
+    project: &hex_project::Project,
+    native_input: Option<crate::NativeParameterInputTarget>,
+) -> Option<usize> {
+    let input = native_input.filter(|input| input.source_effect_receiver().is_some());
     let bound = project
         .native_sources()
         .iter()
@@ -80,12 +84,12 @@ pub(crate) fn construction_bytes(project: &hex_project::Project) -> Option<usize
         .try_fold(recipes, |bytes, device| {
             let (retained, temporary) = crate::device_modulation::EffectModulation::quote(device)?;
             let provider = device.automation().iter().filter(|lane| !lane.target.is_host()).count();
-            let automation = crate::device_automation::quote(device).ok()?;
+            let automation = crate::device_automation::quote_with_input(device, input).ok()?;
             let staging = hex_lattice::PreparedParameterAutomation::quoted_construction_overlap_bytes_with_host(
                 provider,
                 device.automation().len().checked_sub(provider)?,
                 device.reading_automation().try_fold(0usize, |sum, lane| sum.checked_add(lane.point_count()))?,
-            )?.checked_add(crate::device_automation::input_construction_growth_overlap(device, None).ok()?)?;
+            )?.checked_add(crate::device_automation::input_construction_growth_overlap(device, input).ok()?)?;
             bytes.checked_add(retained)?.checked_add(temporary)?.checked_add(automation)?.checked_add(staging)
         })
 }

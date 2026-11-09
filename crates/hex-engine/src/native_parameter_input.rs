@@ -188,15 +188,7 @@ impl NativeParameterCapture {
             let device = project
                 .device(target.device())
                 .ok_or(Invalid("native capture target no longer exists"))?;
-            let class = if matches!(
-                target.identity().owner(),
-                hex_lattice::ProcessorChainOwner::Source(_)
-            ) {
-                crate::NativeDeviceClass::Instrument
-            } else {
-                crate::NativeDeviceClass::Effect
-            };
-            let view = crate::native_device_view_for_class(class, device.state())?;
+            let view = crate::native_device_view_for_class(target.device_class(), device.state())?;
             let parameter = view
                 .parameters
                 .iter()

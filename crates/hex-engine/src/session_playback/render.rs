@@ -1652,7 +1652,15 @@ impl SessionPlayback {
                     }
                     if let Some(generated) = isolated {
                         self.source_effects
-                            .process_with_clock(index, generated, &effect_clock)
+                            .process_with_live_input(
+                                index,
+                                generated,
+                                &effect_clock,
+                                frame_offset,
+                                self.native_parameter_state
+                                    .as_deref_mut()
+                                    .and_then(|state| state.processing.as_mut()),
+                            )
                             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                         for (target, source) in render_output.iter_mut().zip(generated) {
                             target[0] += source[0];

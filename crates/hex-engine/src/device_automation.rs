@@ -8,6 +8,7 @@
 use crate::{Invalid, NativeDeviceClass};
 use hex_lattice::{NativeTransientValue, ProcessorChainOwner, ProcessorInstanceIdentity};
 use hex_lattice_contract::{DeviceAutomationTarget, DeviceTypeId, NativeDeviceState, ParameterId};
+use std::num::NonZeroU64;
 pub const DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED: &str = "device parameter automation playback is not prepared; use a compatible build or clear the envelope in a copy";
 /// Maximum recorded targets admitted into one prepared binding union.
 pub(crate) const MAX_EXTERNAL_PARAMETER_TARGETS: usize = 256;
@@ -21,6 +22,8 @@ pub struct NativeParameterInputTarget {
     target: DeviceAutomationTarget,
     identity: ProcessorInstanceIdentity,
     device_type: DeviceTypeId,
+    // The canonical receiver is nonzero. Keep this optional callback key to one word.
+    source_effect_receiver: Option<NonZeroU64>,
 }
 impl NativeParameterInputTarget {
     pub fn device(self) -> hex_project::DeviceId {
@@ -34,6 +37,18 @@ impl NativeParameterInputTarget {
     }
     pub fn device_type(self) -> DeviceTypeId {
         self.device_type
+    }
+    pub(crate) fn source_effect_receiver(self) -> Option<NonZeroU64> {
+        self.source_effect_receiver
+    }
+    pub(crate) fn device_class(self) -> NativeDeviceClass {
+        if matches!(self.identity.owner(), ProcessorChainOwner::Source(_))
+            && self.source_effect_receiver.is_none()
+        {
+            NativeDeviceClass::Instrument
+        } else {
+            NativeDeviceClass::Effect
+        }
     }
     /// Validate canonical units against the actual current state/ownership. This
     /// performs no authored edit, parameter patch, normalization or DSP setup.
@@ -58,7 +73,7 @@ impl NativeParameterInputTarget {
             .device(self.device)
             .ok_or(Invalid("native parameter input device no longer exists"))?;
         if let NativeTransientValue::Parameter { id, value } = value {
-            let checked = if matches!(self.identity.owner(), ProcessorChainOwner::Source(_)) {
+            let checked = if self.device_class() == NativeDeviceClass::Instrument {
                 let registry = hex_devices::native_instrument_registry()
                     .map_err(|_| Invalid("native instrument registry is invalid"))?;
                 let definition = registry
@@ -90,8 +105,8 @@ impl NativeParameterInputTarget {
         Ok(value)
     }
 }
-/// Resolve one canonical Track/Main/Return native effect or one supported
-/// receiving instrument. Foreign and source effect controls are excluded.
+/// Resolve an exact native effect or receiving instrument. A source effect
+/// includes its current receiver, so changing the receiver invalidates the arm.
 /// Current provider capability is explicit; controls alone never grant it.
 pub fn native_parameter_input_target(
     project: &hex_project::Project,
@@ -103,17 +118,42 @@ pub fn native_parameter_input_target(
         .iter()
         .find(|source| source.devices().any(|candidate| candidate.id() == device))
     {
+        let receiver = source
+            .receiver()
+            .ok_or(Invalid("native source has no receiver"))?;
         let instrument = source.instrument();
-        if instrument.id() != device
-            || instrument.bypassed()
-            || source.receiver().is_none()
-            || source.devices().count() != 1
-            || !instrument_target_supported(instrument.state(), target)
-        {
-            return Err(Invalid(
-                "receiving instrument parameter input is unsupported",
-            ));
-        }
+        let (state, source_effect_receiver) = if instrument.id() == device {
+            if instrument.bypassed()
+                || source.devices().count() != 1
+                || !instrument_target_supported(instrument.state(), target)
+            {
+                return Err(Invalid(
+                    "receiving instrument parameter input is unsupported",
+                ));
+            }
+            (instrument.state(), None)
+        } else {
+            let effect = source
+                .post_instrument_effects()
+                .iter()
+                .find(|effect| effect.id() == device)
+                .ok_or(Invalid(
+                    "native source effect is not in the post-instrument stage",
+                ))?;
+            let registry = hex_devices::native_registry()
+                .map_err(|_| Invalid("native effect registry is invalid"))?;
+            if instrument.bypassed()
+                || effect.bypassed()
+                || !source_effect_target_supported(source, effect, target, &registry)
+            {
+                return Err(Invalid(
+                    "native source effect parameter input is unsupported",
+                ));
+            }
+            let receiver = NonZeroU64::new(receiver.value())
+                .ok_or(Invalid("native source effect receiver identity is invalid"))?;
+            (effect.state(), Some(receiver))
+        };
         return Ok(NativeParameterInputTarget {
             device,
             target,
@@ -121,8 +161,9 @@ pub fn native_parameter_input_target(
                 ProcessorChainOwner::Source(source.id().value()),
                 device.value(),
             )
-            .map_err(|_| Invalid("native instrument input identity is invalid"))?,
-            device_type: instrument.state().type_id(),
+            .map_err(|_| Invalid("native source input identity is invalid"))?,
+            device_type: state.type_id(),
+            source_effect_receiver,
         });
     }
     let mut matching =
@@ -146,6 +187,7 @@ pub fn native_parameter_input_target(
         identity: ProcessorInstanceIdentity::new(owner, device.value())
             .map_err(|_| Invalid("native parameter input identity is invalid"))?,
         device_type: current.state().type_id(),
+        source_effect_receiver: None,
     })
 }
 fn effect_device_owners(
