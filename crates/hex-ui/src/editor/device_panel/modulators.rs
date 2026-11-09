@@ -245,6 +245,7 @@ pub(super) fn panel(
         {
             row = row.child(
                 div()
+                    .w_full()
                     .flex()
                     .items_center()
                     .gap(px(3.0))
@@ -331,6 +332,7 @@ pub(super) fn panel(
     Some(
         div()
             .id("device-modulator-scroll")
+            .debug_selector(|| "device-modulator-scroll".into())
             .max_h(px(58.0))
             .overflow_y_scroll()
             .child(body)

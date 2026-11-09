@@ -6350,11 +6350,35 @@ fn assert_modulation_mapping(
                 .first()?;
             hex_engine::random_modulator::Settings::decode(&slot.state).ok()
         };
+        let scroll_to = |visual: &mut VisualTestContext, key: &str| {
+            let key = Box::leak(key.to_string().into_boxed_str());
+            let target = visual.debug_bounds(key).unwrap();
+            let strip = visual.debug_bounds("device-modulator-scroll").unwrap();
+            if !strip.contains(&target.center()) {
+                visual.simulate_event(gpui::ScrollWheelEvent {
+                    position: strip.center(),
+                    delta: gpui::ScrollDelta::Pixels(point(
+                        px(0.0),
+                        strip.center().y - target.center().y,
+                    )),
+                    ..Default::default()
+                });
+                visual.run_until_parked();
+            }
+            let target = visual.debug_bounds(key).unwrap();
+            let strip = visual.debug_bounds("device-modulator-scroll").unwrap();
+            assert!(
+                strip.contains(&target.center()),
+                "{key} at {target:?} outside {strip:?}"
+            );
+        };
         let initial = editor.read_with(cx, |view, _| settings(view).unwrap());
         let pending = |view: &EditorView| {
             view.worker_requests_pending > 0 || !view.pending_requests.is_empty()
         };
-        click(&mut visual, format!("random-{}-faster", source_id.value()));
+        let faster = format!("random-{}-faster", source_id.value());
+        scroll_to(&mut visual, &faster);
+        click(&mut visual, faster);
         assert!(
             editor.read_with(cx, |view, _| pending(view)
                 || settings(view).is_some_and(|s| s.rate_hz == 2.0)),
@@ -6364,7 +6388,9 @@ fn assert_modulation_mapping(
             settings(view).is_some_and(|value| value.rate_hz == 2.0)
         });
         visual.run_until_parked();
-        click(&mut visual, format!("random-{}-reseed", source_id.value()));
+        let reseed = format!("random-{}-reseed", source_id.value());
+        scroll_to(&mut visual, &reseed);
+        click(&mut visual, reseed);
         assert!(
             editor.read_with(cx, |view, _| pending(view)
                 || settings(view).is_some_and(|s| s.seed != initial.seed)),
@@ -6374,6 +6400,7 @@ fn assert_modulation_mapping(
             settings(view).is_some_and(|value| value.seed != initial.seed)
         });
         visual.run_until_parked();
+        scroll_to(&mut visual, &format!("random-{}-map", source_id.value()));
     }
     click(
         &mut visual,
