@@ -387,6 +387,10 @@ pub(crate) fn contains_sampler_modulation(project: &Project) -> bool {
     })
 }
 
+pub(crate) fn contains_ramp(project: &Project) -> bool {
+    contains_source(project, DeviceTypeId::from_static("hex.modulator.ramp"))
+}
+
 pub(crate) fn contains_note_counter(project: &Project) -> bool {
     contains_source(
         project,
@@ -502,7 +506,9 @@ pub(crate) fn refuse_legacy(project: &Project) -> Result<(), StorageError> {
     Ok(())
 }
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
-    let version = if contains_note_counter(project) {
+    let version = if contains_ramp(project) {
+        crate::RAMP_MODULATOR_SCHEMA_VERSION
+    } else if contains_note_counter(project) {
         crate::NOTE_COUNTER_MODULATOR_SCHEMA_VERSION
     } else if contains_mix(project) {
         crate::MIX_MODULATOR_SCHEMA_VERSION
@@ -610,6 +616,15 @@ pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError
         return Err(StorageError::Invalid(
             "modulation inventory must be nonempty",
         ));
+    }
+    let ramp_schema = version == crate::RAMP_MODULATOR_SCHEMA_VERSION;
+    if contains_ramp(&project) != ramp_schema {
+        return Err(StorageError::Invalid(
+            "ramp modulators require their matching project schema",
+        ));
+    }
+    if ramp_schema {
+        return Ok(project);
     }
     let note_counter_schema = version == crate::NOTE_COUNTER_MODULATOR_SCHEMA_VERSION;
     if contains_note_counter(&project) != note_counter_schema {

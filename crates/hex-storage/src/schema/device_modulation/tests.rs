@@ -1200,7 +1200,7 @@ fn mix_reader_floor_keeps_previous_buttons_and_three_input_assignments() {
 }
 
 #[test]
-fn note_counter_reader_floor_preserves_settings_and_its_instrument_route() {
+fn note_counter_and_ramp_reader_floors_preserve_settings_and_instrument_routes() {
     let mut editor = Editor::new(legacy_fixture(), 8).unwrap();
     let instrument_type = DeviceTypeId::from_static("hex.instrument.fm4");
     let Created::Track(track) = editor
@@ -1272,6 +1272,51 @@ fn note_counter_reader_floor_preserves_settings_and_its_instrument_route() {
     let mut wrong: serde_json::Value =
         serde_json::from_slice(&crate::encode(project).unwrap()).unwrap();
     wrong["version"] = crate::MIX_MODULATOR_SCHEMA_VERSION.into();
+    assert!(crate::decode(&serde_json::to_vec(&wrong).unwrap()).is_err());
+    let counter_bytes = std::fs::read(&path).unwrap();
+    let counter_token = crate::load_with_token(&path).unwrap().1;
+    let bank = project.device(device).unwrap().modulation();
+    let ramp_id = ModulationSourceId::new(project.next_identity()).unwrap();
+    let mut ramp_payload = 50_000_u32.to_le_bytes().to_vec();
+    ramp_payload.extend_from_slice(&[2, 1, 0]);
+    let ramp = Modulator {
+        id: ramp_id,
+        color: ElementColor::Cyan,
+        enabled: true,
+        state: NativeDeviceState::new(
+            DeviceTypeId::from_static("hex.modulator.ramp"),
+            1,
+            ramp_payload,
+        )
+        .unwrap(),
+    };
+    let mut sources = bank.sources().to_vec();
+    sources.push(ramp);
+    let mut routes = bank.routes().to_vec();
+    routes.push(DeviceModulationRoute {
+        id: ModulationRouteId::new(project.next_identity() + 1).unwrap(),
+        source: ramp_id,
+        ..route
+    });
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device,
+            modulation: DeviceModulation::new(sources, routes).unwrap(),
+        })
+        .unwrap();
+    let project = editor.project();
+    assert_eq!(
+        crate::schema_version_for(project),
+        crate::RAMP_MODULATOR_SCHEMA_VERSION
+    );
+    assert!(counter_token.requires_save_confirmation(project).unwrap());
+    let ramp_path = root.join("counter-and-ramp.hex");
+    crate::save_new(&ramp_path, project).unwrap();
+    assert_eq!(crate::load(&ramp_path).unwrap(), *project);
+    assert_eq!(std::fs::read(&path).unwrap(), counter_bytes);
+    let mut wrong: serde_json::Value =
+        serde_json::from_slice(&crate::encode(project).unwrap()).unwrap();
+    wrong["version"] = crate::NOTE_COUNTER_MODULATOR_SCHEMA_VERSION.into();
     assert!(crate::decode(&serde_json::to_vec(&wrong).unwrap()).is_err());
     std::fs::remove_dir_all(root).unwrap();
 }

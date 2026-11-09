@@ -78,7 +78,7 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = NOTE_COUNTER_MODULATOR_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = RAMP_MODULATOR_SCHEMA_VERSION;
 
 /// Schema70 stores an independent original source span for signed musical event placement.
 pub const MUSICAL_EVENT_SOURCE_SCHEMA_VERSION: u32 = 70;
@@ -141,6 +141,8 @@ pub const BUTTONS_MODULATOR_SCHEMA_VERSION: u32 = 96;
 pub const MIX_MODULATOR_SCHEMA_VERSION: u32 = 97;
 /// Schema98 admits a note-event Note Counter source.
 pub const NOTE_COUNTER_MODULATOR_SCHEMA_VERSION: u32 = 98;
+/// Schema99 admits the note-triggered Ramp source.
+pub const RAMP_MODULATOR_SCHEMA_VERSION: u32 = 99;
 
 fn contains_larger_device_state(project: &Project) -> bool {
     schema::device_assets::authored_states(project)
@@ -204,9 +206,11 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// prior project codec, including any instrument or long touch envelope.
 /// Note pressure on FM4 uses schema91. Button uses schema92. Macro-4 uses schema93.
 /// Loaded Sampler banks use schema94. Math uses schema95. Buttons uses schema96.
-/// Mix uses schema97. Note Counter uses schema98.
+/// Mix uses schema97. Note Counter uses schema98. Ramp uses schema99.
 pub fn schema_version_for(project: &Project) -> u32 {
-    if schema::device_modulation::contains_note_counter(project) {
+    if schema::device_modulation::contains_ramp(project) {
+        RAMP_MODULATOR_SCHEMA_VERSION
+    } else if schema::device_modulation::contains_note_counter(project) {
         NOTE_COUNTER_MODULATOR_SCHEMA_VERSION
     } else if schema::device_modulation::contains_mix(project) {
         MIX_MODULATOR_SCHEMA_VERSION
@@ -452,7 +456,8 @@ impl From<serde_json::Error> for StorageError {
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 /// Nonempty serial units use schema80; flat projects retain their prior layout.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    if schema::device_modulation::contains_note_counter(project)
+    if schema::device_modulation::contains_ramp(project)
+        || schema::device_modulation::contains_note_counter(project)
         || schema::device_modulation::contains_mix(project)
         || schema::device_modulation::contains_buttons(project)
         || schema::device_modulation::contains_math(project)
@@ -778,9 +783,8 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
         | MATH_MODULATOR_SCHEMA_VERSION
         | BUTTONS_MODULATOR_SCHEMA_VERSION
         | MIX_MODULATOR_SCHEMA_VERSION
-        | NOTE_COUNTER_MODULATOR_SCHEMA_VERSION => {
-            schema::device_modulation::decode(bytes, header.version)
-        }
+        | NOTE_COUNTER_MODULATOR_SCHEMA_VERSION
+        | RAMP_MODULATOR_SCHEMA_VERSION => schema::device_modulation::decode(bytes, header.version),
         SERIAL_DEVICE_SCHEMA_VERSION => schema::serial_units::decode(bytes),
         DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION | VST3_AUTOMATION_TOUCH_SCHEMA_VERSION => {
             schema::device_automation_touch::decode(bytes, header.version)
