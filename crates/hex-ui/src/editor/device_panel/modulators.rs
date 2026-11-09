@@ -737,24 +737,25 @@ pub(super) fn panel(
                 let key = |suffix| source_key(&format!("{number}-{suffix}"));
                 let value = format!("{number} · {:.0}%", value * 100.0);
                 let destination = macro_four_destination(source_id, parameter);
-                let label = if let Some(mapping) = mapping_source_for(source_id, destination) {
-                    button(
-                        cx,
-                        format!("map-macro-4-{}-{}-{number}", id.value(), source_id.value()),
-                        theme::text(value),
-                        Edit::Map(mapping, MappingTarget::MacroFour(source_id, parameter)),
-                    )
-                    .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
-                    .into_any_element()
-                } else {
-                    theme::text(value).into_any_element()
-                };
+                let value_control =
+                    if let Some(mapping) = mapping_source_for(source_id, destination) {
+                        button(
+                            cx,
+                            format!("map-macro-4-{}-{}-{number}", id.value(), source_id.value()),
+                            theme::text(value),
+                            Edit::Map(mapping, MappingTarget::MacroFour(source_id, parameter)),
+                        )
+                        .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                        .into_any_element()
+                    } else {
+                        theme::text(value).into_any_element()
+                    };
                 controls = controls.child(
                     div()
                         .flex()
                         .items_center()
                         .gap(px(2.0))
-                        .child(label)
+                        .children([value_control])
                         .child(button(
                             cx,
                             key("less"),
@@ -767,14 +768,14 @@ pub(super) fn panel(
                             theme::text("+"),
                             Edit::MacroFourValue(source_id, parameter, 0.05),
                         ))
-                        .child(map_control(
+                        .children([map_control(
                             cx,
                             key("map"),
                             MappingOutput {
                                 source: source_id,
                                 output,
                             },
-                        )),
+                        )]),
                 );
             }
             row = row.child(controls);
