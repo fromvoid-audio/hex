@@ -1273,18 +1273,20 @@ fn attaching_a_second_source_effect_keeps_the_first_sources_wet_history() {
     assert_eq!(a, b);
 }
 
-#[test]
-fn a_bound_native_suffix_modulates_only_generator_audio_and_preserves_phase_on_handoff() {
-    use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
+fn authored_modulated_suffix(
+    target: hex_project::DeviceAutomationTarget,
+    amount: f32,
+    enabled: bool,
+) -> (Editor, hex_project::AssetId, hex_project::DeviceId) {
     use hex_devices::{
         modulation::lfo::{Rate, Settings, Waveform},
-        utility::{MAX_UTILITY_GAIN, UTILITY_DEFINITION, UTILITY_TYPE_ID, parameter},
+        utility::{UTILITY_DEFINITION, UTILITY_TYPE_ID},
     };
     use hex_lattice_contract::NativeDeviceMetadata;
     use hex_project::{
-        DeviceAutomationTarget, DeviceModulation, DeviceModulationRoute, ElementColor,
-        ModulationAmount, ModulationDestination, ModulationOutputId, ModulationRange,
-        ModulationRouteId, ModulationSourceId, Modulator,
+        DeviceModulation, DeviceModulationRoute, ElementColor, ModulationAmount,
+        ModulationDestination, ModulationOutputId, ModulationRange, ModulationRouteId,
+        ModulationSourceId, Modulator,
     };
 
     let (mut editor, asset) = authored_fixture(0, false);
@@ -1335,12 +1337,12 @@ fn a_bound_native_suffix_modulates_only_generator_audio_and_preserves_phase_on_h
             output: ModulationOutputId::MAIN,
             destination: ModulationDestination::Device {
                 device_type: UTILITY_TYPE_ID,
-                target: DeviceAutomationTarget::Parameter(parameter::GAIN),
+                target,
                 vst3_class: None,
             },
-            amount: ModulationAmount::new(0.5 / MAX_UTILITY_GAIN).unwrap(),
+            amount: ModulationAmount::new(amount).unwrap(),
             range: ModulationRange::default(),
-            enabled: true,
+            enabled,
         }],
     )
     .unwrap();
@@ -1359,6 +1361,19 @@ fn a_bound_native_suffix_modulates_only_generator_audio_and_preserves_phase_on_h
             })
             .unwrap();
     }
+    (editor, asset, device)
+}
+
+#[test]
+fn a_bound_native_suffix_modulates_only_generator_audio_and_preserves_phase_on_handoff() {
+    use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
+    use hex_devices::utility::{MAX_UTILITY_GAIN, parameter};
+    use hex_project::DeviceAutomationTarget;
+    let (editor, asset, _) = authored_modulated_suffix(
+        DeviceAutomationTarget::Parameter(parameter::GAIN),
+        0.5 / MAX_UTILITY_GAIN,
+        true,
+    );
     let model = editor.project();
     let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
     let revision = Arc::new(
@@ -1411,4 +1426,108 @@ fn a_bound_native_suffix_modulates_only_generator_audio_and_preserves_phase_on_h
         successor.render(block).unwrap();
     }
     compare(&pcm);
+}
+
+#[test]
+fn live_source_route_edits_keep_phase_and_refuse_processing_class_changes() {
+    use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
+    use hex_devices::utility::parameter;
+    use hex_project::{
+        DeviceAutomationTarget, DeviceModulation, ModulationAmount, ModulationDestination,
+    };
+
+    let (mut editor, asset, device) =
+        authored_modulated_suffix(DeviceAutomationTarget::HostOutputGain, 0.035, false);
+    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
+    let table = Arc::new(crate::SineTable::new());
+    let prepare = |editor: &Editor| {
+        Arc::new(
+            PreparedRevision::prepare(editor.project(), &media, Arc::clone(&table), None).unwrap(),
+        )
+    };
+    let base = prepare(&editor);
+    let mut dry = [[0.0; 2]; WIDTH];
+    crate::render_source_generators(base.arrangement(), 0, 0, WIDTH as u64, &mut dry, None)
+        .unwrap();
+    let mut previous = SessionPlayback::new(base).unwrap();
+    previous.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual = [[0.0; 2]; WIDTH];
+    previous.render(&mut actual[..97]).unwrap();
+
+    let bank = editor
+        .project()
+        .device(device)
+        .unwrap()
+        .modulation()
+        .clone();
+    let mut route = bank.routes()[0];
+    route.enabled = true;
+    let set = |editor: &mut Editor, routes| {
+        editor
+            .execute(Command::ReplaceDeviceModulation {
+                device,
+                modulation: DeviceModulation::new(bank.sources().to_vec(), routes).unwrap(),
+            })
+            .unwrap();
+    };
+    let ModulationDestination::Device { device_type, .. } = route.destination else {
+        panic!("host route");
+    };
+    let incompatible = hex_project::DeviceModulationRoute {
+        destination: ModulationDestination::Device {
+            device_type,
+            target: DeviceAutomationTarget::Parameter(parameter::GAIN),
+            vst3_class: None,
+        },
+        ..route
+    };
+    set(&mut editor, vec![incompatible]);
+    let mut refused = SessionPlayback::new(prepare(&editor)).unwrap();
+    assert!(refused.try_inherit_state_live_from(&mut previous).is_err());
+    assert_eq!(previous.performance_frame(), 97);
+    assert_eq!(refused.performance_frame(), 0);
+
+    for (start, end, depth) in [
+        (97, 178, Some(0.035)),
+        (178, 231, Some(-0.025)),
+        (231, WIDTH, None),
+    ] {
+        let routes = depth
+            .map(|depth| hex_project::DeviceModulationRoute {
+                amount: ModulationAmount::new(depth).unwrap(),
+                ..route
+            })
+            .into_iter()
+            .collect();
+        set(&mut editor, routes);
+        let mut successor = SessionPlayback::new(prepare(&editor)).unwrap();
+        assert!(successor.try_inherit_state_from(&mut previous).is_err());
+        successor
+            .try_inherit_state_live_from(&mut previous)
+            .unwrap();
+        assert_eq!(successor.performance_frame(), start as u64);
+        for frames in actual[start..end].chunks_mut(43) {
+            successor.render(frames).unwrap();
+        }
+        previous = successor;
+    }
+
+    for (index, (actual, dry)) in actual.iter().zip(dry).enumerate() {
+        let depth = match index {
+            97..178 => 0.035_f32,
+            178..231 => -0.025_f32,
+            _ => 0.0,
+        };
+        let wave = if index % 4 < 2 { 1.0 } else { -1.0 };
+        let normalized = (f64::from(60.0_f32 / 84.0) + f64::from(depth) * wave) as f32;
+        let db = (84_000.0 * f64::from(normalized) - 60_000.0).round() as f32 / 1000.0;
+        let gain = 10.0_f32.powf(db / 20.0);
+        let expected = [CLIP[0] + dry[0] * gain, CLIP[1] + dry[1] * gain];
+        for (sample, expected) in actual.iter().zip(expected) {
+            assert!(
+                (sample - expected).abs() < 1e-6,
+                "frame {index}: {sample} != {expected}"
+            );
+        }
+    }
 }

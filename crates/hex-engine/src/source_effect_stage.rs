@@ -209,12 +209,13 @@ impl SourceEffectStages {
     }
 
     /// Match by source identity, independently of the current receiver index.
-    /// New stages have no donor. An unmatched old stage may retire only when
+    /// Live publication may change a compatible recipe's modulation program
+    /// or attach a fresh stage. An unmatched old stage may retire only when
     /// its host is stopped and the processor proves its committed state quiet.
     pub(crate) fn plan_continuation(
         &self,
         previous: &Self,
-        allow_new: bool,
+        live: bool,
         allow_quiet_retirement: bool,
         generator_matches: impl Fn(hex_project::SourceId) -> bool,
     ) -> Option<SourceEffectTransfer> {
@@ -229,7 +230,7 @@ impl SourceEffectStages {
             if let Some((receiver, Some(next))) = matching
                 && next
                     .chain
-                    .can_transfer_unchanged_native_history_from(&old.chain)
+                    .can_transfer_source_recipe_history_from(&old.chain, live)
                 && generator_matches(old.source)
             {
                 *donors.get_mut(receiver)? = Some(index);
@@ -239,7 +240,7 @@ impl SourceEffectStages {
                 return None;
             }
         }
-        if !allow_new
+        if !live
             && self
                 .chains
                 .iter()

@@ -1749,12 +1749,16 @@ impl NativeRuntimeChain {
             })
     }
 
-    /// Preflight a retiring-donor transfer for unchanged native controls and
-    /// topology. Unlike general reconfiguration, this admits no new device,
-    /// changed trim or bypass, automation program, or changed modulation.
-    /// The bounded modulation declaration is compared independently of its
-    /// committed history, which moves only after successful preflight.
-    pub fn can_transfer_unchanged_native_history_from(&self, previous: &Self) -> bool {
+    /// Preflight a retiring-donor transfer for a source effect recipe. The
+    /// native provider, trims, processing class and topology must still match.
+    /// Live publication may change modulation while the same source/device
+    /// identities carry committed history. Strict continuation compares the
+    /// prepared declaration independently from its moving sample history.
+    pub fn can_transfer_source_recipe_history_from(
+        &self,
+        previous: &Self,
+        edit_modulation: bool,
+    ) -> bool {
         self.len() == previous.len()
             && self.configuration_matches_range(previous, 0..self.len())
             && self
@@ -1771,11 +1775,12 @@ impl NativeRuntimeChain {
                         && left.output_tail == right.output_tail
                         && left.automation.is_empty()
                         && right.automation.is_empty()
-                        && match (&left.modulation, &right.modulation) {
-                            (None, None) => true,
-                            (Some(left), Some(right)) => left.same_declaration(right),
-                            _ => false,
-                        }
+                        && (edit_modulation
+                            || match (&left.modulation, &right.modulation) {
+                                (None, None) => true,
+                                (Some(left), Some(right)) => left.same_declaration(right),
+                                _ => false,
+                            })
                 })
             && !self.transition_busy_from(previous)
             && self.can_inherit_from(previous)
