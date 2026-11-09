@@ -176,11 +176,9 @@ impl Recovery {
                 }
             }
             (Phase::Keeping { scope, copy }, Progress::CopyKept(path)) if copy.path == *path => {
-                if copy.receipt.events() != 0
-                    && matches!(copy.receipt.terminal(), DraftTerminal::Finished(_))
-                {
-                    self.saved = Some((scope, copy));
-                }
+                self.saved = (copy.receipt.events() != 0
+                    && matches!(copy.receipt.terminal(), DraftTerminal::Finished(_)))
+                .then_some((scope, copy));
                 resolution = Some(Resolution::Kept(Box::new(scope)));
                 Phase::Idle
             }

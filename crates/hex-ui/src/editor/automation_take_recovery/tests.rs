@@ -70,7 +70,7 @@ fn cancelled_picker_and_stale_responses_cannot_release_the_original() {
         DeviceDraftInput::start_on_control(&session, None, original.clone(), target, stamp, clock)
             .unwrap();
     let outcome = worker.join_on_control().unwrap();
-    let receipt = copy_native_recovery_on_control(
+    let interrupted_receipt = copy_native_recovery_on_control(
         &outcome,
         &destination,
         DraftReadLimits {
@@ -112,7 +112,7 @@ fn cancelled_picker_and_stale_responses_cannot_release_the_original() {
     assert_eq!(flow.settle(8, &Progress::Pending), None);
     let verified = Progress::VerifiedCopy {
         path: destination.clone(),
-        receipt,
+        receipt: interrupted_receipt,
     };
     flow.request = Some(9);
     assert_eq!(flow.settle(8, &verified), None);
@@ -130,7 +130,7 @@ fn cancelled_picker_and_stale_responses_cannot_release_the_original() {
         scope,
         copy: Verified {
             path: destination.clone(),
-            receipt,
+            receipt: interrupted_receipt,
         },
     };
     flow.request = Some(11);
@@ -208,6 +208,32 @@ fn cancelled_picker_and_stale_responses_cannot_release_the_original() {
     assert_eq!(saved_scope, scope);
     assert_eq!(copy.path, path);
     assert_eq!(copy.receipt, receipt);
+    let mut later_keep = Recovery {
+        phase: Phase::Keeping {
+            scope,
+            copy: Verified {
+                path: destination.clone(),
+                receipt: interrupted_receipt,
+            },
+        },
+        request: Some(1),
+        saved: Some((
+            scope,
+            Verified {
+                path: path.clone(),
+                receipt,
+            },
+        )),
+    };
+    assert_eq!(
+        later_keep.settle(1, &Progress::CopyKept(destination.clone())),
+        Some(Resolution::Kept(Box::new(scope)))
+    );
+    assert!(
+        later_keep.saved.is_none(),
+        "the prior file cannot masquerade as the latest keep"
+    );
+    assert!(destination.is_file() && path.is_file());
     flow.phase = Phase::Applying { scope, copy };
     flow.request = Some(13);
     assert_eq!(flow.settle(12, &Progress::Committed), None);
