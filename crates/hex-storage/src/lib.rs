@@ -78,7 +78,7 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = AUDIO_RATE_MODULATOR_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION;
 
 /// Schema70 stores an independent original source span for signed musical event placement.
 pub const MUSICAL_EVENT_SOURCE_SCHEMA_VERSION: u32 = 70;
@@ -119,6 +119,8 @@ pub const LFO_RATE_ROUTE_SCHEMA_VERSION: u32 = 85;
 pub const TEMPO_LFO_RATE_ROUTE_SCHEMA_VERSION: u32 = 86;
 /// Schema87 admits the Audio Rate source alongside every prior bank configuration.
 pub const AUDIO_RATE_MODULATOR_SCHEMA_VERSION: u32 = 87;
+/// Native instrument touches retain their exact source role and base read mode.
+pub const NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION: u32 = 88;
 
 fn contains_larger_device_state(project: &Project) -> bool {
     schema::device_assets::authored_states(project)
@@ -177,8 +179,11 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// Non-sine LFOs use schema84 with complete slot colors and any bound source effects.
 /// Free LFO rate assignments require schema85 and tempo-synced rate assignments
 /// require schema86 regardless of oscillator shape. Audio Rate uses schema87.
+/// Native instrument touches use schema88 over the exact prior codec.
 pub fn schema_version_for(project: &Project) -> u32 {
-    if schema::device_modulation::contains_audio_rate(project) {
+    if schema::device_automation_touch::contains_native_instrument(project) {
+        NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION
+    } else if schema::device_modulation::contains_audio_rate(project) {
         AUDIO_RATE_MODULATOR_SCHEMA_VERSION
     } else if let Some(version) = schema::device_modulation::lfo_rate_route_schema(project) {
         version
@@ -402,6 +407,11 @@ impl From<serde_json::Error> for StorageError {
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 /// Nonempty serial units use schema80; flat projects retain their prior layout.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
+    if schema::device_automation_touch::contains_native_instrument(project) {
+        return encode_document(&schema::device_automation_touch::encode_native_instrument(
+            project,
+        )?);
+    }
     if schema::device_modulation::contains_audio_rate(project)
         || schema::device_modulation::lfo_rate_route_schema(project).is_some()
         || schema::device_modulation::contains_newer_lfo(project)
@@ -687,6 +697,9 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
         return Err(StorageError::Invalid("unsupported project format"));
     }
     let project = match header.version {
+        NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION if !inside_envelope => {
+            schema::device_automation_touch::decode_native_instrument(bytes)
+        }
         BOUND_SOURCE_EFFECT_SCHEMA_VERSION if !inside_envelope => {
             schema::bound_source_effects::decode(bytes)
         }

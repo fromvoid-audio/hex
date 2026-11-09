@@ -221,6 +221,18 @@ impl Device {
             .map(|index| &self.automation[index])
     }
 }
+// Provider grants are checked by Session and the prepared instrument factory.
+fn valid_source_touch(
+    device: &Device,
+    instrument: DeviceId,
+    target: DeviceAutomationTarget,
+) -> bool {
+    matches!(target, DeviceAutomationTarget::Vst3 { .. })
+        || (device.id() == instrument
+            && device.state().type_id() != hex_plugin_state::TYPE_ID
+            && matches!(target, DeviceAutomationTarget::Parameter(_)))
+}
+
 impl Project {
     /// Each canonical device is visited once; immutable track source bindings
     /// are views and do not add duplicate authored envelopes to this inventory.
@@ -236,17 +248,14 @@ impl Project {
             .any(|device| !device.automation.is_empty())
     }
     pub(crate) fn validate_device_automation(&self) -> Result<(), Invalid> {
-        if self
-            .native_sources
-            .iter()
-            .flat_map(|source| source.devices())
-            .any(|device| {
+        if self.native_sources.iter().any(|source| {
+            source.devices().any(|device| {
                 device.automation().iter().any(|lane| {
                     !lane.touch.is_empty()
-                        && !matches!(lane.target, DeviceAutomationTarget::Vst3 { .. })
+                        && !valid_source_touch(device, source.instrument().id(), lane.target)
                 })
             })
-        {
+        }) {
             return Err(Invalid("recorded touch requires a native effect target"));
         }
         let mut total = 0usize;
@@ -358,12 +367,11 @@ impl Project {
         target
             .validate()
             .map_err(|_| Invalid("invalid automation target identity"))?;
-        if !matches!(target, DeviceAutomationTarget::Vst3 { .. })
-            && self
-                .native_sources
-                .iter()
-                .any(|source| source.devices().any(|entry| entry.id() == device))
-        {
+        if self.native_sources.iter().any(|source| {
+            source.devices().any(|entry| {
+                entry.id() == device && !valid_source_touch(entry, source.instrument().id(), target)
+            })
+        }) {
             return Err(Invalid("recorded touch requires a native effect target"));
         }
         self.edit_device(device, |entry| {
