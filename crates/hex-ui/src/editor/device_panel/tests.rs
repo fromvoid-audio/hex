@@ -6377,6 +6377,16 @@ fn modulation_panel_maps_an_lfo_into_a_macro_and_then_a_device_parameter(cx: &mu
     });
 }
 
+#[gpui::test]
+fn modulation_panel_adds_and_maps_seeded_random(cx: &mut TestAppContext) {
+    assert_modulation_mapping(
+        cx,
+        "random",
+        hex_engine::random_modulator::TYPE_ID,
+        &[hex_devices::utility::parameter::GAIN],
+    );
+}
+
 fn assert_modulation_mapping(
     cx: &mut TestAppContext,
     source_kind: &str,
@@ -6441,6 +6451,70 @@ fn assert_modulation_mapping(
         visual.run_until_parked();
     }
 
+    if type_id == hex_engine::random_modulator::TYPE_ID {
+        let settings = |view: &EditorView| {
+            let slot = view
+                .state
+                .as_ref()?
+                .project
+                .device(device)?
+                .modulation()
+                .sources()
+                .first()?;
+            hex_engine::random_modulator::Settings::decode(&slot.state).ok()
+        };
+        let scroll_to = |visual: &mut VisualTestContext, key: &str| {
+            let key = Box::leak(key.to_string().into_boxed_str());
+            let target = visual.debug_bounds(key).unwrap();
+            let strip = visual.debug_bounds("device-modulator-scroll").unwrap();
+            if !strip.contains(&target.center()) {
+                visual.simulate_event(gpui::ScrollWheelEvent {
+                    position: strip.center(),
+                    delta: gpui::ScrollDelta::Pixels(point(
+                        px(0.0),
+                        strip.center().y - target.center().y,
+                    )),
+                    ..Default::default()
+                });
+                visual.run_until_parked();
+            }
+            let target = visual.debug_bounds(key).unwrap();
+            let strip = visual.debug_bounds("device-modulator-scroll").unwrap();
+            assert!(
+                strip.contains(&target.center()),
+                "{key} at {target:?} outside {strip:?}"
+            );
+        };
+        let initial = editor.read_with(cx, |view, _| settings(view).unwrap());
+        let pending = |view: &EditorView| {
+            view.worker_requests_pending > 0 || !view.pending_requests.is_empty()
+        };
+        let faster = format!("random-{}-faster", source_id.value());
+        scroll_to(&mut visual, &faster);
+        click(&mut visual, faster);
+        assert!(
+            editor.read_with(cx, |view, _| pending(view)
+                || settings(view).is_some_and(|s| s.rate_hz == 2.0)),
+            "random rate edit did not dispatch"
+        );
+        pump_until(&editor, cx, |view| {
+            settings(view).is_some_and(|value| value.rate_hz == 2.0)
+        });
+        visual.run_until_parked();
+        let reseed = format!("random-{}-reseed", source_id.value());
+        scroll_to(&mut visual, &reseed);
+        click(&mut visual, reseed);
+        assert!(
+            editor.read_with(cx, |view, _| pending(view)
+                || settings(view).is_some_and(|s| s.seed != initial.seed)),
+            "random seed edit did not dispatch"
+        );
+        pump_until(&editor, cx, |view| {
+            settings(view).is_some_and(|value| value.seed != initial.seed)
+        });
+        visual.run_until_parked();
+        scroll_to(&mut visual, &format!("random-{}-map", source_id.value()));
+    }
     click(
         &mut visual,
         format!("{source_kind}-{}-map", source_id.value()),
@@ -6490,7 +6564,10 @@ fn assert_modulation_mapping(
     editor.read_with(cx, |view, _| {
         let project = &view.state.as_ref().unwrap().project;
         let current = project.device(device).unwrap();
-        if type_id == hex_engine::macro_modulator::TYPE_ID {
+        if matches!(
+            type_id,
+            hex_engine::macro_modulator::TYPE_ID | hex_engine::random_modulator::TYPE_ID
+        ) {
             let bytes = hex_storage::encode(project).unwrap();
             let reopened = hex_storage::decode(&bytes).unwrap();
             assert_eq!(

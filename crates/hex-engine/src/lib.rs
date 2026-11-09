@@ -123,6 +123,8 @@ pub use hex_devices::modulation::envelope_follower as follower_modulator;
 pub use hex_devices::modulation::lfo as lfo_modulator;
 /// Versioned control-side settings for the built-in manual macro source.
 pub use hex_devices::modulation::macro_value as macro_modulator;
+/// The authored reusable random sample-and-hold source codec.
+pub use hex_devices::modulation::random_hold as random_modulator;
 
 mod native_parameter_input;
 pub use device_automation::{
