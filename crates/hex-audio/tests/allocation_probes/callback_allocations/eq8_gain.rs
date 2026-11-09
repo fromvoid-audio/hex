@@ -88,6 +88,9 @@ fn eq8_gain_callback(with_modulation: bool) -> Result<(), Box<dyn Error>> {
                 p::frequency(0, 1),
                 p::gain(0, 1),
                 p::q(0, 1),
+                p::enabled(0, 1),
+                p::kind(0, 1),
+                p::MODE,
             ]
             .into_iter()
             .enumerate()
@@ -101,7 +104,15 @@ fn eq8_gain_callback(with_modulation: bool) -> Result<(), Box<dyn Error>> {
                         target: DeviceAutomationTarget::Parameter(parameter),
                         vst3_class: None,
                     },
-                    amount: ModulationAmount::new(0.015625)?,
+                    amount: ModulationAmount::new(
+                        if matches!(parameter, p::MODE) || parameter == p::enabled(0, 1) {
+                            0.75
+                        } else if parameter == p::kind(0, 1) {
+                            0.25
+                        } else {
+                            0.015625
+                        },
+                    )?,
                     range: ModulationRange::default(),
                     enabled: true,
                 })
