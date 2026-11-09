@@ -17,7 +17,7 @@ if _PYTHON_SPEC is None or _PYTHON_SPEC.loader is None:
 python_tests = importlib.util.module_from_spec(_PYTHON_SPEC)
 _PYTHON_SPEC.loader.exec_module(python_tests)
 
-POLICY_VERSION = 14
+POLICY_VERSION = 15
 UI_PACKAGES = {"hex-ui", "hex-widgets"}
 # Opaque state reaches storage through runtime type IDs, not a Cargo dependency.
 # Changes here must be reviewed with the real registration/codec consumers.
@@ -235,7 +235,8 @@ def module_declarations(source_root: Path) -> dict[Path, list[tuple[Path, list[s
 TEST_ATTRIBUTE = re.compile(r"#\[(?:gpui::)?test\b")
 # Unit test targets which compile the owning source directly. Keep their libtest
 # names under the original module path so scoped coverage remains observable.
-UI_UNIT_TARGETS = {"editor::cpu_meter::": "unit_editor_state",
+UI_UNIT_TARGETS = {"editor::audio_admission::": "unit_editor_state",
+                   "editor::cpu_meter::": "unit_editor_state",
                    "editor::disk_overload::": "unit_editor_state",
                    "editor::midi_thumbnail::": "unit_editor_state",
                    "editor::pending_edit::": "unit_editor_state",
