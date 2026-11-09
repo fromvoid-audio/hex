@@ -23,6 +23,22 @@ impl<'a> EffectPower<'a> {
             depth: 0,
         })
     }
+
+    /// Seed the suffix with the omitted instrument. A root sibling still
+    /// resets inherited power, just as in the full authored preorder.
+    pub(crate) fn after_instrument(
+        devices: &'a [Device],
+        instrument: &Device,
+    ) -> Result<Self, Invalid> {
+        let mut power = Self::new(devices)?;
+        power.ancestors[0] = Some((instrument.id(), instrument.bypassed()));
+        power.depth = 1;
+        Ok(power)
+    }
+
+    pub(crate) fn remaining(&self) -> usize {
+        self.devices.len() - self.cursor
+    }
 }
 impl<'a> Iterator for EffectPower<'a> {
     type Item = Result<(&'a Device, bool), Invalid>;
