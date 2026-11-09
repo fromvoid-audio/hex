@@ -325,6 +325,24 @@ pub struct Fm4Definition;
 
 pub static FM4_DEFINITION: Fm4Definition = Fm4Definition;
 
+fn carrier_semantics(id: ParameterId) -> Option<hex_lattice_contract::ParameterSemantics> {
+    use hex_lattice_contract::{
+        ParameterAccess, ParameterAutomation, ParameterChangeImpact, ParameterModulation,
+        ParameterNormalization, ParameterSemantics, ParameterSmoothing, ParameterStepping,
+    };
+    (parameter::carrier(1)..=parameter::carrier(4))
+        .contains(&id)
+        .then_some(ParameterSemantics {
+            access: ParameterAccess::ReadWrite,
+            normalization: ParameterNormalization::Linear,
+            stepping: ParameterStepping::Continuous,
+            automation: ParameterAutomation::DeviceArrangementEnvelope,
+            modulation: ParameterModulation::SampleRate,
+            smoothing: ParameterSmoothing::DeviceManaged,
+            change_impact: ParameterChangeImpact::ValueOnly,
+        })
+}
+
 impl NativeDeviceMetadata for Fm4Definition {
     fn type_id(&self) -> DeviceTypeId {
         FM4_TYPE_ID
@@ -348,21 +366,7 @@ impl NativeDeviceMetadata for Fm4Definition {
         id: ParameterId,
     ) -> Result<Option<hex_lattice_contract::ParameterSemantics>, DeviceContractError> {
         Fm4Settings::from_state(state)?.read_parameter(id)?;
-        use hex_lattice_contract::{
-            ParameterAccess, ParameterAutomation, ParameterChangeImpact, ParameterModulation,
-            ParameterNormalization, ParameterSemantics, ParameterSmoothing, ParameterStepping,
-        };
-        Ok((29..=32)
-            .contains(&id.value())
-            .then_some(ParameterSemantics {
-                access: ParameterAccess::ReadWrite,
-                normalization: ParameterNormalization::Linear,
-                stepping: ParameterStepping::Continuous,
-                automation: ParameterAutomation::DeviceArrangementEnvelope,
-                modulation: ParameterModulation::Undeclared,
-                smoothing: ParameterSmoothing::DeviceManaged,
-                change_impact: ParameterChangeImpact::ValueOnly,
-            }))
+        Ok(carrier_semantics(id))
     }
 
     fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {

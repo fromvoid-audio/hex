@@ -7,8 +7,10 @@
 //! Events at equal offsets retain order; controller expressions have no FM4 law.
 //!
 //! Carrier weights apply before note events. Cold/reset controls adopt directly;
-//! later changes use a five-millisecond linear ramp, retargeted from the current
-//! effective weight. This is a Hex policy, not measured reference behavior.
+//! later authored changes use a five-millisecond linear ramp, retargeted from
+//! the current effective weight. A routed carrier follows its per-sample
+//! canonical value directly. Removing that route resumes the authored ramp
+//! from the last effective weight.
 //! Original levels remain available to reveal previously inaudible operators.
 //! Voice age/gate and the original tuned phase-step law are unchanged by carrier
 //! controls. Per-voice f32 source samples receive occurrence gain before f64 sum.
@@ -202,8 +204,8 @@ struct Control {
     remaining: u32,
 }
 impl Control {
-    fn sample(&mut self, target: f64, frames: u32, cold: bool) -> f64 {
-        if cold {
+    fn sample(&mut self, target: f64, frames: u32, immediate: bool) -> f64 {
+        if immediate {
             self.current = target;
             self.target = target;
             self.remaining = 0;
@@ -339,6 +341,9 @@ impl Runtime {
         let mut slots = [0; VOICES];
         let mut active_count = self.active_slots(&mut slots);
         let steady_base = values.is_none() && self.has_steady_base_carriers();
+        let modulated = CARRIERS.map(|descriptor| {
+            values.is_some_and(|values| values.has_sample_rate_modulation(descriptor.id))
+        });
         for (offset, frame) in frames.iter_mut().enumerate() {
             if !steady_base {
                 let carriers = std::array::from_fn(|index| {
@@ -348,7 +353,11 @@ impl Runtime {
                         Some(ParameterValue::Float(value)) => f64::from(value),
                         _ => self.config.base.routing.carriers[index],
                     };
-                    self.controls[index].sample(target, self.config.smoothing, self.cold)
+                    self.controls[index].sample(
+                        target,
+                        self.config.smoothing,
+                        self.cold || modulated[index],
+                    )
                 });
                 if carriers != self.effective.routing.carriers {
                     self.set_carriers(carriers);
@@ -428,6 +437,12 @@ impl Runtime {
 impl PreparedMutableInstrumentRuntime for Factory {
     fn parameter_automation_descriptors(&self) -> &[ParameterDescriptor] {
         &CARRIERS
+    }
+    fn parameter_modulation_semantics(
+        &self,
+        parameter: ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        carrier_semantics(parameter)
     }
     fn supports_active_occurrence_ids(&self) -> bool {
         true
@@ -649,6 +664,12 @@ impl InstrumentParameterRuntime for Runtime {
 
     fn descriptors(&self) -> &[ParameterDescriptor] {
         &CARRIERS
+    }
+    fn parameter_modulation_semantics(
+        &self,
+        parameter: ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        carrier_semantics(parameter)
     }
     fn preflight(
         &self,

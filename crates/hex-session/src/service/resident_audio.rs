@@ -205,7 +205,12 @@ impl Inputs<'_> {
             held.construction_bytes,
             resources
                 .compiler_construction_allowance_bytes()?
-                .checked_add(PreparedRevision::device_handoff_metadata_construction_bytes(project)?)
+                .checked_add(
+                    PreparedRevision::device_handoff_metadata_construction_bytes_with_input(
+                        project,
+                        self.native_parameter_input,
+                    )?,
+                )
                 .ok_or(SessionError::Invalid(
                     "resident metadata allowance overflow",
                 ))?,
