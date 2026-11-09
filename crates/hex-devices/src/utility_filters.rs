@@ -492,6 +492,15 @@ impl NativeProcessorRuntime for UtilityFilterProcessor {
         UtilityFilterProcessor::is_quiescent(self)
     }
 
+    fn permits_memoryless_modulation_handoff(&self) -> bool {
+        use crate::utility::parameter::{BASS_MONO, DC_REMOVE};
+        !self.prepared.dc_enabled
+            && !self.prepared.bass_enabled
+            && self.automation.is_some_and(|automation| {
+                !automation.supports(DC_REMOVE) && !automation.supports(BASS_MONO)
+            })
+    }
+
     fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
         previous
             .as_any()

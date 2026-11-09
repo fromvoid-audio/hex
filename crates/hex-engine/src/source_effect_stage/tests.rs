@@ -1430,14 +1430,43 @@ fn a_bound_native_suffix_modulates_only_generator_audio_and_preserves_phase_on_h
 
 #[test]
 fn live_source_route_edits_keep_phase_and_refuse_processing_class_changes() {
+    check_live_source_route_edits(false);
+}
+
+#[test]
+fn utility_matrix_modulation_switches_processing_class_without_applying_the_matrix_twice() {
+    check_live_source_route_edits(true);
+}
+
+fn check_live_source_route_edits(matrix_route: bool) {
     use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
-    use hex_devices::utility::parameter;
+    use hex_devices::utility::{MAX_UTILITY_GAIN, UTILITY_DEFINITION, parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
     use hex_project::{
         DeviceAutomationTarget, DeviceModulation, ModulationAmount, ModulationDestination,
     };
 
-    let (mut editor, asset, device) =
-        authored_modulated_suffix(DeviceAutomationTarget::HostOutputGain, 0.035, false);
+    let target = if matrix_route {
+        DeviceAutomationTarget::Parameter(parameter::GAIN)
+    } else {
+        DeviceAutomationTarget::HostOutputGain
+    };
+    let [first_depth, second_depth] = if matrix_route {
+        [0.25 / MAX_UTILITY_GAIN, -0.35 / MAX_UTILITY_GAIN]
+    } else {
+        [0.035, -0.025]
+    };
+    let (mut editor, asset, device) = authored_modulated_suffix(target, first_depth, false);
+    let state = UTILITY_DEFINITION
+        .patch_parameter(
+            editor.project().device(device).unwrap().state(),
+            parameter::INVERT_LEFT,
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceState { device, state })
+        .unwrap();
     let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
     let table = Arc::new(crate::SineTable::new());
     let prepare = |editor: &Editor| {
@@ -1476,7 +1505,7 @@ fn live_source_route_edits_keep_phase_and_refuse_processing_class_changes() {
     let incompatible = hex_project::DeviceModulationRoute {
         destination: ModulationDestination::Device {
             device_type,
-            target: DeviceAutomationTarget::Parameter(parameter::GAIN),
+            target: DeviceAutomationTarget::Parameter(parameter::DC_REMOVE),
             vst3_class: None,
         },
         ..route
@@ -1488,8 +1517,8 @@ fn live_source_route_edits_keep_phase_and_refuse_processing_class_changes() {
     assert_eq!(refused.performance_frame(), 0);
 
     for (start, end, depth) in [
-        (97, 178, Some(0.035)),
-        (178, 231, Some(-0.025)),
+        (97, 178, Some(first_depth)),
+        (178, 231, Some(second_depth)),
         (231, WIDTH, None),
     ] {
         let routes = depth
@@ -1514,15 +1543,19 @@ fn live_source_route_edits_keep_phase_and_refuse_processing_class_changes() {
 
     for (index, (actual, dry)) in actual.iter().zip(dry).enumerate() {
         let depth = match index {
-            97..178 => 0.035_f32,
-            178..231 => -0.025_f32,
+            97..178 => first_depth,
+            178..231 => second_depth,
             _ => 0.0,
         };
         let wave = if index % 4 < 2 { 1.0 } else { -1.0 };
-        let normalized = (f64::from(60.0_f32 / 84.0) + f64::from(depth) * wave) as f32;
-        let db = (84_000.0 * f64::from(normalized) - 60_000.0).round() as f32 / 1000.0;
-        let gain = 10.0_f32.powf(db / 20.0);
-        let expected = [CLIP[0] + dry[0] * gain, CLIP[1] + dry[1] * gain];
+        let gain = if matrix_route {
+            1.0 + MAX_UTILITY_GAIN * depth * wave as f32
+        } else {
+            let normalized = (f64::from(60.0_f32 / 84.0) + f64::from(depth) * wave) as f32;
+            let db = (84_000.0 * f64::from(normalized) - 60_000.0).round() as f32 / 1000.0;
+            10.0_f32.powf(db / 20.0)
+        };
+        let expected = [CLIP[0] - dry[0] * gain, CLIP[1] + dry[1] * gain];
         for (sample, expected) in actual.iter().zip(expected) {
             assert!(
                 (sample - expected).abs() < 1e-6,
