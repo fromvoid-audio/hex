@@ -123,6 +123,12 @@ struct GateSettings {
     release_ms: f32,
 }
 
+// The other two controls share the return <= threshold invariant.
+const MODULATED_SCALAR: hex_lattice_contract::ParameterSemantics =
+    hex_lattice_contract::ParameterSemantics {
+        modulation: hex_lattice_contract::ParameterModulation::SampleRate,
+        ..crate::parameter_binding::SCALAR_ENVELOPE
+    };
 const BINDINGS: [crate::parameter_binding::Binding<GateSettings>; 6] = [
     crate::parameter_binding::Binding::float(
         DESCRIPTORS[0],
@@ -138,7 +144,7 @@ const BINDINGS: [crate::parameter_binding::Binding<GateSettings>; 6] = [
     ),
     crate::parameter_binding::Binding::float(
         DESCRIPTORS[2],
-        crate::parameter_binding::SCALAR_ENVELOPE,
+        MODULATED_SCALAR,
         |c| c.floor_db,
         |c, v| c.floor_db = v,
     ),
@@ -146,14 +152,14 @@ const BINDINGS: [crate::parameter_binding::Binding<GateSettings>; 6] = [
         DESCRIPTORS[3],
         hex_lattice_contract::ParameterSemantics {
             normalization: hex_lattice_contract::ParameterNormalization::PositiveLogarithmic,
-            ..crate::parameter_binding::SCALAR_ENVELOPE
+            ..MODULATED_SCALAR
         },
         |c| c.attack_ms,
         |c, v| c.attack_ms = v,
     ),
     crate::parameter_binding::Binding::float(
         DESCRIPTORS[4],
-        crate::parameter_binding::SCALAR_ENVELOPE,
+        MODULATED_SCALAR,
         |c| c.hold_ms,
         |c, v| c.hold_ms = v,
     ),
@@ -161,7 +167,7 @@ const BINDINGS: [crate::parameter_binding::Binding<GateSettings>; 6] = [
         DESCRIPTORS[5],
         hex_lattice_contract::ParameterSemantics {
             normalization: hex_lattice_contract::ParameterNormalization::PositiveLogarithmic,
-            ..crate::parameter_binding::SCALAR_ENVELOPE
+            ..MODULATED_SCALAR
         },
         |c| c.release_ms,
         |c, v| c.release_ms = v,
@@ -253,6 +259,17 @@ fn encode(settings: GateSettings) -> Result<NativeDeviceState, DeviceContractErr
 pub struct GateDefinition;
 
 pub static GATE_DEFINITION: GateDefinition = GateDefinition;
+
+impl GateDefinition {
+    /// Prepare the asset-free inline factory for sealed native ownership.
+    pub fn prepare_owned(
+        state: &NativeDeviceState,
+        rate: u32,
+        parameters: &[ParameterId],
+    ) -> Result<PreparedGate, DeviceContractError> {
+        PreparedGate::new(state, rate, parameters)
+    }
+}
 
 impl NativeDeviceMetadata for GateDefinition {
     fn type_id(&self) -> DeviceTypeId {
@@ -376,8 +393,9 @@ fn checked_frames(milliseconds: f32, sample_rate: u32) -> Result<u32, DeviceCont
     Ok(frames as u32)
 }
 
+/// Closed Gate factory with no indirect storage.
 #[derive(Clone, Copy)]
-struct PreparedGate {
+pub struct PreparedGate {
     admitted: [bool; 6],
     settings: GateSettings,
     sample_rate: u32,
@@ -402,6 +420,20 @@ impl PreparedNativeProcessor for PreparedGate {
             })
             .flatten()
     }
+    fn parameter_modulation_semantics(
+        &self,
+        id: ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        crate::parameter_binding::binding(&BINDINGS, id)
+            .ok()
+            .filter(|binding| {
+                self.supports(id)
+                    && binding.semantics.modulation
+                        == hex_lattice_contract::ParameterModulation::SampleRate
+            })
+            .map(|binding| binding.semantics)
+    }
+
     fn supports_smoothed_bypass(&self) -> bool {
         true
     }
@@ -412,7 +444,7 @@ impl PreparedNativeProcessor for PreparedGate {
         std::mem::size_of::<GateRuntime>()
     }
     fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
-        Box::new(GateRuntime {
+        let runtime = GateRuntime {
             base: *self,
             controls: crate::parameter_binding::Controls::new(self.settings, self.admitted),
             settings: self.settings,
@@ -429,7 +461,9 @@ impl PreparedNativeProcessor for PreparedGate {
             ramp_target: self.floor_gain,
             ramp_step: 0.0,
             ramp_remaining: 0,
-        })
+        };
+        runtime.check_inline_ownership();
+        Box::new(runtime)
     }
     fn algorithmic_latency_frames(&self) -> Option<u32> {
         Some(0)
@@ -449,7 +483,8 @@ struct GateHistory {
     ramp_remaining: u32,
 }
 
-struct GateRuntime {
+/// Exact inline runtime recognized by the sealed constructor's storage ledger.
+pub struct GateRuntime {
     base: PreparedGate,
     controls: crate::parameter_binding::Controls<GateSettings, 6>,
     settings: GateSettings,
