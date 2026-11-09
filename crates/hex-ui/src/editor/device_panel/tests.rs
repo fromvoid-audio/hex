@@ -6257,6 +6257,7 @@ fn modulation_panel_maps_eq8_output_gain_and_preserves_its_authored_value(cx: &m
     let original = state.project.device(device).unwrap().state().clone();
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1500.0), px(650.0)));
     visual.run_until_parked();
     let click = click_modulator_control;
     click(&mut visual, "device-modulator-toggle".into(), false);
@@ -6282,7 +6283,38 @@ fn modulation_panel_maps_eq8_output_gain_and_preserves_its_authored_value(cx: &m
             .debug_bounds(Box::leak(target_key(parameter::MODE).into_boxed_str()))
             .is_none()
     );
+    let toolbar = visual
+        .debug_bounds(Box::leak(
+            format!("eq8-toolbar-{}", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    // The modulator strip occupies part of the scrollable housing. Bring the
+    // bottom dial row into view before clicking its mapping overlay.
+    visual.simulate_event(gpui::ScrollWheelEvent {
+        position: toolbar.center(),
+        delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-80.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
     click(&mut visual, target_key(parameter::OUTPUT_GAIN), false);
+    assert!(
+        editor.read_with(cx, |view, _| {
+            view.worker_requests_pending > 0
+                || !view.pending_requests.is_empty()
+                || view
+                    .state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .device(device)
+                    .unwrap()
+                    .modulation()
+                    .routes()
+                    .len()
+                    == 1
+        }),
+        "visible EQ8 dial did not dispatch"
+    );
     pump_until(&editor, cx, |view| {
         view.state
             .as_ref()
@@ -7076,12 +7108,21 @@ fn modulation_panel_maps_a_bound_source_effect_on_its_receiver(cx: &mut TestAppC
             .routes()
             .len()
     };
+    let dispatched = |cx: &mut TestAppContext, expected| {
+        editor.read_with(cx, |view, _| {
+            view.worker_requests_pending > 0
+                || !view.pending_requests.is_empty()
+                || route_count(view) == expected
+        })
+    };
+    assert!(dispatched(cx, 1), "source output trim did not dispatch");
     pump_until(&editor, cx, |view| route_count(view) == 1);
     visual.run_until_parked();
     click(
         &mut visual,
         format!("map-target-{}-{}", device.value(), gain.value()),
     );
+    assert!(dispatched(cx, 2), "source provider gain did not dispatch");
     pump_until(&editor, cx, |view| route_count(view) == 2);
     editor.read_with(cx, |view, _| {
         let project = &view.state.as_ref().unwrap().project;
