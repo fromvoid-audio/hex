@@ -3,11 +3,13 @@
 //! Prepared declarations borrow no project data and never enter project history.
 use hex_devices::modulation::{envelope_follower, lfo, macro_value, random_hold};
 use hex_lattice::{
-    ModulationRoute, ModulationTarget, PreparedModulation, PreparedModulationSource,
-    PreparedModulationState, PreparedProcessorFactory, SourceModulationRoute,
+    HostOutputModulationRoute, ModulationRoute, ModulationTarget, PreparedModulation,
+    PreparedModulationSource, PreparedModulationState, PreparedProcessorFactory,
+    SourceModulationRoute,
 };
 use hex_lattice_contract::{
-    NativeDeviceMetadata, NativeDeviceState, ParameterId, ParameterModulation,
+    DeviceAutomationTarget, HostGain, NativeDeviceMetadata, NativeDeviceState, ParameterId,
+    ParameterModulation,
 };
 use hex_project::{Device, Invalid, ModulationDestination, ModulationOutputId, Project};
 
@@ -43,6 +45,37 @@ pub fn project_device_modulation_target_supported(
             .unwrap_or(false)
 }
 
+/// Control-side mapping eligibility for the native post-processor trim.
+/// The closed provider's actual factory supplies the latency. No render
+/// runtime or audio resources are constructed by this query.
+pub fn project_device_output_gain_modulation_supported(
+    project: &Project,
+    device: hex_project::DeviceId,
+) -> bool {
+    let Some(device) = crate::device_automation::effect_devices(project)
+        .find(|candidate| candidate.id() == device)
+    else {
+        return false;
+    };
+    let state = device.state();
+    if !crate::native_effect_storage::is_closed_type(state.type_id()) {
+        return false;
+    }
+    let Ok(registry) = hex_devices::native_registry() else {
+        return false;
+    };
+    let context = hex_lattice::DevicePreparationContext {
+        sample_rate: project.sample_rate(),
+        tuning: &hex_lattice::TuningTable::default(),
+        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    };
+    registry
+        .prepare_processor(state, &context)
+        .is_ok_and(|factory| {
+            factory.is_none_or(|factory| factory.algorithmic_latency_frames() == Some(0))
+        })
+}
+
 pub(super) fn validate_source_owners(project: &Project) -> Result<(), Invalid> {
     if project.native_sources().iter().any(|source| {
         source
@@ -57,6 +90,7 @@ pub(super) fn validate_source_owners(project: &Project) -> Result<(), Invalid> {
 pub(super) struct EffectModulation {
     sources: Vec<PreparedModulationSource>,
     routes: Vec<ModulationRoute>,
+    host_output_routes: Vec<HostOutputModulationRoute>,
     source_routes: Vec<SourceModulationRoute>,
     parameters: Vec<ParameterId>,
 }
@@ -120,12 +154,26 @@ impl EffectModulation {
             return Ok(None);
         }
 
-        let mut routes = reserved(bank.routes().len())?;
         let source_route_count = bank
             .routes()
             .iter()
             .filter(|route| matches!(route.destination, ModulationDestination::Modulator { .. }))
             .count();
+        let host_output_count = bank
+            .routes()
+            .iter()
+            .filter(|route| {
+                matches!(
+                    route.destination,
+                    ModulationDestination::Device {
+                        target: DeviceAutomationTarget::HostOutputGain,
+                        ..
+                    }
+                )
+            })
+            .count();
+        let mut routes = reserved(bank.routes().len() - source_route_count - host_output_count)?;
+        let mut host_output_routes = reserved(host_output_count)?;
         let mut source_routes = reserved(source_route_count)?;
         let mut parameters = reserved(automation.len() + bank.routes().len())?;
         parameters.extend_from_slice(automation);
@@ -144,6 +192,14 @@ impl EffectModulation {
                     target,
                     vst3_class: None,
                 } if device_type == device.state().type_id() => {
+                    if target == DeviceAutomationTarget::HostOutputGain {
+                        host_output_routes.push(HostOutputModulationRoute {
+                            source,
+                            amount,
+                            range,
+                        });
+                        continue;
+                    }
                     let parameter = target
                         .provider_parameter()
                         .ok_or(Invalid("modulation destination is unsupported"))?;
@@ -177,6 +233,7 @@ impl EffectModulation {
         Ok(Some(Self {
             sources,
             routes,
+            host_output_routes,
             source_routes,
             parameters,
         }))
@@ -224,9 +281,10 @@ impl EffectModulation {
             )?)?;
         let overlap = sources
             .checked_mul(size_of::<&Modulator>() + size_of::<ModulationSourceId>())?
-            .checked_add(
-                routes.checked_mul(size_of::<ModulationRoute>() + size_of::<ParameterId>())?,
-            )?
+            .checked_add(routes.checked_mul(
+                size_of::<ModulationRoute>().max(size_of::<HostOutputModulationRoute>())
+                    + size_of::<ParameterId>(),
+            )?)?
             .checked_add(
                 targets.checked_mul(size_of::<ParameterId>() + size_of::<ModulationTarget>())?,
             )?
@@ -276,8 +334,29 @@ impl EffectModulation {
                 base,
             });
         }
-        let program = PreparedModulation::new(&targets, &self.routes, self.sources.len())
-            .map_err(|_| Invalid("modulation program is invalid or exceeds its capacity"))?;
+        let host_output = if self.host_output_routes.is_empty() {
+            None
+        } else {
+            if factory.map_or(
+                Some(0),
+                PreparedProcessorFactory::algorithmic_latency_frames,
+            ) != Some(0)
+            {
+                return Err(Invalid(
+                    "output gain modulation requires a zero-latency native effect",
+                ));
+            }
+            let base = HostGain::from_millidb(state.output_gain_millidb())
+                .map_err(|_| Invalid("authored output gain is invalid"))?;
+            Some((base, self.host_output_routes.as_slice()))
+        };
+        let program = PreparedModulation::with_host_output(
+            &targets,
+            &self.routes,
+            self.sources.len(),
+            host_output,
+        )
+        .map_err(|_| Invalid("modulation program is invalid or exceeds its capacity"))?;
         PreparedModulationState::with_source_routes(
             self.sources,
             program,

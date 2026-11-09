@@ -83,7 +83,9 @@ fn inspect(
             ledger.root(*store, crate::AudioStorageRole::Current)?;
             if let Some(stage) = staged.filter(|s| std::ptr::eq(*store, s.store)) {
                 ledger.vec(&stage.staged.destination)?;
-                stage.staged.asset.1.visit(ledger)?;
+                for (_, source) in &stage.staged.destination {
+                    source.visit(ledger)?;
+                }
                 if construction {
                     ledger.growth(
                         store
