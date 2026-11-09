@@ -435,26 +435,40 @@ impl SessionPlayback {
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
         let source_effect_handoff =
             !self.source_effects.is_empty() || !previous.source_effects.is_empty();
-        if source_effect_handoff
-            && (groups.is_some()
+        let source_transfer = if source_effect_handoff {
+            let incompatible = SessionPlaybackError::Arrangement(
+                "source effect handoff requires the same prepared source configuration",
+            );
+            if groups.is_some()
                 || fenced_restart
                 || (live && self.live_restart)
                 || self.loop_region() != previous.loop_region()
                 || self.revision.arrangement().tempo_map
                     != previous.revision.arrangement().tempo_map
-                || !self
-                    .source_effects
-                    .can_continue_from(&previous.source_effects)
-                || !self.source_effects.sources().all(|source| {
-                    prepared_source_generator_matches(&previous.revision, &self.revision, source)
-                }))
-        {
-            // Source effect history is carried only across exact, ordinary
-            // continuations. Closed groups, replacement and restart are separate.
-            return Err(SessionPlaybackError::Arrangement(
-                "source effect handoff requires the same prepared source configuration",
-            ));
-        }
+            {
+                return Err(incompatible);
+            }
+            // A new stage starts empty. A stopped transport can retire a
+            // superseded stage only after its committed history is quiet.
+            Some(
+                self.source_effects
+                    .plan_continuation(
+                        &previous.source_effects,
+                        live,
+                        live && !previous.playing && !previous.monitor_source_releases,
+                        |source| {
+                            prepared_source_generator_matches(
+                                &previous.revision,
+                                &self.revision,
+                                source,
+                            )
+                        },
+                    )
+                    .ok_or(incompatible)?,
+            )
+        } else {
+            None
+        };
         if !(retained_path_roles_match(&previous.revision, &self.revision)
             || fenced_restart && live && self.live_restart && self.candidate_admission_open)
         {
@@ -466,37 +480,44 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::DetachedReceiverHistoryUnavailable);
         }
         if live && self.live_restart && self.candidate_admission_open {
-            return self.inherit_state_planned_once(previous, None, demand, true);
+            return self.inherit_state_planned_once(previous, None, demand, true, None);
         }
-        let result =
-            match self.inherit_state_planned_once(previous, groups, demand.as_deref_mut(), false) {
-                // An open admission proves the refusal came from the pure
-                // preflight: neither runtime changed, so the reset handoff may
-                // run instead (Pulse #3770, #3774).
-                Err(SessionPlaybackError::MutableInstrumentActive)
-                    if live
-                        && previous.playing
-                        && self.candidate_admission_open
-                        && shared_sources::short_source_release_blocks_reenable(
-                            &self.revision,
-                            previous,
-                        ) =>
-                {
-                    Err(SessionPlaybackError::DeviceTransitionBusy)
-                }
-                Err(error)
-                    if live
-                        && !source_effect_handoff
-                        && self.candidate_admission_open
-                        && restartable(error) =>
-                {
-                    self.inherit_state_planned_once(previous, None, demand, true)
-                }
-                result => result,
-            };
-        if source_effect_handoff && result.is_ok() {
+        let result = match self.inherit_state_planned_once(
+            previous,
+            groups,
+            demand.as_deref_mut(),
+            false,
+            source_transfer.as_ref(),
+        ) {
+            // An open admission proves the refusal came from the pure
+            // preflight: neither runtime changed, so the reset handoff may
+            // run instead (Pulse #3770, #3774).
+            Err(SessionPlaybackError::MutableInstrumentActive)
+                if live
+                    && previous.playing
+                    && self.candidate_admission_open
+                    && shared_sources::short_source_release_blocks_reenable(
+                        &self.revision,
+                        previous,
+                    ) =>
+            {
+                Err(SessionPlaybackError::DeviceTransitionBusy)
+            }
+            Err(error)
+                if live
+                    && !source_effect_handoff
+                    && self.candidate_admission_open
+                    && restartable(error) =>
+            {
+                self.inherit_state_planned_once(previous, None, demand, true, None)
+            }
+            result => result,
+        };
+        if let Some(source_transfer) = source_transfer
+            && result.is_ok()
+        {
             self.source_effects
-                .continue_from(&mut previous.source_effects);
+                .continue_from(&mut previous.source_effects, source_transfer);
         }
         result
     }
@@ -579,6 +600,7 @@ impl SessionPlayback {
         mut groups: Option<crate::audio_candidate::groups::Transfer<'_>>,
         demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
         force_restart: bool,
+        source_transfer: Option<&crate::source_effect_stage::SourceEffectTransfer>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
         if self.revision.arrangement().sample_rate()
             != previous.revision.arrangement().sample_rate()
@@ -3492,10 +3514,11 @@ impl SessionPlayback {
             if release.location.tail_group().is_some() {
                 continue;
             }
-            let source_effects_continue = release.source_origin.is_some_and(|origin| {
-                self.source_effects
-                    .sources()
-                    .any(|source| source == origin.source)
+            let source_effects_continue = source_transfer.is_some_and(|transfer| {
+                release.source_origin.is_some_and(|origin| {
+                    self.source_effects
+                        .has_continued_source(transfer, origin.source)
+                })
             });
             let audio_plan = shared_sources::plan_release_audio_owner(
                 release,

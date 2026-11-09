@@ -22,6 +22,7 @@ mod modulation;
 #[cfg(test)]
 mod modulation_graph_tests;
 mod modulation_runtime;
+mod modulation_source_routes;
 mod modulation_sources;
 mod owned_processor;
 mod parameter_automation;
@@ -58,6 +59,7 @@ pub use modulation::{
     ModulationRoute, ModulationTarget, PreparedModulation,
 };
 pub use modulation_runtime::ModulationRuntime;
+pub use modulation_source_routes::SourceModulationRoute;
 pub use modulation_sources::{ModulationSourceBank, PreparedModulationSource};
 pub use owned_processor::{
     MAX_RESERVED_BYPASS_FRAMES, OwnedProcessorRuntime, PreparedOwnedProcessorRuntime,

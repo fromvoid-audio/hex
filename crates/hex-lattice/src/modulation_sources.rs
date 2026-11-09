@@ -12,7 +12,7 @@
 //! preallocated cache shares clock reads across sources; absent clock values use
 //! the prepared tempo. Rate/mode retargeting follows the same block transaction
 //! as phase, and graph inheritance retains the new graph's prepared timing mode.
-use crate::NativeInstrumentClock;
+use crate::{NativeInstrumentClock, modulation_source_routes::PreparedSourceRoute};
 use hex_dsp::{EnvelopeFollower, LfoRate, ModulationLfo, RandomHold, StereoFrame};
 use hex_lattice_contract::{DeviceContractError as Error, ModulationSourceId};
 
@@ -100,6 +100,10 @@ pub struct PreparedModulationSource {
     sample_rate: f64,
 }
 impl PreparedModulationSource {
+    pub(crate) fn is_macro(&self) -> bool {
+        matches!(self.initial, SourceState::Macro(_))
+    }
+
     pub fn sample_rate(&self) -> f64 {
         self.sample_rate
     }
@@ -459,6 +463,39 @@ impl ModulationSourceBank {
             }
         }
         self.last_frames = frames;
+        Ok(())
+    }
+
+    /// Compose in dependency order after the chunk's raw sources are rendered.
+    /// Control preparation ties every index and non-self edge to this bank.
+    pub(crate) fn apply_source_routes(
+        &mut self,
+        routes: &[PreparedSourceRoute],
+    ) -> Result<(), Error> {
+        for incoming in routes.chunk_by(|a, b| a.target == b.target) {
+            let index = incoming[0].target;
+            let (before, target_and_after) = self
+                .sources
+                .split_at_mut_checked(index)
+                .ok_or(Error::InvalidDescriptor)?;
+            let (target, after) = target_and_after
+                .split_first_mut()
+                .ok_or(Error::InvalidDescriptor)?;
+            for (frame, value) in target.samples[..self.last_frames].iter_mut().enumerate() {
+                let mut sum = 0.0_f64;
+                for route in incoming {
+                    let source = if route.source < index {
+                        &before[route.source]
+                    } else {
+                        &after[route.source - index - 1]
+                    };
+                    sum += route.contribution.sample(source.samples[frame]);
+                }
+                if sum != 0.0 {
+                    *value = (f64::from(*value) + sum).clamp(0.0, 1.0) as f32;
+                }
+            }
+        }
         Ok(())
     }
 

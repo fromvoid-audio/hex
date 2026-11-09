@@ -40,6 +40,23 @@ pub enum DeviceCaptureTarget {
     Vst3(Vst3CaptureTarget),
 }
 impl DeviceCaptureTarget {
+    /// Durable target identity; this does not grant live worker admission.
+    pub fn draft_target(self) -> super::automation_draft::DraftTarget {
+        use super::automation_draft::DraftTarget;
+        match self {
+            Self::Native(target) => DraftTarget::Device {
+                device: target.device(),
+                target: target.target(),
+            },
+            Self::Vst3(target) => DraftTarget::Device {
+                device: target.device,
+                target: hex_project::DeviceAutomationTarget::Vst3 {
+                    parameter: target.parameter,
+                },
+            },
+        }
+    }
+
     pub fn native(self) -> Option<NativeParameterInputTarget> {
         match self {
             Self::Native(target) => Some(target),
