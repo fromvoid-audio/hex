@@ -116,7 +116,10 @@ fn utility_graph_with_bipolar_audio_rate_modulation_does_not_allocate_or_free() 
 }
 
 fn probe_utility_graph(rate_route: Option<SourceModulationParameter>, audio_rate: bool) {
-    use hex_devices::utility::{UTILITY_DEFINITION, UTILITY_TYPE_ID, UtilityDefinition, parameter};
+    use hex_devices::{
+        modulation::macro_four,
+        utility::{UTILITY_DEFINITION, UTILITY_TYPE_ID, UtilityDefinition, parameter},
+    };
     use hex_lattice::PreparedNativeProcessor;
     use hex_lattice::{
         LfoWaveform, NativeRuntimeChain, PreparedModulationState, PreparedProcessorFactory,
@@ -139,13 +142,13 @@ fn probe_utility_graph(rate_route: Option<SourceModulationParameter>, audio_rate
         };
         let program = PreparedModulation::new(
             &[target],
-            &[0, 1, 2].map(|source| ModulationRoute {
+            &[0, 1, 2, 3, 4, 5].map(|source| ModulationRoute {
                 source,
                 target: id,
                 amount: 0.01,
                 range: [-1.0, 1.0],
             }),
-            3,
+            6,
         )
         .unwrap();
         let oscillator = ModulationSourceId::new(1).unwrap();
@@ -167,15 +170,20 @@ fn probe_utility_graph(rate_route: Option<SourceModulationParameter>, audio_rate
             PreparedModulationSource::envelope_follower(input_id, 48_000, 0.005, 0.05)
         }
         .unwrap();
-        let manual = PreparedModulationSource::macro_value(
-            ModulationSourceId::new(3).unwrap(),
-            48_000,
-            0.25,
-        )
-        .unwrap();
+        let settings = macro_four::Settings {
+            values: [0.0, 0.25, 0.5, 0.75],
+        };
+        let macro_id = ModulationSourceId::new(3).unwrap();
+        let sources = vec![source, input]
+            .into_iter()
+            .chain(macro_four::VALUE_PARAMETERS.map(|parameter| {
+                let output = macro_four::output_for_parameter(parameter).unwrap();
+                settings.prepare(macro_id, 48_000, output).unwrap()
+            }))
+            .collect();
         let mut source_routes = vec![SourceModulationRoute {
             source: 0,
-            target: 2,
+            target: 5,
             parameter: SourceModulationParameter::MacroValue,
             amount: 0.2,
             range: [0.0, 1.0],
@@ -191,13 +199,8 @@ fn probe_utility_graph(rate_route: Option<SourceModulationParameter>, audio_rate
         }
         let prepared = PreparedRuntimeInstance {
             modulation: Some(
-                PreparedModulationState::with_source_routes(
-                    vec![source, input, manual],
-                    program,
-                    17,
-                    &source_routes,
-                )
-                .unwrap(),
+                PreparedModulationState::with_source_routes(sources, program, 17, &source_routes)
+                    .unwrap(),
             ),
             automation: Default::default(),
             meter: Default::default(),

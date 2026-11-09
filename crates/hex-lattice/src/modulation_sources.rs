@@ -16,7 +16,7 @@ use crate::{
     NativeInstrumentClock, SourceModulationParameter, modulation_source_routes::PreparedSourceRoute,
 };
 use hex_dsp::{EnvelopeFollower, LfoRate, LfoWaveform, ModulationLfo, RandomHold, StereoFrame};
-use hex_lattice_contract::{DeviceContractError as Error, ModulationSourceId};
+use hex_lattice_contract::{DeviceContractError as Error, ModulationOutputId, ModulationSourceId};
 
 pub const MAX_MODULATION_SOURCE_SOURCES: usize = 32;
 pub const MAX_MODULATION_SOURCE_STORAGE_BYTES: usize = 262_144;
@@ -121,10 +121,22 @@ impl SourceState {
 #[derive(Clone, Copy, Debug)]
 pub struct PreparedModulationSource {
     pub id: ModulationSourceId,
+    output: ModulationOutputId,
     initial: SourceState,
     sample_rate: f64,
 }
 impl PreparedModulationSource {
+    /// Select an output from the owning provider's declared inventory.
+    /// Existing one-output constructors use MAIN.
+    pub const fn with_output(mut self, output: ModulationOutputId) -> Self {
+        self.output = output;
+        self
+    }
+
+    pub(crate) const fn key(&self) -> (ModulationSourceId, ModulationOutputId) {
+        (self.id, self.output)
+    }
+
     /// Validate the target against the prepared source class and timing mode.
     pub fn supports_modulation_parameter(&self, parameter: SourceModulationParameter) -> bool {
         matches!(
@@ -183,6 +195,7 @@ impl PreparedModulationSource {
             .map_err(|_| Error::InvalidParameterValue)?;
         Ok(Self {
             id,
+            output: ModulationOutputId::MAIN,
             sample_rate,
             initial: SourceState::Lfo {
                 oscillator: lfo,
@@ -224,6 +237,7 @@ impl PreparedModulationSource {
             .map_err(|_| Error::InvalidParameterValue)?;
         Ok(Self {
             id,
+            output: ModulationOutputId::MAIN,
             sample_rate,
             initial: SourceState::Lfo {
                 oscillator: lfo,
@@ -247,6 +261,7 @@ impl PreparedModulationSource {
             .map_err(|_| Error::InvalidParameterValue)?;
         Ok(Self {
             id,
+            output: ModulationOutputId::MAIN,
             initial: SourceState::Follower(follower),
             sample_rate: f64::from(sample_rate),
         })
@@ -260,6 +275,7 @@ impl PreparedModulationSource {
         }
         Ok(Self {
             id,
+            output: ModulationOutputId::MAIN,
             initial: SourceState::AudioRate,
             sample_rate: f64::from(sample_rate),
         })
@@ -276,6 +292,7 @@ impl PreparedModulationSource {
         }
         Ok(Self {
             id,
+            output: ModulationOutputId::MAIN,
             initial: SourceState::Macro(value),
             sample_rate: f64::from(sample_rate),
         })
@@ -292,6 +309,7 @@ impl PreparedModulationSource {
             .map_err(|_| Error::InvalidParameterValue)?;
         Ok(Self {
             id,
+            output: ModulationOutputId::MAIN,
             initial: SourceState::Random(random),
             sample_rate: f64::from(sample_rate),
         })
@@ -299,7 +317,7 @@ impl PreparedModulationSource {
 }
 
 struct Source {
-    id: ModulationSourceId,
+    key: (ModulationSourceId, ModulationOutputId),
     sample_rate: f64,
     initial: SourceState,
     committed: SourceState,
@@ -339,7 +357,7 @@ impl ModulationSourceBank {
         self.chunk_frames == chunk_frames
             && self.sources.len() == sources.len()
             && self.sources.iter().zip(sources).all(|(runtime, prepared)| {
-                runtime.id == prepared.id
+                runtime.key == prepared.key()
                     && runtime.sample_rate == prepared.sample_rate
                     && runtime.initial == prepared.initial
             })
@@ -353,7 +371,7 @@ impl ModulationSourceBank {
                 .iter()
                 .zip(&other.sources)
                 .all(|(left, right)| {
-                    left.id == right.id
+                    left.key == right.key
                         && left.sample_rate == right.sample_rate
                         && left.initial == right.initial
                 })
@@ -375,14 +393,18 @@ impl ModulationSourceBank {
         if minimum > MAX_MODULATION_SOURCE_STORAGE_BYTES {
             return Err(Error::RuntimeBudgetExceeded);
         }
-        if sources.windows(2).any(|pair| pair[0].id >= pair[1].id) {
+        if sources
+            .windows(2)
+            .any(|pair| pair[0].key() >= pair[1].key())
+        {
             return Err(Error::InvalidId);
         }
         Ok(())
     }
 
-    /// IDs must be unique and strictly increasing. The host accounts this
-    /// storage alongside its existing paired-runtime budget before publication.
+    /// Source and output pairs must be unique and strictly increasing. Each
+    /// prepared output uses one of the existing bounded signal buffers. The host
+    /// accounts this storage before publication.
     pub fn new(sources: &[PreparedModulationSource], chunk_frames: usize) -> Result<Self, Error> {
         Self::validate_sources(sources, chunk_frames)?;
         let mut prepared = Vec::new();
@@ -396,7 +418,7 @@ impl ModulationSourceBank {
                 .map_err(|_| Error::RuntimeAllocation)?;
             samples.resize(chunk_frames, 0.0);
             prepared.push(Source {
-                id: source.id,
+                key: source.key(),
                 sample_rate: source.sample_rate,
                 initial: source.initial,
                 committed: source.initial,
@@ -464,7 +486,14 @@ impl ModulationSourceBank {
 
     /// The stable identity at this bank's sorted, transient source index.
     pub fn source_id(&self, index: usize) -> Option<ModulationSourceId> {
-        self.sources.get(index).map(|source| source.id)
+        self.source_key(index).map(|(id, _)| id)
+    }
+
+    pub(crate) fn source_key(
+        &self,
+        index: usize,
+    ) -> Option<(ModulationSourceId, ModulationOutputId)> {
+        self.sources.get(index).map(|source| source.key)
     }
 
     /// Maximum frames in one render chunk; longer segments require chunking.
@@ -694,7 +723,7 @@ impl ModulationSourceBank {
         }
         let index = self
             .sources
-            .binary_search_by_key(&prepared.id, |source| source.id)
+            .binary_search_by_key(&prepared.key(), |source| source.key)
             .map_err(|_| Error::InvalidId)?;
         let source = self.sources.get_mut(index).ok_or(Error::InvalidId)?;
         if source.sample_rate != prepared.sample_rate {
@@ -708,15 +737,28 @@ impl ModulationSourceBank {
         Ok(())
     }
 
-    /// Borrow the last rendered chunk for one source, without transferring ownership.
+    /// Borrow the last rendered chunk of a source's MAIN output.
     pub fn samples(&self, id: ModulationSourceId) -> Option<&[f32]> {
+        self.samples_for_output(id, ModulationOutputId::MAIN)
+    }
+
+    /// Borrow the last rendered chunk of an exact source/output pair.
+    pub fn samples_for_output(
+        &self,
+        id: ModulationSourceId,
+        output: ModulationOutputId,
+    ) -> Option<&[f32]> {
+        let index = self
+            .sources
+            .binary_search_by_key(&(id, output), |source| source.key)
+            .ok()?;
+        self.samples_at_index(index)
+    }
+
+    pub(crate) fn samples_at_index(&self, index: usize) -> Option<&[f32]> {
         if !self.active {
             return None;
         }
-        let index = self
-            .sources
-            .binary_search_by_key(&id, |source| source.id)
-            .ok()?;
         self.sources.get(index)?.samples.get(..self.last_frames)
     }
 
@@ -763,7 +805,7 @@ impl ModulationSourceBank {
             if let Some(old) = previous
                 .sources
                 .iter()
-                .find(|old| old.id == source.id && old.sample_rate == source.sample_rate)
+                .find(|old| old.key == source.key && old.sample_rate == source.sample_rate)
                 && source.committed.inherit_history(old.committed)
             {
                 source.scratch = source.committed;
@@ -773,14 +815,14 @@ impl ModulationSourceBank {
         self.last_frames = 0;
     }
 
-    /// Explicit discontinuity or retrigger; never acts on a speculative block.
+    /// Explicitly reset MAIN after a discontinuity, outside a speculative block.
     pub fn reset(&mut self, id: ModulationSourceId, phase: f64) -> Result<(), Error> {
         if self.active {
             return Err(Error::InvalidParameterValue);
         }
         let index = self
             .sources
-            .binary_search_by_key(&id, |source| source.id)
+            .binary_search_by_key(&(id, ModulationOutputId::MAIN), |source| source.key)
             .map_err(|_| Error::InvalidId)?;
         let source = self.sources.get_mut(index).ok_or(Error::InvalidId)?;
         let SourceState::Lfo { oscillator, .. } = &mut source.committed else {
