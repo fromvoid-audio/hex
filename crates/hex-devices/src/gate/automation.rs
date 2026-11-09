@@ -3,6 +3,27 @@
 //! the current frame and runtime unchanged, allowing the host to refuse output.
 use super::*;
 
+impl GateSettings {
+    fn check_inline(&self) {
+        let Self {
+            threshold_db,
+            return_db,
+            floor_db,
+            attack_ms,
+            hold_ms,
+            release_ms,
+        } = self;
+        let _: [&f32; 6] = [
+            threshold_db,
+            return_db,
+            floor_db,
+            attack_ms,
+            hold_ms,
+            release_ms,
+        ];
+    }
+}
+
 impl PreparedGate {
     pub(super) fn new(
         state: &NativeDeviceState,
@@ -26,7 +47,7 @@ impl PreparedGate {
             admitted[index] = true;
         }
         let settings = decode(state)?;
-        Ok(Self {
+        let prepared = Self {
             admitted,
             settings,
             sample_rate,
@@ -36,7 +57,27 @@ impl PreparedGate {
             attack_frames: checked_frames(settings.attack_ms, sample_rate)?,
             hold_frames: checked_frames(settings.hold_ms.max(MIN_HOLD_MS), sample_rate)?,
             release_frames: checked_frames(settings.release_ms, sample_rate)?,
-        })
+        };
+        prepared.check_inline();
+        Ok(prepared)
+    }
+
+    fn check_inline(&self) {
+        let Self {
+            admitted,
+            settings,
+            sample_rate,
+            threshold,
+            return_level,
+            floor_gain,
+            attack_frames,
+            hold_frames,
+            release_frames,
+        } = self;
+        settings.check_inline();
+        let _: &[bool; 6] = admitted;
+        let _: [&f64; 3] = [threshold, return_level, floor_gain];
+        let _: [&u32; 4] = [sample_rate, attack_frames, hold_frames, release_frames];
     }
 
     pub(super) fn supports(&self, id: ParameterId) -> bool {
@@ -48,6 +89,47 @@ impl PreparedGate {
 }
 
 impl GateRuntime {
+    pub(super) fn check_inline_ownership(&self) {
+        let Self {
+            base,
+            controls,
+            settings,
+            sample_rate,
+            threshold,
+            return_level,
+            floor_gain,
+            attack_frames,
+            hold_frames,
+            release_frames,
+            open,
+            gain,
+            hold_elapsed,
+            ramp_target,
+            ramp_step,
+            ramp_remaining,
+        } = self;
+        base.check_inline();
+        controls.check_inline(GateSettings::check_inline);
+        settings.check_inline();
+        let _: &bool = open;
+        let _: [&f64; 6] = [
+            threshold,
+            return_level,
+            floor_gain,
+            gain,
+            ramp_target,
+            ramp_step,
+        ];
+        let _: [&u32; 6] = [
+            sample_rate,
+            attack_frames,
+            hold_frames,
+            release_frames,
+            hold_elapsed,
+            ramp_remaining,
+        ];
+    }
+
     pub(super) fn install_settings(&mut self, settings: GateSettings) {
         let previous = self.settings;
         self.settings = settings;

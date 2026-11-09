@@ -1547,6 +1547,7 @@ fn reverb_parameter_publication(with_modulation: bool) -> Result<(), Box<dyn Err
                     state: hex_engine::lfo_modulator::Settings {
                         rate: hex_engine::lfo_modulator::Rate::Hertz(f64::from(RATE) * 0.125),
                         phase: 0.0,
+                        ..hex_engine::lfo_modulator::Settings::default()
                     }
                     .encode()?,
                 }],

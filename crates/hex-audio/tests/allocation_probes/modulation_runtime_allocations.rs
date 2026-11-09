@@ -100,12 +100,12 @@ fn utility_graph_modulation_transactions_do_not_allocate_or_free() {
     use hex_devices::utility::{UTILITY_DEFINITION, UTILITY_TYPE_ID, UtilityDefinition, parameter};
     use hex_lattice::PreparedNativeProcessor;
     use hex_lattice::{
-        NativeRuntimeChain, PreparedModulationState, PreparedProcessorFactory,
+        LfoWaveform, NativeRuntimeChain, PreparedModulationState, PreparedProcessorFactory,
         PreparedRuntimeInstance, ProcessorChainOwner, SourceModulationRoute, StereoMatrix,
     };
     use hex_lattice_contract::NativeDeviceMetadata;
     use std::sync::Arc;
-    let build = || {
+    let build = |waveform| {
         let state = UTILITY_DEFINITION.default_state().unwrap();
         let id = parameter::GAIN;
         let definition = UtilityDefinition::prepare_owned_automated_filter(&state, 48_000).unwrap();
@@ -129,12 +129,13 @@ fn utility_graph_modulation_transactions_do_not_allocate_or_free() {
             3,
         )
         .unwrap();
-        let source = PreparedModulationSource::tempo(
+        let source = PreparedModulationSource::tempo_with_waveform(
             ModulationSourceId::new(1).unwrap(),
             48_000.0,
             120.0,
             4.0,
             0.0,
+            waveform,
         )
         .unwrap();
 
@@ -180,8 +181,8 @@ fn utility_graph_modulation_transactions_do_not_allocate_or_free() {
         let chain = NativeRuntimeChain::new_prepared(vec![prepared.clone()]).unwrap();
         (prepared, chain)
     };
-    let (prepared, mut first) = build();
-    let (_, mut second) = build();
+    let (prepared, mut first) = build(LfoWaveform::Sine);
+    let (_, mut second) = build(LfoWaveform::Square);
     let mut frames = [[0.1, -0.1]; 128];
     struct Tempo;
     impl hex_lattice::NativeInstrumentClock for Tempo {
@@ -216,6 +217,11 @@ fn utility_graph_modulation_transactions_do_not_allocate_or_free() {
             first.commit_block();
             second.inherit_from(&first);
             second.transfer_history_from(&mut first);
+            second.begin_block();
+            second
+                .process_range_with_clock(0..1, black_box(&mut frames), Some(&Tempo), Some(&Tempo))
+                .unwrap();
+            second.rollback_block();
             second.reset();
         }
     });

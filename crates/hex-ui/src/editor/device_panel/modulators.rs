@@ -71,6 +71,7 @@ enum Edit {
     RemoveSource(ModulationSourceId),
     Rate(ModulationSourceId, f64),
     Sync(ModulationSourceId),
+    LfoShape(ModulationSourceId, lfo::Waveform),
     MacroValue(ModulationSourceId, f32),
     FollowerTime {
         source: ModulationSourceId,
@@ -82,6 +83,7 @@ enum Edit {
     Map(ModulationSourceId, MappingTarget),
     Adjust(ModulationRouteId, f32),
     Range(ModulationRouteId),
+    ToggleRoute(ModulationRouteId),
     RemoveRoute(ModulationRouteId),
 }
 
@@ -201,6 +203,12 @@ pub(super) fn panel(
                 lfo::Rate::Hertz(rate) => (rate, "hz"),
                 lfo::Rate::BeatsPerCycle(rate) => (rate, "beats"),
             };
+            let (shape, next) = match settings.waveform {
+                lfo::Waveform::Sine => ("sine", lfo::Waveform::Triangle),
+                lfo::Waveform::Triangle => ("triangle", lfo::Waveform::RisingRamp),
+                lfo::Waveform::RisingRamp => ("ramp", lfo::Waveform::Square),
+                lfo::Waveform::Square => ("square", lfo::Waveform::Sine),
+            };
             row = row
                 .child(button(
                     cx,
@@ -219,7 +227,16 @@ pub(super) fn panel(
                     source_key("faster"),
                     theme::text("+"),
                     Edit::Rate(source_id, 2.0),
-                ));
+                ))
+                .child(
+                    button(
+                        cx,
+                        source_key("waveform"),
+                        theme::text(shape),
+                        Edit::LfoShape(source_id, next),
+                    )
+                    .w(px(55.0)),
+                );
         }
         if let SourceKind::Follower = kind
             && let Ok(settings) = follower::Settings::decode(&source.state)
@@ -390,6 +407,12 @@ pub(super) fn panel(
                         key("range"),
                         theme::text(range),
                         Edit::Range(route.id),
+                    ))
+                    .child(button(
+                        cx,
+                        key("toggle"),
+                        theme::text(if route.enabled { "on" } else { "off" }),
+                        Edit::ToggleRoute(route.id),
                     ))
                     .child(button(
                         cx,
@@ -567,6 +590,12 @@ fn apply(
             };
             source.state = settings.encode().map_err(unsupported)?;
         }
+        Edit::LfoShape(id, waveform) => {
+            let source = find_source(&mut sources, id)?;
+            let mut settings = lfo::Settings::decode(&source.state).map_err(unsupported)?;
+            settings.waveform = waveform;
+            source.state = settings.encode().map_err(unsupported)?;
+        }
         Edit::MacroValue(id, change) => {
             let source = find_source(&mut sources, id)?;
             let mut settings = manual::Settings::decode(&source.state).map_err(unsupported)?;
@@ -649,6 +678,10 @@ fn apply(
                 ModulationRange::default()
             };
         }
+        Edit::ToggleRoute(id) => {
+            let route = find_route(&mut routes, id)?;
+            route.enabled = !route.enabled;
+        }
         Edit::RemoveRoute(id) => routes.retain(|route| route.id != id),
     }
     DeviceModulation::new(
@@ -675,4 +708,66 @@ fn find_route(
         .iter_mut()
         .find(|route| route.id == id)
         .ok_or(Invalid("modulation route no longer exists"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hex_project::{Command, Created, Editor, Project};
+
+    #[test]
+    fn enabling_a_route_that_closes_a_cycle_preserves_the_existing_bank() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Device(device) = editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: hex_engine::default_native_device_state(
+                    hex_devices::utility::UTILITY_TYPE_ID,
+                )
+                .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("utility fixture");
+        };
+        for _ in 0..2 {
+            let modulation = apply(editor.project(), device, Edit::Add(SourceKind::Macro)).unwrap();
+            editor
+                .execute(Command::ReplaceDeviceModulation { device, modulation })
+                .unwrap();
+        }
+        let bank = editor.project().device(device).unwrap().modulation();
+        let [first, second] = [bank.sources()[0].id, bank.sources()[1].id];
+        let mapped = apply(
+            editor.project(),
+            device,
+            Edit::Map(first, MappingTarget::Macro(second)),
+        )
+        .unwrap();
+        let mut routes = mapped.routes().to_vec();
+        let id = ModulationRouteId::new(editor.project().next_identity() + 1).unwrap();
+        routes.push(DeviceModulationRoute {
+            id,
+            source: second,
+            destination: macro_destination(first),
+            enabled: false,
+            ..routes[0]
+        });
+        let modulation = DeviceModulation::new(mapped.sources().to_vec(), routes).unwrap();
+        editor
+            .execute(Command::ReplaceDeviceModulation {
+                device,
+                modulation: modulation.clone(),
+            })
+            .unwrap();
+
+        assert_eq!(
+            apply(editor.project(), device, Edit::ToggleRoute(id)),
+            Err(Invalid("modulation routes form a cycle")),
+        );
+        assert_eq!(
+            editor.project().device(device).unwrap().modulation(),
+            &modulation
+        );
+    }
 }

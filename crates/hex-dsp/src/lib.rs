@@ -14,6 +14,6 @@ mod random_hold;
 mod stereo;
 pub use envelope_follower::{EnvelopeFollower, InvalidEnvelopeFollower};
 pub use gain::{Decibels, InvalidGain, LinearAmplitude};
-pub use modulation_lfo::{InvalidLfo, LfoRate, ModulationLfo};
+pub use modulation_lfo::{InvalidLfo, LfoRate, LfoWaveform, ModulationLfo};
 pub use random_hold::{InvalidRandomHold, RandomHold};
 pub use stereo::{InvalidMatrix, StereoFrame, StereoMatrix};

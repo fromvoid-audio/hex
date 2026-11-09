@@ -199,6 +199,7 @@ fn reverb_modulation_follows_host_samples_in_the_96_khz_room() {
                 state: Settings {
                     rate: Rate::Hertz(12_000.0),
                     phase: 0.0,
+                    ..Settings::default()
                 }
                 .encode()
                 .unwrap(),
