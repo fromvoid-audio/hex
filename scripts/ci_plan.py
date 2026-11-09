@@ -17,7 +17,7 @@ if _PYTHON_SPEC is None or _PYTHON_SPEC.loader is None:
 python_tests = importlib.util.module_from_spec(_PYTHON_SPEC)
 _PYTHON_SPEC.loader.exec_module(python_tests)
 
-POLICY_VERSION = 38
+POLICY_VERSION = 39
 UI_PACKAGES = {"hex-ui", "hex-widgets"}
 # Opaque state reaches storage through runtime type IDs, not a Cargo dependency.
 # Changes here must be reviewed with the real registration/codec consumers.
@@ -248,6 +248,7 @@ UI_UNIT_TARGETS = {"editor::audio_admission::": "unit_editor_state",
                    "editor::clip_content_cache::profile::navigation::selection::": "unit_editor_state",
                    "editor::cpu_meter::": "unit_editor_state",
                    "editor::device_automation::plot_geometry::": "unit_automation",
+                   "editor::device_panel::eq_panel::group_move::": "unit_device",
                    "editor::device_panel::eq_panel::selection::": "unit_device",
                    "editor::device_panel::eq_panel::slope::": "unit_device",
                    "editor::device_panel::eq_panel::state_edit::": "unit_device",
@@ -283,6 +284,7 @@ UI_UNIT_FEATURES = {"unit_piano_roll": "ui-unit-tier", "unit_timeline": "ui-unit
 # These geometry modules call one another; a change to one must exercise the
 # complete pure boundary rather than only its own test-name prefix.
 UI_UNIT_COHORTS = [{"editor::midi_drag::", "editor::midi_group_drag::", "editor::midi_scene::", "editor::midi_selection::", "editor::midi_stroke::", "editor::midi_velocity::", "editor::midi_viewport_grid::"},
+                   {"editor::device_panel::eq_panel::group_move::", "editor::device_panel::eq_panel::gestures::"},
                    {"editor::musical_time::", "editor::seek::", "editor::signed_frame_viewport::", "editor::viewport::"},
                    {"section_appearance::", "section_reorder::"}]
 # Recovery's real prepared-audio test is a sibling so importing its state into

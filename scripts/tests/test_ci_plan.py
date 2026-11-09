@@ -1827,6 +1827,11 @@ class ModuleScopeTests(unittest.TestCase):
             self.assertEqual(plan.module_test_filters(root, [path], inventory, [owner]), {owner: [eq]})
         selection = "editor::device_panel::eq_panel::selection::"
         slope = "editor::device_panel::eq_panel::slope::"
+        group = "editor::device_panel::eq_panel::group_move::"
+        gestures = "editor::device_panel::eq_panel::gestures::"
+        for path in ("group_move.rs", "gestures.rs"):
+            self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/editor/device_panel/eq_panel/" + path],
+                                                      inventory, [owner]), {owner: [gestures, group]})
         spectrum = "editor::device_panel::spectrum_display::"
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/editor/device_panel/spectrum_display.rs"],
                                                   inventory, [owner]), {owner: [spectrum]})
@@ -1834,7 +1839,7 @@ class ModuleScopeTests(unittest.TestCase):
             self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/editor/device_panel/eq_panel/" + path],
                                                       inventory, [owner]), {owner: [name]})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_device.rs"], inventory, [owner]),
-                         {owner: [selection, slope, eq, *names, spectrum]})
+                         {owner: [gestures, group, selection, slope, eq, *names, spectrum]})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
                     "single_run": {owner: "ui-test-support"}, "module_filters": {owner: names}}
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
@@ -1845,7 +1850,7 @@ class ModuleScopeTests(unittest.TestCase):
                                      "cargo_inventory": inventory, "paths": []})
         self.assertEqual(sum("unit_device" in step.argv for step in eq_steps), 1)
         self.assertTrue(any(eq in step.argv for step in eq_steps if "unit_device" in step.argv))
-        for name in (selection, slope, spectrum):
+        for name in (group, selection, slope, spectrum):
             boundary["module_filters"] = {owner: [name]}
             scoped = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
                                        "cargo_inventory": inventory, "paths": []})
