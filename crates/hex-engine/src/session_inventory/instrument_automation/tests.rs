@@ -626,6 +626,18 @@ fn saved_fm4_routes_compose_with_authored_curves_and_keep_phase_at_live_handoff(
     }
     assert_eq!(actual, expected);
 
+    current.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+    let mut restarted = [[0.0; 2]; 31];
+    current.render(&mut restarted).unwrap();
+    for (index, frame) in restarted.iter().enumerate() {
+        let expected = after[usize::from(index % 4 >= 2)].sample(
+            index as u64,
+            u64::MAX,
+            &EMPTY_DEVICE_RESOURCES,
+        );
+        assert_eq!(*frame, expected, "seek frame {index}");
+    }
+
     // Session uses the same receiver bank and Arrangement-content controls.
     let mut console = SessionPlayback::new(old).unwrap();
     console
