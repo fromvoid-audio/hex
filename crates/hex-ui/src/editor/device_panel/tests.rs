@@ -6989,7 +6989,8 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
         let settings =
             |view: &EditorView| Settings::decode(&bank(view).sources()[0].state).unwrap();
         let mut expected = Settings::default();
-        let edits: [(&str, fn(&mut Settings)); 7] = [
+        type SettingsEdit = fn(&mut Settings);
+        let edits: [(&str, SettingsEdit); 7] = [
             ("attack-shorter", |state| state.durations_micros[0] = 2_500),
             ("hold-longer", |state| state.durations_micros[1] = 40_000),
             ("decay-shorter", |state| state.durations_micros[2] = 100_000),
