@@ -4,7 +4,9 @@ use crate::{
     AssetId, DeviceComparison, DeviceId, DeviceModulation, Invalid, ModulationDestination,
     ModulationRouteId, ModulationSourceId, OriginalSourceFacts, Project,
 };
-use hex_lattice_contract::{DeviceAssetKey, DeviceAssetReference, NativeDeviceState};
+use hex_lattice_contract::{
+    DeviceAssetKey, DeviceAssetReference, NativeDeviceState, VST3_DEVICE_TYPE_ID,
+};
 
 pub const MAX_PORTABLE_DEVICE_UNIT_NODES: usize = crate::MAX_DEVICES_PER_TRACK + 1;
 pub const MAX_PORTABLE_DEVICE_UNIT_ASSETS: usize = 256;
@@ -45,7 +47,7 @@ impl PortableDeviceUnit {
     /// Asset keys are one-based indexes into this unit's asset manifest.
     pub fn new(
         class: DeviceUnitClass,
-        nodes: Vec<PortableDeviceNode>,
+        mut nodes: Vec<PortableDeviceNode>,
         assets: Vec<PortableDeviceAsset>,
     ) -> Result<Self, Invalid> {
         if nodes.is_empty()
@@ -134,6 +136,9 @@ impl PortableDeviceUnit {
         if used[..assets.len()].contains(&false) {
             return Err(Invalid("portable device unit contains unused assets"));
         }
+        for node in &mut nodes {
+            strip_vst3_approvals(node)?;
+        }
         Ok(Self {
             class,
             nodes: nodes.into_boxed_slice(),
@@ -152,6 +157,41 @@ impl PortableDeviceUnit {
     pub fn assets(&self) -> &[PortableDeviceAsset] {
         &self.assets
     }
+}
+
+fn strip_vst3_approvals(node: &mut PortableDeviceNode) -> Result<(), Invalid> {
+    fn clear(state: &NativeDeviceState) -> Result<NativeDeviceState, Invalid> {
+        // Rebinding the same references drops process-local approval while
+        // keeping the immutable provider bytes and all authored fields.
+        state
+            .clone()
+            .with_asset_references(state.asset_references().to_vec())
+            .map_err(|_| Invalid("could not detach portable device state"))
+    }
+    if node.state.type_id() == VST3_DEVICE_TYPE_ID {
+        node.state = clear(&node.state)?;
+        if let Some(value) = &node.comparison {
+            node.comparison = Some(DeviceComparison::new(
+                value.active(),
+                clear(value.inactive())?,
+            ));
+        }
+    }
+    if node
+        .modulation
+        .sources()
+        .iter()
+        .any(|slot| slot.state.type_id() == VST3_DEVICE_TYPE_ID)
+    {
+        let mut sources = node.modulation.sources().to_vec();
+        for slot in &mut sources {
+            if slot.state.type_id() == VST3_DEVICE_TYPE_ID {
+                slot.state = clear(&slot.state)?;
+            }
+        }
+        node.modulation = DeviceModulation::new(sources, node.modulation.routes().to_vec())?;
+    }
+    Ok(())
 }
 
 impl Project {
