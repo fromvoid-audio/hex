@@ -152,6 +152,8 @@ pub use hex_devices::modulation::note_pressure as note_pressure_modulator;
 pub use hex_devices::modulation::ramp as ramp_modulator;
 /// The authored reusable random sample-and-hold source codec.
 pub use hex_devices::modulation::random_hold as random_modulator;
+/// Authored step pattern and free-running timing.
+pub use hex_devices::modulation::steps as steps_modulator;
 
 mod native_parameter_input;
 pub use device_automation::{
