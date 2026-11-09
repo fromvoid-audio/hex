@@ -73,7 +73,13 @@ fn compressor_modulation_and_keyed_retry_do_not_allocate_or_free() {
         runtime
             .process_auxiliary_stage(
                 0,
-                StereoAuxiliaryBlock::paired(black_box(&mut keyed), black_box(&key)),
+                StereoAuxiliaryBlock::new(
+                    black_box(&mut keyed),
+                    Some(black_box(&key)),
+                    &mut [],
+                    key.len(),
+                )
+                .unwrap(),
                 0,
                 None,
                 None,
