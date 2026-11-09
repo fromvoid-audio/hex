@@ -15,6 +15,11 @@ name = "unit_piano_roll"
 path = "tests/unit_piano_roll.rs"
 required-features = ["ui-unit-tier"]
 
+[[test]]
+name = "unit_timeline"
+path = "tests/unit_timeline.rs"
+required-features = ["ui-unit-tier"]
+
 [dependencies]
 # UI-only random result selection; already pinned in the workspace lock graph.
 fastrand = "=2.5.0"
