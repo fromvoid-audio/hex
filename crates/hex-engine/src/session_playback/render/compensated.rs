@@ -907,7 +907,7 @@ impl SessionPlayback {
                         generator[0][0] += wet[0][0];
                         generator[0][1] += wet[0][1];
                     }
-                    if self.playing && self.source_effects.has_chain(index) {
+                    if self.source_effects.has_chain(index) {
                         let clock =
                             crate::signal_graph::OriginClock(compensation.delays.stamp_at_delay(0));
                         self.source_effects

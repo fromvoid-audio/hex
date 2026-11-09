@@ -39,7 +39,10 @@ impl NativeProcessorRuntime for MemorySquare {
         if self.1 {
             for (offset, frame) in frames.iter_mut().enumerate() {
                 let stamp = clock
-                    .and_then(|clock| clock.performance_frame_at_offset(offset))
+                    .and_then(|clock| match clock.transport_is_running()? {
+                        true => clock.performance_frame_at_offset(offset),
+                        false => clock.arrangement_frame_at_offset(offset),
+                    })
                     .map_or(-1.0, |frame| frame as f32)
                     * (1.0 / 65_536.0);
                 for sample in frame {
@@ -635,13 +638,26 @@ fn session_playing_paths_run_source_effects_once_before_mixing_receiver_clips() 
                 wet.render(&mut restarted).unwrap();
                 assert_eq!(restarted, actual);
             }
+            dry.apply(SessionPlaybackCommand::Pause).unwrap();
             wet.apply(SessionPlaybackCommand::Pause).unwrap();
-            assert!(matches!(
-                wet.render(&mut [[0.0; 2]]),
-                Err(SessionPlaybackError::Arrangement(
-                    "paused source effect monitoring is not supported yet"
-                ))
-            ));
+            let paused_at = wet.performance_frame();
+            let mut paused_dry = [[0.0; 2]; 31];
+            let mut paused_wet = [[0.0; 2]; 31];
+            dry.render(&mut paused_dry).unwrap();
+            wet.render(&mut paused_wet).unwrap();
+            let stamp = paused_at as f32 * (1.0 / 65_536.0);
+            for (wet, dry) in paused_wet.iter().zip(paused_dry) {
+                for ch in 0..2 {
+                    let expected = dry[ch] * dry[ch] + previous[ch] * 0.125 + stamp;
+                    assert!((wet[ch] - expected).abs() < 1e-6);
+                }
+                previous = dry;
+            }
+            assert_eq!(wet.performance_frame(), paused_at);
+            wet.apply(SessionPlaybackCommand::Stop).unwrap();
+            let mut stopped = [[1.0; 2]; 31];
+            wet.render(&mut stopped).unwrap();
+            assert_eq!(stopped, [[0.0; 2]; 31]);
             let mut candidate = SessionPlayback::new(Arc::clone(&revision)).unwrap();
             assert!(matches!(
                 candidate.try_inherit_state_from(&mut wet),
