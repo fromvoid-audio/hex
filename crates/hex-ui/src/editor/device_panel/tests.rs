@@ -6575,7 +6575,8 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
             "random",
             "note pressure",
             "button",
-            "math"
+            "math",
+            "buttons",
         ],
     );
     visual.simulate_keystrokes("escape");
@@ -7193,6 +7194,7 @@ fn add_modulator_from_menu(visual: &mut VisualTestContext, device: DeviceId, kin
             "audio rate",
             "button",
             "math",
+            "buttons",
         ]
         .iter()
         .position(|label| *label == kind)
@@ -7502,6 +7504,86 @@ fn modulation_panel_maps_and_toggles_a_button(cx: &mut TestAppContext) {
         hex_engine::button_modulator::TYPE_ID,
         &[GAIN],
     );
+}
+
+#[gpui::test]
+fn modulation_panel_maps_and_toggles_two_independent_buttons(cx: &mut TestAppContext) {
+    use hex_devices::utility::parameter::GAIN;
+    use hex_engine::buttons_modulator as buttons;
+    use hex_project::{DeviceModulation, ModulationOutputId};
+
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let base = state.project.device(device).unwrap().state().clone();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1500.0), px(650.0)));
+    visual.run_until_parked();
+    let bank = |view: &EditorView| -> DeviceModulation {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .modulation()
+            .clone()
+    };
+    let switches = |view: &EditorView| {
+        buttons::Settings::decode(&bank(view).sources()[0].state)
+            .unwrap()
+            .on
+    };
+    let click = click_modulator_control;
+    click(&mut visual, "device-modulator-toggle".into(), false);
+    add_modulator_from_menu(&mut visual, device, "buttons");
+    pump_until(&editor, cx, |view| bank(view).sources().len() == 1);
+    visual.run_until_parked();
+    let source = editor.read_with(cx, |view, _| {
+        assert_eq!(switches(view), [false, false]);
+        bank(view).sources()[0].id
+    });
+    let target = format!("map-target-{}-{}", device.value(), GAIN.value());
+    for output in 1..=2 {
+        click(
+            &mut visual,
+            format!("buttons-{}-{output}-map", source.value()),
+            true,
+        );
+        click(&mut visual, target.clone(), false);
+        pump_until(&editor, cx, |view| bank(view).routes().len() == output);
+        visual.run_until_parked();
+    }
+    let mapped = editor.read_with(cx, |view, _| {
+        let mapped = bank(view);
+        assert_eq!(mapped.routes()[0].output, ModulationOutputId::MAIN);
+        assert_eq!(
+            mapped.routes()[1].output,
+            ModulationOutputId::new(2).unwrap()
+        );
+        assert_eq!(
+            mapped.routes()[0].destination,
+            mapped.routes()[1].destination
+        );
+        mapped
+    });
+    for (output, expected) in [(1, [true, false]), (2, [true, true])] {
+        click(
+            &mut visual,
+            format!("buttons-{}-{output}-toggle", source.value()),
+            true,
+        );
+        pump_until(&editor, cx, |view| switches(view) == expected);
+        visual.run_until_parked();
+    }
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(project.device(device).unwrap().state(), &base);
+        assert_eq!(bank(view).routes(), mapped.routes());
+        let reopened = hex_storage::decode(&hex_storage::encode(project).unwrap()).unwrap();
+        assert_eq!(&reopened, project.as_ref());
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| switches(view) == [true, false]);
 }
 
 fn assert_modulation_mapping(

@@ -1064,3 +1064,62 @@ fn math_schema_preserves_two_named_inputs_and_requires_reader_upgrade() {
     assert!(crate::decode(&serde_json::to_vec(&wrong).unwrap()).is_err());
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn buttons_reader_floor_round_trips_two_switches_and_distinct_outputs() {
+    let mut editor = Editor::new(legacy_fixture(), 8).unwrap();
+    let device = editor.project().main_devices()[0].id();
+    let device_type = editor.project().device(device).unwrap().state().type_id();
+    let root = temp_dir();
+    let previous = root.join("previous.hex");
+    crate::save_new(&previous, editor.project()).unwrap();
+    let original = std::fs::read(&previous).unwrap();
+    let token = crate::load_with_token(&previous).unwrap().1;
+    let next = editor.project().next_identity();
+    let source = ModulationSourceId::new(next).unwrap();
+    let slot = Modulator {
+        id: source,
+        color: ElementColor::Cyan,
+        enabled: true,
+        state: NativeDeviceState::new(
+            DeviceTypeId::from_static("hex.modulator.buttons"),
+            1,
+            vec![1, 0],
+        )
+        .unwrap(),
+    };
+    let routes = (1..=2)
+        .map(|number| DeviceModulationRoute {
+            id: ModulationRouteId::new(next + u64::from(number)).unwrap(),
+            source,
+            output: ModulationOutputId::new(number).unwrap(),
+            destination: ModulationDestination::Device {
+                device_type,
+                target: DeviceAutomationTarget::Parameter(ParameterId::from_static(number)),
+                vst3_class: None,
+            },
+            amount: ModulationAmount::new(0.5).unwrap(),
+            range: ModulationRange::default(),
+            enabled: true,
+        })
+        .collect();
+    let modulation = DeviceModulation::new(vec![slot], routes).unwrap();
+    editor
+        .execute(Command::ReplaceDeviceModulation { device, modulation })
+        .unwrap();
+    let project = editor.project();
+    assert_eq!(
+        crate::schema_version_for(project),
+        crate::BUTTONS_MODULATOR_SCHEMA_VERSION
+    );
+    assert!(token.requires_save_confirmation(project).unwrap());
+    let current = root.join("buttons.hex");
+    crate::save_new(&current, project).unwrap();
+    assert_eq!(crate::load(&current).unwrap(), *project);
+    assert_eq!(std::fs::read(&previous).unwrap(), original);
+    let mut wrong: serde_json::Value =
+        serde_json::from_slice(&crate::encode(project).unwrap()).unwrap();
+    wrong["version"] = crate::MATH_MODULATOR_SCHEMA_VERSION.into();
+    assert!(crate::decode(&serde_json::to_vec(&wrong).unwrap()).is_err());
+    std::fs::remove_dir_all(root).unwrap();
+}
