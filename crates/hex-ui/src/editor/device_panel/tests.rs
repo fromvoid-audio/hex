@@ -6295,8 +6295,28 @@ fn modulation_panel_maps_delay_feedback_and_mix_without_changing_authored_values
             .routes()
             .to_vec()
     };
+    assert_eq!(
+        editor.read_with(cx, |view, _| view.device_panel.mapping_source),
+        Some((device, source))
+    );
+    let strip = visual.debug_bounds("device-modulator-panel").unwrap();
+    visual.simulate_event(gpui::ScrollWheelEvent {
+        position: point(strip.center().x, strip.bottom() + px(5.0)),
+        delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-100.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
     for (index, parameter) in [FEEDBACK, DRY_WET].into_iter().enumerate() {
+        let bounds = visual
+            .debug_bounds(Box::leak(key(parameter).into_boxed_str()))
+            .unwrap();
         click(&mut visual, key(parameter), false);
+        assert!(
+            editor.read_with(cx, |view, _| view.worker_requests_pending > 0
+                || !view.pending_requests.is_empty()
+                || routes(view).len() == index + 1),
+            "Delay parameter {parameter:?} at {bounds:?} did not dispatch",
+        );
         pump_until(&editor, cx, |view| routes(view).len() == index + 1);
         visual.run_until_parked();
     }
