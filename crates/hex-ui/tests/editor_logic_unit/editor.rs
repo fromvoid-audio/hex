@@ -35,3 +35,6 @@ mod track_meters;
 #[allow(dead_code)]
 #[path = "../../src/editor/fade_handle_geometry.rs"]
 mod fade_handle_geometry;
+
+#[path = "computer_keyboard.rs"]
+mod computer_keyboard;

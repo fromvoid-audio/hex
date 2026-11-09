@@ -1852,6 +1852,7 @@ class ModuleScopeTests(unittest.TestCase):
                          {owner: names})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_editor_logic.rs"], inventory, [owner]),
                          {owner: ["editor::audio_import_settings::admission::",
+                                  "editor::computer_keyboard::state::", "editor::computer_keyboard::tests::",
                                   "editor::controller::audio_event_correlation::",
                                   "editor::controller::sampler_native_ui_protocol_tests::",
                                   "editor::fade_calculation::", "editor::fade_handle_geometry::",
@@ -1872,6 +1873,26 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertTrue(any(step.step_id == "ui-editor-logic-unit-tests" for step in ci.planned_steps({"scope": "full"})))
         health = ci.planned_steps({"scope": "rust", "health": {"python": False, "workspace_inputs": True, "packages": []}})
         self.assertTrue(any(step.step_id == "health-ui-editor-logic-unit" for step in health))
+
+    def test_computer_keyboard_state_selects_unit_and_integration(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        path = "crates/hex-ui/src/editor/computer_keyboard/state.rs"
+        names = ["editor::computer_keyboard::state::", "editor::computer_keyboard::tests::"]
+        self.assertEqual(plan.module_test_filters(root, [path], inventory, [owner]), {owner: names})
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": {owner: names}}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": [path]})
+        unit = next(step for step in steps if "unit_editor_logic" in step.argv)
+        integration = next(step for step in steps if step.step_id == "ui-feature-tests")
+        self.assertIn(names[0], unit.argv)
+        self.assertTrue(unit.requires_tests)
+        self.assertIn(names[1], integration.argv)
 
     def test_section_hit_unit_target_follows_its_owner(self):
         root = SCRIPTS.parent
