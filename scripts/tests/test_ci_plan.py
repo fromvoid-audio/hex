@@ -2017,7 +2017,8 @@ class ModuleScopeTests(unittest.TestCase):
                 root, ["crates/hex-ui/src/editor/" + path], inventory, [owner]), {owner: piano})
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/tests/unit_piano_roll.rs"], inventory, [owner]),
-            {owner: sorted(piano + ["editor::midi_source_controls::"])})
+            {owner: sorted(piano + ["editor::midi_source_controls::", "editor::midi_wheel::",
+                                    "editor::midi_wheel_mapping::"])})
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/src/editor/midi_source_controls.rs"], inventory, [owner]),
             {owner: ["editor::midi_source_controls::"]})
@@ -2041,6 +2042,24 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertTrue(any(step.step_id == "ui-piano-unit-tests" for step in full))
         health = ci.planned_steps({"scope": "rust", "health": {"python": False, "workspace_inputs": True, "packages": []}})
         self.assertTrue(any(step.step_id == "health-ui-piano-unit" for step in health))
+
+    def test_midi_wheel_mapping_keeps_unit_and_window_coverage(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::midi_wheel_mapping::"
+        window = "editor::midi_wheel::"
+        for path in ("midi_wheel_mapping.rs", "midi_wheel.rs"):
+            names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            self.assertEqual(names, {owner: [window, unit]})
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
+                        "single_run": {owner: "ui-test-support"}, "module_filters": names}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                      "cargo_inventory": inventory, "paths": []})
+            self.assertTrue(any(unit in step.argv for step in steps if "unit_piano_roll" in step.argv))
+            self.assertTrue(any(window in step.argv for step in steps if step.step_id == "ui-feature-tests"))
 
     def crate(self, root: Path) -> list[dict]:
         files = {

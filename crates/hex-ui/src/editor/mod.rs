@@ -182,6 +182,7 @@ mod midi_velocity;
 mod midi_velocity_randomize;
 mod midi_velocity_ui;
 mod midi_wheel;
+mod midi_wheel_mapping;
 mod mixer;
 mod mode;
 mod musical_audio_controls;

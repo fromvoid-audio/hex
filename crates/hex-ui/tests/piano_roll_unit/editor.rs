@@ -24,3 +24,6 @@ mod midi_velocity;
 #[allow(dead_code)]
 #[path = "../../src/editor/midi_viewport_grid.rs"]
 mod midi_viewport_grid;
+#[allow(dead_code)]
+#[path = "../../src/editor/midi_wheel_mapping.rs"]
+mod midi_wheel_mapping;
