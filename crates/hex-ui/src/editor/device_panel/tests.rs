@@ -6239,77 +6239,84 @@ fn open_operator_options(visual: &mut VisualTestContext, device: DeviceId) {
 
 #[gpui::test]
 fn modulation_panel_maps_loaded_sampler_gain_through_its_authored_control(cx: &mut TestAppContext) {
-    use super::super::device_automation::host_tests::TestWave;
+    use super::super::{
+        device_automation::host_tests::TestWave,
+        worker_ui_fixture::{self, WorkerUiFixture},
+    };
     use hex_project::{DeviceAutomationTarget, ModulationDestination};
+    use std::time::Instant;
 
     let file = TestWave::new();
-    let service = Service::with_native_reservation(
-        48_000,
-        16,
-        8_000_000,
-        hex_session::ResidentNativeReservation {
-            storage: hex_engine::AudioStorageLedgerReservation {
-                data_rows: 512,
-                handle_rows: 64,
-                root_rows: 64,
-                max_retained_bytes: 20_000_000,
-                max_construction_peak_bytes: 30_000_000,
-            },
-            max_scan_frames: 1024,
-        },
+    let type_id = hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.sampler");
+    let state = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Instrument,
+        type_id,
     )
     .unwrap();
-    receive_service_event(&service);
-    service
-        .submit(Request::Edit(Command::AddMidiTrack {
+    let mut fixture = worker_ui_fixture::open(
+        cx,
+        vec![Command::InsertTrackWithDevice {
             name: "sampler".into(),
-        }))
-        .unwrap();
-    let track_event = receive_service_event(&service);
-    let Some(Created::Track(track)) = track_event.created else {
-        panic!("track");
-    };
-    let type_id = hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.sampler");
-    service
-        .submit(Request::Edit(Command::InsertInstrument {
-            track,
-            state: hex_engine::default_native_device_state_for_class(
-                hex_engine::NativeDeviceClass::Instrument,
-                type_id,
-            )
-            .unwrap(),
-        }))
-        .unwrap();
-    let empty = receive_service_event(&service);
-    assert!(empty.error.is_none(), "{:?}", empty.error);
-    let (handle, editor) = actor_editor_window(cx, service, Arc::clone(&empty.state), track);
-    let mut visual = VisualTestContext::from_window(handle, cx);
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state,
+        }],
+    );
+    let editor = fixture.editor.clone();
+    let empty = editor.read_with(cx, |view, _| Arc::clone(view.state.as_ref().unwrap()));
+    let track = empty.project.tracks()[0].id();
+    let mut visual = VisualTestContext::from_window(fixture.handle, cx);
     visual.simulate_resize(size(px(1500.0), px(650.0)));
+    editor.update(&mut visual, |view, cx| {
+        view.mode = super::super::EditorMode::Session;
+        view.selected_track = Some(track);
+        view.device_panel.owner = Some(DevicePanelOwner::Track(track));
+        view.device_panel_active = true;
+        view.clip_view_open = true;
+        cx.notify();
+    });
     visual.run_until_parked();
+    let pump = |fixture: &mut WorkerUiFixture,
+                visual: &mut VisualTestContext,
+                done: &dyn Fn(&EditorView) -> bool| {
+        let deadline = crate::test_wait::hang_deadline();
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            let ready = fixture.editor.update(visual, |view, cx| {
+                view.tick(cx);
+                cx.notify();
+                assert!(view.error.is_none(), "{:?}", view.error);
+                done(view)
+                    && view.state.as_ref().is_some_and(|state| {
+                        view.applied_project_revision() == Some(state.revision)
+                    })
+            });
+            if ready {
+                break;
+            }
+            assert!(Instant::now() < deadline, "Sampler action was not applied");
+            std::thread::yield_now();
+        }
+        visual.run_until_parked();
+    };
     let toggle = || "device-modulator-toggle".to_owned();
     click_modulator_control(&mut visual, toggle(), false);
     assert!(visual.debug_bounds("device-modulator-scroll").is_none());
     click_modulator_control(&mut visual, toggle(), false);
-    let empty_slot = empty
-        .state
-        .project
-        .track(track)
-        .unwrap()
-        .instrument()
-        .unwrap();
+    let empty_slot = empty.project.track(track).unwrap().instrument().unwrap();
     let empty_sampler = Some((empty_slot.id(), empty_slot.state().clone()));
     editor.update(cx, |view, _| {
         assert!(view.enqueue(Request::LoadFirstSampler {
             request_id: 1,
-            project_generation: 0,
-            revision: empty.state.revision,
+            project_generation: view.project_generation,
+            revision: empty.revision,
             track,
             empty_sampler,
             path: file.0.clone(),
             cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }));
     });
-    pump_until(&editor, cx, |view| {
+    pump(&mut fixture, &mut visual, &|view| {
         view.state.as_ref().is_some_and(|state| {
             state
                 .project
@@ -6347,15 +6354,67 @@ fn modulation_panel_maps_loaded_sampler_gain_through_its_authored_control(cx: &m
     assert!(visual.debug_bounds(gain_selector).is_some());
     click_modulator_control(&mut visual, "device-modulator-toggle".into(), false);
     add_modulator_from_menu(&mut visual, device, "lfo");
-    pump_until(&editor, cx, |view| bank(view).sources().len() == 1);
+    pump(&mut fixture, &mut visual, &|view| {
+        bank(view).sources().len() == 1
+    });
     visual.run_until_parked();
     let source = editor.read_with(cx, |view, _| bank(view).sources()[0].id);
     click_modulator_control(&mut visual, format!("lfo-{}-map", source.value()), true);
-    let target = hex_engine::SAMPLER_GAIN_PARAMETER;
-    let overlay = format!("map-target-{}-{}", device.value(), target.value());
+    let parameter = hex_engine::SAMPLER_GAIN_PARAMETER;
+    let overlay = format!("map-target-{}-{}", device.value(), parameter.value());
+    let target_selector = Box::leak(overlay.clone().into_boxed_str());
+    let shell = Box::leak(format!("device-shell-{}", device.value()).into_boxed_str());
+    // A wide Sampler can have its gain clipped by both the horizontal
+    // device rail and the housing's vertical scroll viewport.
+    let rail = visual.debug_bounds("device-chain-scroll").unwrap();
+    let target = visual.debug_bounds(target_selector).unwrap().center();
+    if target.x < rail.left() {
+        visual.simulate_event(gpui::ScrollWheelEvent {
+            position: rail.center(),
+            delta: gpui::ScrollDelta::Pixels(point(rail.left() + px(70.0) - target.x, px(0.0))),
+            ..Default::default()
+        });
+        visual.run_until_parked();
+    }
+    for _ in 0..5 {
+        let visible = visual.debug_bounds(shell).unwrap().intersect(&rail);
+        let target = visual.debug_bounds(target_selector).unwrap().center();
+        if visible.contains(&target) {
+            break;
+        }
+        visual.simulate_event(gpui::ScrollWheelEvent {
+            position: point(target.x, visible.bottom() - px(14.0)),
+            delta: gpui::ScrollDelta::Pixels(point(px(0.0), visible.center().y - target.y)),
+            ..Default::default()
+        });
+        visual.run_until_parked();
+    }
     assert!(visual.debug_bounds(gain_selector).is_some());
-    click_modulator_control(&mut visual, overlay, false);
-    pump_until(&editor, cx, |view| bank(view).routes().len() == 1);
+    let visible = visual.debug_bounds(shell).unwrap().intersect(&rail);
+    let target = visual.debug_bounds(target_selector).unwrap().center();
+    assert!(
+        visible.contains(&target),
+        "gain {target:?} outside the visible housing {visible:?}"
+    );
+    visual.simulate_mouse_move(target, None, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        visual.rendered_cursor_style(),
+        Some(gpui::CursorStyle::PointingHand)
+    );
+    visual.simulate_click(target, Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        editor.read_with(cx, |view, _| {
+            view.worker_requests_pending > 0
+                || !view.pending_requests.is_empty()
+                || bank(view).routes().len() == 1
+        }),
+        "Sampler gain mapping did not submit"
+    );
+    pump(&mut fixture, &mut visual, &|view| {
+        bank(view).routes().len() == 1
+    });
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         let project = &view.state.as_ref().unwrap().project;
@@ -6366,7 +6425,7 @@ fn modulation_panel_maps_loaded_sampler_gain_through_its_authored_control(cx: &m
             mapped.routes()[0].destination,
             ModulationDestination::Device {
                 device_type: type_id,
-                target: DeviceAutomationTarget::Parameter(target),
+                target: DeviceAutomationTarget::Parameter(parameter),
                 vst3_class: None,
             }
         );
@@ -6374,7 +6433,10 @@ fn modulation_panel_maps_loaded_sampler_gain_through_its_authored_control(cx: &m
         assert_eq!(&reopened, project.as_ref());
     });
     editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
-    pump_until(&editor, cx, |view| bank(view).routes().is_empty());
+    pump(&mut fixture, &mut visual, &|view| {
+        bank(view).routes().is_empty()
+    });
+    fixture.finish(cx);
 }
 
 #[gpui::test]
