@@ -10,9 +10,9 @@
 #[cfg(test)]
 mod auto_pan_modulation_tests;
 mod claimed;
-mod draft;
 #[cfg(test)]
 mod compressor_modulation_tests;
+mod draft;
 #[cfg(test)]
 mod gate_modulation_tests;
 #[cfg(test)]
