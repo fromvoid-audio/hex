@@ -28,7 +28,7 @@ fn editor_receipt_requires_exact_controller_operation_and_discriminant() {
 mod conversion;
 use crate::transport::{Events, MidiEvent};
 use hex_plugin_state::{BinaryIdentity, ClassId, State};
-fn config() -> Configuration {
+pub(super) fn config() -> Configuration {
     Configuration {
         binding: Binding {
             root: 1,
