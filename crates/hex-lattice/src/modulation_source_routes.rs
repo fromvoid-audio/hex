@@ -1,17 +1,27 @@
 //! Control-prepared dependency order for routes between device-local sources.
-//! The host resolves stable IDs to sorted bank indices. A macro value is the
-//! normalized destination admitted here. A route changes only the current
-//! source sample, leaving authored state and source history in their owners.
+//! The host resolves stable IDs to sorted bank indices. A source with incoming
+//! edges renders only after its upstream sources. Authored source values remain
+//! independent of the resulting per-sample phase steps or macro output.
 use crate::{
     MAX_MODULATION_ROUTES, MAX_MODULATION_SOURCES, PreparedModulationSource,
     modulation::RangeContribution,
 };
 use hex_lattice_contract::DeviceContractError as Error;
 
+/// A state-aware parameter on the destination source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceModulationParameter {
+    MacroValue,
+    /// Signed full depth shifts the authored free rate by four octaves.
+    /// Zero rate stays stopped and the effective step saturates at Nyquist.
+    FreeLfoRate,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SourceModulationRoute {
     pub source: usize,
     pub target: usize,
+    pub parameter: SourceModulationParameter,
     pub amount: f32,
     pub range: [f32; 2],
 }
@@ -20,6 +30,7 @@ pub struct SourceModulationRoute {
 pub(crate) struct PreparedSourceRoute {
     pub(crate) source: usize,
     pub(crate) target: usize,
+    pub(crate) parameter: SourceModulationParameter,
     pub(crate) contribution: RangeContribution,
 }
 
@@ -44,7 +55,7 @@ pub(crate) fn prepare(
         }
         if !sources
             .get(route.target)
-            .is_some_and(PreparedModulationSource::is_macro)
+            .is_some_and(|source| source.supports_modulation_parameter(route.parameter))
         {
             return Err(Error::UnsupportedProcessingClass);
         }
@@ -53,6 +64,7 @@ pub(crate) fn prepare(
             PreparedSourceRoute {
                 source: route.source,
                 target: route.target,
+                parameter: route.parameter,
                 contribution: RangeContribution::prepare(route.amount, route.range)?,
             },
         ));
@@ -78,6 +90,12 @@ pub(crate) fn prepare(
     Ok(prepared)
 }
 
+pub(crate) fn target_mask(routes: &[PreparedSourceRoute]) -> u32 {
+    routes
+        .iter()
+        .fold(0, |mask, route| mask | (1 << route.target))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,6 +115,7 @@ mod tests {
         SourceModulationRoute {
             source,
             target,
+            parameter: SourceModulationParameter::MacroValue,
             amount,
             range: [-1.0, 1.0],
         }
@@ -112,8 +131,8 @@ mod tests {
         .unwrap();
         let mut bank = ModulationSourceBank::new(&sources, 4).unwrap();
         bank.begin();
-        bank.render_chunk(4).unwrap();
-        bank.apply_source_routes(&routes).unwrap();
+        bank.render_chunk_with_routes(4, None, None, &routes, target_mask(&routes))
+            .unwrap();
         assert_eq!(
             bank.samples(sources[0].id).unwrap(),
             &[0.625, 0.875, 0.625, 0.375]
@@ -124,8 +143,8 @@ mod tests {
         );
         bank.rollback();
         bank.begin();
-        bank.render_chunk(4).unwrap();
-        bank.apply_source_routes(&routes).unwrap();
+        bank.render_chunk_with_routes(4, None, None, &routes, target_mask(&routes))
+            .unwrap();
         assert_eq!(
             bank.samples(sources[0].id).unwrap(),
             &[0.625, 0.875, 0.625, 0.375]
@@ -134,6 +153,71 @@ mod tests {
         bank.begin();
         bank.render_chunk(4).unwrap();
         assert_eq!(bank.samples(sources[0].id).unwrap(), &[0.25; 4]);
+    }
+
+    #[test]
+    fn free_rate_fan_in_drives_phase_before_the_downstream_macro_and_rolls_back() {
+        use crate::LfoWaveform;
+        let id = |n| ModulationSourceId::new(n).unwrap();
+        let sources = [
+            PreparedModulationSource::free_with_waveform(
+                id(1),
+                8.0,
+                1.0,
+                0.0,
+                LfoWaveform::RisingRamp,
+            )
+            .unwrap(),
+            PreparedModulationSource::macro_value(id(2), 8, 0.5).unwrap(),
+            PreparedModulationSource::free_with_waveform(id(3), 8.0, 2.0, 0.0, LfoWaveform::Square)
+                .unwrap(),
+            PreparedModulationSource::macro_value(id(4), 8, 1.0).unwrap(),
+        ];
+        let rate = |source, amount| SourceModulationRoute {
+            parameter: SourceModulationParameter::FreeLfoRate,
+            ..route(source, 0, amount)
+        };
+        let routes = prepare(
+            &sources,
+            &[route(0, 1, 0.25), rate(2, 0.25), rate(3, -0.125)],
+        )
+        .unwrap();
+        let mask = target_mask(&routes);
+        let mut phase = 0.0;
+        let expected: [f32; 13] = std::array::from_fn(|frame| {
+            let sample = (2.0 * phase - 1.0) as f32;
+            let octaves = if frame % 4 < 2 { 0.5_f64 } else { -1.5 };
+            phase = (phase + 0.125 * octaves.exp2()) % 1.0;
+            sample
+        });
+        let mut whole = ModulationSourceBank::new(&sources, 13).unwrap();
+        whole.begin();
+        whole
+            .render_chunk_with_routes(13, None, None, &routes, mask)
+            .unwrap();
+        assert_eq!(whole.samples(id(1)).unwrap(), expected);
+        whole.rollback();
+
+        whole.begin();
+        let mut start = 0;
+        for count in [1, 7, 5] {
+            whole
+                .render_chunk_with_routes(count, None, None, &routes, mask)
+                .unwrap();
+            let samples = &expected[start..start + count];
+            assert_eq!(whole.samples(id(1)).unwrap(), samples);
+            for (&actual, &sample) in whole.samples(id(2)).unwrap().iter().zip(samples) {
+                assert_eq!(actual, (0.5 + 0.25 * f64::from(sample)) as f32);
+            }
+            start += count;
+        }
+        whole.commit().unwrap();
+
+        let tempo = PreparedModulationSource::tempo(id(1), 8.0, 120.0, 1.0, 0.0).unwrap();
+        let mut incompatible = sources;
+        incompatible[0] = tempo;
+        assert!(prepare(&incompatible, &[rate(2, 0.25)]).is_err());
+        assert!(prepare(&sources, &[rate(1, 0.25), route(0, 1, 0.25)]).is_err());
     }
 
     #[test]

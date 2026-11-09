@@ -274,6 +274,7 @@ impl EffectModulation {
                         source_routes.push(SourceModulationRoute {
                             source,
                             target,
+                            parameter: hex_lattice::SourceModulationParameter::MacroValue,
                             amount,
                             range,
                         });

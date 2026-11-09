@@ -30,6 +30,14 @@ impl LfoRate {
         Ok(Self(frequency_hz / sample_rate))
     }
 
+    /// Scale a validated step and saturate at Nyquist.
+    pub fn scaled(self, multiplier: f64) -> Result<Self, InvalidLfo> {
+        if !multiplier.is_finite() || multiplier < 0.0 {
+            return Err(InvalidLfo);
+        }
+        Ok(Self((self.0 * multiplier).min(0.5)))
+    }
+
     /// Prepare a tempo-synced rate, where `beats_per_cycle` uses quarter-note beats.
     pub fn tempo(
         sample_rate: f64,
@@ -144,6 +152,23 @@ impl ModulationLfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scaled_rates_bound_phase_steps_and_keep_zero_stopped() {
+        let base = LfoRate::free(8.0, 1.0).unwrap();
+        assert!(base.scaled(f64::NAN).is_err());
+        assert!(base.scaled(-1.0).is_err());
+        let rate = base.scaled(16.0).unwrap();
+        let mut ramp =
+            ModulationLfo::new_with_waveform(rate, 0.0, LfoWaveform::RisingRamp).unwrap();
+        let mut samples = [0.0; 3];
+        ramp.render(&mut samples);
+        assert_eq!(samples, [-1.0, 0.0, -1.0]);
+        let zero = LfoRate::free(8.0, 0.0).unwrap().scaled(16.0).unwrap();
+        ramp.set_rate(zero);
+        ramp.render(&mut samples);
+        assert_eq!(samples, [0.0; 3]);
+    }
 
     #[test]
     fn classic_waveforms_follow_their_bipolar_phase_laws() {
