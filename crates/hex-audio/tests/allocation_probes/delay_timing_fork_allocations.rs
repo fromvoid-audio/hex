@@ -273,3 +273,49 @@ fn delay_tail_split_control_and_observation_are_allocation_free() {
         (0, 0, 0, 0)
     );
 }
+
+#[test]
+fn closed_delay_graph_budget_refuses_before_allocating_any_ring() {
+    use hex_devices::delay::DEFINITION;
+    use hex_engine::{AudioCandidateEffects, AudioCandidatePreparation, AudioSourceContext};
+    use hex_project::{Command, Editor, Project};
+
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        return;
+    }
+    const RATE: u32 = 192_000;
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 4).unwrap();
+    for _ in 0..3 {
+        editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: DEFINITION.default_state().unwrap(),
+            })
+            .unwrap();
+    }
+    let registry = hex_devices::native_registry().unwrap();
+    let effects = AudioCandidateEffects::new(&registry);
+    let quote = effects.quote(editor.project(), 0).unwrap();
+    let limits = quote.storage_reservation(0).unwrap();
+    let mut preparation = AudioCandidatePreparation::try_new_on_control(0, limits).unwrap();
+
+    let mut result = None;
+    let counts = measure(|| {
+        result = Some(effects.prepare(
+            &mut preparation,
+            editor.project(),
+            3,
+            AudioSourceContext {
+                project_generation: 2,
+                editor_revision: 8,
+            },
+            None,
+        ));
+    });
+    assert_eq!(
+        result.unwrap(),
+        Err(hex_engine::AudioStorageError::UnsupportedGraph)
+    );
+    assert!(counts.bytes_total < u64::from(RATE) * 16 * std::mem::size_of::<[f32; 2]>() as u64);
+    preparation.cleanup_on_control().unwrap();
+}
