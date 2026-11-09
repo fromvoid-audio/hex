@@ -1026,6 +1026,7 @@ pub(super) struct WorkerEvents {
 pub(super) struct ControlPoll {
     pub pending: bool,
     pub gesture: Option<GestureRequest>,
+    pub editor_take: Option<u64>,
 }
 
 impl WorkerEvents {
@@ -1521,6 +1522,12 @@ impl WorkerEvents {
                 Ok(request) => return Some(request),
                 Err(mpsc::TryRecvError::Disconnected) => return None,
                 Err(mpsc::TryRecvError::Empty) => {}
+            }
+            if let Some(request_id) = control_pending.editor_take {
+                return Some(QueuedRequest::continuation(
+                    Request::ContinuePluginEditorRecording { request_id },
+                    document_intent,
+                ));
             }
             if let Some(gesture) = control_pending.gesture {
                 return Some(QueuedRequest::continuation(

@@ -163,6 +163,81 @@ fn native_vst3_instrument_bounces_to_new_track() {
     );
 }
 
+pub(super) fn replay_reopened_instrument(
+    h: &mut ResidentHarness,
+    path: &std::path::Path,
+    device: hex_project::DeviceId,
+    blocks: usize,
+) -> Vec<[f32; 2]> {
+    let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    h.service.submit(Request::Open(path.to_owned())).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let opened = loop {
+        h.pump();
+        h.render_worker_step();
+        if let Ok(event) = h.service.try_event() {
+            assert!(event.error.is_none(), "{:?}", event.error);
+            if event.project_replaced {
+                break event;
+            }
+        }
+        assert!(Instant::now() < deadline, "replay open did not complete");
+    };
+    let first_applied =
+        super::super::resident_lifecycle::finish_replacement(h, &opened, old_output);
+    let type_id = opened
+        .state
+        .project
+        .device(device)
+        .unwrap()
+        .state()
+        .type_id();
+    let foreign_ready = |h: &ResidentHarness| {
+        h.submitted_observation()
+            .unwrap()
+            .foreign_processor(device.value(), type_id)
+            == Some(true)
+    };
+    if !foreign_ready(h) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !foreign_ready(h) {
+            h.pump();
+            h.render_worker_step();
+            if let Ok(event) = h.service.try_event() {
+                assert!(event.error.is_none(), "{:?}", event.error);
+            }
+            assert!(
+                Instant::now() < deadline,
+                "restored SDK source unavailable: {:?}; {:?}",
+                h.unavailable,
+                h.plugin_progress.lock().unwrap()
+            );
+        }
+        h.applied(first_applied);
+    }
+    assert_eq!(
+        opened.state.project.as_ref(),
+        &hex_storage::load(path).unwrap()
+    );
+    assert_eq!(
+        h.submitted_observation()
+            .unwrap()
+            .foreign_processor(device.value(), type_id),
+        Some(true)
+    );
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let mut pcm = Vec::with_capacity(blocks * 256);
+    for _ in 0..blocks {
+        pcm.extend(render_completed_block(h));
+    }
+    pcm
+}
+
 pub(super) fn render_completed_block(harness: &ResidentHarness) -> [hex_engine::Frame; 256] {
     let frames = harness.render_plugin_block();
     let deadline = Instant::now() + Duration::from_millis(800);
@@ -2980,71 +3055,8 @@ fn verify_instrument_takeover(
         let end_frame = end_frame.expect("a committed take has an actual restored output witness");
         let blocks = usize::try_from(end_frame / 256 + 8).unwrap();
         assert!(blocks < 512, "bounded signed replay fixture");
-        let replay = |h: &mut ResidentHarness, path: &std::path::Path| -> Vec<[f32; 2]> {
-            let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
-            h.service.submit(Request::Open(path.to_owned())).unwrap();
-            let deadline = Instant::now() + Duration::from_secs(3);
-            let opened = loop {
-                h.pump();
-                h.render_worker_step();
-                if let Ok(event) = h.service.try_event() {
-                    assert!(event.error.is_none(), "{:?}", event.error);
-                    if event.project_replaced {
-                        break event;
-                    }
-                }
-                assert!(Instant::now() < deadline, "replay open did not complete");
-            };
-            let first_applied =
-                super::super::resident_lifecycle::finish_replacement(h, &opened, old_output);
-            let foreign_ready = |h: &ResidentHarness| {
-                h.submitted_observation().unwrap().foreign_processor(
-                    device.value(),
-                    before.device(device).unwrap().state().type_id(),
-                ) == Some(true)
-            };
-            if !foreign_ready(h) {
-                let deadline = Instant::now() + Duration::from_secs(3);
-                while !foreign_ready(h) {
-                    h.pump();
-                    h.render_worker_step();
-                    if let Ok(event) = h.service.try_event() {
-                        assert!(event.error.is_none(), "{:?}", event.error);
-                    }
-                    assert!(
-                        Instant::now() < deadline,
-                        "restored SDK source unavailable: {:?}; {:?}",
-                        h.unavailable,
-                        h.plugin_progress.lock().unwrap()
-                    );
-                }
-                h.applied(first_applied);
-            }
-            assert_eq!(
-                opened.state.project.as_ref(),
-                &hex_storage::load(path).unwrap()
-            );
-            assert_eq!(
-                h.submitted_observation().unwrap().foreign_processor(
-                    device.value(),
-                    before.device(device).unwrap().state().type_id()
-                ),
-                Some(true)
-            );
-            h.audio
-                .as_mut()
-                .unwrap()
-                .control
-                .command(PlaybackCommand::Play)
-                .unwrap();
-            let mut pcm = Vec::with_capacity(blocks * 256);
-            for _ in 0..blocks {
-                pcm.extend(render_completed_block(h));
-            }
-            pcm
-        };
-        let expected = replay(h, &reference_path);
-        let actual = replay(h, &path);
+        let expected = replay_reopened_instrument(h, &reference_path, device, blocks);
+        let actual = replay_reopened_instrument(h, &path, device, blocks);
         assert_eq!(expected.len(), actual.len());
         let error = expected
             .iter()

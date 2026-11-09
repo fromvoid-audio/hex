@@ -8,6 +8,7 @@ use super::*;
 use crate::device_gesture::{PluginGesturePreparation, PreparedGesture};
 use native_automation_recording::{Lane, Step};
 use std::time::{Duration, Instant};
+mod editor;
 
 #[derive(Default)]
 pub(super) struct State {
@@ -34,6 +35,8 @@ struct Active {
     // The original plug-in editor owns a deeper Main receipt queue than a
     // Hex knob. Allocate this tail only after its exact cancellation is owed.
     failed_editor: Option<Vec<PluginParameterObservation>>,
+    editor_request: Option<u64>,
+    editor_start_error: Option<String>,
     interrupted: bool,
     sealing: bool,
     outcome: Option<Result<Step, String>>,
@@ -380,7 +383,9 @@ impl State {
         self.active
             .as_ref()
             .zip(snapshot)
-            .is_some_and(|(active, snapshot)| active.key == snapshot.key)
+            .is_some_and(|(active, snapshot)| {
+                active.editor_request.is_none() && active.key == snapshot.key
+            })
     }
     pub(super) fn actor_began(&mut self) {
         self.retired = None;
@@ -577,42 +582,7 @@ impl Preparation<'_> {
                 let observation = sink
                     .take_plugin_parameter_observation()
                     .ok_or("vst3 recording did not provide its original ready observation")?;
-                let scope = DeviceAutomationTakeScope::from_plugin_ready(context, &observation)?;
-                let PluginParameterObservation::Ready { key, source, .. } = observation else {
-                    return Err("vst3 recording did not begin with ready".into());
-                };
-                if key != snapshot.key {
-                    return Err("vst3 recording ready belongs to another gesture".into());
-                }
-                let directory = match self.recovery.and_then(Path::parent) {
-                    Some(directory) => directory.join("automation-drafts"),
-                    None => automation_draft::default_directory()?,
-                };
-                self.lane
-                    .begin(session, self.document_base, scope, source, &directory)?;
-                self.state.active = Some(Active {
-                    key,
-                    scope,
-                    source,
-                    has_points: false,
-                    path: self
-                        .lane
-                        .path()
-                        .ok_or("admitted automation draft has no recovery identity")?
-                        .to_owned(),
-                    source_lost: false,
-                    pending: None,
-                    released: false,
-                    ended: false,
-                    failed_observations: [None; 2],
-                    failed_editor: None,
-                    interrupted: false,
-                    sealing: false,
-                    outcome: None,
-                    deadline: None,
-                });
-                self.state.retired = None;
-                Ok::<_, String>(())
+                self.admit_ready(session, context, snapshot.key, observation)
             })();
             if let Err(reason) = admitted {
                 // No SDK point has been sent. Release the admitted empty hold
@@ -677,6 +647,53 @@ impl Preparation<'_> {
         } else {
             Ok(None)
         }
+    }
+
+    fn admit_ready(
+        &mut self,
+        session: &Session,
+        context: hex_engine::AudioSourceContext,
+        expected_key: crate::device_gesture::GestureKey,
+        observation: PluginParameterObservation,
+    ) -> Result<(), String> {
+        let scope = DeviceAutomationTakeScope::from_plugin_ready(context, &observation)?;
+        let PluginParameterObservation::Ready { key, source, .. } = observation else {
+            return Err("vst3 recording did not begin with ready".into());
+        };
+        if key != expected_key {
+            return Err("vst3 recording ready belongs to another gesture".into());
+        }
+        let directory = match self.recovery.and_then(Path::parent) {
+            Some(directory) => directory.join("automation-drafts"),
+            None => automation_draft::default_directory()?,
+        };
+        self.lane
+            .begin(session, self.document_base, scope, source, &directory)?;
+        self.state.active = Some(Active {
+            key,
+            scope,
+            source,
+            has_points: false,
+            path: self
+                .lane
+                .path()
+                .ok_or("admitted automation draft has no recovery identity")?
+                .to_owned(),
+            source_lost: false,
+            pending: None,
+            released: false,
+            ended: false,
+            failed_observations: [None; 2],
+            failed_editor: None,
+            editor_request: None,
+            editor_start_error: None,
+            interrupted: false,
+            sealing: false,
+            outcome: None,
+            deadline: None,
+        });
+        self.state.retired = None;
+        Ok(())
     }
 
     pub(super) fn drive(
@@ -805,6 +822,7 @@ impl Preparation<'_> {
     fn retire_detached(&mut self, context: hex_engine::AudioSourceContext) {
         if self.state.active.as_ref().is_some_and(|active| {
             self.state.terminal.is_none()
+                && active.editor_request.is_none()
                 && (active.source_lost
                     || context != active.scope.context()
                     || active.failed_editor.is_some())

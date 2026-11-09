@@ -15,7 +15,7 @@ use hex_session::service::{
 fn original_instrument_editor_joins_actual_main_take_and_late_restoration() {
     const CHILD: &str = "HEX_DESKTOP_ORIGINAL_EDITOR_RECORDING_CHILD";
     if std::env::var_os(CHILD).is_none() {
-        for case in ["release", "stop"] {
+        for case in ["release", "stop", "session"] {
             let files = Files::new();
             let result = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
@@ -42,13 +42,30 @@ fn original_instrument_editor_joins_actual_main_take_and_late_restoration() {
         return;
     }
     let _native = native_fixture();
-    let mut h = ResidentHarness::with_plugins(
-        host(),
-        Some(EffectPresentation {
-            input_frames: 0,
-            output_frames: 512,
-        }),
-    );
+    let session_recording = std::env::var(CHILD).as_deref() == Ok("session");
+    let files = Files::new();
+    let presentation = Some(EffectPresentation {
+        input_frames: 0,
+        output_frames: 512,
+    });
+    let mut h = if session_recording {
+        let root = files.0.canonicalize().unwrap();
+        let mut selected = selection();
+        let module = root.join("original.vst3");
+        super::ui::copy_original_module(&selected.module, &module);
+        selected.module = module;
+        hex_ui::write_plugin_effect_test_catalog(&root, &selected, "Instrument|Synth", 0).unwrap();
+        ResidentHarness::with_plugins_at_rate_and_catalog_recovery(
+            host(),
+            presentation,
+            48_000,
+            8192,
+            root.join("plugin-catalog.json"),
+            root.join("recording.hex-journal"),
+        )
+    } else {
+        ResidentHarness::with_plugins(host(), presentation)
+    };
     assert!(h.next().error.is_none());
     let mut applied = h.applied(0).0;
     let added = h.run(Request::Edit(Command::AddMidiTrack {
@@ -95,6 +112,7 @@ fn original_instrument_editor_joins_actual_main_take_and_late_restoration() {
         .id();
     let class = selection().cid;
     applied = h.applied(applied).0;
+    let mut before = Arc::clone(&inserted.state.project);
     for (parameter, value) in [(7, 0.25), (11, 0.5)] {
         let context = h.submitted.unwrap().1.context;
         let edited = automation::edit_with_running_callback(
@@ -113,6 +131,7 @@ fn original_instrument_editor_joins_actual_main_take_and_late_restoration() {
             },
         );
         assert!(edited.error.is_none(), "{:?}", edited.error);
+        before = Arc::clone(&edited.state.project);
         applied = h.applied(applied).0;
     }
     let context = h.submitted.unwrap().1.context;
@@ -140,6 +159,10 @@ fn original_instrument_editor_joins_actual_main_take_and_late_restoration() {
     }
     let baseline = instruments::render_completed_block(&h)[0];
     assert!(baseline[0] > 0.0);
+    if session_recording {
+        verify_session_recording(&mut h, input, before, applied, &files.0, baseline[0]);
+        return;
+    }
     let wrong_class = PluginEditorRecordingInput {
         class: [0; 16],
         ..input
@@ -227,6 +250,153 @@ fn original_instrument_editor_joins_actual_main_take_and_late_restoration() {
         512
     );
     assert!(probe(&h, EditorRecordingProbe::Take).is_none());
+}
+
+fn verify_session_recording(
+    h: &mut ResidentHarness,
+    input: PluginEditorRecordingInput,
+    before: Arc<hex_project::Project>,
+    mut applied: u64,
+    directory: &std::path::Path,
+    baseline: f32,
+) {
+    use crate::native_audio::tests::resident_preview::SESSION_RECORDING_OBSERVATIONS;
+    use hex_session::service::DeviceAutomationTakeProgress as Progress;
+    const ID: u64 = 23;
+    let started = h.run(Request::StartPluginEditorRecording {
+        request_id: ID,
+        input,
+    });
+    assert_eq!(
+        started.device_automation_take_complete.unwrap().progress,
+        Progress::Started
+    );
+    let safety = h.run(Request::QueryDeviceAutomationCloseSafety { request_id: 27 });
+    assert_eq!(
+        safety.device_automation_take_complete.unwrap().progress,
+        Progress::CloseBlocked
+    );
+    let perform_gate = PathBuf::from(std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap());
+    let end_gate = PathBuf::from(std::env::var_os("HEX_ORIGINAL_EDITOR_END_RELEASE").unwrap());
+    std::fs::write(&perform_gate, b"perform").unwrap();
+    let until = Instant::now() + Duration::from_secs(3);
+    while SESSION_RECORDING_OBSERVATIONS.lock().unwrap().is_empty() {
+        instruments::render_completed_block(h);
+        assert!(
+            Instant::now() < until,
+            "actual editor value did not reach the writer"
+        );
+    }
+    std::fs::write(&end_gate, b"end").unwrap();
+    let committed = loop {
+        h.pump();
+        // The Session writer can synchronously await the next publication
+        // callback. Pace native PCM without waiting for a Session poll here.
+        h.render_worker_step();
+        if let Ok(event) = h.service.try_event()
+            && let Some(completion) = event.device_automation_take_complete.as_ref()
+            && completion.request_id == ID
+        {
+            assert!(event.error.is_none(), "{:?}", event.error);
+            assert_eq!(completion.progress, Progress::Committed);
+            break event;
+        }
+        assert!(Instant::now() < until, "editor take did not publish");
+    };
+    // Save and Open may create fresh SDK workers. Only the original
+    // recording worker should see the synthetic editor trigger.
+    std::fs::remove_file(perform_gate).unwrap();
+    std::fs::remove_file(end_gate).unwrap();
+    let observations = SESSION_RECORDING_OBSERVATIONS.lock().unwrap().clone();
+    let [Observation::Delivered(point), Observation::Restored(end)] = observations.as_slice()
+    else {
+        panic!("exact original point and restoration: {observations:?}");
+    };
+    let project = &committed.state.project;
+    let device = project.device(input.device).unwrap();
+    let old = before.device(input.device).unwrap();
+    let target = DeviceAutomationTarget::Vst3 {
+        parameter: input.parameter,
+    };
+    assert_eq!(old.state(), device.state());
+    let lane = device.automation_target(target).unwrap();
+    assert_eq!(lane.points, old.automation_target(target).unwrap().points);
+    assert_eq!(lane.vst3_class, Some(input.class));
+    let [span] = lane.touch.as_slice() else {
+        panic!("one canonical touch")
+    };
+    let clock =
+        hex_engine::PreparedTempoMap::prepare(project.tempo_map().clone(), project.sample_rate())
+            .unwrap();
+    assert_eq!(
+        span.start,
+        clock
+            .frame_to_beat(point.application.origin.content_frame)
+            .unwrap()
+    );
+    assert_eq!(
+        span.end,
+        clock
+            .frame_to_beat(end.application.origin.content_frame)
+            .unwrap()
+    );
+    assert_eq!(span.steps.len(), 1);
+    assert_eq!(span.steps[0].value.get(), 0.75);
+    applied = h.applied(applied).0;
+    let undone = automation::edit_with_running_callback(h, Request::Undo);
+    assert_eq!(undone.state.project, before);
+    applied = h.applied(applied).0;
+    let redone = automation::edit_with_running_callback(h, Request::Redo);
+    assert_eq!(&redone.state.project, project);
+    h.applied(applied);
+    let safety = h.run(Request::QueryDeviceAutomationCloseSafety { request_id: 28 });
+    assert_eq!(
+        safety.device_automation_take_complete.unwrap().progress,
+        Progress::CloseSafe
+    );
+    let path = directory.join("recorded-editor.hex");
+    let saved = h.run(Request::SaveNew(path.clone()));
+    assert!(saved.save_complete && saved.error.is_none());
+    assert_eq!(hex_storage::load(&path).unwrap(), *saved.state.project);
+
+    // Independent authored-Step oracle, calculated from the Main receipts
+    // instead of the committed overlay. Compare actual reopened SDK audio.
+    let step = |frame, value| AutomationPoint {
+        beat: clock.frame_to_beat(frame).unwrap(),
+        value: AutomationValue::new(value).unwrap(),
+        outgoing: AutomationInterpolation::Step,
+    };
+    let mut reference = hex_project::Editor::new((*before).clone(), 8).unwrap();
+    reference
+        .execute(Command::ReplaceDeviceAutomationTarget {
+            device: input.device,
+            target,
+            points: vec![
+                step(0, 0.25),
+                step(point.application.origin.content_frame, 0.75),
+                step(end.application.origin.content_frame, 0.25),
+            ],
+        })
+        .unwrap();
+    let reference_path = directory.join("editor-delivered-steps.hex");
+    hex_storage::save_new(&reference_path, reference.project()).unwrap();
+    let blocks = usize::try_from(end.application.origin.content_frame / 256 + 8).unwrap();
+    assert!(blocks < 128);
+    let expected =
+        instruments::replay_reopened_instrument(h, &reference_path, input.device, blocks);
+    let actual = instruments::replay_reopened_instrument(h, &path, input.device, blocks);
+    assert_eq!(expected.len(), actual.len());
+    assert!(actual.iter().any(|frame| frame[0] > 2.9 * baseline));
+    let error = expected
+        .iter()
+        .flatten()
+        .zip(actual.iter().flatten())
+        .map(|(left, right)| (left - right).abs())
+        .fold(0.0, f32::max);
+    assert!(
+        error < 1.0e-6,
+        "reopened editor take differs from the Main receipt oracle: {error}"
+    );
 }
 
 fn probe<T>(
