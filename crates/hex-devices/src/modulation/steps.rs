@@ -8,6 +8,7 @@ use hex_lattice_contract::{DeviceContractError as Error, DeviceTypeId, NativeDev
 pub use hex_lattice::{MAX_MODULATION_STEPS, ModulationStepDirection as Direction};
 
 pub const TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.modulator.steps");
+pub const MAX_STEPS_PER_BEAT: u32 = 16;
 const FREE_VERSION: u32 = 1;
 const ARRANGEMENT_VERSION: u32 = 2;
 
@@ -15,6 +16,11 @@ const ARRANGEMENT_VERSION: u32 = 2;
 pub enum Timing {
     FreeMicros(u32),
     Arrangement { steps_per_beat: u32 },
+}
+
+impl Timing {
+    pub const DEFAULT_FREE: Self = Self::FreeMicros(125_000);
+    pub const DEFAULT_ARRANGEMENT: Self = Self::Arrangement { steps_per_beat: 4 };
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -27,7 +33,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            timing: Timing::FreeMicros(125_000),
+            timing: Timing::DEFAULT_FREE,
             direction: Direction::Forward,
             pattern: vec![-32767, 0, 32767, 0],
         }
@@ -39,7 +45,7 @@ impl Settings {
         let valid_timing = match self.timing {
             Timing::FreeMicros(micros) => (MIN_MICROS..=MAX_MICROS).contains(&micros),
             Timing::Arrangement { steps_per_beat } => {
-                steps_per_beat.is_power_of_two() && steps_per_beat <= 16
+                steps_per_beat.is_power_of_two() && steps_per_beat <= MAX_STEPS_PER_BEAT
             }
         };
         if valid_timing
