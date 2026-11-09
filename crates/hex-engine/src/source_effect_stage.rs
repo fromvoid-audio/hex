@@ -94,6 +94,13 @@ impl SourceEffectStages {
         self.chains.is_empty()
     }
 
+    pub(crate) fn has_monitor_tail(&self) -> bool {
+        self.chains
+            .iter()
+            .flatten()
+            .any(|chain| !chain.committed_range_is_quiescent(0..chain.len()))
+    }
+
     pub(crate) fn has_tail(&self, index: usize) -> bool {
         self.chains
             .get(index)
