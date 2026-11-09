@@ -176,6 +176,12 @@ pub struct Retirement {
     pub status: ExitStatus,
     pub terminal: Option<Terminal>,
 }
+#[derive(Clone, Copy)]
+enum EditorTouchMode<'a> {
+    Single(protocol::EditorTouchPlan),
+    Group(&'a protocol::EditorTouchPlanSet),
+}
+
 /// Unique actual child. Move this into the existing joining worker, never into
 /// the callback. Drop may wait for actual process retirement on that lane.
 pub struct Prepared {
@@ -674,7 +680,13 @@ impl Prepared {
                 "editor touch requires an exact writable unlaned target",
             ));
         }
-        self.exchange_on_worker_with_metadata(block, None, None, true, Some(plan))
+        self.exchange_on_worker_with_metadata(
+            block,
+            None,
+            None,
+            true,
+            Some(EditorTouchMode::Single(plan)),
+        )
     }
 
     /// Deliver one authored input block to the same lease that observed the
@@ -695,7 +707,7 @@ impl Prepared {
         metadata: &AuthoredParameterMetadata,
         manual_parameter: Option<crate::transport::ParameterPoint>,
         observe_editor: bool,
-        editor_touch: Option<protocol::EditorTouchPlan>,
+        editor_touch: Option<EditorTouchMode<'_>>,
     ) -> Result<protocol::EditorPcm> {
         if !metadata.matches(self) {
             return Err(Error::Protocol("authored parameter source differs"));
@@ -783,7 +795,77 @@ impl Prepared {
                 "editor touch cannot reserve its exact restoration",
             ));
         }
-        self.exchange_armed_with_mode(block, manual, true, Some(plan))
+        self.exchange_armed_with_mode(block, manual, true, Some(EditorTouchMode::Single(plan)))
+    }
+
+    /// Exact grouped unlaned takeover on the original prepared SDK worker.
+    pub fn exchange_editor_group_touch_on_worker(
+        &mut self,
+        block: Block,
+        plan: &protocol::EditorTouchPlanSet,
+    ) -> Result<protocol::EditorPcm> {
+        self.validate_editor_group(&block, plan, None)?;
+        if plan.targets().iter().any(|target| target.reading) {
+            return Err(Error::Protocol("unlaned group cannot read authored input"));
+        }
+        self.exchange_on_worker_with_metadata(
+            block,
+            None,
+            None,
+            true,
+            Some(EditorTouchMode::Group(plan)),
+        )
+    }
+
+    /// Exact grouped takeover with authored input and per-target restoration.
+    pub fn exchange_armed_authored_with_editor_group_touch_on_worker(
+        &mut self,
+        block: Block,
+        plan: &protocol::EditorTouchPlanSet,
+        manual: Option<crate::transport::ParameterPoint>,
+    ) -> Result<protocol::EditorPcm> {
+        self.validate_editor_group(&block, plan, manual)?;
+        self.exchange_armed_with_mode(block, manual, true, Some(EditorTouchMode::Group(plan)))
+    }
+
+    fn validate_editor_group(
+        &self,
+        block: &Block,
+        plan: &protocol::EditorTouchPlanSet,
+        manual: Option<crate::transport::ParameterPoint>,
+    ) -> Result<()> {
+        let points = block.parameters.as_slice();
+        let mut reserved = points.len() + usize::from(manual.is_some());
+        for target in plan.targets() {
+            let id = target.parameter;
+            if !self.has_armed_authored_parameter(id) || manual.is_some_and(|point| point.id == id)
+            {
+                return Err(Error::Protocol(
+                    "editor group requires exact writable targets",
+                ));
+            }
+            if target.reading {
+                if !points
+                    .iter()
+                    .any(|point| point.id == id && point.frame == 0)
+                {
+                    return Err(Error::Protocol(
+                        "editor group is missing its authored restoration",
+                    ));
+                }
+            } else {
+                if points.iter().any(|point| point.id == id) {
+                    return Err(Error::Protocol("unlaned group target has authored input"));
+                }
+                reserved += 1;
+            }
+        }
+        if reserved > crate::transport::MAX_PARAMETER_POINTS {
+            return Err(Error::Protocol(
+                "editor group cannot reserve its exact restorations",
+            ));
+        }
+        Ok(())
     }
 
     fn exchange_armed_with_mode(
@@ -791,7 +873,7 @@ impl Prepared {
         block: Block,
         manual_parameter: Option<crate::transport::ParameterPoint>,
         observe_editor: bool,
-        editor_touch: Option<protocol::EditorTouchPlan>,
+        editor_touch: Option<EditorTouchMode<'_>>,
     ) -> Result<protocol::EditorPcm> {
         let metadata = self
             .authored_parameter_metadata
@@ -816,7 +898,7 @@ impl Prepared {
         metadata: Option<&AuthoredParameterMetadata>,
         manual_parameter: Option<crate::transport::ParameterPoint>,
         observe_editor: bool,
-        editor_touch: Option<protocol::EditorTouchPlan>,
+        editor_touch: Option<EditorTouchMode<'_>>,
     ) -> Result<protocol::EditorPcm> {
         if self.faulted || self.retired.is_some() {
             return Err(Error::Protocol("instance lease is retired or faulted"));
@@ -840,7 +922,7 @@ impl Prepared {
         metadata: Option<&AuthoredParameterMetadata>,
         manual_parameter: Option<crate::transport::ParameterPoint>,
         observe_editor: bool,
-        editor_touch: Option<protocol::EditorTouchPlan>,
+        editor_touch: Option<EditorTouchMode<'_>>,
     ) -> Result<protocol::EditorPcm> {
         self.check_live_capture_deadline()?;
         self.check_parameter_page_deadline()?;
@@ -849,7 +931,8 @@ impl Prepared {
             .sequence
             .checked_add(1)
             .ok_or(Error::Protocol("instance sequence exhausted"))?;
-        let mut bytes = [0; crate::transport::wire::MAX_PACKET_BYTES + 24];
+        let mut bytes = [0; crate::transport::wire::MAX_PACKET_BYTES
+            + protocol::EditorTouchPlanSet::WIRE_BYTES];
         let mut cursor = Cursor::new(bytes.as_mut_slice());
         if let Some(metadata) = metadata {
             crate::transport::wire::write_authored(&mut cursor, &block, manual_parameter, &|id| {
@@ -861,16 +944,24 @@ impl Prepared {
         .map_err(Error::Io)?;
         let mut length = cursor.position() as usize;
         if let Some(plan) = editor_touch {
-            let plan = plan.wire()?;
-            let end = length + plan.len();
-            bytes
-                .get_mut(length..end)
-                .ok_or(Error::Protocol(
-                    "editor touch packet extent exceeds its bound",
-                ))?
-                .copy_from_slice(&plan);
-            length = end;
-            bytes[5] |= (protocol::EDITOR_TOUCH_BIT >> 8) as u8;
+            let mut append = |plan: &[u8], bit: u16| -> Result<()> {
+                let end = length + plan.len();
+                bytes
+                    .get_mut(length..end)
+                    .ok_or(Error::Protocol(
+                        "editor touch packet extent exceeds its bound",
+                    ))?
+                    .copy_from_slice(plan);
+                length = end;
+                bytes[5] |= (bit >> 8) as u8;
+                Ok(())
+            };
+            match plan {
+                EditorTouchMode::Single(plan) => append(&plan.wire()?, protocol::EDITOR_TOUCH_BIT)?,
+                EditorTouchMode::Group(plan) => {
+                    append(&plan.wire(), protocol::EDITOR_GROUP_TOUCH_BIT)?
+                }
+            }
         }
         if observe_editor {
             bytes[5] |= (protocol::EDITOR_PCM_BIT >> 8) as u8;
@@ -889,8 +980,17 @@ impl Prepared {
                 self.config.binding,
             )?));
         }
-        let output = if let Some(plan) = editor_touch {
+        let output = if let Some(EditorTouchMode::Single(plan)) = editor_touch {
             protocol::editor_touch_pcm(
+                self.packet.data(),
+                &self.config,
+                self.sequence,
+                self.last_pcm_edit_sequence,
+                plan,
+                self.last_pcm_restoration_sequence,
+            )?
+        } else if let Some(EditorTouchMode::Group(plan)) = editor_touch {
+            protocol::editor_group_touch_pcm(
                 self.packet.data(),
                 &self.config,
                 self.sequence,
@@ -909,14 +1009,14 @@ impl Prepared {
             protocol::EditorPcm {
                 block: protocol::pcm(self.packet.data(), &self.config, self.sequence)?,
                 performs: protocol::EditorPerforms::default(),
-                restoration: None,
+                restorations: Default::default(),
             }
         };
         token.check()?;
         if let Some(last) = output.performs.as_slice().last() {
             self.last_pcm_edit_sequence = last.sequence;
         }
-        if let Some(restored) = output.restoration {
+        if let Some(restored) = output.restorations.as_slice().last() {
             self.last_pcm_restoration_sequence = restored.sequence;
         }
         self.sequence = next;
