@@ -140,10 +140,9 @@ impl BoundProgram {
             return Err(Invalid("foreign automation source and tempo rates differ"));
         }
         let revision = source.revision;
-        Ok(Program::prepare(
+        Ok(Program::prepare_source(
             lanes,
-            source.class,
-            source.parameters,
+            source,
             tempo,
             QuantumProfile::arbitrary(source.quantum_frames, max_runs),
         )?
@@ -377,6 +376,52 @@ impl ForeignProcessors for WithPrograms<'_> {
 }
 
 impl Program {
+    fn prepare_source(
+        lanes: &[DeviceAutomation],
+        source: hex_lattice::ForeignAutomationSource<'_>,
+        tempo: &TempoMap,
+        profile: QuantumProfile,
+    ) -> Result<Option<Self>, Invalid> {
+        let Some(raw_id) = source.dense_parameter else {
+            return Self::prepare(lanes, source.class, source.parameters, tempo, profile);
+        };
+        if source.parameters.len() > MAX_POINTS
+            || source
+                .parameters
+                .windows(2)
+                .any(|pair| pair[0].id >= pair[1].id)
+            || !source
+                .parameters
+                .iter()
+                .any(|parameter| parameter.id == raw_id && parameter.steps == 0)
+            || lanes.iter().any(|lane| {
+                lane.is_reading()
+                    && lane.target == (DeviceAutomationTarget::Vst3 { parameter: raw_id })
+            })
+        {
+            return Err(Invalid(
+                "dense vst3 modulation conflicts with the authored queue",
+            ));
+        }
+        // The dense lane already supplies the raw ID at every sample. Other
+        // metadata keeps its original sparse authored or static-base path.
+        let mut sparse = [ParameterCapability {
+            id: 0,
+            steps: 0,
+            normalized_base_bits: 0,
+        }; MAX_POINTS];
+        let mut count = 0;
+        for &parameter in source
+            .parameters
+            .iter()
+            .filter(|parameter| parameter.id != raw_id)
+        {
+            sparse[count] = parameter;
+            count += 1;
+        }
+        Self::prepare(lanes, source.class, &sparse[..count], tempo, profile)
+    }
+
     /// Compile authored read and exact canonical bases for the armed source.
     /// Parameters outside authored read receive constant SDK bases; stepped
     /// authored parameters use quantized holds. Every point shares the same

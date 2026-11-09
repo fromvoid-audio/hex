@@ -1376,15 +1376,23 @@ fn compile_effect_devices(
             .prepare_runtime_instance_with_automation(identity, &migrated, context, parameters)
             .map_err(|_| Invalid("native device state or automation could not be prepared"))?;
         let processor = prepared_device.processor;
-        let modulation = modulation
-            .map(|plan| {
+        let modulation = match (modulation, processor.as_ref()) {
+            (Some(plan), Some(hex_lattice::PreparedProcessorFactory::Foreign(facts))) => {
+                plan.prepare_foreign(device, identity, registry, *facts, sample_rate)?
+            }
+            (Some(_), None) if migrated.type_id() == hex_lattice_contract::VST3_DEVICE_TYPE_ID => {
+                // Unavailable admitted VST3 metadata keeps its authored bank in
+                // the document for later restoration without a runtime lane.
+                None
+            }
+            (Some(plan), _) => {
                 let definition = registry
                     .definition(migrated.type_id())
                     .ok_or(Invalid("modulation requires a native effect provider"))?;
-                plan.prepare(&migrated, definition, processor.as_ref())
-                    .map_err(|error| Invalid(error.0))
-            })
-            .transpose()?;
+                Some(plan.prepare(&migrated, definition, processor.as_ref())?)
+            }
+            (None, _) => None,
+        };
         // An explicitly admitted unavailable effect has no factory. Keep its
         // canonical lanes through document staging; the restored foreign
         // worker must still prove its exact metadata before any playback.
