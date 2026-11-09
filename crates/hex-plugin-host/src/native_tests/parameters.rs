@@ -1330,7 +1330,7 @@ fn actual_sdk_edit_during_stopped_capture_refuses_incoherent_snapshot() {
 fn exact_pcm_editor_performs_exclude_overwritten_values_without_consuming_receipts() {
     use crate::protocol::ParameterEditKind::{Begin, End, Perform};
 
-    for (variant, raw_id, min_ready) in [(89, 0, 1), (135, 7, 4)] {
+    for (variant, raw_id, min_ready) in [(89, 0, 1), (135, 7, 4), (147, 7, 1)] {
         let case = Case::new();
         let mut instance = Prepared::prepare(
             &build(),
@@ -1340,7 +1340,7 @@ fn exact_pcm_editor_performs_exclude_overwritten_values_without_consuming_receip
             case.setup_restore(variant),
         )
         .unwrap();
-        if variant == 135 {
+        if variant == 147 {
             let class = instance.configuration().identity.class;
             let metadata = instance
                 .read_authored_parameter_metadata_on_control(class, &[7])
@@ -1368,7 +1368,7 @@ fn exact_pcm_editor_performs_exclude_overwritten_values_without_consuming_receip
         let mut sequence = 1;
         loop {
             let mut input = request(instance.configuration(), sequence);
-            let authored = variant == 135 && sequence == 1;
+            let authored = variant == 147 && sequence == 1;
             if authored {
                 input
                     .parameters
