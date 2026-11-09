@@ -29,6 +29,11 @@ plan = module("scope_fixture", "ci_plan.py")
 inputs = module("build_inputs_fixture", "build_inputs.py")
 ci = module("runner_scope_fixture", "local-ci.py")
 
+METER_BOUNDARY = ["editor::output_meter_ui_test::", "editor::refresh_state::",
+                  "editor::track_meters::decay::", "editor::track_meters::follower::",
+                  "editor::track_meters::main_output::tests::", "editor::track_meters::scale::",
+                  "editor::track_meters::selection::", "editor::track_meters::tests::"]
+
 
 class ScopeTests(unittest.TestCase):
     def test_all_feature_gated_ui_unit_targets_are_scheduled_once(self):
@@ -1682,7 +1687,7 @@ class ModuleScopeTests(unittest.TestCase):
         scale = "editor::track_meters::scale::"
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/src/editor/track_meters/scale.rs"], inventory, [owner]),
-            {owner: [scale]})
+            {owner: METER_BOUNDARY})
         admission = "editor::audio_admission::"
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/src/editor/audio_admission.rs"], inventory, [owner]),
@@ -1704,7 +1709,7 @@ class ModuleScopeTests(unittest.TestCase):
             root, ["crates/hex-ui/src/editor/play_intent.rs"], inventory, [owner]),
             {owner: [play_intent]})
         all_modules = sorted([admission, navigation, cpu, disk, thumbnail, "editor::pending_edit::",
-                              play_intent, recovery, recovery_integration, scale, *timeline])
+                              play_intent, recovery, recovery_integration, *METER_BOUNDARY, *timeline])
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/tests/unit_editor_state.rs"], inventory, [owner]),
             {owner: all_modules})
@@ -1731,7 +1736,8 @@ class ModuleScopeTests(unittest.TestCase):
             if unit:
                 self.assertTrue(ci.module_scoped(unit[0].argv))
                 for name in names:
-                    if name != recovery_integration and name not in timeline[:3]:
+                    if (name != recovery_integration and name not in timeline[:3]
+                            and (name not in METER_BOUNDARY or name == scale)):
                         self.assertIn(name, unit[0].argv)
                 if recovery in names:
                     library = next(step for step in steps if step.step_id == "ui-feature-tests")
@@ -1768,7 +1774,10 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::fade_calculation::", "editor::fades::",
                                   "editor::output_meter_ui_test::", "editor::refresh_state::",
                                   "editor::session_navigation::", "editor::session_navigation_ui_test::",
-                                  "editor::session_route_view::", "editor::track_defaults::", *names]})
+                                  "editor::session_route_view::", "editor::track_defaults::",
+                                  "editor::track_meters::decay::", "editor::track_meters::follower::",
+                                  "editor::track_meters::main_output::tests::", "editor::track_meters::scale::",
+                                  "editor::track_meters::selection::", "editor::track_meters::tests::", *names]})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_session.rs"], inventory, [owner]), {})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
                     "single_run": {owner: "ui-test-support"}, "module_filters": {owner: names}}
@@ -1974,7 +1983,7 @@ class ModuleScopeTests(unittest.TestCase):
         unit = "editor::refresh_state::"
         window = "editor::output_meter_ui_test::"
         names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/refresh_state.rs"], inventory, [owner])
-        self.assertEqual(names, {owner: [window, unit]})
+        self.assertEqual(names, {owner: METER_BOUNDARY})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/editor/refresh.rs"], inventory, [owner]),
                          {owner: ["editor::"]})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
@@ -2079,6 +2088,30 @@ class ModuleScopeTests(unittest.TestCase):
                                       "cargo_inventory": inventory, "paths": []})
             self.assertTrue(any(unit in step.argv for step in steps if "unit_editor_logic" in step.argv))
             self.assertTrue(any(integration in step.argv for step in steps if step.step_id == "ui-feature-tests"))
+
+    def test_console_meter_selection_keeps_unit_and_integration_coverage(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::track_meters::selection::"
+        integration = "editor::track_meters::tests::"
+        for path in ("track_meters/selection.rs", "track_meters/decay.rs",
+                     "track_meters/follower.rs", "track_meters/scale.rs", "refresh_state.rs"):
+            names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            self.assertEqual(names, {owner: METER_BOUNDARY})
+        parent = plan.module_test_filters(root, ["crates/hex-ui/src/editor/track_meters.rs"], inventory, [owner])
+        self.assertEqual(parent, {owner: ["editor::output_meter_ui_test::", "editor::refresh_state::",
+                                          "editor::track_meters::"]})
+        page = plan.module_test_filters(root, ["crates/hex-ui/src/editor/console_track_page.rs"], inventory, [owner])
+        self.assertEqual(page, {owner: ["editor::"]})
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
+                    "single_run": {owner: "ui-test-support"}, "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": []})
+        self.assertTrue(any(unit in step.argv for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(integration in step.argv for step in steps if step.step_id == "ui-feature-tests"))
 
     def crate(self, root: Path) -> list[dict]:
         files = {
