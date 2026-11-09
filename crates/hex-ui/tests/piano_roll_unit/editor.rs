@@ -16,5 +16,8 @@ mod midi_selection;
 #[path = "../../src/editor/midi_stroke.rs"]
 mod midi_stroke;
 #[allow(dead_code)]
+#[path = "../../src/editor/midi_velocity.rs"]
+mod midi_velocity;
+#[allow(dead_code)]
 #[path = "../../src/editor/midi_viewport_grid.rs"]
 mod midi_viewport_grid;
