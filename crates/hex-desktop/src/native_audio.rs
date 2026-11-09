@@ -1188,6 +1188,57 @@ impl WorkerAudioSink for NativeAudioSink {
         self.plugins
             .finish_parameter_gesture(context, key, sequence, accepted);
     }
+    fn confirm_source_effect_publication(
+        &mut self,
+        context: AudioSourceContext,
+        acceptance: hex_session::service::ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        use hex_session::service::ResidentPublicationAcceptance;
+        use std::time::{Duration, Instant};
+
+        let ResidentPublicationAcceptance::Submitted {
+            output_identity,
+            audio_revision,
+        } = acceptance
+        else {
+            return Ok(());
+        };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let control = self
+                .output
+                .as_mut()
+                .and_then(|output| output.publication.control())
+                .filter(|control| control.output_identity() == Some(output_identity))
+                .ok_or("source edit lost its audio output")?;
+            let status = &control.status;
+            if status.recording_source().is_some_and(|source| {
+                source.output_identity == output_identity
+                    && source.audio_revision == audio_revision
+                    && source.context == context
+            }) {
+                return Ok(());
+            }
+            if let Some((revision, reason)) = status.rejected_revision()
+                && revision == audio_revision
+            {
+                return Err(format!(
+                    "source edit playback refused · {}",
+                    reason.message()
+                ));
+            }
+            if status.device_fault.load(Acquire)
+                || status.render_fault.load(Acquire)
+                || Instant::now() >= deadline
+            {
+                // A queued candidate must not install after the editor refuses
+                // its revision. Retire this output before reporting loss.
+                self.relinquish_output();
+                return Err("source edit lost audio confirmation · restart audio".into());
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
     fn resident_publication_readiness(
         &mut self,
     ) -> hex_session::service::ResidentPublicationReadiness {

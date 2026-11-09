@@ -361,7 +361,7 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
         })
         .collect::<Result<Vec<_>, StorageError>>()?;
     let flat = Project::from_snapshot(snapshot).map_err(invalid)?;
-    let mut value: serde_json::Value = serde_json::from_slice(&crate::encode(&flat)?)?;
+    let mut value: serde_json::Value = serde_json::from_slice(&crate::encode_base(&flat)?)?;
     let base = value["version"].clone();
     value["version"] = version.into();
     value["modulation_base_version"] = base;
@@ -389,7 +389,7 @@ pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError
             .ok_or(StorageError::Invalid("modulation inventory missing"))?,
     )?;
     object.insert("version".into(), base.into());
-    let flat = crate::decode(&serde_json::to_vec(&value)?)?;
+    let flat = crate::decode_base(&serde_json::to_vec(&value)?)?;
     let mut snapshot = flat.snapshot();
     let mut rows = rows.into_iter();
     for device in super::device_automation::devices(&mut snapshot) {
