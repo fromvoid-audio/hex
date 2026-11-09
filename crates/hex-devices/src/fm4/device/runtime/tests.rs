@@ -528,3 +528,81 @@ fn committed_target_snapshot_finishes_existing_ramp_and_preserves_resolved_base_
         .unwrap();
     assert_eq!(copied, base);
 }
+
+#[test]
+fn an_unmapped_pressure_slot_retains_held_readings_until_its_identity_changes() {
+    use hex_lattice_contract::ModulationSourceId;
+    use std::num::NonZeroU64;
+
+    let settings = Fm4Settings::defaults();
+    let resources = BorrowedDeviceResources(&[]);
+    let tuning = hex_lattice::TuningTable::default();
+    let (_, instrument) = prepared(48_000, settings, &tuning);
+    let target = CARRIERS[0];
+    let route = PreparedPressureRoute::new(
+        target,
+        carrier_semantics(target.id).unwrap(),
+        -0.25,
+        [0.0, 1.0],
+    )
+    .unwrap();
+    let first = ModulationSourceId::new(7).unwrap();
+    let replacement = ModulationSourceId::new(8).unwrap();
+    let pair = |id, route| {
+        let factory = instrument.prepare_mutable_note_pressure(id, route).unwrap();
+        NativeInstrumentRuntimePair::new(factory.as_ref(), LIMITS).unwrap()
+    };
+    let mut listening = pair(first, None);
+    let mut mapped = pair(first, Some(route));
+    let mut replaced = pair(replacement, Some(route));
+    let mut initial = [[0.0; 2]; 11];
+    listening.begin_block();
+    listening
+        .process_block(
+            &[
+                on(1, 0, 60, 127),
+                NativeInstrumentEvent::NotePressure {
+                    frame_offset: 2,
+                    occurrence_id: NonZeroU64::new(1).unwrap(),
+                    value: 127,
+                },
+            ],
+            &mut initial,
+            &resources,
+        )
+        .unwrap();
+    listening.commit_block();
+
+    let mut modified = settings;
+    modified.carriers[0] = 0.5;
+    let (_, expected) = prepared(48_000, modified, &tuning);
+    let expected = expected.prepare_note(60, 127).unwrap();
+    let original = instrument.prepare_note(60, 127).unwrap();
+    for (index, frame) in initial.into_iter().enumerate() {
+        assert_eq!(frame, original.sample(index as u64, u64::MAX, &resources));
+    }
+
+    let mut pcm = [[0.0; 2]; 19];
+    mapped.inherit_from(&listening).unwrap();
+    mapped.begin_block();
+    mapped.process_block(&[], &mut pcm, &resources).unwrap();
+    mapped.commit_block();
+    for (index, frame) in pcm.into_iter().enumerate() {
+        assert_eq!(
+            frame,
+            expected.sample(11 + index as u64, u64::MAX, &resources)
+        );
+    }
+
+    let mut pcm = [[0.0; 2]; 13];
+    replaced.inherit_from(&mapped).unwrap();
+    replaced.begin_block();
+    replaced.process_block(&[], &mut pcm, &resources).unwrap();
+    replaced.commit_block();
+    for (index, frame) in pcm.into_iter().enumerate() {
+        assert_eq!(
+            frame,
+            original.sample(30 + index as u64, u64::MAX, &resources)
+        );
+    }
+}
