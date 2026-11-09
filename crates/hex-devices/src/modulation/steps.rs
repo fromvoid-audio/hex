@@ -1,10 +1,10 @@
 //! Version 1 stores microseconds per step, traversal, count, and signed
 //! little-endian step values. Preparation uses the admitted sample rate.
 use super::ramp::{MAX_MICROS, MIN_MICROS, duration_frames};
-use hex_lattice::{MAX_MODULATION_STEPS, ModulationSourceId, PreparedModulationSource};
+use hex_lattice::{ModulationSourceId, PreparedModulationSource};
 use hex_lattice_contract::{DeviceContractError as Error, DeviceTypeId, NativeDeviceState};
 
-pub use hex_lattice::ModulationStepDirection as Direction;
+pub use hex_lattice::{MAX_MODULATION_STEPS, ModulationStepDirection as Direction};
 
 pub const TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.modulator.steps");
 const VERSION: u32 = 1;
