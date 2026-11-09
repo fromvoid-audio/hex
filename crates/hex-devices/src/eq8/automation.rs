@@ -75,7 +75,15 @@ macro_rules! band_bindings {
             Binding::choice(DESCRIPTORS[200], CHOICE,
                 |s| match s.mode { ChannelMode::Stereo => 0, ChannelMode::LeftRight => 1, ChannelMode::MidSide => 2 },
                 |s, v| { s.mode = match v { 0 => ChannelMode::Stereo, 1 => ChannelMode::LeftRight, 2 => ChannelMode::MidSide, _ => return Err(DeviceContractError::InvalidParameterValue) }; Ok(()) }),
-            Binding::float(DESCRIPTORS[201], SEMANTICS, |s| s.gain, |s, v| s.gain = v),
+            Binding::float(
+                DESCRIPTORS[201],
+                hex_lattice_contract::ParameterSemantics {
+                    modulation: hex_lattice_contract::ParameterModulation::SampleRate,
+                    ..SEMANTICS
+                },
+                |s| s.gain,
+                |s, v| s.gain = v,
+            ),
         ];
     };
 }

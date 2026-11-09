@@ -513,6 +513,15 @@ impl PreparedNativeProcessor for PreparedEq8 {
             .then(|| automation::descriptor(id))
             .flatten()
     }
+    fn parameter_modulation_semantics(
+        &self,
+        id: ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        automation::semantics(id).filter(|semantics| {
+            self.supports_parameter_automation(id)
+                && semantics.modulation == hex_lattice_contract::ParameterModulation::SampleRate
+        })
+    }
     fn supports_smoothed_bypass(&self) -> bool {
         true
     }
