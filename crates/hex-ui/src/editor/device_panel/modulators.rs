@@ -9,7 +9,7 @@ use hex_engine::{
     buttons_modulator as buttons, follower_modulator as follower, lfo_modulator as lfo,
     macro_four_modulator as macro_four, macro_modulator as manual, math_modulator as math,
     mix_modulator as mix, note_counter_modulator as note_counter,
-    note_pressure_modulator as pressure, random_modulator as random,
+    note_pressure_modulator as pressure, ramp_modulator as ramp, random_modulator as random,
 };
 use hex_lattice_contract::{ParameterId, ParameterModulation};
 use hex_project::{
@@ -32,10 +32,11 @@ enum SourceKind {
     Buttons,
     Mix,
     NoteCounter,
+    Ramp,
 }
 
 impl SourceKind {
-    const ALL: [Self; 12] = [
+    const ALL: [Self; 13] = [
         Self::Lfo,
         Self::Follower,
         Self::Macro,
@@ -48,6 +49,7 @@ impl SourceKind {
         Self::Buttons,
         Self::Mix,
         Self::NoteCounter,
+        Self::Ramp,
     ];
 
     fn label(self) -> &'static str {
@@ -64,6 +66,7 @@ impl SourceKind {
             Self::Buttons => "buttons",
             Self::Mix => "mix",
             Self::NoteCounter => "note counter",
+            Self::Ramp => "ramp",
         }
     }
 
@@ -90,6 +93,7 @@ impl SourceKind {
             Self::Buttons => buttons::Settings::default().encode(),
             Self::Mix => mix::Settings::default().encode(),
             Self::NoteCounter => note_counter::Settings::default().encode(),
+            Self::Ramp => ramp::Settings::default().encode(),
             Self::Macro => manual::Settings::default().encode(),
             Self::MacroFour => macro_four::Settings::default().encode(),
             Self::Random => random::Settings {
@@ -223,12 +227,21 @@ enum CounterEdit {
 }
 
 #[derive(Clone, Copy)]
+enum RampEdit {
+    Duration { longer: bool },
+    Curve(ramp::Curve),
+    ToggleDirection,
+    ToggleLoop,
+}
+
+#[derive(Clone, Copy)]
 enum Edit {
     Add(SourceKind),
     ToggleSource(ModulationSourceId),
     ToggleButton(ModulationSourceId),
     ToggleButtons(MappingOutput),
     NoteCounter(ModulationSourceId, CounterEdit),
+    Ramp(ModulationSourceId, RampEdit),
     DuplicateSource(ModulationSourceId),
     RemoveSource(ModulationSourceId),
     Rate(ModulationSourceId, f64),
@@ -315,7 +328,7 @@ fn open_add_menu(
     let allow_note_pressure = view.state.as_ref().is_some_and(|state| {
         hex_engine::project_device_can_add_note_pressure(&state.project, target.device)
     });
-    let allow_note_counter = view.state.as_ref().is_some_and(|state| {
+    let allow_note_events = view.state.as_ref().is_some_and(|state| {
         hex_engine::project_device_has_modulation_note_events(&state.project, target.device)
     });
     let outputs_available = view
@@ -329,7 +342,7 @@ fn open_add_menu(
         .filter(|kind| match kind {
             SourceKind::Follower | SourceKind::AudioRate => allow_audio_input,
             SourceKind::NotePressure => allow_note_pressure,
-            SourceKind::NoteCounter => allow_note_counter,
+            SourceKind::NoteCounter | SourceKind::Ramp => allow_note_events,
             _ => true,
         })
         .map(|kind| MenuItem {
@@ -595,6 +608,7 @@ pub(super) fn panel(
             buttons::TYPE_ID => SourceKind::Buttons,
             mix::TYPE_ID => SourceKind::Mix,
             note_counter::TYPE_ID => SourceKind::NoteCounter,
+            ramp::TYPE_ID => SourceKind::Ramp,
             _ => continue,
         };
         let label = kind.label();
@@ -738,6 +752,62 @@ pub(super) fn panel(
                 }),
                 Edit::NoteCounter(source_id, CounterEdit::TogglePolarity),
             ));
+        }
+        if let SourceKind::Ramp = kind
+            && let Ok(settings) = ramp::Settings::decode(&source.state)
+        {
+            let duration = if settings.duration_micros < 1000 {
+                format!("{} µs", settings.duration_micros)
+            } else {
+                format!("{:.3} ms", f64::from(settings.duration_micros) / 1000.0)
+            };
+            let (curve, next) = match settings.curve {
+                ramp::Curve::Linear => ("linear", ramp::Curve::EaseIn),
+                ramp::Curve::EaseIn => ("ease in", ramp::Curve::EaseOut),
+                ramp::Curve::EaseOut => ("ease out", ramp::Curve::Linear),
+            };
+            row = row
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(2.0))
+                        .child(button(
+                            cx,
+                            source_key("shorter"),
+                            theme::text("−"),
+                            Edit::Ramp(source_id, RampEdit::Duration { longer: false }),
+                        ))
+                        .child(theme::text(duration))
+                        .child(button(
+                            cx,
+                            source_key("longer"),
+                            theme::text("+"),
+                            Edit::Ramp(source_id, RampEdit::Duration { longer: true }),
+                        )),
+                )
+                .child(button(
+                    cx,
+                    source_key("curve"),
+                    theme::text(curve),
+                    Edit::Ramp(source_id, RampEdit::Curve(next)),
+                ))
+                .child(button(
+                    cx,
+                    source_key("direction"),
+                    theme::text(if settings.falling {
+                        "falling"
+                    } else {
+                        "rising"
+                    }),
+                    Edit::Ramp(source_id, RampEdit::ToggleDirection),
+                ))
+                .child(button(
+                    cx,
+                    source_key("loop"),
+                    theme::text(if settings.looping { "loop" } else { "one shot" }),
+                    Edit::Ramp(source_id, RampEdit::ToggleLoop),
+                ));
         }
         if matches!(kind, SourceKind::NotePressure) {
             row = row.child(theme::text("one carrier"));
@@ -1338,7 +1408,7 @@ fn apply(
                     "one note pressure source is supported on an fm4 receiver",
                 ));
             }
-            if matches!(kind, SourceKind::NoteCounter)
+            if matches!(kind, SourceKind::NoteCounter | SourceKind::Ramp)
                 && !hex_engine::project_device_has_modulation_note_events(project, id)
             {
                 return Err(Invalid("this modulator requires instrument note events"));
@@ -1384,6 +1454,24 @@ fn apply(
                         .clamp(1, 128);
                 }
                 CounterEdit::TogglePolarity => settings.bipolar = !settings.bipolar,
+            }
+            source.state = settings.encode().map_err(unsupported)?;
+        }
+        Edit::Ramp(id, edit) => {
+            let source = find_source(&mut sources, id)?;
+            let mut settings = ramp::Settings::decode(&source.state).map_err(unsupported)?;
+            match edit {
+                RampEdit::Duration { longer } => {
+                    let micros = if longer {
+                        settings.duration_micros.saturating_mul(2)
+                    } else {
+                        settings.duration_micros / 2
+                    };
+                    settings.duration_micros = micros.clamp(ramp::MIN_MICROS, ramp::MAX_MICROS);
+                }
+                RampEdit::Curve(curve) => settings.curve = curve,
+                RampEdit::ToggleDirection => settings.falling = !settings.falling,
+                RampEdit::ToggleLoop => settings.looping = !settings.looping,
             }
             source.state = settings.encode().map_err(unsupported)?;
         }
