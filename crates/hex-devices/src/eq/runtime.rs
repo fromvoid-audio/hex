@@ -169,6 +169,13 @@ impl PreparedNativeProcessor for PreparedEq {
             .binary_search_by_key(&id, |grant| grant.descriptor.id)
             .is_ok()
     }
+    fn parameter_modulation_semantics(
+        &self,
+        id: ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        (id == OUTPUT_GAIN && self.supports_parameter_automation(id))
+            .then_some(OUTPUT_GAIN_SEMANTICS)
+    }
     fn parameter_automation_descriptor(&self, id: ParameterId) -> Option<ParameterDescriptor> {
         self.configuration
             .parameters
@@ -463,7 +470,12 @@ impl ModeFade {
         self.remaining = other.remaining;
         self.total = other.total;
     }
-    fn blend(&mut self, input: StereoFrame, current: [f64; 2]) -> [f64; 2] {
+    fn blend(
+        &mut self,
+        input: StereoFrame,
+        current: [f64; 2],
+        mapped_gain: Option<f64>,
+    ) -> [f64; 2] {
         if !self.is_active() {
             return current;
         }
@@ -505,8 +517,9 @@ impl ModeFade {
             return current;
         }
         let weight = f64::from(self.remaining) / f64::from(self.total);
+        let gain = mapped_gain.unwrap_or(self.gain);
         std::array::from_fn(|channel| {
-            current[channel] + (working[channel] * self.gain - current[channel]) * weight
+            current[channel] + (working[channel] * gain - current[channel]) * weight
         })
     }
 }
@@ -588,6 +601,7 @@ impl EqRuntime {
             automation::Targets {
                 gain: self.configuration.gain,
                 mode: self.configuration.mode,
+                mapped_gain: false,
             },
             None,
         );
@@ -731,13 +745,19 @@ impl EqRuntime {
                     working[channel] += (isolated - working[channel]) * self.audition_mix;
                 }
             }
-            self.gain += (targets.gain - self.gain) * 0.015625;
+            if targets.mapped_gain {
+                self.gain = targets.gain;
+            } else {
+                self.gain += (targets.gain - self.gain) * 0.015625;
+            }
             if self.mode == 2 {
                 working = [working[0] + working[1], working[0] - working[1]];
             }
-            let output = self
-                .mode_fade
-                .blend(input, [working[0] * self.gain, working[1] * self.gain]);
+            let output = self.mode_fade.blend(
+                input,
+                [working[0] * self.gain, working[1] * self.gain],
+                targets.mapped_gain.then_some(self.gain),
+            );
             *frame = if bypassed {
                 input
             } else {
