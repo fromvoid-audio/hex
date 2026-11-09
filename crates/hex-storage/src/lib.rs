@@ -78,7 +78,7 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = BUTTON_MODULATOR_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = MACRO_FOUR_MODULATOR_SCHEMA_VERSION;
 
 /// Schema70 stores an independent original source span for signed musical event placement.
 pub const MUSICAL_EVENT_SOURCE_SCHEMA_VERSION: u32 = 70;
@@ -129,6 +129,8 @@ pub const INSTRUMENT_MODULATION_SCHEMA_VERSION: u32 = 90;
 pub const NOTE_PRESSURE_MODULATOR_SCHEMA_VERSION: u32 = 91;
 /// A modulation inventory containing a latched Button source.
 pub const BUTTON_MODULATOR_SCHEMA_VERSION: u32 = 92;
+/// Schema93 admits the four-output Macro-4 module.
+pub const MACRO_FOUR_MODULATOR_SCHEMA_VERSION: u32 = 93;
 
 fn contains_larger_device_state(project: &Project) -> bool {
     schema::device_assets::authored_states(project)
@@ -190,9 +192,11 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// Native instrument touches use schema88 over the exact prior codec.
 /// Long touch lanes use schema89. FM4 source banks use schema90 over the
 /// prior project codec, including any instrument or long touch envelope.
-/// Note pressure on FM4 raises the reader floor to schema91. Button raises it to schema92.
+/// Note pressure on FM4 uses schema91. Button uses schema92. Macro-4 uses schema93.
 pub fn schema_version_for(project: &Project) -> u32 {
-    if schema::device_modulation::contains_button(project) {
+    if schema::device_modulation::contains_macro_four(project) {
+        MACRO_FOUR_MODULATOR_SCHEMA_VERSION
+    } else if schema::device_modulation::contains_button(project) {
         BUTTON_MODULATOR_SCHEMA_VERSION
     } else if schema::device_modulation::contains_note_pressure(project) {
         NOTE_PRESSURE_MODULATOR_SCHEMA_VERSION
@@ -426,7 +430,9 @@ impl From<serde_json::Error> for StorageError {
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 /// Nonempty serial units use schema80; flat projects retain their prior layout.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    if schema::device_modulation::contains_instrument_modulation(project) {
+    if schema::device_modulation::contains_macro_four(project)
+        || schema::device_modulation::contains_instrument_modulation(project)
+    {
         return encode_document(&schema::device_modulation::encode(project)?);
     }
     if schema::device_automation_touch::contains_extended(project) {
@@ -739,7 +745,8 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
         | AUDIO_RATE_MODULATOR_SCHEMA_VERSION
         | INSTRUMENT_MODULATION_SCHEMA_VERSION
         | NOTE_PRESSURE_MODULATOR_SCHEMA_VERSION
-        | BUTTON_MODULATOR_SCHEMA_VERSION => {
+        | BUTTON_MODULATOR_SCHEMA_VERSION
+        | MACRO_FOUR_MODULATOR_SCHEMA_VERSION => {
             schema::device_modulation::decode(bytes, header.version)
         }
         SERIAL_DEVICE_SCHEMA_VERSION => schema::serial_units::decode(bytes),
