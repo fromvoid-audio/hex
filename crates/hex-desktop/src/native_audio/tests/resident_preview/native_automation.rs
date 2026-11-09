@@ -93,14 +93,11 @@ fn native_fm4_recorded_touch_adopts_and_replays_the_actual_delivered_frames() {
     };
     let baseline: Vec<_> = (0..4).flat_map(|_| delivered(&h)).collect();
     assert!(baseline.iter().any(|frame| frame[0].abs() > 0.001));
-    let (source, transport_epoch) = h
-        .audio
-        .as_ref()
-        .unwrap()
-        .status()
-        .unwrap()
-        .live_native_parameter_source()
-        .unwrap();
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    let source = status.recording_source().unwrap();
+    let transport_epoch = status.transport_epoch.load(Acquire);
+    assert_eq!(source.context, context);
+    assert_ne!(transport_epoch, 0);
     let input =
         hex_engine::native_parameter_input_target(&base.state.project, device, kind).unwrap();
     let audio_target = Target {
