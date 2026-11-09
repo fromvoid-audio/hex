@@ -887,6 +887,13 @@ fn runtime_storage_preflight_bytes(
                 &mut total,
                 std::mem::size_of::<MutableInstrumentTrackRuntime>(),
             )?;
+            if let Some(modulation) = revision.session().instrument_modulation(id) {
+                checked_add(
+                    &mut total,
+                    std::mem::size_of::<hex_lattice::ModulationRuntime>()
+                        .checked_add(modulation.quoted_runtime_heap_bytes()?)?,
+                )?;
+            }
             if !revision.requires_control_sampler_sources()
                 && source_routing.receiver_index(index) == Some(index)
             {
