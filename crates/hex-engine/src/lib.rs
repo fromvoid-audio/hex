@@ -144,6 +144,8 @@ pub use hex_devices::modulation::mix as mix_modulator;
 pub use hex_devices::modulation::note_counter as note_counter_modulator;
 /// The authored note-pressure source codec. Active readings belong to the voice.
 pub use hex_devices::modulation::note_pressure as note_pressure_modulator;
+/// The authored Ramp duration, direction, curve and loop settings.
+pub use hex_devices::modulation::ramp as ramp_modulator;
 /// The authored reusable random sample-and-hold source codec.
 pub use hex_devices::modulation::random_hold as random_modulator;
 
