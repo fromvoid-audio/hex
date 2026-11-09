@@ -69,6 +69,12 @@ pub fn project_device_can_add_note_pressure(project: &Project, device: DeviceId)
             .any(|source| source.state.type_id() == note_pressure::TYPE_ID)
 }
 
+/// FM4's per-occurrence pressure grant is limited to carrier weights.
+pub fn fm4_note_pressure_parameter_supported(parameter: ParameterId) -> bool {
+    use hex_devices::fm4::device::parameter::carrier;
+    (carrier(1)..=carrier(4)).contains(&parameter)
+}
+
 /// State-aware eligibility for native device-panel mapping. Ownership is
 /// resolved from the current project. Preparation independently validates the
 /// actual factory, runtime binding and source program before publication.
@@ -254,7 +260,8 @@ pub(super) fn prepare_voice_pressure(
         return Err(Invalid("note pressure requires a carrier assignment"));
     };
     let invalid_target = || Invalid("note pressure carrier is unsupported");
-    if device_type != device.state().type_id() {
+    if device_type != device.state().type_id() || !fm4_note_pressure_parameter_supported(parameter)
+    {
         return Err(invalid_target());
     }
     let definition = registry
