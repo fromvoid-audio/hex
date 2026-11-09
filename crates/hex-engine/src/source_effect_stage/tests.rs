@@ -59,6 +59,7 @@ impl PreparedNativeProcessor for SquareRecipe {
 
 fn recipe(latency: Option<u32>) -> PreparedRuntimeInstance {
     PreparedRuntimeInstance {
+        modulation: None,
         automation: Default::default(),
         meter: Default::default(),
         // A synthetic processor identity in an internal prepared fixture.
