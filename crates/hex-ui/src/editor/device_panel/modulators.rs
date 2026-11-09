@@ -360,8 +360,8 @@ pub(super) fn panel(
             format!("add-modulator-{}", id.value()),
             theme::text("+ modulator"),
         )
-        .on_click(cx.listener(
-            move |view, event: &gpui::ClickEvent, window, cx| {
+        .on_click(
+            cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
                 cx.stop_propagation();
                 open_add_menu(
                     view,
@@ -371,8 +371,8 @@ pub(super) fn panel(
                     window,
                     cx,
                 );
-            },
-        ));
+            }),
+        );
         body = body.child(add_button);
     }
     if let Some(source) = selected
