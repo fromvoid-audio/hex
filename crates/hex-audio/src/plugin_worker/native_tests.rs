@@ -18,6 +18,14 @@ pub(crate) fn original_instance_with_inputs(
     binding: Binding,
     input_channels: u8,
 ) -> hex_plugin_host::native::Prepared {
+    original_instance_with_profile(binding, input_channels, 8)
+}
+
+fn original_instance_with_profile(
+    binding: Binding,
+    input_channels: u8,
+    quantum: u16,
+) -> hex_plugin_host::native::Prepared {
     use hex_plugin_host::{native::*, protocol::PresentationLatency};
     use hex_plugin_scan::macos::build_identity::InstanceBuild;
     use hex_plugin_state::ClassId;
@@ -48,7 +56,7 @@ pub(crate) fn original_instance_with_inputs(
             preparation: Preparation {
                 binding,
                 sample_rate: 48000.0,
-                quantum: 8,
+                quantum,
                 input_channels,
                 output_channels: 2,
                 limits: Limits {
@@ -439,4 +447,110 @@ fn actual_native_worker_cancellation_cannot_return_a_reusable_source() {
         NativeWorker::start_on_control(instance),
         Err(hex_plugin_host::Error::Cancelled)
     ));
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn original_joining_effect_worker_applies_each_reserved_sample() {
+    const CHILD: &str = "HEX_AUDIO_DENSE_EFFECT_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let test = thread::current().name().unwrap().to_owned();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &test, "--ignored", "--nocapture"])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "80")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr),
+        );
+        return;
+    }
+    let binding = Binding {
+        root: 1,
+        instance: 2,
+        graph: 3,
+        epoch: 4,
+    };
+    let mut instance = original_instance_with_profile(binding, 2, 256);
+    let child = instance.child_id_on_control();
+    let class = instance.configuration().identity.class;
+    let metadata = instance
+        .read_authored_parameter_metadata_on_control(class, &[0])
+        .unwrap();
+    instance
+        .arm_authored_parameter_metadata_on_control(metadata)
+        .unwrap();
+    let dense_data =
+        NativeWorker::preconstruction_dense_effect_data_bytes_on_control(&instance).unwrap();
+    let ordinary_data = NativeWorker::preconstruction_data_bytes_on_control(&instance).unwrap();
+    assert_eq!(
+        dense_data - ordinary_data,
+        dense_channel_storage_bound().unwrap().data_bytes
+            - channel_storage_bound().unwrap().data_bytes,
+    );
+    let (worker, mut callback) =
+        NativeWorker::start_retained_dense_effect_on_control(instance).unwrap();
+    assert_eq!(
+        worker
+            .constructor_dense_effect_storage_on_control(&callback)
+            .unwrap()
+            .data_bytes,
+        dense_data
+    );
+    let (unrelated, unrelated_endpoint, _worker) =
+        dense_effect_channel_from_completed_prefix(binding, 256, 0).unwrap();
+    assert!(!callback.matches_control(&unrelated));
+    assert_eq!(
+        worker.constructor_dense_effect_storage_on_control(&unrelated_endpoint),
+        None
+    );
+    let input = [[0.25; 2]; 256];
+    let values: [f64; 256] = std::array::from_fn(|i| if i % 2 == 0 { 0.125 } else { 0.75 });
+    let lane = DenseParameterLane {
+        id: 0,
+        normalized: &values,
+    };
+    let mut output = [[0.0; 2]; 256];
+    for block in 0..3 {
+        callback.begin_physical_callback(256).unwrap();
+        callback
+            .stage_effect_segment(
+                0,
+                &input,
+                &[],
+                &[],
+                &mut output,
+                SegmentTiming {
+                    playing: None,
+                    at: |_| None,
+                },
+                EffectSegmentOrigins::default(),
+                Some(lane),
+            )
+            .unwrap();
+        assert_eq!(worker.published_blocks_on_control(), block);
+        callback.finish(true).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while worker.published_blocks_on_control() <= block {
+            assert!(!callback.is_revoked(), "reserved endpoint must stay live");
+            assert!(std::time::Instant::now() < deadline);
+            thread::yield_now();
+        }
+        if block < 2 {
+            assert_eq!(output, [[0.0; 2]; 256]);
+        }
+    }
+    for (actual, normalized) in output.into_iter().zip(values) {
+        assert_eq!(actual, [(0.5 * normalized) as f32; 2]);
+    }
+    let quiescent = worker
+        .into_quiescent_dense_effect_on_control(callback)
+        .unwrap();
+    assert_eq!(quiescent.child_id_on_control(), child);
+    assert_eq!(quiescent.completed_blocks(), 3);
+    assert!(quiescent.retire_on_control().unwrap().status.success());
 }

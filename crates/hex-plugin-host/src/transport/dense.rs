@@ -133,6 +133,12 @@ pub fn dense_effect_channel_from_completed_prefix(
 }
 
 impl DenseEffectCallback {
+    /// Compare the original constructor pair without exposing an ordinary
+    /// endpoint view that could undercount the reserved dense storage.
+    pub fn matches_control(&self, control: &Control) -> bool {
+        self.callback.matches_control(control)
+    }
+
     pub fn constructor_storage_on_control(&self, control: &Control) -> Option<ConstructorStorage> {
         let ring = self.staging.sender.buffer();
         let ring_bytes = ring
