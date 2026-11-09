@@ -253,7 +253,7 @@ mod tests {
         assert!(plugins.take_parameter_touch().is_none());
     }
     #[test]
-    fn latest_touch_follows_native_intent_without_treating_end_as_another_touch() {
+    fn latest_touch_follows_native_intent_and_ignores_non_touch_markers() {
         let source = AppliedAudioSource {
             context: AudioSourceContext {
                 project_generation: 3,
@@ -266,13 +266,18 @@ mod tests {
             sequence,
             id,
             kind,
-            normalized: 0.625,
+            normalized: if kind == ParameterEditKind::Perform {
+                0.625
+            } else {
+                0.0
+            },
             ..Default::default()
         };
         let edits = [
             edit(1, 42, ParameterEditKind::Perform),
             edit(2, 88, ParameterEditKind::Begin),
             edit(3, 42, ParameterEditKind::End),
+            edit(4, 0, ParameterEditKind::GroupEnd),
         ];
         assert_eq!(
             latest_touch(source, &edits),
