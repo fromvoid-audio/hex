@@ -374,6 +374,9 @@ impl EditorView {
                 view.automation_take_recovery.phase = match result {
                     Ok(Ok(Some(paths))) if !view.automation_close_preflight.frozen() => {
                         if let [path] = paths.as_slice() {
+                            // An explicit new file replaces the former choice,
+                            // even if inspection later refuses its contents.
+                            view.automation_take_recovery.saved = None;
                             Phase::InspectingFile { path: path.clone() }
                         } else {
                             view.error = Some("select one automation recovery file".into());

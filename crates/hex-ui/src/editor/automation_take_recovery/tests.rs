@@ -489,7 +489,27 @@ fn file_action_selects_a_finished_take_without_applying_it(cx: &mut gpui::TestAp
     assert!(visual.did_prompt_for_paths());
     visual.simulate_paths_selection(Some(vec![path.clone()]));
     visual.run_until_parked();
-    crate::editor::device_automation::host_tests::pump(&mut visual, &editor);
+    let wait_for_inspection = |visual: &mut VisualTestContext| {
+        let deadline = crate::test_wait::hang_deadline();
+        loop {
+            let done = editor.update(visual, |view, cx| {
+                view.tick(cx);
+                cx.notify();
+                matches!(view.automation_take_recovery.phase, Phase::Idle)
+                    && !view.automation_take_recovery.polling()
+            });
+            visual.run_until_parked();
+            if done {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "selected draft did not return its inspection"
+            );
+            std::thread::yield_now();
+        }
+    };
+    wait_for_inspection(&mut visual);
     editor.read_with(&visual, |view, _| {
         let state = view.state.as_ref().unwrap();
         assert_eq!(state.revision, revision);
@@ -505,6 +525,19 @@ fn file_action_selects_a_finished_take_without_applying_it(cx: &mut gpui::TestAp
             view.automation_recovery_status(),
             Some(("apply recovered automation", true))
         );
+    });
+    visual.dispatch_action(crate::editor::OpenAutomationRecovery);
+    assert!(visual.did_prompt_for_paths());
+    visual.simulate_paths_selection(Some(vec![path.with_file_name("missing-draft")]));
+    visual.run_until_parked();
+    wait_for_inspection(&mut visual);
+    editor.read_with(&visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        assert_eq!(state.revision, revision);
+        assert_eq!(state.project, before);
+        assert!(view.error.is_some());
+        assert!(view.automation_take_recovery.saved.is_none());
+        assert!(view.automation_recovery_status().is_none());
     });
     assert_eq!(std::fs::read(&path).unwrap(), original);
     visual.update(|window, _| window.remove_window());
