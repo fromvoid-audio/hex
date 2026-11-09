@@ -93,9 +93,10 @@ unit tests. The counter stays dev-only and native worker I/O stays off callback.
 
 ## Merge selection
 
-The pure pending-edit receipt, viewport, MIDI-thumbnail geometry, CPU-meter and
-disk-overload tests run in the small `hex-ui` target `unit_editor_state`; the
-selector includes it for each owner and the enclosing editor module. Run it with
+The pure pending-edit receipt, viewport, MIDI-thumbnail geometry, CPU-meter,
+track-meter scale and disk-overload tests run in the small `hex-ui` target
+`unit_editor_state`; the selector includes it for each owner and its enclosing
+modules. Run it with
 `cargo test -p hex-ui --test unit_editor_state --locked`.
 Other `hex-ui` tests have not yet been classified into separate tiers; in
 particular, the real-window receipt and delayed-acknowledgement tests remain in
