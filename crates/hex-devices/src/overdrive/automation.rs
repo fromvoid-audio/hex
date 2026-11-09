@@ -2,6 +2,17 @@
 //! Only changed coefficient groups perform bounded conversion; held targets
 //! retain the original trajectory. No curves, clocks or resources are owned here.
 use super::*;
+impl OverdriveDefinition {
+    /// Prepare an owned factory for the host’s closed constructor.
+    pub fn prepare_owned(
+        state: &NativeDeviceState,
+        rate: u32,
+        parameters: &[ParameterId],
+    ) -> Result<PreparedOverdrive, DeviceContractError> {
+        PreparedOverdrive::new(state, rate, parameters)
+    }
+}
+
 impl PreparedOverdrive {
     pub(super) fn new(
         state: &NativeDeviceState,
@@ -20,19 +31,70 @@ impl PreparedOverdrive {
             admitted[index(id)?] = true;
         }
         let settings = decode(state)?;
-        Ok(Self {
+        let prepared = Self {
             settings,
             admitted,
             targets: targets(settings, rate),
             rate,
             kernel: Kernel::new(),
-        })
+        };
+        prepared.check_inline_ownership();
+        Ok(prepared)
     }
+    fn check_inline_ownership(&self) {
+        let Self {
+            settings: Settings(values),
+            admitted,
+            targets,
+            rate,
+            kernel,
+        } = self;
+        let _: (&[f32; 6], &[bool; 6], &[f64; 6], &u32, &Kernel) =
+            (values, admitted, targets, rate, kernel);
+    }
+
     pub(super) fn supports(&self, id: ParameterId) -> bool {
         index(id).is_ok_and(|i| self.admitted[i])
     }
 }
 impl OverdriveRuntime {
+    pub(super) fn check_inline_ownership(&self) {
+        let Self {
+            base_targets,
+            controls,
+            targets,
+            current,
+            step,
+            remaining,
+            rate,
+            channels,
+            envelope,
+            attack,
+            release,
+            kernel,
+            delay,
+            delay_index,
+            silent_frames,
+        } = self;
+        controls.check_inline(|Settings(values)| {
+            let _: &[f32; 6] = values;
+        });
+        let _: (&[f64; 6], &[f64; 6], &[f64; 6], &[f64; 6]) =
+            (base_targets, targets, current, step);
+        let _: (&u32, &u32, &u32, &usize) = (remaining, rate, silent_frames, delay_index);
+        let _: (&[f64; 2], &f64, &f64, &Kernel, &[[f64; 3]; LATENCY_FRAMES]) =
+            (envelope, attack, release, kernel, delay);
+        for Channel {
+            high,
+            low,
+            oversampler,
+            tone,
+        } in channels
+        {
+            let _: (&[f64; 2], &[f64; 2], &Oversampler, &f64) = (high, low, oversampler, tone);
+        }
+    }
+
     fn apply_values(
         &mut self,
         values: &dyn hex_lattice::NativeParameterAutomation,

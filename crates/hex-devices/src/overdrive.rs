@@ -384,7 +384,8 @@ impl NativeDeviceDefinition for OverdriveDefinition {
         )?)))
     }
 }
-struct PreparedOverdrive {
+/// Closed asset-free factory with inline settings and oversampling kernel.
+pub struct PreparedOverdrive {
     settings: Settings,
     admitted: [bool; 6],
     targets: [f64; 6],
@@ -415,7 +416,7 @@ impl PreparedNativeProcessor for PreparedOverdrive {
         std::mem::size_of::<OverdriveRuntime>()
     }
     fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
-        Box::new(OverdriveRuntime {
+        let runtime = OverdriveRuntime {
             base_targets: self.targets,
             controls: crate::parameter_binding::Controls::new(self.settings, self.admitted),
             targets: self.targets,
@@ -431,7 +432,9 @@ impl PreparedNativeProcessor for PreparedOverdrive {
             delay: [[0.0; 3]; LATENCY_FRAMES],
             delay_index: 0,
             silent_frames: 0,
-        })
+        };
+        runtime.check_inline_ownership();
+        Box::new(runtime)
     }
     fn algorithmic_latency_frames(&self) -> Option<u32> {
         Some(LATENCY_FRAMES as u32)
@@ -474,7 +477,8 @@ impl Channel {
     }
 }
 
-struct OverdriveRuntime {
+/// Fixed-inline Overdrive history audited by the sealed storage owner.
+pub struct OverdriveRuntime {
     base_targets: [f64; 6],
     controls: crate::parameter_binding::Controls<Settings, 6>,
     targets: [f64; 6],
