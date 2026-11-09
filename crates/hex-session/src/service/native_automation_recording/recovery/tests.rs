@@ -24,7 +24,7 @@ fn recover(
     scope: DeviceAutomationTakeScope,
     path: &Path,
 ) -> Result<(Box<Command>, TakePublication), String> {
-    recover_sealed(session, None, target(scope), scope.stamp, path)
+    recover_sealed(session, None, target(scope), scope.stamp, path, None)
 }
 fn write(
     path: &Path,
@@ -214,7 +214,7 @@ fn verified_vst3_recovery_prepares_one_edit_and_refuses_changed_custody() {
         prepare_verified_vst3_recovery_on_control(&session, None, scope, &copy, receipt, 0)
             .is_err()
     );
-    let DeviceCaptureTarget::Vst3(target) = scope.target else {
+    let DeviceCaptureTarget::Vst3(vst3) = scope.target else {
         panic!("foreign");
     };
     for wrong in [
@@ -228,14 +228,14 @@ fn verified_vst3_recovery_prepares_one_edit_and_refuses_changed_custody() {
         DeviceAutomationTakeScope {
             target: DeviceCaptureTarget::Vst3(Vst3CaptureTarget {
                 parameter: 1,
-                ..target
+                ..vst3
             }),
             ..scope
         },
         DeviceAutomationTakeScope {
             target: DeviceCaptureTarget::Vst3(Vst3CaptureTarget {
                 class: [8; 16],
-                ..target
+                ..vst3
             }),
             ..scope
         },
@@ -256,14 +256,46 @@ fn verified_vst3_recovery_prepares_one_edit_and_refuses_changed_custody() {
     let replacement = files.0.join("valid-replacement");
     write(&replacement, &session, scope, end());
     assert!(
+        recover_sealed(
+            &session,
+            None,
+            target(scope),
+            scope.stamp,
+            &replacement,
+            Some(receipt)
+        )
+        .is_err()
+    );
+    assert!(
+        recover_sealed(
+            &session,
+            None,
+            target(scope),
+            scope.stamp,
+            &damaged,
+            Some(receipt)
+        )
+        .is_err()
+    );
+    assert!(
         prepare_verified_vst3_recovery_on_control(&session, None, scope, &replacement, receipt, 2)
             .is_err()
     );
     assert_eq!(session.project(), &before);
-    let command =
+    let _command =
         prepare_verified_vst3_recovery_on_control(&session, None, scope, &copy, receipt, 2)
             .unwrap();
-    session.editor.execute(command).unwrap();
+    let (verified_command, publication) = recover_sealed(
+        &session,
+        None,
+        target(scope),
+        scope.stamp,
+        &copy,
+        Some(receipt),
+    )
+    .unwrap();
+    assert!(matches!(publication, TakePublication::Vst3));
+    session.editor.execute(*verified_command).unwrap();
     let after = session.project().clone();
     assert_ne!(after, before);
     assert!(
@@ -313,4 +345,121 @@ fn verified_vst3_recovery_never_prepares_interrupted_or_cancelled_takes() {
         assert!(lane.failed.is_some());
         assert_eq!(session.project(), &before);
     }
+}
+
+#[test]
+fn a_verified_native_finished_copy_revalidates_and_adopts_exact_values_once() {
+    use crate::service::automation_draft::DeviceDraftInput;
+    use hex_engine::{NativeParameterApplication, NativeTransientOperation, NativeTransientValue};
+    use hex_lattice_contract::HostGain;
+
+    let (files, mut session, mut scope, mut source) = fixture();
+    let target = hex_engine::native_parameter_input_target(
+        session.project(),
+        session.project().main_devices()[0].id(),
+        hex_project::DeviceAutomationTarget::HostOutputGain,
+    )
+    .unwrap();
+    scope.target = target.into();
+    source.target = scope.target;
+    let path = files.0.join("original-native");
+    let (mut input, worker) = DeviceDraftInput::start_on_control(
+        &session,
+        None,
+        path.clone(),
+        target,
+        scope.stamp,
+        source.capture_clock(session.project()),
+    )
+    .unwrap();
+    let applied = NativeParameterApplication {
+        identity: target.identity(),
+        operation: NativeTransientOperation::Set(NativeTransientValue::HostOutputGain(
+            HostGain::from_normalized(0.25).unwrap(),
+        )),
+        arrangement_frame: 4,
+        performance_frame: 12,
+        loop_pass: 0,
+        remaining_latency_frames: 8,
+    };
+    assert!(
+        input
+            .append_delivered(target, scope.stamp, &[(1, applied)])
+            .unwrap()
+            .is_some()
+    );
+    let interrupted = worker.join_on_control().unwrap();
+    let original = std::fs::read(&path).unwrap();
+    let copy = files.0.join("native-finished-copy");
+    let receipt = copy_native_recovery_on_control(
+        &interrupted,
+        &copy,
+        DraftReadLimits {
+            max_source_bytes: 64 * 1024,
+        },
+        4,
+        scope,
+        source,
+        &NativeRecoveryContinuation {
+            applications: Arc::from([]),
+            terminal: NativeRecoveryTerminal::Restored(NativeParameterApplication {
+                operation: NativeTransientOperation::Clear(target.target()),
+                arrangement_frame: 16,
+                performance_frame: 24,
+                ..applied
+            }),
+        },
+    )
+    .unwrap();
+    assert_eq!(receipt.events(), 1);
+    assert_eq!(receipt.terminal(), end());
+    let copy_bytes = std::fs::read(&copy).unwrap();
+    let replacement = files.0.join("valid-native-replacement");
+    write(&replacement, &session, scope, end());
+    let before = session.project().clone();
+    assert!(
+        recover_sealed(
+            &session,
+            None,
+            scope.target.draft_target(),
+            scope.stamp,
+            &replacement,
+            Some(receipt),
+        )
+        .is_err()
+    );
+    assert_eq!(session.project(), &before);
+    let (command, publication) = recover_sealed(
+        &session,
+        None,
+        scope.target.draft_target(),
+        scope.stamp,
+        &copy,
+        Some(receipt),
+    )
+    .unwrap();
+    assert!(matches!(publication, TakePublication::Native(found) if found == target));
+    session.editor.execute(*command).unwrap();
+    let after = session.project().clone();
+    let lane = after
+        .device(target.device())
+        .unwrap()
+        .automation_target(target.target())
+        .unwrap();
+    assert_eq!(lane.touch.len(), 1);
+    assert_eq!(lane.touch[0].steps[0].value.get(), 0.25);
+    assert_eq!(
+        lane.touch[0].end,
+        after.tempo_map().frame_to_beat(16).unwrap()
+    );
+    assert!(session.editor.undo());
+    assert_eq!(session.project(), &before);
+    assert!(session.editor.redo());
+    assert_eq!(session.project(), &after);
+    assert_eq!(
+        hex_storage::decode(&hex_storage::encode(&after).unwrap()).unwrap(),
+        after
+    );
+    assert_eq!(std::fs::read(path).unwrap(), original);
+    assert_eq!(std::fs::read(copy).unwrap(), copy_bytes);
 }

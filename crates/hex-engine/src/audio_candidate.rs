@@ -15,6 +15,8 @@ mod draft;
 mod grouped_audio_tests;
 #[cfg(test)]
 mod overdrive_modulation_tests;
+#[cfg(test)]
+mod overdrive_storage_tests;
 mod preparation;
 mod reservation;
 #[cfg(test)]
