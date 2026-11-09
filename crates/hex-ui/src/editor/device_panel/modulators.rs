@@ -53,6 +53,7 @@ impl SourceKind {
 #[derive(Clone, Copy)]
 enum MappingTarget {
     Device(ParameterId),
+    HostOutput,
     Macro(ModulationSourceId),
 }
 
@@ -87,8 +88,15 @@ enum Edit {
     RemoveRoute(ModulationRouteId),
 }
 
+pub(super) struct OutputMappingAvailability {
+    device: DeviceId,
+    rate: u32,
+    state: NativeDeviceState,
+    eligible: bool,
+}
+
 pub(super) fn panel(
-    view: &EditorView,
+    view: &mut EditorView,
     cx: &mut Context<EditorView>,
     device: &Device,
     view_data: &NativeDeviceView,
@@ -137,6 +145,45 @@ pub(super) fn panel(
         .mapping_source
         .filter(|(device, _)| *device == id)
         .map(|(_, source)| source);
+    if let Some(source) = selected
+        && bank.routes().len() < hex_project::MAX_MODULATION_ROUTES_PER_DEVICE
+        && !bank.routes().iter().any(|route| {
+            route.source == source
+                && matches!(
+                    route.destination,
+                    ModulationDestination::Device {
+                        target: DeviceAutomationTarget::HostOutputGain,
+                        ..
+                    }
+                )
+        })
+    {
+        let cache = &mut view.device_panel.output_mapping_availability;
+        let rate = state.project.sample_rate();
+        let available = if let Some(cached) = cache.as_ref().filter(|entry| {
+            entry.device == id && entry.rate == rate && &entry.state == device.state()
+        }) {
+            cached.eligible
+        } else {
+            let eligible =
+                hex_engine::project_device_output_gain_modulation_supported(&state.project, id);
+            *cache = Some(OutputMappingAvailability {
+                device: id,
+                rate,
+                state: device.state().clone(),
+                eligible,
+            });
+            eligible
+        };
+        if available {
+            body = body.child(button(
+                cx,
+                format!("map-output-gain-{}", id.value()),
+                theme::text(hex_engine::DEVICE_OUTPUT_GAIN.label),
+                Edit::Map(source, MappingTarget::HostOutput),
+            ));
+        }
+    }
     let blocked_targets: Vec<_> = selected
         .into_iter()
         .flat_map(|source| bank.source_route_ancestors(source))
@@ -359,6 +406,10 @@ pub(super) fn panel(
                     .find(|row| row.descriptor.id == parameter)
                     .map_or("unavailable", |row| row.descriptor.label)
                     .to_owned(),
+                ModulationDestination::Device {
+                    target: DeviceAutomationTarget::HostOutputGain,
+                    ..
+                } => hex_engine::DEVICE_OUTPUT_GAIN.label.to_owned(),
                 ModulationDestination::Modulator {
                     source,
                     module_type: manual::TYPE_ID,
@@ -642,6 +693,18 @@ fn apply(
                     ModulationDestination::Device {
                         device_type: device.state().type_id(),
                         target: DeviceAutomationTarget::Parameter(parameter),
+                        vst3_class: None,
+                    }
+                }
+                MappingTarget::HostOutput => {
+                    if !hex_engine::project_device_output_gain_modulation_supported(project, id) {
+                        return Err(Invalid(
+                            "this device does not support output gain modulation",
+                        ));
+                    }
+                    ModulationDestination::Device {
+                        device_type: device.state().type_id(),
+                        target: DeviceAutomationTarget::HostOutputGain,
                         vst3_class: None,
                     }
                 }
