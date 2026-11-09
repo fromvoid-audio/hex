@@ -150,7 +150,7 @@ impl MappingOutput {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum MappingTarget {
     Device(ParameterId),
     HostGain(HostGainTarget),
@@ -160,7 +160,7 @@ enum MappingTarget {
     CompositionInput(ModulationSourceId, ParameterId),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum HostGainTarget {
     Input,
     Output,
@@ -597,22 +597,31 @@ pub(super) fn panel(
     }
     if let Some(source) = selected
         && host_gain_available
-        && bank.routes().len() < hex_project::MAX_MODULATION_ROUTES_PER_DEVICE
     {
         let targets = [HostGainTarget::Input, HostGainTarget::Output]
             .into_iter()
             .filter_map(|stage| {
-                let (target, key, label) = stage.mapping();
-                let assigned = bank.routes().iter().any(|route| {
+                let (parameter, key, label) = stage.mapping();
+                let route = bank.routes().iter().find(|route| {
                     source.owns(route)
-                        && matches!(route.destination, ModulationDestination::Device { target: existing, .. } if existing == target)
+                        && matches!(route.destination, ModulationDestination::Device { target, .. } if target == parameter)
                 });
-                (!assigned).then(|| button(
-                    cx,
-                    format!("map-{key}-{}", id.value()),
-                    theme::text(label),
-                    Edit::Map(source, MappingTarget::HostGain(stage), DEFAULT_MAPPING_DEPTH),
-                ))
+                if route.is_none() && bank.routes().len() >= hex_project::MAX_MODULATION_ROUTES_PER_DEVICE {
+                    return None;
+                }
+                let target = target_drag::Target { device: id, source, mapping: MappingTarget::HostGain(stage) };
+                let selector = format!("map-{key}-{}", id.value());
+                let depth = target_drag::displayed_depth(view, target, route);
+                let control = hex_widgets::action(theme::text(label), theme::action_style())
+                    .id(ElementId::Name(selector.clone().into()))
+                    .debug_selector(move || selector.clone())
+                    .relative()
+                    .px(px(3.0))
+                    .h(px(15.0))
+                    .gap(px(3.0))
+                    .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                    .child(div().min_w(px(30.0)).children(depth.map(|depth| theme::text(depth_text(depth)))));
+                Some(target_drag::attach(view, cx, control, target, route, revision))
             });
         body = body.child(div().flex().flex_wrap().gap(px(4.0)).children(targets));
     }
@@ -1498,17 +1507,41 @@ pub(super) fn target_overlay(
     {
         return None;
     }
-    Some(target_drag::overlay(
-        view,
-        cx,
-        target_drag::Target {
-            device,
-            source,
-            parameter,
-        },
-        assigned,
-        state.revision,
-    ))
+    let target = target_drag::Target {
+        device,
+        source,
+        mapping: MappingTarget::Device(parameter),
+    };
+    let selector = format!("map-target-{}-{}", device.value(), parameter.value());
+    let display = target_drag::displayed_depth(view, target, assigned);
+    let control = div()
+        .id(ElementId::Name(selector.clone().into()))
+        .debug_selector(move || selector.clone())
+        .absolute()
+        .inset_0()
+        .border_1()
+        .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
+        .children(display.map(|depth| {
+            let label = depth_text(depth);
+            let selector = format!("map-depth-{}-{}-{label}", device.value(), parameter.value());
+            div()
+                .absolute()
+                .top_0()
+                .right_0()
+                .px(px(2.0))
+                .text_size(px(9.0))
+                .bg(rgb(theme::color(theme::PaletteRole::Background)))
+                .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                .debug_selector(move || selector.clone())
+                .child(theme::text(label))
+        }));
+    Some(
+        target_drag::attach(view, cx, control, target, assigned, state.revision).into_any_element(),
+    )
+}
+
+fn depth_text(depth: f32) -> String {
+    format!("{:+.0}%", depth * 100.0)
 }
 
 fn is_pressure_source(sources: &[Modulator], id: ModulationSourceId) -> bool {
