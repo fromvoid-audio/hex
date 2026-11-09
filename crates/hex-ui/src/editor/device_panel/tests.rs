@@ -7063,6 +7063,11 @@ fn modulation_panel_maps_authored_fm4_connection_depths(cx: &mut TestAppContext)
     exercise_fm4_modulation_mapper(cx, Fm4MappingFixture::ConnectionDepths);
 }
 
+#[gpui::test]
+fn modulation_panel_maps_only_the_fm4_host_output_stage(cx: &mut TestAppContext) {
+    exercise_fm4_modulation_mapper(cx, Fm4MappingFixture::HostOutput);
+}
+
 enum Fm4MappingFixture {
     Carriers,
     Pressure,
@@ -7073,6 +7078,7 @@ enum Fm4MappingFixture {
     OscillatorLevels,
     OscillatorPhases,
     ConnectionDepths,
+    HostOutput,
 }
 
 fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFixture) {
@@ -7088,6 +7094,7 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
     let levels = matches!(fixture, Fm4MappingFixture::OscillatorLevels);
     let phases = matches!(fixture, Fm4MappingFixture::OscillatorPhases);
     let edges = matches!(fixture, Fm4MappingFixture::ConnectionDepths);
+    let output_trim = matches!(fixture, Fm4MappingFixture::HostOutput);
     let edge_targets = [parameter::modulation(2, 1), parameter::modulation(3, 2)];
     let service = Service::new(48_000, 8, 8_000_000).unwrap();
     receive_service_event(&service);
@@ -7375,6 +7382,48 @@ fn exercise_fm4_modulation_mapper(cx: &mut TestAppContext, fixture: Fm4MappingFi
         visual.run_until_parked();
     }
     click(&mut visual, format!("{kind}-{}-map", source.value()), true);
+    let host_input: &'static str =
+        Box::leak(format!("map-input-gain-{}", device.value()).into_boxed_str());
+    let host_output = format!("map-output-gain-{}", device.value());
+    assert!(visual.debug_bounds(host_input).is_none());
+    if pressure {
+        assert!(
+            visual
+                .debug_bounds(Box::leak(host_output.clone().into_boxed_str()))
+                .is_none()
+        );
+    }
+    if output_trim {
+        let start = modulator_control_position(&mut visual, host_output, true);
+        let end = point(start.x, start.y + px(45.0));
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        pump_until(&editor, cx, |view| bank(view).routes().len() == 1);
+        editor.read_with(cx, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            let current = project.device(device).unwrap();
+            let route = current.modulation().routes()[0];
+            assert_eq!(route.source, source);
+            assert_eq!(route.amount.get(), -0.45);
+            assert_eq!(
+                route.destination,
+                ModulationDestination::Device {
+                    device_type: FM4_TYPE_ID,
+                    target: DeviceAutomationTarget::HostOutputGain,
+                    vst3_class: None,
+                }
+            );
+            assert_eq!(current.state(), &original);
+            let reopened = hex_storage::decode(&hex_storage::encode(project).unwrap()).unwrap();
+            assert_eq!(&reopened, project.as_ref());
+        });
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |view| bank(view).routes().is_empty());
+        return;
+    }
     if !levels && !phases && !edges {
         editor.update(cx, |view, cx| {
             view.device_panel.parameter_rows[&device]
