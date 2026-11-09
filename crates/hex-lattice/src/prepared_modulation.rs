@@ -21,7 +21,7 @@ pub struct PreparedModulationState {
 }
 
 impl PreparedModulationState {
-    /// Route source indices refer to the sorted source identity inventory.
+    /// Route indices refer to the sorted source and output identity pairs.
     /// The host still validates device ownership and real target capabilities.
     pub fn new(
         sources: Vec<PreparedModulationSource>,
