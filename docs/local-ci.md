@@ -401,6 +401,13 @@ Cargo. It pins directory ancestry, revalidates exact identity and emptiness,
 and invalidates authority when closed. Existing CLI, programmatic and release
 entrypoints do not use it yet. Raw Cargo and other processes which ignore the
 cooperative target lock remain outside this observation; it is not a sandbox.
+A target-wide `.admission-pending` sentinel beside its lock makes cooperating
+lock users refuse before cleanup or build, including explicit adoption and
+release recovery. Its contents are not trusted: any entry, including a dangling
+symlink, requires preserving it and choosing a fresh target. This guard does not
+create or remove the sentinel and does not complete fresh-target publication.
+Older runner versions and raw Cargo do not honor it; the current guarded paths
+may run initial Cargo metadata before acquiring the lock.
 For the opt-in identity-resolution API, the caller must acquire a reservation
 before its first Cargo operation and retain it through the later custody
 decision. Metadata must report exactly the explicit target and leave it fresh;

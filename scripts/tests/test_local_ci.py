@@ -2417,6 +2417,143 @@ runpy.run_path(sys.argv[1], run_name='__main__')
         self.assertIn("target-handoff-clean.log", output)
         self.assertIn("workspace dev-artifact cleanup failed", output)
 
+    def test_pending_admission_refuses_dev_release_and_adoption_without_mutation(self):
+        target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()
+        target.mkdir()
+        (target / "keep").write_bytes(b"original target")
+        self.assertEqual(self.runner("pending-seed", adopt_target=True).run(), 0)
+        self.release_attempt("pending-release-seed", adopt=True)
+        lock_path, owner = local_ci.target_state_paths(target, self.target_state_dir)
+        release = owner.with_name(owner.name.replace(".owner.json", ".release-owner.json"))
+        pending = local_ci.target_admission_pending_path(lock_path)
+        before_owner, before_release = owner.read_bytes(), release.read_bytes()
+        before_lock = lock_path.read_bytes()
+        for kind in ("regular", "dangling"):
+            with self.subTest(kind=kind):
+                if kind == "regular":
+                    pending.write_bytes(b"incomplete claim")
+                else:
+                    pending.symlink_to(self.base / "missing")
+                for adopt in (False, True):
+                    calls_before = self.call_log.read_text()
+                    runner = self.runner(f"pending-{kind}-{adopt}", adopt_target=adopt)
+                    self.assertEqual(runner.run(), 1)
+                    self.assertIn("admission is incomplete", runner.summary["target_cache_error"])
+                    self.assertIsNone(runner.target_lock)
+                    with self.assertRaisesRegex(local_ci.TargetCacheError, "admission is incomplete"):
+                        self.release_attempt(f"pending-release-{kind}-{adopt}", adopt=adopt)
+                    calls = self.call_log.read_text()[len(calls_before):]
+                    self.assertNotIn("cargo clean", calls)
+                    self.assertNotIn("cargo build", calls)
+                    self.assertEqual((target / "keep").read_bytes(), b"original target")
+                    self.assertEqual(owner.read_bytes(), before_owner)
+                    self.assertEqual(release.read_bytes(), before_release)
+                    self.assertEqual(lock_path.read_bytes(), before_lock)
+                    self.assertTrue(os.path.lexists(pending))
+                pending.unlink()
+        # Refusals release the actual flock without altering its metadata.
+        lock = local_ci.CargoTargetLock(lock_path, {"run_id": "after-pending"})
+        lock.acquire()
+        self.assertIsNone(lock.release())
+
+    def test_pending_admission_inspection_failure_releases_lock(self):
+        target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()
+        lock_path, _ = local_ci.target_state_paths(target, self.target_state_dir)
+        lock = local_ci.CargoTargetLock(lock_path, {"run_id": "inspection-error"})
+        original = os.stat
+        pending_name = local_ci.target_admission_pending_path(lock_path).name
+        def deny(path, *args, **kwargs):
+            if path == pending_name:
+                raise PermissionError("pending inspection denied")
+            return original(path, *args, **kwargs)
+        with patch.object(local_ci.os, "stat", side_effect=deny):
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "pending inspection denied"):
+                lock.acquire()
+        self.assertIsNone(lock.file)
+        lock.acquire()
+        self.assertIsNone(lock.release())
+
+    def test_pending_guard_refuses_replaced_lock_or_state_directory(self):
+        target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()
+        for kind in ("lock", "directory"):
+            with self.subTest(kind=kind):
+                state = self.base / f"state-{kind}"
+                state.mkdir()
+                path, _ = local_ci.target_state_paths(target, state)
+                path.write_bytes(b"previous lock metadata")
+                lock = local_ci.CargoTargetLock(path, {"run_id": kind})
+                original = os.stat
+                replaced = False
+                def replace(path_arg, *args, **kwargs):
+                    nonlocal replaced
+                    if not replaced and ((kind == "lock" and path_arg == path.name)
+                                         or (kind == "directory" and path_arg == state)):
+                        replaced = True
+                        if kind == "lock":
+                            path.rename(state / "original.lock")
+                            path.write_bytes(b"replacement")
+                        else:
+                            state.rename(self.base / "original-state")
+                            state.mkdir()
+                    return original(path_arg, *args, **kwargs)
+                with patch.object(local_ci.os, "stat", side_effect=replace):
+                    with self.assertRaisesRegex(local_ci.TargetCacheError, "identity changed"):
+                        lock.acquire()
+                self.assertTrue(replaced)
+                self.assertIsNone(lock.file)
+                original_path = state / "original.lock" if kind == "lock" else self.base / "original-state" / path.name
+                self.assertEqual(original_path.read_bytes(), b"previous lock metadata")
+                if kind == "lock":
+                    self.assertEqual(path.read_bytes(), b"replacement")
+
+    def test_pending_guard_interruption_releases_flock(self):
+        target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()
+        lock_path, _ = local_ci.target_state_paths(target, self.target_state_dir)
+        pending = local_ci.target_admission_pending_path(lock_path).name
+        original = os.stat
+        def interrupt(path, *args, **kwargs):
+            if path == pending:
+                raise KeyboardInterrupt()
+            return original(path, *args, **kwargs)
+        for stage in ("flock", "pending"):
+            with self.subTest(stage=stage):
+                lock = local_ci.CargoTargetLock(lock_path, {"run_id": stage})
+                operation = (patch.object(local_ci.fcntl, "flock", side_effect=KeyboardInterrupt())
+                             if stage == "flock" else patch.object(local_ci.os, "stat", side_effect=interrupt))
+                with operation, self.assertRaises(KeyboardInterrupt):
+                    lock.acquire()
+                self.assertIsNone(lock.file)
+                lock.acquire()
+                self.assertIsNone(lock.release())
+
+    def test_pending_guard_rechecks_lock_after_pending_lookup(self):
+        target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()
+        for kind in ("lock", "directory"):
+            with self.subTest(kind=kind):
+                state = self.base / f"late-state-{kind}"
+                state.mkdir()
+                path, _ = local_ci.target_state_paths(target, state)
+                path.write_bytes(b"previous lock metadata")
+                pending = local_ci.target_admission_pending_path(path).name
+                lock = local_ci.CargoTargetLock(path, {"run_id": kind})
+                original = os.stat
+                def replace_during_pending(path_arg, *args, **kwargs):
+                    if path_arg == pending:
+                        if kind == "lock":
+                            path.rename(state / "original.lock")
+                            path.write_bytes(b"replacement")
+                        else:
+                            state.rename(self.base / "late-original-state")
+                            state.mkdir()
+                        raise FileNotFoundError("pending absent")
+                    return original(path_arg, *args, **kwargs)
+                with patch.object(local_ci.os, "stat", side_effect=replace_during_pending):
+                    with self.assertRaisesRegex(local_ci.TargetCacheError, "identity changed"):
+                        lock.acquire()
+                self.assertIsNone(lock.file)
+                original_path = state / "original.lock" if kind == "lock" else self.base / "late-original-state" / path.name
+                self.assertEqual(original_path.read_bytes(), b"previous lock metadata")
+
     def test_target_lock_contention_refuses_before_cargo_build(self) -> None:
         target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()
         lock_path, _ = local_ci.target_state_paths(target, self.target_state_dir)
