@@ -363,6 +363,7 @@ UI_UNIT_TARGETS = {"editor::tempo_input::value::": "unit_editor_logic",
 UI_UNIT_HARNESS_FILES = {"tests/piano_roll_unit/editor.rs": "unit_piano_roll",
                          "tests/piano_roll_unit/midi_canvas.rs": "unit_piano_roll"}
 UI_UNIT_HARNESS_MODULES = {
+    "tests/editor_logic_unit/session_grid.rs": {"editor::session_grid::actions::"},
     "tests/editor_logic_unit/tracks.rs": {
         "editor::tracks::clone_source_window::", "editor::tracks::group_overlap::",
     },
@@ -469,6 +470,7 @@ UI_PREFIX_COHORTS = [{"editor::tempo_input::value::",
                       "editor::clip_drag_ui_test::rendered_move_retains_destination_until_real_worker_ack",
                       "editor::drag::group_drag_ui_test::stationary_group_snap_modifier_uses_one_anchor_delta_and_authoritative_release"},
                      {"editor::session_grid::actions::", "editor::delete_ui_tests::",
+                      "editor::controller::tests::launch_and_transport_actions_have_explicit_play_intents",
                       "editor::controller::tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions",
                       "editor::session_navigation_ui_test::scene_launch_leads_the_caption_and_uses_the_guarded_offline_action",
                       "editor::context_menu::tests::global_launch_dropdown_renders_all_choices_and_restores_focus_without_project_edits",
