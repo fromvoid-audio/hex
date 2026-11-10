@@ -160,7 +160,8 @@ fn cuts_through_fades_move_ramps_inside_parts_and_keep_pcm_at_every_block_size()
         .with_curve_positions(300, 800)
         .unwrap();
     let overlapping = ClipFade::new(11, 0, 8, 7).unwrap();
-    for envelope in [None, Some(shaped), Some(overlapping)] {
+    let smooth = shaped.with_curve_laws([ClipFade::DEFAULT_S_CURVE; 2]);
+    for envelope in [None, Some(shaped), Some(overlapping), Some(smooth)] {
         let (whole, _) = fixture_with(&[], false, (0, 11), envelope);
         let expected = render_in_blocks(&whole, 11);
         // Inside each ramp, on a ramp boundary, between ramps and on silence.

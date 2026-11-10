@@ -106,6 +106,7 @@ pub(super) fn edited_fade(
         .ok()?
         .with_curve_positions(in_position, out_position)
         .ok()
+        .map(|next| next.with_curve_laws(fade.curve_laws()))
 }
 
 // Each handle belongs to its own ramp, including legacy bends. Overlapping

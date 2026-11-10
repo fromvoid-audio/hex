@@ -28,9 +28,9 @@ fn fade_domain_positions(fade: ClipFade) -> impl Iterator<Item = u64> {
     };
     let out_end = fade.span() - fade.out_end_offset();
     let midpoints = [
-        (fade.in_curve() != 0 || fade.in_position() != 500)
+        fade.ramp_is_curved(false)
             .then_some(fade.in_start() + fade.fade_in().saturating_sub(1) / 2),
-        (fade.out_curve() != 0 || fade.out_position() != 500)
+        fade.ramp_is_curved(true)
             .then_some(out_end - 1 - fade.fade_out().saturating_sub(1) / 2),
     ];
     fade.breakpoints()
@@ -41,13 +41,11 @@ fn fade_domain_positions(fade: ClipFade) -> impl Iterator<Item = u64> {
             (1..32)
                 .flat_map(move |index| {
                     [
-                        ((fade.in_curve() != 0 || fade.in_position() != 500) && fade.fade_in() > 1)
+                        (fade.ramp_is_curved(false) && fade.fade_in() > 1)
                             .then(|| fade.in_start() + at_gain(fade.fade_in(), index, false)),
-                        ((fade.out_curve() != 0 || fade.out_position() != 500)
-                            && fade.fade_out() > 1)
-                            .then(|| {
-                                out_end - fade.fade_out() + at_gain(fade.fade_out(), index, true)
-                            }),
+                        (fade.ramp_is_curved(true) && fade.fade_out() > 1).then(|| {
+                            out_end - fade.fade_out() + at_gain(fade.fade_out(), index, true)
+                        }),
                     ]
                 })
                 .flatten(),
