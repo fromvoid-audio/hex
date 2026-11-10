@@ -271,7 +271,8 @@ def module_declarations(source_root: Path) -> dict[Path, list[tuple[Path, list[s
 TEST_ATTRIBUTE = re.compile(r"#\[(?:gpui::)?test\b")
 # Unit test targets which compile the owning source directly. Keep their libtest
 # names under the original module path so scoped coverage remains observable.
-UI_UNIT_TARGETS = {"output_meter::logic::": "unit_editor_logic",
+UI_UNIT_TARGETS = {"editor::drag::geometry::": "unit_editor_logic",
+                   "output_meter::logic::": "unit_editor_logic",
                    "editor::overview_waveform::": "unit_editor_logic",
                    "editor::waveform_columns::": "unit_editor_logic",
                    "editor::device_panel::eq_panel::axes::": "unit_editor_logic",
@@ -334,7 +335,10 @@ UI_UNIT_FEATURES = {"unit_piano_roll": "ui-unit-tier", "unit_timeline": "ui-unit
 # complete pure boundary rather than only its own test-name prefix.
 # These consumers live in larger test modules; a selected ancestor must retain
 # the unit owner as well as the specific consumer checks.
-UI_PREFIX_COHORTS = [{"editor::session_grid::actions::", "editor::delete_ui_tests::",
+UI_PREFIX_COHORTS = [{"editor::drag::geometry::", "editor::drag::tests::",
+                      "editor::clip_drag_ui_test::rendered_move_retains_destination_until_real_worker_ack",
+                      "editor::drag::group_drag_ui_test::stationary_group_snap_modifier_uses_one_anchor_delta_and_authoritative_release"},
+                     {"editor::session_grid::actions::", "editor::delete_ui_tests::",
                       "editor::controller::tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions",
                       "editor::session_navigation_ui_test::scene_launch_leads_the_caption_and_uses_the_guarded_offline_action",
                       "editor::device_panel::tests::device_comparison_tests::device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_new_ack"}]
