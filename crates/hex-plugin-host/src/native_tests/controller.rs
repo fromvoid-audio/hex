@@ -875,7 +875,7 @@ fn authored_quantum_partition_preserves_signed_pcm_after_pipeline_latency() {
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn replacement_editor_commands_report_closed_and_unavailable_without_opening_windows() {
-    use crate::protocol::{ControllerRequest, PluginEditorState};
+    use crate::protocol::{ControllerRequest, PluginEditorPosition, PluginEditorState};
     let case = Case::new();
     let mut instance = Prepared::prepare(
         &build(),
@@ -888,7 +888,7 @@ fn replacement_editor_commands_report_closed_and_unavailable_without_opening_win
     for (request, expected) in [
         (ControllerRequest::DetachEditor, PluginEditorState::Closed),
         (
-            ControllerRequest::ReopenEditor,
+            ControllerRequest::ReopenEditor(PluginEditorPosition::new(-204.25, 300.5)),
             PluginEditorState::Unavailable,
         ),
     ] {
