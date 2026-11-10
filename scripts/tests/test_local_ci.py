@@ -458,7 +458,10 @@ class LocalCiRunnerTests(unittest.TestCase):
             ("ci_plan.py", "symlink"), ("python_test_plan.py", "symlink"),
             ("build_inputs.py", "symlink"), ("ci_checkpoint.py", "symlink"),
             ("ci_target_storage.py", "symlink"), ("ci_plan.py", "fifo"),
-            ("python_test_plan.py", "fifo"), ("build_inputs.py", "fifo"))]
+            ("python_test_plan.py", "fifo"), ("build_inputs.py", "fifo"),
+            ("ci_plan.py", "directory"), ("python_test_plan.py", "directory"),
+            ("build_inputs.py", "directory"), ("ci_checkpoint.py", "directory"),
+            ("ci_target_storage.py", "directory"))]
         cases.extend(("python_test_plan.py", kind, "ci_plan.py") for kind in ("symlink", "fifo"))
         for name, kind, entry in cases:
             with self.subTest(name=name, kind=kind, entry=entry), tempfile.TemporaryDirectory() as directory:
@@ -475,12 +478,78 @@ class LocalCiRunnerTests(unittest.TestCase):
                     payload = root / "payload.py"
                     payload.write_text(f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n")
                     helper.symlink_to(payload)
-                else:
+                elif kind == "fifo":
                     os.mkfifo(helper)
+                else:
+                    helper.mkdir()
                 result = subprocess.run([sys.executable, str(scripts / entry), "--help"],
                                         capture_output=True, timeout=2)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse(marker.exists())
+
+    def test_policy_source_descriptors_close_when_wrapping_fails(self):
+        self._install_cli_policy_fixture()
+        policy = self.repo / "scripts" / "ci_plan.py"
+        original_open = os.open
+        opened = []
+
+        def track_open(*args, **kwargs):
+            descriptor = original_open(*args, **kwargs)
+            opened.append(descriptor)
+            return descriptor
+
+        with patch.object(os, "open", side_effect=track_open), \
+                patch.object(os, "fdopen", side_effect=OSError("fixture wrap failure")):
+            with self.assertRaisesRegex(OSError, "fixture wrap failure"):
+                local_ci._read_policy_source(policy)
+        self.assertEqual(len(opened), 2)
+        for descriptor in opened:
+            with self.assertRaises(OSError):
+                os.fstat(descriptor)
+
+    def test_cli_policy_descriptors_close_when_wrapping_fails(self):
+        self._install_cli_policy_fixture()
+        original_open = os.open
+        opened = []
+
+        def track_open(*args, **kwargs):
+            descriptor = original_open(*args, **kwargs)
+            opened.append(descriptor)
+            return descriptor
+
+        with patch.object(os, "open", side_effect=track_open), \
+                patch.object(os, "fdopen", side_effect=OSError("fixture wrap failure")):
+            self.assertIn("fixture wrap failure", local_ci.cli_policy_error(self.repo))
+        self.assertEqual(len(opened), 2)
+        for descriptor in opened:
+            with self.assertRaises(OSError):
+                os.fstat(descriptor)
+
+    def test_cli_policy_closes_previous_file_before_later_wrap_failure(self):
+        self._install_cli_policy_fixture()
+        original_fdopen = os.fdopen
+        original_close = os.close
+        calls = []
+        closed = []
+
+        def fail_second(fd, *args, **kwargs):
+            calls.append(fd)
+            if len(calls) == 2:
+                raise OSError("later fixture wrap failure")
+            return original_fdopen(fd, *args, **kwargs)
+
+        def track_close(fd):
+            closed.append(fd)
+            return original_close(fd)
+
+        with patch.object(os, "fdopen", side_effect=fail_second), \
+                patch.object(os, "close", side_effect=track_close):
+            self.assertIn("later fixture wrap failure", local_ci.cli_policy_error(self.repo))
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(closed[:2], calls)
+        self.assertEqual(len(closed), 3)  # Both files and the scripts directory.
+        with self.assertRaises(OSError):
+            os.fstat(calls[-1])
 
     def test_helper_mutation_under_lock_preserves_owner_and_releases_lock(self):
         self._install_cli_policy_fixture()

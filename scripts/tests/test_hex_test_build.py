@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import py_compile
 import subprocess
 import sys
 import tempfile
@@ -27,6 +28,121 @@ SIGNED = {"identifier": delivery.IDENTITY, "team_identifier": SIGNING["team_iden
 
 
 class DeliveryTests(unittest.TestCase):
+    def test_delivery_runner_descriptors_close_when_wrapping_fails(self):
+        path = Path(__file__).resolve().parents[1] / "hex-test-build.py"
+        spec = importlib.util.spec_from_file_location("delivery_close_probe", path)
+        loaded = importlib.util.module_from_spec(spec)
+        original_open = os.open
+        opened = []
+
+        def track_open(*args, **kwargs):
+            descriptor = original_open(*args, **kwargs)
+            opened.append(descriptor)
+            return descriptor
+
+        with patch.dict(sys.modules, {spec.name: loaded}), \
+                patch.object(os, "open", side_effect=track_open), \
+                patch.object(os, "fdopen", side_effect=OSError("fixture wrap failure")):
+            with self.assertRaisesRegex(OSError, "fixture wrap failure"):
+                spec.loader.exec_module(loaded)
+        self.assertEqual(len(opened), 2)
+        for descriptor in opened:
+            with self.assertRaises(OSError):
+                os.fstat(descriptor)
+
+    def test_delivery_import_executes_current_runner_source_not_stale_pyc(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            scripts = Path(temporary).resolve() / "scripts"
+            scripts.mkdir()
+            original_scripts = Path(__file__).resolve().parents[1]
+            for name in ("hex-test-build.py", "local-ci.py", "ci_plan.py",
+                         "python_test_plan.py", "build_inputs.py", "ci_checkpoint.py",
+                         "ci_target_storage.py", "changelog.py"):
+                shutil.copyfile(original_scripts / name, scripts / name)
+            runner_path = scripts / "local-ci.py"
+            original = runner_path.read_bytes()
+            before, after = b"GIB = 1024 ** 3", b"GIB = 1024 ** 2"
+            self.assertEqual(original.count(before), 1)
+            self.assertEqual(len(before), len(after))
+            py_compile.compile(str(runner_path), doraise=True,
+                               invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP)
+            stamp = runner_path.stat()
+            runner_path.write_bytes(original.replace(before, after, 1))
+            os.utime(runner_path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+
+            # Control proves standard timestamp loading selects the old code.
+            spec = importlib.util.spec_from_file_location("stale_ci_control", runner_path)
+            control = importlib.util.module_from_spec(spec)
+            with patch.dict(sys.modules, {spec.name: control}):
+                spec.loader.exec_module(control)
+            self.assertEqual(control.GIB, 1024 ** 3)
+
+            delivery_path = scripts / "hex-test-build.py"
+            spec = importlib.util.spec_from_file_location("exact_delivery_probe", delivery_path)
+            loaded = importlib.util.module_from_spec(spec)
+            with patch.dict(sys.modules, {spec.name: loaded}):
+                spec.loader.exec_module(loaded)
+                self.assertEqual(loaded.ci.GIB, 1024 ** 2)
+                self.assertEqual(loaded.ci.__name__, "hex_local_ci")
+                self.assertEqual(Path(loaded.ci.__file__), runner_path)
+                self.assertEqual(loaded.ci.__spec__.origin, str(runner_path))
+                self.assertIs(sys.modules[loaded.ci.__name__], loaded.ci)
+
+            # Runtime-only import must work without any checkout CI tooling.
+            runner_path.unlink()
+            (scripts / "changelog.py").unlink()
+            spec = importlib.util.spec_from_file_location("hex_update_runtime", delivery_path)
+            runtime = importlib.util.module_from_spec(spec)
+            with patch.dict(sys.modules, {spec.name: runtime}):
+                spec.loader.exec_module(runtime)
+            self.assertFalse(hasattr(runtime, "ci"))
+            self.assertFalse(hasattr(runtime, "changelog"))
+            self.assertTrue(callable(runtime.apply_after_approved_parent_exit))
+
+    def test_delivery_runner_rejects_symlink_and_fifo_without_blocking(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            scripts = Path(temporary).resolve() / "scripts"
+            scripts.mkdir()
+            original_scripts = Path(__file__).resolve().parents[1]
+            for name in ("hex-test-build.py", "local-ci.py"):
+                shutil.copyfile(original_scripts / name, scripts / name)
+            runner = scripts / "local-ci.py"
+            saved = scripts / "runner-target.py"
+            runner.rename(saved)
+            marker = scripts.parent / "executed"
+            saved.write_text(f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n")
+            delivery_path = scripts / "hex-test-build.py"
+            source = ("import importlib.util, sys; "
+                      "spec = importlib.util.spec_from_file_location('delivery_probe', sys.argv[1]); "
+                      "module = importlib.util.module_from_spec(spec); "
+                      "sys.modules[spec.name] = module; spec.loader.exec_module(module)")
+            for kind in ("symlink", "missing", "directory", "fifo"):
+                if runner.is_symlink() or runner.is_file():
+                    runner.unlink()
+                elif runner.is_dir():
+                    runner.rmdir()
+                if kind == "symlink":
+                    runner.symlink_to(saved.name)
+                elif kind == "directory":
+                    runner.mkdir()
+                elif kind == "fifo":
+                    os.mkfifo(runner)
+                with self.subTest(kind=kind):
+                    result = subprocess.run([sys.executable, "-c", source, str(delivery_path)],
+                                            capture_output=True, text=True, timeout=3, check=False)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("local-ci.py" if kind in ("symlink", "missing") else
+                                  "local CI source is not a regular file", result.stderr)
+                    self.assertFalse(marker.exists())
+
+            # The update helper never opens the substituted runner.
+            spec = importlib.util.spec_from_file_location("hex_update_runtime", delivery_path)
+            runtime = importlib.util.module_from_spec(spec)
+            with patch.dict(sys.modules, {spec.name: runtime}):
+                spec.loader.exec_module(runtime)
+            self.assertFalse(hasattr(runtime, "ci"))
+            self.assertFalse(hasattr(runtime, "changelog"))
+
     def test_update_runtime_import_does_not_load_build_tools(self):
         spec = importlib.util.spec_from_file_location(
             "hex_update_runtime", Path(__file__).resolve().parents[1] / "hex-test-build.py")

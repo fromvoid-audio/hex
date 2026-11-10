@@ -36,10 +36,13 @@ def _read_policy_source(path: Path) -> bytes:
     directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
-        with os.fdopen(descriptor, "rb") as source:
-            if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
                 raise RuntimeError(f"CI policy source is not a regular file: {path.name}")
-            return source.read()
+            with os.fdopen(descriptor, "rb", closefd=False) as source:
+                return source.read()
+        finally:
+            os.close(descriptor)
     finally:
         os.close(directory)
 
@@ -92,11 +95,14 @@ def cli_policy_error(root: Path) -> str | None:
         try:
             for name, digest in expected.items():
                 fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
-                with os.fdopen(fd, "rb") as source:
-                    if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                try:
+                    if not stat.S_ISREG(os.fstat(fd).st_mode):
                         raise ValueError(f"planner source is not a regular file: {name}")
-                    if hashlib.sha256(source.read()).hexdigest() != digest:
-                        raise ValueError(f"executed planner differs from current source: {name}")
+                    with os.fdopen(fd, "rb", closefd=False) as source:
+                        if hashlib.sha256(source.read()).hexdigest() != digest:
+                            raise ValueError(f"executed planner differs from current source: {name}")
+                finally:
+                    os.close(fd)
         finally:
             os.close(directory)
     except (OSError, ValueError) as error:

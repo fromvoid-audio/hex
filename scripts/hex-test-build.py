@@ -30,7 +30,22 @@ if __name__ != "hex_update_runtime":
         raise RuntimeError("local CI module unavailable")
     ci = importlib.util.module_from_spec(SPEC)
     sys.modules[SPEC.name] = ci
-    SPEC.loader.exec_module(ci)
+    # Bind execution to a regular source file, without following a symlink or
+    # blocking on a substituted FIFO, and do not trust timestamp-valid pyc.
+    directory = os.open(ROOT / "scripts", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        descriptor = os.open("local-ci.py", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                             dir_fd=directory)
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise RuntimeError("local CI source is not a regular file")
+            with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                source = stream.read()
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(directory)
+    exec(compile(source, SPEC.origin, "exec", dont_inherit=True), ci.__dict__)
 
     CHANGELOG_SPEC = importlib.util.spec_from_file_location("hex_changelog", ROOT / "scripts/changelog.py")
     if CHANGELOG_SPEC is None or CHANGELOG_SPEC.loader is None:
