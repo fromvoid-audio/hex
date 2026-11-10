@@ -2078,15 +2078,18 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::audio_import_settings::admission::",
                                   "editor::browser::console_drop_ui_test::console_column_paged_narrow_target_uses_painted_anchor_and_rejects_stale_source",
                                   "editor::browser::folder_places_ui_test::moved_place_shows_missing_and_relocates_with_icon_order_and_samples",
+                                  "editor::browser::geometry::",
                                   "editor::browser::samples::state::",
                                   "editor::browser::scan::",
                                   "editor::browser::tree::state::",
                                   "editor::browser::ui_test::all_search_unions_samples_folder_and_devices_and_preserves_identity_on_refresh",
+                                  "editor::browser::ui_test::browser_audio_drag_floats_outside_lanes_locks_preview_and_imports_exact_candidate",
                                   "editor::browser::ui_test::browser_history_ui_test::browser_history_missing_place_remains_recoverable_and_late_scan_cannot_retarget",
                                   "editor::browser::ui_test::browser_history_ui_test::review_history_waits_for_the_used_catalog_not_an_unrelated_scan",
                                   "editor::browser::ui_test::browser_history_ui_test::review_readiness_obsolete_tree_worker_does_not_hold_saved_root",
                                   "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
                                   "editor::browser::ui_test::browser_inline_tree_nested_keyboard_refresh_and_hover_retain_identity",
+                                  "editor::browser::ui_test::browser_right_edge_drag_resizes_and_release_stops_resizing",
                                   "editor::browser::ui_test::browser_samples_count_tracks_hierarchy_items_and_flat_sample_matches",
                                   "editor::browser::ui_test::browser_source_transition_discards_late_scan_and_keeps_query_and_keyboard_scope",
                                   "editor::browser::ui_test::browser_tree_refresh_updates_expanded_branch_hidden_by_indexed_query",
@@ -2145,6 +2148,7 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::track_defaults::",
                                   "editor::track_latency::presentation::",
                                   "editor::track_latency::tests::view_action_mounts_the_indicator_in_actual_headers",
+                                  "editor::track_layout_ui_test::empty_project_main_header_width_handle_uses_current_window_limit",
                                   "editor::track_meters::decay::", "editor::track_meters::follower::",
                                   "editor::track_meters::main_output::tests::", "editor::track_meters::scale::",
                                   "editor::track_meters::selection::", "editor::track_meters::tests::",
@@ -2387,6 +2391,34 @@ class ModuleScopeTests(unittest.TestCase):
                             for step in steps if step.step_id == "ui-feature-tests"))
         for path in ("browser/samples.rs", "browser_ui_test.rs", "browser.rs",
                      "browser_history_ui_test.rs", "browser/folder_places_ui_test.rs", "missing_media/ui_tests.rs"):
+            selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            self.assertTrue(any(unit.startswith(name) for name in selected[owner]))
+
+    def test_browser_geometry_keeps_rendered_resize_and_drag_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        source = "crates/hex-ui/src/editor/browser/geometry.rs"
+        unit = "editor::browser::geometry::"
+        consumers = [
+            "editor::browser::ui_test::browser_right_edge_drag_resizes_and_release_stops_resizing",
+            "editor::browser::ui_test::browser_audio_drag_floats_outside_lanes_locks_preview_and_imports_exact_candidate",
+            "editor::track_layout_ui_test::empty_project_main_header_width_handle_uses_current_window_limit",
+        ]
+        names = plan.module_test_filters(root, [source], inventory, [owner])
+        self.assertEqual(names, {owner: sorted([unit, *consumers])})
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": [source]})
+        self.assertTrue(any(unit in step.argv and step.requires_tests
+                            for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(all(name in step.argv for name in consumers)
+                            for step in steps if step.step_id == "ui-feature-tests"))
+        for path in ("browser.rs", "browser_ui_test.rs", "track_layout_ui_test.rs"):
             selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
             self.assertTrue(any(unit.startswith(name) for name in selected[owner]))
 

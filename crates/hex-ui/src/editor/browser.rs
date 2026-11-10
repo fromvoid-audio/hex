@@ -56,8 +56,6 @@ fn places_error(prefix: &str, error: &hex_preferences::PreferencesError) -> Stri
 }
 
 pub(super) const DEFAULT_WIDTH: f32 = 480.0;
-const MIN_WIDTH: f32 = 220.0;
-pub(super) const MIN_WORKSPACE_WIDTH: f32 = 560.0;
 const COLLAPSED_WIDTH: f32 = 28.0;
 const PLACE_CAPACITY: usize = 16;
 const DEFAULT_PLACE_COUNT: usize = 2;
@@ -105,17 +103,13 @@ pub(super) fn default_preferences_path() -> PathBuf {
 }
 
 fn clamped_panel_width(requested: f32, window_width: f32) -> f32 {
-    requested.clamp(
-        MIN_WIDTH,
-        (window_width
-            - MIN_WORKSPACE_WIDTH
-            - 4.0
-            // Both the browser and workspace panels have framed surrounds.
-            - 4.0 * hex_widgets::PANEL_FRAME_INSET
-            - super::workspace_view::PANEL_GUTTER)
-            .max(MIN_WIDTH),
-    )
+    geometry::clamped_panel_width(requested, window_width, super::workspace_view::PANEL_GUTTER)
 }
+
+#[path = "browser/geometry.rs"]
+mod geometry;
+pub(super) use geometry::MIN_WORKSPACE_WIDTH;
+use geometry::browser_audio_drag_ghost_position;
 
 #[path = "browser/scan.rs"]
 mod scan;
@@ -486,10 +480,6 @@ fn browser_audio_drag_ghost(
         move || format!("{selector}-trailing"),
     )
     .opacity(0.9)
-}
-
-fn browser_audio_drag_ghost_position(pointer: (f32, f32)) -> (f32, f32) {
-    (pointer.0 + 12.0, pointer.1 + 12.0)
 }
 
 impl EditorView {
@@ -2848,28 +2838,6 @@ impl EditorView {
         }
         self.choose_project(path, hex_session::DocumentAudioMode::Resident);
         cx.notify();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{MIN_WIDTH, browser_audio_drag_ghost_position, clamped_panel_width};
-
-    #[test]
-    fn browser_drag_ghost_position_uses_window_relative_pointer_coordinates() {
-        // Window::bounds().origin is global screen space; it is intentionally not
-        // accepted by this helper because GPUI pointer events are window-relative.
-        assert_eq!(
-            browser_audio_drag_ghost_position((317.0, 129.0)),
-            (329.0, 141.0)
-        );
-    }
-
-    #[test]
-    fn browser_width_preserves_minimum_workspace_and_panel() {
-        assert_eq!(clamped_panel_width(280.0, 1_240.0), 280.0);
-        assert_eq!(clamped_panel_width(500.0, 880.0), 297.0);
-        assert_eq!(clamped_panel_width(100.0, 880.0), MIN_WIDTH);
     }
 }
 
