@@ -57,6 +57,27 @@ GIB = 1024 ** 3
 DEFAULT_FULL_MIN_FREE_BYTES = 2 * GIB
 
 
+def cli_policy_error(root: Path) -> str | None:
+    """Compare the CLI's executed policy bytes with regular source files."""
+    expected = {"ci_plan.py": _PLAN_SOURCE_SHA256,
+                "python_test_plan.py": ci_plan._PYTHON_SOURCE_SHA256}
+    try:
+        directory = os.open(root / "scripts", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            for name, digest in expected.items():
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                with os.fdopen(fd, "rb") as source:
+                    if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                        raise ValueError(f"planner source is not a regular file: {name}")
+                    if hashlib.sha256(source.read()).hexdigest() != digest:
+                        raise ValueError(f"executed planner differs from current source: {name}")
+        finally:
+            os.close(directory)
+    except (OSError, ValueError) as error:
+        return str(error)
+    return None
+
+
 @contextmanager
 def terminal_progress(label: str, *, announce: bool = True):
     """Show activity only around work whose child output is captured/logged.
@@ -724,6 +745,8 @@ class LocalCiRunner:
         over_budget_reason: str | None = None,
     ) -> None:
         self.root = root.resolve()
+        # Set by main(); programmatic/release binding remains separate.
+        self._cli_policy_bound = False
         self.over_budget_reason = over_budget_reason
         default_floor = DEFAULT_FULL_MIN_FREE_BYTES if mode in {"full", "merge", "release"} else 0
         self.min_free_bytes = default_floor if min_free_bytes is None else min_free_bytes
@@ -1134,6 +1157,8 @@ class LocalCiRunner:
             return False
         self.target_lock = lock
         try:
+            if self._cli_policy_bound and (error := cli_policy_error(self.root)) is not None:
+                raise TargetCacheError("CLI planner source changed before target lock: " + error)
             self._check_target_filesystem(target)
             malformed_owner = False
             try:
@@ -2163,6 +2188,8 @@ class LocalCiRunner:
                                     step_id_error=f"invalid step IDs: {invalid_ids!r}; expected 1–100 ASCII characters: "
                                                   "alphanumeric first, then alphanumeric, underscore or hyphen")
                 print(self.summary["step_id_error"], file=sys.stderr, flush=True)
+            elif self._cli_policy_bound and (error := cli_policy_error(self.root)) is not None:
+                self.summary.update(status="failed", exit_code=2, cli_policy_error=error)
             elif not self._capture_repository_state("start_tree"):
                 self.summary["status"] = "failed"
                 self.summary["exit_code"] = 2
@@ -2298,6 +2325,8 @@ class LocalCiRunner:
                     try:
                         if self.target_owner_claimed and self.target_owner_path is not None and self.git_identity is not None:
                             try:
+                                if self._cli_policy_bound and (error := cli_policy_error(self.root)) is not None:
+                                    raise TargetCacheError("CLI planner changed during checks: " + error)
                                 if self._dependency_context() != self._dependency_inputs:
                                     raise TargetCacheError("dependency inputs changed during guarded checks")
                                 self._completed_workspace_inputs()
@@ -2330,6 +2359,8 @@ class LocalCiRunner:
                                                 target_lock_release_error=f"{type(error).__name__}: {error}")
                         finally:
                             self.target_lock = None
+                if self._cli_policy_bound and (error := cli_policy_error(self.root)) is not None:
+                    self.summary.update(status="incomplete", exit_code=2, cli_policy_error=error)
                 self.summary["ended_at"] = utc_now()
                 if self.summary.get("start_tree") is not None:
                     if self._capture_repository_state("end_tree"):
@@ -2448,6 +2479,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("changelog range arguments require --prepare-changelog")
     if arguments.min_free_gib is not None and not 0 <= arguments.min_free_gib <= sys.maxsize // GIB:
         parser.error("--min-free-gib must be a bounded nonnegative integer")
+    if (error := cli_policy_error(ROOT)) is not None:
+        parser.error("cannot bind CLI planner source: " + error)
     mode = "quick" if arguments.quick else "full"
     plan = None
     if arguments.profile in {"merge", "edit", "health"} or arguments.base or arguments.source:
@@ -2455,6 +2488,8 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("scoped profiles require --profile, --base and --source; cannot combine --quick")
         try:
             metadata = json.loads(command_output(["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"], ROOT, dict(os.environ)).stdout)
+            if (error := cli_policy_error(ROOT)) is not None:
+                raise ValueError("CLI planner changed before resolution: " + error)
             plan = ci_plan.resolve(ROOT, profile=arguments.profile, base=arguments.base,
                                    source=arguments.source, metadata=metadata)
             if arguments.reuse_report:
@@ -2476,6 +2511,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--reuse-report requires an explicit merge plan")
     elif arguments.package or arguments.test_filter or arguments.features or arguments.lib or arguments.test is not None:
         parser.error("package/filter/features require an explicit edit plan")
+    if (error := cli_policy_error(ROOT)) is not None:
+        parser.error("CLI planner changed during resolution: " + error)
     runner = LocalCiRunner(
         mode=mode,
         min_free_bytes=None if arguments.min_free_gib is None else arguments.min_free_gib * GIB,
@@ -2485,6 +2522,7 @@ def main(argv: list[str] | None = None) -> int:
         carry_report=arguments.carry_report,
         over_budget_reason=arguments.over_budget_reason,
     )
+    runner._cli_policy_bound = True
     try:
         exit_code = runner.run()
     except FileExistsError:

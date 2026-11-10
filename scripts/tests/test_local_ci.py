@@ -413,6 +413,166 @@ class LocalCiRunnerTests(unittest.TestCase):
             target_state_dir=self.target_state_dir,
         )
 
+    def _install_cli_policy_fixture(self):
+        scripts = self.repo / "scripts"
+        scripts.mkdir(exist_ok=True)
+        (scripts / "ci_plan.py").write_bytes(local_ci._PLAN_SOURCE_BYTES)
+        (scripts / "python_test_plan.py").write_bytes(local_ci.ci_plan._PYTHON_SOURCE_BYTES)
+
+    def test_cli_policy_refuses_change_before_plan_resolution(self):
+        self._install_cli_policy_fixture()
+        for name in ("ci_plan.py", "python_test_plan.py"):
+            with self.subTest(name=name):
+                policy = self.repo / "scripts" / name
+                original = policy.read_bytes()
+
+                def metadata(*_args, **_kwargs):
+                    policy.write_bytes(original + b"\n# changed while resolving\n")
+                    return SimpleNamespace(stdout="{}")
+
+                with patch.object(local_ci, "ROOT", self.repo), \
+                        patch.object(local_ci, "command_output", side_effect=metadata), \
+                        patch.object(local_ci.ci_plan, "resolve", side_effect=AssertionError("stale planner was used")) as resolve:
+                    with self.assertRaises(SystemExit):
+                        local_ci.main(["--profile", "merge", "--base", "base", "--source", "source"])
+                    resolve.assert_not_called()
+                policy.write_bytes(original)
+
+    def test_cli_policy_matching_source_reaches_plan_resolution(self):
+        self._install_cli_policy_fixture()
+        with patch.object(local_ci, "ROOT", self.repo), \
+                patch.object(local_ci, "command_output", return_value=SimpleNamespace(stdout="{}")), \
+                patch.object(local_ci.ci_plan, "resolve", side_effect=ValueError("resolution reached")) as resolve:
+            with self.assertRaises(SystemExit):
+                local_ci.main(["--profile", "merge", "--base", "base", "--source", "source"])
+            resolve.assert_called_once()
+
+    def test_cli_policy_refuses_change_during_plan_resolution(self):
+        self._install_cli_policy_fixture()
+        policy = self.repo / "scripts" / "python_test_plan.py"
+
+        def resolve(*_args, **_kwargs):
+            policy.write_bytes(policy.read_bytes() + b"\n# changed while planning\n")
+            return {}
+
+        with patch.object(local_ci, "ROOT", self.repo), \
+                patch.object(local_ci, "command_output", return_value=SimpleNamespace(stdout="{}")), \
+                patch.object(local_ci.ci_plan, "resolve", side_effect=resolve), \
+                patch.object(local_ci, "LocalCiRunner") as runner:
+            with self.assertRaises(SystemExit):
+                local_ci.main(["--profile", "merge", "--base", "base", "--source", "source"])
+            runner.assert_not_called()
+
+    def test_cli_policy_rechecks_after_non_cargo_steps(self):
+        self._install_cli_policy_fixture()
+        policy = self.repo / "scripts" / "python_test_plan.py"
+        runner = self.runner("cli-policy-final", env={**self.env, "MUTATE_FILE": str(policy)},
+                             steps=(local_ci.Step("first", ("first",)),))
+        runner._cli_policy_bound = True
+        self.assertNotEqual(runner.run(), 0)
+        self.assertIn("cli_policy_error", runner.summary)
+        self.assertNotEqual(runner.summary["status"], "passed")
+
+    def test_cli_policy_missing_mutated_and_symlink_refuse(self):
+        self._install_cli_policy_fixture()
+        self.assertIsNone(local_ci.cli_policy_error(self.repo))
+        scripts = self.repo / "scripts"
+        for name in ("ci_plan.py", "python_test_plan.py"):
+            path = scripts / name
+            original = path.read_bytes()
+            path.write_bytes(original + b"\n# mutation\n")
+            self.assertIsNotNone(local_ci.cli_policy_error(self.repo))
+            path.unlink()
+            self.assertIsNotNone(local_ci.cli_policy_error(self.repo))
+            target = scripts / (name + ".target")
+            target.write_bytes(original)
+            path.symlink_to(target.name)
+            self.assertIsNotNone(local_ci.cli_policy_error(self.repo))
+            path.unlink()
+            target.unlink()
+            path.write_bytes(original)
+        moved = self.repo / "real-scripts"
+        scripts.rename(moved)
+        scripts.symlink_to(moved.name, target_is_directory=True)
+        self.assertIsNotNone(local_ci.cli_policy_error(self.repo))
+
+    def test_cli_policy_rechecks_before_snapshot_and_under_lock(self):
+        self._install_cli_policy_fixture()
+        policy = self.repo / "scripts" / "ci_plan.py"
+        original = policy.read_bytes()
+        before = self.runner("cli-policy-before")
+        before._cli_policy_bound = True
+        policy.write_bytes(original + b"\n# changed after import\n")
+        self.assertNotEqual(before.run(), 0)
+        self.assertIn("cli_policy_error", before.summary)
+        self.assertNotIn("cargo build", self.call_log.read_text() if self.call_log.exists() else "")
+
+        policy.write_bytes(original)
+        locked = self.runner("cli-policy-lock")
+        locked._cli_policy_bound = True
+        acquire = local_ci.CargoTargetLock.acquire
+        def mutate_after_lock(lock):
+            acquire(lock)
+            policy.write_bytes(original + b"\n# changed before locked validation\n")
+        with patch.object(local_ci.CargoTargetLock, "acquire", mutate_after_lock):
+            self.assertNotEqual(locked.run(), 0)
+        self.assertIn("CLI planner source changed before target lock", locked.summary["target_cache_error"])
+        self.assertFalse(locked.target_owner_path.exists())
+        self.assertNotIn("cargo build", self.call_log.read_text())
+
+    def test_cli_policy_matching_run_passes_and_lock_refusal_preserves_owner(self):
+        self._install_cli_policy_fixture()
+        first = self.runner("cli-policy-matching")
+        first._cli_policy_bound = True
+        self.assertEqual(first.run(), 0)
+        owner = first.target_owner_path
+        original_owner = owner.read_bytes()
+        policy = self.repo / "scripts" / "python_test_plan.py"
+        second = self.runner("cli-policy-owner")
+        second._cli_policy_bound = True
+        acquire = local_ci.CargoTargetLock.acquire
+
+        def mutate_after_lock(lock):
+            acquire(lock)
+            policy.write_bytes(policy.read_bytes() + b"\n# changed after lock\n")
+
+        with patch.object(local_ci.CargoTargetLock, "acquire", mutate_after_lock):
+            self.assertNotEqual(second.run(), 0)
+        self.assertEqual(owner.read_bytes(), original_owner)
+        self.assertIn("CLI planner source changed before target lock", second.summary["target_cache_error"])
+
+    def test_cli_policy_atomic_replacement_during_cargo_keeps_owner_unchecked(self):
+        self._install_cli_policy_fixture()
+        first = self.runner("cli-policy-first")
+        first._cli_policy_bound = True
+        self.assertEqual(first.run(), 0)
+        policy = self.repo / "scripts" / "ci_plan.py"
+        original = policy.read_bytes()
+        timestamp = policy.stat()
+        runner = self.runner("cli-policy-replaced")
+        runner._cli_policy_bound = True
+        run_step = runner._run_step
+
+        def replace_after_step(step, index):
+            result = run_step(step, index)
+            replacement = policy.with_name("replacement.py")
+            replacement.write_bytes(original[:-1] + bytes([original[-1] ^ 1]))
+            os.utime(replacement, ns=(timestamp.st_atime_ns, timestamp.st_mtime_ns))
+            os.replace(replacement, policy)
+            return result
+
+        with patch.object(runner, "_run_step", side_effect=replace_after_step):
+            self.assertNotEqual(runner.run(), 0)
+        self.assertNotEqual(runner.summary["status"], "passed")
+        owner = json.loads(runner.target_owner_path.read_text())
+        self.assertFalse(owner["cache_inputs"]["workspace"]["checked"])
+        policy.write_bytes(original)
+        os.utime(policy, ns=(timestamp.st_atime_ns, timestamp.st_mtime_ns))
+        recovery = self.runner("cli-policy-recovery")
+        recovery._cli_policy_bound = True
+        self.assertEqual(recovery.run(), 0)
+        self.assertEqual(recovery.summary["target_cache"]["action"], "source-or-compiler-handoff")
+
     def test_native_acceptance_fresh_full_and_scoped_reports_observe_actual_runner_environment(self):
         for mode, selected in (("full", None), ("merge", {"scope": "tooling", "qualifies_merge": False})):
             for key in (None, "HEX_VST3_SDK_DIR", "HEX_VST3_FUTURE_FIXTURE", "HEX_TEST_SIGNING_IDENTITY"):
