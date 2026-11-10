@@ -272,6 +272,7 @@ TEST_ATTRIBUTE = re.compile(r"#\[(?:gpui::)?test\b")
 # Unit test targets which compile the owning source directly. Keep their libtest
 # names under the original module path so scoped coverage remains observable.
 UI_UNIT_TARGETS = {"editor::tempo_input::value::": "unit_editor_logic",
+                   "editor::console_track_page::": "unit_editor_logic",
                    "editor::time_move_preview::intervals::tests::": "unit_editor_logic",
                    "editor::browser::samples::state::": "unit_editor_logic",
                    "editor::group_overview::model::": "unit_editor_logic",
@@ -397,7 +398,14 @@ UI_PREFIX_COHORTS = [{"editor::tempo_input::value::",
                      {"editor::session_grid::actions::", "editor::delete_ui_tests::",
                       "editor::controller::tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions",
                       "editor::session_navigation_ui_test::scene_launch_leads_the_caption_and_uses_the_guarded_offline_action",
-                      "editor::device_panel::tests::device_comparison_tests::device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_new_ack"}]
+                      "editor::device_panel::tests::device_comparison_tests::device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_new_ack"},
+                    {"editor::console_track_page::",
+                     "editor::browser::console_drop_ui_test::console_column_paged_narrow_target_uses_painted_anchor_and_rejects_stale_source",
+                     "editor::session_track_reorder_ui_test::session_group_band_survives_paging_past_its_parent",
+                     "editor::session_track_reorder_ui_test::console_page_turn_rejects_fold_and_window_changes",
+                     "editor::track_clipboard_ui_test::console_fold_hides_cells_navigation_and_invalidates_column_frame",
+                     "editor::track_meters::selection::",
+                     "editor::track_meters::tests::steady_state_meter_ticks_reuse_the_staging_buffers"}]
 UI_UNIT_COHORTS = [{"editor::device_panel::eq_panel::axes::", "editor::device_panel::eq_panel::response::"},
                    {"editor::midi_drag::", "editor::midi_group_drag::", "editor::midi_scene::", "editor::midi_selection::", "editor::midi_stroke::", "editor::midi_velocity::", "editor::midi_viewport_grid::"},
                    {"editor::device_panel::eq_panel::group_move::", "editor::device_panel::eq_panel::gestures::"},

@@ -38,7 +38,11 @@ plan = module("scope_fixture", "ci_plan.py")
 inputs = module("build_inputs_fixture", "build_inputs.py")
 ci = module("runner_scope_fixture", "local-ci.py")
 
-METER_BOUNDARY = ["editor::output_meter_ui_test::", "editor::refresh_state::",
+METER_BOUNDARY = ["editor::browser::console_drop_ui_test::console_column_paged_narrow_target_uses_painted_anchor_and_rejects_stale_source",
+                  "editor::console_track_page::", "editor::output_meter_ui_test::", "editor::refresh_state::",
+                  "editor::session_track_reorder_ui_test::console_page_turn_rejects_fold_and_window_changes",
+                  "editor::session_track_reorder_ui_test::session_group_band_survives_paging_past_its_parent",
+                  "editor::track_clipboard_ui_test::console_fold_hides_cells_navigation_and_invalidates_column_frame",
                   "editor::track_meters::decay::", "editor::track_meters::follower::",
                   "editor::track_meters::main_output::tests::", "editor::track_meters::scale::",
                   "editor::track_meters::selection::", "editor::track_meters::tests::",
@@ -2059,6 +2063,7 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",
                                   "editor::audio_event_editor::workflow_tests::cut_publishes_clipboard_on_ack_and_paste_survives_save_reopen_with_original_media",
                                   "editor::audio_import_settings::admission::",
+                                  "editor::browser::console_drop_ui_test::console_column_paged_narrow_target_uses_painted_anchor_and_rejects_stale_source",
                                   "editor::browser::folder_places_ui_test::moved_place_shows_missing_and_relocates_with_icon_order_and_samples",
                                   "editor::browser::samples::state::",
                                   "editor::browser::tree::state::",
@@ -2074,6 +2079,7 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::browser::ui_test::search_selection::toggle_fixture_same_root_retains_actual_catalog_job_after_view_and_caller_drop",
                                   "editor::clip_drag_ui_test::rendered_move_retains_destination_until_real_worker_ack",
                                   "editor::computer_keyboard::state::", "editor::computer_keyboard::tests::",
+                                  "editor::console_track_page::",
                                   "editor::controller::audio_event_correlation::",
                                   "editor::controller::sampler_native_ui_protocol_tests::",
                                   "editor::controller::session_feedback::",
@@ -2099,6 +2105,8 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::session_grid::actions::", "editor::session_grid::tests::",
                                   "editor::session_navigation::", "editor::session_navigation_ui_test::",
                                   "editor::session_route_view::",
+                                  "editor::session_track_reorder_ui_test::console_page_turn_rejects_fold_and_window_changes",
+                                  "editor::session_track_reorder_ui_test::session_group_band_survives_paging_past_its_parent",
                                   "editor::tempo_input::keyboard_tests::focused_project_arrows_adjust_local_draft_then_commit_exact_micro_bpm",
                                   "editor::tempo_input::keyboard_tests::project_steps_preserve_bounds_precision_cancel_invalid_and_composition",
                                   "editor::tempo_input::tests::project_tempo_same_value_explicit_commit_collapses_later_points_and_cursor_is_display_only",
@@ -2110,6 +2118,7 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::theme_settings::tests::",
                                   "editor::time_move_preview::intervals::tests::",
                                   "editor::time_move_preview::visual_tests::fragment_titles_cuts_crops_and_compact_body_preserve_source_mapping",
+                                  "editor::track_clipboard_ui_test::console_fold_hides_cells_navigation_and_invalidates_column_frame",
                                   "editor::track_defaults::",
                                   "editor::track_meters::decay::", "editor::track_meters::follower::",
                                   "editor::track_meters::main_output::tests::", "editor::track_meters::scale::",
@@ -2117,6 +2126,10 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::waveform::", "editor::waveform_columns::", "editor::waveform_geometry::", "editor::waveform_loop::",
                                   "editor::waveform_source::", "editor::waveform_stretch::",
                                   "output_meter::logic::", "output_meter::tests::", "theme::"]})
+        meter_consumer = "editor::track_meters::tests::steady_state_meter_ticks_reuse_the_staging_buffers"
+        self.assertTrue(any(meter_consumer.startswith(selected) for selected in
+                            plan.module_test_filters(root, ["crates/hex-ui/tests/unit_editor_logic.rs"],
+                                                     inventory, [owner])[owner]))
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_session.rs"], inventory, [owner]), {})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
                     "single_run": {owner: "ui-test-support"}, "module_filters": {owner: names}}
@@ -3106,16 +3119,60 @@ class ModuleScopeTests(unittest.TestCase):
             names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
             self.assertEqual(names, {owner: METER_BOUNDARY})
         parent = plan.module_test_filters(root, ["crates/hex-ui/src/editor/track_meters.rs"], inventory, [owner])
-        self.assertEqual(parent, {owner: ["editor::output_meter_ui_test::", "editor::refresh_state::",
-                                          "editor::track_meters::", "output_meter::logic::", "output_meter::tests::"]})
-        page = plan.module_test_filters(root, ["crates/hex-ui/src/editor/console_track_page.rs"], inventory, [owner])
-        self.assertEqual(page, {owner: ["editor::", "output_meter::logic::", "output_meter::tests::"]})
+        self.assertEqual(parent, {owner: [
+            "editor::browser::console_drop_ui_test::console_column_paged_narrow_target_uses_painted_anchor_and_rejects_stale_source",
+            "editor::console_track_page::", "editor::output_meter_ui_test::", "editor::refresh_state::",
+            "editor::session_track_reorder_ui_test::console_page_turn_rejects_fold_and_window_changes",
+            "editor::session_track_reorder_ui_test::session_group_band_survives_paging_past_its_parent",
+            "editor::track_clipboard_ui_test::console_fold_hides_cells_navigation_and_invalidates_column_frame",
+            "editor::track_meters::", "output_meter::logic::", "output_meter::tests::"]})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
                     "single_run": {owner: "ui-test-support"}, "module_filters": names}
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
                                   "cargo_inventory": inventory, "paths": []})
         self.assertTrue(any(unit in step.argv for step in steps if "unit_editor_logic" in step.argv))
         self.assertTrue(any(integration in step.argv for step in steps if step.step_id == "ui-feature-tests"))
+
+    def test_console_track_page_keeps_unit_and_paging_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::console_track_page::"
+        meter_unit = "editor::track_meters::selection::"
+        consumers = [
+            "editor::browser::console_drop_ui_test::console_column_paged_narrow_target_uses_painted_anchor_and_rejects_stale_source",
+            "editor::session_track_reorder_ui_test::session_group_band_survives_paging_past_its_parent",
+            "editor::session_track_reorder_ui_test::console_page_turn_rejects_fold_and_window_changes",
+            "editor::track_clipboard_ui_test::console_fold_hides_cells_navigation_and_invalidates_column_frame",
+            "editor::track_meters::tests::steady_state_meter_ticks_reuse_the_staging_buffers",
+        ]
+        paths = ["crates/hex-ui/src/editor/console_track_page.rs",
+                 "crates/hex-ui/src/editor/console_drop_ui_test.rs",
+                 "crates/hex-ui/src/editor/session_track_reorder_ui_test.rs",
+                 "crates/hex-ui/src/editor/track_clipboard_ui_test.rs",
+                 "crates/hex-ui/src/editor/track_meters/selection.rs",
+                 "crates/hex-ui/src/editor/track_meters.rs"]
+        for path in paths:
+            names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
+            self.assertIn(unit, names)
+            self.assertTrue(any(meter_unit.startswith(selected) for selected in names))
+            self.assertNotIn("editor::", names)
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in names))
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": {owner: names}}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                      "boundary": boundary, "cargo_inventory": inventory, "paths": [path]})
+            unit_step = next(step for step in steps if "unit_editor_logic" in step.argv)
+            self.assertIn(unit, unit_step.argv)
+            self.assertTrue(any(meter_unit.startswith(selected) for selected in unit_step.argv))
+            self.assertTrue(unit_step.requires_tests)
+            feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv))
 
     def test_session_grid_actions_keep_unit_and_parent_coverage(self):
         root = SCRIPTS.parent
