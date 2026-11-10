@@ -2175,6 +2175,25 @@ runpy.run_path(sys.argv[1], run_name='__main__')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("dependency patches passed", result.stdout)
 
+    def test_dev_owner_record_matches_writer_and_reader(self) -> None:
+        target = Path(self.env["FAKE_METADATA_TARGET"])
+        target.mkdir()
+        runner = self.runner("owner-record")
+        runner.cargo_identity = {"target_directory": str(target)}
+        runner._dependency_inputs = {"version": 1, "sha256": "a" * 64, "packages": []}
+        workspace = {"workspace_root": str(self.repo), "git_common_dir": str(self.repo / ".git")}
+        marker = self.base / "owner.json"
+        with patch.object(local_ci, "utc_now", return_value="2026-01-01T00:00:00Z"), \
+                patch.object(runner, "_cache_provenance", return_value={"witness": "fixture"}) as provenance:
+            record = runner._target_owner_record(workspace, checked=True)
+            runner._write_target_owner(marker, workspace, checked=True)
+        self.assertEqual(runner._load_target_owner(marker, target), record)
+        self.assertEqual(record["workspace_owner"], workspace)
+        self.assertEqual(record["dependency_inputs"], runner._dependency_inputs)
+        self.assertEqual(record["target_identity"], runner._directory_identity(target))
+        self.assertEqual(record["cache_inputs"], {"witness": "fixture"})
+        self.assertEqual(provenance.call_args_list, [unittest.mock.call(checked=True)] * 2)
+
     def test_full_pipeline_claims_fresh_target_before_python_cargo_wrapper(self) -> None:
         target = Path(self.env["FAKE_METADATA_TARGET"])
         _lock, owner = local_ci.target_state_paths(target.resolve(), self.target_state_dir)
@@ -2185,7 +2204,15 @@ runpy.run_path(sys.argv[1], run_name='__main__')
             '  [ -f "$EXPECTED_OWNER" ] || exit 12\n'
             '  /bin/mkdir -p "$CARGO_TARGET_DIR/debug"\n'
             '  echo fixture > "$CARGO_TARGET_DIR/debug/fixture.rlib"\n'
-            'fi\necho "completed $tool $*"',
+            'fi\n'
+            'if [ "$1" = scripts/test_shards.py ]; then echo "test result: ok. 1 passed; 0 failed; 0 ignored;"; fi\n'
+            'echo "completed $tool $*"',
+        ))
+        cargo = self.bin / "cargo"
+        cargo.write_text(FAKE_TOOL.replace(
+            'echo "completed $tool $*"',
+            'if [ "$1" = test ]; then echo "test result: ok. 1 passed; 0 failed; 0 ignored;"; fi\n'
+            'echo "completed $tool $*"',
         ))
         runner = self.runner("python-cargo", env={**self.env, "EXPECTED_OWNER": str(owner)},
                              steps=local_ci.FULL_STEPS)
