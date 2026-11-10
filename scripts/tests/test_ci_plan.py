@@ -45,9 +45,17 @@ METER_BOUNDARY = ["editor::output_meter_ui_test::", "editor::refresh_state::",
                   "output_meter::logic::", "output_meter::tests::"]
 
 
-GRID_CONSUMERS = [
+WAVEFORM_PAINT_GEOMETRY_CONSUMERS = [
     "editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform",
     "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",
+    "editor::audio_event_editor::workflow_tests::cut_publishes_clipboard_on_ack_and_paste_survives_save_reopen_with_original_media",
+    "editor::fade_handles::ui_tests::released_two_axis_fade_stays_painted_until_real_worker_ack",
+    "editor::fades::musical_tests::transformed_cropped_musical_fades_keep_readouts_reset_adjust_and_projected_curve",
+]
+
+
+GRID_CONSUMERS = [
+    *WAVEFORM_PAINT_GEOMETRY_CONSUMERS,
     "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
     "editor::overview_waveform::",
     "editor::sampler_parameter::tests::source_hints_and_paint_require_same_view_source_facts_and_context",
@@ -2049,6 +2057,7 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::arrangement_sections::tests::section_lower_body_paints_all_tracks_without_section_edit_even_when_focused",
                                   "editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform",
                                   "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",
+                                  "editor::audio_event_editor::workflow_tests::cut_publishes_clipboard_on_ack_and_paste_survives_save_reopen_with_original_media",
                                   "editor::audio_import_settings::admission::",
                                   "editor::browser::folder_places_ui_test::moved_place_shows_missing_and_relocates_with_icon_order_and_samples",
                                   "editor::browser::samples::state::",
@@ -2413,19 +2422,50 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertTrue(unit.requires_tests)
         self.assertIn(names[1], integration.argv)
 
+    def test_waveform_paint_geometry_keeps_exact_render_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::waveform::paint_geometry::"
+        consumers = [
+            *WAVEFORM_PAINT_GEOMETRY_CONSUMERS,
+            "editor::waveform::tests::waveform_canvas_paints_full_clip_extent",
+            "editor::waveform::waveform_header_ui_test::waveform_body_painter_stays_below_ordinary_selected_and_looped_headers",
+            "editor::waveform_geometry::tests::event_detail_keeps_a_transient_in_its_visible_column",
+        ]
+        source = "crates/hex-ui/src/editor/"
+        names = plan.module_test_filters(root, [source + "waveform/paint_geometry.rs"], inventory, [owner])
+        self.assertEqual(names, {owner: sorted([unit, *consumers])})
+        for path in ("waveform.rs", "waveform_geometry.rs", "tracks.rs",
+                     "audio_event_editor/waveform_preview.rs", "audio_event_editor/workflow_tests.rs",
+                     "audio_event_editor/free_placement_tests.rs", "audio_event_editor/tests.rs",
+                     "fades/musical_tests.rs", "fade_handles_ui_test.rs", "waveform_header_ui_test.rs"):
+            with self.subTest(path=path):
+                selected = plan.module_test_filters(root, [source + path], inventory, [owner])[owner]
+                self.assertTrue(any(unit.startswith(name) for name in selected))
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(name) for name in selected))
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                  "boundary": boundary, "cargo_inventory": inventory, "paths": []})
+        unit_step = next(step for step in steps if "unit_editor_logic" in step.argv)
+        self.assertTrue(unit_step.requires_tests)
+        self.assertIn(unit, unit_step.argv)
+        feature_step = next(step for step in steps if step.step_id == "ui-feature-tests")
+        for consumer in consumers:
+            self.assertIn(consumer, feature_step.argv)
+
     def test_waveform_source_selects_unit_and_projection_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
         inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
                       "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
                       "targets": [{"kind": ["lib"]}]}]
-        names = ["editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform",
-                 "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",
-                 "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
-                 "editor::overview_waveform::",
-                 "editor::sampler_parameter::tests::source_hints_and_paint_require_same_view_source_facts_and_context",
-                 "editor::waveform::", "editor::waveform_columns::", "editor::waveform_geometry::", "editor::waveform_loop::",
-                 "editor::waveform_source::", "editor::waveform_stretch::"]
+        names = sorted(GRID_CONSUMERS)
         for path in ("crates/hex-ui/src/editor/waveform_source.rs", "crates/hex-ui/src/editor/waveform.rs"):
             self.assertEqual(plan.module_test_filters(root, [path], inventory, [owner]), {owner: names})
             boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
@@ -2989,7 +3029,19 @@ class ModuleScopeTests(unittest.TestCase):
         integration = "editor::fade_handles::"
         for path in ("fade_handle_geometry.rs", "fade_handles.rs", "fade_handles_ui_test.rs"):
             names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
-            self.assertEqual(names, {owner: [unit, integration]})
+            expected = [unit, integration]
+            if path == "fade_handles_ui_test.rs":
+                expected += [
+                    "editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform",
+                    "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",
+                    "editor::audio_event_editor::workflow_tests::cut_publishes_clipboard_on_ack_and_paste_survives_save_reopen_with_original_media",
+                    "editor::fades::musical_tests::transformed_cropped_musical_fades_keep_readouts_reset_adjust_and_projected_curve",
+                    "editor::waveform::paint_geometry::",
+                    "editor::waveform::tests::waveform_canvas_paints_full_clip_extent",
+                    "editor::waveform::waveform_header_ui_test::waveform_body_painter_stays_below_ordinary_selected_and_looped_headers",
+                    "editor::waveform_geometry::tests::event_detail_keeps_a_transient_in_its_visible_column",
+                ]
+            self.assertEqual(names, {owner: sorted(expected)})
             boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
                         "single_run": {owner: "ui-test-support"}, "module_filters": names}
             steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,

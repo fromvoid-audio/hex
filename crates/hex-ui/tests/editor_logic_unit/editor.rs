@@ -55,14 +55,13 @@ mod device_panel;
 // Exercise the production column contract without compiling the full UI owner.
 use crate::theme;
 #[allow(dead_code)]
-#[path = "../../src/editor/waveform_columns.rs"]
-mod waveform_columns;
-mod waveform {
-    pub(super) use super::waveform_columns::waveform_column_count;
-}
-#[allow(dead_code)]
 #[path = "../../src/editor/overview_waveform.rs"]
 mod overview_waveform;
+#[path = "waveform.rs"]
+mod waveform;
+#[allow(dead_code)]
+#[path = "../../src/editor/waveform_columns.rs"]
+mod waveform_columns;
 
 #[path = "drag.rs"]
 mod drag;
