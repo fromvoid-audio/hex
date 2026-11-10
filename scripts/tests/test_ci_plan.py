@@ -41,7 +41,8 @@ ci = module("runner_scope_fixture", "local-ci.py")
 METER_BOUNDARY = ["editor::output_meter_ui_test::", "editor::refresh_state::",
                   "editor::track_meters::decay::", "editor::track_meters::follower::",
                   "editor::track_meters::main_output::tests::", "editor::track_meters::scale::",
-                  "editor::track_meters::selection::", "editor::track_meters::tests::"]
+                  "editor::track_meters::selection::", "editor::track_meters::tests::",
+                  "output_meter::logic::", "output_meter::tests::"]
 
 
 class PlannerSourceLoaderTests(unittest.TestCase):
@@ -2046,7 +2047,8 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::track_meters::main_output::tests::", "editor::track_meters::scale::",
                                   "editor::track_meters::selection::", "editor::track_meters::tests::", *names,
                                   "editor::waveform::", "editor::waveform_columns::", "editor::waveform_geometry::", "editor::waveform_loop::",
-                                  "editor::waveform_source::", "editor::waveform_stretch::", "theme::"]})
+                                  "editor::waveform_source::", "editor::waveform_stretch::",
+                                  "output_meter::logic::", "output_meter::tests::", "theme::"]})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_session.rs"], inventory, [owner]), {})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
                     "single_run": {owner: "ui-test-support"}, "module_filters": {owner: names}}
@@ -2291,7 +2293,7 @@ class ModuleScopeTests(unittest.TestCase):
             names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
             self.assertEqual(names, {owner: sorted(related)})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/editor/mode.rs"], inventory, [owner]),
-                         {owner: ["editor::"]})
+                         {owner: ["editor::", "output_meter::logic::", "output_meter::tests::"]})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
                     "single_run": {owner: "ui-test-support"}, "module_filters": {owner: [unit, window]}}
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
@@ -2337,6 +2339,32 @@ class ModuleScopeTests(unittest.TestCase):
             self.assertTrue(any(expected[0] in step.argv for step in steps if "unit_editor_logic" in step.argv))
             self.assertTrue(any(window in step.argv for step in steps if step.step_id == "ui-feature-tests"))
 
+    def test_output_meter_logic_keeps_rendered_and_editor_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        for source in ("crates/hex-ui/src/output_meter/logic.rs",
+                       "crates/hex-ui/src/output_meter/logic_tests.rs",
+                       "crates/hex-ui/src/output_meter/tests.rs"):
+            names = plan.module_test_filters(root, [source], inventory, [owner])
+            self.assertEqual(names, {owner: METER_BOUNDARY})
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": names}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                      "cargo_inventory": inventory, "paths": []})
+            self.assertTrue(any("output_meter::logic::" in step.argv and step.requires_tests
+                                for step in steps if "unit_editor_logic" in step.argv))
+            library = next(step for step in steps if step.step_id == "ui-feature-tests")
+            self.assertIn("output_meter::tests::", library.argv)
+            self.assertIn("editor::output_meter_ui_test::", library.argv)
+            self.assertIn("editor::refresh_state::", names[owner])
+        parent = plan.module_test_filters(root, ["crates/hex-ui/src/output_meter.rs"], inventory, [owner])
+        self.assertIn("output_meter::", parent[owner])
+        self.assertIn("editor::output_meter_ui_test::", parent[owner])
+
     def test_refresh_state_keeps_unit_and_window_coverage(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
@@ -2348,7 +2376,7 @@ class ModuleScopeTests(unittest.TestCase):
         names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/refresh_state.rs"], inventory, [owner])
         self.assertEqual(names, {owner: METER_BOUNDARY})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/editor/refresh.rs"], inventory, [owner]),
-                         {owner: ["editor::"]})
+                         {owner: ["editor::", "output_meter::logic::", "output_meter::tests::"]})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
                     "single_run": {owner: "ui-test-support"}, "module_filters": names}
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
@@ -2580,9 +2608,9 @@ class ModuleScopeTests(unittest.TestCase):
             self.assertEqual(names, {owner: METER_BOUNDARY})
         parent = plan.module_test_filters(root, ["crates/hex-ui/src/editor/track_meters.rs"], inventory, [owner])
         self.assertEqual(parent, {owner: ["editor::output_meter_ui_test::", "editor::refresh_state::",
-                                          "editor::track_meters::"]})
+                                          "editor::track_meters::", "output_meter::logic::", "output_meter::tests::"]})
         page = plan.module_test_filters(root, ["crates/hex-ui/src/editor/console_track_page.rs"], inventory, [owner])
-        self.assertEqual(page, {owner: ["editor::"]})
+        self.assertEqual(page, {owner: ["editor::", "output_meter::logic::", "output_meter::tests::"]})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
                     "single_run": {owner: "ui-test-support"}, "module_filters": names}
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
