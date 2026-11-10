@@ -156,7 +156,7 @@ impl ComputerKeyboard {
         self.physical[index].take().is_some() || active
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, any(feature = "ui-test-support", feature = "ui-unit-tier")))]
     pub fn held(&self) -> &[Option<HeldKey>; NOTE_KEYS.len()] {
         &self.held
     }
