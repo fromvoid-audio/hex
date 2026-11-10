@@ -206,7 +206,8 @@ impl EditorView {
                                 empty_viewport,
                                 self.track_header_width(),
                                 "locator-line",
-                            )]),
+                            )])
+                            .children(self.edit_cursor_layer(empty_viewport, clip_move_guide, cx)),
                     ),
                     cx,
                 )]);
@@ -318,7 +319,7 @@ impl EditorView {
         self.arrangement_surface(upper, returns, main, cx)
     }
 
-    fn arrangement_body(&self, mut body: Div, cx: &mut Context<Self>) -> Div {
+    fn arrangement_body(&self, mut body: Div, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         if self
             .time_range_move_gesture
             .as_ref()
@@ -326,8 +327,16 @@ impl EditorView {
         {
             body = body.cursor(gpui::CursorStyle::DragCopy);
         }
-        body = body
+        let mut body = body
+            .id("arrangement-content")
             .debug_selector(|| "arrangement-content".to_owned())
+            .when(self.context_menu.is_none(), |body| {
+                body.on_click(cx.listener(|view, event: &gpui::ClickEvent, window, cx| {
+                    if let gpui::ClickEvent::Mouse(event) = event {
+                        view.place_empty_arrangement_cursor(event, window, cx);
+                    }
+                }))
+            })
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|view, event: &gpui::MouseDownEvent, window, cx| {
@@ -462,6 +471,11 @@ impl EditorView {
                             if view.context_menu.is_some()
                                 || super::device_panel::picker_is_open(view)
                             {
+                                return (false, false);
+                            }
+                            // The body click owns a point in the trailing space.
+                            // Lane gesture probes must leave click suppression intact there.
+                            if view.painted_arrangement_tail(x, y).is_some() {
                                 return (false, false);
                             }
                             if view.pointer_hits_section_launch(x, y) {

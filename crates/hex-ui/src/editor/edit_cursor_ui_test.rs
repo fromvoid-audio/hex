@@ -6,6 +6,191 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[gpui::test]
+fn empty_arrangement_space_matches_a_scrolled_zoomed_lane_and_keeps_selection(
+    cx: &mut TestAppContext,
+) {
+    cx.update(super::bind_editor_keys);
+    let (project, source, last, clip) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let viewport = super::viewport::Viewport {
+        start: 48_000,
+        length: 128_000,
+    };
+    editor.update(&mut visual, |view, cx| {
+        view.viewport = Some(viewport);
+        cx.notify();
+    });
+    visual.run_until_parked();
+
+    let (lane, tail, main) = editor.read_with(&visual, |view, _| {
+        (
+            view.drag_lanes[&source],
+            view.painted_track_drop_lane(last).unwrap(),
+            view.main_track_lane_bounds.unwrap(),
+        )
+    });
+    let body = visual.debug_bounds("arrangement-content").unwrap();
+    let last_bottom = px(tail.top + tail.height);
+    assert!(body.bottom() > last_bottom);
+    assert!(body.bottom() <= px(main.top));
+    let tail_y = (last_bottom + body.bottom()) / 2.0;
+    let x = px(lane.left + lane.width * 0.677);
+    let lane_click = point(x, px(lane.top + lane.height * 0.5));
+    let empty_click = point(x, tail_y);
+
+    let mut frames = Vec::new();
+    for free in [false, true] {
+        let modifiers = Modifiers {
+            platform: free,
+            ..Modifiers::default()
+        };
+        visual.simulate_click(lane_click, modifiers);
+        visual.run_until_parked();
+        let lane_frame = editor.read_with(&visual, |view, _| {
+            let cursor = view.edit_cursor.unwrap();
+            assert_eq!(cursor.track, Some(source));
+            cursor.frame
+        });
+        editor.update(&mut visual, |view, cx| {
+            // A pre-existing clip/range would ordinarily supply Play's start.
+            view.selected_clip = Some(clip);
+            view.time_selection = Some(super::time_selection::TimeSelection {
+                anchor_track: source,
+                end_track: last,
+                anchor_frame: 32_000,
+                end_frame: 42_000,
+            });
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let selected_tracks = editor.read_with(&visual, |view, _| view.selected_track_ids());
+        visual.simulate_click(empty_click, modifiers);
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            let cursor = view.project_point_cursor().expect("empty timeline click");
+            assert_eq!(cursor.frame, lane_frame);
+            assert_eq!(view.selected_track, Some(source));
+            assert_eq!(view.selected_track_ids(), selected_tracks);
+            assert_eq!(view.selected_clip, Some(clip));
+            assert!(view.time_selection.is_none());
+            assert_eq!(view.time_selection_paste_target(), None);
+            assert_eq!(view.playback_start_frame(), lane_frame);
+        });
+        let line = visual.debug_bounds("project-edit-cursor-line").unwrap();
+        let expected_x = lane.left + lane.width * viewport.fraction(lane_frame).unwrap();
+        assert!((f32::from(line.left()) - expected_x).abs() <= 1.0);
+        frames.push(lane_frame);
+    }
+    assert_ne!(
+        frames[0], frames[1],
+        "Command placement keeps the off-grid frame"
+    );
+    let placed = frames[1];
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.last_transport_command, None)
+    });
+    visual.simulate_keystrokes("space");
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.last_transport_command,
+            Some(hex_engine::PlaybackCommand::PlayFrom(placed))
+        );
+    });
+
+    let other = point(px(lane.left + lane.width * 0.31), tail_y);
+    let assert_still_placed = |visual: &VisualTestContext| {
+        editor.read_with(visual, |view, _| {
+            assert_eq!(
+                view.project_point_cursor().map(|cursor| cursor.frame),
+                Some(placed)
+            );
+        });
+    };
+    visual.simulate_mouse_down(empty_click, MouseButton::Right, Modifiers::default());
+    visual.simulate_mouse_up(empty_click, MouseButton::Right, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| assert!(view.context_menu.is_some()));
+    visual.simulate_click(other, Modifiers::default());
+    visual.run_until_parked();
+    assert_still_placed(&visual);
+    visual.simulate_keystrokes("escape");
+
+    for opening in [true, false] {
+        editor.update(&mut visual, |view, _| {
+            view.opening_project = opening;
+            view.close_prompt_open = !opening;
+        });
+        visual.simulate_click(other, Modifiers::default());
+        assert_still_placed(&visual);
+    }
+    editor.update(&mut visual, |view, _| {
+        view.close_prompt_open = false;
+        view.mode = super::EditorMode::Session;
+    });
+    visual.simulate_click(other, Modifiers::default());
+    assert_still_placed(&visual);
+    editor.update(&mut visual, |view, cx| {
+        view.mode = super::EditorMode::Arrangement;
+        view.suppress_cursor_click = true;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_click(other, Modifiers::default());
+    assert_still_placed(&visual);
+    editor.read_with(&visual, |view, _| assert!(!view.suppress_cursor_click));
+
+    visual.simulate_click(other, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_ne!(view.project_point_cursor().unwrap().frame, placed);
+    });
+}
+
+#[gpui::test]
+fn empty_project_click_places_a_visible_play_start_without_tracks(cx: &mut TestAppContext) {
+    cx.update(super::bind_editor_keys);
+    let project = hex_project::Project::new(48_000).unwrap();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let body = visual.debug_bounds("arrangement-content").unwrap();
+    let frame = editor.read_with(&visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        let bounds = view.arrangement_bounds.unwrap();
+        let width = bounds.width - view.track_header_width();
+        let x = bounds.left + width * 0.357;
+        let viewport = view.visible_viewport(state.timeline_frames);
+        let frame = super::seek::pointer_to_frame(x, bounds.left, width, viewport).unwrap();
+        (px(x), frame)
+    });
+    visual.simulate_click(
+        point(frame.0, body.center().y),
+        Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        },
+    );
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        let cursor = view.project_point_cursor().expect("point on empty project");
+        assert_eq!(cursor.frame, frame.1);
+        assert!(cursor.frame > 0);
+        assert_eq!(view.selected_track, None);
+        assert!(view.time_selection.is_none());
+        assert_eq!(view.playback_start_frame(), frame.1);
+    });
+    assert!(visual.debug_bounds("project-edit-cursor-line").is_some());
+    visual.simulate_keystrokes("space");
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.last_transport_command,
+            Some(hex_engine::PlaybackCommand::PlayFrom(frame.1))
+        );
+    });
+}
+
+#[gpui::test]
 fn clicked_audio_cursor_is_visible_and_e_uses_it_offline(cx: &mut TestAppContext) {
     cx.update(super::bind_editor_keys);
     let (project, source, target, clip) = audio_project();
@@ -32,7 +217,7 @@ fn clicked_audio_cursor_is_visible_and_e_uses_it_offline(cx: &mut TestAppContext
     visual.run_until_parked();
     let frame = editor.read_with(cx, |view, _| {
         let cursor = view.edit_cursor.expect("click places cursor");
-        assert_eq!(cursor.track, source);
+        assert_eq!(cursor.track, Some(source));
         assert!(cursor.frame > 0 && cursor.frame < 96_000);
         assert!(view.normalized_time_selection().is_none());
         assert_eq!(
@@ -268,7 +453,7 @@ fn empty_position_and_missing_cursor_do_not_dispatch_a_split(cx: &mut TestAppCon
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.edit_cursor.expect("cursor on empty track").track,
-            target
+            Some(target)
         );
         assert!(view.last_enqueued_edit.is_none());
         assert!(
@@ -1571,7 +1756,7 @@ fn assert_space_restart_policy(cx: &mut TestAppContext, enabled: bool) {
         editor.update(cx, |view, _| {
             window.focus(&view.focus);
             view.edit_cursor = Some(super::edit_cursor::EditCursor {
-                track: source,
+                track: Some(source),
                 frame: 73_000,
                 generation: view.project_generation,
                 pulse_color: crate::theme::color(crate::theme::PaletteRole::Text),
@@ -1660,7 +1845,7 @@ fn assert_space_restart_policy(cx: &mut TestAppContext, enabled: bool) {
                 .expect("pause intent token");
             view.play_intent.admit(token, false);
             view.edit_cursor = Some(super::edit_cursor::EditCursor {
-                track: source,
+                track: Some(source),
                 frame: 73_000,
                 generation: view.project_generation,
                 pulse_color: crate::theme::color(crate::theme::PaletteRole::Text),
@@ -1742,7 +1927,7 @@ fn stateful_space_queues_play_from_without_a_seek_worker(cx: &mut TestAppContext
             });
             view.time_selection = None;
             view.edit_cursor = Some(super::edit_cursor::EditCursor {
-                track: source,
+                track: Some(source),
                 frame: 48_000_000,
                 generation: view.project_generation,
                 pulse_color: crate::theme::color(crate::theme::PaletteRole::Text),
@@ -1792,7 +1977,7 @@ fn sampler_space_preserves_edit_cursor_time_selection_and_pause(cx: &mut TestApp
         visual.update(|window, cx| {
             editor.update(cx, |view, _| {
                 view.edit_cursor = Some(super::edit_cursor::EditCursor {
-                    track,
+                    track: Some(track),
                     frame: 73_000,
                     generation: view.project_generation,
                     pulse_color: crate::theme::color(crate::theme::PaletteRole::Text),
@@ -2469,7 +2654,7 @@ fn selected_clips_hide_the_point_cursor_and_supply_the_earliest_play_start(
     visual.update(|_, cx| {
         editor.update(cx, |view, _| {
             view.edit_cursor = Some(super::edit_cursor::EditCursor {
-                track: source,
+                track: Some(source),
                 frame: 73_000,
                 generation: view.project_generation,
                 pulse_color: crate::theme::color(crate::theme::PaletteRole::Text),

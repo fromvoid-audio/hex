@@ -101,7 +101,7 @@ fn command_d_duplicates_bounded_audio_midi_gaps_and_advances_scope_atomically(
                     });
                     view.time_selection_project_scope = scope == 2;
                     view.edit_cursor = Some(crate::editor::edit_cursor::EditCursor {
-                        track: audio,
+                        track: Some(audio),
                         frame: 12_000,
                         generation: view.project_generation,
                         pulse_color: 0,
