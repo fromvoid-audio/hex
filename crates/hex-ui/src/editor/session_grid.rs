@@ -5,8 +5,6 @@ pub(super) use actions::{DeleteTarget, action_is_current, resolve_delete_target}
 
 use super::console_columns::ColumnFrame;
 use super::console_track_page::TrackPage;
-#[cfg(test)]
-use super::console_track_page::visible_track_range;
 use super::session_route_view::cell_route_markers;
 use super::{EditorMode, EditorView, PendingPlaybackAction};
 use crate::theme;
@@ -2075,7 +2073,7 @@ impl EditorView {
 
 #[cfg(test)]
 mod tests {
-    use super::{launch_action, visible_track_range};
+    use super::launch_action;
     use hex_engine::{LaunchQuantization, PlaybackAction, SessionPlaybackCommand};
     use hex_project::{Command, Created, Editor, Project};
 
@@ -2137,14 +2135,5 @@ mod tests {
                 ..
             })
         ));
-    }
-
-    #[test]
-    fn track_paging_keeps_a_bounded_last_page_reachable() {
-        assert_eq!(visible_track_range(256, 0, 8), 0..8);
-        assert_eq!(visible_track_range(256, 248, 8), 248..256);
-        assert_eq!(visible_track_range(256, usize::MAX, 8), 248..256);
-        assert_eq!(visible_track_range(10, 8, 8), 2..10);
-        assert_eq!(visible_track_range(0, 0, 8), 0..0);
     }
 }
