@@ -2287,6 +2287,69 @@ class ModuleScopeTests(unittest.TestCase):
                                   "boundary": consumer_only, "cargo_inventory": [*inventory, other], "paths": []})
         self.assertFalse(any(step.step_id == "ui-consumer-track_group_focus" for step in steps))
 
+    def test_midi_pressure_boundary_source_target_feature_and_full_run_selection(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        target = "midi_pressure_boundary"
+        module = "editor::midi_recording::"
+        fixture = "editor::midi_recording::pressure_fixture"
+        paths = [
+            ("crates/hex-ui/src/editor/midi_recording_pressure_fixture.rs", fixture),
+            ("crates/hex-ui/src/editor/midi_recording.rs", "editor::midi_recording"),
+        ]
+        modules = plan.module_paths(root / "crates/hex-ui/src")
+        for path, expected in paths:
+            self.assertEqual(modules[(root / path).resolve()], expected)
+            names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
+            self.assertTrue(any(module.startswith(selected) for selected in names), names)
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": {owner: names}}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                      "boundary": boundary, "cargo_inventory": inventory,
+                                      "paths": [path]})
+            feature_suite = next(step for step in steps if step.step_id == "ui-feature-tests")
+            self.assertIn("--lib", feature_suite.argv)
+            self.assertTrue(any(module.startswith(selected) for selected in feature_suite.argv))
+            consumer = [step for step in steps if step.step_id == "ui-consumer-" + target]
+            self.assertEqual(len(consumer), 1)
+            self.assertTrue(consumer[0].requires_tests)
+            self.assertEqual(consumer[0].argv,
+                             ("cargo", "test", "-p", owner, "--features", "ui-test-support",
+                              "--test", target, "--locked"))
+
+        harness = "crates/hex-ui/tests/midi_pressure_boundary.rs"
+        target_change = plan.module_test_filters(root, [harness], inventory, [owner])
+        self.assertEqual(target_change, {owner: [module]})
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": target_change}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                  "boundary": boundary, "cargo_inventory": inventory,
+                                  "paths": [harness]})
+        self.assertEqual(sum(step.step_id == "ui-consumer-" + target for step in steps), 1)
+
+        unrelated = plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/user_errors.rs"], inventory, [owner])
+        boundary["module_filters"] = unrelated
+        unrelated_steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                            "boundary": boundary, "cargo_inventory": inventory,
+                                            "paths": ["crates/hex-ui/src/editor/user_errors.rs"]})
+        self.assertFalse(any(step.step_id == "ui-consumer-" + target for step in unrelated_steps))
+
+        full = {"kind": "packages", "tests": [], "test_packages": [owner],
+                "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                "module_filters": {}}
+        full_steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                      "boundary": full, "cargo_inventory": inventory,
+                                      "paths": []})
+        self.assertFalse(any(step.step_id == "ui-consumer-" + target for step in full_steps))
+        full_suite = next(step for step in full_steps if step.step_id == "ui-feature-tests")
+        self.assertNotIn("--test", full_suite.argv)
+
     def test_browser_sample_state_keeps_catalog_worker_and_window_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"

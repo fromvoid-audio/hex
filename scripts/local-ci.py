@@ -504,8 +504,10 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
                      if "hex-ui" in tested and any(module.startswith(name) or name.startswith(module)
                                                     for name in module_filters.get("hex-ui", []))}
     for target in sorted(extra_targets):
+        feature = ci_plan.UI_EXTRA_TEST_FEATURES.get(target)
+        feature_args = ("--features", feature) if feature else ()
         steps.append(Step(f"ui-consumer-{target}",
-                          ("cargo", "test", "-p", "hex-ui", "--test", target, "--locked"),
+                          ("cargo", "test", "-p", "hex-ui", *feature_args, "--test", target, "--locked"),
                           requires_tests=True))
     if lint_features:
         lint_packages = sorted({feature.split("/")[0] for feature in lint_features})
