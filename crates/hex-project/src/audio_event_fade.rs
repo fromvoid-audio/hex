@@ -82,7 +82,8 @@ impl AudioEventFade {
                 self.shape.in_curve(),
                 self.shape.out_curve(),
             )?
-            .with_curve_positions(self.shape.in_position(), self.shape.out_position())?,
+            .with_curve_positions(self.shape.in_position(), self.shape.out_position())?
+            .with_curve_laws(self.shape.curve_laws()),
         )
     }
 }

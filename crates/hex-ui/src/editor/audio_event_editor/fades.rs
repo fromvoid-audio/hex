@@ -106,6 +106,7 @@ fn retain_unchanged_knots(
     .ok()?
     .with_curve_positions(edited.in_position(), edited.out_position())
     .ok()
+    .map(|fade| fade.with_curve_laws(edited.curve_laws()))
 }
 fn destination_frame(
     root: &AudioClipEdit,

@@ -45,6 +45,7 @@ pub(crate) mod provenance;
 pub(crate) mod retained_receiver;
 pub(crate) mod return_feeds;
 pub(crate) mod routing;
+pub(crate) mod s_curve_fades;
 pub(crate) mod sample_rate_mode;
 pub(crate) mod sampler_crossfade;
 pub(crate) mod serial_units;

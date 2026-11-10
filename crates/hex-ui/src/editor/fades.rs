@@ -213,6 +213,7 @@ impl EditorView {
                     local.out_curve(),
                 )?
                 .with_curve_positions(local.in_position(), local.out_position())
+                .map(|next| next.with_curve_laws(local.curve_laws()))
             }) else {
                 return;
             };
