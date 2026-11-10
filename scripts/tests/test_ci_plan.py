@@ -45,6 +45,17 @@ METER_BOUNDARY = ["editor::output_meter_ui_test::", "editor::refresh_state::",
                   "output_meter::logic::", "output_meter::tests::"]
 
 
+GRID_CONSUMERS = [
+    "editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform",
+    "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",
+    "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
+    "editor::overview_waveform::",
+    "editor::sampler_parameter::tests::source_hints_and_paint_require_same_view_source_facts_and_context",
+    "editor::waveform::", "editor::waveform_columns::", "editor::waveform_geometry::",
+    "editor::waveform_loop::", "editor::waveform_source::", "editor::waveform_stretch::",
+]
+
+
 class PlannerSourceLoaderTests(unittest.TestCase):
     def test_nested_policy_descriptors_close_when_wrapping_fails(self):
         spec = importlib.util.spec_from_file_location("planner_close_probe", SCRIPTS / "ci_plan.py")
@@ -1925,7 +1936,7 @@ class ModuleScopeTests(unittest.TestCase):
         timeline = ["editor::musical_time::", "editor::seek::", "editor::signed_frame_viewport::", viewport]
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/src/editor/viewport.rs"], inventory, [owner]),
-            {owner: timeline})
+            {owner: sorted([*timeline, *GRID_CONSUMERS])})
         disk = "editor::disk_overload::"
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/src/editor/disk_overload.rs"], inventory, [owner]),
@@ -2395,6 +2406,45 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertIn("output_meter::", parent[owner])
         self.assertIn("editor::output_meter_ui_test::", parent[owner])
 
+    def test_waveform_grid_selects_unit_geometry_and_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        grid = "editor::waveform_geometry::grid::"
+        geometry = "editor::waveform_geometry::tests::"
+        rendered = "editor::waveform::resize_tests::silent_left_prefix_keeps_waveform_and_geometry_through_real_worker_ack"
+        for source in ("waveform_geometry/grid.rs", "viewport.rs"):
+            names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + source], inventory, [owner])
+            for required in (grid, geometry, rendered, *GRID_CONSUMERS):
+                self.assertTrue(any(required.startswith(selected) for selected in names[owner]))
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": names}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                      "cargo_inventory": inventory, "paths": []})
+            self.assertTrue(any(any(grid.startswith(arg) for arg in step.argv) and step.requires_tests
+                                for step in steps if "unit_editor_logic" in step.argv))
+            feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+            for required in (geometry, rendered, *GRID_CONSUMERS):
+                self.assertTrue(any(required.startswith(arg) for arg in feature.argv))
+        # A rendered consumer edit must select the new unit owner in reverse.
+        rendered_source = plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/waveform_resize_ui_test.rs"], inventory, [owner])
+        self.assertTrue(any(grid.startswith(selected) for selected in rendered_source[owner]))
+        self.assertTrue(any(geometry.startswith(selected) for selected in rendered_source[owner]))
+        # A column-budget edit must still select the grid even when the broader
+        # waveform geometry prefix subsumes its child in the final filter set.
+        columns = plan.module_test_filters(root, ["crates/hex-ui/src/editor/waveform_columns.rs"], inventory, [owner])
+        self.assertIn("editor::waveform_geometry::", columns[owner])
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"}, "module_filters": columns}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": []})
+        self.assertTrue(any("editor::waveform_geometry::" in step.argv
+                            for step in steps if "unit_editor_logic" in step.argv))
+
     def test_loop_projection_keeps_real_waveform_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
@@ -2452,8 +2502,9 @@ class ModuleScopeTests(unittest.TestCase):
                       "targets": [{"kind": ["lib"]}]}]
         timeline = ["editor::musical_time::", "editor::seek::", "editor::signed_frame_viewport::", "editor::viewport::"]
         for path in ("musical_time.rs", "seek.rs", "signed_frame_viewport.rs", "viewport.rs"):
+            expected = sorted([*timeline, *GRID_CONSUMERS]) if path == "viewport.rs" else timeline
             self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner]),
-                             {owner: timeline})
+                             {owner: expected})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_timeline.rs"], inventory, [owner]),
                          {owner: ["editor::clip_range_fit::", "editor::midi_cue::", *timeline]})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],

@@ -72,3 +72,10 @@ mod drag;
 mod waveform_loop;
 #[path = "waveform_stretch.rs"]
 mod waveform_stretch;
+
+// Compile the production grid against the real viewport and column budget.
+#[allow(dead_code)]
+#[path = "../../src/editor/viewport.rs"]
+mod viewport;
+#[path = "waveform_geometry.rs"]
+mod waveform_geometry;
