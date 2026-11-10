@@ -2079,15 +2079,20 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::browser::console_drop_ui_test::console_column_paged_narrow_target_uses_painted_anchor_and_rejects_stale_source",
                                   "editor::browser::folder_places_ui_test::moved_place_shows_missing_and_relocates_with_icon_order_and_samples",
                                   "editor::browser::samples::state::",
+                                  "editor::browser::scan::",
                                   "editor::browser::tree::state::",
                                   "editor::browser::ui_test::all_search_unions_samples_folder_and_devices_and_preserves_identity_on_refresh",
+                                  "editor::browser::ui_test::browser_history_ui_test::browser_history_missing_place_remains_recoverable_and_late_scan_cannot_retarget",
                                   "editor::browser::ui_test::browser_history_ui_test::review_history_waits_for_the_used_catalog_not_an_unrelated_scan",
                                   "editor::browser::ui_test::browser_history_ui_test::review_readiness_obsolete_tree_worker_does_not_hold_saved_root",
                                   "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
                                   "editor::browser::ui_test::browser_inline_tree_nested_keyboard_refresh_and_hover_retain_identity",
                                   "editor::browser::ui_test::browser_samples_count_tracks_hierarchy_items_and_flat_sample_matches",
+                                  "editor::browser::ui_test::browser_source_transition_discards_late_scan_and_keeps_query_and_keyboard_scope",
                                   "editor::browser::ui_test::browser_tree_refresh_updates_expanded_branch_hidden_by_indexed_query",
                                   "editor::browser::ui_test::browser_tree_same_name_files_keep_distinct_preview_paths_and_bounded_labels",
+                                  "editor::browser::ui_test::place_correctness_refresh_retains_identity_only_after_current_success",
+                                  "editor::browser::ui_test::place_correctness_reselect_gates_cached_rows_and_old_audition_callbacks",
                                   "editor::browser::ui_test::samples_catalog_combines_roots_and_active_place_indexed_search",
                                   "editor::browser::ui_test::search_selection::toggle_fixture_same_root_retains_actual_catalog_job_after_view_and_caller_drop",
                                   "editor::clip_drag_ui_test::rendered_move_retains_destination_until_real_worker_ack",
@@ -2380,6 +2385,59 @@ class ModuleScopeTests(unittest.TestCase):
             selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
             self.assertTrue(any(unit.startswith(name) for name in selected[owner]))
 
+    def test_browser_scan_keeps_supersession_and_path_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::browser::scan::"
+        tree_unit = "editor::browser::tree::state::"
+        consumers = [
+            "editor::browser::ui_test::browser_source_transition_discards_late_scan_and_keeps_query_and_keyboard_scope",
+            "editor::browser::ui_test::place_correctness_reselect_gates_cached_rows_and_old_audition_callbacks",
+            "editor::browser::ui_test::place_correctness_refresh_retains_identity_only_after_current_success",
+            "editor::browser::ui_test::browser_inline_tree_nested_keyboard_refresh_and_hover_retain_identity",
+            "editor::browser::ui_test::browser_tree_refresh_updates_expanded_branch_hidden_by_indexed_query",
+            "editor::browser::ui_test::browser_tree_same_name_files_keep_distinct_preview_paths_and_bounded_labels",
+            "editor::browser::ui_test::browser_history_ui_test::browser_history_missing_place_remains_recoverable_and_late_scan_cannot_retarget",
+            "editor::browser::ui_test::browser_history_ui_test::review_readiness_obsolete_tree_worker_does_not_hold_saved_root",
+        ]
+        paths = [
+            ("crates/hex-ui/src/editor/browser/scan.rs", "editor::browser::scan"),
+            ("crates/hex-ui/src/editor/browser.rs", "editor::browser"),
+            ("crates/hex-ui/src/editor/browser_ui_test.rs", "editor::browser::ui_test"),
+            ("crates/hex-ui/src/editor/browser_history_ui_test.rs",
+             "editor::browser::ui_test::browser_history_ui_test"),
+        ]
+        modules = plan.module_paths(root / "crates/hex-ui/src")
+        for path, module in paths:
+            self.assertEqual(modules[(root / path).resolve()], module)
+            names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
+            if path == paths[0][0]:
+                self.assertEqual(names, sorted([unit, tree_unit, *consumers]))
+            if path == paths[1][0]:
+                self.assertIn("editor::browser::", names)
+            self.assertTrue(any(unit.startswith(selected) for selected in names),
+                            f"{path} does not select {unit}: {names}")
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in names),
+                                f"{path} does not select {consumer}: {names}")
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": {owner: names}}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                      "boundary": boundary, "cargo_inventory": inventory,
+                                      "paths": [path]})
+            unit_step = next(step for step in steps if "unit_editor_logic" in step.argv)
+            self.assertTrue(unit_step.requires_tests)
+            self.assertTrue(any(unit.startswith(selected) for selected in unit_step.argv))
+            self.assertTrue(any(tree_unit.startswith(selected) for selected in unit_step.argv))
+            feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv),
+                                f"{path} feature step does not select {consumer}")
+
     def test_browser_tree_state_keeps_real_worker_and_window_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
@@ -2387,12 +2445,17 @@ class ModuleScopeTests(unittest.TestCase):
                       "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
                       "targets": [{"kind": ["lib"]}]}]
         unit = "editor::browser::tree::state::"
+        scan_unit = "editor::browser::scan::"
         consumers = ["editor::browser::ui_test::browser_inline_tree_nested_keyboard_refresh_and_hover_retain_identity",
                      "editor::browser::ui_test::browser_tree_same_name_files_keep_distinct_preview_paths_and_bounded_labels",
                      "editor::browser::ui_test::browser_tree_refresh_updates_expanded_branch_hidden_by_indexed_query",
-                     "editor::browser::ui_test::browser_history_ui_test::review_readiness_obsolete_tree_worker_does_not_hold_saved_root"]
+                     "editor::browser::ui_test::browser_history_ui_test::review_readiness_obsolete_tree_worker_does_not_hold_saved_root",
+                     "editor::browser::ui_test::browser_source_transition_discards_late_scan_and_keeps_query_and_keyboard_scope",
+                     "editor::browser::ui_test::place_correctness_reselect_gates_cached_rows_and_old_audition_callbacks",
+                     "editor::browser::ui_test::place_correctness_refresh_retains_identity_only_after_current_success",
+                     "editor::browser::ui_test::browser_history_ui_test::browser_history_missing_place_remains_recoverable_and_late_scan_cannot_retarget"]
         names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/browser/tree/state.rs"], inventory, [owner])
-        self.assertEqual(names, {owner: sorted([unit, *consumers])})
+        self.assertEqual(names, {owner: sorted([unit, scan_unit, *consumers])})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
                     "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
                     "module_filters": names}
@@ -2400,11 +2463,14 @@ class ModuleScopeTests(unittest.TestCase):
                                   "cargo_inventory": inventory, "paths": []})
         self.assertTrue(any(unit in step.argv and step.requires_tests
                             for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(scan_unit in step.argv and step.requires_tests
+                            for step in steps if "unit_editor_logic" in step.argv))
         self.assertTrue(any(all(name in step.argv for name in consumers)
                             for step in steps if step.step_id == "ui-feature-tests"))
         for path in ("browser/tree.rs", "browser_ui_test.rs", "browser.rs"):
             selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
             self.assertTrue(any(unit.startswith(name) for name in selected[owner]))
+            self.assertTrue(any(scan_unit.startswith(name) for name in selected[owner]))
 
     def test_project_tempo_value_keeps_unit_and_focused_commit_coverage(self):
         root = SCRIPTS.parent
