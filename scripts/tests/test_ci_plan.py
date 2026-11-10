@@ -2073,8 +2073,10 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::arrangement_sections::tests::section_has_opaque_chamfered_fill_and_compact_header_across_palettes_and_layouts",
                                   "editor::arrangement_sections::tests::section_lower_body_paints_all_tracks_without_section_edit_even_when_focused",
                                   "editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform",
+                                  "editor::audio_event_editor::paint::tests::replacement_accents_follow_occupied_victims_and_range_overwrite_semantics",
                                   "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",
                                   "editor::audio_event_editor::workflow_tests::cut_publishes_clipboard_on_ack_and_paste_survives_save_reopen_with_original_media",
+                                  "editor::audio_event_editor::workflow_tests::event_overlap_accent_covers_only_replaced_audio_and_survives_release",
                                   "editor::audio_import_settings::admission::",
                                   "editor::browser::console_drop_ui_test::console_column_paged_narrow_target_uses_painted_anchor_and_rejects_stale_source",
                                   "editor::browser::folder_places_ui_test::moved_place_shows_missing_and_relocates_with_icon_order_and_samples",
@@ -2114,6 +2116,8 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::device_panel::tests::device_comparison_tests::device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_new_ack",
                                   "editor::device_panel::tests::eq_ui_tests::graph_layout_tests::eq_axis_labels_are_logarithmic_nonoverlapping_and_keep_the_plot_hit_map",
                                   "editor::drag::geometry::",
+                                  "editor::drag::group_drag_ui_test::group_overlap_is_passive_clipped_and_excludes_selected_originals_in_both_modes",
+                                  "editor::drag::group_drag_ui_test::review_group_landing_paints_unselected_overwrite_victim",
                                   "editor::drag::group_drag_ui_test::stationary_group_snap_modifier_uses_one_anchor_delta_and_authoritative_release",
                                   "editor::drag::tests::",
                                   "editor::drag_autoscroll::resize_pan_tests::inward_pan_then_supported_stretch_release_commits_once_and_undoes",
@@ -2154,6 +2158,7 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::track_meters::selection::", "editor::track_meters::tests::",
                                   "editor::track_performance::tests::view_actions_fit_independent_indicators_in_arrangement_and_console_headers",
                                   "editor::tracks::clone_source_window::",
+                                  "editor::tracks::group_overlap::",
                                   "editor::tracks::overlap_tests::held_looped_warp_drag_keeps_last_ready_content_in_mixed_copy_group",
                                   "editor::tracks::overlap_tests::held_midi_drag_keeps_actual_note_paint_and_colored_name_below_header",
                                   "editor::tracks::overlap_tests::held_processed_audio_drag_reuses_ready_root_on_lane_and_floating",
@@ -2587,7 +2592,11 @@ class ModuleScopeTests(unittest.TestCase):
         names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/drag/geometry.rs"], inventory, [owner])
         self.assertEqual(names, {owner: sorted([unit, drag, worker, group])})
         parent = plan.module_test_filters(root, ["crates/hex-ui/src/editor/drag.rs"], inventory, [owner])
-        self.assertEqual(parent, {owner: sorted(["editor::drag::", worker])})
+        self.assertEqual(parent, {owner: sorted([
+            "editor::drag::", worker, "editor::tracks::group_overlap::",
+            "editor::audio_event_editor::paint::tests::replacement_accents_follow_occupied_victims_and_range_overwrite_semantics",
+            "editor::audio_event_editor::workflow_tests::event_overlap_accent_covers_only_replaced_audio_and_survives_release",
+        ])})
         for path in ("clip_drag_ui_test.rs", "group_drag_ui_test.rs"):
             selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
             self.assertIn(unit, selected[owner])
@@ -2755,8 +2764,10 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertEqual(names, sorted([unit, *consumers]))
 
         tracks_shim = "crates/hex-ui/tests/editor_logic_unit/tracks.rs"
+        overlap_source = "crates/hex-ui/src/editor/tracks/group_overlap.rs"
+        overlap_names = plan.module_test_filters(root, [overlap_source], inventory, [owner])[owner]
         self.assertEqual(plan.module_test_filters(root, [tracks_shim], inventory, [owner]),
-                         {owner: sorted([unit, *consumers])})
+                         {owner: sorted({unit, *consumers, *overlap_names})})
         editor_shim = "crates/hex-ui/tests/editor_logic_unit/editor.rs"
         combined_paths = [source, "crates/hex-ui/src/editor/tracks.rs", tracks_shim]
         # The shared shim can register tests outside the known unit prefixes.
@@ -2779,6 +2790,36 @@ class ModuleScopeTests(unittest.TestCase):
         feature = next(step for step in steps if step.step_id == "ui-feature-tests")
         for consumer in consumers:
             self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv))
+
+    def test_group_overlap_keeps_arrangement_and_audio_event_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        source = "crates/hex-ui/src/editor/tracks/group_overlap.rs"
+        unit = "editor::tracks::group_overlap::"
+        consumers = [
+            "editor::drag::group_drag_ui_test::group_overlap_is_passive_clipped_and_excludes_selected_originals_in_both_modes",
+            "editor::drag::group_drag_ui_test::review_group_landing_paints_unselected_overwrite_victim",
+            "editor::audio_event_editor::paint::tests::replacement_accents_follow_occupied_victims_and_range_overwrite_semantics",
+            "editor::audio_event_editor::workflow_tests::event_overlap_accent_covers_only_replaced_audio_and_survives_release",
+        ]
+        names = plan.module_test_filters(root, [source], inventory, [owner])
+        self.assertEqual(names, {owner: sorted([unit, *consumers])})
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": [source]})
+        self.assertTrue(any(unit in step.argv and step.requires_tests
+                            for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(all(name in step.argv for name in consumers)
+                            for step in steps if step.step_id == "ui-feature-tests"))
+        for path in ("tracks.rs", "group_drag_ui_test.rs", "audio_event_editor/paint.rs",
+                     "audio_event_editor/workflow_tests.rs"):
+            selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            self.assertTrue(any(unit.startswith(name) for name in selected[owner]))
 
     def test_section_hit_unit_target_follows_its_owner(self):
         root = SCRIPTS.parent
