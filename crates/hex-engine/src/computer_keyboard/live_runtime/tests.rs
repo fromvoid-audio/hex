@@ -334,3 +334,71 @@ fn profile_live_input_monitor_cost() {
     }
     report("128 ordered events / 64 short notes", durations);
 }
+
+#[test]
+fn audition_gate_and_cancel_do_not_release_hardware_playing_the_same_pitch() {
+    let (project, track) = fixture();
+    let input = input();
+    let mut tested = playback(&project, track, &input);
+    let live = input.live_notes().unwrap();
+    let activation = live.current_activation_on_control().unwrap();
+    live.publish(activation, on(60, 37)).unwrap();
+    input
+        .trigger_live_note_audition_on_control(&[(60, 93)], 8)
+        .unwrap();
+    let instrument = hex_devices::prepare_legacy_sine_instrument(48_000).unwrap();
+    let hardware = instrument.prepare_note(60, 37).unwrap();
+    let preview = instrument.prepare_note(60, 93).unwrap();
+    let mut frames = [[0.0; 2]; 24];
+    for block in frames.chunks_mut(8) {
+        tested.render(block).unwrap();
+    }
+    for (age, actual) in frames.into_iter().enumerate() {
+        let a = hardware.sample(age as u64, u64::MAX, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        let b = preview.sample(age as u64, 8, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        assert_eq!(actual, [a[0] + b[0], a[1] + b[1]]);
+    }
+
+    input
+        .trigger_live_note_audition_on_control(&[(60, 93)], 32)
+        .unwrap();
+    input.cancel_live_note_audition_on_control();
+    live.publish(activation, off(60)).unwrap();
+    let mut frames = [[0.0; 2]; 8];
+    tested.render(&mut frames).unwrap();
+    for (offset, actual) in frames.into_iter().enumerate() {
+        let age = offset as u64 + 24;
+        let a = hardware.sample(age, 24, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        let b = preview.sample(age, 8, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        assert_eq!(actual, [a[0] + b[0], a[1] + b[1]]);
+    }
+    assert!(live.same_current_activation(activation));
+    assert!(!input.is_cancelled());
+}
+
+#[test]
+fn a_full_preview_pool_yields_without_losing_the_pending_hardware_onset() {
+    let (project, track) = fixture();
+    let input = input();
+    let mut tested = playback(&project, track, &input);
+    let live = input.live_notes().unwrap();
+    let activation = live.current_activation_on_control().unwrap();
+    for pitch in 32..95 {
+        live.publish(activation, on(pitch, 37)).unwrap();
+    }
+    tested.render(&mut [[0.0; 2]; 64]).unwrap();
+    input
+        .trigger_live_note_audition_on_control(&[(95, 93)], 12000)
+        .unwrap();
+    tested.render(&mut [[0.0; 2]; 64]).unwrap();
+
+    live.publish(activation, on(96, 91)).unwrap();
+    tested.render(&mut [[0.0; 2]; 64]).unwrap();
+    assert_eq!(live.snapshot().unwrap().events(), &[on(96, 91)]);
+    for _ in 0..32 {
+        tested.render(&mut [[0.0; 2]; 128]).unwrap();
+    }
+    assert!(live.snapshot().unwrap().is_empty());
+    assert!(live.same_current_activation(activation));
+    assert!(!input.rejected());
+}

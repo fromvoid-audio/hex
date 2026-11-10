@@ -2008,7 +2008,8 @@ impl EditorView {
     }
 
     fn midi_audition_button(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
-        const HINT: &str = "toggle note audition · selection plays up to 17 notes · computer and hardware input take priority";
+        const HINT: &str =
+            "toggle note audition · selection plays up to 17 notes · live midi stays connected";
         let mut style = theme::action_style();
         if self.midi_audition.enabled {
             let control = theme::control_style();

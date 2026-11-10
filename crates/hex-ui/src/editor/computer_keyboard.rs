@@ -19,6 +19,27 @@ impl super::EditorView {
         self.computer_keyboard.release_all();
     }
 
+    /// Focus owns physical keys, while hardware keeps its prepared route
+    /// through editor focus changes (including the speaker button's click).
+    pub(super) fn blur_computer_keyboard(&mut self, window: &gpui::Window) {
+        if self.controller_wants_live_notes()
+            && let Some(input) = self
+                .computer_keyboard
+                .input
+                .as_ref()
+                .filter(|input| input.live_notes().is_some() && !input.is_cancelled())
+        {
+            input.clear_keys_on_control();
+            self.computer_keyboard.release_all();
+            if !self.midi_focus.is_focused(window) {
+                self.midi_audition.clear();
+            }
+        } else {
+            self.cancel_computer_keyboard();
+            self.computer_keyboard.suspended = true;
+        }
+    }
+
     /// Priority Stop retains only a still-valid ordinary output-bound input root. The output
     /// endpoint revokes its active prefix; fresh physical input can reuse the already admitted
     /// graph without waiting for a publication slot. Other lifecycle cancellation stays terminal.
@@ -106,6 +127,11 @@ impl super::EditorView {
     }
 
     pub(super) fn tick_computer_keyboard(&mut self) -> bool {
+        if self.controller_wants_live_notes() {
+            let changed =
+                self.tick_computer_keyboard_with_policy(self.worker_owns_keyboard_publication());
+            return self.tick_midi_audition().unwrap_or(false) || changed;
+        }
         if let Some(changed) = self.tick_midi_audition() {
             return changed;
         }
@@ -138,7 +164,8 @@ impl super::EditorView {
                 .as_ref()
                 .is_some_and(|input| input.live_notes().is_none())
         {
-            self.cancel_computer_keyboard();
+            self.retire_computer_keyboard_audio();
+            self.computer_keyboard.release_all();
         }
         let retain_input = self.reusable_worker_keyboard_input(worker_owned);
         if worker_owned
@@ -205,6 +232,9 @@ impl super::EditorView {
                 .is_some_and(|(new, old)| new.0 == old.0 && new.2 == old.2);
         if same_physical_target {
             self.retire_computer_keyboard_audio();
+        } else if self.controller_wants_live_notes() {
+            self.retire_computer_keyboard_audio();
+            self.computer_keyboard.release_all();
         } else {
             self.cancel_computer_keyboard();
         }
