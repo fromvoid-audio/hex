@@ -35,7 +35,12 @@
 //! preparation must preserve project, IDs and history.
 mod sidechain;
 pub use sidechain::{MAX_SIDECHAIN_ROUTES, SidechainRoute, SidechainRouteSnapshot};
+mod arrangement_locators;
 mod arrangement_occupancy;
+pub use arrangement_locators::{
+    ArrangementLocator, ArrangementLocatorAppearance, ArrangementLocatorSnapshot,
+    MAX_ARRANGEMENT_LOCATORS,
+};
 mod arrangement_sections;
 pub use arrangement_sections::{
     ArrangementSection, ArrangementSectionSnapshot, MAX_ARRANGEMENT_SECTIONS,
@@ -282,6 +287,7 @@ identifier!(DeviceId);
 identifier!(ReturnId);
 identifier!(RouteId);
 identifier!(SectionId);
+identifier!(LocatorId);
 identifier!(SourceId);
 
 /// Optional half-open timeline region used by prepared playback.
@@ -708,6 +714,7 @@ pub struct Project {
     pub(crate) aliases: clip_alias::ClipAliases,
     pub(crate) native_sources: Vec<NativeSource>,
     pub(crate) arrangement_sections: Vec<ArrangementSection>,
+    pub(crate) arrangement_locators: std::sync::Arc<Vec<ArrangementLocator>>,
     pub(crate) tuning: hex_tuning::ProjectTuning,
     pub(crate) routing: Vec<ReturnFeed>,
     pub(crate) audio_feeds: Vec<AudioFeed>,
@@ -741,6 +748,7 @@ impl Project {
             aliases: clip_alias::ClipAliases::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
+            arrangement_locators: Default::default(),
             tuning: hex_tuning::ProjectTuning::default(),
             routing: Vec::new(),
             audio_feeds: Vec::new(),
@@ -774,6 +782,7 @@ impl Project {
             aliases,
             native_sources,
             arrangement_sections,
+            arrangement_locators,
             tuning: _,
             routing,
             audio_feeds,
@@ -797,6 +806,7 @@ impl Project {
         aliases == &other.aliases
             && native_sources == &other.native_sources
             && arrangement_sections == &other.arrangement_sections
+            && arrangement_locators == &other.arrangement_locators
             && routing == &other.routing
             && audio_feeds == &other.audio_feeds
             && midi_routes == &other.midi_routes

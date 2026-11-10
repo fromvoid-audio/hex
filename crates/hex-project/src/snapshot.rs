@@ -17,6 +17,7 @@ pub struct Snapshot {
     pub aliases: crate::ClipAliasesSnapshot,
     pub native_sources: Vec<crate::NativeSourceSnapshot>,
     pub arrangement_sections: Vec<crate::ArrangementSectionSnapshot>,
+    pub arrangement_locators: Vec<crate::ArrangementLocatorSnapshot>,
     pub tuning: hex_tuning::ProjectTuning,
     pub return_feeds: Vec<crate::ReturnFeedSnapshot>,
     /// Strictly ascending IDs of tracks whose name is automatic (hex-generated
@@ -263,6 +264,7 @@ impl Project {
                 .iter()
                 .map(crate::ArrangementSectionSnapshot::from)
                 .collect(),
+            arrangement_locators: self.arrangement_locators().iter().map(Into::into).collect(),
             tuning: self.tuning,
             audio_feeds: self
                 .audio_feeds
@@ -599,6 +601,9 @@ impl Project {
         let mut note_id = |id: u64| {
             max_id = max_id.max(id);
         };
+        for locator in &snapshot.arrangement_locators {
+            note_id(locator.id);
+        }
         for section in &snapshot.arrangement_sections {
             note_id(section.id);
         }
@@ -795,6 +800,16 @@ impl Project {
                 .push(crate::arrangement_sections::from_snapshot(section)?);
         }
         crate::arrangement_sections::validate(&project.arrangement_sections, project.tempo_map())?;
+        if snapshot.arrangement_locators.len() > crate::MAX_ARRANGEMENT_LOCATORS {
+            return Err(Invalid("arrangement locator limit reached"));
+        }
+        let mut locators = Vec::with_capacity(snapshot.arrangement_locators.len());
+        for locator in snapshot.arrangement_locators {
+            insert_id(locator.id, &mut ids, &mut max_id)?;
+            locators.push(crate::arrangement_locators::from_snapshot(locator)?);
+        }
+        crate::arrangement_locators::validate(&locators, project.tempo_map())?;
+        project.arrangement_locators = Arc::new(locators);
         let mut assets = BTreeMap::new();
         for asset in snapshot.assets {
             insert_id(asset.id, &mut ids, &mut max_id)?;

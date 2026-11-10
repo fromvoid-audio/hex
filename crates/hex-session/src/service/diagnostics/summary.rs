@@ -162,6 +162,9 @@ pub(super) fn created(value: &hex_project::Created) -> Description {
         hex_project::Created::NativeSource(value0) => {
             describe!("native_source"; ["value0" => value0.value()]; omitted="")
         }
+        hex_project::Created::ArrangementLocator(locator) => {
+            describe!("arrangement_locator"; ["locator" => locator.value()]; omitted="")
+        }
         hex_project::Created::ArrangementSection(value0) => {
             describe!("arrangement_section"; ["value0" => value0.value()]; omitted="")
         }
@@ -298,6 +301,18 @@ pub(super) fn command(value: &Command) -> Description {
                 describe!("edit_clips"; ["clips_count" => clips.len()]; omitted="");
             description.nested("edit", self::clip_edit(edit));
             description
+        }
+        Command::AddArrangementLocator { frame } => {
+            describe!("add_arrangement_locator"; ["frame" => frame]; omitted="")
+        }
+        Command::MoveArrangementLocator { locator, frame } => {
+            describe!("move_arrangement_locator"; ["locator" => locator.value(), "frame" => frame]; omitted="")
+        }
+        Command::RenameArrangementLocator { locator, name } => {
+            describe!("rename_arrangement_locator"; ["locator" => locator.value(), "name_redacted_bytes" => name.as_deref().map_or(0, str::len)]; omitted="")
+        }
+        Command::RemoveArrangementLocator(locator) => {
+            describe!("remove_arrangement_locator"; ["locator" => locator.value()]; omitted="")
         }
         Command::AddArrangementSection {
             name, start, end, ..
