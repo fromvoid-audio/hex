@@ -6,6 +6,7 @@
 //! Uses hex-session/project/engine/audio contracts, hex-widgets, GPUI and the bounded library,
 //! preferences, tuning, MIDI, MTS, diagnostics and plugin-catalog services.
 //! fastrand supplies transient browser result ranks on the UI thread.
+//! Test-only storage access verifies complete control-side EQ upgrade round trips.
 //!
 //! # Does not own
 //! Does not own a second editable project, construct DSP or access files/audio devices from

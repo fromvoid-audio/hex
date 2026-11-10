@@ -7,7 +7,8 @@ use gpui::{
 use hex_project::{BeatTime, Command, MidiNoteInsert};
 use hex_session::service::Request;
 use std::sync::Arc;
-const AUDITION: &str = "toggle note audition · selection plays up to 17 notes · computer and hardware input take priority";
+const AUDITION: &str =
+    "toggle note audition · selection plays up to 17 notes · live midi stays connected";
 fn authored(
     cx: &mut TestAppContext,
 ) -> (
@@ -70,12 +71,19 @@ fn click_chord_and_marquee_prepare_once_with_exact_velocities_but_disabled_paint
 ) {
     let (mut visual, editor, _environment, _) = authored(cx);
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    let button_bounds = visual.debug_bounds(AUDITION).unwrap();
+    assert!(visual.debug_bounds("midi-audition-speaker").is_some());
+    let disabled_fill = visual.rendered_background(AUDITION).unwrap();
     let a = position(&mut visual, &editor, 1.125, 60);
     let b = position(&mut visual, &editor, 3.125, 64);
     visual.simulate_click(a, Modifiers::default());
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| assert!(v.computer_keyboard.input.is_none()));
     toggle(&mut visual);
+    assert_eq!(visual.debug_bounds(AUDITION), Some(button_bounds));
+    assert_ne!(visual.rendered_background(AUDITION), Some(disabled_fill));
+    assert!(visual.debug_bounds("midi-audition-speaker").is_some());
+    editor.read_with(&visual, |v, _| assert!(v.midi_audition.enabled));
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert!(
@@ -83,6 +91,9 @@ fn click_chord_and_marquee_prepare_once_with_exact_velocities_but_disabled_paint
             "enable waits for explicit selection"
         )
     });
+    // A note click from Arrangement focus must retain the new piano intent.
+    visual.update(|window, cx| editor.read_with(cx, |v, _| v.focus.focus(window)));
+    visual.run_until_parked();
     visual.simulate_click(b, Modifiers::default());
     pump(&editor, &mut visual);
     let (single, request) = editor.read_with(&visual, |v, _| {
@@ -148,6 +159,8 @@ fn click_chord_and_marquee_prepare_once_with_exact_velocities_but_disabled_paint
     });
     toggle(&mut visual);
     pump(&editor, &mut visual);
+    assert_eq!(visual.debug_bounds(AUDITION), Some(button_bounds));
+    editor.read_with(&visual, |v, _| assert!(!v.midi_audition.enabled));
     assert!(chord.is_cancelled());
     editor.read_with(&visual, |v, _| {
         assert!(v.computer_keyboard.input.is_none());
@@ -378,6 +391,149 @@ fn marquee_points(
         ]
     }
 }
+#[gpui::test]
+fn configured_controller_keeps_its_root_during_note_and_marquee_audition(cx: &mut TestAppContext) {
+    use hex_engine::{
+        PreparedRevision, SineTable,
+        computer_keyboard::{ComputerKeyboardInput, LiveNoteEvent},
+        playback::Playback,
+    };
+
+    let (mut visual, editor, _environment, _) = authored(cx);
+    // Settle the Arrangement-to-detail focus handoff before admitting input.
+    visual.update(|window, cx| editor.read_with(cx, |v, _| v.midi_focus.focus(window)));
+    visual.run_until_parked();
+    let input = Arc::new(ComputerKeyboardInput::default().with_live_notes().unwrap());
+    let mut playback = editor.update(&mut visual, |v, _| {
+        let state = v.state.as_ref().unwrap();
+        let track = v.selected_track.unwrap();
+        let revision = Arc::new(
+            PreparedRevision::prepare(
+                &state.project,
+                &Default::default(),
+                Arc::new(SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let mut playback = Playback::try_from_prepared_with_session(revision).unwrap();
+        playback
+            .prepare_computer_keyboard(&state.project, track, Arc::clone(&input))
+            .unwrap();
+        v.computer_keyboard.target = Some((v.project_generation, state.revision, track));
+        v.computer_keyboard.input = Some(Arc::clone(&input));
+        v.computer_keyboard.prepared = true;
+        v.computer_keyboard.suspended = false;
+        v.set_test_audition_port();
+        playback
+    });
+    let live = input.live_notes().unwrap();
+    let activation = input.begin_live_notes_activation_on_control().unwrap();
+    let mut render = || {
+        let mut frames = [[0.0; 2]; 128];
+        playback.render(&mut frames).unwrap();
+        frames
+    };
+    let assert_route = |visual: &VisualTestContext, step| {
+        editor.read_with(visual, |v, _| {
+            assert!(
+                v.controller_wants_live_notes(),
+                "{step}: controller deselected, {:?}",
+                v.error
+            );
+            assert!(
+                !input.is_cancelled(),
+                "{step}: input cancelled, {:?}",
+                v.error
+            );
+            assert!(
+                v.computer_keyboard.prepared,
+                "{step}: input no longer prepared, {:?}",
+                v.error
+            );
+            assert!(
+                v.computer_keyboard
+                    .input
+                    .as_ref()
+                    .is_some_and(|root| Arc::ptr_eq(root, &input)),
+                "{step}: input replaced"
+            );
+        })
+    };
+    let a = position(&mut visual, &editor, 1.125, 60);
+    visual.simulate_click(a, Modifiers::default());
+    pump(&editor, &mut visual);
+    assert_route(&visual, "disabled note");
+    assert_eq!(render(), [[0.0; 2]; 128]);
+
+    toggle(&mut visual);
+    assert_route(&visual, "enabled toggle");
+    let b = position(&mut visual, &editor, 3.125, 64);
+    visual.simulate_click(b, Modifiers::default());
+    pump(&editor, &mut visual);
+    assert_route(&visual, "enabled note");
+    assert!(render().iter().flatten().any(|sample| *sample != 0.0));
+
+    for _ in 0..128 {
+        render();
+    }
+    assert_eq!(render(), [[0.0; 2]; 128]);
+
+    let [start, _, both] = marquee_points(&mut visual, &editor, false);
+    let shift = Modifiers {
+        shift: true,
+        ..Default::default()
+    };
+    visual.simulate_mouse_down(start, MouseButton::Left, shift);
+    visual.simulate_mouse_move(both, Some(MouseButton::Left), shift);
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert!(Arc::ptr_eq(
+            v.computer_keyboard.input.as_ref().unwrap(),
+            &input
+        ));
+        assert!(v.midi_selection.len() >= 2);
+    });
+    assert!(
+        render().iter().flatten().any(|sample| *sample != 0.0),
+        "marquee preview"
+    );
+    live.publish(
+        activation,
+        LiveNoteEvent::NoteOn {
+            channel: 2,
+            pitch: 67,
+            velocity: 91,
+        },
+    )
+    .unwrap();
+    assert!(render().iter().flatten().any(|sample| *sample != 0.0));
+    visual.simulate_mouse_up(both, MouseButton::Left, shift);
+    toggle(&mut visual);
+    for _ in 0..64 {
+        render();
+    }
+    assert!(
+        render().iter().flatten().any(|sample| *sample != 0.0),
+        "held hardware note"
+    );
+    live.publish(
+        activation,
+        LiveNoteEvent::NoteOff {
+            channel: 2,
+            pitch: 67,
+            velocity: 0,
+        },
+    )
+    .unwrap();
+    for _ in 0..64 {
+        render();
+    }
+    assert_eq!(render(), [[0.0; 2]; 128]);
+    assert!(live.same_current_activation(activation));
+    assert!(!input.is_cancelled());
+}
+
 fn assert_audition_bank(
     editor: &Entity<super::EditorView>,
     visual: &VisualTestContext,

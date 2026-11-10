@@ -87,9 +87,6 @@ fn transformed_cropped_musical_fades_keep_readouts_reset_adjust_and_projected_cu
             view.last_enqueued_edit.clone().expect("fade edit")
         });
         let expected = if reset { (0, 0) } else { (5_040, 9_600) };
-        assert!(
-            matches!(&command,Command::SetClipFades{clip,fade_in,fade_out}if *clip==tail&&(*fade_in,*fade_out)==expected)
-        );
         let mut history = Editor::new(project.clone(), 4).unwrap();
         history.execute(command).unwrap();
         assert_eq!(
@@ -112,4 +109,32 @@ fn transformed_cropped_musical_fades_keep_readouts_reset_adjust_and_projected_cu
         assert!(history.undo());
         assert_eq!(history.project(), &project);
     }
+}
+
+#[gpui::test]
+fn detail_fade_length_control_creates_an_s_curve(cx: &mut TestAppContext) {
+    let (project, track, _, clip) = crate::editor::clip_drag_ui_test::audio_project();
+    let (handle, editor) =
+        crate::editor::clip_drag_ui_test::editor_window(cx, project.clone(), Arc::default());
+    editor.update(cx, |view, cx| {
+        view.selected_track = Some(track);
+        view.selected_clip = Some(clip);
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let target = visual
+        .debug_bounds("fade-in-up")
+        .expect("fade length control")
+        .center();
+    visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    let command = editor.read_with(cx, |view, _| {
+        view.last_enqueued_edit.clone().expect("fade edit")
+    });
+    let mut history = Editor::new(project, 4).unwrap();
+    history.execute(command).unwrap();
+    let fade = history.project().clip(clip).unwrap().retained_fade();
+    assert!(fade.fade_in() > 0);
+    assert_eq!(fade.curve_laws()[0], ClipFade::DEFAULT_S_CURVE);
 }

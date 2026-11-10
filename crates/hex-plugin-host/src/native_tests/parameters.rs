@@ -1,6 +1,8 @@
 //! Actual source-bound SDK parameter processing through the production Rust
 //! reader. Direct worker exchanges are not Root/callback delivery acceptance.
 use super::*;
+#[path = "parameters/editor_touch.rs"]
+mod editor_touch;
 use crate::protocol::{ParameterPageProgress, ParameterPageQuery};
 use crate::transport::{ParameterPoint, Parameters};
 
@@ -30,6 +32,108 @@ fn wait_for_latency_restart(instance: &mut Prepared) -> std::num::NonZeroU64 {
         assert!(Instant::now() < until, "latency restart was not observed");
         thread::yield_now();
     }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn native_dense_authored_request_preserves_every_sample_of_the_raw_zero_parameter() {
+    exercise_native_dense_request(false);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn native_reserved_dense_sidecar_reaches_the_original_armed_worker() {
+    exercise_native_dense_request(true);
+}
+
+fn exercise_native_dense_request(reserved: bool) {
+    let case = Case::new();
+    let mut settings = options();
+    settings.preparation.quantum = 256;
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        settings,
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup_restore(80),
+    )
+    .unwrap();
+    let class = instance.configuration().identity.class;
+    let metadata = instance
+        .read_authored_parameter_metadata_on_control(class, &[0])
+        .unwrap();
+    let input = request(instance.configuration(), 0);
+    let normalized: [f64; 256] =
+        std::array::from_fn(|frame| if frame % 2 == 0 { 0.75 } else { 0.125 });
+    let lane = crate::transport::DenseParameterLane {
+        id: 0,
+        normalized: &normalized,
+    };
+    let reply = if reserved {
+        use crate::transport::{
+            EffectSegmentOrigins, SegmentTiming, dense_effect_channel_from_completed_prefix,
+        };
+        instance
+            .arm_authored_parameter_metadata_on_control(metadata)
+            .unwrap();
+        let (_control, mut callback, mut worker) =
+            dense_effect_channel_from_completed_prefix(input.binding, input.frames, 0).unwrap();
+        callback.begin_physical_callback(256).unwrap();
+        callback
+            .stage_effect_segment(
+                0,
+                &input.pcm,
+                &[],
+                &[],
+                &mut [[0.0; 2]; 256],
+                SegmentTiming {
+                    playing: None,
+                    at: |_| None,
+                },
+                EffectSegmentOrigins::default(),
+                Some(lane),
+            )
+            .unwrap();
+        assert!(worker.receive_request().unwrap().is_none());
+        callback.finish(true).unwrap();
+        let request = worker.receive_request().unwrap().unwrap();
+        let reply = instance
+            .exchange_armed_dense_on_worker(
+                request.block,
+                request.dense_parameter.as_ref().unwrap().lane(),
+                None,
+                false,
+            )
+            .unwrap()
+            .block;
+        worker.complete(reply).unwrap();
+        reply
+    } else {
+        instance
+            .exchange_dense_authored_on_worker(input, &metadata, lane)
+            .unwrap()
+    };
+    for (frame, &normalized) in normalized.iter().enumerate() {
+        assert_eq!(
+            reply.pcm[frame],
+            input.pcm[frame].map(|sample| sample * (normalized * 2.0) as f32)
+        );
+    }
+    assert_eq!(
+        reply.parameters.as_slice(),
+        [ParameterPoint {
+            frame: 255,
+            id: 0,
+            normalized: 0.125
+        }]
+    );
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
 }
 
 #[test]
@@ -1323,4 +1427,213 @@ fn actual_sdk_edit_during_stopped_capture_refuses_incoherent_snapshot() {
             .status
             .success()
     );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn exact_pcm_editor_performs_exclude_overwritten_values_without_consuming_receipts() {
+    use crate::protocol::ParameterEditKind::{Begin, End, Perform};
+
+    for (variant, raw_id, min_ready) in [(89, 0, 1), (135, 7, 4), (147, 7, 1)] {
+        let case = Case::new();
+        let mut instance = Prepared::prepare(
+            &build(),
+            source(),
+            options(),
+            PreparationCancellation::new_on_control().unwrap(),
+            case.setup_restore(variant),
+        )
+        .unwrap();
+        if variant == 147 {
+            let class = instance.configuration().identity.class;
+            let metadata = instance
+                .read_authored_parameter_metadata_on_control(class, &[7])
+                .unwrap();
+            instance
+                .arm_authored_parameter_metadata_on_control(metadata)
+                .unwrap();
+        }
+        let initial = request(instance.configuration(), 0);
+        let reply = instance.exchange_editor_on_worker(initial).unwrap();
+        assert!(reply.performs.as_slice().is_empty());
+        fs::write(case.release(), b"emit original editor performs").unwrap();
+        let mut ordinary = Vec::new();
+        let until = Instant::now() + Duration::from_secs(2);
+        loop {
+            let batch = instance.poll_parameter_edits_on_worker().unwrap();
+            ordinary.extend_from_slice(batch.as_slice());
+            if batch.ready >= min_ready {
+                break;
+            }
+            assert!(Instant::now() < until, "editor input was not queued");
+            thread::yield_now();
+        }
+        let mut effective = Vec::new();
+        let mut sequence = 1;
+        loop {
+            let mut input = request(instance.configuration(), sequence);
+            let authored = variant == 147 && sequence == 1;
+            if authored {
+                input
+                    .parameters
+                    .push(ParameterPoint {
+                        frame: 4,
+                        id: raw_id,
+                        normalized: 0.5,
+                    })
+                    .unwrap();
+            }
+            let reply = if authored {
+                instance
+                    .exchange_armed_authored_with_editor_on_worker(input, None)
+                    .unwrap()
+            } else {
+                instance.exchange_editor_on_worker(input).unwrap()
+            };
+            assert_eq!(
+                (
+                    reply.block.binding,
+                    reply.block.sequence,
+                    reply.block.first_frame
+                ),
+                (input.binding, sequence, sequence * 8),
+            );
+            let points = reply.performs.as_slice();
+            assert!(
+                points.len() <= 1,
+                "offset-zero duplicate was reported twice"
+            );
+            if let Some(point) = points.first() {
+                assert_eq!(point.id, raw_id);
+                let scale = 0.5 + sequence as f64 * 0.125;
+                for (offset, (sample, original)) in
+                    reply.block.pcm[..8].iter().zip(input.pcm).enumerate()
+                {
+                    // The fixture linearly interpolates from the actual
+                    // offset-zero editor point to the authored point at 4.
+                    let normalized = if authored {
+                        point.normalized + (0.5 - point.normalized) * offset.min(4) as f64 / 4.0
+                    } else {
+                        point.normalized
+                    };
+                    assert_eq!(
+                        *sample,
+                        original
+                            .map(|sample| (f64::from(sample) * scale * 4.0 * normalized) as f32),
+                        "variant {variant}, quantum {sequence}, offset {offset}"
+                    );
+                }
+                effective.push((*point, reply.block.first_frame));
+            }
+            let batch = instance.poll_parameter_edits_on_worker().unwrap();
+            ordinary.extend_from_slice(batch.as_slice());
+            if ordinary.last().is_some_and(|edit| edit.kind == End) {
+                break;
+            }
+            assert!(Instant::now() < until, "editor receipts did not finish");
+            sequence += 1;
+        }
+        assert_eq!(ordinary.first().unwrap().kind, Begin);
+        assert_eq!(ordinary.last().unwrap().kind, End);
+        assert_eq!(
+            ordinary.iter().filter(|edit| edit.kind == Perform).count(),
+            if variant == 135 { 13 } else { 1 }
+        );
+        assert_eq!(
+            effective.last().unwrap().0.normalized,
+            if variant == 135 { 0.875 } else { 0.75 }
+        );
+        if variant == 135 {
+            assert!(effective.len() < 13, "the fixture must exercise coalescing");
+        }
+        for (point, frame) in effective {
+            let last = ordinary
+                .iter()
+                .rev()
+                .find(|edit| edit.kind == Perform && edit.first_frame == frame && edit.id == raw_id)
+                .unwrap();
+            assert_eq!(
+                (last.sequence, last.gesture, last.normalized),
+                (point.sequence, point.gesture, point.normalized)
+            );
+        }
+        let input = request(instance.configuration(), sequence + 1);
+        assert!(
+            instance
+                .exchange_editor_on_worker(input)
+                .unwrap()
+                .performs
+                .as_slice()
+                .is_empty()
+        );
+        assert!(
+            instance
+                .stop_and_reap_on_control()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn idle_and_ordinary_editor_input_is_not_replayed_as_opted_in_pcm() {
+    use crate::protocol::ParameterEditKind::End;
+    // The ordinary raw-zero profile deliberately refuses a live zero-frame
+    // exchange. The editor/automation coexistence profile admits idle flushes.
+    for (idle, variant) in [(false, 89), (true, 147)] {
+        let case = Case::new();
+        let mut instance = Prepared::prepare(
+            &build(),
+            source(),
+            options(),
+            PreparationCancellation::new_on_control().unwrap(),
+            case.setup_restore(variant),
+        )
+        .unwrap();
+        fs::write(case.release(), b"emit one editor value").unwrap();
+        let until = Instant::now() + Duration::from_secs(2);
+        let mut sequence = 0;
+        loop {
+            let finished = if idle {
+                instance
+                    .service_idle_editor_edits_on_worker()
+                    .unwrap()
+                    .edits
+                    .as_slice()
+                    .iter()
+                    .any(|edit| edit.kind == End)
+            } else {
+                let input = request(instance.configuration(), sequence);
+                instance.exchange_on_worker(input).unwrap();
+                sequence += 1;
+                instance
+                    .poll_parameter_edits_on_worker()
+                    .unwrap()
+                    .as_slice()
+                    .iter()
+                    .any(|edit| edit.kind == End)
+            };
+            if finished {
+                break;
+            }
+            assert!(Instant::now() < until, "ordinary edit did not finish");
+            thread::yield_now();
+        }
+        let input = request(instance.configuration(), sequence);
+        let reply = instance.exchange_editor_on_worker(input).unwrap();
+        assert!(reply.performs.as_slice().is_empty());
+        let multiplier = 3.0 * (0.5 + sequence as f32 * 0.125);
+        for (sample, original) in reply.block.pcm[..8].iter().zip(input.pcm) {
+            assert_eq!(*sample, original.map(|sample| sample * multiplier));
+        }
+        assert!(
+            instance
+                .stop_and_reap_on_control()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
 }

@@ -67,7 +67,7 @@ fn destination(
         );
         assert!(view.normalized_time_selection().is_none());
         let cursor = view.edit_cursor.expect("actual clicked edit cursor");
-        assert_eq!(cursor.track, track);
+        assert_eq!(cursor.track, Some(track));
         cursor.frame
     })
 }

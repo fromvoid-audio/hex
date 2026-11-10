@@ -35,7 +35,12 @@
 //! preparation must preserve project, IDs and history.
 mod sidechain;
 pub use sidechain::{MAX_SIDECHAIN_ROUTES, SidechainRoute, SidechainRouteSnapshot};
+mod arrangement_locators;
 mod arrangement_occupancy;
+pub use arrangement_locators::{
+    ArrangementLocator, ArrangementLocatorAppearance, ArrangementLocatorSnapshot,
+    MAX_ARRANGEMENT_LOCATORS,
+};
 mod arrangement_sections;
 pub use arrangement_sections::{
     ArrangementSection, ArrangementSectionSnapshot, MAX_ARRANGEMENT_SECTIONS,
@@ -118,16 +123,35 @@ mod clip_fragment;
 mod conversion;
 mod device;
 mod device_automation;
+mod device_modulation;
+pub use device_modulation::{
+    DeviceModulation, DeviceModulationRoute, MAX_MODULATION_ROUTES_PER_DEVICE,
+    MAX_MODULATORS_PER_DEVICE, MAX_PROJECT_MODULATION_ROUTES, MAX_PROJECT_MODULATOR_STATE_BYTES,
+    MAX_PROJECT_MODULATORS, ModulationAmount, ModulationDestination, ModulationOutputId,
+    ModulationRange, ModulationRouteId, ModulationSourceId, Modulator,
+};
+mod device_inventory;
+pub use device_inventory::{DeviceLocation, DeviceOwner};
+mod device_unit_template;
 pub use device_automation::{
     AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
     DeviceAutomation, DeviceAutomationReplacement, DeviceAutomationTarget,
     DeviceAutomationTouchSpan, DeviceAutomationTouchStep, MAX_DEVICE_AUTOMATION_LANES,
     MAX_DEVICE_AUTOMATION_POINTS, MAX_DEVICE_AUTOMATION_POINTS_PER_LANE,
-    MAX_DEVICE_AUTOMATION_TOUCH_SPANS, validate_device_automation,
+    MAX_DEVICE_AUTOMATION_TOUCH_SPANS, MAX_DEVICE_AUTOMATION_TOUCH_STEPS_PER_LANE,
+    validate_device_automation,
+};
+pub use device_inventory::MAX_SERIAL_DEVICE_DEPTH;
+pub use device_unit_template::{
+    DeviceUnitClass, MAX_PORTABLE_DEVICE_UNIT_ASSETS, MAX_PORTABLE_DEVICE_UNIT_NODES,
+    MAX_PORTABLE_DEVICE_UNIT_PAYLOAD_BYTES, PortableDeviceAsset, PortableDeviceNode,
+    PortableDeviceUnit,
 };
 mod device_clipboard;
 pub use device_clipboard::{DeviceChainOwner, DeviceClipboard, DeviceSelectionIds};
 mod device_comparison;
+mod device_initialization;
+pub use device_initialization::DeviceInitialization;
 mod main_devices;
 pub use device_comparison::{DeviceComparison, DeviceComparisonAction, DeviceVariant};
 mod native_sources;
@@ -263,6 +287,7 @@ identifier!(DeviceId);
 identifier!(ReturnId);
 identifier!(RouteId);
 identifier!(SectionId);
+identifier!(LocatorId);
 identifier!(SourceId);
 
 /// Optional half-open timeline region used by prepared playback.
@@ -373,7 +398,7 @@ impl Asset {
 }
 
 mod clip_fade;
-pub use clip_fade::ClipFade;
+pub use clip_fade::{ClipFade, FadeCurveLaw};
 
 /// Edge used by clip trimming and structural section resizing.
 /// Clip trim uses an absolute frame. Section resize changes the prefix/suffix
@@ -689,6 +714,7 @@ pub struct Project {
     pub(crate) aliases: clip_alias::ClipAliases,
     pub(crate) native_sources: Vec<NativeSource>,
     pub(crate) arrangement_sections: Vec<ArrangementSection>,
+    pub(crate) arrangement_locators: std::sync::Arc<Vec<ArrangementLocator>>,
     pub(crate) tuning: hex_tuning::ProjectTuning,
     pub(crate) routing: Vec<ReturnFeed>,
     pub(crate) audio_feeds: Vec<AudioFeed>,
@@ -722,6 +748,7 @@ impl Project {
             aliases: clip_alias::ClipAliases::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
+            arrangement_locators: Default::default(),
             tuning: hex_tuning::ProjectTuning::default(),
             routing: Vec::new(),
             audio_feeds: Vec::new(),
@@ -755,6 +782,7 @@ impl Project {
             aliases,
             native_sources,
             arrangement_sections,
+            arrangement_locators,
             tuning: _,
             routing,
             audio_feeds,
@@ -778,6 +806,7 @@ impl Project {
         aliases == &other.aliases
             && native_sources == &other.native_sources
             && arrangement_sections == &other.arrangement_sections
+            && arrangement_locators == &other.arrangement_locators
             && routing == &other.routing
             && audio_feeds == &other.audio_feeds
             && midi_routes == &other.midi_routes
@@ -1028,15 +1057,6 @@ impl Project {
             .iter_mut()
             .find(|t| t.id == id)
             .ok_or(Invalid("track no longer exists"))
-    }
-    pub fn device(&self, id: DeviceId) -> Option<&Device> {
-        self.tracks
-            .iter()
-            .flat_map(|t| t.devices())
-            .chain(self.returns.iter().flat_map(|t| t.devices()))
-            .chain(self.main_devices())
-            .chain(self.native_sources.iter().flat_map(|s| s.devices()))
-            .find(|d| d.id() == id)
     }
     /// Mutate authored device state at its canonical owner; a retained source
     /// update replaces every immutable binding only after the edit succeeds.

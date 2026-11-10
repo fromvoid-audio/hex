@@ -95,7 +95,8 @@ struct ParameterFeedback {
     }
 };
 inline constexpr size_t HOST_EDIT_COUNT=8;
-enum EditKind : uint32 { Restart=0, Begin=1, Perform=2, End=3 };
+enum EditKind : uint32 { Restart=0, Begin=1, Perform=2, End=3, GroupBegin=4, GroupEnd=5, GroupAborted=6 };
+inline bool is_group_marker(uint32 kind) { return kind>=GroupBegin && kind<=GroupAborted; }
 // sequence orders all main callbacks. gesture names the exact Begin sequence;
 // normalized is meaningful only for Perform. A queued record is not a DSP ACK.
 struct EditEvent {
@@ -104,6 +105,14 @@ struct EditEvent {
     ParamID id=0;
     uint32 kind=Restart;
     bool standalone_begin=false;
+    // Main-only grouping before handoff. Wire receivers recover membership
+    // from the explicit ordered marker records instead of a fake ParamID.
+    uint64 cohort=0;
+    // Inclusive unread width in the atomically published worker batch.
+    size_t batch_remaining=1;
+    // Main stamps the exact gesture's original Begin, even when a later
+    // move belongs to a different cohort or Begin is already read on control.
+    bool grouped_gesture=false;
 };
 enum class HostDisposition { Idle, Refreshed, InvalidMetadata, NoController, Recursive, Retiring, WrongThread, Capacity, Pending, EditQueued };
 struct HostDispatch {
@@ -127,7 +136,7 @@ enum HostRefusal : uint32 { WrongThread=1, UnknownRestart=2, GraphControlRequire
 // drag saturates the main FIFO, replace a superseded, undispatched value for
 // that gesture. A standalone value can supersede another complete standalone
 // edit. Explicit gesture boundaries and restart records are never replaced.
-class Host final : public IHostApplication, public IComponentHandler {
+class Host final : public IHostApplication, public IComponentHandler, public IComponentHandler2 {
     std::atomic<uint32> references{1}, refusals{0};
     HostMessageDiagnostics message_trace{};
     std::array<HostMessage,HOST_MESSAGE_COUNT> messages{};
@@ -141,8 +150,17 @@ class Host final : public IHostApplication, public IComponentHandler {
     std::atomic<uint64> pending_latency_restart{0};
     std::array<ParamID,HOST_EDIT_COUNT> active_ids{};
     std::array<uint64,HOST_EDIT_COUNT> active_tokens{};
+    std::array<bool,HOST_EDIT_COUNT> active_grouped{};
     size_t first=0, count=0, restart_count=0, active_count=0;
     uint64 sequence=0;
+    const bool advertises_editor_groups;
+    uint64 cohort=0;
+    bool refused_cohort=false;
+    std::array<uint64,HOST_EDIT_COUNT> cohort_gestures{};
+    struct CohortValue { ParamID id=0; uint64 delivered_sequence=0; };
+    std::array<CohortValue,HOST_EDIT_COUNT> cohort_values{};
+    size_t cohort_value_count=0;
+    size_t end_reservations() const { return active_count+(cohort?1:0); }
     std::atomic<bool> accepting{true};
     std::atomic<pthread_t> processing_thread{nullptr};
     bool dispatching=false, recursive=false, applying_feedback=false, applying_saved_state=false;
@@ -195,7 +213,8 @@ class Host final : public IHostApplication, public IComponentHandler {
     }
 public:
     static constexpr int32 supported_restarts=kParamValuesChanged|kParamTitlesChanged;
-    explicit Host(bool trace_messages=false) {
+    explicit Host(bool trace_messages=false,bool editor_groups=false)
+        : advertises_editor_groups(editor_groups) {
         for (auto& message:messages)
             message.bind(static_cast<IHostApplication*>(this),trace_messages?&message_trace:nullptr);
     }
@@ -244,6 +263,8 @@ public:
         if (same(iid,INLINE_UID_OF(FUnknown)) || same(iid,INLINE_UID_OF(IHostApplication)))
             *out=static_cast<IHostApplication*>(this);
         else if (same(iid,INLINE_UID_OF(IComponentHandler))) *out=static_cast<IComponentHandler*>(this);
+        else if (advertises_editor_groups && same(iid,INLINE_UID_OF(IComponentHandler2)))
+            *out=static_cast<IComponentHandler2*>(this);
         else return kNoInterface;
         addRef(); return kResultOk;
     }
@@ -273,10 +294,106 @@ public:
         }
         refuse(MessagePoolFull); return kOutOfMemory;
     }
-    tresult PLUGIN_API beginEdit(ParamID id) override { return admit_edit(id,Begin,0); }
-    tresult PLUGIN_API performEdit(ParamID id,ParamValue value) override { return admit_edit(id,Perform,value); }
-    tresult PLUGIN_API endEdit(ParamID id) override { return admit_edit(id,End,0); }
+    tresult PLUGIN_API beginEdit(ParamID id) override { return admit_grouped_edit(id,Begin,0); }
+    tresult PLUGIN_API performEdit(ParamID id,ParamValue value) override { return admit_grouped_edit(id,Perform,value); }
+    tresult PLUGIN_API endEdit(ParamID id) override { return admit_grouped_edit(id,End,0); }
+    tresult PLUGIN_API setDirty(TBool) override { return kNotImplemented; }
+    tresult PLUGIN_API requestOpenEditor(FIDString) override { return kNotImplemented; }
+    tresult PLUGIN_API startGroupEdit() override {
+        if(!advertises_editor_groups) return kNotImplemented;
+        if(![NSThread isMainThread]) {refuse(WrongThread);return kResultFalse;}
+        if(!accepting) {refuse(Retiring);return kResultFalse;}
+        if(dispatching) {recursive=true;refuse(RecursiveRestart);return kResultFalse;}
+        if(applying_saved_state) return kResultOk;
+        if(cohort) {poison_cohort();return kResultFalse;}
+        if(sequence>std::numeric_limits<uint64>::max()-2 || !make_edit_room(2)) {
+            refuse(QueueFull);return kResultFalse;
+        }
+        cohort=++sequence;refused_cohort=false;cohort_gestures.fill(0);cohort_value_count=0;
+        requests[(first+count++)%requests.size()]={sequence,cohort,0,0,GroupBegin,false,cohort};
+        pending_edits.fetch_add(1,std::memory_order_release);
+        return kResultOk;
+    }
+    tresult PLUGIN_API finishGroupEdit() override {
+        if(!advertises_editor_groups) return kNotImplemented;
+        if(![NSThread isMainThread]) {refuse(WrongThread);return kResultFalse;}
+        if(!accepting) {refuse(Retiring);return kResultFalse;}
+        if(dispatching) {recursive=true;refuse(RecursiveRestart);return kResultFalse;}
+        if(applying_saved_state) return kResultOk;
+        if(!cohort) {refuse(InvalidEdit);return kResultFalse;}
+        // Start reserved this terminal's record and one ordinal. Parameter
+        // admission cannot spend either reservation.
+        ++sequence;
+        const auto terminal=refused_cohort?GroupAborted:GroupEnd;
+        if(terminal==GroupAborted) {
+            for(auto& active:active_tokens)
+                if(active && std::find(cohort_gestures.begin(),cohort_gestures.end(),active)!=cohort_gestures.end()) {
+                    active=0;--active_count;
+                }
+        }
+        requests[(first+count++)%requests.size()]={sequence,cohort,0,0,terminal,false,cohort};
+        cohort=0;refused_cohort=false;
+        pending_edits.fetch_add(1,std::memory_order_release);
+        return terminal==GroupEnd?kResultOk:kResultFalse;
+    }
 private:
+    tresult admit_grouped_edit(ParamID id,uint32 kind,ParamValue value) {
+        if([NSThread isMainThread] && cohort && refused_cohort && kind!=End) return kResultFalse;
+        const auto result=admit_edit(id,kind,value);
+        if(result!=kResultOk && [NSThread isMainThread] && cohort) poison_cohort();
+        return result;
+    }
+    // A grouped edit refusal is reported by its reserved GroupAborted row.
+    // Do not turn that bounded input error into a failure of the PCM lease.
+    void refuse_editor_edit(uint32 why) { if(!cohort) refuse(why); }
+    CohortValue* cohort_value(ParamID id) {
+        for(size_t n=0;n<cohort_value_count;++n) if(cohort_values[n].id==id) return &cohort_values[n];
+        return nullptr;
+    }
+    bool track_cohort_value(const ParameterSnapshot::Parameter& info) {
+        if(!cohort || cohort_value(info.info.id)) return true;
+        if(cohort_value_count==cohort_values.size()) return false;
+        cohort_values[cohort_value_count++]={info.info.id,info.editor_sequence};
+        return true;
+    }
+    void poison_cohort() {
+        if(refused_cohort) return;
+        refused_cohort=true;
+        // Refuse the pending cohort prefix before main can publish it. Any
+        // older worker batches keep their exact delivered receipts.
+        for(size_t n=0;n<count;) {
+            const auto& request=requests[(first+n)%requests.size()];
+            if(request.cohort==cohort && request.kind==Perform) {
+                erase_request(n);
+                pending_edits.fetch_sub(1,std::memory_order_acq_rel);
+            } else ++n;
+        }
+        // Pending values protected the controller from older feedback. Keep
+        // that protection only for edits the worker could actually observe.
+        for(size_t n=0;n<metadata.count;++n) {
+            auto& parameter=metadata.parameters[n];
+            if(const auto* value=cohort_value(parameter.info.id))
+                parameter.editor_sequence=value->delivered_sequence;
+        }
+    }
+    bool cohort_room(size_t needed) const {
+        if(!cohort) return true;
+        size_t width=0;
+        for(size_t n=count;n>0;--n) {
+            if(requests[(first+n-1)%requests.size()].cohort!=cohort) break;
+            ++width;
+        }
+        // One record remains available for finish/abort even at saturation.
+        return width+needed+1<=edits.size();
+    }
+    bool remember_cohort_gesture(uint64 gesture) {
+        if(!cohort) return true;
+        for(auto& member:cohort_gestures) {
+            if(member==gesture) return true;
+            if(!member) {member=gesture;return true;}
+        }
+        return false;
+    }
     void erase_request(size_t index) {
         for(size_t next=index+1;next<count;++next)
             requests[(first+next-1)%requests.size()]=requests[(first+next)%requests.size()];
@@ -287,7 +404,7 @@ private:
         // handoff. Append at the tail to retain increasing receipt sequences.
         for(size_t n=count;n>0;--n) {
             const auto& previous=requests[(first+n-1)%requests.size()];
-            if(previous.kind==Restart) break;
+            if(previous.kind==Restart || is_group_marker(previous.kind) || previous.cohort!=next.cohort) break;
             if(previous.kind!=Perform || previous.gesture!=next.gesture) continue;
             erase_request(n-1);
             requests[(first+count++)%requests.size()]=next;
@@ -298,13 +415,13 @@ private:
     bool make_edit_room(size_t needed) {
         // An older value can be dropped only if its replacement is still in
         // this main-owned FIFO and precedes any intervening restart.
-        for(size_t n=0;count+active_count+needed>requests.size();) {
+        for(size_t n=0;count+end_reservations()+needed>requests.size();) {
             if(n>=count) return false;
             const auto current=requests[(first+n)%requests.size()];
             bool superseded=false;
             if(current.kind==Perform) for(size_t later=n+1;later<count;++later) {
                 const auto& next=requests[(first+later)%requests.size()];
-                if(next.kind==Restart) break;
+                if(next.kind==Restart || is_group_marker(next.kind) || next.cohort!=current.cohort) break;
                 if(next.kind==Perform && next.gesture==current.gesture) {
                     superseded=true;break;
                 }
@@ -321,7 +438,7 @@ private:
         // the same restart segment and after the last explicit edit for id.
         for(size_t n=count;n>0;--n) {
             const auto& end=requests[(first+n-1)%requests.size()];
-            if(end.kind==Restart) break;
+            if(end.kind==Restart || is_group_marker(end.kind) || end.cohort!=cohort) break;
             if(end.id!=id) continue;
             if(end.kind!=End || n<3) break;
             const auto& begin=requests[(first+n-3)%requests.size()];
@@ -333,18 +450,19 @@ private:
     }
     tresult admit_standalone_edit(ParameterSnapshot::Parameter& info,ParamValue value) {
         constexpr size_t records=3;
-        if(sequence>std::numeric_limits<uint64>::max()-records) {
-            refuse(QueueFull);return kResultFalse;
+        if(sequence>std::numeric_limits<uint64>::max()-records-(cohort?1:0)) {
+            refuse_editor_edit(QueueFull);return kResultFalse;
         }
         // Some controllers send a valid value without beginEdit. Present it
         // as a complete one-shot gesture to the existing DSP/receipt path.
         const auto id=info.info.id;
+        if(!cohort_room(records) || !track_cohort_value(info)) {refuse_editor_edit(QueueFull);return kResultFalse;}
         const bool has_room=make_edit_room(records);
         if(!has_room && !replace_standalone_edit(id)) return kResultFalse;
         const auto gesture=sequence+1;
-        requests[(first+count++)%requests.size()]={gesture,gesture,0,id,Begin,true};
-        requests[(first+count++)%requests.size()]={gesture+1,gesture,value,id,Perform};
-        requests[(first+count++)%requests.size()]={gesture+2,gesture,0,id,End};
+        requests[(first+count++)%requests.size()]={gesture,gesture,0,id,Begin,true,cohort};
+        requests[(first+count++)%requests.size()]={gesture+1,gesture,value,id,Perform,false,cohort};
+        requests[(first+count++)%requests.size()]={gesture+2,gesture,0,id,End,false,cohort};
         sequence=gesture+2;
         info.editor_sequence=gesture+1;
         if(has_room) pending_edits.fetch_add(records,std::memory_order_release);
@@ -358,41 +476,48 @@ private:
         if(applying_saved_state && id<=0x7FFFFFFFu && valid_value) return kResultOk;
         ParameterSnapshot::Parameter* info=nullptr;
         for(uint32 n=0;n<metadata.count;++n) if(metadata.parameters[n].info.id==id) info=&metadata.parameters[n];
-        if(!info) {refuse(InvalidEdit|UnknownEditParameter);return kInvalidArgument;}
+        if(!info) {refuse_editor_edit(InvalidEdit|UnknownEditParameter);return kInvalidArgument;}
         if(kind!=End && (info->info.flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden))) {
-            refuse(InvalidEdit|ReadOnlyEditParameter);return kInvalidArgument;
+            refuse_editor_edit(InvalidEdit|ReadOnlyEditParameter);return kInvalidArgument;
         }
-        if(!valid_value) {refuse(InvalidEdit|InvalidEditValue);return kInvalidArgument;}
+        if(!valid_value) {refuse_editor_edit(InvalidEdit|InvalidEditValue);return kInvalidArgument;}
         size_t active=active_tokens.size(),vacant=active_tokens.size();
         for(size_t n=0;n<active_tokens.size();++n) {
             if(active_tokens[n] && active_ids[n]==id) active=n;
             if(!active_tokens[n]) vacant=n;
         }
-        if(kind==Begin && active!=active_tokens.size()) {refuse(InvalidEdit|DuplicateEditBegin);return kResultFalse;}
+        if(kind==Begin && active!=active_tokens.size()) {refuse_editor_edit(InvalidEdit|DuplicateEditBegin);return kResultFalse;}
         if(kind!=Begin && active==active_tokens.size()) {
             if(kind==Perform) return admit_standalone_edit(*info,value);
-            refuse(InvalidEdit|MissingEndBegin);return kResultFalse;
+            refuse_editor_edit(InvalidEdit|MissingEndBegin);return kResultFalse;
         }
-        if(sequence==std::numeric_limits<uint64>::max()) {refuse(QueueFull);return kResultFalse;}
+        if(sequence>=std::numeric_limits<uint64>::max()-(cohort?1:0)) {refuse_editor_edit(QueueFull);return kResultFalse;}
         const auto next=sequence+1;
         const auto gesture=kind==Begin?next:active_tokens[active];
-        const EditEvent event{next,gesture,value,id,kind};
+        const bool grouped=kind==Begin?cohort!=0:active_grouped[active];
+        const EditEvent event{next,gesture,value,id,kind,false,cohort,1,grouped};
         // Reserve one slot for each admitted gesture's End. A new Begin
         // consumes a record and adds a reservation. End spends its own.
-        const auto available=requests.size()-count-active_count;
+        const auto available=requests.size()-count-end_reservations();
+        if(kind!=Begin && !remember_cohort_gesture(gesture)) {refuse_editor_edit(QueueFull);return kResultFalse;}
         if(kind==Begin && (vacant==active_tokens.size() || !make_edit_room(2))) return kResultFalse;
-        if(kind==Perform && !available) {
+        if(kind!=Perform && !cohort_room(1)) {refuse_editor_edit(QueueFull);return kResultFalse;}
+        if(kind==Begin && !remember_cohort_gesture(gesture)) {refuse_editor_edit(QueueFull);return kResultFalse;}
+        if(kind==Perform && !track_cohort_value(*info)) {refuse_editor_edit(QueueFull);return kResultFalse;}
+        if(kind==Perform && (!available || !cohort_room(1))) {
             if(replace_queued_perform(event)) {
                 info->editor_sequence=next;
                 sequence=next;
                 return kResultOk;
             }
-            if(!make_edit_room(1)) return kResultFalse;
+            if(!cohort_room(1) || !make_edit_room(1)) {refuse_editor_edit(QueueFull);return kResultFalse;}
         }
         requests[(first+count)%requests.size()]=event;
         ++count;sequence=next;pending_edits.fetch_add(1,std::memory_order_release);
         if(kind==Perform) info->editor_sequence=next;
-        if(kind==Begin) {active_ids[vacant]=id;active_tokens[vacant]=gesture;++active_count;}
+        if(kind==Begin) {
+            active_ids[vacant]=id;active_tokens[vacant]=gesture;active_grouped[vacant]=grouped;++active_count;
+        }
         if(kind==End) {active_tokens[active]=0;--active_count;}
         return kResultOk;
     }
@@ -413,6 +538,9 @@ public:
         // startup refreshes the inventory after applying the state.
         if (applying_saved_state) flags &= ~kParamIDMappingChanged;
         if (!flags) return kResultOk;
+        if(cohort) {
+            poison_cohort();refuse(UnsupportedCapability);return kResultFalse;
+        }
         const auto supported=supported_restarts |
             (latency_enabled?kLatencyChanged:0);
         if (flags & ~supported) {
@@ -422,8 +550,8 @@ public:
             return kNotImplemented;
         }
         const auto refresh=flags & supported_restarts;
-        if ((refresh && (count+active_count==requests.size() || restart_count==HOST_RESTART_COUNT)) ||
-            sequence==std::numeric_limits<uint64>::max()) {
+        if ((refresh && (count+end_reservations()==requests.size() || restart_count==HOST_RESTART_COUNT)) ||
+            sequence>=std::numeric_limits<uint64>::max()-(cohort?1:0)) {
             refuse(QueueFull); return kResultFalse;
         }
         const auto ordinal=++sequence;
@@ -448,12 +576,23 @@ public:
         if(request.kind!=Restart) {
             const auto written=edits_written.load(std::memory_order_relaxed);
             const auto read=edits_read.load(std::memory_order_acquire);
-            if(written==std::numeric_limits<uint64>::max() || written-read==edits.size()) {
+            size_t width=1;
+            if(request.cohort) while(width<count &&
+                    requests[(first+width)%requests.size()].cohort==request.cohort) ++width;
+            if(width>edits.size() || written>std::numeric_limits<uint64>::max()-width ||
+                    width>edits.size()-(written-read)) {
                 result.disposition=HostDisposition::Pending;return result;
             }
-            edits[written%edits.size()]=request;
-            edits_written.store(written+1,std::memory_order_release);
-            first=(first+1)%requests.size();--count;
+            for(size_t n=0;n<width;++n) {
+                auto next=requests[(first+n)%requests.size()];
+                next.batch_remaining=width-n;
+                if(cohort && next.cohort==cohort && next.kind==Perform)
+                    if(auto* value=cohort_value(next.id)) value->delivered_sequence=next.sequence;
+                edits[(written+n)%edits.size()]=next;
+            }
+            // One frontier makes the whole producer cohort visible to PCM.
+            edits_written.store(written+width,std::memory_order_release);
+            first=(first+width)%requests.size();count-=width;
             result.edit=request;result.disposition=HostDisposition::EditQueued;return result;
         }
         result.flags=static_cast<int32>(request.id);
@@ -618,10 +757,10 @@ public:
     }
     // One serialized processing consumer; main never overwrites an unread
     // record. Full handoff defers dispatch, preserving main request FIFO.
-    bool peek_edit(EditEvent& result) const {
+    bool peek_edit(EditEvent& result,size_t offset=0) const {
         const auto read=edits_read.load(std::memory_order_relaxed);
-        if(read==edits_written.load(std::memory_order_acquire)) return false;
-        result=edits[read%edits.size()];return true;
+        if(offset>=edits_written.load(std::memory_order_acquire)-read) return false;
+        result=edits[(read+offset)%edits.size()];return true;
     }
     void consume_edit() {
         const auto read=edits_read.load(std::memory_order_relaxed);
@@ -638,7 +777,7 @@ public:
     void complete_parameter_edit() { pending_edits.fetch_sub(1,std::memory_order_acq_rel); }
     void stop_accepting() {
         if (![NSThread isMainThread]) { refuse(WrongThread); return; }
-        accepting=false;first=0;count=0;restart_count=0;active_count=0;
+        accepting=false;first=0;count=0;restart_count=0;active_count=0;cohort=0;refused_cohort=false;
         active_tokens.fill(0);pending_edits.store(0,std::memory_order_release);
     }
 };

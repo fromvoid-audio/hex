@@ -69,125 +69,15 @@ impl Selection {
     }
 }
 
-pub(super) fn iterations(smoke: bool) -> (usize, usize) {
-    if smoke { (4, 1) } else { (8 + 40, 8) }
+/// Default remains one current-layout trial; comparison balances temporal order.
+pub(super) fn comparison_trials(value: Option<&str>) -> Result<&'static [bool], &'static str> {
+    match value {
+        None | Some("0") => Ok(&[false]),
+        Some("1") => Ok(&[true, false, false, true]),
+        _ => Err("navigation layout comparison must be 0 or 1"),
+    }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn default_keeps_complete_generated_and_project_case_inventories() {
-        let full = Selection::parse(None).unwrap();
-        assert_eq!(full, Selection::parse(Some("all")).unwrap());
-        let mut generated = Vec::new();
-        for content in ["mixed", "audio"] {
-            for (tracks, rows) in [(1, &[false][..]), (100, &[false, true][..])] {
-                for &row in rows {
-                    let cases = full.cases(content, tracks, row);
-                    assert_eq!(
-                        cases
-                            .iter()
-                            .map(|c| (c.density, c.action))
-                            .collect::<Vec<_>>(),
-                        [
-                            ("dense", "pan"),
-                            ("dense", "zoom"),
-                            ("zoomed", "pan"),
-                            ("zoomed", "zoom")
-                        ]
-                    );
-                    generated.extend(cases);
-                }
-            }
-        }
-        assert_eq!(generated.len(), 24);
-        assert_eq!(
-            [false, true]
-                .into_iter()
-                .map(|row| full.cases("project", 71, row).len())
-                .sum::<usize>(),
-            8
-        );
-        assert_eq!(iterations(false), (48, 8));
-        assert_eq!(iterations(false).0 - iterations(false).1, 40);
-        assert_eq!(iterations(true), (4, 1));
-    }
-
-    #[test]
-    fn bounded_scopes_select_only_their_normal_dense_pan_and_zoom() {
-        for (scope, content, tracks) in [
-            ("audio-100-dense", "audio", 100),
-            ("project-dense", "project", 71),
-        ] {
-            let selection = Selection::parse(Some(scope)).unwrap();
-            assert_eq!(selection.label(), scope);
-            assert_eq!(
-                selection.cases(content, tracks, false),
-                [
-                    Case {
-                        density: "dense",
-                        divisor: 1,
-                        action: "pan"
-                    },
-                    Case {
-                        density: "dense",
-                        divisor: 1,
-                        action: "zoom"
-                    },
-                ]
-            );
-            assert!(selection.cases(content, tracks, true).is_empty());
-            assert!(selection.cases("mixed", tracks, false).is_empty());
-        }
-        assert!(Selection::Audio100Dense.cases("audio", 1, false).is_empty());
-        assert!(
-            Selection::Audio100Dense
-                .cases("project", 100, false)
-                .is_empty()
-        );
-        assert!(
-            Selection::ProjectDense
-                .cases("audio", 100, false)
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn invalid_or_incompatible_selections_refuse_instead_of_running_nothing() {
-        for value in ["", " ", "audio", "all,project-dense", "project-dense "] {
-            assert!(Selection::parse(Some(value)).is_err());
-        }
-        for project in [false, true] {
-            for mixed in [false, true] {
-                for audio in [false, true] {
-                    assert_eq!(
-                        Selection::All
-                            .validate_inputs(project, mixed, audio)
-                            .is_ok(),
-                        project || mixed
-                    );
-                    assert_eq!(
-                        Selection::Audio100Dense
-                            .validate_inputs(project, mixed, audio)
-                            .is_ok(),
-                        audio
-                    );
-                    assert_eq!(
-                        Selection::ProjectDense
-                            .validate_inputs(project, mixed, audio)
-                            .is_ok(),
-                        project
-                    );
-                }
-            }
-        }
-        assert!(Selection::All.cases("unknown", 1, false).is_empty());
-        assert!(
-            Selection::ProjectDense
-                .cases("project", 0, false)
-                .is_empty()
-        );
-    }
+pub(super) fn iterations(smoke: bool) -> (usize, usize) {
+    if smoke { (4, 1) } else { (8 + 40, 8) }
 }

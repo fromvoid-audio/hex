@@ -142,21 +142,7 @@ impl Channel {
                     continue;
                 }
                 if wanted == 64 && (&out.bytes[..4] == b"HXVB" || &out.bytes[..4] == b"HXVE") {
-                    let frames = usize::from(u16::from_le_bytes([out.bytes[6], out.bytes[7]]));
-                    let version = u16::from_le_bytes([out.bytes[4], out.bytes[5]]);
-                    let parameters =
-                        usize::from(u16::from_le_bytes([out.bytes[10], out.bytes[11]]));
-                    if frames > crate::transport::MAX_FRAMES
-                        || out.bytes[8..10] != [0, 0]
-                        || !matches!(version, 1 | 2)
-                        || (version == 1 && parameters != 0)
-                        || parameters > crate::transport::MAX_PARAMETER_POINTS
-                        || out.bytes[12..16] != [0; 4]
-                        || (parameters != 0 && (frames == 0 || &out.bytes[..4] != b"HXVB"))
-                    {
-                        return Err(Error::Protocol("unsupported instance PCM extent or events"));
-                    }
-                    wanted = 64 + frames * 8 + parameters * 16;
+                    wanted = protocol::pcm_packet_extent(&out.bytes[..64])?;
                     if wanted == 64 {
                         return Ok(());
                     }

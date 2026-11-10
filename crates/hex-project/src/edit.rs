@@ -15,6 +15,8 @@ pub enum TrackDeviceSlot {
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    /// Initialize active and A/B state as one edit through existing constructors.
+    InitializeDevice(Box<crate::DeviceInitialization>),
     /// Copy Arrangement placements while retaining explicit shared content.
     DuplicateAliasClips(Vec<ClipId>),
     /// Duplicate a selected Arrangement group as aliases at one destination.
@@ -185,6 +187,36 @@ pub enum Command {
         target: crate::SectionId,
         after: bool,
     },
+    /// Copy a complete song section at an absolute beat at/after the final marker.
+    /// A nonempty gap receives the supplied validated marker name/color. The
+    /// original song remains; copy and gap share one preparation/history edge.
+    AppendArrangementSectionCopy {
+        section: crate::SectionId,
+        start: crate::BeatTime,
+        gap_name: String,
+        gap_color: crate::ElementColor,
+    },
+    /// Cut a complete song section and place it at an absolute final beat
+    /// strictly beyond the current last marker, preserving its identity.
+    /// Close the old interval, then mark the gap after the remaining markers
+    /// (or zero for a sole section). Unmarked music is retained. Move and gap
+    /// share one preparation/history edge; equal-end placement uses reorder.
+    MoveArrangementSectionBeyondEnd {
+        section: crate::SectionId,
+        start: crate::BeatTime,
+        gap_name: String,
+        gap_color: crate::ElementColor,
+    },
+    /// Replace a target's complete song interval with source content. Moves
+    /// close the old source interval and retain its ID; copies preserve it and
+    /// allocate a new result ID. Both carry source name/color and retire target.
+    /// All non-replaced music ripples intact. Self replacement is a no-op;
+    /// one private candidate owns preparation, refusal and Undo/Redo.
+    ReplaceArrangementSection {
+        source: crate::SectionId,
+        target: crate::SectionId,
+        copy: bool,
+    },
     /// Split marker metadata at a strict interior beat, preserving all music.
     /// The left marker retains its ID; the right gets a fresh ID and the same
     /// name/color. One validated command owns both adjoining positive ranges.
@@ -207,6 +239,18 @@ pub enum Command {
     },
     /// Replace validated project tuning and audition settings in one history step.
     SetTuning(hex_tuning::ProjectTuning),
+    AddArrangementLocator {
+        frame: u64,
+    },
+    MoveArrangementLocator {
+        locator: crate::LocatorId,
+        frame: u64,
+    },
+    RenameArrangementLocator {
+        locator: crate::LocatorId,
+        name: Option<String>,
+    },
+    RemoveArrangementLocator(crate::LocatorId),
     /// Event IDs come from the clip/revision-scoped editable_audio_events view.
     EditAudioEvents {
         clip: ClipId,
@@ -361,6 +405,28 @@ pub enum Command {
         track: TrackId,
         before: Option<DeviceId>,
     },
+    /// Move a complete unit within one retained source, keeping its parent.
+    /// The designated instrument moves with its children. None appends; invalid
+    /// membership placement must stay inside the owning chain.
+    MoveNativeSourceDevice {
+        source: crate::SourceId,
+        device: DeviceId,
+        before: Option<DeviceId>,
+    },
+    /// Create a fresh last child of a local/Main/Return effect or an unbound
+    /// retained source parent in one candidate. Bound source edits still refuse.
+    InsertNestedDevice {
+        parent: DeviceId,
+        state: hex_lattice_contract::NativeDeviceState,
+    },
+    /// Attach a complete local/Main/Return effect unit as the parent's last
+    /// child. None detaches it immediately after its former top-level unit.
+    /// Unbound source units use the same rule. An unchanged parent is a no-op;
+    /// bound source edits and foreign parents refuse.
+    ReparentDevice {
+        device: DeviceId,
+        parent: Option<DeviceId>,
+    },
     /// Splice half-open touches in one history edge. VST3 targets require the
     /// exact captured class; native/host targets require no class stamp.
     SpliceDeviceAutomationTouch {
@@ -368,6 +434,18 @@ pub enum Command {
         target: crate::DeviceAutomationTarget,
         vst3_class: Option<[u8; 16]>,
         spans: Vec<crate::DeviceAutomationTouchSpan>,
+    },
+    /// Adopt a complete group of two to eight distinct raw VST3 ParamIDs on
+    /// one exact device and class. Lanes are ordered by raw ID, including zero.
+    SpliceVst3AutomationTouchGroup {
+        device: DeviceId,
+        class: [u8; 16],
+        lanes: Vec<(u32, Vec<crate::DeviceAutomationTouchSpan>)>,
+    },
+    /// Replace a complete validated module/route bank in one history edge.
+    ReplaceDeviceModulation {
+        device: DeviceId,
+        modulation: crate::DeviceModulation,
     },
     ReplaceDeviceAutomationTarget {
         device: DeviceId,
@@ -1263,6 +1341,7 @@ pub struct MidiNoteInsert {
 pub enum Created {
     NativeSource(crate::SourceId),
     ArrangementSection(crate::SectionId),
+    ArrangementLocator(crate::LocatorId),
     Track(TrackId),
     /// Inclusive track-only ID range born in one atomic paste.
     Tracks {
@@ -1980,9 +2059,18 @@ impl Project {
             | Command::DeleteArrangementSection(_)
             | Command::DuplicateArrangementSection(_)
             | Command::DuplicateArrangementSectionAt { .. }
+            | Command::AppendArrangementSectionCopy { .. }
+            | Command::MoveArrangementSectionBeyondEnd { .. }
+            | Command::ReplaceArrangementSection { .. }
             | Command::SplitArrangementSection { .. }
             | Command::MergeArrangementSections(_)) => {
                 crate::arrangement_sections::apply(self, command)
+            }
+            command @ (Command::AddArrangementLocator { .. }
+            | Command::MoveArrangementLocator { .. }
+            | Command::RenameArrangementLocator { .. }
+            | Command::RemoveArrangementLocator(_)) => {
+                crate::arrangement_locators::apply(self, command)
             }
             Command::SetTuning(tuning) => {
                 self.tuning = tuning;
@@ -2129,6 +2217,14 @@ impl Project {
                 vst3_class,
                 spans,
             } => self.splice_device_automation_touch(device, target, vst3_class, spans),
+            Command::SpliceVst3AutomationTouchGroup {
+                device,
+                class,
+                lanes,
+            } => self.splice_vst3_automation_touch_group(device, class, lanes),
+            Command::ReplaceDeviceModulation { device, modulation } => {
+                self.replace_device_modulation(device, modulation)
+            }
             Command::ReplaceDeviceAutomationTarget {
                 device,
                 target,
@@ -2139,6 +2235,7 @@ impl Project {
                 parameter,
                 points,
             } => self.replace_device_automation(device, parameter, points),
+            Command::InitializeDevice(initialization) => initialization.apply(self),
             main_command @ (Command::InsertMainDevice { .. } | Command::MoveMainDevice { .. }) => {
                 crate::main_devices::apply(self, main_command)
             }
@@ -2148,6 +2245,9 @@ impl Project {
             | Command::RemoveDevice(_)
             | Command::MoveDevice { .. }
             | Command::MoveTrackDevice { .. }
+            | Command::MoveNativeSourceDevice { .. }
+            | Command::ReparentDevice { .. }
+            | Command::InsertNestedDevice { .. }
             | Command::ReplaceDeviceState { .. }
             | Command::ReplaceDeviceStateWithIdentityReservation { .. }
             | Command::SetDeviceBypass { .. }
@@ -3320,6 +3420,9 @@ impl Command {
                 | Self::DeleteArrangementSection(_)
                 | Self::DuplicateArrangementSection(_)
                 | Self::DuplicateArrangementSectionAt { .. }
+                | Self::AppendArrangementSectionCopy { .. }
+                | Self::MoveArrangementSectionBeyondEnd { .. }
+                | Self::ReplaceArrangementSection { .. }
         )
     }
 }

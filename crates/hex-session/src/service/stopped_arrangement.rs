@@ -80,7 +80,10 @@ pub(super) struct Fence {
 /// captured revision, which the parked edit has not advanced yet, so it runs
 /// against exactly the state its sender observed.
 pub(super) fn served_during_lease(request: &Request) -> bool {
-    matches!(request, Request::SaveDevicePreset { .. })
+    matches!(
+        request,
+        Request::SaveDevicePreset { .. } | Request::SaveDeviceDefault { .. }
+    )
 }
 
 impl Fence {

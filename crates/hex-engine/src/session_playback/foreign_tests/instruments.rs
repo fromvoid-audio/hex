@@ -441,6 +441,197 @@ fn finite_bounce_requires_an_explicit_foreign_instrument_renderer() {
 }
 
 #[test]
+fn vst_note_audition_sends_a_finite_exact_velocity_chord_once() {
+    use crate::{
+        computer_keyboard::{ComputerKeyboardInput, KeyboardActivationClock},
+        playback::Playback,
+    };
+    let (editor, identity) = fixture();
+    let project = editor.project();
+    let track = project.tracks()[0].id();
+    let revision = prepare(&editor, identity, true).unwrap();
+    let clock = Arc::new(KeyboardActivationClock::default());
+    let input = Arc::new(
+        ComputerKeyboardInput::with_output_activation(clock)
+            .unwrap()
+            .with_note_audition(&[(60, 37), (64, 93)], 8)
+            .unwrap(),
+    );
+    let mut playback = Playback::from_prepared(Arc::clone(&revision));
+    playback
+        .prepare_computer_keyboard(project, track, Arc::clone(&input))
+        .unwrap();
+    let mut endpoint = NoteEndpoint::default();
+    let mut output = [[0.0; 2]; 8];
+    endpoint.next_offset = 0;
+    playback
+        .render_with_foreign_processors(&mut output, None, None, None, &mut endpoint)
+        .unwrap();
+    assert!(endpoint.notes.is_empty());
+    input.trigger_note_audition().unwrap();
+    endpoint.next_offset = 0;
+    playback
+        .render_with_foreign_processors(&mut output, None, None, None, &mut endpoint)
+        .unwrap();
+    let onsets = endpoint.notes.clone();
+    assert_eq!(onsets.len(), 2);
+    assert_eq!(
+        (onsets[0].1.pitch, onsets[0].1.velocity, onsets[0].1.on),
+        (60, 37, true)
+    );
+    assert_eq!(
+        (onsets[1].1.pitch, onsets[1].1.velocity, onsets[1].1.on),
+        (64, 93, true)
+    );
+    assert!(input.note_audition_finished());
+    endpoint.next_offset = 0;
+    endpoint.notes.clear();
+    playback
+        .render_with_foreign_processors(&mut output, None, None, None, &mut endpoint)
+        .unwrap();
+    assert_eq!(endpoint.notes.len(), 2);
+    for (release, onset) in endpoint.notes.iter().zip(&onsets) {
+        assert!(!release.1.on);
+        assert_eq!(release.1.note_id, onset.1.note_id);
+    }
+    let mut replacement = Playback::from_prepared(revision);
+    replacement
+        .prepare_computer_keyboard(project, track, Arc::clone(&input))
+        .unwrap();
+    endpoint.next_offset = 0;
+    endpoint.notes.clear();
+    replacement
+        .render_with_foreign_processors(&mut output, None, None, None, &mut endpoint)
+        .unwrap();
+    assert!(endpoint.notes.is_empty(), "a completed bank cannot replay");
+}
+
+#[test]
+fn vst_audition_rolls_back_failed_audio_and_keeps_gate_across_handoff() {
+    use crate::{
+        computer_keyboard::{ComputerKeyboardInput, KeyboardActivationClock},
+        playback::Playback,
+    };
+    let (editor, identity) = fixture();
+    let project = editor.project();
+    let track = project.tracks()[0].id();
+    let revision = prepare(&editor, identity, true).unwrap();
+    let clock = Arc::new(KeyboardActivationClock::default());
+    let input = Arc::new(
+        ComputerKeyboardInput::with_output_activation(clock)
+            .unwrap()
+            .with_note_audition(&[(60, 37)], 8)
+            .unwrap(),
+    );
+    let mut playback = Playback::from_prepared(Arc::clone(&revision));
+    playback
+        .prepare_computer_keyboard(project, track, Arc::clone(&input))
+        .unwrap();
+    input.trigger_note_audition().unwrap();
+    let mut endpoint = NoteEndpoint {
+        fail_at: Some(1),
+        ..Default::default()
+    };
+    let mut output = [[1.0; 2]; 4];
+    assert!(
+        playback
+            .render_with_foreign_processors(&mut output, None, None, None, &mut endpoint)
+            .is_err()
+    );
+    assert!(endpoint.rejected);
+    assert_eq!(output, [[0.0; 2]; 4]);
+    assert!(!input.note_audition_finished());
+    endpoint.fail_at = None;
+    endpoint.next_offset = 0;
+    endpoint.notes.clear();
+    playback
+        .render_with_foreign_processors(&mut output, None, None, None, &mut endpoint)
+        .unwrap();
+    let [(0, onset)] = endpoint.notes.as_slice() else {
+        panic!("retry must admit the onset once")
+    };
+    let onset = *onset;
+    assert!(onset.on && onset.pitch == 60 && onset.velocity == 37);
+    assert!(!input.note_audition_finished());
+    let mut replacement = Playback::from_prepared(revision);
+    replacement
+        .prepare_computer_keyboard_for_controller_activation(project, track, Arc::clone(&input))
+        .unwrap();
+    replacement
+        .try_inherit_runtime_in_control_context(&mut playback, Some(1), Some(1))
+        .unwrap();
+    endpoint.next_offset = 0;
+    endpoint.notes.clear();
+    endpoint.fail_at = Some(3);
+    assert!(
+        replacement
+            .render_with_foreign_processors(&mut output, None, None, None, &mut endpoint)
+            .is_err()
+    );
+    assert!(
+        !input.note_audition_finished(),
+        "a rejected render must not consume gate time"
+    );
+    endpoint.fail_at = None;
+    endpoint.next_offset = 0;
+    endpoint.notes.clear();
+    replacement
+        .render_with_foreign_processors(&mut output, None, None, None, &mut endpoint)
+        .unwrap();
+    assert!(
+        endpoint.notes.is_empty(),
+        "handoff must retain the held note"
+    );
+    assert!(input.note_audition_finished());
+    endpoint.next_offset = 0;
+    endpoint.notes.clear();
+    replacement
+        .render_with_foreign_processors(&mut output, None, None, None, &mut endpoint)
+        .unwrap();
+    let [(0, release)] = endpoint.notes.as_slice() else {
+        panic!("bounded gate must release")
+    };
+    assert!(!release.on && release.note_id == onset.note_id);
+}
+
+#[test]
+fn vst_audition_cancel_releases_the_original_note() {
+    use crate::{computer_keyboard::ComputerKeyboardInput, playback::Playback};
+    let (editor, identity) = fixture();
+    let project = editor.project();
+    let track = project.tracks()[0].id();
+    let input = Arc::new(
+        ComputerKeyboardInput::default()
+            .with_note_audition(&[(61, 41)], 100)
+            .unwrap(),
+    );
+    let mut playback = Playback::from_prepared(prepare(&editor, identity, true).unwrap());
+    playback
+        .prepare_computer_keyboard(project, track, Arc::clone(&input))
+        .unwrap();
+    input.trigger_note_audition().unwrap();
+    let mut endpoint = NoteEndpoint::default();
+    let mut output = [[0.0; 2]; 8];
+    playback
+        .render_with_foreign_processors(&mut output, None, None, None, &mut endpoint)
+        .unwrap();
+    let [(0, onset)] = endpoint.notes.as_slice() else {
+        panic!("audition onset")
+    };
+    let onset = *onset;
+    input.cancel();
+    endpoint.next_offset = 0;
+    endpoint.notes.clear();
+    playback
+        .render_with_foreign_processors(&mut output, None, None, None, &mut endpoint)
+        .unwrap();
+    let [(0, release)] = endpoint.notes.as_slice() else {
+        panic!("cancellation release")
+    };
+    assert!(!release.on && release.note_id == onset.note_id);
+}
+
+#[test]
 fn computer_keyboard_uses_the_same_worker_while_stopped_playing_and_rearmed_after_stop() {
     use crate::{
         computer_keyboard::{ComputerKeyboardInput, KeyboardActivationClock},
@@ -514,6 +705,82 @@ fn computer_keyboard_uses_the_same_worker_while_stopped_playing_and_rearmed_afte
         panic!("cancel release")
     };
     assert!(!release.on && release.note_id == fresh.note_id);
+}
+
+#[test]
+fn live_audition_releases_only_its_own_vst_occurrence() {
+    use crate::{
+        computer_keyboard::{ComputerKeyboardInput, LiveNoteEvent},
+        playback::Playback,
+    };
+    let (editor, identity) = fixture();
+    let project = editor.project();
+    let track = project.tracks()[0].id();
+    let revision = prepare(&editor, identity, true).unwrap();
+    let input = Arc::new(ComputerKeyboardInput::default().with_live_notes().unwrap());
+    let mut playback = Playback::from_prepared(revision);
+    playback
+        .prepare_computer_keyboard(project, track, Arc::clone(&input))
+        .unwrap();
+    let queue = input.live_notes().unwrap();
+    let activation = input.begin_live_notes_activation_on_control().unwrap();
+    queue
+        .publish(
+            activation,
+            LiveNoteEvent::NoteOn {
+                channel: 0,
+                pitch: 60,
+                velocity: 93,
+            },
+        )
+        .unwrap();
+    input
+        .trigger_live_note_audition_on_control(&[(60, 37)], 4)
+        .unwrap();
+    let mut endpoint = NoteEndpoint::default();
+    let mut render = || {
+        endpoint.next_offset = 0;
+        endpoint.notes.clear();
+        playback
+            .render_with_foreign_processors(&mut [[0.; 2]; 8], None, None, None, &mut endpoint)
+            .unwrap();
+        endpoint.notes.clone()
+    };
+
+    let [(_, preview), (_, hardware)] = render()[..] else {
+        panic!("preview and live onsets");
+    };
+    assert!(preview.on && preview.velocity == 37);
+    assert!(hardware.on && hardware.velocity == 93 && hardware.note_id != preview.note_id);
+    let [(_, released)] = render()[..] else {
+        panic!("only the preview expires");
+    };
+    assert!(!released.on && released.note_id == preview.note_id);
+
+    input
+        .trigger_live_note_audition_on_control(&[(60, 37)], 32)
+        .unwrap();
+    let [(_, replacement)] = render()[..] else {
+        panic!("fresh preview");
+    };
+    assert!(replacement.on && replacement.note_id != preview.note_id);
+    input.cancel_live_note_audition_on_control();
+    queue
+        .publish(
+            activation,
+            LiveNoteEvent::NoteOff {
+                channel: 0,
+                pitch: 60,
+                velocity: 41,
+            },
+        )
+        .unwrap();
+    let [(_, cancelled), (_, off)] = render()[..] else {
+        panic!("each input releases its own occurrence");
+    };
+    assert!(!cancelled.on && cancelled.note_id == replacement.note_id);
+    assert!(!off.on && off.note_id == hardware.note_id && off.velocity == 41);
+    assert!(queue.same_current_activation(activation));
 }
 
 #[test]

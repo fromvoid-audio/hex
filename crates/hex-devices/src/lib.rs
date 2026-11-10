@@ -32,6 +32,7 @@ pub use eq8::flexible as eq;
 pub mod fm4;
 pub mod gate;
 pub mod limiter;
+pub mod modulation;
 pub mod operator_envelope;
 pub mod operator_state;
 pub mod operator_waveform;
@@ -82,6 +83,13 @@ static BUILTIN_NATIVE_INSTRUMENTS: [&dyn NativeInstrumentDefinition; 4] = [
 ];
 
 pub const SINE_INSTRUMENT_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.sine");
+
+// Conservative Arc overhead for the inline payload of a prepared source factory.
+fn source_effect_arc_bytes<T>() -> usize {
+    std::mem::size_of::<T>()
+        + 2 * std::mem::size_of::<usize>()
+        + 2 * std::mem::align_of::<T>().max(std::mem::align_of::<usize>())
+}
 
 /// The immutable catalog of original built-in native effects.
 pub fn native_registry()

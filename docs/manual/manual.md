@@ -252,9 +252,33 @@ press **q** or use the section focus toggle to restore all tracks.
 through it; **command-shift-click** adds or removes a single section. both work in a
 section's lower body too. ordinary lower-body dragging still selects time.
 drag a section header to move its musical content; hold **option** to insert a copy
-before or after another section, or beside the source. changing option during the drag
-switches between moving and copying. the source stays in place when copying, and
+before or after another section, or beside the source. past the last section,
+move or copy to the snapped pointer beat; a new section marks the intervening gap.
+a move closes the old interval and preserves music in the gap. move/copy and the
+gap marker share one undo step. command toggles snapping for a move; use control
+while option-copying, since option-command edits only markers. changing option
+during the drag switches between moving and copying. the source stays in place when copying, and
 one undo restores the entire operation.
+
+while dragging a section, the cyan bar marks insertion at an edge or in a gap.
+a highlighted section body marks replacement: the target's music is removed and
+the source content takes its place. later music ripples by the length difference;
+a move also closes the source's old interval. the result carries the source name
+and color. option preserves the source and gives the replacement a new identity.
+dropping on the source body does nothing. option-command marker edits do not
+replace content. the indicator stays with a pending edit until its result arrives.
+
+with the section lane focused, select one section and press **command+c**, then click
+the lane to place the edit cursor and press **command+v**. paste inserts at the nearest
+section boundary before or within the song. after the last marker, it lands at the
+cursor and gives any intervening marker gap a new section. all tracks are copied,
+and one undo removes the whole paste. the section cursor keeps the snapping chosen
+when you clicked it; command+v does not invert the grid again.
+
+the section clipboard stays available after successful copies of the same section. place the
+cursor again for another paste. other project edits, undo or redo make the reference
+stale; copy the section again before pasting. opening another project clears it.
+right-click a section for **copy section** and **paste section at cursor**.
 
 section edits apply while playing. when an edit changes the tempo, a sampler's held
 notes or a device's latency, audio briefly restarts at the playhead: effect tails
@@ -438,7 +462,7 @@ linked copies. a small link icon in the clip title identifies each alias. linked
 audio shares its events, pitch and warp edits; linked midi shares its notes.
 each copy keeps its own arrangement position, trims, loop window and fades.
 
-press **i** or choose **make unique** from the clip menu to detach the selected
+press **shift+i** or choose **make unique** from the clip menu to detach the selected
 copies. their current content and sound stay unchanged. **apply settings to aliases** in
 the clip menu copies the picked alias's local settings to every member of its
 group, preserving each arrangement position. there is no privileged original:
@@ -554,11 +578,31 @@ vertically in arrange. **x** restores the prior time view, track heights and
 vertical scroll, including former visible trailing space. minimum row heights
 can leave a large selection scrollable.
 
+## arrangement locators
+
+place the insert cursor or select a time range, then press **i**. a locator appears
+at the cursor or the start of the range. pressing **i** again at the same frame
+keeps the existing locator. computer-keyboard midi keeps priority.
+
+click a locator triangle to play from its position. drag the triangle to move it
+on the arrangement grid. hold **command** to invert snapping. double-click the
+name to edit it, or select the locator and press **command+r**. clear the name to
+restore automatic naming. select a locator and press **backspace** to delete it.
+
+inside a section, locators use its colour and take names such as **verse.1** and
+**verse.2** from left to right. custom names still count in the sequence. outside
+sections, locators are grey and use names such as **locator 1**. section edits
+that move, copy, or delete music carry locators with it. marker-only edits
+change the section bounds around the locators. locators are saved with the
+project and support undo and redo.
+
 ## create fades from a time selection
 
 select a positive time range at the beginning or end of an audio clip and press
-**command+f**. the selected portion becomes a linear fade-in or fade-out; the
-opposite authored ramp stays unchanged. a range entirely inside a clip, or one
+**command+f**. the selected portion becomes an s-shaped fade-in or fade-out; the
+opposite authored ramp stays unchanged. dragging a new fade also starts with an
+s-curve. drag the diamond to reshape it, or double-click the diamond to
+straighten an s-curve. a range entirely inside a clip, or one
 covering both ends, is refused with a message.
 
 across a join between two ordinary audio clips, **command+f** extends the source
@@ -600,8 +644,9 @@ sources. choose **src** again to return to the grouped event.
 
 drag an upper square to change a fade length. drag a diamond horizontally and
 vertically to shape its curve. lower squares trim the event; they move freely by
-default, with **command** opting into the event grid. double-click a fade control
-to reset that event's fades. one undo restores each completed gesture.
+default, with **command** opting into the event grid. double-click an s-curve
+diamond to straighten that ramp. double-click an endpoint to reset the event's
+fades. one undo restores each completed gesture.
 
 the preview becomes prepared audio after release. **escape** or leaving the
 editor cancels a held gesture. splitting retains the source fade, moving keeps
@@ -848,7 +893,9 @@ distortion, **tone** adjusts its brightness, and **dynamics** restores more of t
 input's level changes as it increases. **dry/wet** blends the original signal with
 the processed sound. the effect is available on track, return and main chains.
 
-rattle is a one-knob drive. at **drive** 0 it passes audio unchanged; raising
+rattle is a one-knob drive. its compact panel pairs a percent drive dial with
+eleven orange diamonds. the diamonds tighten as drive rises and follow its
+automation while the lane reads. at **drive** 0 it passes audio unchanged; raising
 **drive** blends in a progressively harder, grittier and noisier saturation whose
 level is compensated for typical programme, so it gets dirtier rather than much
 louder. rattle processes at twice the sample rate and reports 11 samples of
@@ -865,11 +912,15 @@ undoable edit. vertical movement changes q for a cut or notch, or the gain of a
 bell. existing nodes keep their own selection and drag targets. press
 **escape** to cancel.
 
-drag across empty space in the eq graph to select every node inside the
-rectangle; **shift** adds to the selection and **command** toggles nodes.
+hold **shift** and drag across empty space in the eq graph to select every node
+inside the rectangle; **shift-command** toggles those nodes against the selection.
 dragging a selected node moves the whole selection, keeping each node's
 spacing, and **backspace** or **remove** deletes every selected node with its
 automation. one undo restores either edit.
+
+the fixed eight-band eq uses the same marquee selection. dragging a selected
+band moves the group in one undoable edit. **backspace** disables the selected
+bands; their fixed slots remain available. one undo restores their on flags.
 
 each visible eq has its own live spectrum, including eqs on return and main
 tracks. selecting another device keeps these spectra running. use **spectrum**

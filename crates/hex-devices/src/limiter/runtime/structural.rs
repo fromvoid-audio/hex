@@ -325,6 +325,15 @@ impl PreparedOwnedProcessorRuntime for PreparedStructuralLimiter {
             .filter(|&i| self.admitted[i])
             .map(|i| BINDINGS[i].descriptor)
     }
+    fn parameter_modulation_semantics(
+        &self,
+        id: ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        self.supports_parameter_automation(id)
+            .then(|| scalar::modulation_semantics(id))
+            .flatten()
+    }
+
     fn runtime_version(&self) -> u32 {
         4
     }

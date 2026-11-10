@@ -56,6 +56,7 @@ fn node(
     .unwrap();
     let device_type = DeviceTypeId::from_static("fixture.foreign");
     PreparedRuntimeInstance {
+        modulation: None,
         owner,
         device_id: id,
         device_type,

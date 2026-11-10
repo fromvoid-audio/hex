@@ -92,7 +92,9 @@ pub(super) enum EditorContextAction {
         before: Option<SceneId>,
     },
     UtilityMode(UtilityModeAction),
+    AddModulator(device_panel::AddModulatorAction),
     DeviceComparison(super::device_comparison::Intent),
+    DevicePreset(super::device_preset::Intent),
     RenameTrackName {
         generation: u64,
         revision: u64,
@@ -493,7 +495,7 @@ impl EditorView {
                 ),
             ];
             if linked {
-                entries.push(("make unique · i", ClipAliasOperation::MakeUnique));
+                entries.push(("make unique · shift+i", ClipAliasOperation::MakeUnique));
                 entries.push((
                     "apply settings to aliases",
                     ClipAliasOperation::ApplySettings,
@@ -698,6 +700,10 @@ impl EditorView {
             }
             EditorContextAction::DeviceComparison(target) => {
                 self.perform_device_comparison(target, cx)
+            }
+            EditorContextAction::AddModulator(action) => action.perform(self),
+            EditorContextAction::DevicePreset(target) => {
+                self.perform_device_preset_action(target, cx)
             }
             EditorContextAction::BounceTrack {
                 generation,
@@ -931,6 +937,10 @@ impl EditorView {
                 }
                 EditorContextAction::DeviceComparison(target) => {
                     !super::device_comparison::current(self, target)
+                }
+                EditorContextAction::AddModulator(action) => !action.current(self),
+                EditorContextAction::DevicePreset(target) => {
+                    !super::device_preset::current(self, target)
                 }
                 EditorContextAction::PlaceIcon { path, .. } => {
                     !self.browser_place_icon_assignable(path)
@@ -2093,7 +2103,7 @@ mod tests {
             for label in [
                 "duplicate · d",
                 "duplicate alias · cmd+d",
-                "make unique · i",
+                "make unique · shift+i",
                 "apply settings to aliases",
             ] {
                 assert!(menu.items.iter().any(|item| item.label == label));
@@ -2136,7 +2146,7 @@ mod tests {
                 .unwrap()
                 .items
                 .iter()
-                .find(|item| item.label == "make unique · i")
+                .find(|item| item.label == "make unique · shift+i")
                 .unwrap()
                 .action
                 .clone()

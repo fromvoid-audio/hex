@@ -246,7 +246,7 @@ impl EditorView {
             let header = div()
                 .id(("console-return-header", id.value()))
                 .debug_selector(move || format!("console-return-header-{}", id.value()))
-                .h(px(34.0))
+                .h(px(super::session_grid::TRACK_HEADER_HEIGHT))
                 .flex_shrink_0()
                 .px(px(6.0))
                 .flex()
@@ -497,6 +497,10 @@ mod ui_tests {
                 "the previous click must advance the Return bank"
             );
             let main = visual.debug_bounds("console-main-header").unwrap();
+            assert_eq!(
+                main.size.height,
+                px(super::super::session_grid::TRACK_HEADER_HEIGHT)
+            );
             let main_mixer = visual.debug_bounds("console-main-mixer-column").unwrap();
             let bank = visual.debug_bounds("console-return-bank").unwrap();
             let tail = visual.debug_bounds("console-column-header-tail").unwrap();
@@ -585,7 +589,11 @@ mod ui_tests {
                 .is_none()
         );
         let main = visual.debug_bounds("console-main-header").unwrap();
-        assert!(main.right() <= px(640.0));
+        let panel = visual.debug_bounds("workspace-main-panel").unwrap();
+        assert!(
+            main.right() <= panel.right() - px(4.0),
+            "main={main:?}, panel={panel:?}"
+        );
         let field = visual
             .debug_bounds(selector("return-volume", ids[1], "-value"))
             .unwrap()

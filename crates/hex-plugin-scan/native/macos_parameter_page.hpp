@@ -2,13 +2,18 @@
 // pointers and grant no edit, graph or DSP-application acknowledgement.
 #pragma once
 #include "macos_host.hpp"
+#include "macos_editor_position.hpp"
 
 namespace hex_instance {
 inline constexpr size_t CONTROLLER_PAGE_COUNT=4;
 inline constexpr uint8 TOGGLE_EDITOR=6;
 inline constexpr uint8 CLOSE_EDITOR=7;
 inline constexpr uint8 SELECTED_PARAMETERS=8;
-inline bool editor_request(uint8 kind) { return kind==TOGGLE_EDITOR || kind==CLOSE_EDITOR; }
+inline constexpr uint8 DETACH_EDITOR=11;
+inline constexpr uint8 REOPEN_EDITOR=12;
+inline bool editor_request(uint8 kind) {
+    return kind==TOGGLE_EDITOR || kind==CLOSE_EDITOR || kind==DETACH_EDITOR || kind==REOPEN_EDITOR;
+}
 struct ControllerQuery {
     uint16 first=0;uint64 revision=0;
     uint8 kind=0;uint32 id=0;uint64 bits=0;String128 text{};
@@ -17,6 +22,13 @@ struct ControllerQuery {
             id==other.id && bits==other.bits && !std::memcmp(text,other.text,sizeof(text));
     }
 };
+// The reopen kind uses the reserved revision/bits words as two doubles.
+inline EditorPosition editor_reopen_position(const ControllerQuery& query) {
+    EditorPosition position{};
+    std::memcpy(&position.x,&query.revision,8);
+    std::memcpy(&position.y,&query.bits,8);
+    return position;
+}
 struct ControllerConversion {
     uint32 id=0;uint8 status=3; // converted/refused/unsupported/missing
     double normalized=0,plain=std::numeric_limits<double>::quiet_NaN();
@@ -59,11 +71,16 @@ inline bool controller_text(String128 value) {
 }
 inline bool valid_controller_query(const ControllerQuery& query) {
     if(query.first>HOST_PARAMETER_COUNT ||
-       (query.first && !query.revision && query.kind!=SELECTED_PARAMETERS) || query.kind>SELECTED_PARAMETERS) return false;
+       (query.first && !query.revision && query.kind!=SELECTED_PARAMETERS) || query.kind>REOPEN_EDITOR) return false;
     String128 text{};std::memcpy(text,query.text,sizeof(text));
     if(!controller_text(text) || std::memcmp(text,query.text,sizeof(text))) return false;
+    if(query.kind==REOPEN_EDITOR) {
+        return !query.first && !text[0] &&
+            (query.id==1?editor_reopen_position(query).valid():!query.id && !query.revision && !query.bits);
+    }
     if(editor_request(query.kind)) return !query.first && !query.revision && !query.id && !query.bits && !text[0];
     if(query.kind==SELECTED_PARAMETERS) return !query.revision && !query.id && !query.bits && !text[0];
+    if(query.kind>5) return false;
     if(!query.kind) return !query.id && !query.bits && !text[0];
     if(query.first || query.id>static_cast<uint32>(std::numeric_limits<int32>::max())) return false;
     double value=0;std::memcpy(&value,&query.bits,8);

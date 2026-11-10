@@ -61,7 +61,9 @@ fn compressor_shared_panel_fits_and_drag_commits_one_undoable_edit(cx: &mut Test
         .expect("transfer plot");
     assert_eq!(
         card.size.width,
-        px(compressor_panel::FRAME_WIDTH + device_meter::WIDTH)
+        px(compressor_panel::FRAME_WIDTH
+            + hex_widgets::DEVICE_FRAME_HEADER_WIDTH
+            + device_meter::WIDTH)
     );
     assert_eq!(card.size.height, px(DEVICE_FRAME_HEIGHT));
     assert!(graph.size.height >= px(50.0));

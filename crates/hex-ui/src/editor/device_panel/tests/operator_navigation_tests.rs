@@ -1,5 +1,4 @@
 use super::*;
-use operator_panel::preview::{Field, Switch};
 
 pub(super) fn operator_fixture() -> (Service, Arc<ViewState>, TrackId, DeviceId) {
     let (service, _, track, _, _, _) = actor_utility_fixture();
@@ -285,6 +284,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
     visual.update(|window, _| window.activate_window());
     visual.simulate_resize(size(px(1440.0), px(540.0)));
     visual.run_until_parked();
+    open_operator_options(&mut visual, device);
     let envelope = tab_bounds(&mut visual, device, "envelope", "amp env");
     let oscillator = tab_bounds(&mut visual, device, "oscillator", "osc");
     let rail = visual
@@ -310,7 +310,13 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
         tab_bounds(&mut visual, device, "oscillator", "osc"),
         oscillator
     );
-    assert_eq!(lfo_link_bounds(&mut visual, device), lfo);
+    assert_eq!(
+        lfo_link_bounds(&mut visual, device),
+        Bounds {
+            origin: lfo.origin + point(px(120.0), px(0.0)),
+            ..lfo
+        }
+    );
     for parameter in 82..=92 {
         assert!(
             visual
@@ -416,7 +422,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
         assert!(
             visual
                 .debug_bounds(selector(format!(
-                    "device-{}-parameter-{}-slider",
+                    "device-{}-parameter-{}-value",
                     device.value(),
                     63 + operator * 3
                 )))
@@ -436,25 +442,6 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             view.worker_requests_pending == 0 && view.pending_requests.is_empty()
         });
     }
-    {
-        let switch = Switch::Pitch.index();
-        let bounds = visual
-            .debug_bounds(selector(format!(
-                "operator-preview-{}-toggle-{switch}",
-                device.value()
-            )))
-            .unwrap();
-        visual.simulate_click(bounds.center(), Modifiers::default());
-        visual.run_until_parked();
-        assert_eq!(
-            tab_bounds(&mut visual, device, "envelope", "amp env"),
-            envelope
-        );
-        assert_eq!(
-            tab_bounds(&mut visual, device, "oscillator", "osc"),
-            oscillator
-        );
-    }
     assert!(
         visual
             .debug_bounds(selector(format!(
@@ -463,16 +450,20 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             )))
             .is_none()
     );
-    // Click the Time tile rather than the icon, then activate the rail by keyboard.
-    let time = visual
+    // Select the optional global context explicitly through its background.
+    let global = visual
         .debug_bounds(selector(format!(
-            "operator-preview-{}-{}",
-            device.value(),
-            Field::Time as usize
+            "operator-preview-row-{}-global",
+            device.value()
         )))
         .unwrap();
+    let routing = visual
+        .debug_bounds(Box::leak(
+            format!("operator-preview-{}-route-link", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
     visual.simulate_click(
-        point(time.center().x, time.origin.y + px(3.0)),
+        point(routing.right() + px(2.0), global.center().y),
         Modifiers::default(),
     );
     visual.run_until_parked();
@@ -489,7 +480,10 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
                 device.value()
             )))
             .unwrap(),
-        rail
+        Bounds {
+            origin: rail.origin + point(px(120.0), px(0.0)),
+            ..rail
+        }
     );
     assert!(
         visual
@@ -552,8 +546,22 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.device_panel.operator_pages[&device].page,
-            operator_panel::OperatorPage::Routing,
-            "focused routing activation takes precedence over session launch"
+            operator_panel::OperatorPage::Envelope,
+            "focused routing picker preserves envelope context"
+        );
+    });
+    visual.simulate_keystrokes("escape");
+    visual.simulate_keystrokes("alt-enter");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.device_panel.operator_pages[&device].page,
+            operator_panel::OperatorPage::Routing
+        );
+        assert!(
+            view.device_panel.operator_previews[&device]
+                .routing_popup
+                .is_none()
         );
     });
     visual.simulate_click(shell.center(), Modifiers::default());
@@ -572,17 +580,19 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             view.device_panel.operator_pages[&device].page,
             page_before_space
         );
-        assert!(matches!(
-            view.last_transport_command,
-            Some(hex_engine::PlaybackCommand::PlayFrom(_))
-        ));
+        assert!(view.last_transport_command.is_none());
+        assert!(
+            view.device_panel.operator_previews[&device]
+                .routing_popup
+                .is_some()
+        );
     });
-    visual.simulate_keystrokes("enter");
+    visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.device_panel.operator_pages[&device].page,
-            operator_panel::OperatorPage::Routing
+            page_before_space
         );
         assert_eq!(
             view.state

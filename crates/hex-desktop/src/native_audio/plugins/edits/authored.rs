@@ -55,6 +55,10 @@ impl Plugins {
             {
                 continue;
             }
+            // The metadata extension uses the same serialized controller as
+            // display polling. Finish an admitted read on its original owner
+            // before starting the edit, while retaining its explicit terminal.
+            self.yield_parameters_to_control(control, input.context(), cancellation)?;
             let hint = self
                 .observed_parameters
                 .iter()

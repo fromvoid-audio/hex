@@ -504,6 +504,7 @@ pub struct SessionPlayback {
     route_scratch: Vec<TrackRoute>,
     track_faders: [track_fader::TrackFader; MAX_TRACKS],
     track_fader_scratch: [track_fader::TrackFader; MAX_TRACKS],
+    source_effects: crate::source_effect_stage::SourceEffectStages,
     device_chains: Vec<hex_lattice::NativeRuntimeChain>,
     return_chains: Vec<hex_lattice::NativeRuntimeChain>,
     main_chain: hex_lattice::NativeRuntimeChain,
@@ -917,6 +918,7 @@ impl SessionPlayback {
             route_scratch: _,
             track_faders: _,
             track_fader_scratch: _,
+            source_effects: _, // retained by the Session container, not separately transferred
             device_chains,
             return_chains,
             main_chain,
@@ -1024,6 +1026,7 @@ impl SessionPlayback {
         for chain in self
             .device_chains
             .iter_mut()
+            .chain(self.source_effects.chains_mut())
             .chain(self.return_chains.iter_mut())
             .chain(std::iter::once(&mut self.main_chain))
         {
@@ -1102,6 +1105,7 @@ impl SessionPlayback {
     ) -> bool {
         let project = self.revision.arrangement();
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Source(_) => false,
             hex_lattice::ProcessorChainOwner::Main => self.main_chain.select_processor_audition(
                 identity.owner,
                 identity.device_id,
@@ -1195,6 +1199,7 @@ impl SessionPlayback {
     ) -> bool {
         let project = self.revision.arrangement();
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Source(_) => false,
             hex_lattice::ProcessorChainOwner::Main => self.main_chain.processor_audition_is_active(
                 identity.owner,
                 identity.device_id,
@@ -1233,6 +1238,7 @@ impl SessionPlayback {
     pub(crate) fn cancel_processor_audition(&mut self, identity: crate::PostNodeIdentity) -> bool {
         let project = self.revision.arrangement();
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Source(_) => false,
             hex_lattice::ProcessorChainOwner::Main => {
                 self.main_chain.cancel_processor_audition_for_identity(
                     identity.owner,
@@ -1554,7 +1560,38 @@ impl SessionPlayback {
         resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
         transient_loop: Option<hex_project::LoopRegion>,
     ) -> Result<Self, SessionPlaybackError> {
+        Self::new_with_render_policy_and_source_effects(
+            revision,
+            policy,
+            resources,
+            transient_loop,
+            None,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_with_source_effects(
+        revision: Arc<PreparedRevision>,
+        recipes: &[crate::source_effect_stage::PreparedSourceEffects],
+    ) -> Result<Self, SessionPlaybackError> {
+        Self::new_with_render_policy_and_source_effects(
+            revision,
+            RenderConstruction::Interactive,
+            None,
+            None,
+            Some(recipes),
+        )
+    }
+
+    fn new_with_render_policy_and_source_effects(
+        revision: Arc<PreparedRevision>,
+        policy: RenderConstruction,
+        resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
+        transient_loop: Option<hex_project::LoopRegion>,
+        recipe_override: Option<&[crate::source_effect_stage::PreparedSourceEffects]>,
+    ) -> Result<Self, SessionPlaybackError> {
         let arrangement = revision.arrangement();
+        let recipes = recipe_override.unwrap_or(&arrangement.source_effects);
         let linear_arrangement_export = policy != RenderConstruction::Interactive;
         let chain_has_foreign_automation = arrangement
             .tracks
@@ -1601,9 +1638,10 @@ impl SessionPlayback {
                 "device resource set differs from prepared revision",
             ));
         }
-        // Scoped linear export and every finite bounce reserve before allocation,
-        // then check the actual runtime below. Interactive budgets stay unchanged.
-        let linear_resource_allowance = if (linear_arrangement_export && resources.is_some())
+        // Linear export with scoped resources or source effects, and every finite bounce,
+        // reserve before allocation and check actual runtime storage below.
+        let linear_resource_allowance = if (linear_arrangement_export
+            && (resources.is_some() || !recipes.is_empty()))
             || matches!(
                 policy,
                 RenderConstruction::FiniteBounce | RenderConstruction::FiniteForeignBounce
@@ -1612,6 +1650,9 @@ impl SessionPlayback {
         } else {
             None
         };
+        let source_effects =
+            crate::source_effect_stage::SourceEffectStages::prepare(arrangement, recipes)
+                .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
         let arrangement_tracks = revision.arrangement().tracks();
         let session_tracks = revision.session().tracks();
         if arrangement_tracks.len() != session_tracks.len()
@@ -1833,6 +1874,9 @@ impl SessionPlayback {
                 .map_err(SessionPlaybackError::from)?;
             let mut runtime = runtime;
             if let Some(runtime) = runtime.as_mut() {
+                if let Some(modulation) = revision.session().instrument_modulation(id) {
+                    runtime.install_modulation(modulation)?;
+                }
                 if track.source_id().is_some() && !revision.requires_control_sampler_sources() {
                     runtime.enable_source_live();
                 }
@@ -2029,6 +2073,7 @@ impl SessionPlayback {
                 revision: &revision,
                 midi_admission: midi_admission.as_ref(),
                 analytic_import: &analytic_import,
+                source_effects: &source_effects,
                 device_chains: &device_chains,
                 return_chains: &return_chains,
                 return_effect_tails: &return_effect_tails,
@@ -2096,6 +2141,7 @@ impl SessionPlayback {
             route_scratch,
             track_faders,
             track_fader_scratch: track_faders,
+            source_effects,
             device_chains,
             return_chains,
             main_chain,

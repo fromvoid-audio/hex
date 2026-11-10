@@ -3,8 +3,36 @@
 use hex_lattice::{NativeInstrumentDefinition, PreparedAnalyticNote, PreparedNativeInstrument};
 use hex_lattice_contract::{
     DeviceContractError as Error, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
-    ParameterDescriptor, ParameterId, ParameterValue,
+    ParameterAccess, ParameterAutomation, ParameterChangeImpact, ParameterDescriptor, ParameterId,
+    ParameterKind, ParameterModulation, ParameterNormalization, ParameterPresentation,
+    ParameterSemantics, ParameterSmoothing, ParameterStepping, ParameterValue,
 };
+
+/// Existing authored linear gain, before envelope and occurrence output gain.
+pub const GAIN: ParameterId = ParameterId::from_static(1);
+pub(super) const GAIN_DESCRIPTORS: [ParameterDescriptor; 1] = [ParameterDescriptor {
+    id: GAIN,
+    label: "gain",
+    kind: ParameterKind::Float {
+        min: 0.0,
+        max: 4.0,
+        unit: None,
+    },
+    default: ParameterValue::Float(1.0),
+    presentation: ParameterPresentation::Linear,
+}];
+
+pub(super) fn gain_semantics(parameter: ParameterId) -> Option<ParameterSemantics> {
+    (parameter == GAIN).then_some(ParameterSemantics {
+        access: ParameterAccess::ReadWrite,
+        normalization: ParameterNormalization::Linear,
+        stepping: ParameterStepping::Continuous,
+        automation: ParameterAutomation::Unsupported,
+        modulation: ParameterModulation::SampleRate,
+        smoothing: ParameterSmoothing::None,
+        change_impact: ParameterChangeImpact::ValueOnly,
+    })
+}
 
 pub static DEFINITION: SamplerDefinition = SamplerDefinition;
 pub struct SamplerDefinition;
@@ -19,7 +47,25 @@ impl NativeDeviceMetadata for SamplerDefinition {
         super::state::STATE_VERSION
     }
     fn descriptors(&self) -> &'static [ParameterDescriptor] {
-        &[]
+        &GAIN_DESCRIPTORS
+    }
+    fn descriptors_for_state(
+        &self,
+        state: &NativeDeviceState,
+    ) -> Result<Vec<ParameterDescriptor>, Error> {
+        if super::state::is_empty_state(state) {
+            return Ok(Vec::new());
+        }
+        super::state::SamplerState::from_native(state)?;
+        Ok(self.descriptors().to_vec())
+    }
+    fn parameter_semantics_for_state(
+        &self,
+        state: &NativeDeviceState,
+        parameter: ParameterId,
+    ) -> Result<Option<ParameterSemantics>, Error> {
+        super::state::SamplerState::from_native(state)?;
+        Ok(gain_semantics(parameter))
     }
     fn default_state(&self) -> Result<NativeDeviceState, Error> {
         super::state::empty_state()
@@ -42,18 +88,31 @@ impl NativeDeviceMetadata for SamplerDefinition {
     }
     fn read_parameter(
         &self,
-        _: &NativeDeviceState,
-        _: ParameterId,
+        state: &NativeDeviceState,
+        parameter: ParameterId,
     ) -> Result<ParameterValue, Error> {
-        Err(Error::UnknownParameter)
+        if parameter != GAIN {
+            return Err(Error::UnknownParameter);
+        }
+        let authored = super::state::SamplerState::from_native(state)?;
+        Ok(ParameterValue::Float(authored.gain as f32))
     }
     fn patch_parameter(
         &self,
-        _: &NativeDeviceState,
-        _: ParameterId,
-        _: ParameterValue,
+        state: &NativeDeviceState,
+        parameter: ParameterId,
+        value: ParameterValue,
     ) -> Result<NativeDeviceState, Error> {
-        Err(Error::UnknownParameter)
+        if parameter != GAIN {
+            return Err(Error::UnknownParameter);
+        }
+        GAIN_DESCRIPTORS[0].validate(value)?;
+        let ParameterValue::Float(gain) = value else {
+            return Err(Error::InvalidParameterValue);
+        };
+        let mut authored = super::state::SamplerState::from_native(state)?;
+        authored.gain = f64::from(gain);
+        authored.replace_in(state)
     }
 }
 impl NativeInstrumentDefinition for SamplerDefinition {
@@ -96,7 +155,8 @@ fn prepare(
         Ok(Box::new(EmptySampler))
     } else {
         Ok(Box::new(PreparedSamplerInstrument(
-            super::state::prepare_runtime_on_control(state, context, max_events)?,
+            super::state::prepare_runtime_on_control(state, context, max_events)?
+                .with_sample_rate_gain(),
         )))
     }
 }

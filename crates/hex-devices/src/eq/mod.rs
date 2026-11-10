@@ -13,6 +13,12 @@ pub const MAX_POINTS: usize = 160;
 pub const EQ_STATE_VERSION: u32 = 1;
 pub const MODE: ParameterId = ParameterId::from_static(201);
 pub const OUTPUT_GAIN: ParameterId = ParameterId::from_static(202);
+const OUTPUT_GAIN_SEMANTICS: hex_lattice_contract::ParameterSemantics =
+    hex_lattice_contract::ParameterSemantics {
+        modulation: hex_lattice_contract::ParameterModulation::SampleRate,
+        smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+        ..crate::parameter_binding::SCALAR_ENVELOPE
+    };
 const KINDS: &[&str] = &[
     "bell",
     "low shelf",
@@ -64,12 +70,13 @@ impl NativeDeviceMetadata for EqDefinition {
             ParameterSmoothing as S, ParameterStepping as T,
         };
         let settings = EqState::decode(state)?;
+        if id == OUTPUT_GAIN {
+            return Ok(Some(OUTPUT_GAIN_SEMANTICS));
+        }
         let (normalization, stepping, automation, smoothing) = if id == MODE {
-            (N::Discrete, T::Choice, E::Unsupported, S::None)
-        } else if id == OUTPUT_GAIN {
             (
-                N::Linear,
-                T::Continuous,
+                N::Discrete,
+                T::Choice,
                 E::DeviceArrangementEnvelope,
                 S::DeviceManaged,
             )
@@ -180,14 +187,51 @@ impl NativeDeviceMetadata for EqDefinition {
         })
     }
 }
+impl EqDefinition {
+    /// Control-only exact-grant component preparation. The returned processor
+    /// uses the existing native checkpoint/runtime custody; no resource ownership
+    /// transfers. Standard registry admission uses the same exact-grant component.
+    /// Known node fields, mode and output gain are accepted. Mode uses one
+    /// preallocated outgoing fade with latest-target coalescence; legacy-shelf
+    /// kind/gain/q remain unsupported. Grants are sorted, unique and bounded by
+    /// the neutral descriptor limit. No authored state or curves are rewritten.
+    pub fn prepare_automation_component(
+        state: &NativeDeviceState,
+        sample_rate: u32,
+        parameters: &[ParameterId],
+    ) -> Result<Arc<dyn PreparedNativeProcessor>, DeviceContractError> {
+        state.require_asset_free_processing()?;
+        Ok(Arc::new(runtime::PreparedEq::automated(
+            EqState::decode(state)?,
+            sample_rate,
+            parameters,
+        )?))
+    }
+}
 impl NativeDeviceDefinition for EqDefinition {
+    fn source_effect_factory_bytes(&self) -> Option<usize> {
+        Some(runtime::PreparedEq::source_factory_bytes_bound())
+    }
     fn supports_parameter_automation(
         &self,
         state: &NativeDeviceState,
         parameter: ParameterId,
     ) -> Result<bool, DeviceContractError> {
-        EqState::decode(state)?;
-        Ok(parameter == OUTPUT_GAIN)
+        let settings = EqState::decode(state)?;
+        if parameter == MODE || parameter == OUTPUT_GAIN {
+            return Ok(true);
+        }
+        let Ok((id, field)) = NodeId::from_parameter(parameter) else {
+            return Ok(false);
+        };
+        let Ok(node) = settings.node(id) else {
+            return Ok(false);
+        };
+        Ok(!node.legacy_shelf
+            || !matches!(
+                field,
+                NodeParameter::Kind | NodeParameter::Gain | NodeParameter::Q
+            ))
     }
     fn prepare_automated_runtime_instance(
         &self,
@@ -196,18 +240,14 @@ impl NativeDeviceDefinition for EqDefinition {
         context: &hex_lattice::DevicePreparationContext<'_>,
         parameters: &[ParameterId],
     ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
-        state.require_asset_free_processing()?;
         Ok(hex_lattice::PreparedRuntimeDevice {
             matrix: StereoMatrix::identity(),
-            processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(Arc::new(
-                runtime::PreparedEq::automated(
-                    EqState::decode(state)?,
-                    context.sample_rate,
-                    parameters,
-                )?,
-            ))),
+            processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(
+                Self::prepare_automation_component(state, context.sample_rate, parameters)?,
+            )),
         })
     }
+
     fn prepare_matrix(&self, _: &NativeDeviceState) -> Result<StereoMatrix, DeviceContractError> {
         Err(DeviceContractError::UnsupportedProcessingClass)
     }

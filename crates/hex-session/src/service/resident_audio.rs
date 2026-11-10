@@ -205,7 +205,12 @@ impl Inputs<'_> {
             held.construction_bytes,
             resources
                 .compiler_construction_allowance_bytes()?
-                .checked_add(PreparedRevision::device_handoff_metadata_construction_bytes(project)?)
+                .checked_add(
+                    PreparedRevision::device_handoff_metadata_construction_bytes_with_input(
+                        project,
+                        self.native_parameter_input,
+                    )?,
+                )
                 .ok_or(SessionError::Invalid(
                     "resident metadata allowance overflow",
                 ))?,
@@ -2381,7 +2386,8 @@ impl Session {
         let explicit_tuning = matches!(&transition, Transition::Command(command)
             if matches!(command.as_ref(), Command::SetTuning(..)));
         let prepare = |source: &Project, project: &Project| {
-            let context = if source == project {
+            let changed = source != project;
+            let context = if !changed {
                 hex_engine::AudioSourceContext {
                     editor_revision: context.editor_revision.saturating_sub(1),
                     ..context
@@ -2452,6 +2458,15 @@ impl Session {
                                 SessionError::PluginSourceLost(reason)
                             }
                         })?;
+                } else if changed
+                    && [source, project].into_iter().any(|project| {
+                        project.native_sources().iter().any(|unit| {
+                            unit.receiver().is_some() && !unit.post_instrument_effects().is_empty()
+                        })
+                    })
+                {
+                    sink.confirm_source_effect_publication(context, accepted)
+                        .map_err(SessionError::NativeAudio)?;
                 }
             }
             publish_time = publish_started.elapsed();
@@ -2507,6 +2522,7 @@ pub(super) mod tests {
     mod export_tests;
     mod fence_tests;
     mod import_reuse_tests;
+    mod modulation_edit_tests;
     mod native_automation_recording;
     mod plugin_effect_tests;
     mod source_binding_tests;
@@ -2534,6 +2550,8 @@ pub(super) mod tests {
     struct Observed {
         accepted: Mutex<Vec<(u64, thread::ThreadId)>>,
         refuse: AtomicBool,
+        refuse_source_confirmation: AtomicBool,
+        source_confirmations: AtomicUsize,
         closed: AtomicUsize,
         seek_attempts: AtomicUsize,
         publications: Mutex<Vec<(ResidentPublicationMetadata, ResidentPublicationPolicy)>>,
@@ -2606,6 +2624,26 @@ pub(super) mod tests {
         fn resident_publication_enabled(&self) -> bool {
             true
         }
+        fn confirm_source_effect_publication(
+            &mut self,
+            context: hex_engine::AudioSourceContext,
+            acceptance: ResidentPublicationAcceptance,
+        ) -> Result<(), String> {
+            self.observed
+                .source_confirmations
+                .fetch_add(1, Ordering::AcqRel);
+            match acceptance {
+                ResidentPublicationAcceptance::OfflineRetained => Ok(()),
+                ResidentPublicationAcceptance::Submitted {
+                    output_identity: 7,
+                    audio_revision,
+                } => {
+                    assert_eq!(audio_revision, context.editor_revision);
+                    Err("fixture callback refused source edit".into())
+                }
+                _ => panic!("unexpected fixture source receipt"),
+            }
+        }
         fn resident_admission(&self) -> [DeviceResourceAdmission<'_>; 3] {
             [
                 self.pending.as_ref().map_or(
@@ -2665,6 +2703,16 @@ pub(super) mod tests {
             })();
             match result {
                 Ok(resources) => {
+                    if self
+                        .observed
+                        .refuse_source_confirmation
+                        .load(Ordering::Acquire)
+                    {
+                        return Ok(ResidentPublicationAcceptance::Submitted {
+                            output_identity: 7,
+                            audio_revision: metadata.context.editor_revision,
+                        });
+                    }
                     if playback.computer_keyboard_tuning_hint().is_some() {
                         self.observed
                             .keyboard_publications

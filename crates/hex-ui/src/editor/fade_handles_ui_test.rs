@@ -101,8 +101,12 @@ fn held_f_exposes_neutral_handles_and_release_commits_one_fade_without_moving_cl
         )
     );
     assert!(changed.fade().fade_in() > 0);
+    assert_eq!(changed.fade().curve_laws()[0], ClipFade::DEFAULT_S_CURVE);
+    let accepted = changed.clone();
     assert!(canonical.undo());
     assert_eq!(canonical.project().clip(clip).unwrap(), &original);
+    assert!(canonical.redo());
+    assert_eq!(canonical.project().clip(clip).unwrap(), &accepted);
 }
 #[gpui::test]
 fn authored_fades_reveal_on_hover_and_each_endpoint_and_curve_uses_its_real_handle(
@@ -849,6 +853,48 @@ fn real_faded_clip(
     pump(&editor, &mut visual);
     (files, editor, visual, clip)
 }
+
+#[gpui::test]
+fn double_click_straightens_only_the_selected_s_curve(cx: &mut TestAppContext) {
+    let (_files, editor, mut visual, clip) = real_faded_clip(cx);
+    let authored = editor.update(&mut visual, |v, _| {
+        let authored = v
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .clip(clip)
+            .unwrap()
+            .fade()
+            .with_curve_laws([ClipFade::DEFAULT_S_CURVE; 2]);
+        assert!(v.enqueue(Request::Edit(Command::SetClipFadeEnvelope {
+            clip,
+            fade: authored
+        })));
+        authored
+    });
+    pump(&editor, &mut visual);
+    key(&mut visual, true, "f");
+    let selector: &'static str =
+        Box::leak(format!("fade-in-curve-{}", clip.value()).into_boxed_str());
+    let diamond = visual.debug_bounds(selector).unwrap().center();
+    visual.simulate_event(gpui::MouseDownEvent {
+        position: diamond,
+        button: MouseButton::Left,
+        modifiers: Modifiers::default(),
+        click_count: 2,
+        first_mouse: false,
+    });
+    visual.simulate_mouse_up(diamond, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        let fade = v.state.as_ref().unwrap().project.clip(clip).unwrap().fade();
+        assert_eq!(fade.fade_in(), authored.fade_in());
+        assert!(!fade.ramp_is_curved(false));
+        assert_eq!(fade.curve_laws()[1], ClipFade::DEFAULT_S_CURVE);
+    });
+}
+
 #[gpui::test]
 fn released_push_keeps_both_pushed_handles_painted_until_real_worker_ack(cx: &mut TestAppContext) {
     let (_files, editor, mut visual, clip) = real_faded_clip(cx);

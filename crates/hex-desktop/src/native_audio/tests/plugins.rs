@@ -1,5 +1,8 @@
 //! Actual Session/desktop/native Root workflow; no device or app execution.
 mod automation;
+mod editor_recording;
+mod first_effect_take;
+mod installed_edits;
 mod instruments;
 mod performance_profile;
 mod state;

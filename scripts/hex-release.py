@@ -25,11 +25,28 @@ from pathlib import Path
 import plistlib
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def _delivery_source(path: Path) -> bytes:
+    """Read the delivery source from an opened regular file without links."""
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise RuntimeError("delivery source is not a regular file")
+            with os.fdopen(descriptor, "rb", closefd=False) as source:
+                return source.read()
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(directory)
 
 
 def module(name, filename):
@@ -38,7 +55,12 @@ def module(name, filename):
         raise RuntimeError("release dependency unavailable")
     value = importlib.util.module_from_spec(spec)
     sys.modules[name] = value
-    spec.loader.exec_module(value)
+    if filename == "hex-test-build.py":
+        # Delivery authority must reflect source bytes, not a timestamp-valid pyc.
+        source = _delivery_source(Path(spec.origin))
+        exec(compile(source, spec.origin, "exec", dont_inherit=True), value.__dict__)
+    else:
+        spec.loader.exec_module(value)
     return value
 
 

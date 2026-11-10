@@ -89,7 +89,8 @@ pub(crate) fn preview(
     };
     let next = ClipFade::new(trimmed.duration, 0, fade_in, fade_out)?
         .with_shape(in_start, out_end_offset, fade.in_curve(), fade.out_curve())?
-        .with_curve_positions(fade.in_position(), fade.out_position())?;
+        .with_curve_positions(fade.in_position(), fade.out_position())?
+        .with_curve_laws(fade.curve_laws());
     if trimmed.audio_edit().is_some() {
         crate::audio_edit::set_clip_fade_envelope(&mut trimmed, next, tempo)?;
     } else {

@@ -1,6 +1,6 @@
 //! View-local panels for exact hosted VST3 controller sources. Persisted rows
-//! supply names and order only; every displayed parameter value is refreshed
-//! from the active source before it can be edited.
+//! supply names and order only. Native Perform receipts can advance the knob's
+//! display. Fresh controller pages still authorize edits.
 use super::*;
 use gpui::{Entity, Subscription, UniformListScrollHandle, uniform_list};
 use hex_audio::prepared::AppliedAudioSource;
@@ -8,8 +8,9 @@ use hex_engine::AudioSourceContext;
 use hex_session::device_gesture::{GestureKey, PluginParameterOrigin, PluginParameterValue};
 use hex_session::service::{PluginParameterQuery, PluginParameterResult, PluginParameterRow};
 use hex_widgets::{
-    NumericControl, NumericControlConfig, NumericControlEvent, NumericControlPresentation,
-    NumericEventPhase, NumericGestureId, NumericScale, NumericSpec, TextInput,
+    ControlAvailability, NumericControl, NumericControlConfig, NumericControlEvent,
+    NumericControlPresentation, NumericEventPhase, NumericGestureId, NumericScale, NumericSpec,
+    TextInput,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -20,12 +21,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-const PAGE_SIZE: usize = 4;
 const PAGE_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_AUTOMATIC_RETRIES: u8 = 3;
-const REFRESH_YIELDED_TO_CONTROL: &str = "vst3 parameter refresh yielded to control";
 
 mod cache;
+mod row_projection;
+mod scrollbar;
+use row_projection::{
+    PAGE_SIZE, TouchObservation, display_only, fresh_touch_row, is_refresh_yield, matching_rows,
+    merge_page, refresh_page,
+};
 
 #[derive(Default)]
 pub(super) struct State {
@@ -43,12 +48,13 @@ struct ReportedStatus {
     message: String,
     error: Option<String>,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct TouchObservation {
-    source: AppliedAudioSource,
-    binding: hex_lattice_contract::ForeignProcessorBinding,
-    parameter: u32,
+#[derive(Clone, Copy)]
+struct LiveTouchValue {
+    touch: TouchObservation,
+    value: PluginParameterValue,
+    after_request: u64,
 }
+
 struct Panel {
     owner: super::DevicePanelOwner,
     key: String,
@@ -67,9 +73,11 @@ struct Panel {
     search: Entity<TextInput>,
     _observe_search: Subscription,
     scroll: UniformListScrollHandle,
+    scrollbar: scrollbar::State,
     visible_pages: BTreeSet<u16>,
     priority_page: Option<u16>,
     queued_touch: Option<TouchObservation>,
+    live_values: HashMap<u32, LiveTouchValue>,
     pending_touch: Option<TouchObservation>,
     last_touched: Option<u32>,
     touch_unavailable: bool,
@@ -78,13 +86,67 @@ struct Panel {
     pending_touch_request: Option<u64>,
     next_page: u16,
     knobs: HashMap<u32, Knob>,
+    row_placeholders: HashMap<u32, RowPlaceholder>,
     next_query_at: Instant,
     retry_count: u8,
 }
 struct Knob {
+    source: hex_lattice_contract::ForeignProcessorBinding,
+    output: u64,
+    name: String,
+    default: f64,
+    steps: u32,
     control: Entity<NumericControl>,
     origin: Rc<Cell<PluginParameterOrigin>>,
+    drag: Rc<KnobDrag>,
     _subscription: Subscription,
+}
+impl Knob {
+    fn matches_descriptor(&self, row: &PluginParameterRow) -> bool {
+        self.name == row.name && self.default == row.default_normalized && self.steps == row.steps
+    }
+
+    fn matches_source(
+        &self,
+        source: hex_lattice_contract::ForeignProcessorBinding,
+        query: PluginParameterQuery,
+        row: &PluginParameterRow,
+    ) -> bool {
+        self.source == source
+            && self.output == query.output_identity
+            && self.matches_descriptor(row)
+    }
+
+    fn owns(&self, key: GestureKey) -> bool {
+        self.drag
+            .borrow()
+            .as_ref()
+            .is_some_and(|(_, owner)| *owner == key)
+    }
+
+    fn renew(
+        &self,
+        query: PluginParameterQuery,
+        row: &PluginParameterRow,
+        value: f64,
+        enabled: bool,
+        active: Option<GestureKey>,
+        cx: &mut Context<EditorView>,
+    ) -> Option<Entity<NumericControl>> {
+        self.origin.set(parameter_origin(query, row)?);
+        let busy = active.is_some_and(|key| !self.owns(key));
+        self.control.update(cx, |control, cx| {
+            let _ = control.set_external_value(value, cx);
+            control.set_availability(ControlAvailability::for_edit(enabled, busy), cx);
+        });
+        Some(self.control.clone())
+    }
+}
+
+struct RowPlaceholder {
+    name: String,
+    default: f64,
+    control: Entity<NumericControl>,
 }
 
 /// Metadata reads keep the control poll active without claiming edit custody.
@@ -98,10 +160,60 @@ impl Panel {
         self.result.as_ref().map(|rows| rows.as_slice())
     }
 
+    fn observe_value(&mut self, touch: TouchObservation, value: Option<PluginParameterValue>) {
+        // Bound this map by the admitted row inventory. Unknown targets still
+        // follow the ordinary controller lookup before displaying a value.
+        if let Some(value) = value
+            && self.source == Some(touch.binding)
+            && self.query.context == touch.source.context
+            && self.query.output_identity == touch.source.output_identity
+            && self.rows().is_some_and(|rows| {
+                rows.iter()
+                    .any(|row| row.id == touch.parameter && row.metadata_revision != 0)
+            })
+        {
+            self.live_values.insert(
+                touch.parameter,
+                LiveTouchValue {
+                    touch,
+                    value,
+                    after_request: self.query.request_id,
+                },
+            );
+        }
+    }
+
+    fn display_value(&self, row: &PluginParameterRow) -> f64 {
+        self.live_values
+            .get(&row.id)
+            .filter(|live| {
+                self.source == Some(live.touch.binding)
+                    && self.query.context == live.touch.source.context
+                    && self.query.output_identity == live.touch.source.output_identity
+                    && row.metadata_revision != 0
+            })
+            .map_or(row.normalized, |live| live.value.normalized())
+    }
+
+    fn reconcile_live_values(
+        &mut self,
+        query: PluginParameterQuery,
+        source: hex_lattice_contract::ForeignProcessorBinding,
+        rows: &[PluginParameterRow],
+    ) {
+        self.live_values.retain(|&id, live| {
+            live.touch.binding == source
+                && (query.request_id <= live.after_request || !rows.iter().any(|row| row.id == id))
+        });
+    }
+
     fn refilter(&mut self, reset_scroll: bool) {
         let Some(matched) = self.rows().map(|rows| matching_rows(rows, &self.filter)) else {
             return;
         };
+        if reset_scroll || *self.matched != matched {
+            self.scrollbar.invalidate();
+        }
         self.matched = Arc::new(matched);
         if reset_scroll {
             self.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
@@ -109,6 +221,7 @@ impl Panel {
     }
 
     fn mark_values_stale(&mut self) {
+        self.scrollbar.invalidate();
         let total = self.rows().and_then(|rows| u16::try_from(rows.len()).ok());
         if let Some(rows) = &self.result {
             self.result = Some(Arc::new(
@@ -127,10 +240,11 @@ impl Panel {
         }
         self.source = None;
         self.total = total;
-        self.knobs.clear();
-        self.follow_knob = None;
+        // Retain presentation identity. Source and metadata revocation above
+        // prevent these controls from admitting input until a fresh page arrives.
         self.priority_page = None;
         self.queued_touch = None;
+        self.live_values.clear();
         self.pending_touch = None;
         self.pending_touch_request = None;
         // The selected parameter is view intent, not edit authority. Keep its
@@ -138,88 +252,6 @@ impl Panel {
         self.touch_unavailable = false;
         self.next_query_at = Instant::now();
     }
-}
-
-fn display_only(row: &PluginParameterRow) -> PluginParameterRow {
-    PluginParameterRow {
-        value: String::new(),
-        normalized: row.default_normalized,
-        editable: false,
-        automation_class: None,
-        metadata_revision: 0,
-        ..row.clone()
-    }
-}
-
-fn matching_rows(rows: &[PluginParameterRow], filter: &str) -> Vec<usize> {
-    rows.iter()
-        .enumerate()
-        .filter_map(|(index, row)| {
-            (filter.is_empty() || row.name.to_lowercase().contains(filter)).then_some(index)
-        })
-        .collect()
-}
-
-fn merge_page(
-    cached: &[PluginParameterRow],
-    cached_signature: Option<[u8; 32]>,
-    cached_total: Option<u16>,
-    total: u16,
-    first: u16,
-    live_signature: [u8; 32],
-    rows: &[PluginParameterRow],
-) -> Option<Vec<PluginParameterRow>> {
-    let first = usize::from(first);
-    let total_usize = usize::from(total);
-    let page_len = total_usize.saturating_sub(first).min(PAGE_SIZE);
-    if cached_signature != Some(live_signature)
-        || first % PAGE_SIZE != 0
-        || total_usize != cached.len()
-        || cached_total != Some(total)
-        || rows.len() != page_len
-        || cached
-            .get(first..first.saturating_add(rows.len()))
-            .is_none_or(|prior| prior.iter().zip(rows).any(|(old, new)| old.id != new.id))
-    {
-        return None;
-    }
-    let mut merged = cached.to_vec();
-    for (offset, row) in rows.iter().cloned().enumerate() {
-        merged[first + offset] = row;
-    }
-    Some(merged)
-}
-
-fn refresh_page(
-    has_rows: bool,
-    source_validated: bool,
-    priority_page: Option<u16>,
-    visible_pages: &BTreeSet<u16>,
-    next_page: u16,
-    rows_empty: bool,
-) -> Option<Option<u16>> {
-    if !has_rows {
-        return Some(None);
-    }
-    if let Some(page) = priority_page {
-        return Some(Some(page));
-    }
-    if !source_validated {
-        return Some(Some(0));
-    }
-    if visible_pages.is_empty() {
-        return rows_empty.then_some(Some(0));
-    }
-    visible_pages
-        .range(next_page..)
-        .next()
-        .or_else(|| visible_pages.first())
-        .copied()
-        .map(Some)
-}
-
-fn is_refresh_yield(error: &str) -> bool {
-    error == REFRESH_YIELDED_TO_CONTROL
 }
 
 fn current_context(view: &EditorView) -> Option<AudioSourceContext> {
@@ -268,7 +300,7 @@ pub(in crate::editor) fn touched(
     binding: hex_lattice_contract::ForeignProcessorBinding,
     device_id: u64,
     parameter: u32,
-    _sequence: u64,
+    value: Option<PluginParameterValue>,
 ) {
     let Some(device) = view
         .device_panel
@@ -290,6 +322,7 @@ pub(in crate::editor) fn touched(
     }
     view.device_panel.vst3_parameters.last_touched_device = Some(device);
     if let Some(panel) = view.device_panel.vst3_parameters.panels.get_mut(&device) {
+        panel.observe_value(touch, value);
         queue_native_touch(panel, touch);
     }
 }
@@ -317,8 +350,9 @@ fn queue_native_touch(panel: &mut Panel, touch: TouchObservation) {
         panel.queued_touch = None;
         panel.pending_touch = None;
         panel.pending_touch_request = None;
+        // Prioritize the known target at the next scheduled read. Repeated
+        // Perform callbacks must not bypass the refresh cadence.
         panel.priority_page = Some(page);
-        panel.next_query_at = Instant::now();
     } else {
         panel.queued_touch = Some(touch);
         panel.pending_touch_request = None;
@@ -420,7 +454,8 @@ fn queue_touch_refresh(
     row: Option<&PluginParameterRow>,
 ) {
     let page = row.map(|row| row.page_first);
-    panel.last_touched = None;
+    // Keep the last validated presentation until the new target resolves.
+    // A pending touch suspends follow-control input without erasing its label.
     panel.touch_unavailable = false;
     panel.queued_touch = None;
     panel.pending_touch = Some(touch);
@@ -432,33 +467,11 @@ fn queue_touch_refresh(
     } else if let Some(page) = page {
         panel.priority_page = Some(page);
     } else {
-        panel.result = None;
-        panel.source = None;
-        panel.descriptor_signature = None;
-        panel.total = None;
+        // Unknown IDs require a full inventory query, not removal of the
+        // current inventory. A plug-in can report non-exposed edit targets.
         panel.priority_page = None;
-        panel.knobs.clear();
-        panel.follow_knob = None;
     }
     panel.next_query_at = Instant::now();
-}
-
-fn fresh_touch_row(
-    touch: TouchObservation,
-    source: hex_lattice_contract::ForeignProcessorBinding,
-    rows: &[PluginParameterRow],
-    page_first: Option<u16>,
-) -> Option<PluginParameterRow> {
-    if touch.binding != source {
-        return None;
-    }
-    rows.iter()
-        .find(|row| {
-            row.id == touch.parameter
-                && row.metadata_revision != 0
-                && page_first.is_none_or(|first| row.page_first == first)
-        })
-        .cloned()
 }
 
 fn resolve_pending_touch(
@@ -602,9 +615,11 @@ fn ensure_panel(view: &mut EditorView, device: DeviceId, cx: &mut Context<Editor
             search,
             _observe_search: observe_search,
             scroll: UniformListScrollHandle::new(),
+            scrollbar: scrollbar::State::default(),
             visible_pages: BTreeSet::new(),
             priority_page: None,
             queued_touch: None,
+            live_values: HashMap::new(),
             pending_touch: None,
             pending_touch_request: None,
             last_touched: None,
@@ -613,6 +628,7 @@ fn ensure_panel(view: &mut EditorView, device: DeviceId, cx: &mut Context<Editor
             placeholder_knob,
             next_page: 0,
             knobs: HashMap::new(),
+            row_placeholders: HashMap::new(),
             next_query_at: Instant::now(),
             retry_count: 0,
         },
@@ -717,14 +733,8 @@ fn apply_result(
     panel.next_query_at = Instant::now() + PAGE_REFRESH_INTERVAL;
     let rows = match result.rows {
         Ok(rows) => rows,
-        Err(error) if is_refresh_yield(&error) => {
-            panel.cache_error = None;
-            panel.retry_count = 0;
-            panel.next_query_at = Instant::now();
-            return;
-        }
         Err(error) => {
-            record_error(panel, error);
+            record_refresh_failure(panel, error);
             return;
         }
     };
@@ -733,6 +743,10 @@ fn apply_result(
         panel.mark_values_stale();
         return;
     };
+    panel.reconcile_live_values(result.query, source, &rows);
+    if panel.descriptor_signature != result.descriptor_signature {
+        panel.live_values.clear();
+    }
     let Some(descriptor_signature) = result.descriptor_signature else {
         panel.result = None;
         panel.source = None;
@@ -773,13 +787,25 @@ fn apply_result(
             record_error(panel, "vst3 parameter inventory differs".into());
             return;
         }
+        panel.scrollbar.invalidate();
         panel.source = Some(source);
         panel.descriptor_signature = Some(descriptor_signature);
         panel.total = Some(result.total);
         panel.cache_error = None;
         panel.retry_count = 0;
-        panel.knobs.clear();
-        panel.follow_knob = None;
+        panel
+            .knobs
+            .retain(|id, _| rows.iter().any(|row| row.id == *id));
+        panel
+            .row_placeholders
+            .retain(|id, _| rows.iter().any(|row| row.id == *id));
+        if panel
+            .follow_knob
+            .as_ref()
+            .is_some_and(|(id, _)| !rows.iter().any(|row| row.id == *id))
+        {
+            panel.follow_knob = None;
+        }
         if panel.pending_touch.is_none() || touch_query {
             panel.priority_page = None;
         }
@@ -846,7 +872,7 @@ fn apply_result(
         if &cached[index] != row
             && let Some(origin) = parameter_origin(result.query, row)
         {
-            let value = row.normalized;
+            let value = panel.display_value(row);
             if let Some(knob) = panel.knobs.get(&row.id) {
                 knob.origin.set(origin);
                 knob.control.update(cx, |control, cx| {
@@ -918,6 +944,18 @@ fn interactions_active(view: &EditorView, cx: &Context<EditorView>) -> bool {
                         .as_ref()
                         .is_some_and(|(_, knob)| knob.control.read(cx).is_interacting())
             })
+}
+
+fn record_refresh_failure(panel: &mut Panel, error: String) {
+    if is_refresh_yield(&error) {
+        panel.cache_error = None;
+        panel.retry_count = 0;
+        panel.next_query_at = Instant::now();
+    } else if error != "vst3 controller is busy · try again" {
+        record_error(panel, error);
+    }
+    // A controller operation owns the mailbox briefly. Keep the last
+    // presentation and retry at the normal page cadence.
 }
 
 fn record_error(panel: &mut Panel, error: String) {
@@ -1334,6 +1372,97 @@ fn save_cache(panel: &mut Panel, device: DeviceId, generation: u64, cx: &mut Con
     .detach();
 }
 
+/// Fresh loaded-row facts retained across a mapping pointer gesture.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct MappingTarget {
+    pub(super) parameter: u32,
+    pub(super) class: [u8; 16],
+    source: hex_lattice_contract::ForeignProcessorBinding,
+    metadata_revision: u64,
+}
+
+pub(super) fn mapping_target(
+    view: &EditorView,
+    device: DeviceId,
+    row: &PluginParameterRow,
+) -> Option<MappingTarget> {
+    let panel = view.device_panel.vst3_parameters.panels.get(&device)?;
+    let source = panel.source?;
+    let class = row.automation_class?;
+    if !row.editable
+        || row.steps != 0
+        || row.metadata_revision == 0
+        || view.stopped_playback_restore.is_some()
+        || view.degraded_plugins.contains(device.value())
+        || current_context(view) != Some(panel.query.context)
+        || view
+            .audio
+            .as_ref()
+            .and_then(|audio| audio.control.output_identity())
+            != Some(panel.query.output_identity)
+    {
+        return None;
+    }
+    let state = view.state.as_ref()?;
+    super::modulators::vst3_destination(&state.project, device, row.id, class).ok()?;
+    Some(MappingTarget {
+        parameter: row.id,
+        class,
+        source,
+        metadata_revision: row.metadata_revision,
+    })
+}
+
+pub(super) fn mapping_target_is_current(
+    view: &EditorView,
+    device: DeviceId,
+    target: MappingTarget,
+) -> bool {
+    view.device_panel
+        .vst3_parameters
+        .panels
+        .get(&device)
+        .and_then(Panel::rows)
+        .and_then(|rows| rows.iter().find(|row| row.id == target.parameter))
+        .and_then(|row| mapping_target(view, device, row))
+        == Some(target)
+}
+
+pub(super) fn has_mapping_target(view: &EditorView, device: DeviceId) -> bool {
+    view.device_panel
+        .vst3_parameters
+        .panels
+        .get(&device)
+        .and_then(Panel::rows)
+        .is_some_and(|rows| {
+            rows.iter()
+                .any(|row| mapping_target(view, device, row).is_some())
+        })
+}
+
+pub(super) fn mapping_label(view: &EditorView, device: DeviceId, id: u32) -> Option<&str> {
+    view.device_panel
+        .vst3_parameters
+        .panels
+        .get(&device)?
+        .rows()?
+        .iter()
+        .find(|row| row.id == id)
+        .map(|row| row.name.as_str())
+}
+
+fn dense_target_owns_parameter(view: &EditorView, device: DeviceId, id: u32) -> bool {
+    view.state
+        .as_ref()
+        .and_then(|state| state.project.device(device))
+        .and_then(|device| {
+            hex_engine::project_vst3_modulation_target(device)
+                .ok()
+                .flatten()
+        })
+        .is_some_and(|(raw, _)| raw == id)
+}
+
 pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<EditorView>) -> Div {
     ensure_panel(view, device, cx);
     let body = crate::device_composition::body()
@@ -1378,7 +1507,10 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
     } else {
         follow_display(view, device, cx)
     };
-    let Some(panel) = view.device_panel.vst3_parameters.panels.get(&device) else {
+    let follow_mapping = follow_row
+        .as_ref()
+        .and_then(|row| super::modulators::vst3_target_overlay(view, cx, device, row, "follow"));
+    let Some(panel) = view.device_panel.vst3_parameters.panels.get_mut(&device) else {
         return body.h(px(56.0)).child(div().h(px(56.0)).flex_shrink_0());
     };
     let row = follow_row.as_ref();
@@ -1390,7 +1522,7 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
             let _ = control.set_external_value(value, cx);
         });
     }
-    let name = row.map_or("last touch", |row| row.name.as_str());
+    let name = row.map(|row| row.name.as_str());
     let value = row.map(|row| row.value.as_str()).unwrap_or("");
     let retry = panel.cache_error.is_some() || panel.retry_count > MAX_AUTOMATIC_RETRIES;
     let field = if retry {
@@ -1428,11 +1560,15 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
         .gap_0()
         .child(
             div()
-                .debug_selector(|| "vst3-last-touch-label".to_string())
                 .w(px(80.0))
+                .h(px(20.0))
                 .min_w_0()
                 .truncate()
-                .child(theme::text(hex_session::service::text::verbatim(name))),
+                .when_some(name, |label, name| {
+                    label
+                        .debug_selector(|| "vst3-last-touch-label".to_string())
+                        .child(theme::text(hex_session::service::text::verbatim(name)))
+                }),
         )
         .child(field);
     let control = follow.or_else(|| panel.placeholder_knob.clone());
@@ -1454,6 +1590,7 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
     );
     let controls = div()
         .debug_selector(|| "vst3-last-touch-row".to_string())
+        .relative()
         .w(px(80.0 + 8.0 + hex_widgets::MICRO_DIAL_WIDTH))
         .h(px(hex_widgets::MICRO_DIAL_HEIGHT))
         .flex_shrink_0()
@@ -1461,7 +1598,8 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
         .items_center()
         .gap_2()
         .child(details)
-        .child(control);
+        .child(control)
+        .children(follow_mapping);
     let toolbar = div()
         .debug_selector(|| "vst3-search-row".to_string())
         .h(px(56.0))
@@ -1518,15 +1656,15 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
             let query = panel.query;
             let scroll = panel.scroll.clone();
             let editor = cx.weak_entity();
+            let scrollbar = scrollbar::element(panel, device, cx);
             body.child(
                 div()
                     .debug_selector(|| "vst3-parameter-list-area".to_string())
                     .flex()
-                    .flex_col()
                     .flex_1()
                     .min_h_0()
                     .w_full()
-                    .child(
+                    .child(div().flex().flex_col().flex_1().min_w_0().h_full().child(
                         uniform_list(
                             ("vst3-parameter-list", device.value()),
                             matched.len(),
@@ -1551,75 +1689,90 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
                                     .filter_map(|index| {
                                         let row_index = *matched.get(index)?;
                                         let row = rows.get(row_index)?;
-                                        let knob = if row.editable {
-                                            editor
-                                                .update(app, |view, cx| {
+                                        let (knob, mapping) = editor
+                                            .update(app, |view, cx| {
+                                                let knob = if row.editable {
+                                                    if let Some(panel) = view
+                                                        .device_panel
+                                                        .vst3_parameters
+                                                        .panels
+                                                        .get_mut(&device)
+                                                    {
+                                                        panel.row_placeholders.remove(&row.id);
+                                                    }
                                                     knob(view, device, query, row, cx)
-                                                })
-                                                .ok()
-                                                .flatten()
-                                        } else {
-                                            None
-                                        };
+                                                } else {
+                                                    row_placeholder(view, device, row, cx)
+                                                };
+                                                let mapping = super::modulators::vst3_target_overlay(
+                                                    view, cx, device, row, "row",
+                                                );
+                                                (knob, mapping)
+                                            })
+                                            .unwrap_or_default();
                                         let row_id = row.id;
                                         let row_editor = editor.clone();
                                         Some(
                                             div()
-                                                .id(("vst3-parameter", row.id))
-                                                .debug_selector(move || {
-                                                    format!("vst3-parameter-row-{row_id}")
-                                                })
-                                                .h(px(hex_widgets::MICRO_DIAL_HEIGHT + 4.0))
+                                                .h(px(hex_widgets::MICRO_DIAL_HEIGHT + 8.0))
                                                 .w_full()
-                                                .min_w_0()
-                                                .py(px(2.0))
-                                                .flex()
-                                                .items_center()
-                                                .gap_2()
-                                                .text_xs()
-                                                .child(div().flex_1().min_w_0().truncate().child(
-                                                    theme::text(
-                                                        hex_session::service::text::verbatim(
-                                                            &row.name,
+                                                .child(
+                                                    hex_widgets::device_section(
+                                                        theme::device_style(
+                                                            crate::theme::DeviceStyleRole::Layout,
                                                         ),
-                                                    ),
-                                                ))
-                                                .children(knob)
-                                                .when(row.automation_class.is_some(), |item| {
-                                                    item.on_mouse_down(
-                                                        gpui::MouseButton::Right,
-                                                        move |event, window, app| {
-                                                            let _ = row_editor.update(
-                                                                app,
-                                                                |view, cx| {
-                                                                    if show_automation_menu(
-                                                                        view,
-                                                                        device,
-                                                                        query,
-                                                                        row_id,
-                                                                        event.position,
-                                                                        window,
-                                                                        cx,
-                                                                    ) {
-                                                                        cx.stop_propagation();
-                                                                    }
-                                                                },
-                                                            );
-                                                        },
+                                                        hex_widgets::DeviceSectionSurface::Rail,
                                                     )
-                                                })
-                                                .when(!row.editable, |item| {
-                                                    item.child(
+                                                    .id(("vst3-parameter", row.id))
+                                                    .debug_selector(move || {
+                                                        format!("vst3-parameter-row-{row_id}")
+                                                    })
+                                                    .h(px(hex_widgets::MICRO_DIAL_HEIGHT + 4.0))
+                                                    .relative()
+                                                    .w_full()
+                                                    .min_w_0()
+                                                    .py(px(2.0))
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap_2()
+                                                    .text_xs()
+                                                    .child(
                                                         div()
-                                                            .max_w(px(92.0))
-                                                            .truncate()
-                                                            .child(theme::text(
-                                                            hex_session::service::text::verbatim(
-                                                                &row.value,
-                                                            ),
-                                                        )),
+                                                            .flex_1()
+                                                            .min_w_0()
+                                                            .flex()
+                                                            .items_center()
+                                                            .gap_2()
+                                                            .child(div().flex_1().min_w_0().truncate().child(theme::text(
+                                                                hex_session::service::text::verbatim(&row.name),
+                                                            ))),
                                                     )
-                                                }),
+                                                    .children(knob)
+                                                    .children(mapping)
+                                                    .when(row.automation_class.is_some(), |item| {
+                                                        item.on_mouse_down(
+                                                            gpui::MouseButton::Right,
+                                                            move |event, window, app| {
+                                                                let _ = row_editor.update(
+                                                                    app,
+                                                                    |view, cx| {
+                                                                        if show_automation_menu(
+                                                                            view,
+                                                                            device,
+                                                                            query,
+                                                                            row_id,
+                                                                            event.position,
+                                                                            window,
+                                                                            cx,
+                                                                        ) {
+                                                                            cx.stop_propagation();
+                                                                        }
+                                                                    },
+                                                                );
+                                                            },
+                                                        )
+                                                    }),
+                                                ),
                                         )
                                     })
                                     .collect::<Vec<_>>()
@@ -1629,7 +1782,8 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
                         .flex_1()
                         .min_h_0()
                         .w_full(),
-                    ),
+                    ))
+                    .children([scrollbar]),
             )
         }
     }
@@ -1647,8 +1801,10 @@ fn follow_display(
     let Some(panel) = view.device_panel.vst3_parameters.panels.get(&device) else {
         return (None, None, Some("no vst parameter touched"));
     };
+    let active = view.device_gesture.snapshot().map(|gesture| gesture.key);
     if let Some((id, knob)) = panel.follow_knob.as_ref()
         && knob.control.read(cx).is_interacting()
+        && active.is_none_or(|key| knob.owns(key))
     {
         let row = panel
             .rows()
@@ -1660,9 +1816,7 @@ fn follow_display(
             Some("refreshing last touched parameter"),
         );
     }
-    if panel.pending_touch.is_some() || panel.queued_touch.is_some() {
-        return (None, None, Some("refreshing last touched parameter"));
-    }
+    let refreshing = panel.pending_touch.is_some() || panel.queued_touch.is_some();
     let Some(id) = panel.last_touched else {
         return (None, None, Some("no vst parameter touched"));
     };
@@ -1681,19 +1835,38 @@ fn follow_display(
             }),
         );
     };
-    if !row.editable {
-        return (None, Some(row), Some("last touched parameter is read only"));
-    }
-    if row.metadata_revision == 0 || panel.source.is_none() {
-        return (None, Some(row), Some("refreshing last touched parameter"));
+    if !row.editable || row.metadata_revision == 0 || panel.source.is_none() {
+        let control = panel
+            .follow_knob
+            .as_ref()
+            .filter(|(current, knob)| *current == id && knob.matches_descriptor(&row))
+            .map(|(_, knob)| knob.control.clone());
+        if let Some(control) = &control {
+            control.update(cx, |control, cx| {
+                let _ = control.set_external_value(row.normalized, cx);
+                control.set_enabled(false, cx);
+            });
+        }
+        let status = if row.metadata_revision == 0 || panel.source.is_none() {
+            "refreshing last touched parameter"
+        } else {
+            "last touched parameter is read only"
+        };
+        return (control, Some(row), Some(status));
     }
     let query = panel.query;
-    let status = row
-        .automation_class
-        .is_none()
-        .then_some("automation unavailable");
-    let control = follow_knob(view, device, query, &row, cx);
-    (control, Some(row), status)
+    let status = if refreshing {
+        Some("refreshing last touched parameter")
+    } else {
+        row.automation_class
+            .is_none()
+            .then_some("automation unavailable")
+    };
+    (
+        follow_knob(view, device, query, &row, cx),
+        Some(row),
+        status,
+    )
 }
 
 fn show_automation_menu(
@@ -1803,7 +1976,7 @@ fn placeholder_knob(
     let spec = NumericSpec::new(0.0, 1.0, 0.5, NumericScale::Linear, 3, None::<&str>).ok()?;
     let config = NumericControlConfig::new(
         format!("vst3-follow-placeholder-{}", device.value()),
-        theme::text("last touch"),
+        theme::text(""),
         NumericControlPresentation::MicroDial,
         spec,
         0.5,
@@ -1815,6 +1988,71 @@ fn placeholder_knob(
     Some(control)
 }
 
+// A bounded set of display-only controls supports virtualization without giving
+// cached descriptors the authority to dispatch parameter gestures.
+fn row_placeholder(
+    view: &mut EditorView,
+    device: DeviceId,
+    row: &PluginParameterRow,
+    cx: &mut Context<EditorView>,
+) -> Option<Entity<NumericControl>> {
+    let panel = view.device_panel.vst3_parameters.panels.get_mut(&device)?;
+    if let Some(knob) = panel.knobs.get(&row.id)
+        && knob.matches_descriptor(row)
+    {
+        let control = knob.control.clone();
+        control.update(cx, |control, cx| {
+            let _ = control.set_external_value(row.normalized, cx);
+            control.set_enabled(false, cx);
+        });
+        return Some(control);
+    }
+    if let Some(placeholder) = panel.row_placeholders.get(&row.id)
+        && placeholder.name == row.name
+        && placeholder.default == row.default_normalized
+    {
+        let control = placeholder.control.clone();
+        control.update(cx, |control, cx| {
+            let _ = control.set_external_value(row.normalized, cx);
+        });
+        return Some(control);
+    }
+    // The list also renders an item for measurement, so pruning by each
+    // requested range would evict controls that are still on screen.
+    if panel.row_placeholders.len() >= 128 {
+        panel.row_placeholders.clear();
+    }
+    let spec = NumericSpec::new(
+        0.0,
+        1.0,
+        row.default_normalized,
+        NumericScale::Linear,
+        3,
+        None::<&str>,
+    )
+    .ok()?;
+    let config = NumericControlConfig::new(
+        format!("vst3-placeholder-{}-{}", device.value(), row.id),
+        theme::text(hex_session::service::text::verbatim(&row.name)),
+        NumericControlPresentation::MicroDial,
+        spec,
+        row.normalized,
+        theme::control_style(),
+    )
+    .ok()?;
+    let control = cx.new(|cx| NumericControl::from_config(cx, config));
+    control.update(cx, |control, cx| control.set_enabled(false, cx));
+    panel.row_placeholders.insert(
+        row.id,
+        RowPlaceholder {
+            name: row.name.clone(),
+            default: row.default_normalized,
+            control: control.clone(),
+        },
+    );
+    Some(control)
+}
+
 fn knob(
     view: &mut EditorView,
     device: DeviceId,
@@ -1822,17 +2060,15 @@ fn knob(
     row: &PluginParameterRow,
     cx: &mut Context<EditorView>,
 ) -> Option<Entity<NumericControl>> {
-    if let Some(knob) = view
-        .device_panel
-        .vst3_parameters
-        .panels
-        .get(&device)?
-        .knobs
-        .get(&row.id)
+    let enabled = !dense_target_owns_parameter(view, device, row.id);
+    let active = view.device_gesture.snapshot().map(|gesture| gesture.key);
+    let panel = view.device_panel.vst3_parameters.panels.get(&device)?;
+    if let Some(knob) = panel.knobs.get(&row.id)
+        && knob.matches_source(panel.source?, query, row)
     {
-        return Some(knob.control.clone());
+        return knob.renew(query, row, panel.display_value(row), enabled, active, cx);
     }
-    let knob = create_knob(view, device, query, row, "row", cx)?;
+    let knob = create_knob(view, device, query, row, "row", enabled, cx)?;
     let control = knob.control.clone();
     view.device_panel
         .vst3_parameters
@@ -1850,18 +2086,18 @@ fn follow_knob(
     row: &PluginParameterRow,
     cx: &mut Context<EditorView>,
 ) -> Option<Entity<NumericControl>> {
-    if let Some((id, knob)) = view
-        .device_panel
-        .vst3_parameters
-        .panels
-        .get(&device)?
-        .follow_knob
-        .as_ref()
+    let active = view.device_gesture.snapshot().map(|gesture| gesture.key);
+    let panel = view.device_panel.vst3_parameters.panels.get(&device)?;
+    let enabled = panel.pending_touch.is_none()
+        && panel.queued_touch.is_none()
+        && !dense_target_owns_parameter(view, device, row.id);
+    if let Some((id, knob)) = panel.follow_knob.as_ref()
         && *id == row.id
+        && knob.matches_source(panel.source?, query, row)
     {
-        return Some(knob.control.clone());
+        return knob.renew(query, row, panel.display_value(row), enabled, active, cx);
     }
-    let knob = create_knob(view, device, query, row, "follow", cx)?;
+    let knob = create_knob(view, device, query, row, "follow", enabled, cx)?;
     let control = knob.control.clone();
     view.device_panel
         .vst3_parameters
@@ -1877,14 +2113,11 @@ fn create_knob(
     query: PluginParameterQuery,
     row: &PluginParameterRow,
     role: &str,
+    enabled: bool,
     cx: &mut Context<EditorView>,
 ) -> Option<Knob> {
-    let source = view
-        .device_panel
-        .vst3_parameters
-        .panels
-        .get(&device)?
-        .source?;
+    let panel = view.device_panel.vst3_parameters.panels.get(&device)?;
+    let source = panel.source?;
     let origin = parameter_origin(query, row)?;
     let spec = NumericSpec::new(
         0.0,
@@ -1905,34 +2138,54 @@ fn create_knob(
         theme::text(hex_session::service::text::verbatim(&row.name)),
         NumericControlPresentation::MicroDial,
         spec,
-        row.normalized,
+        panel.display_value(row),
         theme::control_style(),
     )
     .ok()?;
-    let control = cx.new(|cx| NumericControl::from_config(cx, config));
+    let availability =
+        ControlAvailability::for_edit(enabled, view.device_gesture.snapshot().is_some());
+    let control = cx.new(|cx| {
+        let mut control = NumericControl::from_config(cx, config);
+        control.set_availability(availability, cx);
+        control
+    });
     let origin = Rc::new(Cell::new(origin));
     let event_origin = Rc::clone(&origin);
     let drag = Rc::new(RefCell::new(None));
+    let event_drag = Rc::clone(&drag);
     let steps = row.steps;
+    let is_follow = role == "follow";
     let subscription =
         cx.subscribe(
             &control,
             move |view, emitter, event: &NumericControlEvent, cx| {
                 let origin = event_origin.get();
+                // Pending metadata suspends new follow gestures, but an admitted
+                // pointer gesture must still reach its existing terminal owner.
+                let continuing_pointer =
+                    event.phase != NumericEventPhase::Begin && event.gesture.is_some();
+                if !continuing_pointer && view.device_gesture.snapshot().is_some() {
+                    return;
+                }
                 let current =
                     view.device_panel
                         .vst3_parameters
                         .panels
                         .get(&device)
                         .filter(|panel| {
-                            panel.source == Some(source)
+                            (!is_follow
+                                || continuing_pointer
+                                || (panel.pending_touch.is_none() && panel.queued_touch.is_none()))
+                                && panel.source == Some(source)
                                 && panel.query.context == origin.context
                                 && panel.query.output_identity == query.output_identity
                         })
                         .and_then(Panel::rows)
                         .and_then(|rows| rows.iter().find(|row| row.id == origin.parameter))
                         .is_some_and(|row| {
-                            row.metadata_revision == origin.metadata_revision
+                            row.editable
+                                && row.metadata_revision != 0
+                                && row.metadata_revision == origin.metadata_revision
                                 && row.normalized == origin.initial.normalized()
                         })
                         && view
@@ -1951,7 +2204,7 @@ fn create_knob(
                 if !current || current_context(view) != Some(origin.context) {
                     return;
                 }
-                if let Err(reason) = knob_event(view, origin, event, steps, &drag) {
+                if let Err(reason) = knob_event(view, origin, event, steps, &event_drag) {
                     view.error = Some(reason.into());
                 }
                 if event.phase == NumericEventPhase::Begin {
@@ -1962,8 +2215,14 @@ fn create_knob(
             },
         );
     Some(Knob {
+        source,
+        output: query.output_identity,
+        name: row.name.clone(),
+        default: row.default_normalized,
+        steps: row.steps,
         control,
         origin,
+        drag,
         _subscription: subscription,
     })
 }
@@ -1985,8 +2244,14 @@ fn knob_event(
     };
     let value = PluginParameterValue::new(normalized)?;
     let mut drag = drag.borrow_mut();
+    if view.automation_close_preflight.frozen()
+        && (event.phase == NumericEventPhase::Begin
+            || (event.phase == NumericEventPhase::Commit && event.gesture.is_none()))
+    {
+        return Err("close is pending · automation recording is unavailable");
+    }
     if event.phase == NumericEventPhase::Begin {
-        let key = view.device_gesture.begin_plugin(origin)?;
+        let key = view.begin_vst3_parameter_gesture(origin)?;
         *drag = Some((event.gesture.clone(), key));
         return Ok(());
     }
@@ -1994,7 +2259,7 @@ fn knob_event(
         && event.gesture.is_none()
         && view.device_gesture.snapshot().is_none()
     {
-        view.device_gesture.begin_plugin(origin)?;
+        view.begin_vst3_parameter_gesture(origin)?;
         return view.device_gesture.finish_plugin(value);
     }
     let Some((pointer, key)) = drag.as_ref() else {
@@ -2022,207 +2287,9 @@ fn knob_event(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
     use super::*;
-
-    #[test]
-    fn cached_rows_are_display_only_until_a_live_page_arrives() {
-        let cached = PluginParameterRow {
-            id: 7,
-            name: "gain".into(),
-            value: String::new(),
-            normalized: 0.25,
-            default_normalized: 0.25,
-            steps: 0,
-            editable: false,
-            automation_class: None,
-            page_first: 0,
-            metadata_revision: 0,
-        };
-        let stale = display_only(&PluginParameterRow {
-            value: "live".into(),
-            normalized: 0.8,
-            editable: true,
-            automation_class: Some([1; 16]),
-            metadata_revision: 7,
-            ..cached.clone()
-        });
-        assert!(stale.value.is_empty());
-        assert_eq!(stale.normalized, stale.default_normalized);
-        assert!(!stale.editable);
-        assert_eq!(stale.automation_class, None);
-        assert_eq!(stale.metadata_revision, 0);
-    }
-
-    #[test]
-    fn matching_rows_keeps_cache_indices_for_live_page_requests() {
-        let rows = ["oscillator", "filter cutoff", "filter resonance", "level"]
-            .into_iter()
-            .enumerate()
-            .map(|(i, name)| PluginParameterRow {
-                id: 100 + 3 * i as u32,
-                name: name.into(),
-                value: String::new(),
-                normalized: 0.0,
-                default_normalized: 0.0,
-                steps: 0,
-                editable: false,
-                automation_class: None,
-                page_first: 0,
-                metadata_revision: 0,
-            })
-            .collect::<Vec<_>>();
-        let found = matching_rows(&rows, "filter");
-        assert_eq!(found, [1, 2]);
-        assert_eq!(
-            found
-                .iter()
-                .map(|&index| (index / PAGE_SIZE) * PAGE_SIZE)
-                .collect::<Vec<_>>(),
-            [0, 0]
-        );
-    }
-
-    #[test]
-    fn live_page_merge_requires_the_cached_total_and_ordered_ids() {
-        let rows = (0_u32..6)
-            .map(|index| PluginParameterRow {
-                id: 20 + index,
-                name: format!("parameter {index}"),
-                value: String::new(),
-                normalized: 0.0,
-                default_normalized: 0.0,
-                steps: 0,
-                editable: false,
-                automation_class: None,
-                page_first: ((index / 4) * 4) as u16,
-                metadata_revision: 0,
-            })
-            .collect::<Vec<_>>();
-        let mut second_page = rows[4..].to_vec();
-        second_page[0].value = "live".into();
-        let merged =
-            merge_page(&rows, Some([8; 32]), Some(6), 6, 4, [8; 32], &second_page).unwrap();
-        assert_eq!(merged[4].value, "live");
-        assert!(merge_page(&rows, Some([8; 32]), Some(5), 6, 4, [8; 32], &second_page).is_none());
-        assert!(merge_page(&rows, Some([8; 32]), Some(6), 6, 1, [8; 32], &rows[1..5]).is_none());
-        let mut reordered = second_page;
-        reordered.swap(0, 1);
-        assert!(merge_page(&rows, Some([8; 32]), Some(6), 6, 4, [8; 32], &reordered).is_none());
-        let unchanged_ids_with_changed_signature = rows[4..].to_vec();
-        assert!(
-            merge_page(
-                &rows,
-                Some([8; 32]),
-                Some(6),
-                6,
-                4,
-                [9; 32],
-                &unchanged_ids_with_changed_signature,
-            )
-            .is_none()
-        );
-        let value_only_update = rows[4..]
-            .iter()
-            .cloned()
-            .map(|mut row| {
-                row.value = "changed value".into();
-                row
-            })
-            .collect::<Vec<_>>();
-        assert!(
-            merge_page(
-                &rows,
-                Some([8; 32]),
-                Some(6),
-                6,
-                4,
-                [8; 32],
-                &value_only_update
-            )
-            .is_some()
-        );
-    }
-
-    #[test]
-    fn unvalidated_cache_requests_page_zero_without_visible_matches() {
-        let no_visible_pages = BTreeSet::new();
-        assert_eq!(
-            refresh_page(true, false, None, &no_visible_pages, 0, false),
-            Some(Some(0))
-        );
-        assert_eq!(
-            refresh_page(true, true, None, &no_visible_pages, 0, false),
-            None
-        );
-        assert_eq!(
-            refresh_page(true, true, Some(12), &no_visible_pages, 0, false),
-            Some(Some(12))
-        );
-    }
-
-    #[test]
-    fn native_touch_resolves_only_from_a_fresh_page_for_the_exact_binding() {
-        let binding = hex_lattice_contract::ForeignProcessorBinding {
-            root: 1,
-            instance: 2,
-            graph: 3,
-            epoch: 4,
-        };
-        let other_binding = hex_lattice_contract::ForeignProcessorBinding {
-            epoch: 5,
-            ..binding
-        };
-        let touch = TouchObservation {
-            source: AppliedAudioSource {
-                context: AudioSourceContext {
-                    project_generation: 8,
-                    editor_revision: 9,
-                },
-                audio_revision: 10,
-                output_identity: 11,
-            },
-            binding,
-            parameter: 7,
-        };
-        let cached = PluginParameterRow {
-            id: 7,
-            name: "gain".into(),
-            value: String::new(),
-            normalized: 0.2,
-            default_normalized: 0.2,
-            steps: 0,
-            editable: false,
-            automation_class: None,
-            page_first: 4,
-            metadata_revision: 0,
-        };
-        let live = PluginParameterRow {
-            value: "0.75".into(),
-            normalized: 0.75,
-            editable: true,
-            automation_class: Some([6; 16]),
-            metadata_revision: 3,
-            ..cached.clone()
-        };
-        assert_eq!(
-            fresh_touch_row(touch, binding, std::slice::from_ref(&live), Some(4)),
-            Some(live.clone())
-        );
-        assert_eq!(
-            fresh_touch_row(touch, other_binding, std::slice::from_ref(&cached), Some(4)),
-            None
-        );
-        assert_eq!(fresh_touch_row(touch, binding, &[cached], Some(4)), None);
-        assert_eq!(fresh_touch_row(touch, binding, &[live], Some(0)), None);
-    }
-
-    #[test]
-    fn control_yield_is_a_quiet_refresh_retry() {
-        assert!(is_refresh_yield(REFRESH_YIELDED_TO_CONTROL));
-        assert!(!is_refresh_yield("vst3 parameter source changed"));
-    }
 
     #[cfg(feature = "ui-test-support")]
     #[gpui::test]
@@ -2311,11 +2378,22 @@ mod tests {
         };
         visual.run_until_parked();
         let baseline = bounds(&mut visual);
+        let value_bounds = visual.debug_bounds("vst3-last-touch-value").unwrap();
+        assert!(
+            visual.debug_bounds("vst3-last-touch-label").is_none(),
+            "the empty last-touch label must not paint placeholder text"
+        );
+        for selector in ["vst3-parameter-row-7", "vst3-parameter-row-8"] {
+            assert!(
+                visual.rendered_border(selector).is_some(),
+                "each parameter needs a section"
+            );
+        }
         assert_eq!(baseline[0][3], 56.0);
         assert_eq!(baseline[2][3], hex_widgets::MICRO_DIAL_HEIGHT,);
         assert!(baseline[4][3] >= hex_widgets::MICRO_DIAL_HEIGHT);
         assert!(baseline[5][3] >= hex_widgets::MICRO_DIAL_HEIGHT);
-        assert!(baseline[5][1] >= baseline[4][1] + baseline[4][3]);
+        assert!(baseline[5][1] >= baseline[4][1] + baseline[4][3] + 4.0);
         assert!(visual.debug_bounds("vst3-last-touched-knob").is_some());
         let placeholder =
             Box::leak(format!("vst3-follow-placeholder-{}-knob", device.value()).into_boxed_str());
@@ -2453,6 +2531,12 @@ mod tests {
                 false,
                 Some("cache failed"),
             ),
+            (
+                layout_row(0.8, true, 7),
+                Some(7),
+                false,
+                Some("vst3 controller is busy · try again"),
+            ),
             (layout_row(0.8, true, 7), Some(7), false, None),
         ] {
             editor.update(&mut visual, |view, cx| {
@@ -2484,17 +2568,99 @@ mod tests {
                     binding,
                     parameter: 7,
                 });
-                panel.cache_error = error.map(str::to_owned);
-                panel.retry_count = u8::from(error.is_some());
+                panel.cache_error = None;
+                panel.retry_count = 0;
+                let refresh_due = Instant::now() + PAGE_REFRESH_INTERVAL;
+                panel.next_query_at = refresh_due;
+                if let Some(error) = error {
+                    record_refresh_failure(panel, error.into());
+                    if error == "vst3 controller is busy · try again" {
+                        assert_eq!(panel.next_query_at, refresh_due);
+                        assert_eq!(panel.retry_count, 0);
+                    }
+                }
                 panel.queued_touch = None;
                 cx.notify();
             });
             visual.run_until_parked();
             assert_eq!(bounds(&mut visual), baseline);
-            if error.is_some() {
+            if touched.is_some() {
+                assert!(visual.debug_bounds("vst3-last-touch-label").is_some());
+            }
+            if error == Some("cache failed") {
                 assert!(visual.debug_bounds("vst3-parameter-retry").is_some());
+            } else {
+                assert_eq!(
+                    visual.debug_bounds("vst3-last-touch-value"),
+                    Some(value_bounds)
+                );
             }
         }
+        // A local pointer cannot capture another dial while the prior edit's
+        // terminal is outstanding. Deliver the typed ACKs in this headless
+        // card without starting a plug-in or publishing audio.
+        let (active, other_control) = editor.update(&mut visual, |view, cx| {
+            let panel = &view.device_panel.vst3_parameters.panels[&device];
+            let origin = parameter_origin(panel.query, &panel.rows().unwrap()[0]).unwrap();
+            let other = panel.knobs[&8].control.entity_id();
+            let active = view.device_gesture.begin_plugin(origin).unwrap();
+            view.device_gesture.finish_plugin(origin.initial).unwrap();
+            cx.notify();
+            (active, other)
+        });
+        visual.run_until_parked();
+        let other_selector =
+            Box::leak(format!("vst3-knob-{}-8-knob", device.value()).into_boxed_str());
+        let other_dial = visual.debug_bounds(other_selector).unwrap().center();
+        visual.simulate_mouse_down(other_dial, gpui::MouseButton::Left, modifiers);
+        visual.simulate_mouse_move(
+            gpui::point(other_dial.x, other_dial.y - px(20.0)),
+            gpui::MouseButton::Left,
+            modifiers,
+        );
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, cx| {
+            let knob = &view.device_panel.vst3_parameters.panels[&device].knobs[&8];
+            assert_eq!(knob.control.entity_id(), other_control);
+            let control = knob.control.read(cx);
+            assert!(!control.is_interacting());
+            assert_eq!(control.value(), 0.35);
+            assert_eq!(view.device_gesture.snapshot().unwrap().key, active);
+            assert!(view.device_gesture.has_pending_terminal());
+        });
+        visual.simulate_mouse_up(other_dial, gpui::MouseButton::Left, modifiers);
+        editor.update(&mut visual, |view, cx| {
+            use hex_session::device_gesture::{GestureAck, GesturePhase};
+            for phase in [GesturePhase::Begin, GesturePhase::Commit] {
+                let request = view.device_gesture.next_request().unwrap();
+                assert_eq!((request.key(), request.phase()), (active, phase));
+                view.device_gesture.mark_submitted();
+                assert!(view.device_gesture.acknowledge(&GestureAck {
+                    preview_retained: false,
+                    source_lost: false,
+                    key: active,
+                    phase,
+                    sequence: request.sequence(),
+                    accepted: true,
+                    reason: None,
+                }));
+            }
+            assert!(view.device_gesture.snapshot().is_none());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        visual.simulate_mouse_down(other_dial, gpui::MouseButton::Left, modifiers);
+        editor.read_with(&visual, |view, cx| {
+            let knob = &view.device_panel.vst3_parameters.panels[&device].knobs[&8];
+            assert_eq!(knob.control.entity_id(), other_control);
+            assert!(knob.control.read(cx).is_interacting());
+        });
+        visual.simulate_mouse_up(other_dial, gpui::MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        let (previous_control, previous_value) = editor.update(&mut visual, |view, cx| {
+            let control = follow_display(view, device, cx).0.unwrap();
+            (control.entity_id(), control.read(cx).value())
+        });
         editor.update(&mut visual, |view, cx| {
             let panel = view
                 .device_panel
@@ -2502,6 +2668,132 @@ mod tests {
                 .panels
                 .get_mut(&device)
                 .unwrap();
+            let touch = TouchObservation {
+                source: AppliedAudioSource {
+                    context: panel.query.context,
+                    audio_revision: 1,
+                    output_identity: panel.query.output_identity,
+                },
+                binding,
+                parameter: 8,
+            };
+            let row = panel
+                .rows()
+                .unwrap()
+                .iter()
+                .find(|row| row.id == 8)
+                .unwrap()
+                .clone();
+            queue_touch_refresh(panel, touch, Some(&row));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("vst3-last-touch-label").is_some(),
+            "a pending touch must retain the last validated label across repaints"
+        );
+        let pending_dial = visual
+            .debug_bounds(Box::leak(
+                format!("vst3-follow-knob-{}-7-knob", device.value()).into_boxed_str(),
+            ))
+            .unwrap()
+            .center();
+        visual.simulate_mouse_down(pending_dial, gpui::MouseButton::Left, modifiers);
+        visual.simulate_mouse_move(
+            gpui::point(pending_dial.x, pending_dial.y - gpui::px(20.0)),
+            gpui::MouseButton::Left,
+            modifiers,
+        );
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, cx| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get(&device)
+                .unwrap();
+            let control = panel.follow_knob.as_ref().unwrap().1.control.read(cx);
+            assert!(
+                !control.is_interacting(),
+                "pending display must not start a gesture"
+            );
+            assert_eq!(control.value(), previous_value);
+            assert!(view.device_gesture.snapshot().is_none());
+        });
+        visual.simulate_mouse_up(pending_dial, gpui::MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        editor.update(&mut visual, |view, cx| {
+            let (control, row, _) = follow_display(view, device, cx);
+            assert_eq!(control.unwrap().entity_id(), previous_control);
+            assert_eq!(row.unwrap().id, 7);
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap();
+            let row = panel
+                .rows()
+                .unwrap()
+                .iter()
+                .find(|row| row.id == 8)
+                .unwrap()
+                .clone();
+            resolve_pending_touch(panel, binding, &[row], Some(0), true).unwrap();
+            assert_eq!(follow_display(view, device, cx).1.unwrap().id, 8);
+            // Restore the existing stale-value assertions below.
+            view.device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap()
+                .last_touched = Some(7);
+        });
+        let (row_control_before_renewal, follow_control_before_renewal) =
+            editor.update(&mut visual, |view, cx| {
+                let panel = view
+                    .device_panel
+                    .vst3_parameters
+                    .panels
+                    .get(&device)
+                    .unwrap();
+                let row = panel
+                    .rows()
+                    .unwrap()
+                    .iter()
+                    .find(|row| row.id == 7)
+                    .unwrap()
+                    .clone();
+                let query = panel.query;
+                let row = knob(view, device, query, &row, cx).unwrap().entity_id();
+                let follow = follow_display(view, device, cx).0.unwrap().entity_id();
+                (row, follow)
+            });
+        editor.update(&mut visual, |view, cx| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap();
+            let known_rows = panel.rows().unwrap().len();
+            let unknown = TouchObservation {
+                source: AppliedAudioSource {
+                    context: panel.query.context,
+                    audio_revision: 1,
+                    output_identity: panel.query.output_identity,
+                },
+                binding,
+                parameter: 999,
+            };
+            queue_touch_refresh(panel, unknown, None);
+            assert_eq!(
+                panel.rows().map(<[_]>::len),
+                Some(known_rows),
+                "an unknown touch must not blank the parameter inventory"
+            );
+            assert_eq!(panel.source, Some(binding));
+            panel.pending_touch = None;
             panel.mark_values_stale();
             let row = panel
                 .rows()
@@ -2522,16 +2814,311 @@ mod tests {
                 .panels
                 .get(&device)
                 .unwrap();
-            let control = panel.placeholder_knob.as_ref().unwrap().read(cx);
             assert_eq!(
-                control.value(),
-                0.8,
-                "renewal keeps the last observed disabled display"
+                panel.knobs.get(&7).unwrap().control.entity_id(),
+                row_control_before_renewal,
+                "renewal must retain the rendered row control"
             );
+            assert_eq!(
+                panel.follow_knob.as_ref().unwrap().1.control.entity_id(),
+                follow_control_before_renewal
+            );
+            assert_eq!(panel.knobs[&7].control.read(cx).value(), 0.8);
+            assert_eq!(
+                panel
+                    .follow_knob
+                    .as_ref()
+                    .unwrap()
+                    .1
+                    .control
+                    .read(cx)
+                    .value(),
+                0.8
+            );
+        });
+        let stale_dial = visual
+            .debug_bounds(Box::leak(
+                format!("vst3-knob-{}-7-knob", device.value()).into_boxed_str(),
+            ))
+            .unwrap()
+            .center();
+        visual.simulate_mouse_down(stale_dial, gpui::MouseButton::Left, modifiers);
+        visual.simulate_mouse_move(
+            gpui::point(stale_dial.x, stale_dial.y - px(20.0)),
+            gpui::MouseButton::Left,
+            modifiers,
+        );
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, cx| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get(&device)
+                .unwrap();
+            assert!(!panel.knobs[&7].control.read(cx).is_interacting());
+            assert_eq!(panel.knobs[&7].control.read(cx).value(), 0.8);
+            assert!(view.device_gesture.snapshot().is_none());
+        });
+        visual.simulate_mouse_up(stale_dial, gpui::MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        editor.update(&mut visual, |view, cx| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap();
+            let mut row = panel
+                .rows()
+                .unwrap()
+                .iter()
+                .find(|row| row.id == 7)
+                .unwrap()
+                .clone();
+            row.editable = true;
+            row.metadata_revision = 9;
+            row.automation_class = Some([2; 16]);
+            panel.source = Some(binding);
+            let query = panel.query;
+            let renewed = knob(view, device, query, &row, cx).unwrap();
+            assert_eq!(renewed.entity_id(), row_control_before_renewal);
+            assert_eq!(
+                view.device_panel.vst3_parameters.panels[&device].knobs[&7]
+                    .origin
+                    .get()
+                    .metadata_revision,
+                9
+            );
+            let mut changed_source = binding;
+            changed_source.epoch += 1;
+            view.device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap()
+                .source = Some(changed_source);
+            let replaced = knob(view, device, query, &row, cx).unwrap();
+            assert_ne!(replaced.entity_id(), renewed.entity_id());
+            let mut query = query;
+            query.output_identity += 1;
+            let new_output = knob(view, device, query, &row, cx).unwrap();
+            assert_ne!(new_output.entity_id(), replaced.entity_id());
+            row.name = "new descriptor".into();
+            let descriptor = knob(view, device, query, &row, cx).unwrap();
+            assert_ne!(descriptor.entity_id(), new_output.entity_id());
+        });
+        editor.update(&mut visual, |view, cx| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap();
+            panel.result = Some(Arc::new(
+                (0..40)
+                    .map(|index| PluginParameterRow {
+                        id: 100 + index,
+                        page_first: ((index as usize / PAGE_SIZE) * PAGE_SIZE) as u16,
+                        ..layout_row(0.35, false, 0)
+                    })
+                    .collect(),
+            ));
+            panel.refilter(true);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        editor.update(&mut visual, |view, _| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap();
+            panel
+                .scroll
+                .0
+                .borrow()
+                .base_handle
+                .set_offset(gpui::point(px(0.0), px(-1164.0)));
+        });
+        visual.update(|window, cx| window.draw(cx).clear());
+        assert!(visual.debug_bounds("vst3-parameter-row-124").is_some());
+        assert!(
+            visual
+                .debug_bounds(Box::leak(
+                    format!("vst3-placeholder-{}-124-knob", device.value()).into_boxed_str()
+                ))
+                .is_some(),
+            "a newly visible row has its dial in the first frame"
+        );
+        editor.read_with(&visual, |view, _| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get(&device)
+                .unwrap();
+            assert!(panel.row_placeholders.len() <= 128);
+            assert!(!panel.knobs.contains_key(&124));
+        });
+        let dial =
+            Box::leak(format!("vst3-placeholder-{}-124-knob", device.value()).into_boxed_str());
+        let down = visual.debug_bounds(dial).unwrap().center();
+        visual.simulate_mouse_down(down, gpui::MouseButton::Left, modifiers);
+        visual.simulate_mouse_move(
+            gpui::point(down.x, down.y - px(20.0)),
+            gpui::MouseButton::Left,
+            modifiers,
+        );
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, cx| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get(&device)
+                .unwrap();
+            let control = panel.row_placeholders[&124].control.read(cx);
+            assert!(!control.is_interacting());
+            assert_eq!(control.value(), 0.35);
+            assert!(view.device_gesture.snapshot().is_none());
+        });
+        visual.simulate_mouse_up(down, gpui::MouseButton::Left, modifiers);
+        editor.update(&mut visual, |view, cx| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap();
+            panel.source = Some(binding);
+            let rows = Arc::make_mut(panel.result.as_mut().unwrap());
+            rows[24] = PluginParameterRow {
+                id: 124,
+                page_first: rows[24].page_first,
+                ..layout_row(0.35, true, 7)
+            };
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds(Box::leak(
+                    format!("vst3-knob-{}-124-knob", device.value()).into_boxed_str()
+                ))
+                .is_some()
+        );
+        editor.read_with(&visual, |view, _| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get(&device)
+                .unwrap();
+            assert!(!panel.row_placeholders.contains_key(&124));
+            assert!(panel.knobs.contains_key(&124));
+        });
+        editor.update(&mut visual, |view, cx| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap();
+            panel.result = Some(Arc::new(
+                (0..40)
+                    .map(|index| PluginParameterRow {
+                        id: 100 + index,
+                        page_first: ((index as usize / PAGE_SIZE) * PAGE_SIZE) as u16,
+                        ..layout_row(0.35, false, 0)
+                    })
+                    .collect(),
+            ));
+            panel.refilter(true);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("vst3-parameter-scrollbar").is_some(),
+            "a long parameter list has a scrollbar"
+        );
+        let geometry = |visual: &VisualTestContext| {
+            editor.read_with(visual, |view, _| {
+                view.device_panel.vst3_parameters.panels[&device]
+                    .scrollbar
+                    .test_geometry()
+                    .unwrap()
+            })
+        };
+        let (track, thumb, maximum) = geometry(&visual);
+        assert!(maximum > 0.0);
+        assert_eq!(thumb.top(), track.top());
+        let row = visual.debug_bounds("vst3-parameter-row-100").unwrap();
+        visual.simulate_event(gpui::ScrollWheelEvent {
+            position: row.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(-150.0))),
+            ..Default::default()
+        });
+        visual.run_until_parked();
+        let (track, thumb, _) = geometry(&visual);
+        assert!(thumb.top() > track.top());
+        visual.simulate_mouse_down(thumb.center(), gpui::MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
             assert!(
-                panel.follow_knob.is_none(),
-                "stale rows cannot retain editable controls"
+                view.device_panel.vst3_parameters.panels[&device]
+                    .scrollbar
+                    .test_dragging()
+            )
+        });
+        let outside = gpui::point(track.left(), track.bottom() + px(300.0));
+        visual.simulate_mouse_move(outside, gpui::MouseButton::Left, modifiers);
+        visual.simulate_mouse_up(outside, gpui::MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        let (track, thumb, _) = geometry(&visual);
+        assert!((f32::from(thumb.bottom() - track.bottom())).abs() < 0.01);
+        editor.read_with(&visual, |view, _| {
+            assert!(
+                !view.device_panel.vst3_parameters.panels[&device]
+                    .scrollbar
+                    .test_dragging()
             );
+            assert!(view.device_gesture.snapshot().is_none());
+        });
+        visual.simulate_mouse_down(thumb.center(), gpui::MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        editor.update(&mut visual, |view, cx| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap();
+            assert!(panel.scrollbar.test_dragging());
+            panel.filter = "no matching parameter".into();
+            panel.refilter(true);
+            assert!(!panel.scrollbar.test_dragging());
+            cx.notify();
+        });
+        visual.simulate_mouse_move(
+            gpui::point(track.left(), track.top()),
+            gpui::MouseButton::Left,
+            modifiers,
+        );
+        visual.simulate_mouse_up(
+            gpui::point(track.left(), track.top()),
+            gpui::MouseButton::Left,
+            modifiers,
+        );
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert!(
+                !view.device_panel.vst3_parameters.panels[&device]
+                    .scrollbar
+                    .test_dragging()
+            );
+            assert!(view.device_gesture.snapshot().is_none());
         });
     }
 
@@ -2591,13 +3178,58 @@ mod tests {
             .expect("an in-flight page can resolve before the touch stream ends");
             assert_eq!(observed.normalized, 0.4);
             panel.result = Some(Arc::new(vec![intermediate]));
+            let refresh_due = Instant::now() + PAGE_REFRESH_INTERVAL;
+            panel.next_query_at = refresh_due;
             for _ in 0..8 {
                 queue_native_touch(panel, touch);
                 assert_eq!(panel.last_touched, Some(7));
                 assert_eq!(panel.pending_touch, None);
                 assert_eq!(panel.queued_touch, None);
                 assert_eq!(panel.priority_page, Some(0));
+                assert_eq!(panel.next_query_at, refresh_due);
             }
+            // A native receipt can paint ahead of an already submitted page.
+            // It must never change the edit origin or be overwritten by that page.
+            panel.query.request_id = 12;
+            panel.observe_value(touch, Some(PluginParameterValue::new(0.7).unwrap()));
+            let row = panel.rows().unwrap()[0].clone();
+            assert_eq!(panel.display_value(&row), 0.7);
+            assert_eq!(
+                parameter_origin(panel.query, &row)
+                    .unwrap()
+                    .initial
+                    .normalized(),
+                0.4
+            );
+            panel.reconcile_live_values(panel.query, binding, std::slice::from_ref(&row));
+            assert_eq!(panel.display_value(&row), 0.7);
+            let newer = PluginParameterQuery {
+                request_id: 13,
+                ..panel.query
+            };
+            panel.reconcile_live_values(newer, binding, std::slice::from_ref(&row));
+            assert_eq!(panel.display_value(&row), 0.4);
+            panel.observe_value(touch, Some(PluginParameterValue::new(0.8).unwrap()));
+            panel.source = Some(hex_lattice_contract::ForeignProcessorBinding {
+                epoch: 5,
+                ..binding
+            });
+            assert_eq!(panel.display_value(&row), 0.4);
+            panel.source = Some(binding);
+            panel.live_values.clear();
+
+            let query = panel.query;
+            panel.observe_value(touch, Some(PluginParameterValue::new(0.9).unwrap()));
+            let control = knob(view, device, query, &row, cx).unwrap();
+            assert_eq!(control.read(cx).value(), 0.9);
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap();
+            assert_eq!(panel.knobs[&row.id].origin.get().initial.normalized(), 0.4);
+
             // Different raw IDs and source identities must restart validation.
             let other = TouchObservation {
                 parameter: 0,
@@ -2621,6 +3253,204 @@ mod tests {
             assert!(resolve_pending_touch(panel, binding, &[row], Some(0), true).is_none());
             assert_eq!(panel.last_touched, None);
         });
+    }
+
+    #[cfg(feature = "ui-test-support")]
+    #[gpui::test]
+    fn vst3_modulation_maps_only_fresh_continuous_rows_and_keeps_signed_pending_depth(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::editor::{clip_drag_ui_test, device_panel::DevicePanelOwner};
+        use gpui::{Modifiers, MouseButton, VisualTestContext, point};
+        use hex_project::{
+            Command, DeviceAutomationTarget, DeviceModulation, Editor, ModulationDestination,
+            ModulationSourceId, Modulator,
+        };
+
+        let _serial = hex_audio::worker_fixture::serial_output();
+        let (mut output, mut backend) =
+            hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+        let client = output.take_client().unwrap();
+        let root = client.output_identity().unwrap();
+        let (project, track, device) = parameter_project();
+        let source = ModulationSourceId::new(project.next_identity()).unwrap();
+        let mut project = Editor::new(project, 8).unwrap();
+        project
+            .execute(Command::ReplaceDeviceModulation {
+                device,
+                modulation: DeviceModulation::new(
+                    vec![Modulator {
+                        id: source,
+                        color: Default::default(),
+                        enabled: true,
+                        state: hex_engine::lfo_modulator::Settings::default()
+                            .encode()
+                            .unwrap(),
+                    }],
+                    Vec::new(),
+                )
+                .unwrap(),
+            })
+            .unwrap();
+        let (handle, editor) =
+            clip_drag_ui_test::editor_window(cx, project.project().clone(), Arc::default());
+        struct Card {
+            editor: Entity<EditorView>,
+            device: DeviceId,
+            _observe: Subscription,
+        }
+        impl gpui::Render for Card {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                self.editor.update(cx, |view, cx| {
+                    let device = view
+                        .state
+                        .as_ref()
+                        .unwrap()
+                        .project
+                        .device(self.device)
+                        .unwrap()
+                        .clone();
+                    let body = body(view, self.device, cx);
+                    let panel = super::super::modulators::vst3_panel(view, cx, &device);
+                    hex_widgets::device_frame_with_modulators(
+                        theme::text("vst3"),
+                        theme::device_frame_style(true),
+                        div(),
+                        div(),
+                        body,
+                        panel,
+                    )
+                    .w(px(300.0))
+                    .h(px(360.0))
+                })
+            }
+        }
+        cx.update_window(handle, |_, window, cx| {
+            window.replace_root(cx, |_, cx| Card {
+                editor: editor.clone(),
+                device,
+                _observe: cx.observe(&editor, |_, _, cx| cx.notify()),
+            });
+        })
+        .unwrap();
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        editor.update(&mut visual, |view, cx| {
+            view.audio = Some(crate::EditorAudio {
+                control: client,
+                sample_rate: 48_000,
+                label: "headless".into(),
+                spectrum_error: None,
+                mode: hex_session::DocumentAudioMode::Resident,
+            });
+            view.selected_track = Some(track);
+            view.device_panel.owner = Some(DevicePanelOwner::Track(track));
+            view.device_panel.selected_device = Some(device);
+            view.device_panel_active = true;
+            view.clip_view_open = true;
+            ensure_panel(view, device, cx);
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap();
+            panel.cache_loading = false;
+            panel.source = Some(hex_lattice_contract::ForeignProcessorBinding {
+                root,
+                instance: device.value(),
+                graph: 1,
+                epoch: 1,
+            });
+            panel.query.output_identity = root;
+            let live = PluginParameterRow {
+                id: 0,
+                automation_class: Some([2; 16]),
+                ..layout_row(0.25, true, 1)
+            };
+            panel.result = Some(Arc::new(vec![
+                live.clone(),
+                PluginParameterRow {
+                    id: 8,
+                    steps: 1,
+                    ..live.clone()
+                },
+                PluginParameterRow {
+                    id: 9,
+                    metadata_revision: 0,
+                    ..live
+                },
+            ]));
+            panel.matched = Arc::new(vec![0, 1, 2]);
+            cx.notify();
+        });
+        editor.update(&mut visual, |view, _| {
+            let current = {
+                let panel = &view.device_panel.vst3_parameters.panels[&device];
+                mapping_target(view, device, &panel.rows().unwrap()[0]).unwrap()
+            };
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap();
+            let original = panel.source.unwrap();
+            panel.source = Some(hex_lattice_contract::ForeignProcessorBinding {
+                epoch: original.epoch + 1,
+                ..original
+            });
+            assert!(!mapping_target_is_current(view, device, current));
+            view.device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap()
+                .source = Some(original);
+        });
+        let click = |visual: &mut VisualTestContext, key: &'static str| {
+            let center = visual.debug_bounds(key).unwrap().center();
+            visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+        };
+        visual.run_until_parked();
+        click(&mut visual, "device-modulator-toggle");
+        click(
+            &mut visual,
+            Box::leak(format!("lfo-{}-map", source.value()).into_boxed_str()),
+        );
+        let key = |suffix| -> &'static str {
+            Box::leak(format!("map-vst3-row-{}-{suffix}", device.value()).into_boxed_str())
+        };
+        let target = visual.debug_bounds(key(0)).unwrap().center();
+        assert!(visual.debug_bounds(key(8)).is_none());
+        assert!(visual.debug_bounds(key(9)).is_none());
+        let down = point(target.x, target.y + px(30.0));
+        visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(down, Some(MouseButton::Left), Modifiers::default());
+        visual.run_until_parked();
+        let depth =
+            Box::leak(format!("map-vst3-row-depth-{}-0--30%", device.value()).into_boxed_str());
+        assert!(visual.debug_bounds(depth).is_some());
+        visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
+        editor.read_with(&visual, |view, _| {
+            let bank = view
+                .device_panel
+                .modulation_target_drag
+                .pending_bank_for_test()
+                .unwrap();
+            assert_eq!(bank.routes()[0].amount.get(), -0.3);
+            assert_eq!(
+                bank.routes()[0].destination,
+                ModulationDestination::Device {
+                    device_type: hex_lattice_contract::VST3_DEVICE_TYPE_ID,
+                    target: DeviceAutomationTarget::Vst3 { parameter: 0 },
+                    vst3_class: Some([2; 16]),
+                }
+            );
+        });
+        editor.update(&mut visual, |view, _| view.audio = None);
+        backend.close();
     }
 
     #[cfg(feature = "ui-test-support")]

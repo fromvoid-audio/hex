@@ -1395,7 +1395,9 @@ fn event_fade_drag_keeps_pending_paint_then_one_undo_and_reset(cx: &mut TestAppC
             .unwrap()
             .audio_events()
             .events[0];
-        assert!(event.fade.unwrap().shape().fade_in() > 0);
+        let fade = event.fade.unwrap().shape();
+        assert!(fade.fade_in() > 0);
+        assert_eq!(fade.curve_laws()[0], hex_project::ClipFade::DEFAULT_S_CURVE);
         v.state.as_ref().unwrap().project.snapshot()
     });
     editor.read_with(&visual, |v, _| {
@@ -1414,7 +1416,8 @@ fn event_fade_drag_keeps_pending_paint_then_one_undo_and_reset(cx: &mut TestAppC
             .shape()
             .fade_in() as usize;
         assert_eq!(pcm[0], [0.0; 2]);
-        assert!((pcm[1][0] - 0.25 / (count - 1) as f32).abs() < 1e-7);
+        let t = 1.0 / (count - 1) as f32;
+        assert!((pcm[1][0] - 0.25 * t * t * (3.0 - 2.0 * t)).abs() < 1e-7);
         assert_eq!(pcm[count - 1], [0.25; 2]);
     });
     assert_eq!(visual.debug_bounds("audio-event-fade-in-top-1"), Some(held));
@@ -1424,6 +1427,39 @@ fn event_fade_drag_keeps_pending_paint_then_one_undo_and_reset(cx: &mut TestAppC
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
     });
     visual.simulate_keystrokes("cmd-shift-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), accepted)
+    });
+    let diamond = visual
+        .debug_bounds("audio-event-fade-in-curve-1")
+        .unwrap()
+        .center();
+    visual.simulate_event(gpui::MouseDownEvent {
+        position: diamond,
+        button: MouseButton::Left,
+        modifiers: Modifiers::default(),
+        click_count: 2,
+        first_mouse: false,
+    });
+    visual.simulate_mouse_up(diamond, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        let fade = v
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .clip(clip)
+            .unwrap()
+            .audio_events()
+            .events[0]
+            .fade
+            .unwrap();
+        assert!(fade.shape().fade_in() > 0);
+        assert!(!fade.shape().ramp_is_curved(false));
+    });
+    visual.simulate_keystrokes("cmd-z");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), accepted)

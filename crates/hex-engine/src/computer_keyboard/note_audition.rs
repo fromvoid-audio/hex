@@ -13,10 +13,91 @@ pub const MAX_NOTE_AUDITION_GATE_FRAMES: u64 = 768_000;
 pub(super) struct NoteAudition {
     notes: [(u8, u8); MAX_NOTE_AUDITION_NOTES],
     len: usize,
-    pub(super) gate_frames: u64,
-    pub(super) started: AtomicBool,
-    pub(super) finished: AtomicBool,
+    gate_frames: u64,
 }
+
+/// Control-written alongside the physical snapshot sequence. Callback reads
+/// are bounded and never take ownership of the input or hardware queue.
+#[derive(Debug, Default)]
+pub(super) struct LiveAudition {
+    id: AtomicU64,
+    frames: AtomicU64,
+    words: [AtomicU64; COMPUTER_KEY_COUNT],
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct AuditionRequest {
+    id: u64,
+    frames: u64,
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct AuditionGate {
+    request: Option<AuditionRequest>,
+    rendered: u64,
+}
+
+impl AuditionGate {
+    pub(crate) fn observe(
+        &mut self,
+        request: Option<AuditionRequest>,
+        input: Option<&ComputerKeyboardInput>,
+    ) {
+        if self.request.map(|gate| gate.id) != request.map(|gate| gate.id) {
+            self.rendered = request.map_or(0, |gate| {
+                if input.is_some_and(|input| input.audition_started.load(Acquire) >= gate.id) {
+                    // A rebuilt runtime without inherited progress cannot replay a trigger.
+                    gate.frames
+                } else {
+                    0
+                }
+            });
+        }
+        self.request = request;
+    }
+
+    pub(crate) fn active(self) -> bool {
+        self.request.is_some()
+    }
+
+    pub(crate) fn expired(self) -> bool {
+        self.request
+            .is_some_and(|gate| self.rendered >= gate.frames)
+    }
+
+    pub(crate) fn advance(&mut self, frames: u64) {
+        if let Some(gate) = self.request {
+            self.rendered = self.rendered.saturating_add(frames).min(gate.frames);
+        }
+    }
+
+    pub(super) fn finish(&mut self) {
+        if let Some(gate) = self.request {
+            self.rendered = gate.frames;
+        }
+    }
+
+    pub(crate) fn commit(self, input: &ComputerKeyboardInput) {
+        if let Some(gate) = self.request.filter(|_| self.rendered != 0) {
+            if input.audition_started.load(Acquire) < gate.id {
+                input.audition_started.fetch_max(gate.id, Release);
+            }
+            if self.expired() && input.audition_finished.load(Acquire) < gate.id {
+                input.audition_finished.fetch_max(gate.id, Release);
+            }
+        }
+    }
+}
+
+fn valid_bank(notes: &[(u8, u8)], frames: u64) -> bool {
+    !notes.is_empty()
+        && notes.len() <= MAX_NOTE_AUDITION_NOTES
+        && notes
+            .iter()
+            .all(|(pitch, velocity)| *pitch <= 127 && (1..=127).contains(velocity))
+        && (1..=MAX_NOTE_AUDITION_GATE_FRAMES).contains(&frames)
+}
+
 impl ComputerKeyboardInput {
     /// Turn a fresh control-created input into one immutable exact-velocity chord.
     /// No source/runtime authority changes. Each selection uses a fresh input Arc;
@@ -29,13 +110,7 @@ impl ComputerKeyboardInput {
         notes: &[(u8, u8)],
         gate_frames: u64,
     ) -> Result<Self, Invalid> {
-        if notes.is_empty()
-            || notes.len() > MAX_NOTE_AUDITION_NOTES
-            || notes
-                .iter()
-                .any(|(pitch, velocity)| *pitch > 127 || !(1..=127).contains(velocity))
-            || gate_frames == 0
-            || gate_frames > MAX_NOTE_AUDITION_GATE_FRAMES
+        if !valid_bank(notes, gate_frames)
             || self.native_activation.is_some()
             || self.sequence.load(Acquire) != 0
             || self.is_cancelled()
@@ -50,8 +125,6 @@ impl ComputerKeyboardInput {
             notes: [(0, 0); MAX_NOTE_AUDITION_NOTES],
             len: notes.len(),
             gate_frames,
-            started: AtomicBool::new(false),
-            finished: AtomicBool::new(false),
         };
         bank.notes[..notes.len()].copy_from_slice(notes);
         self.audition = Some(bank);
@@ -60,10 +133,89 @@ impl ComputerKeyboardInput {
     pub fn is_note_audition(&self) -> bool {
         self.audition.is_some()
     }
+
     pub fn note_audition_finished(&self) -> bool {
-        self.audition
-            .as_ref()
-            .is_some_and(|bank| bank.finished.load(Acquire))
+        self.is_note_audition() && self.audition_finished.load(Acquire) != 0
+    }
+
+    /// Audition on the already admitted live root. This replaces only the
+    /// preceding preview and never writes to the hardware or recording queues.
+    /// Physical keys take priority over the preview.
+    pub fn trigger_live_note_audition_on_control(
+        &self,
+        notes: &[(u8, u8)],
+        gate_frames: u64,
+    ) -> Result<(), Invalid> {
+        let bank = self.live_audition.as_ref().ok_or(Invalid(
+            "live note audition requires a prepared controller input",
+        ))?;
+        if !valid_bank(notes, gate_frames)
+            || self.is_cancelled()
+            || self
+                .ordered_keys
+                .as_ref()
+                .is_some_and(|keys| keys.has_recording_prefix())
+            || self.sequence.load(Acquire) >= (u64::MAX >> 15) - 1
+            || self.notes.iter().any(|word| word.load(Acquire) != 0)
+        {
+            return Err(Invalid("live note audition is unavailable for this input"));
+        }
+        if self.output_activation.is_some() {
+            self.ensure_output_activation_on_control()?;
+        }
+        let after = self.begin_write()?;
+        for (index, destination) in bank.words.iter().enumerate() {
+            // Slot identity is separate from physical words. A change of bank
+            // releases even an identical pitch/velocity before retriggering.
+            let word = notes.get(index).map_or(0, |&(pitch, velocity)| {
+                ((after >> 1) << 16) | (u64::from(velocity) << 8) | u64::from(pitch + 1)
+            });
+            destination.store(word, SeqCst);
+        }
+        bank.frames.store(gate_frames, SeqCst);
+        bank.id.store(after, SeqCst);
+        self.sequence.store(after, SeqCst);
+        Ok(())
+    }
+
+    pub fn cancel_live_note_audition_on_control(&self) {
+        // The sole control writer publishes a scalar revocation. The snapshot
+        // verifies this identity after reading the words, as well as its sequence.
+        if let Some(bank) = &self.live_audition {
+            bank.id.store(0, SeqCst);
+        }
+    }
+
+    pub(super) fn audition_snapshot(
+        &self,
+        words: &mut [u64; COMPUTER_KEY_COUNT],
+        sequence: u64,
+    ) -> Option<AuditionRequest> {
+        if let Some(bank) = &self.audition {
+            if self.note_audition_finished() {
+                words.fill(0);
+                return None;
+            }
+            return (sequence != 0).then_some(AuditionRequest {
+                id: 2,
+                frames: bank.gate_frames,
+            });
+        }
+        let bank = self.live_audition.as_ref()?;
+        let id = bank.id.load(SeqCst);
+        if id == 0
+            || self.audition_finished.load(Acquire) >= id
+            || words.iter().any(|word| *word != 0)
+        {
+            return None;
+        }
+        let frames = bank.frames.load(SeqCst);
+        let preview = std::array::from_fn(|index| bank.words[index].load(SeqCst));
+        if id != bank.id.load(SeqCst) {
+            return None;
+        }
+        *words = preview;
+        Some(AuditionRequest { id, frames })
     }
     /// Publish the whole bank in one coherent transaction, once per input.
     /// Control triggers only after its preparation ACK; cancellation always wins.
@@ -72,7 +224,8 @@ impl ComputerKeyboardInput {
             .audition
             .as_ref()
             .ok_or(Invalid("input has no note audition bank"))?;
-        if self.is_cancelled() || bank.finished.load(Acquire) || self.sequence.load(Acquire) != 0 {
+        if self.is_cancelled() || self.note_audition_finished() || self.sequence.load(Acquire) != 0
+        {
             return Err(Invalid("note audition activation is no longer fresh"));
         }
         let after = self.begin_write()?;
@@ -178,10 +331,10 @@ mod tests {
         assert!(input.set_key(0, Some((60, 100, 1))).is_err());
         assert!(input.reactivate_on_control().is_err());
         assert!(
-            matches!(input.note_snapshot(), NoteSnapshot::Active(_, words) if words == [0; COMPUTER_KEY_COUNT])
+            matches!(input.note_snapshot(), NoteSnapshot::Active(_, words, _) if words == [0; COMPUTER_KEY_COUNT])
         );
         input.trigger_note_audition().unwrap();
-        let NoteSnapshot::Active(_, words) = input.note_snapshot() else {
+        let NoteSnapshot::Active(_, words, _) = input.note_snapshot() else {
             panic!("complete bank")
         };
         assert_eq!((words[0] & 255, (words[0] >> 8) & 255), (61, 37));

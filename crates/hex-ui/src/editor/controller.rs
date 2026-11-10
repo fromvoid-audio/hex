@@ -33,107 +33,15 @@ mod submission;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod verified_gain_tests;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AudioEventDisposition {
-    Current,
-    Future,
-    Ignore,
-}
+mod session_feedback;
+use session_feedback::{SessionTicketOutcome, reconcile_session_receipt, reconcile_session_ticket};
 
-fn audio_event_disposition(
-    current_generation: u64,
-    pending_restart: Option<(u64, u64)>,
-    event_generation: u64,
-    restart_request: Option<u64>,
-) -> AudioEventDisposition {
-    if event_generation < current_generation {
-        return AudioEventDisposition::Ignore;
-    }
-    if event_generation == current_generation {
-        return match restart_request {
-            Some(request_id) if pending_restart == Some((event_generation, request_id)) => {
-                AudioEventDisposition::Current
-            }
-            Some(_) => AudioEventDisposition::Ignore,
-            None if pending_restart
-                .is_some_and(|(generation, _)| generation == event_generation) =>
-            {
-                AudioEventDisposition::Ignore
-            }
-            None => AudioEventDisposition::Current,
-        };
-    }
-    match restart_request {
-        Some(request_id) if pending_restart == Some((event_generation, request_id)) => {
-            AudioEventDisposition::Future
-        }
-        Some(_) => AudioEventDisposition::Ignore,
-        None => AudioEventDisposition::Future,
-    }
-}
-
-fn future_audio_result_replaces(slot_generation: Option<u64>, event_generation: u64) -> bool {
-    slot_generation.is_none_or(|slot_generation| event_generation >= slot_generation)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum PublicationObservationDisposition {
-    Apply,
-    Wait,
-    Stale,
-}
-
-fn publication_observation_replaces(
-    existing: Option<hex_engine::AudioSourceContext>,
-    incoming: hex_engine::AudioSourceContext,
-) -> bool {
-    existing.is_none_or(|existing| {
-        (incoming.project_generation, incoming.editor_revision)
-            >= (existing.project_generation, existing.editor_revision)
-    })
-}
-
-fn publication_observation_disposition(
-    current_generation: u64,
-    current_revision: Option<u64>,
-    current_context: Option<hex_engine::AudioSourceContext>,
-    current_output_identity: Option<u64>,
-    observation_context: hex_engine::AudioSourceContext,
-    observation_output_identity: u64,
-) -> PublicationObservationDisposition {
-    let observed = (
-        observation_context.project_generation,
-        observation_context.editor_revision,
-    );
-    if observation_context.project_generation < current_generation
-        || current_revision.is_some_and(|revision| {
-            observation_context.project_generation == current_generation
-                && observation_context.editor_revision < revision
-        })
-    {
-        return PublicationObservationDisposition::Stale;
-    }
-    let Some(current_context) = current_context else {
-        return PublicationObservationDisposition::Wait;
-    };
-    let current = (
-        current_context.project_generation,
-        current_context.editor_revision,
-    );
-    if observed < current {
-        return PublicationObservationDisposition::Stale;
-    }
-    if observed > current {
-        return PublicationObservationDisposition::Wait;
-    }
-    match current_output_identity {
-        Some(identity) if identity == observation_output_identity => {
-            PublicationObservationDisposition::Apply
-        }
-        Some(_) => PublicationObservationDisposition::Stale,
-        None => PublicationObservationDisposition::Wait,
-    }
-}
+mod audio_event_correlation;
+pub(super) use audio_event_correlation::PublicationObservationDisposition;
+use audio_event_correlation::{
+    AudioEventDisposition, audio_event_disposition, future_audio_result_replaces,
+    publication_observation_disposition, publication_observation_replaces,
+};
 
 // A comparison may retain its exact source context while authoring advances. Normalize only
 // contexts accepted by the sealed comparison binding; intermediate revisions remain stale.
@@ -745,10 +653,11 @@ impl EditorView {
                     binding,
                     device,
                     parameter,
-                    sequence,
+                    value,
+                    ..
                 } => {
                     super::device_panel::vst3_parameters::touched(
-                        self, source, binding, device, parameter, sequence,
+                        self, source, binding, device, parameter, value,
                     );
                     changed = true;
                 }
@@ -1207,6 +1116,7 @@ impl EditorView {
             .worker_requests_pending
             .saturating_add(self.pending_requests.len());
         let mut visible_change = self.poll_audio_recovery() || logging_changed;
+        visible_change |= self.tick_automation_close(cx);
         if let Ok(view) = self.service.try_solo_view() {
             visible_change |= self.observe_solo_view(view);
         }
@@ -1222,6 +1132,7 @@ impl EditorView {
         visible_change |= self.poll_browser_sample_playback();
         visible_change |= self.tick_gain_recording();
         visible_change |= self.tick_native_automation_recording();
+        visible_change |= self.tick_automation_take_recovery();
         visible_change |= self.tick_midi_recording();
         visible_change |= self.tick_sampler_parameter();
         visible_change |= self.tick_computer_keyboard();
@@ -1272,6 +1183,7 @@ impl EditorView {
                     visible_change = true;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    visible_change |= self.automation_close_disconnected(cx);
                     if self.state.is_none() {
                         let reason = self
                             .service
@@ -1300,6 +1212,8 @@ impl EditorView {
                     visible_change |= self.retire_pending_audio_events();
                     visible_change |= self.retire_pending_clip_loop();
                     visible_change |= self.clear_pending_bypass();
+                    visible_change |= self.cancel_modulation_target_drag();
+                    visible_change |= self.retire_pending_modulation_depth();
                     visible_change |= self.cancel_audio_loop_gesture();
                     visible_change |= self.retire_pending_clip_move();
                     visible_change |= self.retire_pending_clip_paint();
@@ -1359,6 +1273,7 @@ impl EditorView {
         visible_change |= self.pump_device_gesture();
         visible_change |= self.tick_stopped_vst3_restore();
         visible_change |= self.retire_abandoned_bypass();
+        visible_change |= self.retire_abandoned_modulation_depth();
         visible_change |= self.retire_abandoned_duplicate();
         visible_change |= self.retire_abandoned_track_clipboard();
         visible_change |= self.retire_abandoned_group_copy();
@@ -2371,9 +2286,11 @@ impl EditorView {
         }
         self.document_format_upgrade_required = event.document_format_upgrade_required;
         self.recovery_failure = event.recovery_failure.clone();
+        self.observe_automation_close(&event);
         let sampler_edit_complete = event.sampler_edit_complete;
         self.plugin_effect_complete(&event);
         self.native_automation_take_completion(&event);
+        self.observe_automation_take_recovery(&event);
         if let Some(result) = event.plugin_parameters.take() {
             super::device_panel::vst3_parameters::install_result(
                 self,
@@ -2392,6 +2309,7 @@ impl EditorView {
         let audio_placement_selection = self.audio_events_request_complete(&event);
         self.clip_loop_request_complete(&event);
         self.bypass_request_complete(&event);
+        self.modulation_depth_complete(&event);
         self.clip_move_request_complete(&event);
         self.clip_paint_request_complete(&event);
         self.truncated_import
@@ -2404,6 +2322,7 @@ impl EditorView {
         self.midi_drag_request_complete(&event);
         self.advance_midi_origin_view(&event);
         self.fade_request_complete(&event);
+        self.locators.observe(self.project_generation, &event);
         self.clip_gain_complete(&event);
         self.gain_request_complete(&event);
         self.gain_take_request_complete(&event);
@@ -3118,6 +3037,18 @@ impl EditorView {
         if let Some(result) = event.tuning_library.as_ref() {
             self.tuning_library_complete(result);
         }
+        if event.active_device_gesture.is_none()
+            && let Some(ack) = event.gesture_ack.as_ref()
+            && self.device_gesture.snapshot().is_some_and(|snapshot| {
+                snapshot.key == ack.key
+                    && matches!(
+                        snapshot.target,
+                        hex_session::device_gesture::GestureTarget::PluginParameter { .. }
+                    )
+            })
+        {
+            self.probe_failed_plugin_automation();
+        }
         let mut matched_scroll_ack = None;
         if event.gesture_protocol_ack
             && let Some(ack) = event.gesture_ack.as_ref()
@@ -3132,6 +3063,12 @@ impl EditorView {
         {
             self.error = Some(reason.clone().into());
         }
+        self.observe_vst3_automation_arm(
+            event.project_replaced,
+            event.gesture_ack.as_ref(),
+            event.active_device_gesture.is_some(),
+            revision,
+        );
         if super::device_gesture::actor_retired_gesture(
             event.project_replaced,
             event.active_device_gesture.is_some(),
@@ -3522,9 +3459,14 @@ impl EditorView {
             return false;
         }
         if self.native_automation_recorder.busy()
+            && !self
+                .native_automation_recorder
+                .permits_original_editor_window(&request)
             && !matches!(
                 &request,
                 Request::DeviceAutomationTake { .. }
+                    | Request::StartPluginEditorRecording { .. }
+                    | Request::StopPluginEditorRecording { .. }
                     | Request::RestartAudio { .. }
                     | Request::RestartRecovery(_)
             )
@@ -5266,58 +5208,6 @@ fn queued_action_is_current(
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SessionTicketOutcome {
-    Consumed,
-    Rejected,
-    Superseded,
-    Interrupted,
-}
-
-fn reconcile_session_receipt(
-    pending: Option<(u64, u64)>,
-    current_generation: u64,
-    receipt: hex_audio::prepared::ActionOutcomeReceipt,
-) -> (Option<(u64, u64)>, Option<SessionTicketOutcome>) {
-    let Some((ticket, generation)) = pending else {
-        return (None, None);
-    };
-    if generation != current_generation {
-        return (None, None);
-    }
-    if ticket != receipt.ticket {
-        return (Some((ticket, generation)), None);
-    }
-    let outcome = match receipt.outcome {
-        hex_audio::prepared::ActionOutcome::Applied => SessionTicketOutcome::Consumed,
-        hex_audio::prepared::ActionOutcome::Rejected(_) => SessionTicketOutcome::Rejected,
-        hex_audio::prepared::ActionOutcome::Superseded => SessionTicketOutcome::Superseded,
-        hex_audio::prepared::ActionOutcome::Interrupted => SessionTicketOutcome::Interrupted,
-    };
-    (None, Some(outcome))
-}
-
-fn reconcile_session_ticket(
-    pending: Option<(u64, u64)>,
-    current_generation: u64,
-    consumed_high_water: u64,
-    rejected_ticket: Option<u64>,
-) -> (Option<(u64, u64)>, Option<SessionTicketOutcome>) {
-    let Some((ticket, generation)) = pending else {
-        return (None, None);
-    };
-    if generation != current_generation {
-        return (None, None);
-    }
-    if rejected_ticket == Some(ticket) {
-        return (None, Some(SessionTicketOutcome::Rejected));
-    }
-    if consumed_high_water >= ticket {
-        return (None, Some(SessionTicketOutcome::Consumed));
-    }
-    (Some((ticket, generation)), None)
-}
-
 fn fault_with_action_errors(
     existing: &Option<super::display_error::DisplayError>,
     diagnostic: &str,
@@ -5380,213 +5270,13 @@ fn allows_non_open_request(
 }
 
 #[cfg(test)]
-mod audio_event_correlation_tests {
-    use super::{
-        AudioEventDisposition as D, PublicationObservationDisposition as P,
-        audio_event_disposition, future_audio_result_replaces, publication_observation_disposition,
-        publication_observation_replaces,
-    };
-    use hex_engine::AudioSourceContext;
-
-    fn context(generation: u64, revision: u64) -> AudioSourceContext {
-        AudioSourceContext {
-            project_generation: generation,
-            editor_revision: revision,
-        }
-    }
-
-    #[test]
-    fn automatic_same_generation_result_cannot_replace_explicit_restart() {
-        let pending = Some((7, 41));
-        assert_eq!(audio_event_disposition(7, pending, 7, None), D::Ignore);
-        // Both automatic success and automatic failure use the same correlation rule.
-        assert_eq!(audio_event_disposition(7, pending, 7, Some(41)), D::Current);
-        assert_eq!(audio_event_disposition(7, pending, 7, Some(40)), D::Ignore);
-    }
-
-    #[test]
-    fn future_unavailable_result_is_current_after_canonical_generation_advances() {
-        assert_eq!(audio_event_disposition(7, None, 8, None), D::Future);
-        assert_eq!(audio_event_disposition(8, None, 8, None), D::Current);
-    }
-
-    #[test]
-    fn stale_results_and_unmatched_restart_requests_are_ignored() {
-        assert_eq!(audio_event_disposition(8, None, 7, None), D::Ignore);
-        assert_eq!(
-            audio_event_disposition(8, Some((8, 41)), 8, Some(40)),
-            D::Ignore
-        );
-        assert_eq!(
-            audio_event_disposition(8, Some((8, 41)), 9, Some(41)),
-            D::Ignore
-        );
-    }
-
-    #[test]
-    fn future_auto_result_supersedes_older_restart_and_replays_on_new_generation() {
-        let older_restart = Some((7, 41));
-        assert_eq!(
-            audio_event_disposition(7, older_restart, 8, None),
-            D::Future
-        );
-        assert!(future_audio_result_replaces(Some(7), 8));
-        assert_eq!(audio_event_disposition(8, None, 8, None), D::Current);
-        assert!(!future_audio_result_replaces(Some(9), 8));
-    }
-
-    #[test]
-    fn future_result_stays_queued_until_its_generation_and_replaces_only_older_results() {
-        assert!(future_audio_result_replaces(None, 10));
-        assert!(!future_audio_result_replaces(Some(10), 9));
-        assert!(future_audio_result_replaces(Some(10), 11));
-        assert_eq!(audio_event_disposition(8, None, 10, None), D::Future);
-        assert_eq!(audio_event_disposition(10, None, 10, None), D::Current);
-    }
-
-    #[test]
-    fn submitted_waits_for_state_and_opened_client_in_either_order_then_consumes_once() {
-        let submitted = context(5, 12);
-
-        let mut pending = Some((submitted, 70));
-        assert_eq!(
-            publication_observation_disposition(
-                5,
-                Some(11),
-                Some(context(5, 11)),
-                None,
-                submitted,
-                70
-            ),
-            P::Wait
-        );
-        assert_eq!(
-            publication_observation_disposition(5, Some(12), Some(submitted), None, submitted, 70),
-            P::Wait
-        );
-        assert_eq!(
-            publication_observation_disposition(
-                5,
-                Some(12),
-                Some(submitted),
-                Some(70),
-                submitted,
-                70
-            ),
-            P::Apply
-        );
-        if pending.is_some_and(|(context, identity)| {
-            publication_observation_disposition(
-                5,
-                Some(12),
-                Some(submitted),
-                Some(70),
-                context,
-                identity,
-            ) == P::Apply
-        }) {
-            pending.take();
-        }
-        assert!(
-            pending.is_none(),
-            "a matching submitted observation is consumed"
-        );
-
-        // The reverse arrival order (matching client before the canonical state).
-        assert_eq!(
-            publication_observation_disposition(
-                5,
-                Some(11),
-                Some(context(5, 11)),
-                Some(70),
-                submitted,
-                70
-            ),
-            P::Wait
-        );
-        assert_eq!(
-            publication_observation_disposition(
-                5,
-                Some(12),
-                Some(submitted),
-                Some(70),
-                submitted,
-                70
-            ),
-            P::Apply
-        );
-    }
-
-    #[test]
-    fn same_document_newer_revision_is_held_until_that_revision_arrives() {
-        let newer = context(5, 13);
-        assert_eq!(
-            publication_observation_disposition(
-                5,
-                Some(12),
-                Some(context(5, 12)),
-                Some(70),
-                newer,
-                70
-            ),
-            P::Wait
-        );
-        assert_eq!(
-            publication_observation_disposition(5, Some(13), Some(newer), Some(70), newer, 70),
-            P::Apply
-        );
-    }
-
-    #[test]
-    fn stale_contexts_and_wrong_output_roots_are_discarded() {
-        let current = context(5, 13);
-        assert_eq!(
-            publication_observation_disposition(
-                5,
-                Some(13),
-                Some(current),
-                Some(70),
-                context(4, 99),
-                70
-            ),
-            P::Stale
-        );
-        assert_eq!(
-            publication_observation_disposition(
-                5,
-                Some(13),
-                Some(current),
-                Some(70),
-                context(5, 12),
-                70
-            ),
-            P::Stale
-        );
-        assert_eq!(
-            publication_observation_disposition(5, Some(13), Some(current), Some(71), current, 70),
-            P::Stale
-        );
-    }
-
-    #[test]
-    fn newer_publication_context_cannot_be_overwritten_by_an_older_observation() {
-        let newest = context(6, 2);
-        let older = context(5, 900);
-        assert!(publication_observation_replaces(None, newest));
-        assert!(!publication_observation_replaces(Some(newest), older));
-        assert!(publication_observation_replaces(Some(older), newest));
-        assert!(publication_observation_replaces(Some(newest), newest));
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::{
         SessionTicketOutcome, allows_non_open_request, clear_rejected_scene_duplicate,
         intent_desired_playing, latest_applied_canonical_candidate, pending_playback_for_state,
         preview_source_is_current, promote_playback_candidates, queued_action_is_current,
-        reconcile_session_receipt, reconcile_session_ticket, rejected_candidate_project,
-        rejected_preview_candidate, retained_install_fresh_policy,
+        reconcile_session_receipt, rejected_candidate_project, rejected_preview_candidate,
+        retained_install_fresh_policy,
     };
     use crate::editor::audio_admission::{AudioAdmissionStatus, ProjectRevision};
     use crate::editor::{PendingPlaybackAction, PendingSceneDuplicate, PlaybackCandidate};
@@ -6051,26 +5741,6 @@ mod tests {
             .unwrap();
         callback.begin_block();
         control.reclaim();
-    }
-
-    #[test]
-    fn session_ticket_feedback_clears_on_consumption_or_matching_rejection() {
-        assert_eq!(
-            reconcile_session_ticket(Some((5, 7)), 7, 4, None),
-            (Some((5, 7)), None)
-        );
-        assert_eq!(
-            reconcile_session_ticket(Some((5, 7)), 7, 5, None),
-            (None, Some(SessionTicketOutcome::Consumed))
-        );
-        assert_eq!(
-            reconcile_session_ticket(Some((5, 7)), 7, 5, Some(5)),
-            (None, Some(SessionTicketOutcome::Rejected))
-        );
-        assert_eq!(
-            reconcile_session_ticket(Some((5, 7)), 8, 5, None),
-            (None, None)
-        );
     }
 
     #[test]
