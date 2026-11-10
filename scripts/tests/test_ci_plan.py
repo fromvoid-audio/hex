@@ -2233,6 +2233,41 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertTrue(any(all(name in step.argv for name in (drag, worker, group))
                             for step in steps if step.step_id == "ui-feature-tests"))
 
+    def test_stretch_projection_retains_real_cache_consumer(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []},
+                      "dependencies": [], "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::waveform_stretch::projection::"
+        cache = "editor::waveform_stretch::tests::geometry_cache_replaces_preview_snapshot_and_distinguishes_source_and_map"
+        names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/waveform_stretch/projection.rs"], inventory, [owner])
+        self.assertTrue(any(unit.startswith(name) for name in names[owner]))
+        self.assertTrue(any(cache.startswith(name) for name in names[owner]))
+        consumers = (
+            "editor::waveform::resize_tests::silent_left_prefix_keeps_waveform_and_geometry_through_real_worker_ack",
+            "editor::waveform_geometry::", "editor::waveform_loop::", "editor::waveform_source::",
+            "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
+            "editor::sampler_parameter::tests::source_hints_and_paint_require_same_view_source_facts_and_context",
+            "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",
+            "editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform",
+        )
+        for consumer in consumers:
+            self.assertTrue(any(consumer.startswith(name) for name in names[owner]))
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                  "boundary": boundary, "cargo_inventory": inventory, "paths": []})
+        self.assertTrue(any("unit_editor_logic" in step.argv and step.requires_tests
+                            and any(unit.startswith(arg) for arg in step.argv) for step in steps))
+        feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+        for consumer in consumers:
+            self.assertTrue(any(consumer.startswith(arg) for arg in feature.argv))
+        for source in ("waveform_geometry.rs", "waveform_loop.rs", "waveform.rs"):
+            reverse = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + source], inventory, [owner])
+            self.assertTrue(any(unit.startswith(name) for name in reverse[owner]))
+
     def test_session_feedback_keeps_real_callback_and_window_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
