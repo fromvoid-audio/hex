@@ -277,6 +277,7 @@ UI_UNIT_TARGETS = {"editor::time_move_preview::intervals::tests::": "unit_editor
                    "editor::browser::tree::state::": "unit_editor_logic",
                    "editor::arrangement_map::model::": "unit_editor_logic",
                    "editor::controller::session_feedback::": "unit_editor_logic",
+                   "editor::waveform::paint_geometry::": "unit_editor_logic",
                    "editor::waveform_geometry::grid::": "unit_editor_logic",
                    "editor::waveform_loop::projection::": "unit_editor_logic",
                    "editor::waveform_stretch::accepted_root::": "unit_editor_logic",
@@ -488,6 +489,29 @@ def doc_example_owners(root: Path, paths: list[str], inventory: list[dict]) -> l
     return sorted(owners)
 
 
+WAVEFORM_PAINT_GEOMETRY_UNIT = "editor::waveform::paint_geometry::"
+WAVEFORM_PAINT_GEOMETRY_TESTS = {
+    "editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform",
+    "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",
+    "editor::audio_event_editor::workflow_tests::cut_publishes_clipboard_on_ack_and_paste_survives_save_reopen_with_original_media",
+    "editor::fade_handles::ui_tests::released_two_axis_fade_stays_painted_until_real_worker_ack",
+    "editor::fades::musical_tests::transformed_cropped_musical_fades_keep_readouts_reset_adjust_and_projected_curve",
+    "editor::waveform::tests::waveform_canvas_paints_full_clip_extent",
+    "editor::waveform::waveform_header_ui_test::waveform_body_painter_stays_below_ordinary_selected_and_looped_headers",
+    "editor::waveform_geometry::tests::event_detail_keeps_a_transient_in_its_visible_column",
+}
+WAVEFORM_PAINT_GEOMETRY_CONSUMERS = {
+    "crates/hex-ui/src/editor/audio_event_editor/waveform_preview.rs",
+    "crates/hex-ui/src/editor/audio_event_editor/free_placement_tests.rs",
+    "crates/hex-ui/src/editor/audio_event_editor/tests.rs",
+    "crates/hex-ui/src/editor/audio_event_editor/workflow_tests.rs",
+    "crates/hex-ui/src/editor/fade_handles_ui_test.rs",
+    "crates/hex-ui/src/editor/fades/musical_tests.rs",
+    "crates/hex-ui/src/editor/tracks.rs",
+    "crates/hex-ui/src/editor/waveform_geometry.rs",
+    "crates/hex-ui/src/editor/waveform_header_ui_test.rs",
+}
+
 def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                         tested: list[str]) -> dict[str, list[str]]:
     """Per-owner libtest filters for module-scoped merges (user policy, 1 November 2026).
@@ -553,6 +577,8 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
     # when that source changes, including the grid's geometry consumers.
     if "crates/hex-ui/src/editor/viewport.rs" in executable and "hex-ui" in tested:
         filters.setdefault("hex-ui", set()).update({"editor::waveform_geometry::grid::", "editor::arrangement_map::model::"})
+    if "hex-ui" in tested and WAVEFORM_PAINT_GEOMETRY_CONSUMERS.intersection(executable):
+        filters.setdefault("hex-ui", set()).add(WAVEFORM_PAINT_GEOMETRY_UNIT)
     # The theme source is compiled by path in each consumer. Run its own text
     # contract alongside storage's test, without widening other storage edits.
     if "crates/hex-storage/src/text.rs" in executable:
@@ -588,6 +614,10 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                         names.update(cohort)
                 if len(names) == before:
                     break
+            # These exact consumer checks exercise the projection owner. They
+            # do not seed unrelated fade and waveform dependency cohorts.
+            if any(WAVEFORM_PAINT_GEOMETRY_UNIT.startswith(name) for name in names):
+                names.update(WAVEFORM_PAINT_GEOMETRY_TESTS)
         # A filter already covered by a broader selected module is redundant.
         selected[owner] = sorted(n for n in names if not any(n != o and n.startswith(o) for o in names))
     return selected
