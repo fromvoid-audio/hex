@@ -2098,7 +2098,16 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::session_audio_panel::",
                                   "editor::session_grid::actions::", "editor::session_grid::tests::",
                                   "editor::session_navigation::", "editor::session_navigation_ui_test::",
-                                  "editor::session_route_view::", "editor::theme_settings::tests::",
+                                  "editor::session_route_view::",
+                                  "editor::tempo_input::keyboard_tests::focused_project_arrows_adjust_local_draft_then_commit_exact_micro_bpm",
+                                  "editor::tempo_input::keyboard_tests::project_steps_preserve_bounds_precision_cancel_invalid_and_composition",
+                                  "editor::tempo_input::tests::project_tempo_same_value_explicit_commit_collapses_later_points_and_cursor_is_display_only",
+                                  "editor::tempo_input::value::",
+                                  "editor::tempo_input_ui_test::project_tempo_blur_commits_valid_text_and_invalid_blur_releases_editor_shortcuts",
+                                  "editor::tempo_input_ui_test::project_tempo_cursor_movement_cannot_retarget_an_active_draft",
+                                  "editor::tempo_input_ui_test::project_tempo_direct_input_validation_cancel_focus_and_canonical_commit",
+                                  "editor::tempo_input_ui_test::project_tempo_stale_revision_and_project_switch_retire_drafts",
+                                  "editor::theme_settings::tests::",
                                   "editor::time_move_preview::intervals::tests::",
                                   "editor::time_move_preview::visual_tests::fragment_titles_cuts_crops_and_compact_body_preserve_source_mapping",
                                   "editor::track_defaults::",
@@ -2285,6 +2294,41 @@ class ModuleScopeTests(unittest.TestCase):
         for path in ("browser/tree.rs", "browser_ui_test.rs", "browser.rs"):
             selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
             self.assertTrue(any(unit.startswith(name) for name in selected[owner]))
+
+    def test_project_tempo_value_keeps_unit_and_focused_commit_coverage(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::tempo_input::value::"
+        consumers = [
+            "editor::tempo_input::keyboard_tests::focused_project_arrows_adjust_local_draft_then_commit_exact_micro_bpm",
+            "editor::tempo_input::keyboard_tests::project_steps_preserve_bounds_precision_cancel_invalid_and_composition",
+            "editor::tempo_input::tests::project_tempo_same_value_explicit_commit_collapses_later_points_and_cursor_is_display_only",
+            "editor::tempo_input_ui_test::project_tempo_direct_input_validation_cancel_focus_and_canonical_commit",
+            "editor::tempo_input_ui_test::project_tempo_blur_commits_valid_text_and_invalid_blur_releases_editor_shortcuts",
+            "editor::tempo_input_ui_test::project_tempo_stale_revision_and_project_switch_retire_drafts",
+            "editor::tempo_input_ui_test::project_tempo_cursor_movement_cannot_retarget_an_active_draft",
+        ]
+        path = "crates/hex-ui/src/editor/tempo_input/value.rs"
+        names = plan.module_test_filters(root, [path], inventory, [owner])
+        self.assertEqual(names, {owner: sorted([unit, *consumers])})
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": [path]})
+        unit_step = next(step for step in steps if "unit_editor_logic" in step.argv)
+        self.assertTrue(unit_step.requires_tests)
+        self.assertIn(unit, unit_step.argv)
+        integration = next(step for step in steps if step.step_id == "ui-feature-tests")
+        self.assertTrue(all(case in integration.argv for case in consumers))
+        for source in ("tempo_input.rs", "tempo_input/keyboard_tests.rs", "tempo_input_ui_test.rs"):
+            with self.subTest(source=source):
+                selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + source], inventory, [owner])
+                for required in (unit, *consumers):
+                    self.assertTrue(any(required.startswith(name) for name in selected[owner]))
 
     def test_time_move_interval_split_keeps_unit_and_window_consumers(self):
         root = SCRIPTS.parent

@@ -96,3 +96,5 @@ mod group_overview;
 
 // Compile the production interval splitter without pulling in GPUI or Service.
 mod time_move_preview;
+
+mod tempo_input;
