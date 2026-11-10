@@ -101,3 +101,6 @@ mod tempo_input;
 
 #[path = "section_launch.rs"]
 mod section_launch;
+
+#[path = "track_latency.rs"]
+mod track_latency;

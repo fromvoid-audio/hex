@@ -2134,9 +2134,13 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::time_move_preview::visual_tests::fragment_titles_cuts_crops_and_compact_body_preserve_source_mapping",
                                   "editor::track_clipboard_ui_test::console_fold_hides_cells_navigation_and_invalidates_column_frame",
                                   "editor::track_defaults::",
+                                  "editor::track_latency::presentation::",
+                                  "editor::track_latency::tests::view_action_mounts_the_indicator_in_actual_headers",
                                   "editor::track_meters::decay::", "editor::track_meters::follower::",
                                   "editor::track_meters::main_output::tests::", "editor::track_meters::scale::",
-                                  "editor::track_meters::selection::", "editor::track_meters::tests::", *names,
+                                  "editor::track_meters::selection::", "editor::track_meters::tests::",
+                                  "editor::track_performance::tests::view_actions_fit_independent_indicators_in_arrangement_and_console_headers",
+                                  *names,
                                   "editor::waveform::", "editor::waveform_columns::", "editor::waveform_geometry::", "editor::waveform_loop::",
                                   "editor::waveform_source::", "editor::waveform_stretch::",
                                   "log_viewer::copy_tests::copy_all_uses_frozen_filters_and_real_clipboard_and_read_failures_keep_previous_copy",
@@ -2740,6 +2744,56 @@ class ModuleScopeTests(unittest.TestCase):
             feature = next(step for step in steps if step.step_id == "ui-feature-tests")
             for consumer in consumers:
                 self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv))
+
+    def test_track_latency_presentation_keeps_header_render_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::track_latency::presentation::"
+        consumers = [
+            "editor::track_latency::tests::view_action_mounts_the_indicator_in_actual_headers",
+            "editor::track_performance::tests::view_actions_fit_independent_indicators_in_arrangement_and_console_headers",
+        ]
+        paths = [
+            ("crates/hex-ui/src/editor/track_latency/presentation.rs",
+             "editor::track_latency::presentation"),
+            ("crates/hex-ui/src/editor/track_latency.rs", "editor::track_latency"),
+            ("crates/hex-ui/src/editor/track_performance/tests.rs",
+             "editor::track_performance::tests"),
+            ("crates/hex-ui/src/editor/track_performance.rs", "editor::track_performance"),
+        ]
+        modules = plan.module_paths(root / "crates/hex-ui/src")
+        for path, module in paths:
+            self.assertEqual(modules[(root / path).resolve()], module)
+            names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
+            if path == paths[0][0]:
+                self.assertEqual(names, sorted([unit, *consumers]))
+            if path == paths[1][0]:
+                self.assertIn("editor::track_latency::", names)
+            if path == paths[3][0]:
+                self.assertIn("editor::track_performance::", names)
+            self.assertTrue(any(unit.startswith(selected) for selected in names),
+                            f"{path} does not select {unit}: {names}")
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in names),
+                                f"{path} does not select {consumer}: {names}")
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": {owner: names}}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                      "boundary": boundary, "cargo_inventory": inventory,
+                                      "paths": [path]})
+            unit_step = next(step for step in steps if "unit_editor_logic" in step.argv)
+            self.assertTrue(unit_step.requires_tests)
+            self.assertTrue(any(unit.startswith(selected) for selected in unit_step.argv))
+            if path == paths[1][0]:
+                self.assertIn("editor::track_latency::", unit_step.argv)
+            feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv),
+                                f"{path} feature step does not select {consumer}")
 
     def test_device_display_unit_target_follows_its_owner(self):
         root = SCRIPTS.parent
