@@ -2322,6 +2322,7 @@ impl EditorView {
         self.midi_drag_request_complete(&event);
         self.advance_midi_origin_view(&event);
         self.fade_request_complete(&event);
+        self.locators.observe(self.project_generation, &event);
         self.clip_gain_complete(&event);
         self.gain_request_complete(&event);
         self.gain_take_request_complete(&event);
