@@ -2091,6 +2091,7 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::browser::ui_test::samples_catalog_combines_roots_and_active_place_indexed_search",
                                   "editor::browser::ui_test::search_selection::toggle_fixture_same_root_retains_actual_catalog_job_after_view_and_caller_drop",
                                   "editor::clip_drag_ui_test::rendered_move_retains_destination_until_real_worker_ack",
+                                  "editor::clip_drag_ui_test::shift_edge_stretch_previews_live_and_stationary_modifier_changes_dispatch_one_edit",
                                   "editor::computer_keyboard::state::", "editor::computer_keyboard::tests::",
                                   "editor::console_track_page::",
                                   "editor::controller::audio_event_correlation::",
@@ -2106,6 +2107,8 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::drag::geometry::",
                                   "editor::drag::group_drag_ui_test::stationary_group_snap_modifier_uses_one_anchor_delta_and_authoritative_release",
                                   "editor::drag::tests::",
+                                  "editor::drag_autoscroll::resize_pan_tests::inward_pan_then_supported_stretch_release_commits_once_and_undoes",
+                                  "editor::drag_autoscroll::resize_pan_tests::resize_pan_preserves_stationary_snap_and_shift_stretch_preview_release",
                                   "editor::edit_cursor_ui_test::audio_time_move_preview_masks_overlaps_and_restores_when_cancelled",
                                   "editor::edit_cursor_ui_test::midi_time_move_preview_translates_cached_notes_to_the_destination",
                                   "editor::edit_cursor_ui_test::pending_time_move_preview_survives_until_worker_failure_then_restores_source",
@@ -2140,6 +2143,9 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::track_meters::main_output::tests::", "editor::track_meters::scale::",
                                   "editor::track_meters::selection::", "editor::track_meters::tests::",
                                   "editor::track_performance::tests::view_actions_fit_independent_indicators_in_arrangement_and_console_headers",
+                                  "editor::trim::resize_release_tests::shift_resize_preserves_visible_extent_through_release_and_real_worker_ack",
+                                  "editor::trim::stretch_limit_tests::",
+                                  "editor::trim::stretch_preview::resolver::",
                                   *names,
                                   "editor::waveform::", "editor::waveform_columns::", "editor::waveform_geometry::", "editor::waveform_loop::",
                                   "editor::waveform_source::", "editor::waveform_stretch::",
@@ -2790,6 +2796,64 @@ class ModuleScopeTests(unittest.TestCase):
             self.assertTrue(any(unit.startswith(selected) for selected in unit_step.argv))
             if path == paths[1][0]:
                 self.assertIn("editor::track_latency::", unit_step.argv)
+            feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv),
+                                f"{path} feature step does not select {consumer}")
+
+    def test_stretch_preview_resolver_keeps_resize_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::trim::stretch_preview::resolver::"
+        consumers = [
+            "editor::trim::stretch_limit_tests::",
+            "editor::trim::resize_release_tests::shift_resize_preserves_visible_extent_through_release_and_real_worker_ack",
+            "editor::clip_drag_ui_test::shift_edge_stretch_previews_live_and_stationary_modifier_changes_dispatch_one_edit",
+            "editor::drag_autoscroll::resize_pan_tests::resize_pan_preserves_stationary_snap_and_shift_stretch_preview_release",
+            "editor::drag_autoscroll::resize_pan_tests::inward_pan_then_supported_stretch_release_commits_once_and_undoes",
+        ]
+        paths = [
+            ("crates/hex-ui/src/editor/stretch_preview/resolver.rs",
+             "editor::trim::stretch_preview::resolver"),
+            ("crates/hex-ui/src/editor/trim.rs", "editor::trim"),
+            ("crates/hex-ui/src/editor/stretch_preview.rs", "editor::trim::stretch_preview"),
+            ("crates/hex-ui/src/editor/stretch_limit_tests.rs", "editor::trim::stretch_limit_tests"),
+            ("crates/hex-ui/src/editor/resize_release_tests.rs", "editor::trim::resize_release_tests"),
+            ("crates/hex-ui/src/editor/clip_drag_ui_test.rs", "editor::clip_drag_ui_test"),
+            ("crates/hex-ui/src/editor/resize_pan_tests.rs",
+             "editor::drag_autoscroll::resize_pan_tests"),
+            ("crates/hex-ui/src/editor/drag_autoscroll.rs", "editor::drag_autoscroll"),
+        ]
+        modules = plan.module_paths(root / "crates/hex-ui/src")
+        for path, module in paths:
+            self.assertEqual(modules[(root / path).resolve()], module)
+            names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
+            if path == paths[0][0]:
+                self.assertEqual(names, sorted([unit, *consumers]))
+            if path == paths[1][0]:
+                self.assertIn("editor::trim::", names)
+            if path == paths[2][0]:
+                self.assertIn("editor::trim::stretch_preview::", names)
+            self.assertTrue(any(unit.startswith(selected) for selected in names),
+                            f"{path} does not select {unit}: {names}")
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in names),
+                                f"{path} does not select {consumer}: {names}")
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": {owner: names}}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                      "boundary": boundary, "cargo_inventory": inventory,
+                                      "paths": [path]})
+            unit_step = next(step for step in steps if "unit_editor_logic" in step.argv)
+            self.assertTrue(unit_step.requires_tests)
+            self.assertTrue(any(unit.startswith(selected) for selected in unit_step.argv))
+            if path in (paths[1][0], paths[2][0]):
+                self.assertTrue(any(selected.startswith("editor::trim::")
+                                    for selected in unit_step.argv))
             feature = next(step for step in steps if step.step_id == "ui-feature-tests")
             for consumer in consumers:
                 self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv),
