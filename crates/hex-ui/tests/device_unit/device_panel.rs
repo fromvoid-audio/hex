@@ -7,3 +7,6 @@ mod numeric_display;
 #[allow(dead_code)]
 #[path = "../../src/editor/device_panel/spectrum_display.rs"]
 mod spectrum_display;
+
+#[path = "vst3_parameters.rs"]
+mod vst3_parameters;

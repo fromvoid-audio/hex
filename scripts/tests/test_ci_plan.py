@@ -1987,7 +1987,8 @@ class ModuleScopeTests(unittest.TestCase):
             self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/editor/device_panel/eq_panel/" + path],
                                                       inventory, [owner]), {owner: [name]})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_device.rs"], inventory, [owner]),
-                         {owner: [gestures, group, selection, slope, eq, *names, spectrum]})
+                         {owner: [gestures, group, selection, slope, eq, *names, spectrum,
+                                  "editor::device_panel::vst3_parameters::"]})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
                     "single_run": {owner: "ui-test-support"}, "module_filters": {owner: names}}
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
@@ -2008,6 +2009,27 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertTrue(any(step.step_id == "ui-device-unit-tests" for step in ci.planned_steps({"scope": "full"})))
         health = ci.planned_steps({"scope": "rust", "health": {"python": False, "workspace_inputs": True, "packages": []}})
         self.assertTrue(any(step.step_id == "health-ui-device-unit" for step in health))
+
+    def test_vst3_row_projection_selects_unit_and_panel_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        name = "editor::device_panel::vst3_parameters::"
+        for path in ("crates/hex-ui/src/editor/device_panel/vst3_parameters.rs",
+                     "crates/hex-ui/src/editor/device_panel/vst3_parameters/row_projection.rs"):
+            self.assertEqual(plan.module_test_filters(root, [path], inventory, [owner]), {owner: [name]})
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": {owner: [name]}}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                      "cargo_inventory": inventory, "paths": [path]})
+            unit = next(step for step in steps if "unit_device" in step.argv)
+            integration = next(step for step in steps if step.step_id == "ui-feature-tests")
+            self.assertIn(name, unit.argv)
+            self.assertTrue(unit.requires_tests)
+            self.assertIn(name, integration.argv)
 
     def test_automation_plot_unit_target_follows_its_owner(self):
         root = SCRIPTS.parent
