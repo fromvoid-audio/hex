@@ -301,14 +301,7 @@ pub(super) const UI_EVENT_BUDGET: usize = 2;
 const PLAYBACK_CANDIDATE_CAPACITY: usize = 32;
 
 pub(super) use mode::EditorMode;
-
-#[derive(Clone, Copy, Debug)]
-pub(super) struct PendingPlaybackAction {
-    pub action: PlaybackAction,
-    pub generation: u64,
-    pub revision: Option<u64>,
-    pub(super) intent_token: Option<play_intent::IntentToken>,
-}
+pub(super) use session_grid::PendingPlaybackAction;
 
 struct PendingPlayback {
     project_revision: u64,
