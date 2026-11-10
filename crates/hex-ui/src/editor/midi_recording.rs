@@ -534,7 +534,13 @@ impl EditorView {
                         take.interrupt();
                     }
                     self.midi_recorder.mode = Mode::Interrupted;
-                    self.error = Some(format!("midi recording interrupted · {reason:?} · take retained; discard explicitly").to_lowercase().into());
+                    self.error = Some(
+                        format!(
+                            "midi recording interrupted · {} · take retained; discard explicitly",
+                            super::user_errors::midi_abort(reason)
+                        )
+                        .into(),
+                    );
                 }
             }
         }

@@ -57,41 +57,41 @@ impl NativeBankLoan {
 pub struct ResidentDeviceAssets {
     pub(super) assets: Vec<(AssetId, NativeBankLoan)>,
 }
-pub(super) struct StagedDeviceAsset {
+pub(super) struct StagedDeviceAssets {
     pub(super) destination: Vec<(AssetId, NativeBankLoan)>,
-    pub(super) asset: (AssetId, NativeBankLoan),
     summary: AudioRootStorageSummary,
 }
 /// Lifetime-bound view of the actual uncommitted owner/container. No owner
 /// projection or clone is available, and it cannot outlive the transaction.
 pub struct StagedNativeAssetView<'a> {
     pub(super) store: &'a ResidentDeviceAssets,
-    pub(super) staged: &'a StagedDeviceAsset,
+    pub(super) staged: &'a StagedDeviceAssets,
 }
 impl StagedNativeAssetView<'_> {
+    pub(super) fn loan(&self, asset: AssetId) -> Option<&NativeBankLoan> {
+        self.staged
+            .destination
+            .iter()
+            .chain(&self.store.assets)
+            .find(|(id, _)| *id == asset)
+            .map(|(_, loan)| loan)
+    }
+
     /// Borrow original PCM from this exact staged transaction; no owning handle
     /// escapes and the view cannot outlive either uncommitted source or store.
     pub fn source(&self, asset: AssetId) -> Option<crate::OwnedAudioSourceView<'_>> {
-        if self.staged.asset.0 != asset {
-            return self.store.source(asset);
-        }
-        let bank = &self.staged.asset.1.bank;
+        let bank = &self.loan(asset)?.bank;
         bank.source_view(&bank.source_token(asset).ok()?).ok()
     }
-    /// Expected content from this actual staged bank's immutable catalog.
+
+    /// Expected content from this actual immutable source catalog.
     pub fn original_source_facts_on_control(
         &self,
         asset: AssetId,
     ) -> Result<hex_project::OriginalSourceFacts, ResourcePreparationError> {
-        if self.staged.asset.0 != asset {
-            return self.store.original_source_facts_on_control(asset);
-        }
         let identity = self
-            .staged
-            .asset
-            .1
-            .catalog
-            .identity(asset)
+            .loan(asset)
+            .and_then(|loan| loan.catalog.identity(asset))
             .ok_or(ResourcePreparationError::InvalidSource)?;
         hex_project::OriginalSourceFacts::new(identity.derivation_version, identity.content)
             .map_err(|_| ResourcePreparationError::InvalidSource)
@@ -182,7 +182,6 @@ impl ResidentDeviceAssets {
     }
     fn inventory<'a>(
         &'a self,
-        candidate: Option<&'a NativeBankLoan>,
         destination: Option<&'a Vec<(AssetId, NativeBankLoan)>>,
         legacy_pcm_bytes: usize,
         reservation: AudioStorageLedgerReservation,
@@ -211,7 +210,7 @@ impl ResidentDeviceAssets {
                 Location("legacy-pcm-allowance", 0),
                 legacy_pcm_bytes,
             )?;
-            for asset in self.assets.iter().map(|(_, a)| a).chain(candidate) {
+            for (_, asset) in self.assets.iter().chain(destination.into_iter().flatten()) {
                 asset.visit(ledger)?;
             }
             Ok(())
@@ -223,39 +222,16 @@ impl ResidentDeviceAssets {
         legacy_pcm_bytes: usize,
         reservation: AudioStorageLedgerReservation,
     ) -> Result<AudioRootStorageSummary, AudioStorageError> {
-        self.inventory(None, None, legacy_pcm_bytes, reservation)
+        self.inventory(None, legacy_pcm_bytes, reservation)
     }
-    /// Admit the owned decoded source and construction overlap before canonical
-    /// commit. No old container capacity or owner changes on any refusal.
-    fn stage_on_control(
-        &self,
+    fn stage_bank_on_control(
         asset: AssetId,
         source: OwnedAudioSource,
-        legacy_pcm_bytes: usize,
+        capacity_frames: u64,
         reservation: AudioStorageLedgerReservation,
         max_scan_frames: u64,
         cancel: &AtomicBool,
-    ) -> Result<StagedDeviceAsset, ResourcePreparationError> {
-        cancellation(cancel)?;
-        if self.contains(asset) || self.assets.len() >= hex_project::MAX_ASSETS {
-            return Err(ResourcePreparationError::InvalidSource);
-        }
-        // Row limits bound both the scan and actual metadata allocation.
-        let rows = self
-            .assets
-            .len()
-            .checked_add(2)
-            .ok_or(AudioStorageError::Overflow)?;
-        if rows > reservation.root_rows {
-            return Err(AudioStorageError::Capacity.into());
-        }
-        let capacity_frames = match &source.kind {
-            crate::audio_only_inputs::SourceKind::Resident(audio) => {
-                u64::try_from(audio.pcm_capacity_frames())
-                    .map_err(|_| AudioStorageError::Overflow)?
-            }
-            _ => return Err(ResourcePreparationError::InvalidSource),
-        };
+    ) -> Result<NativeBankLoan, ResourcePreparationError> {
         let expected = OriginalResourceSource {
             asset,
             sample_rate: source.sample_rate(),
@@ -300,32 +276,91 @@ impl ResidentDeviceAssets {
         if owner.parts().is_none() {
             return Err(AudioStorageError::UnsupportedConstructor.into());
         }
-        let asset = (
-            asset,
-            NativeBankLoan {
-                owner,
-                handle: crate::audio_only_inputs::handle()?,
-            },
-        );
+        Ok(NativeBankLoan {
+            owner,
+            handle: crate::audio_only_inputs::handle()?,
+        })
+    }
+
+    /// Admit the exact set without changing any current owner or capacity.
+    fn stage_on_control(
+        &self,
+        sources: impl ExactSizeIterator<Item = (AssetId, OwnedAudioSource)>,
+        legacy_pcm_bytes: usize,
+        reservation: AudioStorageLedgerReservation,
+        max_scan_frames: u64,
+        cancel: &AtomicBool,
+    ) -> Result<StagedDeviceAssets, ResourcePreparationError> {
+        cancellation(cancel)?;
+        let count = sources.len();
+        let total = self
+            .assets
+            .len()
+            .checked_add(count)
+            .ok_or(AudioStorageError::Overflow)?;
+        if count == 0 || total > hex_project::MAX_ASSETS {
+            return Err(ResourcePreparationError::InvalidSource);
+        }
+        if total.checked_add(1).ok_or(AudioStorageError::Overflow)? > reservation.root_rows {
+            return Err(AudioStorageError::Capacity.into());
+        }
+
         let mut destination = Vec::new();
         destination
-            .try_reserve_exact(
-                self.assets
-                    .len()
-                    .checked_add(1)
-                    .ok_or(AudioStorageError::Overflow)?,
-            )
+            .try_reserve_exact(total)
             .map_err(|_| AudioStorageError::Allocation)?;
-        let summary = self.inventory(
-            Some(&asset.1),
-            Some(&destination),
-            legacy_pcm_bytes,
-            reservation,
-        )?;
+        let frame_bytes = std::mem::size_of::<crate::Frame>();
+        let mut pcm_floor = usize::try_from(self.capacity_frames()?)
+            .ok()
+            .and_then(|n| n.checked_mul(frame_bytes))
+            .and_then(|n| n.checked_add(legacy_pcm_bytes))
+            .ok_or(AudioStorageError::Overflow)?;
+        let mut work = max_scan_frames;
+        for (asset, source) in sources {
+            cancellation(cancel)?;
+            if destination.len() >= count
+                || self.contains(asset)
+                || destination.iter().any(|(id, _)| *id == asset)
+            {
+                return Err(ResourcePreparationError::InvalidSource);
+            }
+            let frames = match &source.kind {
+                crate::audio_only_inputs::SourceKind::Resident(audio) => {
+                    audio.pcm_capacity_frames()
+                }
+                _ => return Err(ResourcePreparationError::InvalidSource),
+            };
+            pcm_floor = frames
+                .checked_mul(frame_bytes)
+                .and_then(|bytes| pcm_floor.checked_add(bytes))
+                .ok_or(AudioStorageError::Overflow)?;
+            if pcm_floor > reservation.max_retained_bytes
+                || pcm_floor > reservation.max_construction_peak_bytes
+            {
+                return Err(AudioStorageError::ReservationExceeded.into());
+            }
+            let source_frames = source.frames();
+            work = work
+                .checked_sub(source_frames)
+                .ok_or(ResourcePreparationError::WorkCapacity)?;
+            let capacity = u64::try_from(frames).map_err(|_| AudioStorageError::Overflow)?;
+            let loan = Self::stage_bank_on_control(
+                asset,
+                source,
+                capacity,
+                reservation,
+                source_frames,
+                cancel,
+            )?;
+            destination.push((asset, loan));
+        }
+        if destination.len() != count {
+            return Err(ResourcePreparationError::InvalidSource);
+        }
+        let summary = self.inventory(Some(&destination), legacy_pcm_bytes, reservation)?;
         cancellation(cancel)?;
-        Ok(StagedDeviceAsset {
+        Ok(StagedDeviceAssets {
             destination,
-            asset,
             summary,
         })
     }
@@ -359,10 +394,30 @@ impl ResidentDeviceAssets {
         cancel: &AtomicBool,
         finish: impl FnOnce(&StagedNativeAssetView<'_>) -> Result<T, E>,
     ) -> Result<(T, AudioRootStorageSummary), E> {
+        self.insert_many_checked_on_control(
+            std::iter::once(source),
+            legacy_pcm_bytes,
+            reservation,
+            max_scan_frames,
+            cancel,
+            finish,
+        )
+    }
+
+    /// Prepare one exact original set, then commit only reserved moves after the
+    /// caller's canonical preparation and publication succeed.
+    pub fn insert_many_checked_on_control<T, E: From<ResourcePreparationError>>(
+        &mut self,
+        sources: impl ExactSizeIterator<Item = (AssetId, OwnedAudioSource)>,
+        legacy_pcm_bytes: usize,
+        reservation: AudioStorageLedgerReservation,
+        max_scan_frames: u64,
+        cancel: &AtomicBool,
+        finish: impl FnOnce(&StagedNativeAssetView<'_>) -> Result<T, E>,
+    ) -> Result<(T, AudioRootStorageSummary), E> {
         let mut staged = self
             .stage_on_control(
-                source.0,
-                source.1,
+                sources,
                 legacy_pcm_bytes,
                 reservation,
                 max_scan_frames,
@@ -374,8 +429,9 @@ impl ResidentDeviceAssets {
             store: self,
             staged: &staged,
         })?;
+        let additions = staged.destination.len();
         staged.destination.append(&mut self.assets);
-        staged.destination.push(staged.asset);
+        staged.destination.rotate_left(additions);
         self.assets = staged.destination;
         Ok((result, staged.summary))
     }
@@ -500,5 +556,202 @@ mod tests {
                 Ok::<_, ResourcePreparationError>(())
             })
             .unwrap();
+    }
+
+    #[test]
+    fn original_batch_exposes_exact_union_and_commits_only_after_preparation() {
+        let reservation = AudioStorageLedgerReservation {
+            data_rows: 128,
+            handle_rows: 16,
+            root_rows: 8,
+            max_retained_bytes: 100_000,
+            max_construction_peak_bytes: 100_000,
+        };
+        let cancel = AtomicBool::new(false);
+        let mut assets = ResidentDeviceAssets::default();
+        let [old, left, right] = [id(1), id(2), id(3)];
+        assets
+            .insert_on_control((old, source()), 0, reservation, 4, &cancel, || {
+                Ok::<_, ResourcePreparationError>(())
+            })
+            .unwrap();
+        let before = assets.storage_on_control(0, reservation).unwrap();
+        let old_pointer = assets
+            .source(old)
+            .unwrap()
+            .resident_frames()
+            .unwrap()
+            .as_ptr();
+        let other_pcm = [[-0.5, 0.75]; 4];
+        let sources = || {
+            [
+                (left, source()),
+                (
+                    right,
+                    OwnedAudioSource::try_resident(11025, other_pcm.to_vec())
+                        .ok()
+                        .unwrap(),
+                ),
+            ]
+            .into_iter()
+        };
+        let refusal =
+            assets.insert_many_checked_on_control(sources(), 0, reservation, 7, &cancel, |_| {
+                panic_result("aggregate work budget must refuse before preparation")
+            });
+        assert_eq!(refusal.err(), Some(ResourcePreparationError::WorkCapacity));
+
+        let inspect = |stage: &StagedNativeAssetView<'_>| {
+            assert_eq!(
+                stage
+                    .source(old)
+                    .unwrap()
+                    .resident_frames()
+                    .unwrap()
+                    .as_ptr(),
+                old_pointer
+            );
+            assert_eq!(stage.source(left).unwrap().sample_rate(), 8000);
+            assert_eq!(
+                stage.source(right).unwrap().resident_frames().unwrap(),
+                other_pcm
+            );
+            assert_eq!(
+                stage.original_source_facts_on_control(right).unwrap(),
+                super::super::original_pcm_facts_on_control(11025, &other_pcm, 4, &cancel).unwrap(),
+            );
+            let phase = super::super::DeviceResourcePhase {
+                stores: &[stage.store],
+                registered: &[],
+                selections: &[],
+                outbound: &[],
+                legacy: &[],
+                checked_runtime_bytes: 0,
+                construction_bytes: 0,
+            };
+            let union = stage.inspect(&phase, &phase, reservation).unwrap();
+            assert_eq!(union.retained_frames, 12);
+        };
+        let refused =
+            assets.insert_many_checked_on_control(sources(), 0, reservation, 8, &cancel, |stage| {
+                inspect(stage);
+                Err::<(), _>(ResourcePreparationError::Cancelled)
+            });
+        assert_eq!(refused.err(), Some(ResourcePreparationError::Cancelled));
+        assert_eq!(assets.storage_on_control(0, reservation).unwrap(), before);
+        assert_eq!(assets.ids().collect::<Vec<_>>(), [old]);
+
+        let duplicate = assets.insert_many_checked_on_control(
+            [(left, source()), (left, source())].into_iter(),
+            0,
+            reservation,
+            8,
+            &cancel,
+            |_| panic_result("duplicate identity must refuse before preparation"),
+        );
+        assert_eq!(
+            duplicate.err(),
+            Some(ResourcePreparationError::InvalidSource)
+        );
+        assert_eq!(assets.ids().collect::<Vec<_>>(), [old]);
+
+        assets
+            .insert_many_checked_on_control(sources(), 0, reservation, 8, &cancel, |stage| {
+                inspect(stage);
+                cancel.store(true, Ordering::Relaxed);
+                Ok::<_, ResourcePreparationError>(())
+            })
+            .unwrap();
+        assert_eq!(assets.ids().collect::<Vec<_>>(), [old, left, right]);
+        assert_eq!(
+            assets
+                .source(old)
+                .unwrap()
+                .resident_frames()
+                .unwrap()
+                .as_ptr(),
+            old_pointer
+        );
+    }
+
+    fn panic_result(message: &'static str) -> Result<(), ResourcePreparationError> {
+        panic!("{message}")
+    }
+
+    #[test]
+    fn refused_original_set_does_not_publish_project_or_history() {
+        use hex_project::{Command, Created, Editor, Invalid, Project};
+        fn import(
+            editor: &mut Editor,
+            assets: &mut ResidentDeviceAssets,
+            accept: bool,
+        ) -> Result<(), Invalid> {
+            let commands = ["a.wav", "b.wav"]
+                .into_iter()
+                .map(|path| Command::ImportDeviceAsset {
+                    path: path.into(),
+                    sample_rate: 8000,
+                    frames: 4,
+                })
+                .collect();
+            let reservation = AudioStorageLedgerReservation {
+                data_rows: 128,
+                handle_rows: 16,
+                root_rows: 8,
+                max_retained_bytes: 100_000,
+                max_construction_peak_bytes: 100_000,
+            };
+            editor.execute_many_prepared(commands, |candidate, created| {
+                let ids: Vec<_> = created
+                    .iter()
+                    .map(|result| match *result {
+                        Created::Asset(id) => id,
+                        _ => panic!("original asset result"),
+                    })
+                    .collect();
+                assert_eq!(ids.len(), 2);
+                assert_eq!(candidate.assets().count(), 2);
+                assets
+                    .insert_many_checked_on_control(
+                        ids.iter().map(|&id| (id, source())),
+                        0,
+                        reservation,
+                        8,
+                        &AtomicBool::new(false),
+                        |stage| {
+                            assert!(ids.iter().all(|&id| stage.source(id).is_some()));
+                            if accept {
+                                Ok(())
+                            } else {
+                                Err(ResourcePreparationError::InvalidScope)
+                            }
+                        },
+                    )
+                    .map_err(|_| Invalid("original set not prepared"))
+            })?;
+            Ok(())
+        }
+        let mut editor = Editor::new(Project::new(8000).unwrap(), 8).unwrap();
+        let mut assets = ResidentDeviceAssets::default();
+        let before = editor.project().snapshot();
+        assert_eq!(
+            import(&mut editor, &mut assets, false),
+            Err(Invalid("original set not prepared"))
+        );
+        assert_eq!(editor.project().snapshot(), before);
+        assert!(!editor.can_undo());
+        assert_eq!(assets.ids().count(), 0);
+        import(&mut editor, &mut assets, true).unwrap();
+        assert_eq!(
+            editor
+                .project()
+                .assets()
+                .map(|a| a.id())
+                .collect::<Vec<_>>(),
+            assets.ids().collect::<Vec<_>>()
+        );
+        assert!(editor.undo());
+        assert_eq!(editor.project().assets().count(), 0);
+        assert!(!editor.can_undo());
     }
 }

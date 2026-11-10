@@ -974,12 +974,13 @@ impl CandidateRoot {
                 Ok(()) => work.bank_drop_pending = false,
             }
             let mut bank = lock(&self.0.bank);
-            if let Some(slot) = bank.slots.get_mut(stamp.slot) {
-                if slot.incarnation == stamp.incarnation && slot.identity == Some(stamp.owner) {
-                    slot.phase = Phase::Vacant;
-                    slot.identity = None;
-                    slot.domain_count = 0;
-                }
+            if let Some(slot) = bank.slots.get_mut(stamp.slot)
+                && slot.incarnation == stamp.incarnation
+                && slot.identity == Some(stamp.owner)
+            {
+                slot.phase = Phase::Vacant;
+                slot.identity = None;
+                slot.domain_count = 0;
             }
             return;
         }
@@ -1066,13 +1067,12 @@ impl CandidateRoot {
             Ok(()) => work.metadata_drop_pending = false,
         }
         let mut bank = lock(&self.0.bank);
-        if let Some(slot) = bank.slots.get_mut(stamp.slot) {
-            if slot.incarnation == stamp.incarnation
-                && slot.identity == Some(stamp.owner)
-                && slot.ready.is_some()
-            {
-                slot.phase = Phase::Complete;
-            }
+        if let Some(slot) = bank.slots.get_mut(stamp.slot)
+            && slot.incarnation == stamp.incarnation
+            && slot.identity == Some(stamp.owner)
+            && slot.ready.is_some()
+        {
+            slot.phase = Phase::Complete;
         }
     }
     pub(crate) fn root_id(&self) -> u64 {
@@ -1196,6 +1196,12 @@ impl CandidateRoot {
     #[cfg(test)]
     pub(crate) fn cleanup_scheduled(&self) -> bool {
         lock(&self.0.bank).scheduled
+    }
+    /// Run `f` while holding the eligible domain bank, as a lifecycle cleanup
+    /// pass does, so tests can reproduce contended nonblocking observations.
+    #[cfg(test)]
+    pub(crate) fn with_domain_bank_held<R>(&self, f: impl FnOnce() -> R) -> R {
+        self.0.eligible.with_bank_held(f)
     }
     #[cfg(test)]
     pub(crate) fn test_status(&self) -> String {
@@ -1393,6 +1399,15 @@ mod tests {
             .unwrap()
             .as_ref() as *const dyn Any as *const ();
         root.advance_on_control();
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        // #4132: a later pass cannot complete a failed owner; the failure and
+        // its retained root stay latched, so retirement never releases them.
+        assert!(!crate::lifecycle::finish_cleanup_observed(&root, &status));
+        assert!(root.cleanup_failed());
+        assert_eq!(
+            status.failure(),
+            Some(crate::AudioLifecycleFailure::Cleanup)
+        );
         assert_eq!(drops.load(Ordering::SeqCst), 1);
         assert_eq!(
             lock(&root.0.execution)

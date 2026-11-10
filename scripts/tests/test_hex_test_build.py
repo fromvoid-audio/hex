@@ -1,11 +1,13 @@
 """Deterministic tests for exact-source delivery and interruption recovery."""
 import importlib.util
+import hashlib
 import errno
 import io
 import json
 import os
 from pathlib import Path
 import plistlib
+import py_compile
 import subprocess
 import sys
 import tempfile
@@ -15,6 +17,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from contextlib import contextmanager, redirect_stderr
+from test_ci_target_storage import reuse_fixed_scratch_observations
+from test_local_ci import install_delivery_source_fixture
 
 SPEC = importlib.util.spec_from_file_location("hex_test_build", Path(__file__).resolve().parents[1] / "hex-test-build.py")
 delivery = importlib.util.module_from_spec(SPEC)
@@ -26,6 +30,230 @@ SIGNED = {"identifier": delivery.IDENTITY, "team_identifier": SIGNING["team_iden
 
 
 class DeliveryTests(unittest.TestCase):
+    def test_delivery_refuses_changed_or_missing_candidate_source_before_validation(self):
+        runner = delivery.ci.LocalCiRunner(self.root)
+        report = self.root / "unused.json"
+        report.write_text("{}")
+        for name in ("local-ci.py", "ci_plan.py", "python_test_plan.py", "build_inputs.py",
+                     "ci_checkpoint.py", "ci_target_storage.py"):
+            path = self.root / "scripts" / name
+            original = path.read_bytes()
+            for change in ("changed", "missing", "symlink", "fifo"):
+                with self.subTest(name=name, change=change):
+                    if change == "changed":
+                        path.write_bytes(original + b"\n# changed\n")
+                    else:
+                        path.unlink()
+                        if change == "symlink":
+                            target = self.root / "other-source"
+                            target.write_bytes(original)
+                            path.symlink_to(target)
+                        elif change == "fifo":
+                            os.mkfifo(path)
+                    with patch.object(runner, "_capture_repository_state") as capture:
+                        with self.assertRaisesRegex(delivery.DeliveryError, "source"):
+                            delivery.validate_source(runner, "a" * 40)
+                        with self.assertRaisesRegex(delivery.DeliveryError, "source"):
+                            delivery.validate_ci(report, runner, "a" * 40)
+                        capture.assert_not_called()
+                    if path.is_symlink() or path.exists():
+                        path.unlink()
+                    path.write_bytes(original)
+
+    def test_delivery_checks_supplied_runner_module_not_sys_modules(self):
+        source_path = Path(__file__).resolve().parents[1] / "local-ci.py"
+        source = source_path.read_bytes() + b"\n# independently loaded runner\n"
+        spec = importlib.util.spec_from_file_location("hex_local_ci", source_path)
+        other = importlib.util.module_from_spec(spec)
+        other._DELIVERY_RUNNER_SOURCE_SHA256 = hashlib.sha256(source).hexdigest()
+        with patch.dict(sys.modules, {spec.name: other}):
+            exec(compile(source, str(source_path), "exec", dont_inherit=True), other.__dict__)
+        runner = other.LocalCiRunner(self.root)
+        tree = {"commit": "a" * 40, "dirty": False, "content_sha256": "fixture"}
+        runner.summary["start_tree"] = tree
+        with patch.object(runner, "_capture_repository_state", return_value=True) as capture, \
+                patch.dict(sys.modules, {"hex_local_ci": delivery.ci}):
+            with self.assertRaisesRegex(delivery.DeliveryError, "runner CI source mismatch"):
+                delivery.validate_source(runner, tree["commit"])
+            capture.assert_not_called()
+
+    def test_delivery_checks_independently_loaded_runner_helpers(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            other_root = Path(temporary).resolve()
+            install_delivery_source_fixture(other_root)
+            path = other_root / "scripts/local-ci.py"
+            source = path.read_bytes()
+            tree = {"commit": "a" * 40, "dirty": False, "content_sha256": "fixture"}
+
+            def load_runner(name):
+                spec = importlib.util.spec_from_file_location(name, path)
+                module = importlib.util.module_from_spec(spec)
+                module._DELIVERY_RUNNER_SOURCE_SHA256 = hashlib.sha256(source).hexdigest()
+                with patch.dict(sys.modules, {name: module}):
+                    exec(compile(source, str(path), "exec", dont_inherit=True), module.__dict__)
+                runner = module.LocalCiRunner(self.root)
+                runner.summary["start_tree"] = tree
+                return runner
+
+            matching = load_runner("matching_independent_ci")
+            with patch.object(matching, "_capture_repository_state", return_value=True):
+                self.assertEqual(delivery.validate_source(matching, tree["commit"]), tree)
+
+            helper = other_root / "scripts/build_inputs.py"
+            helper.write_bytes(helper.read_bytes() + b"\n# independently loaded helper\n")
+            mismatched = load_runner("mismatched_independent_ci")
+            with patch.object(mismatched, "_capture_repository_state") as capture:
+                with self.assertRaisesRegex(delivery.DeliveryError, "runner CI source mismatch"):
+                    delivery.validate_source(mismatched, tree["commit"])
+                capture.assert_not_called()
+
+    def test_delivery_rejects_unattested_runner(self):
+        runner = SimpleNamespace(root=self.root)
+        with self.assertRaisesRegex(delivery.DeliveryError, "witness is unavailable"):
+            delivery.validate_source(runner, "a" * 40)
+        source_path = Path(__file__).resolve().parents[1] / "local-ci.py"
+        spec = importlib.util.spec_from_file_location("unattested_runner", source_path)
+        loaded = importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules, {spec.name: loaded}):
+            spec.loader.exec_module(loaded)
+        runner = loaded.LocalCiRunner(self.root)
+        with self.assertRaisesRegex(delivery.DeliveryError, "witness is unavailable"):
+            delivery.validate_source(runner, "a" * 40)
+
+    def test_delivery_refuses_source_change_during_metadata_before_plan_resolution(self):
+        runner = delivery.ci.LocalCiRunner(self.root)
+        tree = {"commit": "a" * 40, "dirty": False, "content_sha256": "fixture"}
+        runner.summary["start_tree"] = tree
+        report = self.root / "scoped.json"
+        report.write_text(json.dumps({"schema_version": 2, "steps": [], "start_tree": tree,
+            "end_tree": tree, "plan": {"scope": "full", "profile": "merge",
+            "qualifies_merge": True, "source": tree["commit"], "base": "b" * 40}}))
+        policy = self.root / "scripts/python_test_plan.py"
+        def metadata(*args, **kwargs):
+            policy.write_bytes(policy.read_bytes() + b"\n# changed during metadata\n")
+            return "{}"
+        with patch.object(runner, "_capture_repository_state", return_value=True), \
+                patch.object(delivery, "run", side_effect=metadata), \
+                patch.object(delivery.ci.ci_plan, "resolve") as resolve:
+            with self.assertRaisesRegex(delivery.DeliveryError, "source mismatch"):
+                delivery.validate_ci(report, runner, tree["commit"])
+            resolve.assert_not_called()
+
+    def test_delivery_runner_descriptors_close_when_wrapping_fails(self):
+        path = Path(__file__).resolve().parents[1] / "hex-test-build.py"
+        spec = importlib.util.spec_from_file_location("delivery_close_probe", path)
+        loaded = importlib.util.module_from_spec(spec)
+        original_open = os.open
+        opened = []
+
+        def track_open(*args, **kwargs):
+            descriptor = original_open(*args, **kwargs)
+            opened.append(descriptor)
+            return descriptor
+
+        with patch.dict(sys.modules, {spec.name: loaded}), \
+                patch.object(os, "open", side_effect=track_open), \
+                patch.object(os, "fdopen", side_effect=OSError("fixture wrap failure")):
+            with self.assertRaisesRegex(OSError, "fixture wrap failure"):
+                spec.loader.exec_module(loaded)
+        self.assertEqual(len(opened), 2)
+        for descriptor in opened:
+            with self.assertRaises(OSError):
+                os.fstat(descriptor)
+
+    def test_delivery_import_executes_current_runner_source_not_stale_pyc(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            scripts = Path(temporary).resolve() / "scripts"
+            scripts.mkdir()
+            original_scripts = Path(__file__).resolve().parents[1]
+            for name in ("hex-test-build.py", "local-ci.py", "ci_plan.py",
+                         "python_test_plan.py", "build_inputs.py", "ci_checkpoint.py",
+                         "ci_target_storage.py", "changelog.py"):
+                shutil.copyfile(original_scripts / name, scripts / name)
+            runner_path = scripts / "local-ci.py"
+            original = runner_path.read_bytes()
+            before, after = b"GIB = 1024 ** 3", b"GIB = 1024 ** 2"
+            self.assertEqual(original.count(before), 1)
+            self.assertEqual(len(before), len(after))
+            py_compile.compile(str(runner_path), doraise=True,
+                               invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP)
+            stamp = runner_path.stat()
+            runner_path.write_bytes(original.replace(before, after, 1))
+            os.utime(runner_path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+
+            # Control proves standard timestamp loading selects the old code.
+            spec = importlib.util.spec_from_file_location("stale_ci_control", runner_path)
+            control = importlib.util.module_from_spec(spec)
+            with patch.dict(sys.modules, {spec.name: control}):
+                spec.loader.exec_module(control)
+            self.assertEqual(control.GIB, 1024 ** 3)
+
+            delivery_path = scripts / "hex-test-build.py"
+            spec = importlib.util.spec_from_file_location("exact_delivery_probe", delivery_path)
+            loaded = importlib.util.module_from_spec(spec)
+            with patch.dict(sys.modules, {spec.name: loaded}):
+                spec.loader.exec_module(loaded)
+                self.assertEqual(loaded.ci.GIB, 1024 ** 2)
+                self.assertEqual(loaded.ci.__name__, "hex_local_ci")
+                self.assertEqual(Path(loaded.ci.__file__), runner_path)
+                self.assertEqual(loaded.ci.__spec__.origin, str(runner_path))
+                self.assertIs(sys.modules[loaded.ci.__name__], loaded.ci)
+
+            # Runtime-only import must work without any checkout CI tooling.
+            runner_path.unlink()
+            (scripts / "changelog.py").unlink()
+            spec = importlib.util.spec_from_file_location("hex_update_runtime", delivery_path)
+            runtime = importlib.util.module_from_spec(spec)
+            with patch.dict(sys.modules, {spec.name: runtime}):
+                spec.loader.exec_module(runtime)
+            self.assertFalse(hasattr(runtime, "ci"))
+            self.assertFalse(hasattr(runtime, "changelog"))
+            self.assertTrue(callable(runtime.apply_after_approved_parent_exit))
+
+    def test_delivery_runner_rejects_symlink_and_fifo_without_blocking(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            scripts = Path(temporary).resolve() / "scripts"
+            scripts.mkdir()
+            original_scripts = Path(__file__).resolve().parents[1]
+            for name in ("hex-test-build.py", "local-ci.py"):
+                shutil.copyfile(original_scripts / name, scripts / name)
+            runner = scripts / "local-ci.py"
+            saved = scripts / "runner-target.py"
+            runner.rename(saved)
+            marker = scripts.parent / "executed"
+            saved.write_text(f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n")
+            delivery_path = scripts / "hex-test-build.py"
+            source = ("import importlib.util, sys; "
+                      "spec = importlib.util.spec_from_file_location('delivery_probe', sys.argv[1]); "
+                      "module = importlib.util.module_from_spec(spec); "
+                      "sys.modules[spec.name] = module; spec.loader.exec_module(module)")
+            for kind in ("symlink", "missing", "directory", "fifo"):
+                if runner.is_symlink() or runner.is_file():
+                    runner.unlink()
+                elif runner.is_dir():
+                    runner.rmdir()
+                if kind == "symlink":
+                    runner.symlink_to(saved.name)
+                elif kind == "directory":
+                    runner.mkdir()
+                elif kind == "fifo":
+                    os.mkfifo(runner)
+                with self.subTest(kind=kind):
+                    result = subprocess.run([sys.executable, "-c", source, str(delivery_path)],
+                                            capture_output=True, text=True, timeout=3, check=False)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("local-ci.py" if kind in ("symlink", "missing") else
+                                  "local CI source is not a regular file", result.stderr)
+                    self.assertFalse(marker.exists())
+
+            # The update helper never opens the substituted runner.
+            spec = importlib.util.spec_from_file_location("hex_update_runtime", delivery_path)
+            runtime = importlib.util.module_from_spec(spec)
+            with patch.dict(sys.modules, {spec.name: runtime}):
+                spec.loader.exec_module(runtime)
+            self.assertFalse(hasattr(runtime, "ci"))
+            self.assertFalse(hasattr(runtime, "changelog"))
+
     def test_update_runtime_import_does_not_load_build_tools(self):
         spec = importlib.util.spec_from_file_location(
             "hex_update_runtime", Path(__file__).resolve().parents[1] / "hex-test-build.py")
@@ -170,6 +398,7 @@ class DeliveryTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name).resolve()
+        install_delivery_source_fixture(self.root)
         self.app = self.root / "hex.app"
         self.workspace = delivery.install_workspace(self.app)
         self.workspace.mkdir()
@@ -451,6 +680,41 @@ class DeliveryTests(unittest.TestCase):
     def test_production_build_assembles_and_replaces_stable_app(self):
         self.assert_production_build(build_only=False)
 
+    def test_default_build_stages_discovery_in_the_installed_app(self):
+        self.assert_production_build(build_only=False, discovery=True)
+
+    def test_discovery_input_builds_by_default_and_verifies_the_exact_candidate(self):
+        candidate = "a" * 40
+        args = SimpleNamespace(candidate=candidate, vst3_discovery_receipt=None,
+                               vst3_sdk=None, without_vst3_discovery=False)
+        sdk = self.root / "sdk"
+        output = self.root / "vst3-discovery"
+        receipt = output / "controlled-macos.json"
+        builder = Mock()
+        builder.build.return_value = receipt
+        with patch.dict(os.environ, {"HEX_VST3_SDK": str(sdk)}), \
+                patch.object(delivery, "discovery_builder", return_value=builder), \
+                patch.object(delivery, "validate_discovery_input") as verify:
+            self.assertEqual(delivery.prepare_discovery_input(args, self.root), receipt)
+            builder.build.assert_called_once_with(sdk, output, discovery_only=True)
+            verify.assert_called_once_with(receipt, candidate)
+            verify.reset_mock()
+            args.vst3_discovery_receipt = receipt
+            self.assertEqual(delivery.prepare_discovery_input(args, self.root), receipt)
+            builder.build.assert_called_once()
+            verify.assert_called_once_with(receipt, candidate)
+
+    def test_default_discovery_refuses_missing_sdk_and_allows_explicit_omission(self):
+        args = SimpleNamespace(candidate="a" * 40, vst3_discovery_receipt=None,
+                               vst3_sdk=None, without_vst3_discovery=False)
+        with patch.dict(os.environ, {"HEX_VST3_SDK": ""}), \
+                patch.object(delivery, "discovery_builder") as builder:
+            with self.assertRaisesRegex(delivery.DeliveryError, "HEX_VST3_SDK"):
+                delivery.prepare_discovery_input(args, self.root)
+            args.without_vst3_discovery = True
+            self.assertIsNone(delivery.prepare_discovery_input(args, self.root))
+            builder.assert_not_called()
+
     def test_finder_metadata_after_custody_deletion_publishes_matching_receipt(self):
         self.assert_production_build(build_only=False, finder_metadata=True)
 
@@ -616,7 +880,8 @@ class DeliveryTests(unittest.TestCase):
         self.assertFalse((self.root / ".hex-pending-update").exists())
 
     def assert_production_build(self, *, build_only, drift=False, finder_metadata=False, rmdir_member=None,
-                                prepare_only=False, followup_failure=False, validate_ci_receipt=False):
+                                prepare_only=False, followup_failure=False, validate_ci_receipt=False,
+                                discovery=False):
         # Exercise real assembly/receipt/activation with native external tools
         # substituted. A missing Contents parent failed actual post-merge delivery.
         self.bundle(self.app, b"old")
@@ -627,6 +892,7 @@ class DeliveryTests(unittest.TestCase):
         source.mkdir()
         for relative in ("scripts", "assets/fonts/ioskeley-mono", "third_party/gpui"):
             (source / relative).mkdir(parents=True)
+        install_delivery_source_fixture(source)
         (source / "scripts/hex-test-build.json").write_text(json.dumps({"app_path":"artifacts/hex.app", "signing": SIGNING}))
         (source / "assets/fonts/ioskeley-mono/OFL.txt").write_text("font license")
         (source / "third_party/gpui/LICENSE-APACHE").write_text("gpui license")
@@ -686,9 +952,22 @@ class DeliveryTests(unittest.TestCase):
                 return f"123 {self.app}/Contents/MacOS/hex"
             return ""
         args = SimpleNamespace(ci_report=None if build_only else report, candidate=candidate, build_only=build_only,
-                               included=included, checklist=checklist, prepare_only=prepare_only)
+                               included=included, checklist=checklist, prepare_only=prepare_only,
+                               vst3_discovery_receipt=None, vst3_sdk=self.root / "sdk",
+                               without_vst3_discovery=not discovery)
+        scanner = {"path": str(target / "hex-vst3-scan-macos")}
+        native_input = self.root / "controlled-macos.json"
+        discovery_evidence = {"source": candidate}
+        def stage_discovery(app, native, exact_source, artifact, _signing):
+            self.assertEqual((native, exact_source, artifact), (native_input, candidate, scanner))
+            helper = app / delivery.DISCOVERY_ROOT / delivery.DISCOVERY_SCANNER
+            helper.parent.mkdir(parents=True)
+            helper.write_bytes(b"scanner fixture")
+            return discovery_evidence
+
         @contextmanager
         def artifact_guard(*args, **kwargs):
+            self.assertEqual(kwargs.get("discovery", False), discovery)
             if rmdir_member:
                 # Real durable pending/ready publication and target lock, with
                 # only compilation/native tools substituted in this fixture.
@@ -705,7 +984,8 @@ class DeliveryTests(unittest.TestCase):
                     "profile":"release", "source":runner.summary["start_tree"], "packages":[],
                     "target_directory":str(target.parent.parent), "owner_path":"fixture-owner",
                     "lock_path":"fixture-lock", "action":"reuse", "cleanup_status":"not_needed",
-                    "artifact":{"path":str(executable), "sha256":delivery.sha(executable)}}
+                    "artifact":{"path":str(executable), "sha256":delivery.sha(executable)},
+                    "discovery_scanner":scanner}
             finally:
                 runner.target_lock.release()
         def capture(key):
@@ -730,7 +1010,11 @@ class DeliveryTests(unittest.TestCase):
                 patch.object(delivery.ci.ci_target_storage, "inspect", return_value={
                     "platform": "darwin", "status": "identified", "filesystem_type": "apfs"}), \
                 patch.multiple(delivery, optimized_artifact=Mock(side_effect=artifact_guard),
-                               stage_update_supervisor=Mock(return_value=None)), \
+                               stage_update_supervisor=Mock(return_value=None),
+                               discovery_builder=Mock(return_value=Mock(build=Mock(return_value=native_input))),
+                               validate_discovery_input=Mock(),
+                               stage_discovery=Mock(side_effect=stage_discovery),
+                               verify_discovery_package=Mock()), \
                 patch.object(delivery, "native_signature", return_value=SIGNED), \
                 patch.object(delivery, "run", side_effect=tool), \
                 patch.object(delivery.subprocess, "run", return_value=SimpleNamespace(stdout=json.dumps(event), returncode=0)):
@@ -948,6 +1232,10 @@ class DeliveryTests(unittest.TestCase):
             delivery.write_json(self.app / "Contents/Resources/test-build.json", verified)
         self.assertEqual(verified["source"], candidate)
         self.assertEqual(verified["profile"], "release")
+        if discovery:
+            self.assertEqual(verified["vst3_discovery"], discovery_evidence)
+            self.assertEqual((self.app / delivery.DISCOVERY_ROOT / delivery.DISCOVERY_SCANNER).read_bytes(),
+                             b"scanner fixture")
         self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"optimized fixture")
         self.assertEqual((self.app / "Contents/Resources/USER-TEST.md").read_text(), checklist.read_text())
         if build_only:
@@ -1056,6 +1344,7 @@ class DeliveryTests(unittest.TestCase):
         fixture = fixtures.LocalCiRunnerTests()
         fixture.setUp()
         self.addCleanup(fixture.tearDown)
+        install_delivery_source_fixture(fixture.repo)
         runner = fixture.runner("core-python-consumer")
         self.assertTrue(runner._capture_repository_state("start_tree"))
         tree = runner.summary["start_tree"]
@@ -1183,7 +1472,10 @@ class NativeSignatureTests(unittest.TestCase):
 
 
 class ReleaseCargoTests(unittest.TestCase):
+    __hex_shard_early__ = True
+
     def test_real_release_a_b_a_api_outputs_dependencies_and_scope_refusal(self):
+        reuse_fixed_scratch_observations(self, delivery.ci)
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             root = base / "a"
@@ -1212,6 +1504,7 @@ class ReleaseCargoTests(unittest.TestCase):
                     self.fail(f"fixture executable did not finish within 120 seconds: {argv[0]}")
                 self.assertEqual(result.returncode, 0, result.stderr)
                 return result.stdout.strip()
+            install_delivery_source_fixture(root)
             command(["git", "init", "-q"])
             command(["git", "config", "user.name", "release fixture"])
             command(["git", "config", "user.email", "fixture@example.invalid"])
@@ -1230,7 +1523,7 @@ class ReleaseCargoTests(unittest.TestCase):
             def runner(cwd, name, selected_env=env):
                 return delivery.ci.LocalCiRunner(cwd, run_id=name, env=selected_env,
                     min_free_bytes=0, target_state_dir=state)
-            def build(cwd, name, expected, selected_env=env):
+            def build(cwd, name, expected, selected_env=env, *, check_contender=False, retain=False):
                 instance = runner(cwd, name, selected_env)
                 checks = []
                 def verify():
@@ -1240,18 +1533,19 @@ class ReleaseCargoTests(unittest.TestCase):
                     self.assertEqual(command([str(binary)]), expected)
                     self.assertEqual(delivery.sha(binary), ownership["artifact"]["sha256"])
                     self.assertIsNotNone(instance.target_lock)
-                    with self.assertRaisesRegex(delivery.ci.TargetCacheError, "already in use"):
-                        with runner(cwd, name + "-contender").guarded_release():
-                            self.fail("second owner entered")
-                    # Artifact-only consumption does not activate/install any app.
-                    shutil.copy2(binary, base / (name + "-retained-binary"))
+                    if check_contender:
+                        with self.assertRaisesRegex(delivery.ci.TargetCacheError, "already in use"):
+                            with runner(cwd, name + "-contender").guarded_release():
+                                self.fail("second owner entered")
+                    if retain:
+                        shutil.copy2(binary, base / (name + "-retained-binary"))
                 self.assertIsNone(instance.target_lock)
                 self.assertEqual(ownership["state"], "ready")
                 if ownership.get("cleanup_log"):
                     self.assertNotIn("qualifier", Path(ownership["cleanup_log"]).read_text())
                 self.assertEqual(checks, ["before-build", "artifact"])
                 return ownership
-            first = build(root, "release-a", "16")
+            first = build(root, "release-a", "16", check_contender=True, retain=True)
             owner_before = Path(first["owner_path"]).read_bytes()
             def refuse_certificate():
                 raise delivery.DeliveryError("test certificate inputs changed")
@@ -1292,7 +1586,7 @@ class ReleaseCargoTests(unittest.TestCase):
             self.assertEqual(control.returncode, 23, control.stderr)
             command(["cargo", "build", "--offline", "--locked"], other, env)
             dev = {str(p.relative_to(target)):delivery.sha(p) for p in (target / "debug").rglob("*") if p.is_file()}
-            second = build(other, "release-b", "B string API 9", guarded_env)
+            second = build(other, "release-b", "B string API 9", guarded_env, retain=True)
             third = build(root, "release-a-again", "16", guarded_env)
             self.assertEqual(second["cleanup_status"], "passed")
             self.assertEqual(third["cleanup_status"], "passed")
@@ -1324,31 +1618,27 @@ class ReleaseCargoTests(unittest.TestCase):
             self.assertEqual(restored["cleanup_status"], "passed")
             self.assertIn("fixture-api", " ".join(restored["cleanup_argv"]))
             self.assertNotEqual(restored["artifact"]["sha256"], incremental["artifact"]["sha256"])
-            api.write_text('pub fn value() -> u32 { 10 }\n')
-            command(["git", "add", "."])
-            command(["git", "commit", "-qm", "restore normal behavior"])
-            build(root, "release-a-after-restored", "19")
             # External path dependencies need the same content-based release
             # protection, even when Cargo's timestamp observation is unchanged.
+            # Keep workspace source fixed at the previous successful build.
             external_source = external / "src/lib.rs"
             stamp = external_source.stat()
             external_source.write_text('pub fn suffix() -> u32 { 8 }\n')
             os.utime(external_source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
-            external_changed = build(root, "release-a-external-restored", "18")
+            external_changed = build(root, "release-a-external-restored", "28")
             self.assertIn("external-helper", " ".join(external_changed["cleanup_argv"]))
-            external_source.write_text('pub fn suffix() -> u32 { 9 }\n')
-            build(root, "release-a-external-restored-back", "19")
-            changed_config = build(root, "release-a-config", "19", {**env, "RUSTFLAGS": "--cfg release_fixture_changed"})
+            dependencies = {p.name:delivery.sha(p) for p in (target / "release/deps").glob("libexternal_helper-*.rlib")}
+            self.assertTrue(dependencies)
+            configured_env = {**env, "RUSTFLAGS": "--cfg release_fixture_changed"}
+            changed_config = build(root, "release-a-config", "28", configured_env)
             self.assertEqual(changed_config["cleanup_status"], "passed")
             configured_dependencies = {p.name:delivery.sha(p) for p in (target / "release/deps").glob("libexternal_helper-*.rlib")}
             self.assertEqual({name: configured_dependencies[name] for name in dependencies}, dependencies)
-            dependencies = configured_dependencies
-            build(root, "release-a-normal-config", "19")
             original_main = (root / "app/src/main.rs").read_text()
             (root / "app/src/main.rs").write_text("invalid Rust source")
             command(["git", "add", "."])
             command(["git", "commit", "-qm", "actual failed build"])
-            failed = runner(root, "release-a-failed")
+            failed = runner(root, "release-a-failed", configured_env)
             with self.assertRaises(delivery.DeliveryError):
                 with delivery.optimized_artifact(failed, package="fixture-app"):
                     self.fail("failed Cargo build yielded an artifact")
@@ -1356,15 +1646,15 @@ class ReleaseCargoTests(unittest.TestCase):
             self.assertEqual(owner["state"], "pending")
             (root / "app/src/main.rs").write_text(original_main)
             (root / "api/src/lib.rs").write_text('pub fn value() -> u32 { 7 }\n')
+            external_source.write_text('pub fn suffix() -> u32 { 9 }\n')
             command(["git", "add", "."])
             command(["git", "commit", "-qm", "restore behavior"])
             with self.assertRaisesRegex(delivery.ci.TargetCacheError, "pending"):
-                with delivery.optimized_artifact(runner(root, "pending-refused"), package="fixture-app"):
+                with delivery.optimized_artifact(runner(root, "pending-refused", configured_env), package="fixture-app"):
                     self.fail("pending state was silently reused")
             with delivery.optimized_artifact(runner(root, "pending-explicit"), package="fixture-app", adopt=True) as (binary, _):
                 self.assertEqual(command([str(binary)]), "16")
-            # Explicit recovery switched from the guarded Cargo wrapper back
-            # to the original tool, invalidating that release dependency profile.
+            # Explicit recovery restores the original release inputs.
             dependencies = {p.name:delivery.sha(p) for p in (target / "release/deps").glob("libexternal_helper-*.rlib")}
             # Cargo cannot select the old removed/renamed member from this graph.
             (other / "api/Cargo.toml").write_text('[package]\nname="renamed-api"\nversion="0.1.0"\nedition="2021"\n')

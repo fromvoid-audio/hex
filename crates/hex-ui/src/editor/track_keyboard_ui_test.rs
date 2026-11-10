@@ -80,7 +80,10 @@ fn command_t_uses_existing_insert_track_and_one_canonical_undo(cx: &mut TestAppC
     let command = editor.read_with(&visual, |view, _| {
         assert!(matches!(
             &view.last_enqueued_edit,
-            Some(Command::InsertDefaultTrack { before_track: None })
+            Some(Command::InsertDefaultTrackWithGain {
+                before_track: None,
+                ..
+            })
         ));
         view.last_enqueued_edit.clone().unwrap()
     });

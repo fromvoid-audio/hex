@@ -401,6 +401,7 @@ fn bounds(
         hex_engine::SamplerParameter::LoopEnabled,
         hex_engine::SamplerParameter::LoopStartFrame,
         hex_engine::SamplerParameter::LoopEndFrame,
+        hex_engine::SamplerParameter::LoopCrossfadeMs,
         hex_engine::SamplerParameter::AttackMs,
         hex_engine::SamplerParameter::DecayMs,
         hex_engine::SamplerParameter::SustainPercent,

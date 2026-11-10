@@ -162,9 +162,12 @@ pub(super) struct NoteGesture {
     pub(super) channel: u8,
     pub(super) velocity: u8,
     pub(super) preview: NotePreview,
+    /// Positive storage translation; displayed source start is preview.start - prefix.
+    /// Only the canonical source-prefix command may publish this coordinate change.
+    pub(super) source_prefix: u64,
     pub(super) kind: GestureKind,
     pub(super) bounds: [f32; 4],
-    pub(super) beat_start: u64,
+    pub(super) beat_start: i128,
     pub(super) beat_span: u64,
     pub(super) clip_length: u64,
     pub(super) pitch_low: u8,
@@ -184,7 +187,7 @@ pub(super) struct GestureStart {
     pub(super) kind: HitKind,
     pub(super) pointer: [f32; 2],
     pub(super) bounds: [f32; 4],
-    pub(super) beat_start: u64,
+    pub(super) beat_start: i128,
     pub(super) beat_span: u64,
     pub(super) clip_length: u64,
     pub(super) pitch_low: u8,
@@ -200,7 +203,7 @@ pub(super) struct GestureContext {
     pub(super) selected_note: Option<NoteId>,
     pub(super) clip_contains_note: bool,
     pub(super) pending: bool,
-    pub(super) beat_start: u64,
+    pub(super) beat_start: i128,
     pub(super) beat_span: u64,
     pub(super) pitch_low: u8,
     pub(super) pitch_rows: u8,
@@ -316,6 +319,7 @@ pub(super) fn begin(start: GestureStart) -> Option<NoteGesture> {
         channel: start.channel,
         velocity: start.velocity,
         preview: start.original,
+        source_prefix: 0,
         kind,
         bounds: start.bounds,
         beat_start: start.beat_start,
@@ -327,7 +331,7 @@ pub(super) fn begin(start: GestureStart) -> Option<NoteGesture> {
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 pub(super) fn update(gesture: &mut NoteGesture, pointer_x: f32, pointer_y: f32) -> bool {
     update_with_modifier(gesture, pointer_x, pointer_y, false)
 }
@@ -338,7 +342,7 @@ pub(super) fn update_with_modifier(
     pointer_y: f32,
     invert_snap: bool,
 ) -> bool {
-    let Some(pointer_beat_raw) = beat_at_point(
+    let Some(pointer_beat_raw) = signed_beat_at_point(
         pointer_x,
         gesture.bounds,
         gesture.beat_start,
@@ -359,12 +363,8 @@ pub(super) fn update_with_modifier(
     } else {
         effective_grid(gesture.grid, invert_snap)
     };
-    let delta_from = |anchor| {
-        quantize_delta(
-            i128::from(pointer_beat_raw) - i128::from(anchor),
-            effective_grid,
-        )
-    };
+    let delta_from = |anchor| quantize_delta(pointer_beat_raw - i128::from(anchor), effective_grid);
+    let mut source_prefix = 0;
     let candidate = match gesture.kind {
         GestureKind::Move {
             pointer_beat_raw: down_beat,
@@ -375,11 +375,21 @@ pub(super) fn update_with_modifier(
             pointer_pitch: down_pitch,
         } => {
             let delta = delta_from(down_beat);
-            let max_start = gesture
-                .clip_length
-                .saturating_sub(gesture.original.duration);
-            let start =
-                (i128::from(gesture.original.start) + delta).clamp(0, i128::from(max_start)) as u64;
+            // Movement can retain material beyond the current source. The
+            // canonical extent-growing update owns storage growth on commit.
+            let max_start = u64::MAX - gesture.original.duration;
+            let requested = (i128::from(gesture.original.start) + delta).min(i128::from(max_start));
+            let Some((signed_start, prefix)) = super::midi_viewport_grid::source_prefix(
+                requested,
+                u64::MAX - gesture.clip_length,
+                gesture.beat_start,
+                gesture.beat_span,
+                gesture.grid.step_raw().unwrap_or(BeatTime::ONE.raw()),
+            ) else {
+                return false;
+            };
+            source_prefix = prefix;
+            let start = (signed_start + i128::from(source_prefix)) as u64;
             let pitch = (i16::from(gesture.original.pitch) + i16::from(pointer_pitch)
                 - i16::from(down_pitch))
             .clamp(0, 127) as u8;
@@ -431,13 +441,14 @@ pub(super) fn update_with_modifier(
             }
         }
     };
-    let changed = gesture.preview != candidate;
+    let changed = gesture.preview != candidate || gesture.source_prefix != source_prefix;
     gesture.preview = candidate;
+    gesture.source_prefix = source_prefix;
     changed
 }
 
 pub(super) fn is_noop(gesture: &NoteGesture) -> bool {
-    gesture.preview == gesture.original
+    gesture.source_prefix == 0 && gesture.preview == gesture.original
 }
 
 pub(super) fn release_is_inside(gesture: &NoteGesture, x: f32, y: f32) -> bool {
@@ -461,15 +472,23 @@ pub(super) fn point_is_inside(bounds: [f32; 4], x: f32, y: f32) -> bool {
 pub(super) fn beat_at_point(
     x: f32,
     bounds: [f32; 4],
-    beat_start: u64,
+    beat_start: i128,
     beat_span: u64,
 ) -> Option<u64> {
+    u64::try_from(signed_beat_at_point(x, bounds, beat_start, beat_span)?).ok()
+}
+/// View coordinates may precede the unsigned authored source. Only explicit
+/// source-prefix authoring may convert a negative view coordinate to storage.
+pub(super) fn signed_beat_at_point(
+    x: f32,
+    bounds: [f32; 4],
+    beat_start: i128,
+    beat_span: u64,
+) -> Option<i128> {
     let [left, top, width, height] = bounds;
-    if !x.is_finite()
-        || !left.is_finite()
-        || !top.is_finite()
-        || !width.is_finite()
-        || !height.is_finite()
+    if ![x, left, top, width, height]
+        .iter()
+        .all(|value| value.is_finite())
         || width <= 0.0
         || height <= 0.0
         || beat_span == 0
@@ -481,8 +500,7 @@ pub(super) fn beat_at_point(
     if !raw.is_finite() || raw < 0.0 {
         return None;
     }
-    let raw = raw.min(u64::MAX as f64) as u64;
-    beat_start.checked_add(raw)
+    beat_start.checked_add(i128::from(raw.min(u64::MAX as f64) as u64))
 }
 
 pub(super) fn quantize_delta(delta: i128, grid: MidiGrid) -> i128 {
@@ -529,7 +547,7 @@ fn snap_clamped(raw: i128, min: u64, max: u64, step: u64) -> u64 {
     snapped.clamp(i128::from(min), i128::from(max)) as u64
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::{
         HitKind, MidiGrid, NotePreview, begin, default_gate_raw, effective_grid, hit_kind, is_noop,
@@ -803,18 +821,51 @@ mod tests {
     }
 
     #[test]
-    fn move_clamps_to_clip_and_pitch_limits_and_noop_is_detected() {
+    fn move_preserves_gate_and_rebases_negative_time_with_pitch_limits() {
         let mut drag = gesture(HitKind::Move);
         assert!(is_noop(&drag));
         assert!(!update(&mut drag, 250.0, 335.0));
         update(&mut drag, 500.0, 200.0);
-        assert!(drag.preview.start + drag.preview.duration <= CLIP_LENGTH);
+        assert_eq!(drag.preview.duration, drag.original.duration);
         assert_eq!(drag.preview.pitch, 73);
         update(&mut drag, -10_000.0, 10_000.0);
-        assert_eq!(drag.preview.start, 0);
+        assert_eq!(drag.source_prefix, 4 * BeatTime::ONE.raw());
+        assert_eq!(
+            i128::from(drag.preview.start) - i128::from(drag.source_prefix),
+            -i128::from(BeatTime::ONE.raw() / 2)
+        );
         assert_eq!(drag.preview.pitch, 2);
         update(&mut drag, 250.0, -10_000.0);
+        assert_eq!(
+            drag.source_prefix, 0,
+            "reversal clears the held origin shift"
+        );
         assert_eq!(drag.preview.pitch, 127);
+    }
+
+    #[test]
+    fn move_retains_gate_length_beyond_source_and_at_numeric_end() {
+        let mut drag = gesture_for_span(
+            NotePreview {
+                start: 1,
+                duration: 1,
+                pitch: 60,
+            },
+            HitKind::Move,
+            [BOUNDS[0], 335.0],
+            u64::MAX,
+        );
+        drag.grid = MidiGrid::Off;
+        assert!(update(&mut drag, BOUNDS[0] + BOUNDS[2], 335.0));
+        assert_eq!(drag.preview.start, u64::MAX - 1);
+        assert_eq!(drag.preview.duration, 1);
+        assert_eq!(
+            drag.preview.start.checked_add(drag.preview.duration),
+            Some(u64::MAX)
+        );
+        assert!(drag.preview.start > drag.clip_length);
+        assert!(update(&mut drag, BOUNDS[0], 335.0));
+        assert_eq!(drag.preview, drag.original);
     }
 
     #[test]
@@ -1253,7 +1304,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod creation_geometry_tests {
     use super::*;
     #[test]

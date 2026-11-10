@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "observed_at": "2026-11-05",
+  "method": "read-only official public Live 12 HTML manual via web connector; original paraphrase, no proprietary assets copied",
+  "source": {
+    "url": "https://www.ableton.com/en/live-manual/12/computer-audio-resources-and-strategies/",
+    "section": "38.1.3 CPU Load from Tracks and Devices"
+  },
+  "observations": [
+    "The manual describes an optional per-track relative performance-impact display using six rectangles.",
+    "The documented visibility controls are the mixer configuration menu and the View menu mixer controls submenu."
+  ],
+  "unknowns": [
+    "No installed application was available or launched in this Linux environment. The installed-reference build recorded elsewhere was not rechecked.",
+    "The manual does not establish numerical thresholds, smoothing, sampling cadence or attribution rules for shared processing.",
+    "No equivalent original project was measured in Live, and no numerical, UI interaction or latency parity is claimed."
+  ]
+}
