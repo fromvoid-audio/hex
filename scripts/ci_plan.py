@@ -271,7 +271,8 @@ def module_declarations(source_root: Path) -> dict[Path, list[tuple[Path, list[s
 TEST_ATTRIBUTE = re.compile(r"#\[(?:gpui::)?test\b")
 # Unit test targets which compile the owning source directly. Keep their libtest
 # names under the original module path so scoped coverage remains observable.
-UI_UNIT_TARGETS = {"editor::time_move_preview::intervals::tests::": "unit_editor_logic",
+UI_UNIT_TARGETS = {"editor::tempo_input::value::": "unit_editor_logic",
+                   "editor::time_move_preview::intervals::tests::": "unit_editor_logic",
                    "editor::browser::samples::state::": "unit_editor_logic",
                    "editor::group_overview::model::": "unit_editor_logic",
                    "editor::browser::tree::state::": "unit_editor_logic",
@@ -351,7 +352,15 @@ UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
 # complete pure boundary rather than only its own test-name prefix.
 # These consumers live in larger test modules; a selected ancestor must retain
 # the unit owner as well as the specific consumer checks.
-UI_PREFIX_COHORTS = [{"editor::time_move_preview::intervals::tests::",
+UI_PREFIX_COHORTS = [{"editor::tempo_input::value::",
+                      "editor::tempo_input::keyboard_tests::focused_project_arrows_adjust_local_draft_then_commit_exact_micro_bpm",
+                      "editor::tempo_input::keyboard_tests::project_steps_preserve_bounds_precision_cancel_invalid_and_composition",
+                      "editor::tempo_input::tests::project_tempo_same_value_explicit_commit_collapses_later_points_and_cursor_is_display_only",
+                      "editor::tempo_input_ui_test::project_tempo_direct_input_validation_cancel_focus_and_canonical_commit",
+                      "editor::tempo_input_ui_test::project_tempo_blur_commits_valid_text_and_invalid_blur_releases_editor_shortcuts",
+                      "editor::tempo_input_ui_test::project_tempo_stale_revision_and_project_switch_retire_drafts",
+                      "editor::tempo_input_ui_test::project_tempo_cursor_movement_cannot_retarget_an_active_draft"},
+                     {"editor::time_move_preview::intervals::tests::",
                       "editor::time_move_preview::visual_tests::fragment_titles_cuts_crops_and_compact_body_preserve_source_mapping",
                       "editor::edit_cursor_ui_test::audio_time_move_preview_masks_overlaps_and_restores_when_cancelled",
                       "editor::edit_cursor_ui_test::midi_time_move_preview_translates_cached_notes_to_the_destination",
