@@ -317,6 +317,7 @@ UI_UNIT_TARGETS = {"editor::tempo_input::value::": "unit_editor_logic",
                    "editor::fade_handle_geometry::": "unit_editor_logic",
                    "editor::midi_drag::": "unit_piano_roll",
                    "editor::midi_group_drag::": "unit_piano_roll",
+                   "editor::midi_canvas::geometry::": "unit_piano_roll",
                    "editor::midi_scene::": "unit_piano_roll",
                    "editor::midi_selection::": "unit_piano_roll",
                    "editor::midi_source_controls::": "unit_piano_roll",
@@ -353,6 +354,8 @@ UI_UNIT_TARGETS = {"editor::tempo_input::value::": "unit_editor_logic",
                    "section_resize::": "unit_section",
                    "section_selection::": "unit_section",
                    "theme::": "unit_editor_logic"}
+UI_UNIT_HARNESS_FILES = {"tests/piano_roll_unit/editor.rs": "unit_piano_roll",
+                         "tests/piano_roll_unit/midi_canvas.rs": "unit_piano_roll"}
 UI_UNIT_FEATURES = {"unit_piano_roll": "ui-unit-tier", "unit_timeline": "ui-unit-tier", "unit_automation": "ui-unit-tier", "unit_device": "ui-unit-tier", "unit_section": "ui-unit-tier", "unit_editor_logic": "ui-unit-tier"}
 # These integration consumers are not included in a module-scoped library run.
 UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
@@ -372,6 +375,8 @@ UI_PREFIX_COHORTS = [{"editor::tempo_input::value::",
                       "editor::tempo_input_ui_test::project_tempo_blur_commits_valid_text_and_invalid_blur_releases_editor_shortcuts",
                       "editor::tempo_input_ui_test::project_tempo_stale_revision_and_project_switch_retire_drafts",
                       "editor::tempo_input_ui_test::project_tempo_cursor_movement_cannot_retarget_an_active_draft"},
+                    {"editor::midi_canvas::geometry::",
+                     "editor::midi_canvas::creation_tests::held_creation_clamps_to_clip_end_and_positive_minimum"},
                      {"editor::time_move_preview::intervals::tests::",
                       "editor::time_move_preview::visual_tests::fragment_titles_cuts_crops_and_compact_body_preserve_source_mapping",
                       "editor::edit_cursor_ui_test::audio_time_move_preview_masks_overlaps_and_restores_when_cancelled",
@@ -459,7 +464,7 @@ UI_PREFIX_COHORTS = [{"editor::tempo_input::value::",
                      "log_viewer::copy_tests::copy_all_uses_frozen_filters_and_real_clipboard_and_read_failures_keep_previous_copy",
                      "log_viewer::copy_tests::filtered_excerpt_reports_empty_limits_and_failed_clipboard_confirmation"}]
 UI_UNIT_COHORTS = [{"editor::device_panel::eq_panel::axes::", "editor::device_panel::eq_panel::response::"},
-                   {"editor::midi_drag::", "editor::midi_group_drag::", "editor::midi_scene::", "editor::midi_selection::", "editor::midi_stroke::", "editor::midi_velocity::", "editor::midi_viewport_grid::"},
+                   {"editor::midi_canvas::geometry::", "editor::midi_drag::", "editor::midi_group_drag::", "editor::midi_scene::", "editor::midi_selection::", "editor::midi_stroke::", "editor::midi_velocity::", "editor::midi_viewport_grid::"},
                    {"editor::device_panel::eq_panel::group_move::", "editor::device_panel::eq_panel::gestures::"},
                    {"editor::musical_time::", "editor::seek::", "editor::signed_frame_viewport::", "editor::viewport::"},
                    {"output_meter::logic::", "editor::refresh_state::", "editor::track_meters::decay::", "editor::track_meters::follower::", "editor::track_meters::scale::"},
@@ -617,8 +622,10 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
             if file == directory / "tests" / "midi_pressure_boundary.rs" and file.is_file():
                 filters.setdefault(owner, set()).add("editor::midi_recording::")
                 continue
+            harness_target = UI_UNIT_HARNESS_FILES.get(file.relative_to(directory).as_posix())
             unit_modules = {module for module, target in UI_UNIT_TARGETS.items()
-                            if file == directory / "tests" / f"{target}.rs"}
+                            if (file == directory / "tests" / f"{target}.rs"
+                                or target == harness_target)}
             if unit_modules and file.is_file():
                 filters.setdefault(owner, set()).update(unit_modules)
                 continue
