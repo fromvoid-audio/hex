@@ -2099,6 +2099,7 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::clip_drag_ui_test::shift_edge_stretch_previews_live_and_stationary_modifier_changes_dispatch_one_edit",
                                   "editor::computer_keyboard::state::", "editor::computer_keyboard::tests::",
                                   "editor::console_track_page::",
+                                  "editor::context_menu::tests::global_launch_dropdown_renders_all_choices_and_restores_focus_without_project_edits",
                                   "editor::controller::audio_event_correlation::",
                                   "editor::controller::sampler_native_ui_protocol_tests::",
                                   "editor::controller::session_feedback::",
@@ -3131,6 +3132,7 @@ class ModuleScopeTests(unittest.TestCase):
         related = ["editor::controller::tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions",
                    "editor::delete_ui_tests::",
                    "editor::device_panel::tests::device_comparison_tests::device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_new_ack",
+                   "editor::context_menu::tests::global_launch_dropdown_renders_all_choices_and_restores_focus_without_project_edits",
                    "editor::session_grid::actions::", "editor::session_grid::tests::", unit, window]
         for path in ("session_navigation.rs", "session_navigation_ui_test.rs"):
             names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
@@ -3709,7 +3711,7 @@ class ModuleScopeTests(unittest.TestCase):
             for consumer in consumers:
                 self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv))
 
-    def test_session_grid_actions_keep_unit_and_parent_coverage(self):
+    def test_session_grid_quantization_keeps_unit_parent_and_ui_coverage(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
         inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
@@ -3723,19 +3725,36 @@ class ModuleScopeTests(unittest.TestCase):
         queued = "editor::controller::tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions"
         navigation = "editor::session_navigation_ui_test::"
         navigation_unit = "editor::session_navigation::"
+        menu = ("editor::context_menu::tests::"
+                "global_launch_dropdown_renders_all_choices_and_restores_focus_without_project_edits")
         names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/session_grid/actions.rs"], inventory, [owner])
-        self.assertEqual(names, {owner: sorted([unit, integration, delete, launch, queued, navigation, navigation_unit])})
+        self.assertEqual(names, {owner: sorted([unit, integration, delete, launch, queued, navigation,
+                                                navigation_unit, menu])})
         parent = plan.module_test_filters(root, ["crates/hex-ui/src/editor/session_grid.rs"], inventory, [owner])
-        self.assertEqual(parent, {owner: sorted(["editor::session_grid::", delete, launch, queued, navigation, navigation_unit])})
+        self.assertEqual(parent, {owner: sorted(["editor::session_grid::", delete, launch, queued, navigation,
+                                                 navigation_unit, menu])})
+        combined = plan.module_test_filters(
+            root,
+            ["crates/hex-ui/src/editor/session_grid/actions.rs",
+             "crates/hex-ui/src/editor/session_grid.rs"],
+            inventory,
+            [owner],
+        )
+        self.assertEqual(combined, {owner: sorted(["editor::session_grid::", delete, launch, queued,
+                                                   navigation, navigation_unit, menu])})
+        self.assertNotIn(unit, combined[owner])
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
-                    "single_run": {owner: "ui-test-support"}, "module_filters": names}
+                    "single_run": {owner: "ui-test-support"}, "module_filters": combined}
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
                                   "cargo_inventory": inventory, "paths": []})
-        self.assertTrue(any(unit in step.argv for step in steps if "unit_editor_logic" in step.argv))
-        self.assertTrue(any(integration in step.argv for step in steps if step.step_id == "ui-feature-tests"))
-        self.assertTrue(any(delete in step.argv and launch in step.argv and queued in step.argv and navigation in step.argv
-                            for step in steps if step.step_id == "ui-feature-tests"))
+        unit_step = next(step for step in steps if step.step_id == "ui-unit-unit_editor_logic")
+        self.assertIn("editor::session_grid::", unit_step.argv)
+        feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+        self.assertTrue(any("editor::session_grid::" in step.argv for step in steps
+                            if step.step_id == "ui-feature-tests"))
+        self.assertTrue(all(test in feature.argv for test in (delete, launch, queued, navigation, menu)))
         for path in ("delete_ui_tests.rs", "controller.rs", "session_navigation_ui_test.rs",
+                     "context_menu.rs",
                      "device_panel/tests/device_comparison_tests.rs"):
             consumers = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
             self.assertIn(unit, consumers[owner])

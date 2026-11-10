@@ -1,5 +1,6 @@
 //! Compact, ID-backed Session grid and guarded playback requests.
 mod actions;
+use actions::with_quantization;
 pub(super) use actions::{DeleteTarget, action_is_current, resolve_delete_target};
 
 use super::console_columns::ColumnFrame;
@@ -88,32 +89,6 @@ pub(super) fn launch_action(
         generation,
         revision: Some(revision),
         intent_token: None,
-    }
-}
-
-fn with_quantization(
-    command: SessionPlaybackCommand,
-    quantization: LaunchQuantization,
-) -> SessionPlaybackCommand {
-    match command {
-        SessionPlaybackCommand::LaunchClip { clip, .. } => {
-            SessionPlaybackCommand::LaunchClip { clip, quantization }
-        }
-        SessionPlaybackCommand::LaunchScene { scene, .. } => SessionPlaybackCommand::LaunchScene {
-            scene,
-            quantization,
-        },
-        SessionPlaybackCommand::StopTrack { track, .. } => SessionPlaybackCommand::StopTrack {
-            track,
-            quantization,
-        },
-        SessionPlaybackCommand::StopAllClips { .. } => {
-            SessionPlaybackCommand::StopAllClips { quantization }
-        }
-        SessionPlaybackCommand::BackToArrangement { .. } => {
-            SessionPlaybackCommand::BackToArrangement { quantization }
-        }
-        command => command,
     }
 }
 
@@ -2100,7 +2075,7 @@ impl EditorView {
 
 #[cfg(test)]
 mod tests {
-    use super::{launch_action, visible_track_range, with_quantization};
+    use super::{launch_action, visible_track_range};
     use hex_engine::{LaunchQuantization, PlaybackAction, SessionPlaybackCommand};
     use hex_project::{Command, Created, Editor, Project};
 
@@ -2131,17 +2106,10 @@ mod tests {
         assert_eq!(pending.generation, 3);
     }
 
+    #[cfg(feature = "ui-test-support")]
     #[test]
-    fn quantization_is_captured_by_each_session_command_and_queued_launch() {
+    fn queued_scene_launch_retains_quantization_selected_before_launch() {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 3).unwrap();
-        let Created::Track(track) = editor
-            .execute(Command::AddMidiTrack {
-                name: "instrument".into(),
-            })
-            .unwrap()
-        else {
-            panic!("track")
-        };
         let Created::Scene(scene) = editor
             .execute(Command::AddScene {
                 name: "scene".into(),
@@ -2150,81 +2118,16 @@ mod tests {
         else {
             panic!("scene")
         };
-        let Created::SessionClip(clip) = editor
-            .execute(Command::CreateSessionMidiClip {
-                track,
-                scene,
-                name: "pattern".into(),
-                source_length: hex_project::BeatTime::from_quarters(4).unwrap(),
-            })
-            .unwrap()
-        else {
-            panic!("session clip")
-        };
-
-        let commands = [
-            SessionPlaybackCommand::LaunchClip {
-                clip,
-                quantization: LaunchQuantization::Immediate,
-            },
-            SessionPlaybackCommand::LaunchScene {
-                scene,
-                quantization: LaunchQuantization::Immediate,
-            },
-            SessionPlaybackCommand::StopTrack {
-                track,
-                quantization: LaunchQuantization::Immediate,
-            },
-            SessionPlaybackCommand::StopAllClips {
-                quantization: LaunchQuantization::Immediate,
-            },
-            SessionPlaybackCommand::BackToArrangement {
-                quantization: LaunchQuantization::Immediate,
-            },
-        ];
-        for quantization in [
-            LaunchQuantization::Immediate,
-            LaunchQuantization::FourQuarter,
-        ] {
-            for command in commands {
-                let captured = with_quantization(command, quantization);
-                let expected = match command {
-                    SessionPlaybackCommand::LaunchClip { clip, .. } => {
-                        SessionPlaybackCommand::LaunchClip { clip, quantization }
-                    }
-                    SessionPlaybackCommand::LaunchScene { scene, .. } => {
-                        SessionPlaybackCommand::LaunchScene {
-                            scene,
-                            quantization,
-                        }
-                    }
-                    SessionPlaybackCommand::StopTrack { track, .. } => {
-                        SessionPlaybackCommand::StopTrack {
-                            track,
-                            quantization,
-                        }
-                    }
-                    SessionPlaybackCommand::StopAllClips { .. } => {
-                        SessionPlaybackCommand::StopAllClips { quantization }
-                    }
-                    SessionPlaybackCommand::BackToArrangement { .. } => {
-                        SessionPlaybackCommand::BackToArrangement { quantization }
-                    }
-                    command => command,
-                };
-                assert_eq!(captured, expected);
-            }
-        }
 
         let mut selected_quantization = LaunchQuantization::FourQuarter;
-        let captured = with_quantization(
+        let command = super::with_quantization(
             SessionPlaybackCommand::LaunchScene {
                 scene,
                 quantization: LaunchQuantization::Immediate,
             },
             selected_quantization,
         );
-        let queued = launch_action(captured, 19, 3);
+        let queued = launch_action(command, 19, 3);
         selected_quantization = LaunchQuantization::Immediate;
         assert_eq!(selected_quantization, LaunchQuantization::Immediate);
         assert!(matches!(
@@ -2234,13 +2137,6 @@ mod tests {
                 ..
             })
         ));
-        assert_eq!(
-            with_quantization(
-                SessionPlaybackCommand::CancelPending { track: None },
-                LaunchQuantization::FourQuarter,
-            ),
-            SessionPlaybackCommand::CancelPending { track: None }
-        );
     }
 
     #[test]
