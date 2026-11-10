@@ -2028,14 +2028,18 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::computer_keyboard::state::", "editor::computer_keyboard::tests::",
                                   "editor::controller::audio_event_correlation::",
                                   "editor::controller::sampler_native_ui_protocol_tests::",
+                                  "editor::controller::tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions",
+                                  "editor::delete_ui_tests::",
                                   "editor::device_panel::eq_panel::axes::",
                                   "editor::device_panel::eq_panel::response::",
+                                  "editor::device_panel::tests::device_comparison_tests::device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_new_ack",
                                   "editor::device_panel::tests::eq_ui_tests::graph_layout_tests::eq_axis_labels_are_logarithmic_nonoverlapping_and_keep_the_plot_hit_map",
                                   "editor::fade_calculation::", "editor::fade_handle_geometry::",
                                   "editor::fade_handles::", "editor::fades::",
                                   "editor::output_meter_ui_test::", "editor::overview_waveform::", "editor::refresh_state::",
                                   "editor::sampler_parameter::tests::source_hints_and_paint_require_same_view_source_facts_and_context",
                                   "editor::session_audio_panel::",
+                                  "editor::session_grid::actions::", "editor::session_grid::tests::",
                                   "editor::session_navigation::", "editor::session_navigation_ui_test::",
                                   "editor::session_route_view::", "editor::theme_settings::tests::", "editor::track_defaults::",
                                   "editor::track_meters::decay::", "editor::track_meters::follower::",
@@ -2279,9 +2283,13 @@ class ModuleScopeTests(unittest.TestCase):
                       "targets": [{"kind": ["lib"]}]}]
         unit = "editor::session_navigation::"
         window = "editor::session_navigation_ui_test::"
+        related = ["editor::controller::tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions",
+                   "editor::delete_ui_tests::",
+                   "editor::device_panel::tests::device_comparison_tests::device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_new_ack",
+                   "editor::session_grid::actions::", "editor::session_grid::tests::", unit, window]
         for path in ("session_navigation.rs", "session_navigation_ui_test.rs"):
             names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
-            self.assertEqual(names, {owner: [unit, window]})
+            self.assertEqual(names, {owner: sorted(related)})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/editor/mode.rs"], inventory, [owner]),
                          {owner: ["editor::"]})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
@@ -2581,6 +2589,37 @@ class ModuleScopeTests(unittest.TestCase):
                                   "cargo_inventory": inventory, "paths": []})
         self.assertTrue(any(unit in step.argv for step in steps if "unit_editor_logic" in step.argv))
         self.assertTrue(any(integration in step.argv for step in steps if step.step_id == "ui-feature-tests"))
+
+    def test_session_grid_actions_keep_unit_and_parent_coverage(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::session_grid::actions::"
+        integration = "editor::session_grid::tests::"
+        delete = "editor::delete_ui_tests::"
+        launch = ("editor::device_panel::tests::device_comparison_tests::"
+                  "device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_new_ack")
+        queued = "editor::controller::tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions"
+        navigation = "editor::session_navigation_ui_test::"
+        navigation_unit = "editor::session_navigation::"
+        names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/session_grid/actions.rs"], inventory, [owner])
+        self.assertEqual(names, {owner: sorted([unit, integration, delete, launch, queued, navigation, navigation_unit])})
+        parent = plan.module_test_filters(root, ["crates/hex-ui/src/editor/session_grid.rs"], inventory, [owner])
+        self.assertEqual(parent, {owner: sorted(["editor::session_grid::", delete, launch, queued, navigation, navigation_unit])})
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
+                    "single_run": {owner: "ui-test-support"}, "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": []})
+        self.assertTrue(any(unit in step.argv for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(integration in step.argv for step in steps if step.step_id == "ui-feature-tests"))
+        self.assertTrue(any(delete in step.argv and launch in step.argv and queued in step.argv and navigation in step.argv
+                            for step in steps if step.step_id == "ui-feature-tests"))
+        for path in ("delete_ui_tests.rs", "controller.rs", "session_navigation_ui_test.rs",
+                     "device_panel/tests/device_comparison_tests.rs"):
+            consumers = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            self.assertIn(unit, consumers[owner])
 
     def crate(self, root: Path) -> list[dict]:
         files = {

@@ -311,6 +311,7 @@ UI_UNIT_TARGETS = {"editor::overview_waveform::": "unit_editor_logic",
                    "editor::recovery_state::": "unit_editor_state",
                    "editor::refresh_state::": "unit_editor_logic",
                    "editor::seek::": "unit_timeline",
+                   "editor::session_grid::actions::": "unit_editor_logic",
                    "editor::session_navigation::": "unit_editor_logic",
                    "editor::session_route_view::": "unit_editor_logic",
                    "editor::signed_frame_viewport::": "unit_timeline",
@@ -330,6 +331,12 @@ UI_UNIT_TARGETS = {"editor::overview_waveform::": "unit_editor_logic",
 UI_UNIT_FEATURES = {"unit_piano_roll": "ui-unit-tier", "unit_timeline": "ui-unit-tier", "unit_automation": "ui-unit-tier", "unit_device": "ui-unit-tier", "unit_section": "ui-unit-tier", "unit_editor_logic": "ui-unit-tier"}
 # These geometry modules call one another; a change to one must exercise the
 # complete pure boundary rather than only its own test-name prefix.
+# These consumers live in larger test modules; a selected ancestor must retain
+# the unit owner as well as the specific consumer checks.
+UI_PREFIX_COHORTS = [{"editor::session_grid::actions::", "editor::delete_ui_tests::",
+                      "editor::controller::tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions",
+                      "editor::session_navigation_ui_test::scene_launch_leads_the_caption_and_uses_the_guarded_offline_action",
+                      "editor::device_panel::tests::device_comparison_tests::device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_new_ack"}]
 UI_UNIT_COHORTS = [{"editor::device_panel::eq_panel::axes::", "editor::device_panel::eq_panel::response::"},
                    {"editor::midi_drag::", "editor::midi_group_drag::", "editor::midi_scene::", "editor::midi_selection::", "editor::midi_stroke::", "editor::midi_velocity::", "editor::midi_viewport_grid::"},
                    {"editor::device_panel::eq_panel::group_move::", "editor::device_panel::eq_panel::gestures::"},
@@ -359,6 +366,7 @@ UI_INTEGRATION_PAIRS = {"editor::overview_waveform::": "editor::browser::ui_test
                         "editor::fade_handle_geometry::": "editor::fade_handles::",
                         "editor::midi_wheel_mapping::": "editor::midi_wheel::",
                         "editor::refresh_state::": "editor::output_meter_ui_test::",
+                        "editor::session_grid::actions::": "editor::session_grid::tests::",
                         "editor::session_navigation::": "editor::session_navigation_ui_test::",
                         "editor::track_meters::selection::": "editor::track_meters::tests::",
                         "editor::track_meters::decay::": "editor::track_meters::tests::",
@@ -508,6 +516,10 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                         names.update((module, integration))
                 for cohort in UI_UNIT_COHORTS:
                     if names & cohort:
+                        names.update(cohort)
+                for cohort in UI_PREFIX_COHORTS:
+                    if any(member.startswith(name) or name.startswith(member)
+                           for name in names for member in cohort):
                         names.update(cohort)
                 if len(names) == before:
                     break
