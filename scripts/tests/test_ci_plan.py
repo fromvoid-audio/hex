@@ -69,11 +69,14 @@ GRID_CONSUMERS = [
 
 ARRANGEMENT_CONSUMERS = [
     "editor::arrangement_focus::visibility::",
+    "editor::arrangement_main_track_ui_test::clips_and_main_sections_share_grid_endpoints_through_fractional_pan_and_resize",
     "editor::arrangement_map::model::",
     "editor::arrangement_map::tests::main_lane_paints_canonical_intervals_at_the_ruler_scale",
+    "editor::arrangement_sections::tests::section_has_opaque_chamfered_fill_and_compact_header_across_palettes_and_layouts",
     "editor::arrangement_sections::tests::section_lower_body_paints_all_tracks_without_section_edit_even_when_focused",
     "editor::group_overview::model::",
     "editor::group_overview::tests::",
+    "section_surface::geometry::",
 ]
 
 
@@ -1958,6 +1961,10 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/src/editor/viewport.rs"], inventory, [owner]),
             {owner: sorted([*timeline, *GRID_CONSUMERS, *ARRANGEMENT_CONSUMERS])})
+        self.assertEqual(plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/mod.rs"], inventory, [owner]),
+            {owner: ["editor::", "output_meter::logic::", "output_meter::tests::",
+                     "section_surface::geometry::"]})
         disk = "editor::disk_overload::"
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/src/editor/disk_overload.rs"], inventory, [owner]),
@@ -2056,8 +2063,10 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_editor_logic.rs"], inventory, [owner]),
                          {owner: ["editor::action_outcome_ui_tests::editor_reports_each_rejection_and_keeps_reader_through_retirement",
                                   "editor::arrangement_focus::visibility::",
+                                  "editor::arrangement_main_track_ui_test::clips_and_main_sections_share_grid_endpoints_through_fractional_pan_and_resize",
                                   "editor::arrangement_map::model::",
                                   "editor::arrangement_map::tests::main_lane_paints_canonical_intervals_at_the_ruler_scale",
+                                  "editor::arrangement_sections::tests::section_has_opaque_chamfered_fill_and_compact_header_across_palettes_and_layouts",
                                   "editor::arrangement_sections::tests::section_lower_body_paints_all_tracks_without_section_edit_even_when_focused",
                                   "editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform",
                                   "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",
@@ -2135,7 +2144,8 @@ class ModuleScopeTests(unittest.TestCase):
                                   "log_viewer::tests::long_log_rows_stay_within_their_visual_bounds",
                                   "log_viewer::tests::rapid_filter_changes_install_only_the_latest_result",
                                   "log_viewer::tests::severity_badges_keep_rows_readable_and_copy_original_records",
-                                  "output_meter::logic::", "output_meter::tests::", "theme::"]})
+                                  "output_meter::logic::", "output_meter::tests::", "section_surface::geometry::",
+                                  "theme::"]})
         meter_consumer = "editor::track_meters::tests::steady_state_meter_ticks_reuse_the_staging_buffers"
         self.assertTrue(any(meter_consumer.startswith(selected) for selected in
                             plan.module_test_filters(root, ["crates/hex-ui/tests/unit_editor_logic.rs"],
@@ -2564,8 +2574,15 @@ class ModuleScopeTests(unittest.TestCase):
             self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/" + name + ".rs"], inventory, [owner]),
                              {owner: [name + "::"]})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_section.rs"], inventory, [owner]),
-                         {owner: ["section_appearance::", "section_hit::", "section_input::", "section_reorder::",
-                                  "section_resize::", "section_selection::"]})
+                         {owner: ["editor::arrangement_focus::visibility::",
+                                  "editor::arrangement_main_track_ui_test::clips_and_main_sections_share_grid_endpoints_through_fractional_pan_and_resize",
+                                  "editor::arrangement_map::model::",
+                                  "editor::arrangement_map::tests::main_lane_paints_canonical_intervals_at_the_ruler_scale",
+                                  "editor::arrangement_sections::tests::section_has_opaque_chamfered_fill_and_compact_header_across_palettes_and_layouts",
+                                  "editor::arrangement_sections::tests::section_lower_body_paints_all_tracks_without_section_edit_even_when_focused",
+                                  "editor::group_overview::model::", "editor::group_overview::tests::",
+                                  "section_appearance::", "section_hit::", "section_input::", "section_reorder::",
+                                  "section_resize::", "section_selection::", "section_surface::geometry::"]})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
                     "single_run": {owner: "ui-test-support"}, "module_filters": {owner: names}}
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
@@ -2584,6 +2601,50 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertTrue(any(step.step_id == "ui-section-unit-tests" for step in ci.planned_steps({"scope": "full"})))
         health = ci.planned_steps({"scope": "rust", "health": {"python": False, "workspace_inputs": True, "packages": []}})
         self.assertTrue(any(step.step_id == "health-ui-section-unit" for step in health))
+
+    def test_section_surface_geometry_keeps_actual_rendered_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "section_surface::geometry::"
+        consumers = [
+            "editor::arrangement_sections::tests::section_has_opaque_chamfered_fill_and_compact_header_across_palettes_and_layouts",
+            "editor::arrangement_main_track_ui_test::clips_and_main_sections_share_grid_endpoints_through_fractional_pan_and_resize",
+            "editor::group_overview::tests::native_group_preview_tracks_viewport_content_removal_and_undo",
+            "editor::arrangement_map::tests::main_lane_paints_canonical_intervals_at_the_ruler_scale",
+        ]
+        paths = [
+            ("crates/hex-ui/src/section_surface/geometry.rs", "section_surface::geometry"),
+            ("crates/hex-ui/src/section_surface.rs", "section_surface"),
+            ("crates/hex-ui/src/editor/arrangement_sections.rs", "editor::arrangement_sections"),
+            ("crates/hex-ui/src/editor/arrangement_main_track_ui_test.rs",
+             "editor::arrangement_main_track_ui_test"),
+            ("crates/hex-ui/src/editor/group_overview.rs", "editor::group_overview"),
+            ("crates/hex-ui/src/editor/arrangement_map.rs", "editor::arrangement_map"),
+        ]
+        modules = plan.module_paths(root / "crates/hex-ui/src")
+        for path, module in paths:
+            self.assertEqual(modules[(root / path).resolve()], module)
+            names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
+            self.assertTrue(any(unit.startswith(selected) for selected in names), path)
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in names),
+                                f"{path} does not select {consumer}: {names}")
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": {owner: names}}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                      "boundary": boundary, "cargo_inventory": inventory,
+                                      "paths": [path]})
+            unit_step = next(step for step in steps if "unit_section" in step.argv)
+            self.assertTrue(unit_step.requires_tests)
+            self.assertTrue(any(unit.startswith(selected) for selected in unit_step.argv))
+            feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv),
+                                f"{path} feature step does not select {consumer}")
 
     def test_device_display_unit_target_follows_its_owner(self):
         root = SCRIPTS.parent
@@ -2733,7 +2794,8 @@ class ModuleScopeTests(unittest.TestCase):
             names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
             self.assertEqual(names, {owner: sorted(related)})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/editor/mode.rs"], inventory, [owner]),
-                         {owner: ["editor::", "output_meter::logic::", "output_meter::tests::"]})
+                         {owner: ["editor::", "output_meter::logic::", "output_meter::tests::",
+                                  "section_surface::geometry::"]})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
                     "single_run": {owner: "ui-test-support"}, "module_filters": {owner: [unit, window]}}
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
@@ -2926,7 +2988,8 @@ class ModuleScopeTests(unittest.TestCase):
         names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/refresh_state.rs"], inventory, [owner])
         self.assertEqual(names, {owner: METER_BOUNDARY})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/editor/refresh.rs"], inventory, [owner]),
-                         {owner: ["editor::", "output_meter::logic::", "output_meter::tests::"]})
+                         {owner: ["editor::", "output_meter::logic::", "output_meter::tests::",
+                                  "section_surface::geometry::"]})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
                     "single_run": {owner: "ui-test-support"}, "module_filters": names}
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
