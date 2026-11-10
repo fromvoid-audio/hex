@@ -345,6 +345,7 @@ UI_UNIT_TARGETS = {"editor::tempo_input::value::": "unit_editor_logic",
                    "editor::track_meters::scale::": "unit_editor_state",
                    "editor::track_meters::selection::": "unit_editor_logic",
                    "editor::tracks::clone_source_window::": "unit_editor_logic",
+                   "editor::tracks::group_overlap::": "unit_editor_logic",
                    "editor::user_errors::": "unit_editor_logic",
                    "editor::viewport::": "unit_editor_state",
                    "section_appearance::": "unit_section",
@@ -359,7 +360,9 @@ UI_UNIT_TARGETS = {"editor::tempo_input::value::": "unit_editor_logic",
 UI_UNIT_HARNESS_FILES = {"tests/piano_roll_unit/editor.rs": "unit_piano_roll",
                          "tests/piano_roll_unit/midi_canvas.rs": "unit_piano_roll"}
 UI_UNIT_HARNESS_MODULES = {
-    "tests/editor_logic_unit/tracks.rs": {"editor::tracks::clone_source_window::"},
+    "tests/editor_logic_unit/tracks.rs": {
+        "editor::tracks::clone_source_window::", "editor::tracks::group_overlap::",
+    },
 }
 UI_UNIT_FEATURES = {"unit_piano_roll": "ui-unit-tier", "unit_timeline": "ui-unit-tier", "unit_automation": "ui-unit-tier", "unit_device": "ui-unit-tier", "unit_section": "ui-unit-tier", "unit_editor_logic": "ui-unit-tier"}
 # These integration consumers are not included in a module-scoped library run.
@@ -458,6 +461,11 @@ UI_PREFIX_COHORTS = [{"editor::tempo_input::value::",
                      "editor::tracks::overlap_tests::held_midi_drag_keeps_actual_note_paint_and_colored_name_below_header",
                      "editor::tracks::overlap_tests::held_processed_audio_drag_reuses_ready_root_on_lane_and_floating",
                      "editor::tracks::overlap_tests::held_looped_warp_drag_keeps_last_ready_content_in_mixed_copy_group"},
+                    {"editor::tracks::group_overlap::",
+                     "editor::drag::group_drag_ui_test::group_overlap_is_passive_clipped_and_excludes_selected_originals_in_both_modes",
+                     "editor::drag::group_drag_ui_test::review_group_landing_paints_unselected_overwrite_victim",
+                     "editor::audio_event_editor::paint::tests::replacement_accents_follow_occupied_victims_and_range_overwrite_semantics",
+                     "editor::audio_event_editor::workflow_tests::event_overlap_accent_covers_only_replaced_audio_and_survives_release"},
                     {"editor::console_track_page::",
                      "editor::browser::console_drop_ui_test::console_column_paged_narrow_target_uses_painted_anchor_and_rejects_stale_source",
                      "editor::session_track_reorder_ui_test::session_group_band_survives_paging_past_its_parent",
