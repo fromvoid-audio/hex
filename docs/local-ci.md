@@ -139,7 +139,7 @@ cargo test -p hex-ui --features ui-unit-tier --test unit_section --locked
 
 Editor logic tests, including Session route view state, EQ response sampling,
 overview-waveform, loop-projection, waveform-grid and clip-drag geometry,
-session-receipt reconciliation, and output-meter logic, use:
+arrangement-map projection, session-receipt reconciliation, and output-meter logic, use:
 
 ```sh
 cargo test -p hex-ui --features ui-unit-tier --test unit_editor_logic --locked
@@ -225,7 +225,10 @@ result and include the time spent on every case.
 Module-scoped test steps build only the library (or, for a binary-only crate,
 the binaries): a `module::path::` filter can never match an integration test,
 example or bench, so building and linking those targets was pure overhead
-(hex-session has 28 test and 7 example targets, hex-storage 34).
+(hex-session has 28 test and 7 example targets, hex-storage 34). Explicit
+source-by-path consumers are exceptions: arrangement focus, track indentation
+and track-reorder subtree changes also select the separate `hex-ui`
+`track_group_focus` integration target.
 
 **One-minute budget.** Merge runs keep test setup and execution, excluding Cargo's
 build phase, under 60 s. local-ci sums executed test steps (wall time minus the

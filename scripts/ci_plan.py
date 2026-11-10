@@ -271,7 +271,8 @@ def module_declarations(source_root: Path) -> dict[Path, list[tuple[Path, list[s
 TEST_ATTRIBUTE = re.compile(r"#\[(?:gpui::)?test\b")
 # Unit test targets which compile the owning source directly. Keep their libtest
 # names under the original module path so scoped coverage remains observable.
-UI_UNIT_TARGETS = {"editor::controller::session_feedback::": "unit_editor_logic",
+UI_UNIT_TARGETS = {"editor::arrangement_map::model::": "unit_editor_logic",
+                   "editor::controller::session_feedback::": "unit_editor_logic",
                    "editor::waveform_geometry::grid::": "unit_editor_logic",
                    "editor::waveform_loop::projection::": "unit_editor_logic",
                    "editor::waveform_stretch::accepted_root::": "unit_editor_logic",
@@ -335,11 +336,21 @@ UI_UNIT_TARGETS = {"editor::controller::session_feedback::": "unit_editor_logic"
                    "section_selection::": "unit_section",
                    "theme::": "unit_editor_logic"}
 UI_UNIT_FEATURES = {"unit_piano_roll": "ui-unit-tier", "unit_timeline": "ui-unit-tier", "unit_automation": "ui-unit-tier", "unit_device": "ui-unit-tier", "unit_section": "ui-unit-tier", "unit_editor_logic": "ui-unit-tier"}
+# These integration targets compile an owner's real source by path and are not
+# included in a module-scoped library run.
+UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
+                         "editor::track_hierarchy_indent::": "track_group_focus",
+                         "editor::track_reorder::subtree::": "track_group_focus"}
 # These geometry modules call one another; a change to one must exercise the
 # complete pure boundary rather than only its own test-name prefix.
 # These consumers live in larger test modules; a selected ancestor must retain
 # the unit owner as well as the specific consumer checks.
-UI_PREFIX_COHORTS = [{"editor::controller::session_feedback::",
+UI_PREFIX_COHORTS = [{"editor::arrangement_map::model::",
+                      "editor::arrangement_map::tests::main_lane_paints_canonical_intervals_at_the_ruler_scale",
+                      "editor::arrangement_focus::visibility::",
+                      "editor::group_overview::tests::",
+                      "editor::arrangement_sections::tests::section_lower_body_paints_all_tracks_without_section_edit_even_when_focused"},
+                     {"editor::controller::session_feedback::",
                       "editor::controller::tests::earlier_session_rejection_is_not_reported_as_consumed",
                       "editor::action_outcome_ui_tests::editor_reports_each_rejection_and_keeps_reader_through_retirement"},
                      {"editor::waveform_geometry::grid::",
@@ -478,6 +489,11 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                 whole.add(owner)
             continue
         if owner == "hex-ui":
+            # This target compiles the real focus source by path. Keep mixed
+            # owner-and-harness changes scoped while selecting its full binary.
+            if file == directory / "tests" / "track_group_focus.rs" and file.is_file():
+                filters.setdefault(owner, set()).add("editor::arrangement_focus::")
+                continue
             unit_modules = {module for module, target in UI_UNIT_TARGETS.items()
                             if file == directory / "tests" / f"{target}.rs"}
             if unit_modules and file.is_file():
@@ -509,7 +525,7 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
     # The real viewport is an input to the waveform grid. Select its owner
     # when that source changes, including the grid's geometry consumers.
     if "crates/hex-ui/src/editor/viewport.rs" in executable and "hex-ui" in tested:
-        filters.setdefault("hex-ui", set()).add("editor::waveform_geometry::grid::")
+        filters.setdefault("hex-ui", set()).update({"editor::waveform_geometry::grid::", "editor::arrangement_map::model::"})
     # The theme source is compiled by path in each consumer. Run its own text
     # contract alongside storage's test, without widening other storage edits.
     if "crates/hex-storage/src/text.rs" in executable:

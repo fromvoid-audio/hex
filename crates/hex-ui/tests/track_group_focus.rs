@@ -1,4 +1,6 @@
 //! Focused visibility contract using the same private projection as the UI.
+#[path = "../src/editor/arrangement_focus/interval.rs"]
+mod interval;
 #[path = "../src/editor/track_reorder/subtree.rs"]
 mod subtree;
 #[path = "../src/editor/track_hierarchy_indent.rs"]

@@ -79,3 +79,8 @@ mod waveform_stretch;
 mod viewport;
 #[path = "waveform_geometry.rs"]
 mod waveform_geometry;
+
+#[path = "arrangement_focus.rs"]
+mod arrangement_focus;
+#[path = "arrangement_map.rs"]
+mod arrangement_map;
