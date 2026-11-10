@@ -343,6 +343,7 @@ UI_UNIT_TARGETS = {"editor::tempo_input::value::": "unit_editor_logic",
                    "editor::track_meters::follower::": "unit_editor_logic",
                    "editor::track_meters::scale::": "unit_editor_state",
                    "editor::track_meters::selection::": "unit_editor_logic",
+                   "editor::tracks::clone_source_window::": "unit_editor_logic",
                    "editor::user_errors::": "unit_editor_logic",
                    "editor::viewport::": "unit_editor_state",
                    "section_appearance::": "unit_section",
@@ -356,6 +357,9 @@ UI_UNIT_TARGETS = {"editor::tempo_input::value::": "unit_editor_logic",
                    "theme::": "unit_editor_logic"}
 UI_UNIT_HARNESS_FILES = {"tests/piano_roll_unit/editor.rs": "unit_piano_roll",
                          "tests/piano_roll_unit/midi_canvas.rs": "unit_piano_roll"}
+UI_UNIT_HARNESS_MODULES = {
+    "tests/editor_logic_unit/tracks.rs": {"editor::tracks::clone_source_window::"},
+}
 UI_UNIT_FEATURES = {"unit_piano_roll": "ui-unit-tier", "unit_timeline": "ui-unit-tier", "unit_automation": "ui-unit-tier", "unit_device": "ui-unit-tier", "unit_section": "ui-unit-tier", "unit_editor_logic": "ui-unit-tier"}
 # These integration consumers are not included in a module-scoped library run.
 UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
@@ -445,6 +449,10 @@ UI_PREFIX_COHORTS = [{"editor::tempo_input::value::",
                       "editor::session_navigation_ui_test::scene_launch_leads_the_caption_and_uses_the_guarded_offline_action",
                       "editor::context_menu::tests::global_launch_dropdown_renders_all_choices_and_restores_focus_without_project_edits",
                       "editor::device_panel::tests::device_comparison_tests::device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_new_ack"},
+                    {"editor::tracks::clone_source_window::",
+                     "editor::tracks::overlap_tests::held_midi_drag_keeps_actual_note_paint_and_colored_name_below_header",
+                     "editor::tracks::overlap_tests::held_processed_audio_drag_reuses_ready_root_on_lane_and_floating",
+                     "editor::tracks::overlap_tests::held_looped_warp_drag_keeps_last_ready_content_in_mixed_copy_group"},
                     {"editor::console_track_page::",
                      "editor::browser::console_drop_ui_test::console_column_paged_narrow_target_uses_painted_anchor_and_rejects_stale_source",
                      "editor::session_track_reorder_ui_test::session_group_band_survives_paging_past_its_parent",
@@ -623,10 +631,12 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
             if file == directory / "tests" / "midi_pressure_boundary.rs" and file.is_file():
                 filters.setdefault(owner, set()).add("editor::midi_recording::")
                 continue
-            harness_target = UI_UNIT_HARNESS_FILES.get(file.relative_to(directory).as_posix())
+            relative_path = file.relative_to(directory).as_posix()
+            harness_target = UI_UNIT_HARNESS_FILES.get(relative_path)
             unit_modules = {module for module, target in UI_UNIT_TARGETS.items()
                             if (file == directory / "tests" / f"{target}.rs"
                                 or target == harness_target)}
+            unit_modules.update(UI_UNIT_HARNESS_MODULES.get(relative_path, set()))
             if unit_modules and file.is_file():
                 filters.setdefault(owner, set()).update(unit_modules)
                 continue

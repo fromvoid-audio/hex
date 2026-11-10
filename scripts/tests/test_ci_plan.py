@@ -2149,6 +2149,10 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::track_meters::main_output::tests::", "editor::track_meters::scale::",
                                   "editor::track_meters::selection::", "editor::track_meters::tests::",
                                   "editor::track_performance::tests::view_actions_fit_independent_indicators_in_arrangement_and_console_headers",
+                                  "editor::tracks::clone_source_window::",
+                                  "editor::tracks::overlap_tests::held_looped_warp_drag_keeps_last_ready_content_in_mixed_copy_group",
+                                  "editor::tracks::overlap_tests::held_midi_drag_keeps_actual_note_paint_and_colored_name_below_header",
+                                  "editor::tracks::overlap_tests::held_processed_audio_drag_reuses_ready_root_on_lane_and_floating",
                                   "editor::trim::resize_release_tests::shift_resize_preserves_visible_extent_through_release_and_real_worker_ack",
                                   "editor::trim::stretch_limit_tests::",
                                   "editor::trim::stretch_preview::resolver::",
@@ -2701,6 +2705,48 @@ class ModuleScopeTests(unittest.TestCase):
             self.assertTrue(unit.requires_tests)
             for name in names:
                 self.assertIn(name, integration.argv)
+
+    def test_clone_source_window_keeps_unit_harness_and_rendered_drag_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::tracks::clone_source_window::"
+        consumers = [
+            "editor::tracks::overlap_tests::held_midi_drag_keeps_actual_note_paint_and_colored_name_below_header",
+            "editor::tracks::overlap_tests::held_processed_audio_drag_reuses_ready_root_on_lane_and_floating",
+            "editor::tracks::overlap_tests::held_looped_warp_drag_keeps_last_ready_content_in_mixed_copy_group",
+        ]
+        source = "crates/hex-ui/src/editor/tracks/clone_source_window.rs"
+        names = plan.module_test_filters(root, [source], inventory, [owner])[owner]
+        self.assertEqual(names, sorted([unit, *consumers]))
+
+        tracks_shim = "crates/hex-ui/tests/editor_logic_unit/tracks.rs"
+        self.assertEqual(plan.module_test_filters(root, [tracks_shim], inventory, [owner]),
+                         {owner: sorted([unit, *consumers])})
+        editor_shim = "crates/hex-ui/tests/editor_logic_unit/editor.rs"
+        combined_paths = [source, "crates/hex-ui/src/editor/tracks.rs", tracks_shim]
+        # The shared shim can register tests outside the known unit prefixes.
+        self.assertEqual(plan.module_test_filters(root, [editor_shim], inventory, [owner]), {})
+        self.assertEqual(plan.module_test_filters(root, [*combined_paths, editor_shim], inventory, [owner]), {})
+        combined = plan.module_test_filters(root, combined_paths, inventory, [owner])[owner]
+        self.assertIn("editor::tracks::", combined)
+        self.assertNotIn("editor::", combined)
+        self.assertTrue(all(any(consumer.startswith(selected) for selected in combined)
+                            for consumer in consumers))
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": {owner: combined}}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                  "boundary": boundary, "cargo_inventory": inventory,
+                                  "paths": combined_paths})
+        unit_step = next(step for step in steps if step.step_id == "ui-unit-unit_editor_logic")
+        self.assertTrue(any(unit.startswith(selected) for selected in unit_step.argv))
+        self.assertTrue(unit_step.requires_tests)
+        feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+        for consumer in consumers:
+            self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv))
 
     def test_section_hit_unit_target_follows_its_owner(self):
         root = SCRIPTS.parent
