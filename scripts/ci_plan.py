@@ -17,7 +17,7 @@ if _PYTHON_SPEC is None or _PYTHON_SPEC.loader is None:
 python_tests = importlib.util.module_from_spec(_PYTHON_SPEC)
 _PYTHON_SPEC.loader.exec_module(python_tests)
 
-POLICY_VERSION = 51
+POLICY_VERSION = 52
 UI_PACKAGES = {"hex-ui", "hex-widgets"}
 # Opaque state reaches storage through runtime type IDs, not a Cargo dependency.
 # Changes here must be reviewed with the real registration/codec consumers.
@@ -254,7 +254,8 @@ def module_declarations(source_root: Path) -> dict[Path, list[tuple[Path, list[s
 TEST_ATTRIBUTE = re.compile(r"#\[(?:gpui::)?test\b")
 # Unit test targets which compile the owning source directly. Keep their libtest
 # names under the original module path so scoped coverage remains observable.
-UI_UNIT_TARGETS = {"editor::waveform_source::": "unit_editor_logic",
+UI_UNIT_TARGETS = {"editor::midi_cue::timing::": "unit_timeline",
+                   "editor::waveform_source::": "unit_editor_logic",
                    "editor::computer_keyboard::state::": "unit_editor_logic",
                    "editor::audio_admission::": "unit_editor_state",
                    "editor::audio_import_settings::admission::": "unit_editor_logic",
@@ -311,6 +312,7 @@ UI_UNIT_COHORTS = [{"editor::midi_drag::", "editor::midi_group_drag::", "editor:
                    {"editor::musical_time::", "editor::seek::", "editor::signed_frame_viewport::", "editor::viewport::"},
                    {"editor::refresh_state::", "editor::track_meters::decay::", "editor::track_meters::follower::", "editor::track_meters::scale::"},
                    {"section_appearance::", "section_reorder::"},
+                   {"editor::midi_cue::", "editor::midi_cue::timing::", "editor::clip_range_fit::"},
                    {"editor::waveform_source::", "editor::waveform::", "editor::waveform_geometry::",
                     "editor::waveform_loop::", "editor::waveform_stretch::",
                     "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",

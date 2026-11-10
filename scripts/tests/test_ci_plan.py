@@ -2137,7 +2137,7 @@ class ModuleScopeTests(unittest.TestCase):
             self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner]),
                              {owner: timeline})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_timeline.rs"], inventory, [owner]),
-                         {owner: timeline})
+                         {owner: ["editor::clip_range_fit::", "editor::midi_cue::", *timeline]})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
                     "single_run": {owner: "ui-test-support"}, "module_filters": {owner: timeline}}
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
@@ -2147,6 +2147,28 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertTrue(any(step.step_id == "ui-timeline-unit-tests" for step in ci.planned_steps({"scope": "full"})))
         health = ci.planned_steps({"scope": "rust", "health": {"python": False, "workspace_inputs": True, "packages": []}})
         self.assertTrue(any(step.step_id == "health-ui-timeline-unit" for step in health))
+
+    def test_midi_cue_timing_selects_unit_and_real_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        names = ["editor::clip_range_fit::", "editor::midi_cue::"]
+        for path in ("crates/hex-ui/src/editor/midi_cue/timing.rs",
+                     "crates/hex-ui/src/editor/midi_cue.rs", "crates/hex-ui/src/editor/clip_range_fit.rs"):
+            self.assertEqual(plan.module_test_filters(root, [path], inventory, [owner]), {owner: names})
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": {owner: names}}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                      "cargo_inventory": inventory, "paths": [path]})
+            unit = next(step for step in steps if "unit_timeline" in step.argv)
+            integration = next(step for step in steps if step.step_id == "ui-feature-tests")
+            self.assertIn("editor::midi_cue::", unit.argv)
+            self.assertTrue(unit.requires_tests)
+            for name in names:
+                self.assertIn(name, integration.argv)
 
     def test_piano_unit_target_follows_owners_and_runs_once(self):
         root = SCRIPTS.parent
