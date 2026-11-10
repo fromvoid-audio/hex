@@ -182,6 +182,23 @@ class LocalCiRunnerTests(unittest.TestCase):
                 source.write_bytes(original)
         self.assertEqual(self.runner("source-match").run(), 0)
 
+    def test_programmatic_planner_changed_before_snapshot_refuses_without_target_mutation(self):
+        planner = self.repo / "scripts/ci_plan.py"
+        planner.write_bytes(planner.read_bytes() + b"\n# changed after import\n")
+        target = Path(self.env["FAKE_METADATA_TARGET"])
+        target.mkdir()
+        sentinel = target / "preserve"
+        sentinel.write_bytes(b"previous artifact")
+        runner = self.runner("planner-before-snapshot")
+        with patch.object(runner, "_capture_repository_state", wraps=runner._capture_repository_state) as capture, \
+                patch.object(runner, "_resolve_cargo_identity", wraps=runner._resolve_cargo_identity) as identity:
+            self.assertEqual(runner.run(), 2)
+        capture.assert_not_called()
+        identity.assert_not_called()
+        self.assertIn("ci_plan.py", runner.summary["runner_policy_error"])
+        self.assertEqual(sentinel.read_bytes(), b"previous artifact")
+        self.assertIsNone(runner.target_lock)
+
     def test_programmatic_policy_mutation_after_lock_refuses_owner(self):
         source = self.repo / "scripts/ci_plan.py"
         original = source.read_bytes()
