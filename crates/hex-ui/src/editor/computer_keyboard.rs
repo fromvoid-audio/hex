@@ -19,27 +19,6 @@ impl super::EditorView {
         self.computer_keyboard.release_all();
     }
 
-    /// Focus owns physical keys, while hardware keeps its prepared route
-    /// through editor focus changes (including the speaker button's click).
-    pub(super) fn blur_computer_keyboard(&mut self, window: &gpui::Window) {
-        if self.controller_wants_live_notes()
-            && let Some(input) = self
-                .computer_keyboard
-                .input
-                .as_ref()
-                .filter(|input| input.live_notes().is_some() && !input.is_cancelled())
-        {
-            input.clear_keys_on_control();
-            self.computer_keyboard.release_all();
-            if !self.midi_focus.is_focused(window) {
-                self.midi_audition.clear();
-            }
-        } else {
-            self.cancel_computer_keyboard();
-            self.computer_keyboard.suspended = true;
-        }
-    }
-
     /// Priority Stop retains only a still-valid ordinary output-bound input root. The output
     /// endpoint revokes its active prefix; fresh physical input can reuse the already admitted
     /// graph without waiting for a publication slot. Other lifecycle cancellation stays terminal.

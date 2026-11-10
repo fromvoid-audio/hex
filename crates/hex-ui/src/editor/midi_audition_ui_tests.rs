@@ -91,6 +91,9 @@ fn click_chord_and_marquee_prepare_once_with_exact_velocities_but_disabled_paint
             "enable waits for explicit selection"
         )
     });
+    // A note click from Arrangement focus must retain the new piano intent.
+    visual.update(|window, cx| editor.read_with(cx, |v, _| v.focus.focus(window)));
+    visual.run_until_parked();
     visual.simulate_click(b, Modifiers::default());
     pump(&editor, &mut visual);
     let (single, request) = editor.read_with(&visual, |v, _| {

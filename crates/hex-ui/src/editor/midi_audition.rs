@@ -72,6 +72,33 @@ impl EditorView {
             self.retire_computer_keyboard_audio();
         }
     }
+    /// Retire the departing focus's physical keys and preserve an explicit
+    /// selection captured by the click that just moved focus into the piano roll.
+    /// Hardware keeps the same admitted route across the focus handoff.
+    pub(super) fn blur_computer_keyboard(&mut self, window: &gpui::Window) {
+        let entering_piano_roll = self.midi_focus.is_focused(window);
+        let pending = if entering_piano_roll {
+            self.midi_audition.pending.take()
+        } else {
+            None
+        };
+        if self.controller_wants_live_notes()
+            && let Some(input) = self
+                .computer_keyboard
+                .input
+                .as_ref()
+                .filter(|input| input.live_notes().is_some() && !input.is_cancelled())
+        {
+            input.clear_keys_on_control();
+            self.computer_keyboard.release_all();
+            self.midi_audition.clear();
+        } else {
+            self.cancel_computer_keyboard();
+            self.computer_keyboard.suspended = true;
+        }
+        self.midi_audition.pending = pending;
+    }
+
     /// Capture at most 17 complete notes in one bounded pass over the selected source.
     /// More notes refuse the whole chord; no velocity quantization or truncation.
     pub(super) fn audition_midi_selection(&mut self) {
