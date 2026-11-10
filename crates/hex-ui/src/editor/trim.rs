@@ -16,6 +16,10 @@ pub(super) mod loop_handles;
 #[path = "stretch_preview.rs"]
 mod stretch_preview;
 
+#[path = "trim/admission.rs"]
+mod admission;
+use admission::trim_drag_admitted;
+
 #[path = "trim/geometry.rs"]
 mod geometry;
 use geometry::{corrected_edge_frame, edge_frame, frame_at_x, preview_is_noop};
@@ -610,15 +614,6 @@ fn drag_admitted(view: &EditorView) -> bool {
             view.worker_requests_pending,
             view.pending_requests.len(),
         )
-}
-
-fn trim_drag_admitted(
-    opening_project: bool,
-    close_prompt_open: bool,
-    worker_requests_pending: usize,
-    pending_requests: usize,
-) -> bool {
-    !opening_project && !close_prompt_open && worker_requests_pending == 0 && pending_requests == 0
 }
 
 fn payload_is_current(
@@ -1956,7 +1951,6 @@ impl MidiTrimDrag {
 mod tests {
     use super::{
         TrimDrag, payload_is_current, replace_audio_trim_preview, replace_midi_trim_preview,
-        trim_drag_admitted,
     };
     use crate::editor::{drag::LaneBounds, viewport::Viewport};
     use hex_project::{Clip, Command, Created, Editor, Project, TrackId, TrimEdge};
@@ -2014,15 +2008,6 @@ mod tests {
             &midi,
             Some(midi_candidate.into())
         ));
-    }
-
-    #[test]
-    fn trim_admission_waits_for_open_close_and_canonical_work() {
-        assert!(trim_drag_admitted(false, false, 0, 0));
-        assert!(!trim_drag_admitted(true, false, 0, 0));
-        assert!(!trim_drag_admitted(false, true, 0, 0));
-        assert!(!trim_drag_admitted(false, false, 1, 0));
-        assert!(!trim_drag_admitted(false, false, 0, 1));
     }
 
     #[test]
