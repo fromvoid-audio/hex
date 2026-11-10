@@ -3394,14 +3394,38 @@ class ModuleScopeTests(unittest.TestCase):
         inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
                       "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
                       "targets": [{"kind": ["lib"]}]}]
-        piano = ["editor::midi_drag::", "editor::midi_group_drag::", "editor::midi_scene::", "editor::midi_selection::", "editor::midi_stroke::", "editor::midi_velocity::", "editor::midi_viewport_grid::"]
-        for path in ("midi_drag.rs", "midi_group_drag.rs", "midi_scene.rs", "midi_selection.rs", "midi_stroke.rs", "midi_velocity.rs", "midi_viewport_grid.rs"):
+        piano = ["editor::midi_canvas::geometry::", "editor::midi_drag::", "editor::midi_group_drag::", "editor::midi_scene::", "editor::midi_selection::", "editor::midi_stroke::", "editor::midi_velocity::", "editor::midi_viewport_grid::"]
+        creation = "editor::midi_canvas::creation_tests::held_creation_clamps_to_clip_end_and_positive_minimum"
+        for path in ("midi_drag.rs", "midi_group_drag.rs", "midi_scene.rs", "midi_selection.rs", "midi_stroke.rs", "midi_velocity.rs", "midi_viewport_grid.rs", "midi_canvas/geometry.rs"):
             self.assertEqual(plan.module_test_filters(
-                root, ["crates/hex-ui/src/editor/" + path], inventory, [owner]), {owner: piano})
-        self.assertEqual(plan.module_test_filters(
-            root, ["crates/hex-ui/tests/unit_piano_roll.rs"], inventory, [owner]),
-            {owner: sorted(piano + ["editor::midi_source_controls::", "editor::midi_wheel::",
-                                    "editor::midi_wheel_mapping::"])})
+                root, ["crates/hex-ui/src/editor/" + path], inventory, [owner]),
+                {owner: sorted([*piano, creation])})
+        piano_harness = plan.module_test_filters(
+            root, ["crates/hex-ui/tests/unit_piano_roll.rs"], inventory, [owner])
+        self.assertEqual(piano_harness,
+                         {owner: sorted(piano + ["editor::midi_source_controls::", "editor::midi_wheel::",
+                                                 "editor::midi_wheel_mapping::", creation])})
+        shim_paths = ["crates/hex-ui/tests/piano_roll_unit/editor.rs",
+                      "crates/hex-ui/tests/piano_roll_unit/midi_canvas.rs"]
+        for path in shim_paths:
+            self.assertEqual(plan.module_test_filters(root, [path], inventory, [owner]), piano_harness)
+        combined_shims = plan.module_test_filters(root, shim_paths, inventory, [owner])
+        self.assertEqual(combined_shims, piano_harness)
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": combined_shims}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                  "boundary": boundary, "cargo_inventory": inventory,
+                                  "paths": shim_paths})
+        units = [step for step in steps if "unit_piano_roll" in step.argv]
+        self.assertEqual(len(units), 1)
+        self.assertTrue(units[0].requires_tests)
+        for name in [*piano, "editor::midi_source_controls::", "editor::midi_wheel_mapping::"]:
+            self.assertIn(name, units[0].argv)
+        self.assertNotIn("editor::midi_wheel::", units[0].argv)
+        feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+        self.assertIn(creation, feature.argv)
+        self.assertIn("editor::midi_wheel::", feature.argv)
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/src/editor/midi_source_controls.rs"], inventory, [owner]),
             {owner: ["editor::midi_source_controls::"]})
@@ -3425,6 +3449,57 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertTrue(any(step.step_id == "ui-piano-unit-tests" for step in full))
         health = ci.planned_steps({"scope": "rust", "health": {"python": False, "workspace_inputs": True, "packages": []}})
         self.assertTrue(any(step.step_id == "health-ui-piano-unit" for step in health))
+
+    def test_midi_canvas_geometry_keeps_unit_dependencies_and_creation_consumer(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::midi_canvas::geometry::"
+        collaborators = [
+            "editor::midi_drag::",
+            "editor::midi_group_drag::",
+            "editor::midi_scene::",
+            "editor::midi_selection::",
+            "editor::midi_stroke::",
+            "editor::midi_velocity::",
+            "editor::midi_viewport_grid::",
+        ]
+        consumer = "editor::midi_canvas::creation_tests::held_creation_clamps_to_clip_end_and_positive_minimum"
+        paths = [
+            ("crates/hex-ui/src/editor/midi_canvas/geometry.rs", "editor::midi_canvas::geometry"),
+            ("crates/hex-ui/src/editor/midi_canvas.rs", "editor::midi_canvas"),
+            ("crates/hex-ui/src/editor/midi_creation_ui_tests.rs", "editor::midi_canvas::creation_tests"),
+            ("crates/hex-ui/src/editor/midi_drag.rs", "editor::midi_drag"),
+            ("crates/hex-ui/src/editor/midi_scene.rs", "editor::midi_scene"),
+        ]
+        modules = plan.module_paths(root / "crates/hex-ui/src")
+        for path, module in paths:
+            self.assertEqual(modules[(root / path).resolve()], module)
+            names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
+            if path == paths[0][0]:
+                self.assertEqual(names, sorted([unit, *collaborators, consumer]))
+            self.assertTrue(any(unit.startswith(selected) for selected in names),
+                            f"{path} does not select {unit}: {names}")
+            for collaborator in collaborators:
+                self.assertTrue(any(collaborator.startswith(selected) for selected in names),
+                                f"{path} does not select {collaborator}: {names}")
+            self.assertTrue(any(consumer.startswith(selected) for selected in names),
+                            f"{path} does not select {consumer}: {names}")
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": {owner: names}}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                      "boundary": boundary, "cargo_inventory": inventory,
+                                      "paths": [path]})
+            unit_step = next(step for step in steps if "unit_piano_roll" in step.argv)
+            self.assertTrue(unit_step.requires_tests)
+            for expected in [unit, *collaborators]:
+                self.assertTrue(any(expected.startswith(selected) for selected in unit_step.argv),
+                                f"{path} unit step misses {expected}")
+            feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+            self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv))
 
     def test_eq_response_keeps_axes_unit_and_window_coverage(self):
         root = SCRIPTS.parent
