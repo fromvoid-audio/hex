@@ -948,13 +948,13 @@ fn browser_right_edge_drag_resizes_and_release_stops_resizing(cx: &mut TestAppCo
         MouseButton::Left,
         Modifiers::default(),
     );
-    editor.read_with(cx, |view, _| assert_eq!(view.browser.width, 310.0));
+    editor.read_with(cx, |view, _| assert_eq!(view.browser.width, 306.0));
     visual.simulate_mouse_move(
         point(px(240.0), px(200.0)),
         MouseButton::Left,
         Modifiers::default(),
     );
-    editor.read_with(cx, |view, _| assert_eq!(view.browser.width, 240.0));
+    editor.read_with(cx, |view, _| assert_eq!(view.browser.width, 236.0));
     visual.simulate_mouse_up(
         point(px(240.0), px(200.0)),
         MouseButton::Left,
@@ -963,7 +963,7 @@ fn browser_right_edge_drag_resizes_and_release_stops_resizing(cx: &mut TestAppCo
     visual.simulate_mouse_move(point(px(300.0), px(200.0)), None, Modifiers::default());
     editor.read_with(cx, |view, _| {
         assert!(!view.browser.resizing);
-        assert_eq!(view.browser.width, 240.0);
+        assert_eq!(view.browser.width, 236.0);
     });
 }
 
@@ -2875,7 +2875,7 @@ fn split_browser_keeps_results_between_sidebar_tags_and_preview(cx: &mut TestApp
         .expect("resized outer divider");
     assert!((resized.left() - target.x).abs() < px(1.0));
     editor.update(visual, |view, cx| {
-        view.browser.width = super::MIN_WIDTH;
+        view.browser.width = super::geometry::MIN_WIDTH;
         cx.notify();
     });
     visual.run_until_parked();

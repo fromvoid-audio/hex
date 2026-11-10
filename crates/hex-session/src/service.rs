@@ -34,9 +34,19 @@ mod audio_sink;
 pub mod automation_draft;
 pub mod automation_take;
 mod native_automation_recording;
+mod plugin_editor_group;
 pub use native_automation_recording::{
-    DeviceAutomationSource, DeviceAutomationTakeAction, DeviceAutomationTakeCompletion,
-    DeviceAutomationTakeProgress, DeviceAutomationTakeScope, DeviceCaptureTarget,
+    AutomationRecoveryFileIdentity, DeviceAutomationSource, DeviceAutomationTakeAction,
+    DeviceAutomationTakeCompletion, DeviceAutomationTakeProgress, DeviceAutomationTakeScope,
+    DeviceCaptureTarget, FailedPluginContinuation, MAX_FAILED_PLUGIN_EDITOR_OBSERVATIONS,
+    MAX_NATIVE_RECOVERY_CONTINUATION_EVENTS, NativeRecoveryContinuation, NativeRecoveryTerminal,
+    SealedAutomationRecoveryFile, copy_failed_plugin_on_control,
+    copy_failed_plugin_with_receipt_on_control, copy_native_recovery_on_control,
+    prepare_failed_plugin_continuation, prepare_verified_vst3_recovery_on_control,
+};
+pub use plugin_editor_group::{
+    MAX_VST3_EDITOR_GROUP_MEMBERS, PluginEditorRecordingTarget, Vst3EditorGroupObservation,
+    Vst3EditorGroupReceipt, Vst3EditorGroupRows,
 };
 #[cfg(test)]
 mod busy_reason_tests;
@@ -68,13 +78,14 @@ mod sampler_parameter;
 use audio_sink::WorkerEvents;
 pub use audio_sink::{
     ArrangementEditPosition, NativeSamplerInput, NativeSamplerReservationHold,
-    NativeSamplerRetryFacts, OfflineBounceSource, PluginParameterCapture, PluginParameterDelivery,
-    PluginParameterGestureError, PluginParameterGestureInput, PluginParameterGestureResult,
-    PluginParameterObservation, PluginParameterOverride, ResidentEffectPreparation,
-    ResidentFileInput, ResidentFileMetadata, ResidentFilePublication, ResidentFileSeekPreparer,
-    ResidentFileSeekRequest, ResidentFileSet, ResidentFreshRuntimeFence,
-    ResidentPublicationAcceptance, ResidentPublicationMetadata, ResidentPublicationPolicy,
-    ResidentPublicationReadiness, ResidentPublicationRefusal, ResidentRuntimeLoop, WorkerAudioSink,
+    NativeSamplerRetryFacts, OfflineBounceSource, PluginEditorRecordingInput,
+    PluginParameterCapture, PluginParameterDelivery, PluginParameterGestureError,
+    PluginParameterGestureInput, PluginParameterGestureResult, PluginParameterObservation,
+    PluginParameterOverride, ResidentEffectPreparation, ResidentFileInput, ResidentFileMetadata,
+    ResidentFilePublication, ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
+    ResidentFreshRuntimeFence, ResidentPublicationAcceptance, ResidentPublicationMetadata,
+    ResidentPublicationPolicy, ResidentPublicationReadiness, ResidentPublicationRefusal,
+    ResidentRuntimeLoop, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
@@ -107,6 +118,7 @@ pub use request_cancellation::RequestCancellation;
 mod conversion_selection_tests;
 #[cfg(test)]
 mod correlated_save_tests;
+mod device_defaults;
 #[cfg(test)]
 mod effect_bus_tests;
 #[cfg(test)]
@@ -290,7 +302,7 @@ pub struct Event {
     pub sampler_edit_complete: Option<u64>,
     /// At most two exact terminals: a refused new request and an invalidated pending one.
     pub plugin_effect_complete: Vec<PluginEffectCompletion>,
-    /// This response consumed a read-only parameter query or continuation.
+    /// This response consumed a read-only parameter or failed-take query.
     /// Its request completion never acknowledges an editor mutation. Canonical
     /// state and unrelated completions still follow the normal ordered contract.
     pub plugin_parameter_observation: bool,
@@ -486,6 +498,14 @@ pub enum DeviceClipboardAction {
 pub enum Request {
     /// Source-bound Arrangement paint; resolves through the canonical overwrite command.
     PaintMidiClip(PaintMidiClip),
+    /// Replace one device's bank against the displayed canonical revision.
+    /// Resolve before touching a gesture or preparing a new playback graph.
+    ReplaceDeviceModulation {
+        project_generation: u64,
+        revision: u64,
+        device: hex_project::DeviceId,
+        modulation: hex_project::DeviceModulation,
+    },
     DeviceClipboard {
         project_generation: u64,
         revision: u64,
@@ -603,6 +623,20 @@ pub enum Request {
         owner: preset::Owner,
         path: PathBuf,
     },
+    SaveDeviceUnitPreset {
+        owner: preset::Owner,
+        path: PathBuf,
+    },
+    SaveDeviceUnitDefault {
+        owner: preset::Owner,
+        root: PathBuf,
+    },
+    /// Save provider settings on the control worker, without changing the project.
+    /// Root is the configured app data directory, never an external preset path.
+    SaveDeviceDefault {
+        owner: preset::Owner,
+        root: PathBuf,
+    },
     /// Browser Enter: worker-owned default construction and created-track selection.
     InsertBrowserInstrumentTrack {
         project_generation: u64,
@@ -666,15 +700,43 @@ pub enum Request {
         scope: DeviceAutomationTakeScope,
         action: DeviceAutomationTakeAction,
     },
+    /// Bind and open a durable draft before enabling the original editor scope.
+    StartPluginEditorRecording {
+        request_id: u64,
+        input: PluginEditorRecordingInput,
+    },
+    StopPluginEditorRecording {
+        request_id: u64,
+        key: crate::device_gesture::GestureKey,
+    },
+    ContinuePluginEditorRecording {
+        request_id: u64,
+    },
+    /// Read the retained VST3 take identity without changing its custody.
+    QueryFailedPluginAutomation {
+        request_id: u64,
+    },
+    /// Inspect one selected, completed automation draft without changing history.
+    InspectSealedAutomationRecovery {
+        request_id: u64,
+        path: PathBuf,
+    },
+    /// Observe earlier device-automation custody in worker order. The caller
+    /// must prevent later admissions until it acts on this response.
+    QueryDeviceAutomationCloseSafety {
+        request_id: u64,
+    },
     /// Recover one completed device take without reconstructing its old worker.
     /// Current context fences publication; expected target/provenance bind only
-    /// the immutable file. Every path echoes request_id through take completion.
+    /// the immutable file. A selected verified copy is revalidated under
+    /// the same reader used for adoption. Every path echoes request_id.
     RecoverDeviceAutomationTake {
         request_id: u64,
         context: hex_engine::AudioSourceContext,
         target: hex_storage::automation_draft::DraftTarget,
         expected: automation_draft::DraftProvenance,
         path: PathBuf,
+        identity: AutomationRecoveryFileIdentity,
     },
     ArmNativeParameterRecording {
         project_generation: u64,
@@ -951,6 +1013,17 @@ impl ControlledExport {
 }
 
 impl Request {
+    /// Read responses do not acknowledge ordered editor mutations.
+    pub fn is_read_only_observation(&self) -> bool {
+        matches!(
+            self,
+            Self::QueryPluginParameters(_)
+                | Self::ContinuePluginParameters
+                | Self::QueryFailedPluginAutomation { .. }
+                | Self::InspectSealedAutomationRecovery { .. }
+                | Self::QueryDeviceAutomationCloseSafety { .. }
+        )
+    }
     /// The canonical `ExportRange` parts of an export request; `Export` is its
     /// automatic whole-project Main spelling. Other requests return `None`.
     fn into_export_range(self) -> Option<ExportRangeParts> {
@@ -1002,6 +1075,9 @@ impl Request {
                 | Request::SaveCurrent
                 | Request::SaveCurrentWithFormatUpgrade { .. }
                 | Request::SaveDevicePreset { .. }
+                | Request::SaveDeviceDefault { .. }
+                | Request::SaveDeviceUnitPreset { .. }
+                | Request::SaveDeviceUnitDefault { .. }
                 | Request::LoadDevicePreset { .. }
                 | Request::CompareDevice { .. }
                 | Request::Export(_)
@@ -1206,6 +1282,17 @@ enum ExportWork {
 }
 
 impl Service {
+    /// Configure fresh catalog creation without filesystem work. Accepted FIFO
+    /// requests retain their captured directory; explicit saved/copied state
+    /// never receives it. Unconfigured services use provider factory settings.
+    pub fn set_device_defaults_directory(&mut self, root: PathBuf) -> Result<(), String> {
+        preset::validate_default_root(&root)?;
+        self.requests
+            .as_mut()
+            .ok_or("session worker is closed")?
+            .set_device_defaults_directory(root);
+        Ok(())
+    }
     pub fn new(
         sample_rate: u32,
         history_capacity: usize,
@@ -2610,9 +2697,28 @@ fn run_worker(
                 pending: control_lanes_pending(resident_seek.as_ref(), &export_lane)
                     || plugin_recording.pending(),
                 gesture: plugin_recording.ready(),
+                editor_take: plugin_recording.editor_ready(),
             }
         },
     ) {
+        let mut queued = queued;
+        if plugin_recording.editor_active()
+            && matches!(
+                &queued.request,
+                Request::SaveNew(_)
+                    | Request::SaveCurrent
+                    | Request::SaveCurrentWithFormatUpgrade { .. }
+                    | Request::Undo
+                    | Request::Redo
+                    | Request::Export(_)
+                    | Request::ExportRange { .. }
+                    | Request::DeviceGesture(_)
+            )
+        {
+            queued.recording_barrier = Some(recording_barrier::Completion::Failed(
+                "finish the plug-in editor automation take first",
+            ));
+        }
         let queued = recording_barrier.admit(
             queued,
             plugin_recording.terminal_for(device_gesture.snapshot()),
@@ -2693,6 +2799,8 @@ fn run_worker(
             queued.publication_waited,
         );
         let save_correlation = queued.save_correlation;
+        let defaults_directory = queued.native_device_defaults;
+        let defaults_root = defaults_directory.as_deref().map(PathBuf::as_path);
         let recording_barrier_completion = queued.recording_barrier;
         let (request, mut import_decode) = truncated_import::admit(queued.request);
         let solo_request = matches!(
@@ -2709,15 +2817,13 @@ fn run_worker(
             Request::ContinueSamplerEdit
                 | Request::ContinuePluginEffect
                 | Request::ContinuePluginEditor
+                | Request::ContinuePluginEditorRecording { .. }
                 | Request::ContinuePluginParameters
                 | Request::ContinuePluginStateRestore
                 | Request::ContinueStoppedPlaybackRestore
         );
         let mut plugin_effect_complete = Vec::new();
-        let plugin_parameter_observation = matches!(
-            &request,
-            Request::QueryPluginParameters(_) | Request::ContinuePluginParameters
-        );
+        let plugin_parameter_observation = request.is_read_only_observation();
         let mut plugin_parameters = None;
         let mut sampler_edit_complete = None;
         if matches!(
@@ -2824,13 +2930,215 @@ fn run_worker(
         };
         let mut device_automation_take_complete = None;
         let mut adopted_device_draft = None;
+        let mut failed_plugin_adoption = None;
+        let mut failed_plugin_publication_confirmed = false;
         let resolved_edit = match &request {
+            Request::StartPluginEditorRecording { request_id, input } => {
+                let result = (|| {
+                    let current = hex_engine::AudioSourceContext {
+                        project_generation,
+                        editor_revision: revision,
+                    };
+                    if input.context != current
+                        || pending_sampler_parameter.is_some()
+                        || device_gesture.snapshot().is_some()
+                        || tuning_gesture.snapshot().is_some()
+                        || session.audio_mode() != DocumentAudioMode::Resident
+                        || !events.resident_publication_enabled()
+                    {
+                        return Err(
+                            "vst3 editor recording requires the current resident source".into()
+                        );
+                    }
+                    let device = session
+                        .project()
+                        .device(input.target.device())
+                        .filter(|device| !device.bypassed())
+                        .ok_or("vst3 editor recording device changed")?;
+                    if vst3_automation_class(device.state()) != Some(input.target.class()) {
+                        return Err("vst3 editor recording class changed".into());
+                    }
+                    let target = match input.target {
+                        PluginEditorRecordingTarget::Single {
+                            device: id,
+                            class,
+                            parameter,
+                            ..
+                        } => {
+                            let reading = device
+                                .automation_target(hex_project::DeviceAutomationTarget::Vst3 {
+                                    parameter,
+                                })
+                                .is_some_and(hex_project::DeviceAutomation::is_reading);
+                            PluginEditorRecordingTarget::Single {
+                                device: id,
+                                class,
+                                parameter,
+                                reading,
+                            }
+                        }
+                        PluginEditorRecordingTarget::Group(group) => {
+                            if group.ids().iter().any(|&parameter| {
+                                device
+                                    .automation_target(hex_project::DeviceAutomationTarget::Vst3 {
+                                        parameter,
+                                    })
+                                    .is_none_or(|lane| lane.vst3_class != Some(group.class()))
+                            }) {
+                                return Err(
+                                    "assign each vst3 group parameter to an automation lane first"
+                                        .into(),
+                                );
+                            }
+                            input.target
+                        }
+                    };
+                    let sink = events
+                        .resident_audio()
+                        .ok_or("vst3 output is unavailable")?;
+                    plugin_recording::Preparation {
+                        state: &mut plugin_recording,
+                        lane: &mut native_automation_take,
+                        document_base: media_base.as_deref(),
+                        recovery: recovery.as_deref(),
+                        may_defer: false,
+                        deferred: false,
+                    }
+                    .begin_editor(
+                        &session,
+                        PluginEditorRecordingInput { target, ..*input },
+                        *request_id,
+                        sink,
+                    )
+                })();
+                let mut completion = DeviceAutomationTakeCompletion {
+                    request_id: *request_id,
+                    progress: DeviceAutomationTakeProgress::Refused,
+                };
+                let resolved = match result {
+                    Ok(progress) => {
+                        completion.progress = progress;
+                        None
+                    }
+                    Err(reason) => Some(Err(reason)),
+                };
+                device_automation_take_complete = Some(completion);
+                resolved
+            }
+            Request::StopPluginEditorRecording { request_id, key } => {
+                let stopped = events.resident_audio().is_some_and(|sink| {
+                    plugin_recording::Preparation {
+                        state: &mut plugin_recording,
+                        lane: &mut native_automation_take,
+                        document_base: media_base.as_deref(),
+                        recovery: recovery.as_deref(),
+                        may_defer: false,
+                        deferred: false,
+                    }
+                    .stop_editor(*key, *request_id, sink)
+                });
+                device_automation_take_complete = Some(DeviceAutomationTakeCompletion {
+                    request_id: *request_id,
+                    progress: if stopped {
+                        DeviceAutomationTakeProgress::Pending
+                    } else {
+                        DeviceAutomationTakeProgress::Refused
+                    },
+                });
+                (!stopped).then(|| Err("vst3 editor take is no longer active".into()))
+            }
+            Request::ContinuePluginEditorRecording { request_id } => {
+                use native_automation_recording::Step;
+                let current = hex_engine::AudioSourceContext {
+                    project_generation,
+                    editor_revision: revision,
+                };
+                plugin_recording
+                    .finish_editor(*request_id, &native_automation_take)
+                    .and_then(|outcome| {
+                        let mut completion = DeviceAutomationTakeCompletion {
+                            request_id: *request_id,
+                            progress: DeviceAutomationTakeProgress::Refused,
+                        };
+                        let resolved = match outcome.result {
+                            Ok(Step::Commit(command, path))
+                                if outcome.scope.context() == current =>
+                            {
+                                adopted_device_draft = Some((path, outcome.scope.target.into()));
+                                Some(Ok(*command))
+                            }
+                            Ok(Step::Commit(_, path)) => {
+                                completion.progress = DeviceAutomationTakeProgress::Retained(path);
+                                None
+                            }
+                            Ok(Step::Progress(progress)) => {
+                                completion.progress = progress;
+                                None
+                            }
+                            Err(reason) => Some(Err(reason)),
+                        };
+                        device_automation_take_complete = Some(completion);
+                        resolved
+                    })
+            }
+            Request::QueryDeviceAutomationCloseSafety { request_id } => {
+                let safe = native_automation_take.close_safe() && plugin_recording.close_safe();
+                device_automation_take_complete = Some(DeviceAutomationTakeCompletion {
+                    request_id: *request_id,
+                    progress: if safe {
+                        DeviceAutomationTakeProgress::CloseSafe
+                    } else {
+                        DeviceAutomationTakeProgress::CloseBlocked
+                    },
+                });
+                None
+            }
+            Request::QueryFailedPluginAutomation { request_id } => {
+                let gesture_active = pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some();
+                let result = plugin_recording::failed_custody(
+                    &plugin_recording,
+                    &native_automation_take,
+                    gesture_active,
+                );
+                let mut completion = DeviceAutomationTakeCompletion {
+                    request_id: *request_id,
+                    progress: DeviceAutomationTakeProgress::Refused,
+                };
+                let resolved = match result {
+                    Ok(progress) => {
+                        completion.progress = progress;
+                        None
+                    }
+                    Err(reason) => Some(Err(reason)),
+                };
+                device_automation_take_complete = Some(completion);
+                resolved
+            }
+            Request::InspectSealedAutomationRecovery { request_id, path } => {
+                let mut completion = DeviceAutomationTakeCompletion {
+                    request_id: *request_id,
+                    progress: DeviceAutomationTakeProgress::Refused,
+                };
+                let resolved = match native_automation_recording::inspect_sealed_file(path) {
+                    Ok(file) => {
+                        completion.progress =
+                            DeviceAutomationTakeProgress::SealedFile(Box::new(file));
+                        None
+                    }
+                    Err(reason) => Some(Err(reason)),
+                };
+                device_automation_take_complete = Some(completion);
+                resolved
+            }
             Request::RecoverDeviceAutomationTake {
                 request_id,
                 context,
                 target,
                 expected,
                 path,
+                identity,
             } => {
                 let current = hex_engine::AudioSourceContext {
                     project_generation,
@@ -2840,8 +3148,10 @@ fn run_worker(
                     || pending_sampler_parameter.is_some()
                     || device_gesture.snapshot().is_some()
                     || tuning_gesture.snapshot().is_some()
-                    || native_automation_take.busy()
-                    || plugin_recording.pending()
+                    || !plugin_recording::generic_sealed_recovery_idle(
+                        &plugin_recording,
+                        &native_automation_take,
+                    )
                     || session.audio_mode() != DocumentAudioMode::Resident
                     || !events.resident_publication_enabled()
                 {
@@ -2853,6 +3163,7 @@ fn run_worker(
                         *target,
                         *expected,
                         path,
+                        *identity,
                     )
                 };
                 device_automation_take_complete = Some(DeviceAutomationTakeCompletion {
@@ -2910,6 +3221,80 @@ fn run_worker(
                             &directory,
                         )
                     })()
+                } else if let DeviceAutomationTakeAction::CopyFailedPlugin {
+                    destination,
+                    max_events,
+                } = action
+                {
+                    plugin_recording::start_failed_copy(
+                        &plugin_recording,
+                        &mut native_automation_take,
+                        *scope,
+                        destination,
+                        *max_events,
+                        gesture_active,
+                    )
+                } else if matches!(action, DeviceAutomationTakeAction::InspectFailedPluginCopy) {
+                    plugin_recording::inspect_failed_copy(
+                        &plugin_recording,
+                        &native_automation_take,
+                        *scope,
+                        gesture_active,
+                    )
+                } else if let DeviceAutomationTakeAction::KeepFailedPluginCopy {
+                    path,
+                    receipt,
+                    max_events,
+                } = action
+                {
+                    plugin_recording::keep_failed_copy(
+                        &mut plugin_recording,
+                        &mut native_automation_take,
+                        *scope,
+                        path,
+                        *receipt,
+                        *max_events,
+                        gesture_active,
+                    )
+                } else if let DeviceAutomationTakeAction::AdoptFailedPluginCopy { max_events } =
+                    action
+                {
+                    (|| {
+                        if scope.context() != current
+                            || gesture_active
+                            || session.audio_mode() != DocumentAudioMode::Resident
+                            || !events.resident_publication_enabled()
+                        {
+                            return Err(
+                                "vst3 recovery requires the current idle resident source".into()
+                            );
+                        }
+                        let source = events
+                            .resident_audio()
+                            .ok_or("vst3 recovery output unavailable")?
+                            .device_automation_source(current, scope.target)?;
+                        let (command, adoption) = plugin_recording::prepare_failed_adoption(
+                            &plugin_recording,
+                            &native_automation_take,
+                            &session,
+                            document_base,
+                            *scope,
+                            source,
+                            *max_events,
+                        )?;
+                        let path = adoption.path.clone();
+                        failed_plugin_adoption = Some(adoption);
+                        Ok(Step::Commit(command, path))
+                    })()
+                } else if gesture_active
+                    && matches!(
+                        action,
+                        DeviceAutomationTakeAction::PrepareNativeRecovery
+                            | DeviceAutomationTakeAction::CopyNativeRecovery { .. }
+                            | DeviceAutomationTakeAction::KeepNativeRecoveryCopy { .. }
+                    )
+                {
+                    Err("native recovery requires a quiescent gesture".into())
                 } else if gesture_active && matches!(action, DeviceAutomationTakeAction::Poll) {
                     // A take must never finalize somebody else's active edit.
                     Ok(Step::Progress(DeviceAutomationTakeProgress::Pending))
@@ -3170,13 +3555,17 @@ fn run_worker(
                             hex_storage::text::lowercase_outside_verbatim(&reason.to_string())
                         })
                         .and_then(|state| {
-                            Ok(device_track_command(
-                                None,
-                                hex_project::TrackDeviceSlot::Instrument,
-                                state,
-                                native_device_name(*class, *type_id)?,
-                                *new_track_gain,
-                            ))
+                            device_defaults::initialize(
+                                device_track_command(
+                                    None,
+                                    hex_project::TrackDeviceSlot::Instrument,
+                                    state,
+                                    native_device_name(*class, *type_id)?,
+                                    *new_track_gain,
+                                ),
+                                *class,
+                                defaults_root,
+                            )
                         })
                 },
             ),
@@ -3201,6 +3590,27 @@ fn run_worker(
                         *type_id,
                         *before,
                     )
+                    .and_then(|command| device_defaults::initialize(command, *class, defaults_root))
+                },
+            ),
+            Request::ReplaceDeviceModulation {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                device,
+                modulation,
+            } => Some(
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    Err("modulation edit cancelled · project changed".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Err("finish or cancel the active gesture before editing modulation".into())
+                } else {
+                    Ok(Command::ReplaceDeviceModulation {
+                        device: *device,
+                        modulation: modulation.clone(),
+                    })
                 },
             ),
             Request::PaintMidiClip(intent) => Some(intent.resolve(
@@ -3732,6 +4142,9 @@ fn run_worker(
                     | Request::SamplerEdit(_)
                     | Request::ContinueSamplerEdit
                     | Request::DeviceAutomationTake { .. }
+                    | Request::QueryFailedPluginAutomation { .. }
+                    | Request::InspectSealedAutomationRecovery { .. }
+                    | Request::QueryDeviceAutomationCloseSafety { .. }
                     | Request::RecoverDeviceAutomationTake { .. }
                     | Request::InsertPluginEffect(_)
                     | Request::ContinuePluginEffect
@@ -4489,6 +4902,9 @@ fn run_worker(
                 Request::PaintMidiClip(_) => {
                     error = Some("clip paint target was not resolved".into());
                 }
+                Request::ReplaceDeviceModulation { .. } => {
+                    error = Some("modulation target was not resolved".into());
+                }
                 Request::MoveExistingClips { .. } => {
                     error = Some("clip move target was not resolved".into());
                 }
@@ -4531,6 +4947,9 @@ fn run_worker(
                             destination,
                             new_track_gain,
                         )
+                        .and_then(|command| {
+                            device_defaults::initialize(command, class, defaults_root)
+                        })
                     };
                     match command.and_then(|command| {
                         resident_audio::execute_command(
@@ -4644,7 +5063,7 @@ fn run_worker(
                                             device_name: native_device_name(class, type_id)?,
                                         })
                                     }),
-                            },
+                            }.and_then(|command| device_defaults::initialize(command, class, defaults_root)),
                             NativeDeviceDropSource::Existing {
                                 device,
                                 class,
@@ -5006,6 +5425,13 @@ fn run_worker(
                         Err(reason) => error = Some(reason.to_string()),
                     }
                 }
+                Request::Edit(_)
+                    if failed_plugin_adoption.is_some()
+                        && (!events.resident_publication_enabled()
+                            || session.audio_mode() != DocumentAudioMode::Resident) =>
+                {
+                    error = Some("vst3 recovery lost its resident publication path".into());
+                }
                 Request::Edit(command)
                     if events.resident_publication_enabled()
                         && session.audio_mode() == DocumentAudioMode::Resident =>
@@ -5049,6 +5475,11 @@ fn run_worker(
                         });
                     match result {
                         Ok((new, snapshot)) => {
+                            if failed_plugin_adoption.is_some() {
+                                // Device-take VST3 publication returns only after the exact
+                                // output/revision callback confirmation.
+                                failed_plugin_publication_confirmed = true;
+                            }
                             created = Some(new);
                             if session.project() != state.project.as_ref() {
                                 unsaved = true;
@@ -5900,6 +6331,11 @@ fn run_worker(
                                     })
                             }),
                     };
+                    let command = command
+                        .map_err(|error| error.to_string())
+                        .and_then(|command| {
+                            device_defaults::initialize(command, class, defaults_root)
+                        });
                     match command {
                         Ok(command) => {
                             let before_project = session.project().clone();
@@ -5957,13 +6393,20 @@ fn run_worker(
                                         &reason.to_string(),
                                     )
                                 })
+                        })
+                        .and_then(|state| {
+                            device_defaults::initialize(
+                                Command::ReplaceDeviceState { device, state },
+                                class,
+                                defaults_root,
+                            )
                         });
                     match replacement {
-                        Ok(state) => {
+                        Ok(command) => {
                             let before_project = session.project().clone();
                             match resident_audio::execute_command(
                                 &mut session,
-                                Command::ReplaceDeviceState { device, state },
+                                command,
                                 compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
                                 hex_engine::AudioSourceContext {
                                     project_generation,
@@ -6310,6 +6753,12 @@ fn run_worker(
                     }
                 }
                 Request::DeviceAutomationTake { .. }
+                | Request::StartPluginEditorRecording { .. }
+                | Request::StopPluginEditorRecording { .. }
+                | Request::ContinuePluginEditorRecording { .. }
+                | Request::QueryFailedPluginAutomation { .. }
+                | Request::InspectSealedAutomationRecovery { .. }
+                | Request::QueryDeviceAutomationCloseSafety { .. }
                 | Request::RecoverDeviceAutomationTake { .. } => {}
                 Request::ArmNativeParameterRecording {
                     project_generation: expected_generation,
@@ -6496,6 +6945,37 @@ fn run_worker(
                 Request::SaveDevicePreset { owner, path } => {
                     match preset::save(&session, project_generation, revision, owner, &path) {
                         Ok(()) => status = Some("device preset saved".into()),
+                        Err(reason) => error = Some(reason),
+                    }
+                }
+                Request::SaveDeviceDefault { owner, root } => {
+                    match preset::save_default(&session, project_generation, revision, owner, &root)
+                    {
+                        Ok(()) => status = Some("device default saved".into()),
+                        Err(reason) => error = Some(reason),
+                    }
+                }
+                Request::SaveDeviceUnitPreset { owner, path } => {
+                    match preset::save_complete(
+                        &session,
+                        project_generation,
+                        revision,
+                        owner,
+                        preset::CompleteDestination::Preset(&path),
+                    ) {
+                        Ok(()) => status = Some("device preset saved".into()),
+                        Err(reason) => error = Some(reason),
+                    }
+                }
+                Request::SaveDeviceUnitDefault { owner, root } => {
+                    match preset::save_complete(
+                        &session,
+                        project_generation,
+                        revision,
+                        owner,
+                        preset::CompleteDestination::Default(&root),
+                    ) {
+                        Ok(()) => status = Some("device default saved".into()),
                         Err(reason) => error = Some(reason),
                     }
                 }
@@ -8329,9 +8809,51 @@ fn run_worker(
         }
         if let Some(completion) = device_automation_take_complete.as_mut() {
             if let Some((path, _)) = adopted_device_draft {
-                if error.is_none() && revision != revision_before_request {
-                    completion.progress = DeviceAutomationTakeProgress::Committed;
-                    status = Some("device automation take committed".into());
+                let recovery_finish = failed_plugin_adoption.as_ref().map(|adoption| {
+                    let publication = plugin_recording::classify_recovery_publication(
+                        error.is_some(),
+                        revision_before_request,
+                        revision,
+                        failed_plugin_publication_confirmed,
+                    );
+                    let result = plugin_recording::finish_failed_adoption(
+                        &mut plugin_recording,
+                        &mut native_automation_take,
+                        adoption,
+                        publication,
+                    );
+                    (publication, result)
+                });
+                if failed_plugin_adoption.is_some()
+                    && failed_plugin_publication_confirmed
+                    && revision != revision_before_request
+                    && error.is_some()
+                {
+                    let reason = error
+                        .as_deref()
+                        .unwrap_or("recovery acknowledgement failed");
+                    error = Some(format!(
+                        "device automation take committed · recovery custody retained · {reason}"
+                    ));
+                    completion.progress =
+                        DeviceAutomationTakeProgress::CommittedWithRetainedCustody(path);
+                } else if error.is_none() && revision != revision_before_request {
+                    if recovery_finish.as_ref().is_some_and(|(publication, _)| {
+                        *publication != plugin_recording::RecoveryPublication::Committed
+                    }) {
+                        error = Some("device automation take committed · recovery custody retained · publication identity changed".into());
+                        completion.progress =
+                            DeviceAutomationTakeProgress::CommittedWithRetainedCustody(path);
+                    } else if let Some((_, Err(reason))) = recovery_finish {
+                        error = Some(format!(
+                            "device automation take committed · recovery custody retained · {reason}"
+                        ));
+                        completion.progress =
+                            DeviceAutomationTakeProgress::CommittedWithRetainedCustody(path);
+                    } else {
+                        completion.progress = DeviceAutomationTakeProgress::Committed;
+                        status = Some("device automation take committed".into());
+                    }
                 } else {
                     let reason = error
                         .as_deref()
@@ -8533,7 +9055,11 @@ fn latest_timeline_content_end(project: &Project) -> u64 {
         .filter_map(|section| project.tempo_map().beat_to_frame(section.end()).ok())
         .max()
         .unwrap_or(0);
-    audio_end.max(midi_end).max(section_end)
+    let locator_end = project
+        .arrangement_locators()
+        .last()
+        .map_or(0, |locator| locator.frame());
+    audio_end.max(midi_end).max(section_end).max(locator_end)
 }
 
 fn run_export_worker(

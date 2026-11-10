@@ -4,6 +4,7 @@
 #include "macos_state_stream.hpp"
 #include "macos_input_notes.hpp"
 #include "macos_parameters.hpp"
+#include "macos_editor_touch.hpp"
 #include "macos_parameter_page.hpp"
 #include "pluginterfaces/vst/ivstprocesscontext.h"
 #include <array>
@@ -191,17 +192,29 @@ inline void sample(uint8_t* p,float value) {
 }
 struct Packet {
     static constexpr size_t timing_change_limit=7, timing_change_bytes=8+extended_timing_size;
+    static constexpr size_t editor_touch_bytes=24, editor_restore_bytes=24;
+    static constexpr size_t dense_header_bytes=8;
+    static constexpr uint64_t dense_parameter_bit=0x0800;
+    static constexpr size_t editor_target_bytes=16, editor_group_header_bytes=16;
+    static constexpr size_t editor_group_bytes=editor_group_header_bytes+
+        hex_instance::HOST_EDIT_COUNT*editor_target_bytes;
+    static constexpr uint64_t editor_touch_bit=0x2000, editor_group_touch_bit=0x1000;
     struct TimingChange { uint16_t offset=0; Steinberg::Vst::ProcessContext context{}; };
-    std::array<uint8_t,header_size+max_frames*8+hex_instance::INPUT_NOTE_COUNT*12+hex_instance::PARAMETER_POINT_COUNT*20+extended_timing_size+timing_change_limit*timing_change_bytes> bytes{};
+    std::array<uint8_t,header_size+max_frames*8+hex_instance::INPUT_NOTE_COUNT*12+hex_instance::PARAMETER_POINT_COUNT*20+extended_timing_size+timing_change_limit*timing_change_bytes+dense_header_bytes+max_frames*8+editor_group_bytes> bytes{};
     std::array<hex_instance::ParameterPoint,hex_instance::PARAMETER_POINT_COUNT> parameters{};
     std::array<uint32_t,hex_instance::PARAMETER_POINT_COUNT> authored_steps{};
-    bool authored_parameters=false,manual_parameter=false;
+    bool authored_parameters=false,manual_parameter=false,dense_parameter=false;
+    uint32_t dense_id=0,dense_steps=0;
+    std::array<Steinberg::Vst::ParamValue,max_frames> dense_values{};
     std::array<hex_instance::InputNote,hex_instance::INPUT_NOTE_COUNT> notes{};
     size_t note_count=0;
     size_t parameter_count=0;
     size_t reply_parameter_count=0,timing_change_count=0;
     std::array<TimingChange,timing_change_limit> timing_changes{};
     std::optional<Steinberg::Vst::ProcessContext> context;
+    std::optional<hex_instance::EditorTouchPlanSet> editor_touch;
+    std::array<hex_instance::EditorRestoration,hex_instance::HOST_EDIT_COUNT> editor_restore{};
+    bool group_touch=false;
     uint16_t frames=0;bool stop=false,observe_latency=false,flush_idle_edits=false,release_gates=false;
     uint64_t next_graph=0,next_epoch=0;
     uint64_t capture_operation=0;
@@ -226,7 +239,16 @@ struct Packet {
         const auto wire_version=number(p+4,2);
         constexpr uint64_t authored_bit=0x8000;
         authored_parameters=pcm && (wire_version&authored_bit);
-        const auto version=authored_parameters?(wire_version&~authored_bit):wire_version;
+        dense_parameter=pcm && (wire_version&dense_parameter_bit);
+        if(dense_parameter && !authored_parameters) return -1;
+        observe_editor_pcm=pcm && (wire_version&editor_pcm_bit);reply_editor_count=0;
+        const bool touch=pcm && (wire_version&editor_touch_bit);
+        group_touch=pcm && (wire_version&editor_group_touch_bit);
+        if((touch && group_touch) || ((touch || group_touch) && !observe_editor_pcm)) return -1;
+        editor_touch.reset();editor_restore={};
+        const auto version=wire_version&~((authored_parameters?authored_bit:0)|
+            (observe_editor_pcm?editor_pcm_bit:0)|(touch?editor_touch_bit:0)|
+            (group_touch?editor_group_touch_bit:0)|(dense_parameter?dense_parameter_bit:0));
         release_gates=quiesce && version==2 && !config.inputs;
         observe_latency=edit_query && (version==2 || version==3);
         flush_idle_edits=edit_query && version==3;
@@ -248,7 +270,8 @@ struct Packet {
             (note_count && (!pcm || config.inputs)) || (version==3 && pcm && !note_count)) return -1;
         const bool has_parameter_field=((pcm || flush) && version==2) || identified_notes;
         parameter_count=has_parameter_field?static_cast<size_t>(number(p+10,2)):0;
-        if(parameter_count>parameters.size() || (authored_parameters && !parameter_count)) return -1;
+        if(parameter_count>parameters.size() || (dense_parameter && !has_parameter_field) ||
+            (authored_parameters && !parameter_count && !dense_parameter)) return -1;
         timing_change_count=sliced_timing?p[12]:0;
         if(sliced_timing && (!timing_change_count || timing_change_count>timing_changes.size() || p[13]>1)) return -1;
         for(size_t n=sliced_timing?14:(resume?11:(has_parameter_field?12:10));n<16;++n) if(p[n]) return -1;
@@ -293,8 +316,31 @@ struct Packet {
         const size_t note_bytes=identified_notes?12:8;
         const size_t point_bytes=authored_parameters?20:16;
         const size_t clock_bytes=no_initial_context?0:(extended_timing?extended_timing_size:(timed?timing_size:0));
-        if(read_exact(fd,p+header_size,frames*8+note_count*note_bytes+parameter_count*point_bytes+clock_bytes+
-            timing_change_count*timing_change_bytes)!=1) return -1;
+        const size_t dense_bytes=dense_parameter?dense_header_bytes+static_cast<size_t>(frames)*8:0;
+        const auto payload_bytes=frames*8+note_count*note_bytes+parameter_count*point_bytes+clock_bytes+
+            timing_change_count*timing_change_bytes+dense_bytes;
+        const auto touch_bytes=group_touch?editor_group_bytes:(touch?editor_touch_bytes:0);
+        if(read_exact(fd,p+header_size,payload_bytes+touch_bytes)!=1) return -1;
+        if(touch_bytes) {
+            const auto* raw=p+header_size+payload_bytes;
+            hex_instance::EditorTouchPlanSet plan{};
+            plan.scope=number(raw,8);
+            plan.count=group_touch?raw[8]:1;
+            if(group_touch && (plan.count<2 || plan.count>plan.targets.size() || number(raw+9,7))) return -1;
+            const auto* targets=raw+(group_touch?editor_group_header_bytes:8);
+            for(size_t n=0;n<plan.count;++n) {
+                const auto* row=targets+n*editor_target_bytes;
+                auto& target=plan.targets[n];
+                target.parameter=static_cast<uint32_t>(number(row,4));
+                if(row[4]>1 || number(row+5,3)) return -1;
+                target.reading=row[4]!=0;
+                const auto bits=number(row+8,8);std::memcpy(&target.base,&bits,8);
+            }
+            if(group_touch && std::any_of(targets+plan.count*editor_target_bytes,raw+touch_bytes,
+                    [](uint8_t byte) {return byte!=0;})) return -1;
+            if(!plan.valid()) return -1;
+            editor_touch=plan;
+        }
         for(size_t n=0;n<frames*2u;++n) if(!std::isfinite(sample(p+header_size+n*4))) return -1;
         const auto* payload=p+header_size+frames*8;
         for (size_t n=0;n<note_count;++n) {
@@ -313,6 +359,20 @@ struct Packet {
         }
         const auto* points=payload+note_count*note_bytes;
         if(!parse_parameters(points,frames)) return -1;
+        if(dense_parameter) {
+            const auto* raw=p+header_size+payload_bytes-dense_bytes;
+            dense_id=static_cast<uint32_t>(number(raw,4));
+            dense_steps=static_cast<uint32_t>(number(raw+4,4));
+            if(dense_id>0x7FFFFFFFu || dense_steps>0x7FFFFFFFu) return -1;
+            for(size_t n=0;n<parameter_count;++n) if(parameters[n].id==dense_id) return -1;
+            if(editor_touch) for(size_t n=0;n<editor_touch->count;++n)
+                if(editor_touch->targets[n].parameter==dense_id) return -1;
+            for(size_t n=0;n<frames;++n) {
+                const auto bits=number(raw+dense_header_bytes+n*8,8);
+                auto& value=dense_values[n];std::memcpy(&value,&bits,8);
+                if(!std::isfinite(value) || value<0 || value>1) return -1;
+            }
+        }
         context.reset();
         if(!timed) return 1;
         const auto* clock=points+parameter_count*point_bytes;
@@ -414,12 +474,46 @@ struct Packet {
         }
         return true;
     }
+    // Optional PCM reply tail. Each record is one effective offset-zero
+    // input. The ordered receipt reader remains the only boundary owner.
+    static constexpr uint64_t editor_pcm_bit=0x4000;
+    static constexpr size_t editor_point_bytes=32;
+    bool observe_editor_pcm=false;
+    size_t reply_editor_count=0;
+    bool append_editor_perform(const hex_instance::EditEvent& edit) {
+        if(!observe_editor_pcm || reply_editor_count==hex_instance::HOST_EDIT_COUNT) return false;
+        const auto offset=header_size+frames*8+reply_parameter_count*16+reply_editor_count*editor_point_bytes;
+        if(offset+editor_point_bytes>bytes.size()) return false;
+        auto* point=bytes.data()+offset;
+        const auto put=[](uint8_t* out,uint64_t value,size_t count) {
+            for(size_t n=0;n<count;++n) out[n]=static_cast<uint8_t>(value>>(n*8));
+        };
+        uint64_t normalized=0;std::memcpy(&normalized,&edit.normalized,8);
+        put(point,edit.sequence,8);put(point+8,edit.gesture,8);put(point+16,normalized,8);
+        put(point+24,edit.id,4);put(point+28,0,4);
+        ++reply_editor_count;return true;
+    }
     bool write(int fd) {
-        bytes[4]=reply_parameter_count?2:1;bytes[5]=0;
+        bytes[4]=reply_parameter_count?2:1;
+        bytes[5]=static_cast<uint8_t>(((observe_editor_pcm?editor_pcm_bit:0)|
+            (group_touch?editor_group_touch_bit:(editor_touch?editor_touch_bit:0)))>>8);
         bytes[8]=bytes[9]=0; // Input notes are never echoed as processor output.
         bytes[10]=static_cast<uint8_t>(reply_parameter_count);
         std::fill(bytes.begin()+11,bytes.begin()+16,0); // Request timing is never echoed.
-        return write_exact(fd,bytes.data(),header_size+frames*8+reply_parameter_count*16);
+        bytes[12]=static_cast<uint8_t>(reply_editor_count);
+        auto size=header_size+frames*8+reply_parameter_count*16+reply_editor_count*editor_point_bytes;
+        const auto put=[](uint8_t* dst,uint64_t value,size_t count) {
+            for(size_t n=0;n<count;++n) dst[n]=static_cast<uint8_t>(value>>(n*8));
+        };
+        for(const auto& restored:editor_restore) {
+            if(!restored.sequence) break;
+            if(!editor_touch || (!group_touch && bytes[13]) || size+editor_restore_bytes>bytes.size()) return false;
+            auto* out=bytes.data()+size;
+            put(out,restored.sequence,8);put(out+8,restored.gesture,8);
+            put(out+16,restored.parameter,4);put(out+20,0,4);
+            ++bytes[13];size+=editor_restore_bytes;
+        }
+        return write_exact(fd,bytes.data(),size);
     }
 };
 } // namespace hex_instance_wire

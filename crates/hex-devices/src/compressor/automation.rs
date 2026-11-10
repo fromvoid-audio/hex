@@ -6,6 +6,31 @@ fn time_alpha(milliseconds: f32, sample_rate: u32) -> f64 {
     (-1.0 / (f64::from(milliseconds) * (f64::from(sample_rate) / 1_000.0))).exp()
 }
 
+impl CompressorSettings {
+    fn check_inline(&self) {
+        let Self {
+            threshold_db,
+            ratio,
+            attack_ms,
+            release_ms,
+            knee_db,
+            makeup_db,
+            dry_wet,
+            detector,
+        } = self;
+        let _: [&f32; 7] = [
+            threshold_db,
+            ratio,
+            attack_ms,
+            release_ms,
+            knee_db,
+            makeup_db,
+            dry_wet,
+        ];
+        let _: &Detector = detector;
+    }
+}
+
 impl PreparedCompressor {
     pub(super) fn new(
         state: &NativeDeviceState,
@@ -42,6 +67,21 @@ impl PreparedCompressor {
             rms_alpha: (-1.0 / (RMS_INTEGRATION_SECONDS * f64::from(sample_rate))).exp(),
         })
     }
+    fn check_inline(&self) {
+        let Self {
+            admitted,
+            settings,
+            sample_rate,
+            attack_alpha,
+            release_alpha,
+            gain_alpha,
+            rms_alpha,
+        } = self;
+        settings.check_inline();
+        let _: &[bool; 8] = admitted;
+        let _: &u32 = sample_rate;
+        let _: [&f64; 4] = [attack_alpha, release_alpha, gain_alpha, rms_alpha];
+    }
     pub(super) fn supports(&self, id: ParameterId) -> bool {
         BINDINGS
             .iter()
@@ -51,6 +91,41 @@ impl PreparedCompressor {
 }
 
 impl CompressorRuntime {
+    pub(super) fn check_inline_ownership(&self) {
+        let Self {
+            base,
+            controls,
+            settings,
+            sample_rate,
+            attack_alpha,
+            release_alpha,
+            gain_alpha,
+            rms_alpha,
+            energy,
+            detector_mix,
+            detector_remaining,
+            envelope,
+            gain_db,
+            mix,
+            mix_remaining,
+        } = self;
+        base.check_inline();
+        controls.check_inline(CompressorSettings::check_inline);
+        settings.check_inline();
+        let _: &[f64; 2] = energy;
+        let _: [&u32; 3] = [sample_rate, detector_remaining, mix_remaining];
+        let _: [&f64; 8] = [
+            attack_alpha,
+            release_alpha,
+            gain_alpha,
+            rms_alpha,
+            detector_mix,
+            envelope,
+            gain_db,
+            mix,
+        ];
+    }
+
     pub(super) fn apply_values(
         &mut self,
         values: &dyn NativeParameterAutomation,

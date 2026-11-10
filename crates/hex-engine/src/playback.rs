@@ -443,8 +443,8 @@ impl Playback {
             _ => Ok(0),
         }
     }
-    /// Conservative resource-factory plus ordinary handoff-evidence allowance. This follows
-    /// the immutable graph's physical control-side destruction, not migrating runtime leases.
+    /// Conservative resource-factory, ordinary handoff-evidence and source-program allowance.
+    /// This follows the immutable graph's physical control-side destruction, not runtime leases.
     pub(crate) fn resource_control_metadata_bytes_on_control(
         &self,
     ) -> Result<usize, crate::AudioStorageError> {
@@ -454,6 +454,11 @@ impl Playback {
                     .as_deref()
                     .map_or(Ok(0), |revision| revision.device_handoff_metadata_bytes())?,
             )
+            .and_then(|bytes| {
+                bytes.checked_add(self.prepared_revision.as_deref().map_or(0, |revision| {
+                    revision.session().instrument_automation_storage_bytes()
+                }))
+            })
             .ok_or(crate::AudioStorageError::Overflow)
     }
     pub fn contains_device_resource_leases(&self) -> bool {
@@ -2788,6 +2793,9 @@ struct ShiftedForeign<'a> {
 }
 
 impl hex_lattice::ForeignProcessors for ShiftedForeign<'_> {
+    fn returns_post_trim(&self, node: hex_lattice::ForeignProcessorNode<'_>) -> bool {
+        self.inner.returns_post_trim(node)
+    }
     fn process_segment(
         &mut self,
         node: hex_lattice::ForeignProcessorNode<'_>,
@@ -2829,6 +2837,22 @@ impl hex_lattice::ForeignProcessors for ShiftedForeign<'_> {
             notes,
             clock,
         )
+    }
+    fn process_segment_with_modulation(
+        &mut self,
+        node: hex_lattice::ForeignProcessorNode<'_>,
+        frame_offset: usize,
+        frames: &mut [Frame],
+        lane: hex_lattice::ForeignModulationSamples<'_>,
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), hex_lattice_contract::DeviceContractError> {
+        let Some(offset) = self.offset.checked_add(frame_offset) else {
+            self.inner.reject_callback();
+            frames.fill([0.0; 2]);
+            return Err(hex_lattice_contract::DeviceContractError::ForeignProcessingFailed);
+        };
+        self.inner
+            .process_segment_with_modulation(node, offset, frames, lane, clock)
     }
     fn committed_tail_is_drained(&self, node: hex_lattice::ForeignProcessorNode<'_>) -> bool {
         self.inner.committed_tail_is_drained(node)

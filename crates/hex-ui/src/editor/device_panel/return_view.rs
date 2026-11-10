@@ -243,6 +243,7 @@ pub(super) fn render_return_effect(
     if device_view.is_ok() {
         actions = actions
             .child(super::super::device_preset::actions(
+                view,
                 id,
                 NativeDeviceClass::Effect,
                 selected,
@@ -281,7 +282,7 @@ pub(super) fn render_return_effect(
     let rendered = match &device_view {
         _ if device.state().type_id().as_str() == Ok("hex.vst3") => {
             let body = vst3_status_body(view, device, cx);
-            device_frame(
+            hex_widgets::device_frame_with_modulators(
                 device_drag_title(
                     view,
                     cx,
@@ -293,6 +294,7 @@ pub(super) fn render_return_effect(
                 leading,
                 actions,
                 body,
+                super::modulators::vst3_panel(view, cx, device),
             )
         }
         Ok(device_view) => {
@@ -310,6 +312,8 @@ pub(super) fn render_return_effect(
                 super::delay_panel::render_body(view, cx, id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.overdrive") {
                 super::overdrive_panel::render_body(view, cx, id, device.state(), device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.rattle") {
+                super::rattle_panel::render_body(view, cx, device, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.gate") {
                 super::gate_panel::render_body(view, cx, id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.auto-pan") {
@@ -353,7 +357,7 @@ pub(super) fn render_return_effect(
                     device_view,
                 )
             };
-            device_frame(
+            hex_widgets::device_frame_with_modulators(
                 device_drag_title(
                     view,
                     cx,
@@ -365,6 +369,7 @@ pub(super) fn render_return_effect(
                 leading,
                 actions,
                 body,
+                super::modulators::panel(view, cx, device, device_view, true),
             )
         }
         Err(error) => {
@@ -399,7 +404,7 @@ pub(super) fn render_return_effect(
             device_view,
         ),
     );
-    let card_width = device_card_width(NativeDeviceClass::Effect, device.state().type_id());
+    let card_width = device_card_width(view, NativeDeviceClass::Effect, device);
     let rendered = rendered
         .h_full()
         .debug_selector(move || format!("device-shell-{}", id.value()));

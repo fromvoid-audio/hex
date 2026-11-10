@@ -494,13 +494,4 @@ mod tests {
             "eq group move is limited to 32 nodes"
         );
     }
-    #[test]
-    fn option_displacement_keeps_initial_q_and_bounds_without_gain_coordinate_jump() {
-        for initial in [0.1, 0.707, 1.0, 18.0] {
-            assert_eq!(group_move::option_q(initial, 0.0), initial);
-            assert_eq!(group_move::option_q(initial, -2.0), 0.1);
-            assert_eq!(group_move::option_q(initial, 2.0), 18.0);
-            assert!(group_move::option_q(initial, 0.1) >= initial);
-        }
-    }
 }

@@ -66,7 +66,7 @@ pub(super) struct GridBand {
 /// zebra changes only every few zoom steps. Band indices are anchored to each
 /// meter segment's musical origin, so panning changes the visible subset
 /// without moving the pattern.
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 pub(super) fn adaptive_grid_bands(
     project: &Project,
     viewport: Viewport,
@@ -384,9 +384,9 @@ struct MeterSection {
 
 struct RulerCandidates {
     ticks: Vec<RulerTick>,
-    #[cfg(test)]
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     landmark_attempts: usize,
-    #[cfg(test)]
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     marker_attempts: usize,
 }
 
@@ -531,7 +531,7 @@ fn ruler_candidates(
     } else {
         (0, 0)
     };
-    #[cfg(test)]
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     let mut landmark_attempts = 0;
     if sampled_sections > 0 {
         for sampled_index in 0..sampled_sections {
@@ -616,7 +616,7 @@ fn ruler_candidates(
                     continue;
                 };
                 let beat = BeatTime::from_raw(raw_beat);
-                #[cfg(test)]
+                #[cfg(all(test, feature = "ui-unit-tier"))]
                 {
                     landmark_attempts += 1;
                 }
@@ -639,9 +639,9 @@ fn ruler_candidates(
 
     RulerCandidates {
         ticks,
-        #[cfg(test)]
+        #[cfg(all(test, feature = "ui-unit-tier"))]
         landmark_attempts,
-        #[cfg(test)]
+        #[cfg(all(test, feature = "ui-unit-tier"))]
         marker_attempts: points.len().min(MAX_METER_MAP_POINTS),
     }
 }
@@ -1082,8 +1082,10 @@ pub(super) enum SnapGrid {
     #[cfg(test)]
     Quarter,
     #[cfg(test)]
+    #[allow(dead_code)] // Used by feature-gated window and timeline fixtures.
     Eighth,
     #[cfg(test)]
+    #[allow(dead_code)] // Used by feature-gated window and timeline fixtures.
     Sixteenth,
 }
 
@@ -1295,7 +1297,7 @@ impl SnapGrid {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::Viewport;
     use super::{
@@ -2205,6 +2207,6 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 #[path = "adaptive_grid_density_tests.rs"]
 mod density_tests;

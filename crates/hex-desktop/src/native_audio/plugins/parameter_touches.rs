@@ -5,12 +5,14 @@
 use super::*;
 use hex_audio::plugin_worker::{ParameterEdit, ParameterEditKind, RecoveryEdits};
 use hex_audio::prepared::AppliedAudioSource;
+use hex_session::device_gesture::PluginParameterValue;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Touch {
     source: AppliedAudioSource,
     parameter: u32,
     sequence: u64,
+    value: Option<PluginParameterValue>,
 }
 
 fn latest_touch(source: AppliedAudioSource, edits: &[ParameterEdit]) -> Option<Touch> {
@@ -23,6 +25,9 @@ fn latest_touch(source: AppliedAudioSource, edits: &[ParameterEdit]) -> Option<T
             source,
             parameter: edit.id,
             sequence: edit.sequence,
+            value: (edit.kind == ParameterEditKind::Perform)
+                .then(|| PluginParameterValue::new(edit.normalized).ok())
+                .flatten(),
         })
     })
 }
@@ -57,17 +62,29 @@ impl Plugins {
         let recovery = recovery_allowed && control.status.applied_audio_source().is_none();
         self.latency_poll_at = now.checked_add(std::time::Duration::from_millis(10));
         let len = self.sources.len();
+        let recording = self.recording_binding().and_then(|binding| {
+            self.sources
+                .iter()
+                .position(|source| source.binding == binding && source.accepted && !source.retiring)
+        });
         for _ in 0..len {
-            let index = self.latency_poll % len;
-            self.latency_poll = (index + 1) % len;
+            let index = recording.unwrap_or(self.latency_poll % len);
+            if recording.is_none() {
+                self.latency_poll = (index + 1) % len;
+            }
             let source = &mut self.sources[index];
             if !source.accepted
                 || source.retiring
                 || source.project_generation != context.project_generation
             {
+                if recording.is_some() {
+                    return None;
+                }
                 continue;
             }
-            let requested_recovery = source.edit_recovery.unwrap_or(recovery);
+            let requested_recovery = source
+                .edit_recovery
+                .unwrap_or(recovery && recording.is_none());
             source.observes_latency |= requested_recovery;
             let result = if requested_recovery {
                 control.poll_native_source_recovery_edits_on_control(source.binding)
@@ -106,6 +123,8 @@ impl Plugins {
                 {
                     source.observed_latency_receipt = true;
                 }
+                let binding = source.binding;
+                self.observe_recording_order(binding, batch.edits.as_slice());
                 if recovery
                     && batch.pending_latency_restart.is_some()
                     && self.latency_notice.is_none_or(|(last, at)| {
@@ -133,6 +152,7 @@ impl Plugins {
                     device: source.device,
                     parameter: touch.parameter,
                     sequence: touch.sequence,
+                    value: touch.value,
                 },
             )
         })
@@ -160,12 +180,14 @@ mod tests {
             queued: true,
             observes_latency: true,
             editor_open: false,
+            editor_transfer: false,
             edit_backlog: false,
             edit_recovery: None,
             pending_touch: Some(Touch {
                 source: active,
                 parameter,
                 sequence: 8,
+                value: None,
             }),
             #[cfg(feature = "allocation-probe")]
             observed_latency_receipt: false,
@@ -191,6 +213,7 @@ mod tests {
             source: active,
             parameter: 43,
             sequence: 9,
+            value: None,
         });
         assert!(matches!(
             plugins.take_parameter_touch(),
@@ -215,6 +238,7 @@ mod tests {
             source: active,
             parameter: 43,
             sequence: 10,
+            value: None,
         });
         plugins.sources[0].retiring = true;
         assert!(plugins.take_parameter_touch().is_none());
@@ -223,12 +247,13 @@ mod tests {
             source: active,
             parameter: 43,
             sequence: 11,
+            value: None,
         });
         plugins.output_closed();
         assert!(plugins.take_parameter_touch().is_none());
     }
     #[test]
-    fn latest_touch_follows_native_intent_without_treating_end_as_another_touch() {
+    fn latest_touch_follows_native_intent_and_ignores_non_touch_markers() {
         let source = AppliedAudioSource {
             context: AudioSourceContext {
                 project_generation: 3,
@@ -241,21 +266,32 @@ mod tests {
             sequence,
             id,
             kind,
+            normalized: if kind == ParameterEditKind::Perform {
+                0.625
+            } else {
+                0.0
+            },
             ..Default::default()
         };
         let edits = [
             edit(1, 42, ParameterEditKind::Perform),
             edit(2, 88, ParameterEditKind::Begin),
             edit(3, 42, ParameterEditKind::End),
+            edit(4, 0, ParameterEditKind::GroupEnd),
         ];
         assert_eq!(
             latest_touch(source, &edits),
             Some(Touch {
                 source,
                 parameter: 88,
-                sequence: 2
+                sequence: 2,
+                value: None,
             })
         );
         assert_eq!(latest_touch(source, &edits[2..]), None);
+        assert_eq!(
+            latest_touch(source, &edits[..1]).unwrap().value,
+            Some(PluginParameterValue::new(0.625).unwrap())
+        );
     }
 }

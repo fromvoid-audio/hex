@@ -6,7 +6,7 @@
 use super::*;
 use crate::parameter_binding::{Binding, SCALAR_ENVELOPE};
 use hex_lattice_contract::{
-    ParameterDescriptor, ParameterId, ParameterSemantics, ParameterSmoothing,
+    ParameterDescriptor, ParameterId, ParameterModulation, ParameterSemantics, ParameterSmoothing,
 };
 
 pub(super) const COUNT: usize = 27;
@@ -101,10 +101,17 @@ impl LfoControls {
         }
     }
 }
+#[derive(Clone, Copy, Default)]
+pub(super) struct ImmediateControls {
+    pub(super) feedback: bool,
+    pub(super) mix: bool,
+    pub(super) lfo_delay: bool,
+    pub(super) lfo_rate: bool,
+}
 impl ControlValues {
     // Timing is compared after linkage projection: an inactive raw lane must
     // not restart the shared scalar ramp. Exhaustive fields keep this audited.
-    pub(super) fn other_targets_changed(&self, other: &Self) -> bool {
+    pub(super) fn other_targets_changed(&self, other: &Self, immediate: ImmediateControls) -> bool {
         let Self {
             feedback,
             mix,
@@ -114,11 +121,18 @@ impl ControlValues {
             timing: _,
             flags,
         } = self;
-        *feedback != other.feedback
-            || *mix != other.mix
+        let mut lfo = *lfo;
+        if immediate.lfo_delay {
+            lfo.delay = other.lfo.delay;
+        }
+        if immediate.lfo_rate {
+            lfo.rate = other.lfo.rate;
+        }
+        (!immediate.feedback && *feedback != other.feedback)
+            || (!immediate.mix && *mix != other.mix)
             || *frequency != other.frequency
             || *width != other.width
-            || lfo != &other.lfo
+            || lfo != other.lfo
             || flags != &other.flags
     }
     pub(super) fn new(settings: Settings) -> Self {
@@ -137,6 +151,16 @@ const SEMANTICS: ParameterSemantics = ParameterSemantics {
     smoothing: ParameterSmoothing::DeviceManaged,
     ..SCALAR_ENVELOPE
 };
+const SAMPLE_RATE: ParameterSemantics = ParameterSemantics {
+    modulation: ParameterModulation::SampleRate,
+    ..SEMANTICS
+};
+
+const DIRECT_SAMPLE_RATE: ParameterSemantics = ParameterSemantics {
+    modulation: ParameterModulation::SampleRate,
+    ..SCALAR_ENVELOPE
+};
+
 pub(super) const BINDINGS: [Binding<ControlValues>; COUNT] = [
     Binding::float(
         state::DESCRIPTORS[0],
@@ -149,13 +173,13 @@ pub(super) const BINDINGS: [Binding<ControlValues>; COUNT] = [
     ),
     Binding::float(
         state::DESCRIPTORS[1],
-        SEMANTICS,
+        SAMPLE_RATE,
         |s| s.feedback,
         |s, v| s.feedback = v,
     ),
     Binding::float(
         state::DESCRIPTORS[2],
-        SEMANTICS,
+        SAMPLE_RATE,
         |s| s.mix,
         |s, v| s.mix = v,
     ),
@@ -278,7 +302,7 @@ pub(super) const BINDINGS: [Binding<ControlValues>; COUNT] = [
     ),
     Binding::float(
         state::DESCRIPTORS[17],
-        SCALAR_ENVELOPE,
+        DIRECT_SAMPLE_RATE,
         |s| s.lfo.delay,
         |s, v| s.lfo.delay = v,
     ),
@@ -301,7 +325,7 @@ pub(super) const BINDINGS: [Binding<ControlValues>; COUNT] = [
         state::DESCRIPTORS[20],
         ParameterSemantics {
             normalization: hex_lattice_contract::ParameterNormalization::PositiveLogarithmic,
-            ..SCALAR_ENVELOPE
+            ..DIRECT_SAMPLE_RATE
         },
         |s| s.lfo.rate,
         |s, v| s.lfo.rate = v,
@@ -368,24 +392,36 @@ pub(super) fn prepare(
     context: &hex_lattice::DevicePreparationContext<'_>,
     ids: &[ParameterId],
 ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
+    if ids.is_empty() {
+        return Err(DeviceContractError::UnsupportedProcessingClass);
+    }
+    let factory = prepare_factory(state, context.sample_rate, ids)?;
+    Ok(hex_lattice::PreparedRuntimeDevice {
+        matrix: StereoMatrix::identity(),
+        processor: Some(PreparedProcessorFactory::Owned(Arc::new(factory))),
+    })
+}
+
+pub(super) fn prepare_factory(
+    state: &NativeDeviceState,
+    sample_rate: u32,
+    ids: &[ParameterId],
+) -> Result<Factory, DeviceContractError> {
     state.require_asset_free_processing()?;
-    if !(8000..=192000).contains(&context.sample_rate) {
+    if !(8000..=192000).contains(&sample_rate) {
         return Err(DeviceContractError::InvalidParameterValue);
     }
-    if ids.is_empty() || ids.windows(2).any(|p| p[0] >= p[1]) {
+    if ids.windows(2).any(|p| p[0] >= p[1]) {
         return Err(DeviceContractError::UnsupportedProcessingClass);
     }
     let mut admitted = [false; COUNT];
     for &id in ids {
         admitted[slot(id).ok_or(DeviceContractError::UnsupportedProcessingClass)?] = true;
     }
-    Ok(hex_lattice::PreparedRuntimeDevice {
-        matrix: StereoMatrix::identity(),
-        processor: Some(PreparedProcessorFactory::Owned(Arc::new(Factory {
-            settings: decode(state)?,
-            rate: context.sample_rate,
-            admitted,
-        }))),
+    Ok(Factory {
+        settings: decode(state)?,
+        rate: sample_rate,
+        admitted,
     })
 }
 

@@ -10,7 +10,7 @@
 //! tails therefore advance pending routing without fallible callback design.
 use super::*;
 
-type Target = [[BandStages; BAND_COUNT]; 2];
+type Target = CoefficientTarget;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PendingRouting {
@@ -31,33 +31,56 @@ impl PendingRouting {
 
 #[derive(Clone, Copy, Debug)]
 pub(in crate::eq8) struct RoutingAutomation {
-    canonical: [[BandStages; BAND_COUNT]; 5],
+    canonical: [CoefficientBank; 5],
     pending: Option<PendingRouting>,
 }
 impl RoutingAutomation {
-    pub(in crate::eq8) fn new(canonical: [[BandStages; BAND_COUNT]; 5]) -> Self {
+    pub(in crate::eq8) fn new(canonical: [CoefficientBank; 5]) -> Self {
         Self {
             canonical,
             pending: None,
         }
     }
-    fn canonical_target(&self, mode: ChannelMode) -> Target {
-        selected(mode).map(|bank| self.canonical[bank])
+    pub(in crate::eq8) fn canonical_target(&self, mode: ChannelMode) -> [&CoefficientBank; 2] {
+        selected(mode).map(|bank| &self.canonical[bank])
+    }
+    pub(in crate::eq8) fn effective_target<'a>(
+        &'a self,
+        automated: Option<&'a Target>,
+        canonical_mode: ChannelMode,
+    ) -> [&'a CoefficientBank; 2] {
+        automated
+            .map(channels)
+            .unwrap_or_else(|| self.canonical_target(canonical_mode))
     }
     pub(super) fn stage(
         &self,
         values: ControlValues,
+        previous: Option<&ControlValues>,
         current: ChannelMode,
         rate: u32,
     ) -> Result<Option<PendingRouting>, DeviceContractError> {
         if values.mode == current {
-            Ok(None)
-        } else {
-            Ok(Some(PendingRouting::new(
-                values,
-                design(&values.banks, values.mode, rate)?,
-            )))
+            return Ok(None);
         }
+        let banks = selected(values.mode);
+        let target = if let Some(old) = previous.filter(|old| old.mode == values.mode)
+            && let Some(pending) = self
+                .pending
+                .as_ref()
+                .filter(|pending| pending.mode == values.mode)
+        {
+            if banks
+                .into_iter()
+                .all(|bank| old.banks[bank] == values.banks[bank])
+            {
+                return Ok(self.pending);
+            }
+            redesign_changed(channels(&pending.target), old, &values, banks, rate)?
+        } else {
+            design(&values.banks, values.mode, rate)?
+        };
+        Ok(Some(PendingRouting::new(values, target)))
     }
     pub(super) fn install(&mut self, pending: Option<PendingRouting>) {
         self.pending = pending;
@@ -68,16 +91,16 @@ impl RoutingAutomation {
         current: ChannelMode,
     ) -> Option<Target> {
         self.pending = (base.mode != current)
-            .then(|| PendingRouting::new(base, self.canonical_target(base.mode)));
-        (base.mode != current).then(|| self.canonical_target(current))
+            .then(|| PendingRouting::new(base, self.canonical_target(base.mode).map(|bank| *bank)));
+        (base.mode != current).then(|| self.canonical_target(current).map(|bank| *bank))
     }
 }
 
 impl Eq8Runtime {
     pub(in crate::eq8) fn preserves_routing(&self, previous: &Self) -> bool {
         self.sample_rate == previous.sample_rate
-            && self.routing.is_some()
-            && previous.routing.is_some()
+            && self.controls.admitted(MODE_SLOT)
+            && previous.controls.admitted(MODE_SLOT)
     }
     pub(in crate::eq8) fn inherit_routing(&mut self, previous: &Self) {
         if !self.preserves_routing(previous) {
@@ -87,26 +110,27 @@ impl Eq8Runtime {
         // routing, active fade and cached desired target belong to playback.
         self.mode = previous.mode;
         self.install_enabled_bands(&self.controls.base().banks);
-        if let (Some(route), Some(old)) = (&mut self.routing, &previous.routing) {
-            route.pending = old.pending;
-        }
+        self.routing.pending = previous.routing.pending;
     }
     pub(in crate::eq8) fn reset_routing(&mut self) {
-        if let Some(route) = &mut self.routing {
-            route.pending = None;
-        }
+        self.routing.pending = None;
     }
     pub(in crate::eq8) fn advance_routing(&mut self) {
         if self.mode_fade.is_active() {
             return;
         }
-        let current = self.mode;
-        let Some((pending, canonical)) = self.routing.as_mut().and_then(|route| {
-            let pending = route.pending.take()?;
-            (pending.mode != current).then(|| (pending, route.canonical_target(pending.mode)))
-        }) else {
+        let Some(pending) = self
+            .routing
+            .pending
+            .take()
+            .filter(|pending| pending.mode != self.mode)
+        else {
             return;
         };
+        let canonical = self
+            .routing
+            .canonical_target(pending.mode)
+            .map(|bank| *bank);
         let outgoing = ModeFade::from_outgoing(self, self.sample_rate);
         self.mode = pending.mode;
         self.coefficients = canonical;
@@ -262,7 +286,7 @@ mod tests {
             final_room.process_block(&mut expected[n..], &R);
             assert_eq!(out, expected);
             assert!(!actual.mode_fade.is_active());
-            assert!(actual.routing.as_ref().unwrap().pending.is_none());
+            assert!(actual.routing.pending.is_none());
         }
     }
     #[test]
@@ -341,7 +365,7 @@ mod tests {
             assert!(!absent.mode_fade.is_active());
             absent.reset();
             assert_eq!(absent.mode, ChannelMode::Stereo);
-            assert!(absent.routing.as_ref().unwrap().pending.is_none());
+            assert!(absent.routing.pending.is_none());
             let mut fresh = prepare(&base, rate, &ids).unwrap().runtime();
             out = signal(97);
             reference = out.clone();

@@ -1,5 +1,7 @@
 //! Nine value controls use their existing owned history and latency. Lookahead
 //! or routing eligibility selects the bounded structural factory at fixed latency.
+//! Sample-rate input gain mappings use the same 5 ms gain response as authored
+//! automation, before input enters the delayed limiting stages.
 use super::{
     decode,
     runtime::Factory,
@@ -10,7 +12,7 @@ use hex_lattice::{
     DevicePreparationContext, PreparedProcessorFactory, PreparedRuntimeDevice, StereoMatrix,
 };
 use hex_lattice_contract::{
-    DeviceContractError, NativeDeviceState, ParameterDescriptor, ParameterId,
+    DeviceContractError, NativeDeviceState, ParameterDescriptor, ParameterId, ParameterModulation,
     ParameterNormalization, ParameterSemantics, ParameterSmoothing,
 };
 use std::sync::Arc;
@@ -19,6 +21,7 @@ pub(super) const BINDINGS: [Binding<Settings>; COUNT] = [
     Binding::float(
         state::DESCRIPTORS[0],
         ParameterSemantics {
+            modulation: ParameterModulation::SampleRate,
             smoothing: ParameterSmoothing::DeviceManaged,
             ..SCALAR_ENVELOPE
         },
@@ -96,6 +99,10 @@ pub(super) fn semantics(id: ParameterId) -> Option<ParameterSemantics> {
         slot(id).map(|i| BINDINGS[i].semantics)
     }
 }
+pub(super) fn modulation_semantics(id: ParameterId) -> Option<ParameterSemantics> {
+    semantics(id).filter(|semantics| semantics.modulation == ParameterModulation::SampleRate)
+}
+
 pub(super) fn prepare(
     state: &NativeDeviceState,
     context: &DevicePreparationContext<'_>,

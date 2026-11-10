@@ -536,6 +536,7 @@ impl SessionPlayback {
             revision: &self.revision,
             midi_admission: self.midi_admission.as_ref(),
             analytic_import: &self.analytic_import,
+            source_effects: &self.source_effects,
             device_chains: &self.device_chains,
             return_chains: &self.return_chains,
             return_effect_tails: &self.return_effect_tails,
@@ -605,6 +606,7 @@ pub(super) struct RuntimeStorage<'a> {
     pub(super) revision: &'a PreparedRevision,
     pub(super) midi_admission: Option<&'a crate::session_inventory::PreparedSessionMidiAdmission>,
     pub(super) analytic_import: &'a analytic_import::ImportPlan,
+    pub(super) source_effects: &'a crate::source_effect_stage::SourceEffectStages,
     pub(super) device_chains: &'a Vec<hex_lattice::NativeRuntimeChain>,
     pub(super) return_chains: &'a Vec<hex_lattice::NativeRuntimeChain>,
     pub(super) return_effect_tails: &'a ReturnEffectTailBank,
@@ -684,6 +686,7 @@ impl RuntimeStorage<'_> {
         add_capacity::<TrackRoute>(&mut total, self.routes)?;
         add_capacity::<TrackRoute>(&mut total, self.route_scratch)?;
         add_capacity::<Option<CurrentPendingCut>>(&mut total, self.current_route_cut_scratch)?;
+        checked_add(&mut total, self.source_effects.accounted_runtime_bytes()?)?;
         add_capacity::<hex_lattice::NativeRuntimeChain>(&mut total, self.device_chains.capacity())?;
         for chain in self.device_chains {
             checked_add(&mut total, chain.accounted_storage_bytes()?)?;
@@ -793,6 +796,13 @@ fn runtime_storage_preflight_bytes(
     checked_add(&mut total, main_bytes)?;
     checked_add(
         &mut total,
+        crate::source_effect_stage::SourceEffectStages::requested_runtime_bytes(
+            track_count,
+            &arrangement.source_effects,
+        )?,
+    )?;
+    checked_add(
+        &mut total,
         foreign_arrangement::ForeignArrangement::preflight_bytes(revision)?,
     )?;
     if let Some(graph) = &arrangement.signal_graph {
@@ -877,6 +887,13 @@ fn runtime_storage_preflight_bytes(
                 &mut total,
                 std::mem::size_of::<MutableInstrumentTrackRuntime>(),
             )?;
+            if let Some(modulation) = revision.session().instrument_modulation(id) {
+                checked_add(
+                    &mut total,
+                    std::mem::size_of::<hex_lattice::ModulationRuntime>()
+                        .checked_add(modulation.quoted_runtime_heap_bytes()?)?,
+                )?;
+            }
             if !revision.requires_control_sampler_sources()
                 && source_routing.receiver_index(index) == Some(index)
             {

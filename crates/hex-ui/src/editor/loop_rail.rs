@@ -345,6 +345,20 @@ impl EditorView {
     }
 }
 
+pub(super) fn displayed_region(view: &EditorView, state: &ViewState) -> Option<LoopRegion> {
+    let current_region = state.project.loop_region();
+    let gesture = view.loop_rail_gesture.filter(|gesture| {
+        gesture.generation == view.project_generation
+            && gesture.revision == state.revision
+            && gesture.loop_region == state.project.loop_region()
+            && view.mode == EditorMode::Arrangement
+    });
+    gesture
+        .and_then(|gesture| gesture.preview)
+        .or_else(|| view.pending_loop_region())
+        .or(current_region)
+}
+
 pub(super) fn view(
     view: &EditorView,
     state: &ViewState,
@@ -353,16 +367,7 @@ pub(super) fn view(
     cx: &mut Context<EditorView>,
 ) -> Div {
     let current_region = state.project.loop_region();
-    let gesture = view.loop_rail_gesture.filter(|gesture| {
-        gesture.generation == view.project_generation
-            && gesture.revision == state.revision
-            && gesture.loop_region == state.project.loop_region()
-            && view.mode == EditorMode::Arrangement
-    });
-    let shown_region = gesture
-        .and_then(|gesture| gesture.preview)
-        .or_else(|| view.pending_loop_region())
-        .or(current_region);
+    let shown_region = displayed_region(view, state);
     let entity = cx.entity();
     let rail = super::timeline_strip::loop_surface()
         .flex()

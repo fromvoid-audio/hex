@@ -112,6 +112,22 @@ pub(super) enum Action {
     Reenable(Target),
     Override(Target),
     ToggleNativeArm(Target),
+    ToggleVst3Arm {
+        target: Target,
+        revision: u64,
+    },
+    ToggleVst3EditorArm {
+        target: Target,
+        revision: u64,
+    },
+    ToggleVst3EditorGroupMember {
+        target: Target,
+        revision: u64,
+    },
+    ToggleVst3EditorGroupArm {
+        target: Target,
+        revision: u64,
+    },
     Shape(Target, AutomationInterpolation),
 }
 
@@ -708,14 +724,7 @@ impl EditorView {
         let target = entry.target;
         let supported = matches!(
             entry.metadata,
-            EntryMetadata::HostGain
-                | EntryMetadata::Provider {
-                    descriptor: ParameterDescriptor {
-                        kind: ParameterKind::Float { .. },
-                        ..
-                    },
-                    ..
-                }
+            EntryMetadata::HostGain | EntryMetadata::Provider { .. }
         );
         (supported
             && self.state.as_ref().is_some_and(|state| {
@@ -747,8 +756,9 @@ impl EditorView {
         let Some(owner) = self.device_panel.owner else {
             return false;
         };
-        let Some(entry) = self.state.as_ref().and_then(|state| {
+        let Some((entry, revision)) = self.state.as_ref().and_then(|state| {
             Entry::vst3(&state.project, self.project_generation, owner, device, row)
+                .map(|entry| (entry, state.revision))
         }) else {
             return false;
         };
@@ -761,6 +771,34 @@ impl EditorView {
             ("add new automation lane", Action::Show(entry, true)),
         ];
         actions.extend(self.device_automation_read_action(target));
+        if let (Some(class), DeviceAutomationTarget::Vst3 { parameter }) =
+            (target.vst3_class, target.kind)
+        {
+            let label = if self.vst3_automation_arm_selected(device, class, parameter) {
+                "disarm automation recording"
+            } else {
+                "arm automation recording"
+            };
+            actions.push((label, Action::ToggleVst3Arm { target, revision }));
+            let editor_label = if self.vst3_editor_arm_selected(device, class, parameter) {
+                "disarm plug-in editor recording"
+            } else {
+                "arm plug-in editor recording"
+            };
+            actions.push((
+                editor_label,
+                Action::ToggleVst3EditorArm { target, revision },
+            ));
+            if let Some((member, arm)) = self.vst3_editor_group_menu(device, class, parameter) {
+                actions.push((
+                    member,
+                    Action::ToggleVst3EditorGroupMember { target, revision },
+                ));
+                if let Some(label) = arm {
+                    actions.push((label, Action::ToggleVst3EditorGroupArm { target, revision }));
+                }
+            }
+        }
         self.open_automation_menu(position, actions, window, cx);
         true
     }
@@ -864,6 +902,17 @@ impl EditorView {
                     .identity_current(&state.project, self.project_generation)
                     .is_none()
             }),
+            Action::ToggleVst3Arm { target, revision }
+            | Action::ToggleVst3EditorArm { target, revision }
+            | Action::ToggleVst3EditorGroupMember { target, revision }
+            | Action::ToggleVst3EditorGroupArm { target, revision } => {
+                self.state.as_ref().is_none_or(|state| {
+                    state.revision != *revision
+                        || target
+                            .identity_current(&state.project, self.project_generation)
+                            .is_none()
+                })
+            }
             Action::Pick { generation, owner }
             | Action::Reveal {
                 generation, owner, ..
@@ -1129,6 +1178,32 @@ impl EditorView {
             ),
             Action::ToggleNativeArm(target) => {
                 self.toggle_native_automation_arm(target.device, target.kind);
+            }
+            Action::ToggleVst3Arm { target, .. } => {
+                if let (Some(class), DeviceAutomationTarget::Vst3 { parameter }) =
+                    (target.vst3_class, target.kind)
+                {
+                    self.toggle_vst3_automation_arm(target.device, class, parameter);
+                }
+            }
+            Action::ToggleVst3EditorArm { target, .. } => {
+                if let (Some(class), DeviceAutomationTarget::Vst3 { parameter }) =
+                    (target.vst3_class, target.kind)
+                {
+                    self.toggle_vst3_editor_arm(target.device, class, parameter);
+                }
+            }
+            Action::ToggleVst3EditorGroupMember { target, .. } => {
+                if let (Some(class), DeviceAutomationTarget::Vst3 { parameter }) =
+                    (target.vst3_class, target.kind)
+                {
+                    self.toggle_vst3_editor_group_member(target.device, class, parameter);
+                }
+            }
+            Action::ToggleVst3EditorGroupArm { target, .. } => {
+                if let Some(class) = target.vst3_class {
+                    self.toggle_vst3_editor_group_arm(target.device, class);
+                }
             }
             Action::Clear(target) => {
                 self.commit_device_automation(target, Vec::new(), cx);

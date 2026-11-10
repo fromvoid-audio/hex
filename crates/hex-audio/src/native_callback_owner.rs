@@ -467,6 +467,27 @@ impl NativeRetirement {
             .filter(|pages| pages.is_some())
             .count()
     }
+    #[cfg(all(
+        test,
+        feature = "allocation-probe",
+        target_os = "macos",
+        target_arch = "aarch64"
+    ))]
+    pub(crate) fn test_native_source_carriers_returned(&self) -> bool {
+        self.states[0] == Disposal::Complete && self.native_sources.iter().all(Option::is_none)
+    }
+    #[cfg(all(
+        test,
+        feature = "allocation-probe",
+        target_os = "macos",
+        target_arch = "aarch64"
+    ))]
+    pub(crate) fn test_native_source_carriers_pending(&self) -> usize {
+        self.native_sources
+            .iter()
+            .filter(|source| source.is_some())
+            .count()
+    }
     pub(crate) fn bind_spectrum_reaper(
         &self,
         reaper: Option<&crate::spectrum_worker::SpectrumReaper>,

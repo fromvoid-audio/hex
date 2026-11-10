@@ -4,31 +4,36 @@ use super::*;
 #[test]
 fn editor_receipt_requires_exact_controller_operation_and_discriminant() {
     let config = config();
-    let request = ControllerRequest::ToggleEditor;
-    let wire = parameter_page_request(&config, 1, 7, request, false).unwrap();
-    assert_eq!(&wire[..4], b"HXVM");
-    assert_eq!(wire[82], 6);
-    assert!(wire[83..].iter().all(|byte| *byte == 0));
-    let mut reply = Vec::new();
-    stamp(&mut reply, config.binding);
-    for value in [1_u64, u64::from(config.quantum), 7] {
-        reply.extend(value.to_le_bytes());
+    for (request, code) in [
+        (ControllerRequest::ToggleEditor, 6),
+        (ControllerRequest::DetachEditor, 9),
+        (ControllerRequest::ReopenEditor, 10),
+    ] {
+        let wire = parameter_page_request(&config, 1, 7, request, false).unwrap();
+        assert_eq!(&wire[..4], b"HXVM");
+        assert_eq!(wire[82], code);
+        assert!(wire[83..].iter().all(|byte| *byte == 0));
+        let mut reply = Vec::new();
+        stamp(&mut reply, config.binding);
+        for value in [1_u64, u64::from(config.quantum), 7] {
+            reply.extend(value.to_le_bytes());
+        }
+        reply.extend([4, 1]);
+        assert_eq!(
+            parameter_page(&reply, &config, 1, 7, request).unwrap(),
+            ParameterPageProgress::Editor(PluginEditorState::Open)
+        );
+        assert!(parameter_page(&reply, &config, 1, 8, request).is_err());
+        assert!(parameter_page(&reply, &config, 1, 7, ParameterPageQuery::default()).is_err());
+        reply.push(0);
+        assert!(parameter_page(&reply, &config, 1, 7, request).is_err());
     }
-    reply.extend([4, 1]);
-    assert_eq!(
-        parameter_page(&reply, &config, 1, 7, request).unwrap(),
-        ParameterPageProgress::Editor(PluginEditorState::Open)
-    );
-    assert!(parameter_page(&reply, &config, 1, 8, request).is_err());
-    assert!(parameter_page(&reply, &config, 1, 7, ParameterPageQuery::default()).is_err());
-    reply.push(0);
-    assert!(parameter_page(&reply, &config, 1, 7, request).is_err());
 }
 #[path = "protocol_tests/conversion.rs"]
 mod conversion;
 use crate::transport::{Events, MidiEvent};
 use hex_plugin_state::{BinaryIdentity, ClassId, State};
-fn config() -> Configuration {
+pub(super) fn config() -> Configuration {
     Configuration {
         binding: Binding {
             root: 1,
@@ -857,6 +862,46 @@ fn recovery_edit_receipts_keep_exact_prefix_and_versioned_ordinal() {
 }
 
 #[test]
+fn ordered_sdk_group_markers_are_distinct_from_raw_zero() {
+    let config = config();
+    let mut body = Vec::new();
+    stamp(&mut body, config.binding);
+    for value in [2_u64, 16, 3] {
+        body.extend(value.to_le_bytes());
+    }
+    for value in [0_u16, 0, 5] {
+        body.extend(value.to_le_bytes());
+    }
+    let rows = [
+        (1_u64, 1_u64, 0.0_f64, 4_u32, 0_u64),
+        (2, 2, 0.0, 1, 0),
+        (3, 2, 0.75, 2, 8),
+        (4, 2, 0.0, 3, 16),
+        (5, 1, 0.0, 5, 16),
+    ];
+    for (sequence, gesture, value, kind, frame) in rows {
+        body.extend(sequence.to_le_bytes());
+        body.extend(gesture.to_le_bytes());
+        body.extend(value.to_le_bytes());
+        body.extend(0_u32.to_le_bytes());
+        body.extend(kind.to_le_bytes());
+        body.extend(frame.to_le_bytes());
+    }
+    let parsed = parameter_edits(&body, &config, 2, 3, (0, 0)).unwrap();
+    let rows = parsed.as_slice();
+    assert_eq!(rows[0].kind, ParameterEditKind::GroupBegin);
+    assert_eq!(rows[2].kind, ParameterEditKind::Perform);
+    assert_eq!((rows[2].id, rows[2].normalized), (0, 0.75));
+    assert_eq!(rows[4].kind, ParameterEditKind::GroupEnd);
+    assert_eq!(rows[0].gesture, rows[4].gesture);
+    assert_ne!(rows[0].gesture, rows[2].gesture);
+    let mut malformed = body.clone();
+    // The first marker must have an empty ParamID field.
+    malformed[64 + 24..64 + 28].copy_from_slice(&11_u32.to_le_bytes());
+    assert!(parameter_edits(&malformed, &config, 2, 3, (0, 0)).is_err());
+}
+
+#[test]
 fn edit_receipts_bind_source_prefix_operation_order_and_gesture_without_coalescing() {
     let config = config();
     let request = edit_request(&config, 2, 3).unwrap();
@@ -902,7 +947,7 @@ fn edit_receipts_bind_source_prefix_operation_order_and_gesture_without_coalesci
         (62, 9),
         (64, 0),
         (72, 0),
-        (92, 4),
+        (92, 7),
         (96, 17),
     ] {
         let mut bad = body.clone();

@@ -15,6 +15,7 @@
 //! DSP rollback occurs.
 
 type Frame = [f32; 2];
+use crate::protocol::{EditorPerforms, EditorRestorations};
 use hex_lattice_contract::ForeignProcessorBinding as Binding;
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::num::NonZeroU64;
@@ -28,13 +29,19 @@ use std::sync::{
 mod authored;
 use authored::AuthoredOrigins;
 pub use authored::{AuthoredParameterProgram, AuthoredSegment};
+mod dense;
+pub use dense::{
+    DenseEffectCallback, DenseParameterRequest, dense_effect_channel_from_completed_prefix,
+};
 mod parameters;
 mod storage;
 pub use parameters::{MAX_PARAMETER_POINTS, ParameterPoint, Parameters};
 #[cfg(test)]
+mod editor_tests;
+#[cfg(test)]
 mod parameter_tests;
 pub mod wire;
-pub use storage::{ConstructorStorage, channel_storage_bound};
+pub use storage::{ConstructorStorage, channel_storage_bound, dense_channel_storage_bound};
 
 pub const MAX_FRAMES: usize = 256;
 pub const MAX_EVENTS: usize = 64;
@@ -74,6 +81,22 @@ pub struct DeadlineMiss {
     pub worker_phase: DeadlineWorkerPhase,
 }
 
+/// The callback's last accepted state within its copied transport quantum.
+/// This observation grants no graph, worker, quiescence or reclamation authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommittedQuantumState {
+    Closed,
+    OpenUnprogrammed,
+    OpenProgram(NonZeroU64),
+}
+
+/// A coherent diagnostic snapshot from the original constructor-paired callback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommittedQuantum {
+    pub binding: Binding,
+    pub state: CommittedQuantumState,
+}
+
 struct Revocation {
     binding: Binding,
     revoked: AtomicBool,
@@ -83,6 +106,12 @@ struct Revocation {
     processed_prefix: AtomicU64,
     missed_reply: AtomicU64,
     missed_phase: AtomicU8,
+    quantum_serial: AtomicU64,
+    quantum_program: AtomicU64,
+    quantum_state: AtomicU8,
+    // Scope in high bits; low bit means armed. Keep the last serial after end
+    // so a stale caller cannot reopen an earlier physical capture scope.
+    editor_scope: AtomicU64,
 }
 impl Revocation {
     const REPORTED: u8 = 1 << 7;
@@ -97,6 +126,10 @@ impl Revocation {
             processed_prefix: AtomicU64::new(0),
             missed_reply: AtomicU64::new(0),
             missed_phase: AtomicU8::new(0),
+            quantum_serial: AtomicU64::new(0),
+            quantum_program: AtomicU64::new(0),
+            quantum_state: AtomicU8::new(0),
+            editor_scope: AtomicU64::new(0),
         }
     }
 
@@ -106,6 +139,29 @@ impl Revocation {
 
     fn is_revoked(&self) -> bool {
         self.revoked.load(Acquire)
+    }
+
+    // The callback is the sole publisher. Exhaustion permanently makes this
+    // optional observation unavailable; it never changes transport behavior.
+    fn publish_quantum(&self, quantum: CommittedQuantumState) {
+        use std::sync::atomic::Ordering::SeqCst;
+        let serial = self.quantum_serial.load(SeqCst);
+        let Some(next) = serial.checked_add(2) else {
+            self.quantum_serial.store(u64::MAX, SeqCst);
+            return;
+        };
+        if serial & 1 != 0 {
+            return;
+        }
+        self.quantum_serial.store(serial + 1, SeqCst);
+        let (state, key) = match quantum {
+            CommittedQuantumState::Closed => (1, 0),
+            CommittedQuantumState::OpenUnprogrammed => (2, 0),
+            CommittedQuantumState::OpenProgram(key) => (3, key.get()),
+        };
+        self.quantum_program.store(key, SeqCst);
+        self.quantum_state.store(state, SeqCst);
+        self.quantum_serial.store(next, SeqCst);
     }
 
     fn record_callback_fault(&self, fault: Fault) {
@@ -302,6 +358,23 @@ impl ProcessTiming {
     }
 }
 
+/// One authored raw SDK parameter with a normalized value at every sample.
+#[derive(Clone, Copy)]
+pub struct DenseParameterLane<'a> {
+    pub id: u32,
+    pub normalized: &'a [f64],
+}
+impl DenseParameterLane<'_> {
+    pub(crate) fn valid(self, frames: usize) -> bool {
+        parameters::valid_id(self.id)
+            && self.normalized.len() == frames
+            && self
+                .normalized
+                .iter()
+                .all(|value| (0.0..=1.0).contains(value))
+    }
+}
+
 /// Inline wire payload; dropping it never reclaims a resource.
 #[derive(Clone, Copy)]
 pub struct Block {
@@ -425,7 +498,80 @@ pub struct ReceivedProgram {
     pub sequence: u64,
     pub program: Option<NonZeroU64>,
 }
+/// Control-side custody of the original pair's opt-in. This retains only
+/// copied transport signals, not a worker, endpoint, SDK or output lease.
+/// Drop on control after the last wanted marker is drained.
+pub struct EditorScope {
+    signal: Arc<Revocation>,
+    serial: NonZeroU64,
+}
+
+impl Drop for EditorScope {
+    fn drop(&mut self) {
+        let ended = self.serial.get() << 1;
+        let _ = self
+            .signal
+            .editor_scope
+            .compare_exchange(ended | 1, ended, AcqRel, Acquire);
+    }
+}
+
 impl Control {
+    /// Enable observation on new physical quantum starts for this exact pair.
+    /// Serial numbers must increase per pair. Ending discards unconsumed
+    /// markers; drain wanted observations before ending an orderly scope.
+    pub fn arm_editor_pcm(&mut self, serial: NonZeroU64) -> Result<EditorScope, Fault> {
+        self.arm_editor_pcm_after(serial, || {})
+    }
+
+    /// The unique control owner installs its exact worker plan before the
+    /// release publication can make this serial visible to the callback.
+    pub fn arm_editor_pcm_after(
+        &mut self,
+        serial: NonZeroU64,
+        prepare: impl FnOnce(),
+    ) -> Result<EditorScope, Fault> {
+        if self.is_revoked() {
+            return Err(Fault::Revoked);
+        }
+        let value = serial.get().checked_mul(2).ok_or(Fault::Exhausted)? | 1;
+        let previous = self.revoked.editor_scope.load(Acquire);
+        if previous & 1 != 0 || serial.get() <= previous >> 1 {
+            return Err(Fault::Protocol);
+        }
+        prepare();
+        self.revoked.editor_scope.store(value, Release);
+        Ok(EditorScope {
+            signal: Arc::clone(&self.revoked),
+            serial,
+        })
+    }
+
+    /// Read one bounded snapshot of the exact paired callback's most recently
+    /// accepted quantum. None means no observation, contention, exhaustion, or
+    /// revocation. A copied binding is not proof of any graph installation.
+    pub fn committed_quantum(&self) -> Option<CommittedQuantum> {
+        use std::sync::atomic::Ordering::SeqCst;
+        if self.revoked.is_revoked() {
+            return None;
+        }
+        let before = self.revoked.quantum_serial.load(SeqCst);
+        if before == 0 || before & 1 != 0 {
+            return None;
+        }
+        let key = self.revoked.quantum_program.load(SeqCst);
+        let state = match self.revoked.quantum_state.load(SeqCst) {
+            1 => CommittedQuantumState::Closed,
+            2 => CommittedQuantumState::OpenUnprogrammed,
+            3 => CommittedQuantumState::OpenProgram(NonZeroU64::new(key)?),
+            _ => return None,
+        };
+        (before == self.revoked.quantum_serial.load(SeqCst) && !self.revoked.is_revoked())
+            .then_some(CommittedQuantum {
+                binding: self.revoked.binding,
+                state,
+            })
+    }
     pub fn revoke(&self) {
         self.revoked.revoke();
     }
@@ -508,17 +654,22 @@ struct InputRequest {
     parameter_capacity: usize,
     authored_program: Option<NonZeroU64>,
     manual_origin: Option<ManualParameterOrigin>,
+    editor_scope: Option<NonZeroU64>,
 }
 
 pub struct WorkerRequest {
     pub block: Block,
     pub parameter_capacity: usize,
+    pub dense_parameter: Option<DenseParameterRequest>,
     /// Program frozen at the accepted physical quantum opening.
     pub authored_program: Option<NonZeroU64>,
     /// The exact accepted quantum starts on a known compensated Arrangement
     /// origin. The copied clock stays with the transport's in-flight request.
     /// This observation grants no publication or parameter input authority.
     pub manual_origin_available: bool,
+    /// The control scope active at the original accepted physical quantum's
+    /// first sample. No request already staged at arm time is retroactively tagged.
+    pub editor_scope: Option<NonZeroU64>,
 }
 
 /// The one exact host operation applied at offset zero in a successful SDK
@@ -578,10 +729,40 @@ struct ManualExchange {
     origin: Option<ManualParameterOrigin>,
 }
 
+/// Successful editor input carried with this exact endpoint's accepted sample.
+/// Only the Main owner can determine its final delivery and transport validity.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AcceptedEditorQuantum {
+    pub binding: Binding,
+    pub sequence: u64,
+    pub first_frame: u64,
+    pub callback_offset: u16,
+    pub scope: NonZeroU64,
+    pub performs: EditorPerforms,
+    pub restorations: EditorRestorations,
+    pub lost_origin: bool,
+    pub origin: Option<ManualParameterOrigin>,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct EditorPcmFacts {
+    pub performs: EditorPerforms,
+    pub restorations: EditorRestorations,
+    pub lost_origin: bool,
+}
+
+#[derive(Clone, Copy)]
+struct EditorExchange {
+    scope: NonZeroU64,
+    facts: EditorPcmFacts,
+    origin: Option<ManualParameterOrigin>,
+}
+
 #[derive(Clone, Copy)]
 struct OutputReply {
     block: Block,
     manual: Option<ManualExchange>,
+    editor: Option<EditorExchange>,
 }
 
 impl OutputReply {
@@ -602,6 +783,7 @@ struct State {
     position: u64,
     input: Block,
     input_manual_origin: Option<ManualParameterOrigin>,
+    input_editor_scope: Option<NonZeroU64>,
     output: OutputReply,
     output_gap: bool,
     parameter_capacity: usize,
@@ -611,6 +793,7 @@ struct Stage {
     state: State,
     request: Option<InputRequest>,
     manual: Option<AcceptedManualParameter>,
+    editor: Option<AcceptedEditorQuantum>,
     expected_frames: usize,
     staged_frames: usize,
     input_events: usize,
@@ -641,6 +824,8 @@ pub struct Callback {
     state: State,
     staged: Option<Stage>,
     accepted_manual: Option<AcceptedManualParameter>,
+    accepted_editor: Option<AcceptedEditorQuantum>,
+    committed_quantum: Option<CommittedQuantumState>,
     // Only the prefix below the staged position is read. Rejection permanently
     // revokes the endpoint, so origin scratch does not need a rollback copy.
     authored_origins: AuthoredOrigins,
@@ -656,10 +841,12 @@ pub struct Worker {
     revoked: Arc<Revocation>,
     sequence: u64,
     in_flight: Option<InFlight>,
+    dense_requests: Option<Consumer<DenseParameterRequest>>,
 }
 
 struct InFlight {
     manual_origin: Option<ManualParameterOrigin>,
+    editor_scope: Option<NonZeroU64>,
 }
 
 /// Allocate only on control. The two rings have eight fixed inline slots each.
@@ -724,15 +911,19 @@ fn channel_with_policy(
                 position,
                 input: empty,
                 input_manual_origin: None,
+                input_editor_scope: None,
                 output: OutputReply {
                     block: empty,
                     manual: None,
+                    editor: None,
                 },
                 output_gap: false,
                 parameter_capacity: MAX_PARAMETER_POINTS,
             },
             staged: None,
             accepted_manual: None,
+            accepted_editor: None,
+            committed_quantum: None,
             authored_origins: AuthoredOrigins::default(),
         },
         Worker {
@@ -743,6 +934,7 @@ fn channel_with_policy(
             revoked,
             sequence: completed_blocks,
             in_flight: None,
+            dense_requests: None,
         },
     ))
 }
@@ -784,6 +976,7 @@ impl Callback {
         self.revoked.revoke();
         self.staged = None;
         self.accepted_manual = None;
+        self.accepted_editor = None;
     }
     pub fn latency_frames(&self) -> u32 {
         u32::from(self.quantum) * 2
@@ -820,6 +1013,7 @@ impl Callback {
         self.revoked.record_callback_fault(fault);
         self.staged = None;
         self.accepted_manual = None;
+        self.accepted_editor = None;
         Err(fault)
     }
     /// Declare one actual physical callback, even when the graph renders it in
@@ -833,10 +1027,12 @@ impl Callback {
             return self.fail(Fault::Protocol);
         }
         self.accepted_manual = None;
+        self.accepted_editor = None;
         self.staged = Some(Stage {
             state: self.state,
             request: None,
             manual: None,
+            editor: None,
             expected_frames: frames,
             staged_frames: 0,
             input_events: 0,
@@ -1076,6 +1272,12 @@ impl Callback {
                 stage.state.input.sequence = sequence;
                 stage.state.input.first_frame = position;
                 stage.state.input_manual_origin = manual.and_then(|origin| origin(index));
+                let editor_scope = self.revoked.editor_scope.load(Acquire);
+                stage.state.input_editor_scope = if editor_scope & 1 != 0 {
+                    NonZeroU64::new(editor_scope >> 1)
+                } else {
+                    None
+                };
                 stage.state.parameter_capacity = MAX_PARAMETER_POINTS;
                 self.authored_origins.program = program;
                 stage.state.input.timing = (timing.at)(index);
@@ -1107,6 +1309,19 @@ impl Callback {
                             callback_offset: (frame_offset + index) as u16,
                             input: manual.input,
                             origin: manual.origin,
+                        });
+                    }
+                    if let Some(editor) = stage.state.output.editor {
+                        stage.editor = Some(AcceptedEditorQuantum {
+                            binding: self.binding,
+                            sequence: stage.state.output.block.sequence,
+                            first_frame: stage.state.output.block.first_frame,
+                            callback_offset: (frame_offset + index) as u16,
+                            scope: editor.scope,
+                            performs: editor.facts.performs,
+                            restorations: editor.facts.restorations,
+                            lost_origin: editor.facts.lost_origin,
+                            origin: editor.origin,
                         });
                     }
                 }
@@ -1208,6 +1423,7 @@ impl Callback {
                     parameter_capacity: stage.state.parameter_capacity,
                     authored_program: self.authored_origins.program,
                     manual_origin: stage.state.input_manual_origin,
+                    editor_scope: stage.state.input_editor_scope,
                 });
             }
         }
@@ -1254,6 +1470,19 @@ impl Callback {
         }
         self.state = stage.state;
         self.accepted_manual = stage.manual;
+        self.accepted_editor = stage.editor;
+        let quantum = if self.state.position.is_multiple_of(u64::from(self.quantum)) {
+            CommittedQuantumState::Closed
+        } else if let Some(key) = self.authored_origins.program {
+            CommittedQuantumState::OpenProgram(key)
+        } else {
+            CommittedQuantumState::OpenUnprogrammed
+        };
+        // Identical observations carry no additional receipt or authority.
+        if self.committed_quantum != Some(quantum) {
+            self.revoked.publish_quantum(quantum);
+            self.committed_quantum = Some(quantum);
+        }
         Ok(())
     }
 
@@ -1263,6 +1492,15 @@ impl Callback {
         self.accepted_manual
             .take()
             .filter(|_| !self.revoked.is_revoked())
+    }
+
+    /// Consume once before the next physical callback. Rejection, revocation
+    /// and ending/replacing the control scope never return an old marker.
+    pub fn take_accepted_editor_quantum(&mut self) -> Option<AcceptedEditorQuantum> {
+        self.accepted_editor.take().filter(|marker| {
+            self.revoked.editor_scope.load(Acquire) == ((marker.scope.get() << 1) | 1)
+                && !self.revoked.is_revoked()
+        })
     }
 }
 
@@ -1300,6 +1538,7 @@ fn stage_reply(
             state.output = OutputReply {
                 block: Block::empty(binding, quantum),
                 manual: None,
+                editor: None,
             };
             state.output_gap = true;
         }
@@ -1341,7 +1580,9 @@ impl Worker {
     /// still be checked before adding input.
     pub fn receive_with_parameter_capacity(&mut self) -> Result<Option<(Block, usize)>, Fault> {
         match self.receive_request()? {
-            Some(request) if request.authored_program.is_some() => {
+            Some(request)
+                if request.authored_program.is_some() || request.dense_parameter.is_some() =>
+            {
                 self.fail(Fault::InvalidParameters)
             }
             Some(request) => Ok(Some((request.block, request.parameter_capacity))),
@@ -1368,6 +1609,13 @@ impl Worker {
         if let Err(fault) = block.valid(self.binding, self.quantum, self.sequence) {
             return self.fail(fault);
         }
+        let dense_parameter = match self.dense_requests.as_mut() {
+            Some(requests) => match dense::receive(requests, &block) {
+                Ok(lane) => lane,
+                Err(fault) => return self.fail(fault),
+            },
+            None => None,
+        };
         if let Err(fault) = self
             .revoked
             .record_received_program(self.sequence, request.authored_program)
@@ -1376,12 +1624,15 @@ impl Worker {
         }
         self.in_flight = Some(InFlight {
             manual_origin: request.manual_origin,
+            editor_scope: request.editor_scope,
         });
         Ok(Some(WorkerRequest {
             block,
             parameter_capacity: request.parameter_capacity,
+            dense_parameter,
             authored_program: request.authored_program,
             manual_origin_available: request.manual_origin.is_some(),
+            editor_scope: request.editor_scope,
         }))
     }
     /// Publish exactly one matching reply after the isolated processor finishes.
@@ -1397,6 +1648,37 @@ impl Worker {
         reply: Block,
         manual: Option<ManualParameterInput>,
     ) -> Result<(), Fault> {
+        self.complete_with_parameter_observations(reply, manual, None)
+    }
+
+    /// Attach the validated result of the opted-in SDK exchange for this
+    /// in-flight request. An empty batch still witnesses its physical quantum;
+    /// absence means the SDK exchange did not opt in.
+    pub fn complete_with_parameter_observations(
+        &mut self,
+        reply: Block,
+        manual: Option<ManualParameterInput>,
+        performs: Option<EditorPerforms>,
+    ) -> Result<(), Fault> {
+        self.complete_with_editor_facts(
+            reply,
+            manual,
+            performs.map(|performs| EditorPcmFacts {
+                performs,
+                restorations: Default::default(),
+                lost_origin: false,
+            }),
+        )
+    }
+
+    /// Publish the distinct SDK restoration beside the same checked PCM.
+    /// The later Main owner still controls final output acceptance.
+    pub fn complete_with_editor_facts(
+        &mut self,
+        reply: Block,
+        manual: Option<ManualParameterInput>,
+        facts: Option<EditorPcmFacts>,
+    ) -> Result<(), Fault> {
         if self.revoked.is_revoked() {
             return Err(Fault::Revoked);
         }
@@ -1406,8 +1688,18 @@ impl Worker {
         self.revoked
             .processed_prefix
             .store(self.sequence.saturating_add(1), Release);
+        let editor = match (in_flight.editor_scope, facts) {
+            (None, None) => None,
+            (Some(scope), Some(facts)) => Some(EditorExchange {
+                scope,
+                facts,
+                origin: in_flight.manual_origin,
+            }),
+            _ => return self.fail(Fault::Protocol),
+        };
         let reply = OutputReply {
             block: reply,
+            editor,
             manual: manual.map(|input| ManualExchange {
                 input,
                 origin: in_flight.manual_origin,

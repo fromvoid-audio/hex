@@ -2,17 +2,18 @@
 //! Retained native/host targets keep their preparation eligibility when reading
 //! base values; only authored/touch readings change, not the target union.
 //! Utility effect controls are consumed by the existing closed processor family.
-//! Host trims are consumed at native effect boundaries (track/main/return).
-//! Foreign processors and source-owned instruments/effects refuse host targets;
+//! Host trims are consumed at native effect boundaries, including a bound
+//! post-instrument source stage. Foreign processors and instruments refuse host targets;
 //! other provider parameter curves still require explicit runtime support.
 use crate::{Invalid, NativeDeviceClass};
 use hex_lattice::{NativeTransientValue, ProcessorChainOwner, ProcessorInstanceIdentity};
 use hex_lattice_contract::{DeviceAutomationTarget, DeviceTypeId, NativeDeviceState, ParameterId};
+use std::num::NonZeroU64;
 pub const DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED: &str = "device parameter automation playback is not prepared; use a compatible build or clear the envelope in a copy";
 /// Maximum recorded targets admitted into one prepared binding union.
 pub(crate) const MAX_EXTERNAL_PARAMETER_TARGETS: usize = 256;
 
-/// Canonical control-side arm description for one supported native effect.
+/// Canonical control-side arm description for one supported native processor.
 /// This Copy identity grants neither publication nor a runtime/source lease.
 /// Runtime factory/twin admission and source fencing remain with preparation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,6 +22,8 @@ pub struct NativeParameterInputTarget {
     target: DeviceAutomationTarget,
     identity: ProcessorInstanceIdentity,
     device_type: DeviceTypeId,
+    // The canonical receiver is nonzero. Keep this optional callback key to one word.
+    source_effect_receiver: Option<NonZeroU64>,
 }
 impl NativeParameterInputTarget {
     pub fn device(self) -> hex_project::DeviceId {
@@ -34,6 +37,18 @@ impl NativeParameterInputTarget {
     }
     pub fn device_type(self) -> DeviceTypeId {
         self.device_type
+    }
+    pub(crate) fn source_effect_receiver(self) -> Option<NonZeroU64> {
+        self.source_effect_receiver
+    }
+    pub(crate) fn device_class(self) -> NativeDeviceClass {
+        if matches!(self.identity.owner(), ProcessorChainOwner::Source(_))
+            && self.source_effect_receiver.is_none()
+        {
+            NativeDeviceClass::Instrument
+        } else {
+            NativeDeviceClass::Effect
+        }
     }
     /// Validate canonical units against the actual current state/ownership. This
     /// performs no authored edit, parameter patch, normalization or DSP setup.
@@ -57,36 +72,99 @@ impl NativeParameterInputTarget {
         let device = project
             .device(self.device)
             .ok_or(Invalid("native parameter input device no longer exists"))?;
-        let registry = hex_devices::native_registry()
-            .map_err(|_| Invalid("native effect registry is invalid"))?;
         if let NativeTransientValue::Parameter { id, value } = value {
-            let definition = registry
-                .definition(self.device_type)
-                .ok_or(Invalid("native parameter input device is unsupported"))?;
-            hex_lattice_contract::validate_parameter_write(definition, device.state(), id, value)
-                .map_err(|_| {
+            let checked = if self.device_class() == NativeDeviceClass::Instrument {
+                let registry = hex_devices::native_instrument_registry()
+                    .map_err(|_| Invalid("native instrument registry is invalid"))?;
+                let definition = registry
+                    .definition(self.device_type)
+                    .ok_or(Invalid("native parameter input instrument is unsupported"))?;
+                hex_lattice_contract::validate_parameter_write(
+                    definition,
+                    device.state(),
+                    id,
+                    value,
+                )
+            } else {
+                let registry = hex_devices::native_registry()
+                    .map_err(|_| Invalid("native effect registry is invalid"))?;
+                let definition = registry
+                    .definition(self.device_type)
+                    .ok_or(Invalid("native parameter input device is unsupported"))?;
+                hex_lattice_contract::validate_parameter_write(
+                    definition,
+                    device.state(),
+                    id,
+                    value,
+                )
+            };
+            checked.map_err(|_| {
                 Invalid("native parameter input value is invalid for the current state")
             })?;
         }
         Ok(value)
     }
 }
-/// Resolve exactly one canonical Track/Main/Return native effect. Source-owned
-/// devices and foreign providers are excluded even when they expose metadata.
+/// Resolve an exact native effect or receiving instrument. A source effect
+/// includes its current receiver, so changing the receiver invalidates the arm.
 /// Current provider capability is explicit; controls alone never grant it.
 pub fn native_parameter_input_target(
     project: &hex_project::Project,
     device: hex_project::DeviceId,
     target: DeviceAutomationTarget,
 ) -> Result<NativeParameterInputTarget, Invalid> {
-    if project
+    if let Some(source) = project
         .native_sources()
         .iter()
-        .any(|source| source.devices().any(|candidate| candidate.id() == device))
+        .find(|source| source.devices().any(|candidate| candidate.id() == device))
     {
-        return Err(Invalid(
-            "source-owned native parameter input is unsupported",
-        ));
+        let receiver = source
+            .receiver()
+            .ok_or(Invalid("native source has no receiver"))?;
+        let instrument = source.instrument();
+        let registry = hex_devices::native_registry()
+            .map_err(|_| Invalid("native effect registry is invalid"))?;
+        let (state, source_effect_receiver) = if instrument.id() == device {
+            if instrument.bypassed()
+                || !instrument_automation_chain_supported(source, &registry)
+                || !instrument_target_supported(instrument.state(), target)
+            {
+                return Err(Invalid(
+                    "receiving instrument parameter input is unsupported",
+                ));
+            }
+            (instrument.state(), None)
+        } else {
+            let effect = source
+                .post_instrument_effects()
+                .iter()
+                .find(|effect| effect.id() == device)
+                .ok_or(Invalid(
+                    "native source effect is not in the post-instrument stage",
+                ))?;
+            if instrument.bypassed()
+                || effect.bypassed()
+                || !source_effect_target_supported(source, effect, target, &registry)
+            {
+                return Err(Invalid(
+                    "native source effect parameter input is unsupported",
+                ));
+            }
+            let receiver = NonZeroU64::new(receiver.value())
+                .ok_or(Invalid("native source effect receiver identity is invalid"))?;
+            (effect.state(), Some(receiver))
+        };
+        return Ok(NativeParameterInputTarget {
+            device,
+            target,
+            identity: ProcessorInstanceIdentity::new(
+                ProcessorChainOwner::Source(source.id().value()),
+                device.value(),
+            )
+            .map_err(|_| Invalid("native source input identity is invalid"))?,
+            device_type: state.type_id(),
+            source_effect_receiver,
+        });
     }
     let mut matching =
         effect_device_owners(project).filter(|(candidate, _)| candidate.id() == device);
@@ -109,6 +187,7 @@ pub fn native_parameter_input_target(
         identity: ProcessorInstanceIdentity::new(owner, device.value())
             .map_err(|_| Invalid("native parameter input identity is invalid"))?,
         device_type: current.state().type_id(),
+        source_effect_receiver: None,
     })
 }
 fn effect_device_owners(
@@ -144,22 +223,23 @@ pub fn native_parameter_automation_supported(
     state: &NativeDeviceState,
     parameter: ParameterId,
 ) -> bool {
-    if class != NativeDeviceClass::Effect {
-        return false;
-    }
-    let Ok(registry) = hex_devices::native_registry() else {
-        return false;
-    };
-    supported(&registry, state, parameter)
+    native_device_automation_target_supported(
+        class,
+        state,
+        DeviceAutomationTarget::Parameter(parameter),
+    )
 }
 /// Provider/class metadata capability, without a project ownership decision.
-/// UI assignment uses project_device_automation_target_supported instead:
-/// source-owned effects can share this metadata but lack render delivery.
+/// UI assignment uses project_device_automation_target_supported to include
+/// the actual graph owner and the bound source effect capability.
 pub fn native_device_automation_target_supported(
     class: NativeDeviceClass,
     state: &NativeDeviceState,
     target: DeviceAutomationTarget,
 ) -> bool {
+    if class == NativeDeviceClass::Instrument {
+        return instrument_target_supported(state, target);
+    }
     if class != NativeDeviceClass::Effect {
         return false;
     }
@@ -168,23 +248,75 @@ pub fn native_device_automation_target_supported(
     };
     target_supported(&registry, state, target)
 }
-/// Actual-owner control query. Only track/main/return effect boundaries consume
-/// these curves. A retained source (including a linked/shared instrument or an
-/// effect in its chain), missing identity, or foreign provider returns false.
+/// Actual-owner query for supported effects and FM4 provider lanes. A receiving
+/// FM4 can retain an admitted native effect suffix. The generator program runs
+/// before that suffix, which processes the shared sum once for all contributors.
+/// Unbinding the receiver leaves lanes dormant until a new receiver is bound.
+/// This metadata query grants no runtime/resource custody; preparation validates
+/// the actual factory grants and bounded program storage before publication.
 pub fn project_device_automation_target_supported(
     project: &hex_project::Project,
     device: hex_project::DeviceId,
     target: DeviceAutomationTarget,
 ) -> bool {
-    let Some(device) = effect_devices(project).find(|candidate| candidate.id() == device) else {
-        return false;
-    };
     let Ok(registry) = hex_devices::native_registry() else {
         return false;
     };
-    target_supported(&registry, device.state(), target)
+    if let Some(source) = project
+        .native_sources()
+        .iter()
+        .find(|source| source.instrument().id() == device)
+    {
+        return source.receiver().is_some()
+            && instrument_automation_chain_supported(source, &registry)
+            && instrument_target_supported(source.instrument().state(), target);
+    }
+    let Some(location) = project.device_location(device) else {
+        return false;
+    };
+    match location.owner {
+        hex_project::DeviceOwner::Source(source) => {
+            project.native_source(source).is_some_and(|source| {
+                source.receiver().is_some()
+                    && source_effect_target_supported(source, location.device, target, &registry)
+            })
+        }
+        _ => target_supported(&registry, location.device.state(), target),
+    }
 }
-fn effect_devices(project: &hex_project::Project) -> impl Iterator<Item = &hex_project::Device> {
+
+/// The source recipe still validates the actual provider factory, zero latency
+/// and graph budget. This query shares its authored suffix eligibility without
+/// opening a second processor or granting any callback custody.
+fn instrument_automation_chain_supported(
+    source: &hex_project::NativeSource,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+) -> bool {
+    source.instrument_index() == 0
+        && source.post_instrument_effects().iter().all(|effect| {
+            crate::source_effect_stage::metadata::validate_authored(effect.state(), registry)
+                .is_ok()
+        })
+}
+
+fn source_effect_target_supported(
+    source: &hex_project::NativeSource,
+    device: &hex_project::Device,
+    target: DeviceAutomationTarget,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+) -> bool {
+    source.instrument_index() == 0
+        && source
+            .post_instrument_effects()
+            .iter()
+            .any(|member| member.id() == device.id())
+        && crate::source_effect_stage::metadata::validate_authored(device.state(), registry).is_ok()
+        && target_supported(registry, device.state(), target)
+}
+/// Canonical track-local, Return and Main effects, excluding retained sources.
+pub(crate) fn effect_devices(
+    project: &hex_project::Project,
+) -> impl Iterator<Item = &hex_project::Device> {
     project
         .tracks()
         .iter()
@@ -235,6 +367,27 @@ fn supported(
                 })
             })
 }
+fn instrument_target_supported(state: &NativeDeviceState, target: DeviceAutomationTarget) -> bool {
+    let DeviceAutomationTarget::Parameter(id) = target else {
+        return false;
+    };
+    if state.type_id() != hex_devices::fm4::device::FM4_TYPE_ID {
+        return false;
+    }
+    let Ok(registry) = hex_devices::native_instrument_registry() else {
+        return false;
+    };
+    let Some(definition) = registry.definition(state.type_id()) else {
+        return false;
+    };
+    hex_lattice_contract::validated_parameter_semantics(definition, state, id).is_ok_and(|value| {
+        value.is_some_and(|semantics| {
+            semantics.access == hex_lattice_contract::ParameterAccess::ReadWrite
+                && semantics.automation
+                    == hex_lattice_contract::ParameterAutomation::DeviceArrangementEnvelope
+        })
+    })
+}
 pub(crate) fn validate_project(project: &hex_project::Project) -> Result<(), Invalid> {
     let registry =
         hex_devices::native_registry().map_err(|_| Invalid("native effect registry is invalid"))?;
@@ -244,18 +397,25 @@ pub(crate) fn validate_project_with_registry(
     project: &hex_project::Project,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
 ) -> Result<(), Invalid> {
+    crate::device_modulation::validate_source_owners(project)?;
     if project.native_sources().iter().any(|source| {
         source.devices().any(|device| {
             device.automation().iter().any(|lane| {
-                device.id() != source.instrument().id()
-                    || !crate::compile::is_vst3_instrument(device)
-                    || !matches!(lane.target, DeviceAutomationTarget::Vst3 { .. })
+                if device.id() == source.instrument().id() {
+                    !(crate::compile::is_vst3_instrument(device)
+                        && matches!(lane.target, DeviceAutomationTarget::Vst3 { .. })
+                        || instrument_automation_chain_supported(source, registry)
+                            && instrument_target_supported(device.state(), lane.target))
+                } else {
+                    !source_effect_target_supported(source, device, lane.target, registry)
+                }
             })
         })
     }) {
         return Err(Invalid(DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED));
     }
     for device in effect_devices(project) {
+        crate::device_modulation::EffectModulation::validate(device, project)?;
         if device.automation().iter().any(|lane| {
             // The Arrangement compiler verifies exact foreign capabilities
             // for both effect chains and instrument sources.
@@ -701,3 +861,10 @@ mod result_tests;
 #[cfg(test)]
 #[path = "device_parameter_input_tests.rs"]
 mod input_tests;
+
+#[cfg(test)]
+mod fm4_source_tests;
+
+#[cfg(test)]
+#[path = "device_modulation_admission_tests.rs"]
+mod modulation_admission_tests;

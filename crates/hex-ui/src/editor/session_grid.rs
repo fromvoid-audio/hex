@@ -1,8 +1,10 @@
 //! Compact, ID-backed Session grid and guarded playback requests.
+mod actions;
+use actions::with_quantization;
+pub(super) use actions::{DeleteTarget, action_is_current, resolve_delete_target};
+
 use super::console_columns::ColumnFrame;
 use super::console_track_page::TrackPage;
-#[cfg(test)]
-use super::console_track_page::visible_track_range;
 use super::session_route_view::cell_route_markers;
 use super::{EditorMode, EditorView, PendingPlaybackAction};
 use crate::theme;
@@ -12,17 +14,18 @@ use hex_audio::prepared::{
 };
 use hex_engine::{LaunchQuantization, PlaybackAction, SessionPlaybackCommand};
 use hex_project::{
-    BeatTime, ClipId, Command, Project, SceneId, SessionCellContent, SessionSceneTarget, TrackId,
+    BeatTime, ClipId, Command, SceneId, SessionCellContent, SessionSceneTarget, TrackId,
 };
 use hex_session::{import_batch::ConsoleDestination, service::Request};
 use std::sync::Arc;
 
 const TRACK_COLUMN_WIDTH: f32 = 148.0;
 const SCENE_ROW_HEIGHT: f32 = 31.0;
-const TRACK_HEADER_HEIGHT: f32 = 34.0;
+// Shared by the pinned Return bank so scene and mixer columns stay aligned.
+pub(super) const TRACK_HEADER_HEIGHT: f32 = 28.0;
 // Eight nested ancestors fit while preserving a usable header label.
 const GROUP_BAND_HEIGHT: f32 = 1.0;
-const SCENE_HEADER_WIDTH: f32 = 150.0;
+const SCENE_HEADER_WIDTH: f32 = 110.0;
 
 /// Paint occupies an inset surface; the cell keeps its original IDs, layout,
 /// rename/launch controls and drop targets. Console clips are one caption row,
@@ -74,51 +77,6 @@ enum CellExpectation {
     Audio(ClipId),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum DeleteTarget {
-    MidiNotes,
-    SessionCell { track: TrackId, scene: SceneId },
-    SessionScene(SceneId),
-    ArrangementClip(ClipId),
-}
-
-pub(super) fn resolve_delete_target(
-    project: Option<&Project>,
-    mode: EditorMode,
-    piano_focused: bool,
-    note_selection_nonempty: bool,
-    selected_cell: Option<(TrackId, SceneId)>,
-    selected_scene: Option<SceneId>,
-    selected_clip: Option<ClipId>,
-) -> Option<DeleteTarget> {
-    if piano_focused {
-        return note_selection_nonempty.then_some(DeleteTarget::MidiNotes);
-    }
-    if mode == EditorMode::Session {
-        let project = project?;
-        if let Some((track, scene)) = selected_cell {
-            if project.track(track).is_none()
-                || !project.scenes().iter().any(|item| item.id() == scene)
-            {
-                return None;
-            }
-            return matches!(
-                project.session_cell(track, scene),
-                Some(
-                    SessionCellContent::Audio(_)
-                        | SessionCellContent::Midi(_)
-                        | SessionCellContent::Stop
-                )
-            )
-            .then_some(DeleteTarget::SessionCell { track, scene });
-        }
-        return selected_scene
-            .filter(|scene| project.scenes().iter().any(|item| item.id() == *scene))
-            .map(DeleteTarget::SessionScene);
-    }
-    selected_clip.map(DeleteTarget::ArrangementClip)
-}
-
 pub(super) fn launch_action(
     command: SessionPlaybackCommand,
     revision: u64,
@@ -129,76 +87,6 @@ pub(super) fn launch_action(
         generation,
         revision: Some(revision),
         intent_token: None,
-    }
-}
-
-fn with_quantization(
-    command: SessionPlaybackCommand,
-    quantization: LaunchQuantization,
-) -> SessionPlaybackCommand {
-    match command {
-        SessionPlaybackCommand::LaunchClip { clip, .. } => {
-            SessionPlaybackCommand::LaunchClip { clip, quantization }
-        }
-        SessionPlaybackCommand::LaunchScene { scene, .. } => SessionPlaybackCommand::LaunchScene {
-            scene,
-            quantization,
-        },
-        SessionPlaybackCommand::StopTrack { track, .. } => SessionPlaybackCommand::StopTrack {
-            track,
-            quantization,
-        },
-        SessionPlaybackCommand::StopAllClips { .. } => {
-            SessionPlaybackCommand::StopAllClips { quantization }
-        }
-        SessionPlaybackCommand::BackToArrangement { .. } => {
-            SessionPlaybackCommand::BackToArrangement { quantization }
-        }
-        command => command,
-    }
-}
-
-pub(super) fn action_is_current(
-    project: Option<&Project>,
-    command: SessionPlaybackCommand,
-    expected_generation: u64,
-    current_generation: u64,
-    expected_revision: u64,
-    current_revision: Option<u64>,
-) -> bool {
-    expected_generation == current_generation
-        && current_revision == Some(expected_revision)
-        && action_matches_project(project, command)
-}
-
-pub(super) fn action_matches_project(
-    project: Option<&Project>,
-    command: SessionPlaybackCommand,
-) -> bool {
-    let Some(project) = project else {
-        return false;
-    };
-    match command {
-        SessionPlaybackCommand::LaunchClip { clip, .. } => project.session_cells().iter().any(
-            |cell| matches!(cell.content(), SessionCellContent::Midi(item) if item.id() == clip),
-        ),
-        SessionPlaybackCommand::CueMidiClip { track, clip, .. } => {
-            project.session_cells().iter().any(|cell| {
-                cell.track() == track
-                    && matches!(cell.content(), SessionCellContent::Midi(item) if item.id() == clip)
-            })
-        }
-        SessionPlaybackCommand::LaunchScene { scene, .. } => {
-            project.scenes().iter().any(|item| item.id() == scene)
-        }
-        SessionPlaybackCommand::StopTrack { track, .. } => project.track(track).is_some(),
-        SessionPlaybackCommand::StopAllClips { .. }
-        | SessionPlaybackCommand::BackToArrangement { .. }
-        | SessionPlaybackCommand::Play
-        | SessionPlaybackCommand::Pause
-        | SessionPlaybackCommand::Stop
-        | SessionPlaybackCommand::Seek(_)
-        | SessionPlaybackCommand::CancelPending { .. } => true,
     }
 }
 
@@ -422,8 +310,7 @@ impl EditorView {
             self.session_routes
                 .routes_available(snapshot, &state.project, revision, generation)
         });
-        let available_width =
-            f32::from(window.bounds().size.width) - self.browser_content_width(window);
+        let available_width = self.workspace_body_width(window);
         super::device_panel::retire_removed_send_controls(self, cx);
         let pending_send = super::device_panel::pending_send(self, cx);
         let pending_return = self
@@ -610,14 +497,10 @@ impl EditorView {
                             .items_center()
                             .border_l_1()
                             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-                            .bg(rgb(theme::color(if selected {
-                                theme::PaletteRole::Raised
-                            } else {
-                                theme::PaletteRole::Surface
-                            })))
-                            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
-                            .text_xs()
-                            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+                            .bg(rgb(theme::element_colors(track.color()).accent))
+                            .text_size(px(11.0))
+                            .line_height(px(14.0))
+                            .text_color(rgb(theme::color(theme::PaletteRole::ClipText)))
                             .child(
                                 div()
                                     .min_w_0()
@@ -684,15 +567,7 @@ impl EditorView {
                                                 })
                                                 .into()
                                             })
-                                            .child(theme::text(if folded { ">" } else { "v" }))
-                                    }))
-                                    .children(track.is_group().then(|| {
-                                        div()
-                                            .flex_shrink_0()
-                                            .debug_selector(move || {
-                                                format!("group-track-marker-{}", track_id.value())
-                                            })
-                                            .child(theme::text("group · "))
+                                            .child(theme::text(if folded { "▸" } else { "▾" }))
                                     }))
                                     .child(
                                         div()
@@ -740,16 +615,20 @@ impl EditorView {
                     true,
                     cx,
                 ),
-            )
-            .child(div().w(px(return_width)).flex_shrink_0())
-            .child(self.console_main_header(SCENE_HEADER_WIDTH, &return_page, frame, cx))
-            .child(self.console_reorder_layer(
-                page.clone(),
-                frame,
-                TRACK_COLUMN_WIDTH,
-                SCENE_HEADER_WIDTH + return_width,
-                cx,
-            ));
+            );
+        let header = super::console_columns::pinned_row(
+            header,
+            return_width,
+            self.console_main_header(SCENE_HEADER_WIDTH, &return_page, frame, cx),
+            TRACK_HEADER_HEIGHT,
+        )
+        .child(self.console_reorder_layer(
+            page.clone(),
+            frame,
+            TRACK_COLUMN_WIDTH,
+            SCENE_HEADER_WIDTH + return_width,
+            cx,
+        ));
 
         let scene_rows = uniform_list(
             "session-scene-rows",
@@ -776,10 +655,19 @@ impl EditorView {
         let body = div()
             .relative()
             .flex_1()
+            .min_w_0()
             .min_h_0()
             .flex()
             .flex_col()
-            .child(div().flex_shrink_0().flex().overflow_hidden().child(header))
+            .child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .flex_shrink_0()
+                    .flex()
+                    .overflow_hidden()
+                    .child(header),
+            )
             .child(
                 div()
                     .flex_1()
@@ -799,6 +687,7 @@ impl EditorView {
         div()
             .relative()
             .flex_1()
+            .min_w_0()
             .min_h_0()
             .flex()
             .flex_col()
@@ -1182,7 +1071,6 @@ impl EditorView {
             .map(|scene| scene.id());
         let selected = self.selected_scene == Some(scene_id);
         let mut row = div()
-            .id(("session-scene-row", scene_id.value()))
             .w_full()
             .h(px(SCENE_ROW_HEIGHT))
             .flex_shrink_0()
@@ -1580,7 +1468,7 @@ impl EditorView {
             .px_2()
             .flex()
             .items_center()
-            .justify_between()
+            .gap(px(4.0))
             .bg(rgb(if selected {
                 theme::color(theme::PaletteRole::Raised)
             } else {
@@ -1588,6 +1476,25 @@ impl EditorView {
             }))
             .text_xs()
             .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+            .child(
+                self.session_icon(
+                    "▶",
+                    "launch scene",
+                    ("session-launch-scene", scene_id.value()),
+                    cx.listener(move |view, _, window, cx| {
+                        if view.session_callback_current(revision, generation)
+                            && view.focus_empty_details(window, cx)
+                        {
+                            view.focus.focus(window);
+                            view.advance_selection_intent();
+                            view.select_session_scene(scene_id);
+                            view.launch_scene(scene_id, revision, view.session_quantization);
+                        }
+                        cx.notify();
+                    }),
+                )
+                .debug_selector(move || format!("console-launch-scene-{}", scene_id.value())),
+            )
             .child(
                 div()
                     .id(("session-scene-select", scene_id.value()))
@@ -1606,23 +1513,7 @@ impl EditorView {
                         }
                         cx.notify();
                     })),
-            )
-            .child(self.session_icon(
-                "▶",
-                "launch scene",
-                ("session-launch-scene", scene_id.value()),
-                cx.listener(move |view, _, window, cx| {
-                    if view.session_callback_current(revision, generation)
-                        && view.focus_empty_details(window, cx)
-                    {
-                        view.focus.focus(window);
-                        view.advance_selection_intent();
-                        view.select_session_scene(scene_id);
-                        view.launch_scene(scene_id, revision, view.session_quantization);
-                    }
-                    cx.notify();
-                }),
-            ));
+            );
         #[cfg(feature = "ui-test-support")]
         let scene_column = scene_column.debug_selector(|| "session-scene-column".into());
         let tail = self.console_column_surface(
@@ -1638,11 +1529,13 @@ impl EditorView {
             false,
             cx,
         );
-        row = row
-            .child(tail)
-            .child(div().w(px(return_width)).flex_shrink_0())
-            .child(scene_column);
-        row
+        super::console_columns::pinned_row(
+            row.child(tail),
+            return_width,
+            scene_column,
+            SCENE_ROW_HEIGHT,
+        )
+        .id(("session-scene-row", scene_id.value()))
     }
 
     fn console_insertion_strip(
@@ -1681,21 +1574,12 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let mut row = div()
-            .id("console-append-row")
-            .debug_selector(|| "console-append-row".into())
             .w_full()
             .h(px(SCENE_ROW_HEIGHT))
             .flex()
             .flex_shrink_0()
             .border_b_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-            .on_mouse_down(
-                gpui::MouseButton::Right,
-                cx.listener(|view, event: &gpui::MouseDownEvent, window, cx| {
-                    cx.stop_propagation();
-                    view.open_console_scene_context_menu(event.position, None, window, cx);
-                }),
-            );
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)));
         if let Some(state) = self.state.as_ref() {
             for track in page.columns.iter().filter_map(|column| {
                 state
@@ -1752,17 +1636,24 @@ impl EditorView {
             false,
             cx,
         );
-        row.child(tail)
-            .child(div().w(px(return_width)).flex_shrink_0())
-            .child(
-                div()
-                    .w(px(SCENE_HEADER_WIDTH))
-                    .px_2()
-                    .flex()
-                    .items_center()
-                    .text_xs()
-                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                    .child(theme::text("add scene")),
+        let main = div()
+            .w(px(SCENE_HEADER_WIDTH))
+            .flex_shrink_0()
+            .px_2()
+            .flex()
+            .items_center()
+            .text_xs()
+            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+            .child(theme::text("add scene"));
+        super::console_columns::pinned_row(row.child(tail), return_width, main, SCENE_ROW_HEIGHT)
+            .id("console-append-row")
+            .debug_selector(|| "console-append-row".into())
+            .on_mouse_down(
+                gpui::MouseButton::Right,
+                cx.listener(|view, event: &gpui::MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    view.open_console_scene_context_menu(event.position, None, window, cx);
+                }),
             )
     }
 
@@ -2182,88 +2073,9 @@ impl EditorView {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        DeleteTarget, action_is_current, action_matches_project, launch_action,
-        resolve_delete_target, visible_track_range, with_quantization,
-    };
+    use super::launch_action;
     use hex_engine::{LaunchQuantization, PlaybackAction, SessionPlaybackCommand};
-    use hex_project::{Command, Created, Editor, Project, SessionCellContent};
-
-    #[test]
-    fn guarded_session_actions_require_current_stable_ids() {
-        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
-        let Created::Track(track) = editor
-            .execute(Command::AddMidiTrack {
-                name: "instrument".into(),
-            })
-            .unwrap()
-        else {
-            panic!("track")
-        };
-        let Created::Scene(scene) = editor
-            .execute(Command::AddScene {
-                name: "scene".into(),
-            })
-            .unwrap()
-        else {
-            panic!("scene")
-        };
-        let launch = SessionPlaybackCommand::LaunchScene {
-            scene,
-            quantization: LaunchQuantization::Immediate,
-        };
-        assert!(action_matches_project(Some(editor.project()), launch));
-        assert!(action_is_current(
-            Some(editor.project()),
-            launch,
-            8,
-            8,
-            12,
-            Some(12)
-        ));
-        assert!(!action_is_current(
-            Some(editor.project()),
-            launch,
-            7,
-            8,
-            12,
-            Some(12)
-        ));
-        assert!(!action_is_current(
-            Some(editor.project()),
-            launch,
-            8,
-            8,
-            12,
-            Some(13)
-        ));
-        editor.execute(Command::RemoveScene(scene)).unwrap();
-        assert!(!action_matches_project(Some(editor.project()), launch));
-        let cancel = SessionPlaybackCommand::CancelPending { track: None };
-        assert!(action_is_current(
-            Some(editor.project()),
-            cancel,
-            8,
-            8,
-            13,
-            Some(13)
-        ));
-        assert!(!action_is_current(
-            Some(editor.project()),
-            cancel,
-            7,
-            8,
-            13,
-            Some(13)
-        ));
-        let stop = SessionPlaybackCommand::StopTrack {
-            track,
-            quantization: LaunchQuantization::Immediate,
-        };
-        assert!(action_matches_project(Some(editor.project()), stop));
-        editor.execute(Command::RemoveTrack(track)).unwrap();
-        assert!(!action_matches_project(Some(editor.project()), stop));
-    }
+    use hex_project::{Command, Created, Editor, Project};
 
     #[test]
     fn launch_and_play_is_one_revision_guarded_action() {
@@ -2292,17 +2104,10 @@ mod tests {
         assert_eq!(pending.generation, 3);
     }
 
+    #[cfg(feature = "ui-test-support")]
     #[test]
-    fn quantization_is_captured_by_each_session_command_and_queued_launch() {
+    fn queued_scene_launch_retains_quantization_selected_before_launch() {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 3).unwrap();
-        let Created::Track(track) = editor
-            .execute(Command::AddMidiTrack {
-                name: "instrument".into(),
-            })
-            .unwrap()
-        else {
-            panic!("track")
-        };
         let Created::Scene(scene) = editor
             .execute(Command::AddScene {
                 name: "scene".into(),
@@ -2311,81 +2116,16 @@ mod tests {
         else {
             panic!("scene")
         };
-        let Created::SessionClip(clip) = editor
-            .execute(Command::CreateSessionMidiClip {
-                track,
-                scene,
-                name: "pattern".into(),
-                source_length: hex_project::BeatTime::from_quarters(4).unwrap(),
-            })
-            .unwrap()
-        else {
-            panic!("session clip")
-        };
-
-        let commands = [
-            SessionPlaybackCommand::LaunchClip {
-                clip,
-                quantization: LaunchQuantization::Immediate,
-            },
-            SessionPlaybackCommand::LaunchScene {
-                scene,
-                quantization: LaunchQuantization::Immediate,
-            },
-            SessionPlaybackCommand::StopTrack {
-                track,
-                quantization: LaunchQuantization::Immediate,
-            },
-            SessionPlaybackCommand::StopAllClips {
-                quantization: LaunchQuantization::Immediate,
-            },
-            SessionPlaybackCommand::BackToArrangement {
-                quantization: LaunchQuantization::Immediate,
-            },
-        ];
-        for quantization in [
-            LaunchQuantization::Immediate,
-            LaunchQuantization::FourQuarter,
-        ] {
-            for command in commands {
-                let captured = with_quantization(command, quantization);
-                let expected = match command {
-                    SessionPlaybackCommand::LaunchClip { clip, .. } => {
-                        SessionPlaybackCommand::LaunchClip { clip, quantization }
-                    }
-                    SessionPlaybackCommand::LaunchScene { scene, .. } => {
-                        SessionPlaybackCommand::LaunchScene {
-                            scene,
-                            quantization,
-                        }
-                    }
-                    SessionPlaybackCommand::StopTrack { track, .. } => {
-                        SessionPlaybackCommand::StopTrack {
-                            track,
-                            quantization,
-                        }
-                    }
-                    SessionPlaybackCommand::StopAllClips { .. } => {
-                        SessionPlaybackCommand::StopAllClips { quantization }
-                    }
-                    SessionPlaybackCommand::BackToArrangement { .. } => {
-                        SessionPlaybackCommand::BackToArrangement { quantization }
-                    }
-                    command => command,
-                };
-                assert_eq!(captured, expected);
-            }
-        }
 
         let mut selected_quantization = LaunchQuantization::FourQuarter;
-        let captured = with_quantization(
+        let command = super::with_quantization(
             SessionPlaybackCommand::LaunchScene {
                 scene,
                 quantization: LaunchQuantization::Immediate,
             },
             selected_quantization,
         );
-        let queued = launch_action(captured, 19, 3);
+        let queued = launch_action(command, 19, 3);
         selected_quantization = LaunchQuantization::Immediate;
         assert_eq!(selected_quantization, LaunchQuantization::Immediate);
         assert!(matches!(
@@ -2395,256 +2135,5 @@ mod tests {
                 ..
             })
         ));
-        assert_eq!(
-            with_quantization(
-                SessionPlaybackCommand::CancelPending { track: None },
-                LaunchQuantization::FourQuarter,
-            ),
-            SessionPlaybackCommand::CancelPending { track: None }
-        );
-    }
-
-    #[test]
-    fn delete_target_routes_session_cells_scenes_and_piano_focus_safely() {
-        let mut editor = Editor::new(Project::new(48_000).unwrap(), 3).unwrap();
-        let Created::Track(track) = editor
-            .execute(Command::AddMidiTrack {
-                name: "instrument".into(),
-            })
-            .unwrap()
-        else {
-            panic!("track")
-        };
-        let Created::Scene(midi_scene) = editor
-            .execute(Command::AddScene {
-                name: "midi".into(),
-            })
-            .unwrap()
-        else {
-            panic!("midi scene")
-        };
-        editor
-            .execute(Command::CreateSessionMidiClip {
-                track,
-                scene: midi_scene,
-                name: "pattern".into(),
-                source_length: hex_project::BeatTime::from_quarters(4).unwrap(),
-            })
-            .unwrap();
-        let Created::Scene(stop_scene) = editor
-            .execute(Command::AddScene {
-                name: "stop".into(),
-            })
-            .unwrap()
-        else {
-            panic!("stop scene")
-        };
-        editor
-            .execute(Command::SetSessionStopCell {
-                track,
-                scene: stop_scene,
-            })
-            .unwrap();
-        let Created::Scene(empty_scene) = editor
-            .execute(Command::AddScene {
-                name: "empty".into(),
-            })
-            .unwrap()
-        else {
-            panic!("empty scene")
-        };
-
-        assert_eq!(
-            resolve_delete_target(
-                Some(editor.project()),
-                super::EditorMode::Session,
-                false,
-                false,
-                Some((track, midi_scene)),
-                Some(stop_scene),
-                None,
-            ),
-            Some(DeleteTarget::SessionCell {
-                track,
-                scene: midi_scene
-            })
-        );
-        assert_eq!(
-            resolve_delete_target(
-                Some(editor.project()),
-                super::EditorMode::Session,
-                false,
-                false,
-                Some((track, stop_scene)),
-                None,
-                None,
-            ),
-            Some(DeleteTarget::SessionCell {
-                track,
-                scene: stop_scene
-            })
-        );
-        assert_eq!(
-            resolve_delete_target(
-                Some(editor.project()),
-                super::EditorMode::Session,
-                false,
-                false,
-                Some((track, empty_scene)),
-                Some(midi_scene),
-                None,
-            ),
-            None,
-            "an empty selected cell is a no-op, not a fallback scene delete"
-        );
-        assert_eq!(
-            resolve_delete_target(
-                Some(editor.project()),
-                super::EditorMode::Session,
-                false,
-                false,
-                None,
-                Some(midi_scene),
-                None,
-            ),
-            Some(DeleteTarget::SessionScene(midi_scene))
-        );
-        assert_eq!(
-            resolve_delete_target(
-                Some(editor.project()),
-                super::EditorMode::Session,
-                true,
-                true,
-                Some((track, midi_scene)),
-                Some(midi_scene),
-                None,
-            ),
-            Some(DeleteTarget::MidiNotes)
-        );
-        assert_eq!(
-            resolve_delete_target(
-                Some(editor.project()),
-                super::EditorMode::Session,
-                true,
-                false,
-                Some((track, midi_scene)),
-                Some(midi_scene),
-                None,
-            ),
-            None,
-            "empty piano selection cannot fall through to grid deletion"
-        );
-
-        editor.execute(Command::RemoveScene(empty_scene)).unwrap();
-        assert_eq!(
-            resolve_delete_target(
-                Some(editor.project()),
-                super::EditorMode::Session,
-                false,
-                false,
-                Some((track, empty_scene)),
-                Some(midi_scene),
-                None,
-            ),
-            None,
-            "a stale cell must not fall through to scene deletion"
-        );
-        assert_eq!(
-            resolve_delete_target(
-                Some(editor.project()),
-                super::EditorMode::Session,
-                false,
-                false,
-                None,
-                Some(empty_scene),
-                None,
-            ),
-            None
-        );
-        let Some(SessionCellContent::Midi(clip)) = editor.project().session_cell(track, midi_scene)
-        else {
-            panic!("session clip")
-        };
-        assert_eq!(
-            resolve_delete_target(
-                Some(editor.project()),
-                super::EditorMode::Arrangement,
-                false,
-                false,
-                None,
-                None,
-                Some(clip.id()),
-            ),
-            Some(DeleteTarget::ArrangementClip(clip.id()))
-        );
-
-        // Hybrid tracks hold audio Session cells; Delete clears them too.
-        let Created::Scene(audio_scene) = editor
-            .execute(Command::AddScene {
-                name: "audio".into(),
-            })
-            .unwrap()
-        else {
-            panic!("audio scene")
-        };
-        let Created::Asset(asset) = editor
-            .execute(Command::AddAsset {
-                path: "source.wav".into(),
-                sample_rate: 48_000,
-                frames: 1_000,
-            })
-            .unwrap()
-        else {
-            panic!("asset")
-        };
-        editor
-            .execute(Command::CreateSessionAudioClip {
-                track,
-                scene: audio_scene,
-                name: "audio".into(),
-                asset,
-                source_start: 0,
-                source_end: 1_000,
-            })
-            .unwrap();
-        let with_audio = editor.project().snapshot();
-        let target = resolve_delete_target(
-            Some(editor.project()),
-            super::EditorMode::Session,
-            false,
-            false,
-            Some((track, audio_scene)),
-            None,
-            None,
-        );
-        assert_eq!(
-            target,
-            Some(DeleteTarget::SessionCell {
-                track,
-                scene: audio_scene
-            })
-        );
-        editor
-            .execute(Command::ClearSessionCell {
-                track,
-                scene: audio_scene,
-            })
-            .unwrap();
-        assert!(editor.project().session_cell(track, audio_scene).is_none());
-        assert!(editor.undo());
-        assert!(matches!(
-            editor.project().session_cell(track, audio_scene),
-            Some(SessionCellContent::Audio(_))
-        ));
-        assert_eq!(editor.project().snapshot(), with_audio);
-    }
-
-    #[test]
-    fn track_paging_keeps_a_bounded_last_page_reachable() {
-        assert_eq!(visible_track_range(256, 0, 8), 0..8);
-        assert_eq!(visible_track_range(256, 248, 8), 248..256);
-        assert_eq!(visible_track_range(256, usize::MAX, 8), 248..256);
-        assert_eq!(visible_track_range(10, 8, 8), 2..10);
-        assert_eq!(visible_track_range(0, 0, 8), 0..0);
     }
 }

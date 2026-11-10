@@ -23,8 +23,9 @@ pub(super) fn valid(point: ParameterPoint, frames: usize) -> bool {
 
 /// Globally ordered offsets preserve each parameter queue's ordering. The
 /// last value for an equal ID/offset replaces its earlier value, without
-/// consuming another slot or changing equal-offset parameter order. Overflow
-/// and malformed/out-of-order input refuse before changing this payload.
+/// consuming another slot or changing equal-offset parameter order. The sorted
+/// prefix makes the last offset's group the only possible replacement site.
+/// Overflow and malformed/out-of-order input refuse before changing this payload.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Parameters {
     values: [ParameterPoint; MAX_PARAMETER_POINTS],
@@ -53,7 +54,9 @@ impl Parameters {
         }
         if let Some(previous) = self.values[..self.len]
             .iter_mut()
-            .find(|previous| previous.frame == point.frame && previous.id == point.id)
+            .rev()
+            .take_while(|previous| previous.frame == point.frame)
+            .find(|previous| previous.id == point.id)
         {
             *previous = point;
             return Ok(());
@@ -74,6 +77,32 @@ impl Parameters {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_parameter_can_keep_an_exact_point_at_each_admitted_frame() {
+        let mut points = Parameters::default();
+        let final_frame = (MAX_PARAMETER_POINTS - 1) as u16;
+        let point = |frame, normalized| ParameterPoint {
+            frame,
+            id: 17,
+            normalized,
+        };
+        for frame in 0..=final_frame {
+            points.push(point(frame, 0.25)).unwrap();
+        }
+        points.push(point(final_frame, 0.75)).unwrap();
+        assert_eq!(points.as_slice().len(), MAX_PARAMETER_POINTS);
+        for frame in 0..final_frame {
+            assert_eq!(points.as_slice()[usize::from(frame)], point(frame, 0.25));
+        }
+        assert_eq!(points.as_slice().last(), Some(&point(final_frame, 0.75)));
+        let before = points;
+        for rejected in [point(final_frame - 1, 0.5), point(final_frame + 1, 0.5)] {
+            assert_eq!(points.push(rejected), Err(Fault::InvalidParameters));
+            assert_eq!(points, before);
+        }
+        assert!(points.valid(MAX_PARAMETER_POINTS));
+    }
 
     #[test]
     fn equal_offset_last_value_wins_at_capacity_without_reordering_other_ids() {

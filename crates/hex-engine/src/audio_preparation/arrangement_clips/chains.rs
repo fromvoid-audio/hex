@@ -3,6 +3,7 @@
 use crate::{
     AudioStorageError,
     audio_only_inputs::handle,
+    device_modulation::EffectModulation,
     owned_shared::{OwnedShared, SharedDeclaration},
 };
 use hex_lattice::{
@@ -15,6 +16,7 @@ use std::sync::Arc;
 
 struct Entry {
     automation_bytes: usize,
+    modulation_bytes: Option<usize>,
     authored: bool,
     device_id: u64,
     owner: ProcessorChainOwner,
@@ -56,7 +58,14 @@ impl ChainCustody {
             )?)
             .ok_or(AudioStorageError::Overflow)?;
         let mut largest_copy = 0;
+        let mut modulation_overlap = 0;
         for device in devices {
+            let (modulation, staging) =
+                EffectModulation::quote(device).ok_or(AudioStorageError::Overflow)?;
+            retained = retained
+                .checked_add(modulation)
+                .ok_or(AudioStorageError::Overflow)?;
+            modulation_overlap = modulation_overlap.max(staging);
             retained = retained
                 .checked_add(crate::device_automation::quote_with_input(
                     device,
@@ -71,7 +80,12 @@ impl ChainCustody {
                 let migrated = hex_devices::utility::UTILITY_DEFINITION
                     .migrate_state(state)
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?;
-                let processor = if !device
+                let processor = if !device.modulation().routes().iter().any(|route| {
+                    matches!(
+                        route.destination, hex_project::ModulationDestination::Device { target, .. }
+                            if target.provider_parameter().is_some()
+                    )
+                }) && !device
                     .automation()
                     .iter()
                     .any(|lane| lane.target.provider_parameter().is_some())
@@ -109,6 +123,84 @@ impl ChainCustody {
                     Some(parts(OwnedShared::<
                         hex_devices::saturator::PreparedSaturator,
                     >::declared_parts())?),
+                )
+            } else if state.type_id() == hex_devices::overdrive::OVERDRIVE_TYPE_ID {
+                let migrated = hex_devices::overdrive::OVERDRIVE_DEFINITION
+                    .migrate_state(state)
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                hex_devices::overdrive::OverdriveDefinition::prepare_owned(&migrated, rate, &[])
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                largest_copy = largest_copy.max(migrated.payload().len());
+                (
+                    migrated.payload().len(),
+                    Some(parts(OwnedShared::<
+                        hex_devices::overdrive::PreparedOverdrive,
+                    >::declared_parts())?),
+                )
+            } else if state.type_id() == hex_devices::eq8::EQ8_TYPE_ID {
+                let migrated = hex_devices::eq8::EQ8_DEFINITION
+                    .migrate_state(state)
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                hex_devices::eq8::Eq8Definition::prepare_owned(&migrated, rate, &[])
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                largest_copy = largest_copy.max(migrated.payload().len());
+                (
+                    migrated.payload().len(),
+                    Some(parts(
+                        OwnedShared::<hex_devices::eq8::PreparedEq8>::declared_parts(),
+                    )?),
+                )
+            } else if state.type_id() == hex_devices::rattle::RATTLE_TYPE_ID {
+                let migrated = hex_devices::rattle::RATTLE_DEFINITION
+                    .migrate_state(state)
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                hex_devices::rattle::RattleDefinition::prepare_owned(&migrated, rate, &[])
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                largest_copy = largest_copy.max(migrated.payload().len());
+                (
+                    migrated.payload().len(),
+                    Some(parts(
+                        OwnedShared::<hex_devices::rattle::PreparedRattle>::declared_parts(),
+                    )?),
+                )
+            } else if state.type_id() == hex_devices::delay::TYPE_ID {
+                let migrated = hex_devices::delay::DEFINITION
+                    .migrate_state(state)
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                hex_devices::delay::DelayDefinition::prepare_owned(&migrated, rate, &[])
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                largest_copy = largest_copy.max(migrated.payload().len());
+                (
+                    migrated.payload().len(),
+                    Some(parts(
+                        OwnedShared::<hex_devices::delay::PreparedDelay>::declared_parts(),
+                    )?),
+                )
+            } else if state.type_id() == hex_devices::compressor::COMPRESSOR_TYPE_ID {
+                let migrated = hex_devices::compressor::COMPRESSOR_DEFINITION
+                    .migrate_state(state)
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                hex_devices::compressor::CompressorDefinition::prepare_owned(&migrated, rate, &[])
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                largest_copy = largest_copy.max(migrated.payload().len());
+                (
+                    migrated.payload().len(),
+                    Some(parts(OwnedShared::<
+                        hex_devices::compressor::PreparedCompressor,
+                    >::declared_parts())?),
+                )
+            } else if state.type_id() == hex_devices::gate::GATE_TYPE_ID {
+                let migrated = hex_devices::gate::GATE_DEFINITION
+                    .migrate_state(state)
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                hex_devices::gate::GateDefinition::prepare_owned(&migrated, rate, &[])
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                largest_copy = largest_copy.max(migrated.payload().len());
+                (
+                    migrated.payload().len(),
+                    Some(parts(
+                        OwnedShared::<hex_devices::gate::PreparedGate>::declared_parts(),
+                    )?),
                 )
             } else if state.type_id() == hex_devices::auto_pan::AUTO_PAN_TYPE_ID {
                 let migrated = hex_devices::auto_pan::AUTO_PAN_DEFINITION
@@ -186,6 +278,7 @@ impl ChainCustody {
             .and_then(|n| n.checked_add(largest_copy))
             .and_then(|n| n.checked_add(automation_overlap))
             .and_then(|n| n.checked_add(automation_staging))
+            .and_then(|n| n.checked_add(modulation_overlap))
             .ok_or(AudioStorageError::Overflow)?;
         Ok((retained, overlap))
     }
@@ -270,15 +363,24 @@ impl ChainCustody {
                 )
             })
             .ok_or(AudioStorageError::Overflow)?;
+        let modulation_overlap = devices.iter().try_fold(0usize, |largest, device| {
+            let (_, staging) =
+                EffectModulation::quote(device).ok_or(AudioStorageError::Overflow)?;
+            Ok(largest.max(staging))
+        })?;
         self.construction_overlap = self
             .construction_overlap
-            .checked_add(automation_staging)
+            .checked_add(modulation_overlap)
+            .and_then(|bytes| bytes.checked_add(automation_staging))
             .ok_or(AudioStorageError::Overflow)?;
         if prepared.capacity() != devices.len() {
             return Err(AudioStorageError::UnknownStorage);
         }
         let mut admission = StereoMatrix::identity();
-        for device in devices {
+        for entry in crate::serial_effect_power::EffectPower::new(devices)
+            .map_err(|_| AudioStorageError::UnsupportedGraph)?
+        {
+            let (device, bypassed) = entry.map_err(|_| AudioStorageError::UnsupportedGraph)?;
             let mut automation = if let Some(effects) = effects {
                 crate::device_automation::prepare_closed_effect(device, effects, native_input)
             } else if native_input.is_some() {
@@ -293,6 +395,9 @@ impl ChainCustody {
                 crate::device_automation::prepare(device)
             }
             .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+            let modulation =
+                EffectModulation::plan(device, project, rate, automation.parameter_ids())
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
             device
                 .state()
                 .require_asset_free_processing()
@@ -301,11 +406,17 @@ impl ChainCustody {
             let reverb = device.state().type_id() == hex_devices::reverb::REVERB_TYPE_ID;
             let saturator = device.state().type_id() == hex_devices::saturator::SATURATOR_TYPE_ID;
             let auto_pan = device.state().type_id() == hex_devices::auto_pan::AUTO_PAN_TYPE_ID;
-            let native = utility || reverb || saturator || auto_pan;
+            let overdrive = device.state().type_id() == hex_devices::overdrive::OVERDRIVE_TYPE_ID;
+            let gate = device.state().type_id() == hex_devices::gate::GATE_TYPE_ID;
+            let compressor =
+                device.state().type_id() == hex_devices::compressor::COMPRESSOR_TYPE_ID;
+            let rattle = device.state().type_id() == hex_devices::rattle::RATTLE_TYPE_ID;
+            let eq8 = device.state().type_id() == hex_devices::eq8::EQ8_TYPE_ID;
+            let delay = device.state().type_id() == hex_devices::delay::TYPE_ID;
+            let native = crate::native_effect_storage::is_closed_type(device.state().type_id());
             let definition = &hex_devices::utility::UTILITY_DEFINITION;
-            // Never adopt a provider's state/processor owner. The Utility,
-            // Reverb, Saturator and Auto Pan constructors are closed; foreign factories return scalar facts
-            // only, matched later to the audio owner's original source.
+            // Construct closed native factories here. Foreign factories
+            // return scalar facts matched to the original source.
             let foreign_definition = if native {
                 None
             } else {
@@ -315,7 +426,37 @@ impl ChainCustody {
                         .ok_or(AudioStorageError::UnsupportedGraph)?,
                 )
             };
-            let migrated = if auto_pan {
+            let migrated = if eq8 {
+                hex_devices::eq8::EQ8_DEFINITION
+                    .migrate_state(device.state())
+                    .and_then(|state| state.with_host_metadata_from(device.state()))
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?
+            } else if rattle {
+                hex_devices::rattle::RATTLE_DEFINITION
+                    .migrate_state(device.state())
+                    .and_then(|state| state.with_host_metadata_from(device.state()))
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?
+            } else if delay {
+                hex_devices::delay::DEFINITION
+                    .migrate_state(device.state())
+                    .and_then(|state| state.with_host_metadata_from(device.state()))
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?
+            } else if compressor {
+                hex_devices::compressor::COMPRESSOR_DEFINITION
+                    .migrate_state(device.state())
+                    .and_then(|state| state.with_host_metadata_from(device.state()))
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?
+            } else if gate {
+                hex_devices::gate::GATE_DEFINITION
+                    .migrate_state(device.state())
+                    .and_then(|state| state.with_host_metadata_from(device.state()))
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?
+            } else if overdrive {
+                hex_devices::overdrive::OVERDRIVE_DEFINITION
+                    .migrate_state(device.state())
+                    .and_then(|state| state.with_host_metadata_from(device.state()))
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?
+            } else if auto_pan {
                 hex_devices::auto_pan::AUTO_PAN_DEFINITION
                     .migrate_state(device.state())
                     .and_then(|state| state.with_host_metadata_from(device.state()))
@@ -383,11 +524,21 @@ impl ChainCustody {
             let automation_bytes = automation
                 .storage_bytes()
                 .ok_or(AudioStorageError::Overflow)?;
-            let matrix = if device.bypassed()
+            let parameters = modulation.as_ref().map_or_else(
+                || automation.parameter_ids(),
+                EffectModulation::parameter_ids,
+            );
+            let matrix = if bypassed
                 || !native
-                || !automation.parameter_ids().is_empty()
+                || !parameters.is_empty()
                 || saturator
                 || auto_pan
+                || overdrive
+                || gate
+                || compressor
+                || rattle
+                || eq8
+                || delay
             {
                 StereoMatrix::identity()
             } else if reverb {
@@ -402,7 +553,7 @@ impl ChainCustody {
             admission = admission
                 .then(matrix)
                 .map_err(|_| AudioStorageError::UnsupportedGraph)?;
-            if !device.bypassed() {
+            if !bypassed {
                 let gain = migrated.input_gain_linear() * migrated.output_gain_linear();
                 let trim = StereoMatrix::new([[gain, 0.0], [0.0, gain]])
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?;
@@ -410,13 +561,59 @@ impl ChainCustody {
                     .then(trim)
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?;
             }
-            let processor = if auto_pan {
+            let processor = if eq8 {
+                Some(
+                    OwnedShared::new_owned(
+                        hex_devices::eq8::Eq8Definition::prepare_owned(&migrated, rate, parameters)
+                            .map_err(|_| AudioStorageError::UnsupportedGraph)?,
+                    )
+                    .into_processor_parts_on_control(),
+                )
+            } else if rattle {
+                Some(
+                    OwnedShared::new_owned(
+                        hex_devices::rattle::RattleDefinition::prepare_owned(
+                            &migrated, rate, parameters,
+                        )
+                        .map_err(|_| AudioStorageError::UnsupportedGraph)?,
+                    )
+                    .into_processor_parts_on_control(),
+                )
+            } else if compressor {
+                Some(
+                    OwnedShared::new_owned(
+                        hex_devices::compressor::CompressorDefinition::prepare_owned(
+                            &migrated, rate, parameters,
+                        )
+                        .map_err(|_| AudioStorageError::UnsupportedGraph)?,
+                    )
+                    .into_processor_parts_on_control(),
+                )
+            } else if gate {
+                Some(
+                    OwnedShared::new_owned(
+                        hex_devices::gate::GateDefinition::prepare_owned(
+                            &migrated, rate, parameters,
+                        )
+                        .map_err(|_| AudioStorageError::UnsupportedGraph)?,
+                    )
+                    .into_processor_parts_on_control(),
+                )
+            } else if overdrive {
+                Some(
+                    OwnedShared::new_owned(
+                        hex_devices::overdrive::OverdriveDefinition::prepare_owned(
+                            &migrated, rate, parameters,
+                        )
+                        .map_err(|_| AudioStorageError::UnsupportedGraph)?,
+                    )
+                    .into_processor_parts_on_control(),
+                )
+            } else if auto_pan {
                 Some(
                     OwnedShared::new_owned(
                         hex_devices::auto_pan::AutoPanDefinition::prepare_owned(
-                            &migrated,
-                            rate,
-                            automation.parameter_ids(),
+                            &migrated, rate, parameters,
                         )
                         .map_err(|_| AudioStorageError::UnsupportedGraph)?,
                     )
@@ -426,20 +623,18 @@ impl ChainCustody {
                 Some(
                     OwnedShared::new_owned(
                         hex_devices::saturator::SaturatorDefinition::prepare_owned(
-                            &migrated,
-                            rate,
-                            automation.parameter_ids(),
+                            &migrated, rate, parameters,
                         )
                         .map_err(|_| AudioStorageError::UnsupportedGraph)?,
                     )
                     .into_processor_parts_on_control(),
                 )
             } else if utility {
-                (if automation.parameter_ids().is_empty() {
+                (if parameters.is_empty() {
                     hex_devices::utility::UtilityDefinition::prepare_owned_filter(&migrated, rate)
                 } else {
                     hex_devices::utility::UtilityDefinition::prepare_owned_automated_filter_for_parameters(
-                        &migrated, rate, automation.parameter_ids(),
+                        &migrated, rate, parameters,
                     )
                     .map(Some)
                 })
@@ -449,9 +644,7 @@ impl ChainCustody {
                 Some(
                     OwnedShared::new_owned(
                         hex_devices::reverb::ReverbDefinition::prepare_owned_room_for_parameters(
-                            &migrated,
-                            rate,
-                            automation.parameter_ids(),
+                            &migrated, rate, parameters,
                         )
                         .map_err(|_| AudioStorageError::UnsupportedGraph)?,
                     )
@@ -470,20 +663,87 @@ impl ChainCustody {
             let state = OwnedShared::new_owned(migrated);
             state.parts().ok_or(AudioStorageError::UnknownStorage)?;
             let (configuration, state) = state.into_paired_parts_on_control();
-            let (processor, processor_declaration) = if let Some((owner, declaration)) = processor {
+            let (factory, processor_declaration) = if delay {
+                let (owner, declaration) = OwnedShared::new_owned(
+                    hex_devices::delay::DelayDefinition::prepare_owned(
+                        &configuration,
+                        rate,
+                        parameters,
+                    )
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?,
+                )
+                .into_owned_processor_parts_on_control();
                 declaration
                     .parts(&owner)
                     .ok_or(AudioStorageError::UnknownStorage)?;
-                (Some(owner), Some(declaration))
+                (
+                    Some(PreparedProcessorFactory::Owned(owner)),
+                    Some(declaration),
+                )
+            } else if let Some((owner, declaration)) = processor {
+                declaration
+                    .parts(&owner)
+                    .ok_or(AudioStorageError::UnknownStorage)?;
+                (
+                    Some(PreparedProcessorFactory::Legacy(owner)),
+                    Some(declaration),
+                )
             } else {
-                (None, None)
+                (foreign.map(PreparedProcessorFactory::Foreign), None)
             };
+            let modulation = modulation
+                .map(|plan| {
+                    if let (Some(effects), Some(foreign)) = (effects, foreign) {
+                        let identity = ProcessorInstanceIdentity::new(owner, device.id().value())
+                            .map_err(|_| AudioStorageError::SourceMismatch)?;
+                        return plan
+                            .prepare_foreign(device, identity, effects, foreign, rate)
+                            .map_err(|_| AudioStorageError::UnsupportedGraph);
+                    }
+                    let metadata: &dyn NativeDeviceMetadata = if utility {
+                        definition
+                    } else if saturator {
+                        &hex_devices::saturator::SATURATOR_DEFINITION
+                    } else if auto_pan {
+                        &hex_devices::auto_pan::AUTO_PAN_DEFINITION
+                    } else if overdrive {
+                        &hex_devices::overdrive::OVERDRIVE_DEFINITION
+                    } else if compressor {
+                        &hex_devices::compressor::COMPRESSOR_DEFINITION
+                    } else if eq8 {
+                        &hex_devices::eq8::EQ8_DEFINITION
+                    } else if delay {
+                        &hex_devices::delay::DEFINITION
+                    } else if rattle {
+                        &hex_devices::rattle::RATTLE_DEFINITION
+                    } else if gate {
+                        &hex_devices::gate::GATE_DEFINITION
+                    } else if reverb {
+                        &hex_devices::reverb::REVERB_DEFINITION
+                    } else {
+                        return Err(AudioStorageError::UnsupportedGraph);
+                    };
+                    plan.prepare(&configuration, metadata, factory.as_ref())
+                        .map(Some)
+                        .map_err(|_| AudioStorageError::UnsupportedGraph)
+                })
+                .transpose()?
+                .flatten();
+            let modulation_bytes = modulation
+                .as_ref()
+                .map(|value| {
+                    value
+                        .heap_storage_bytes()
+                        .ok_or(AudioStorageError::Overflow)
+                })
+                .transpose()?;
             let meter = OwnedShared::new_owned(hex_lattice::DeviceMeter::default());
             meter.parts().ok_or(AudioStorageError::UnknownStorage)?;
             let (meter, meter_declaration) = meter.into_paired_parts_on_control();
             let handles = [handle()?, handle()?, handle()?, handle()?];
             self.entries.push(Entry {
                 automation_bytes,
+                modulation_bytes,
                 authored,
                 device_id: device.id().value(),
                 owner,
@@ -496,18 +756,17 @@ impl ChainCustody {
                 handles,
             });
             prepared.push(PreparedRuntimeInstance {
+                modulation,
                 automation,
                 meter,
                 owner,
                 device_id: device.id().value(),
                 device_type: migrated_type,
                 matrix,
-                bypassed: device.bypassed(),
+                bypassed,
                 sample_rate: rate,
                 configuration: Some(configuration),
-                definition: foreign
-                    .map(PreparedProcessorFactory::Foreign)
-                    .or_else(|| processor.map(PreparedProcessorFactory::Legacy)),
+                definition: factory,
             });
         }
         Ok(if prepared.is_empty() {
@@ -521,7 +780,17 @@ impl ChainCustody {
             return Err(AudioStorageError::SourceMismatch);
         }
         for (value, pair) in chain.iter().zip(&self.entries) {
-            if value.automation.storage_bytes() != Some(pair.automation_bytes)
+            let modulation_bytes = value
+                .modulation
+                .as_ref()
+                .map(|modulation| {
+                    modulation
+                        .heap_storage_bytes()
+                        .ok_or(AudioStorageError::Overflow)
+                })
+                .transpose()?;
+            if modulation_bytes != pair.modulation_bytes
+                || value.automation.storage_bytes() != Some(pair.automation_bytes)
                 || value.device_id != pair.device_id
                 || value.owner != pair.owner
                 || value.device_type != pair.device_type
@@ -529,8 +798,13 @@ impl ChainCustody {
                     (Some(PreparedProcessorFactory::Foreign(actual)), Some(expected), false) => {
                         *actual != expected
                     }
-                    (Some(PreparedProcessorFactory::Legacy(_)), None, true)
-                    | (None, None, false) => false,
+                    (Some(PreparedProcessorFactory::Owned(_)), None, true) => {
+                        pair.device_type != hex_devices::delay::TYPE_ID
+                    }
+                    (Some(PreparedProcessorFactory::Legacy(_)), None, true) => {
+                        pair.device_type == hex_devices::delay::TYPE_ID
+                    }
+                    (None, None, false) => false,
                     _ => true,
                 }
             {
@@ -563,6 +837,7 @@ impl ChainCustody {
         for (value, pair) in chain.iter().zip(&self.entries) {
             bytes = bytes
                 .checked_add(pair.automation_bytes)
+                .and_then(|bytes| bytes.checked_add(pair.modulation_bytes.unwrap_or(0)))
                 .ok_or(AudioStorageError::Overflow)?;
             let state = value
                 .configuration
@@ -580,12 +855,13 @@ impl ChainCustody {
                     .and_then(|n| n.checked_add(overhead))
                     .ok_or(AudioStorageError::Overflow)?;
             }
-            if let Some(PreparedProcessorFactory::Legacy(processor)) = &value.definition {
-                let (payload, overhead) = pair
-                    .processor
-                    .as_ref()
-                    .and_then(|d| d.parts(processor))
-                    .ok_or(AudioStorageError::UnknownStorage)?;
+            if let Some(declaration) = &pair.processor {
+                let (payload, overhead) = match &value.definition {
+                    Some(PreparedProcessorFactory::Legacy(factory)) => declaration.parts(factory),
+                    Some(PreparedProcessorFactory::Owned(factory)) => declaration.parts(factory),
+                    _ => None,
+                }
+                .ok_or(AudioStorageError::UnknownStorage)?;
                 bytes = bytes
                     .checked_add(payload)
                     .and_then(|n| n.checked_add(overhead))
@@ -632,6 +908,15 @@ impl ChainCustody {
             l.vec(lanes)?;
             l.vec(points)?;
             l.vec(value.automation.touch_storage())?;
+            if let Some(modulation) = &value.modulation {
+                l.bytes(
+                    Owner::exclusive(value),
+                    Location("prepared-modulation-backing", 0),
+                    modulation
+                        .heap_storage_bytes()
+                        .ok_or(AudioStorageError::Overflow)?,
+                )?;
+            }
             if let Some(program) = value.automation.foreign() {
                 crate::foreign_automation::storage::declare(program, l)?;
             }
@@ -666,14 +951,22 @@ impl ChainCustody {
                 pair.handles[2],
                 None,
             )?;
-            if let Some(PreparedProcessorFactory::Legacy(processor)) = &value.definition {
-                l.shared(
-                    processor,
-                    pair.processor.as_ref().and_then(|d| d.parts(processor)),
-                    Owner::exclusive(processor),
+            match &value.definition {
+                Some(PreparedProcessorFactory::Legacy(factory)) => l.shared(
+                    factory,
+                    pair.processor.as_ref().and_then(|d| d.parts(factory)),
+                    Owner::exclusive(factory),
                     pair.handles[3],
                     None,
-                )?;
+                )?,
+                Some(PreparedProcessorFactory::Owned(factory)) => l.shared(
+                    factory,
+                    pair.processor.as_ref().and_then(|d| d.parts(factory)),
+                    Owner::exclusive(factory),
+                    pair.handles[3],
+                    None,
+                )?,
+                _ => {}
             }
         }
         Ok(())
@@ -705,6 +998,58 @@ mod tests {
     use crate::audio_preparation::*;
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
     #[test]
+    fn serial_parent_power_reaches_prepared_flags_and_matrices_without_mutating_authored_state() {
+        use hex_project::{Command, Created, Editor, Project};
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "chain".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let definition = &hex_devices::utility::UTILITY_DEFINITION;
+        let state = definition
+            .patch_parameter(
+                &definition.default_state().unwrap(),
+                hex_devices::utility::parameter::GAIN,
+                ParameterValue::Float(2.0),
+            )
+            .unwrap();
+        for _ in 0..3 {
+            editor
+                .execute(Command::InsertDevice {
+                    track,
+                    before: None,
+                    state: state.clone(),
+                })
+                .unwrap();
+        }
+        let mut snapshot = editor.project().snapshot();
+        snapshot.tracks[0].devices[1].parent = Some(snapshot.tracks[0].devices[0].id);
+        snapshot.tracks[0].devices[0].bypassed = true;
+        let project = Project::from_snapshot(snapshot).unwrap();
+        let authored = project.snapshot();
+        let devices = project.track(track).unwrap().devices();
+        let mut custody = super::ChainCustody::default();
+        let prepared = custody.prepare(devices, track, 48_000).unwrap();
+        assert_eq!(
+            prepared.iter().map(|d| d.bypassed).collect::<Vec<_>>(),
+            [true, true, false]
+        );
+        assert_eq!(prepared[0].matrix, hex_lattice::StereoMatrix::identity());
+        assert_eq!(prepared[1].matrix, hex_lattice::StereoMatrix::identity());
+        assert_ne!(prepared[2].matrix, hex_lattice::StereoMatrix::identity());
+        assert_eq!(
+            prepared.iter().map(|d| d.device_id).collect::<Vec<_>>(),
+            devices.iter().map(|d| d.id().value()).collect::<Vec<_>>()
+        );
+        assert!(!devices[1].bypassed());
+        assert_eq!(project.snapshot(), authored);
+        custody.bytes(&prepared).unwrap();
+    }
+    #[test]
     fn reverb_feedback_live_input_uses_scoped_closed_factory_and_tail_quote() {
         use hex_devices::reverb::{REVERB_DEFINITION as D, parameter as p};
         use hex_lattice_contract::DeviceAutomationTarget;
@@ -715,6 +1060,8 @@ mod tests {
         snapshot.tracks[0]
             .devices
             .push(hex_project::DeviceSnapshot {
+                modulation: Default::default(),
+                parent: None,
                 id,
                 bypassed: false,
                 comparison: None,
@@ -787,6 +1134,8 @@ mod tests {
         snapshot.tracks[0]
             .devices
             .push(hex_project::DeviceSnapshot {
+                modulation: Default::default(),
+                parent: None,
                 id,
                 bypassed: false,
                 comparison: None,
@@ -889,6 +1238,8 @@ mod tests {
                 snapshot.tracks[0]
                     .devices
                     .push(hex_project::DeviceSnapshot {
+                        modulation: Default::default(),
+                        parent: None,
                         automation: if automated {
                             vec![hex_project::DeviceAutomation {
                                 touch: Vec::new(),

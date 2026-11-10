@@ -4,7 +4,12 @@
 //! Cold held targets start canonically. Missing values select immutable Base.
 //! Granted fields override historical opaque lanes, including Base; ungranted
 //! historical fields still use their original clock. No authored lane is erased.
-//! This module owns no curves, clock, publication or resource lifecycle.
+//! Mode uses the preallocated routing fade: rapid targets coalesce to the
+//! latest reading until that one outgoing branch finishes. Cold/seek targets
+//! select directly. This module owns no curves, clock, publication or resource
+//! lifecycle. A mapped output gain applies on the same sample to both sides of
+//! the mode fade. An ordinary authored lane continues through its existing gain
+//! smoother from the last effective gain.
 use super::*;
 use hex_lattice::NativeParameterAutomation;
 use hex_lattice_contract::MAX_PARAMETERS_PER_DEVICE;
@@ -24,9 +29,9 @@ impl Grant {
         }
         ids.iter()
             .map(|&id| {
-                if id == OUTPUT_GAIN {
+                if id == OUTPUT_GAIN || id == MODE {
                     return Ok(Self {
-                        descriptor: DESCRIPTORS[201],
+                        descriptor: DESCRIPTORS[if id == MODE { 200 } else { 201 }],
                         node: None,
                     });
                 }
@@ -115,6 +120,12 @@ impl PreparedEq {
         Self::prepare(settings, rate, parameters)
     }
 }
+#[derive(Clone, Copy)]
+pub(super) struct Targets {
+    pub(super) gain: f64,
+    pub(super) mode: u8,
+    pub(super) mapped_gain: bool,
+}
 impl EqRuntime {
     pub(super) fn process_automation(
         &mut self,
@@ -144,10 +155,15 @@ impl EqRuntime {
             .parameters
             .iter()
             .any(|grant| grant.node.is_some());
+        let mapped_gain = values.has_sample_rate_modulation(OUTPUT_GAIN);
         let mut readings = [None; MAX_PARAMETERS_PER_DEVICE];
         for (offset, frame) in frames.iter_mut().enumerate() {
             values.values_at(offset, &mut readings[..ids.len()])?;
-            let mut gain = self.configuration.gain;
+            let mut targets = Targets {
+                gain: self.configuration.gain,
+                mode: self.configuration.mode,
+                mapped_gain,
+            };
             let mut authored_gain = false;
             for (&reading, &binding) in readings[..ids.len()].iter().zip(&bindings) {
                 let grant = self.configuration.parameters[binding];
@@ -161,20 +177,24 @@ impl EqRuntime {
                             reading.unwrap_or_else(|| self.configuration.nodes[index].value(field)),
                         )?;
                     }
+                } else if grant.descriptor.id == MODE {
+                    if let Some(ParameterValue::Choice(value)) = reading {
+                        targets.mode = value as u8;
+                    }
                 } else if let Some(ParameterValue::Float(value)) = reading {
-                    gain = f64::from(value);
+                    targets.gain = f64::from(value);
                     authored_gain = true;
                 }
             }
             if authored_gain && self.pristine {
-                self.gain = gain;
+                self.gain = targets.gain;
             }
             self.process_at(
                 std::slice::from_mut(frame),
                 clock,
                 bypassed,
                 offset,
-                gain,
+                targets,
                 has_nodes.then_some(&nodes),
             );
         }
@@ -391,7 +411,7 @@ mod tests {
         let state = s.encode().unwrap();
         for ids in [
             &[][..],
-            &[MODE],
+            &[ParameterId::from_static(13)],
             &[OUTPUT_GAIN, OUTPUT_GAIN],
             &[OUTPUT_GAIN, MODE],
         ] {
@@ -403,7 +423,7 @@ mod tests {
                 .unwrap()
         );
         assert!(
-            !EQ_DEFINITION
+            EQ_DEFINITION
                 .supports_parameter_automation(&state, MODE)
                 .unwrap()
         );
@@ -510,3 +530,6 @@ mod clock_tests {
 
 #[cfg(test)]
 mod node_tests;
+
+#[cfg(test)]
+mod mode_tests;

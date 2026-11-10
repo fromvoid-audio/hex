@@ -30,6 +30,14 @@ fn limiter_value_and_structural_lane_edits_preserve_history_and_refuse_stale_req
     }
 }
 fn lane_case(type_id: &'static str, raw_parameter: u32) {
+    let state =
+        hex_engine::default_native_device_state(DeviceTypeId::from_static(type_id)).unwrap();
+    lane_case_state(state, raw_parameter);
+}
+fn lane_case_state(
+    state: hex_lattice_contract::NativeDeviceState,
+    raw_parameter: u32,
+) -> std::sync::Arc<hex_project::Project> {
     let service = Service::new(48000, 16, 0).unwrap();
     event(&service);
     service
@@ -44,8 +52,7 @@ fn lane_case(type_id: &'static str, raw_parameter: u32) {
         .submit(Request::Edit(Command::InsertDevice {
             track,
             before: None,
-            state: hex_engine::default_native_device_state(DeviceTypeId::from_static(type_id))
-                .unwrap(),
+            state,
         }))
         .unwrap();
     let added = event(&service);
@@ -156,9 +163,46 @@ fn lane_case(type_id: &'static str, raw_parameter: u32) {
         redone.state.project,
         "refusal cannot add or consume history"
     );
+    redone.state.project.clone()
 }
 
 #[test]
 fn flexible_eq_output_lane_preserves_history_and_refuses_stale_requests() {
     lane_case("hex.eq", 202);
+}
+
+#[test]
+fn flexible_eq_node_lanes_preserve_typed_edits_history_stale_refusal_and_storage() {
+    use hex_engine::eq::{EqState, Node, NodeId, NodeKind, NodeParameter};
+    for field in NodeParameter::ALL {
+        let mut state = EqState::default();
+        let id = NodeId::new(7).unwrap();
+        let mut node = Node::new(id, 700.0, 6.0, 0).unwrap();
+        if field == NodeParameter::Slope {
+            node.kind = NodeKind::LowCut;
+        }
+        state.add(node).unwrap();
+        let parameter = id.parameter(field).unwrap();
+        let project = lane_case_state(state.encode().unwrap(), parameter.value());
+        let path = std::env::temp_dir().join(format!(
+            "hex-eq-node-session-{}-{}.hex",
+            std::process::id(),
+            parameter.value()
+        ));
+        hex_storage::save_new(&path, &project).unwrap();
+        let loaded = hex_storage::load(&path);
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(&loaded.unwrap(), project.as_ref());
+    }
+}
+
+#[test]
+fn flexible_eq_mode_lane_preserves_typed_edits_history_stale_refusal_and_storage() {
+    let state = hex_engine::eq::EqState::default().encode().unwrap();
+    let project = lane_case_state(state, hex_engine::eq::MODE.value());
+    let path = std::env::temp_dir().join(format!("hex-eq-mode-session-{}.hex", std::process::id()));
+    hex_storage::save_new(&path, &project).unwrap();
+    let loaded = hex_storage::load(&path);
+    std::fs::remove_file(path).unwrap();
+    assert_eq!(&loaded.unwrap(), project.as_ref());
 }

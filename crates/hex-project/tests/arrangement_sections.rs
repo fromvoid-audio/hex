@@ -1121,9 +1121,16 @@ fn duplication_copies_midi_gain_touch_tempo_and_meter_with_fresh_identities() {
         copy.name(),
         e.project().arrangement_section(section_id).unwrap().name()
     );
-    assert_ne!(
+    // Valid copy draws may reuse a colour; the preview must predict the exact
+    // candidate draw, and history/storage retain it rather than drawing again.
+    assert_eq!(
         copy.color(),
-        e.project().arrangement_section(section_id).unwrap().color()
+        preview
+            .sections()
+            .iter()
+            .find(|marker| marker.id().value() == 0)
+            .unwrap()
+            .color()
     );
     assert!(
         e.project()

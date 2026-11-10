@@ -101,9 +101,11 @@ fn nested_group_plates_and_poles_join_follow_selection_and_close_at_visible_ends
                 f64::from(corners.bottom_left),
                 if last { 2.0 * f64::from(scale) } else { 0.0 }
             );
-            assert_eq!(
-                visual.rendered_background(key),
-                visual.rendered_background(selector("track-name-area", group)),
+            let plate = visual.rendered_path_triangles(selector("track-name-plate", group));
+            assert!(!plate.is_empty(), "the group plate is painted");
+            let pole = visual.rendered_background(key).expect("group pole fill");
+            assert!(
+                plate.iter().all(|triangle| triangle.color == pole),
                 "the group plate and its entire pole use the same selected/unselected fill"
             );
         };
@@ -116,11 +118,12 @@ fn nested_group_plates_and_poles_join_follow_selection_and_close_at_visible_ends
             .unwrap();
         assert_eq!(plate.top(), header.top());
         assert_eq!(plate.bottom(), header.bottom());
-        let (corners, _) = visual
-            .rendered_surface_geometry(selector("track-name-area", track))
-            .unwrap();
-        assert_eq!(f64::from(corners.top_right), 6.0 * f64::from(scale));
-        assert_eq!(f64::from(corners.bottom_right), 6.0 * f64::from(scale));
+        assert!(
+            !visual
+                .rendered_path_triangles(selector("track-name-plate", track))
+                .is_empty(),
+            "group name plate is painted as a shaped path"
+        );
     }
     // Resizing a group grows only its plate, keeping the working controls
     // in the compact top slot instead of following the middle of the row.
@@ -410,7 +413,12 @@ fn group_track_header_menu(cx: &mut TestAppContext, mode: super::EditorMode) {
         }
         group.id()
     });
-    let selector = Box::leak(format!("group-track-marker-{}", group.value()).into_boxed_str());
+    let marker = if mode == super::EditorMode::Session {
+        "console-group-fold"
+    } else {
+        "group-track-marker"
+    };
+    let selector = Box::leak(format!("{marker}-{}", group.value()).into_boxed_str());
     assert!(visual.debug_bounds(selector).is_some());
     for id in &ids {
         let selector = Box::leak(format!("track-hierarchy-indent-{}", id.value()).into_boxed_str());

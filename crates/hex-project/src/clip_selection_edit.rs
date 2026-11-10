@@ -531,7 +531,12 @@ impl Command {
             | Self::ApplyClipSettingsToAliases(_)
             | Self::DuplicateSessionCell { .. }
             | Self::ReverseClips(_) => ClipCommandScope::Explicit,
-            Self::AddArrangementSection { .. }
+            Self::InitializeDevice(_)
+            | Self::AddArrangementLocator { .. }
+            | Self::MoveArrangementLocator { .. }
+            | Self::RenameArrangementLocator { .. }
+            | Self::RemoveArrangementLocator(_)
+            | Self::AddArrangementSection { .. }
             | Self::SetArrangementSectionRange { .. }
             | Self::MoveArrangementSectionMarker { .. }
             | Self::ResizeArrangementSectionMarker { .. }
@@ -546,6 +551,9 @@ impl Command {
             | Self::DeleteArrangementSection(_)
             | Self::DuplicateArrangementSection(_)
             | Self::DuplicateArrangementSectionAt { .. }
+            | Self::AppendArrangementSectionCopy { .. }
+            | Self::MoveArrangementSectionBeyondEnd { .. }
+            | Self::ReplaceArrangementSection { .. }
             | Self::SplitArrangementSection { .. }
             | Self::MergeArrangementSections(_)
             | Self::SetTuning(..)
@@ -574,7 +582,12 @@ impl Command {
             | Self::RemoveDevice(..)
             | Self::MoveDevice { .. }
             | Self::MoveTrackDevice { .. }
+            | Self::MoveNativeSourceDevice { .. }
+            | Self::ReparentDevice { .. }
+            | Self::InsertNestedDevice { .. }
             | Self::SpliceDeviceAutomationTouch { .. }
+            | Self::SpliceVst3AutomationTouchGroup { .. }
+            | Self::ReplaceDeviceModulation { .. }
             | Self::ReplaceDeviceAutomationTarget { .. }
             | Self::ReplaceDeviceAutomation { .. }
             | Self::ManualDeviceEdit { .. }

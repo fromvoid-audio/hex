@@ -6,6 +6,7 @@ use crate::{
 };
 use std::sync::Arc;
 
+mod modulation;
 mod program_history;
 
 const TYPE: DeviceTypeId = DeviceTypeId::from_static("test.foreign");
@@ -22,6 +23,7 @@ fn state() -> Arc<NativeDeviceState> {
 }
 fn declaration(owner: ProcessorChainOwner, bypassed: bool) -> PreparedRuntimeInstance {
     PreparedRuntimeInstance {
+        modulation: None,
         automation: Default::default(),
         meter: Default::default(),
         owner,

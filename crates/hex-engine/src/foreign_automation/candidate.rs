@@ -100,8 +100,40 @@ pub(crate) fn prepare_device(
     tempo: &hex_project::TempoMap,
     region: Option<hex_project::LoopRegion>,
 ) -> Result<Option<hex_lattice::PreparedForeignAutomation>, Error> {
+    let Some(source) = exact_source(device, identity, effects, processor, tempo.sample_rate())?
+    else {
+        return if has_authored(device) {
+            Err(Error::UnsupportedGraph)
+        } else {
+            Ok(None)
+        };
+    };
+    let revision = source.revision;
+    let profile = if processor.is_instrument_profile() {
+        QuantumProfile::for_arrangement_instrument(source.quantum_frames, region)
+    } else {
+        QuantumProfile::arrangement(source.quantum_frames, region)
+    };
+    let program = Program::prepare_source(device.automation(), source, tempo, profile)
+        .map_err(|_| Error::UnsupportedGraph)?;
+    let Some(program) = program else {
+        return Ok(None);
+    };
+    let bytes = program.backing_bytes().ok_or(Error::Overflow)?;
+    hex_lattice::PreparedForeignAutomation::new(source.binding, revision, program, bytes)
+        .map(Some)
+        .map_err(|_| Error::Overflow)
+}
+
+pub(crate) fn exact_source<'a>(
+    device: &Device,
+    identity: ProcessorInstanceIdentity,
+    effects: &'a NativeDeviceRegistry<'_>,
+    processor: hex_lattice::PreparedForeignProcessor,
+    sample_rate: u32,
+) -> Result<Option<hex_lattice::ForeignAutomationSource<'a>>, Error> {
     let context = DevicePreparationContext {
-        sample_rate: tempo.sample_rate(),
+        sample_rate,
         tuning: &hex_lattice::TuningTable::default(),
         resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
     };
@@ -110,38 +142,13 @@ pub(crate) fn prepare_device(
         .ok_or(Error::UnsupportedGraph)?
         .foreign_automation_source(identity, device.state(), &context)
         .map_err(|_| Error::UnsupportedGraph)?;
-    let Some(source) = source else {
-        return if has_authored(device) {
-            Err(Error::UnsupportedGraph)
-        } else {
-            Ok(None)
-        };
-    };
-    if source.sample_rate != tempo.sample_rate()
-        || source.quantum_frames != processor.quantum_frames()
-        || Some(source.binding) != processor.binding()
-    {
+    if source.is_some_and(|source| {
+        source.sample_rate != sample_rate
+            || source.quantum_frames != processor.quantum_frames()
+            || Some(source.binding) != processor.binding()
+            || source.binding.instance != identity.device_id()
+    }) {
         return Err(Error::SourceMismatch);
     }
-    let revision = source.revision;
-    let profile = if processor.is_instrument_profile() {
-        QuantumProfile::for_arrangement_instrument(source.quantum_frames, region)
-    } else {
-        QuantumProfile::arrangement(source.quantum_frames, region)
-    };
-    let program = Program::prepare(
-        device.automation(),
-        source.class,
-        source.parameters,
-        tempo,
-        profile,
-    )
-    .map_err(|_| Error::UnsupportedGraph)?;
-    let Some(program) = program else {
-        return Ok(None);
-    };
-    let bytes = program.backing_bytes().ok_or(Error::Overflow)?;
-    hex_lattice::PreparedForeignAutomation::new(source.binding, revision, program, bytes)
-        .map(Some)
-        .map_err(|_| Error::Overflow)
+    Ok(source)
 }

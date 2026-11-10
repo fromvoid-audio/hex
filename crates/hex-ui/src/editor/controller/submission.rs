@@ -31,6 +31,7 @@ pub(super) struct PendingKinds {
     audio_events: bool,
     clip_loop: bool,
     bypass: Option<hex_project::DeviceId>,
+    modulation_depth: bool,
     clip_move: bool,
     clip_paint: bool,
     section: bool,
@@ -39,6 +40,7 @@ pub(super) struct PendingKinds {
     track_clipboard: bool,
     midi_drag: bool,
     fade: bool,
+    locator_move: bool,
     clip_gain: bool,
     gain: bool,
     gain_take: bool,
@@ -69,11 +71,15 @@ pub(super) struct Refused {
     pub(super) kinds: PendingKinds,
 }
 
+fn is_initial_observation(request: &Request) -> bool {
+    request.is_read_only_observation() && !matches!(request, Request::ContinuePluginParameters)
+}
+
 impl EditorView {
     pub(super) fn classify_submission(&self, request: &Request) -> Submission {
         Submission {
             kinds: PendingKinds {
-                parameter_observation: matches!(request, Request::QueryPluginParameters(_)),
+                parameter_observation: is_initial_observation(request),
                 trim: self.pending_trim_matches(request),
                 loop_region: self.pending_loop_matches(request),
                 group_copy: self.pending_group_copy_matches(request),
@@ -89,6 +95,7 @@ impl EditorView {
                     }
                     _ => None,
                 },
+                modulation_depth: self.pending_modulation_depth_matches(request),
                 clip_move: self.pending_clip_move_matches(request),
                 clip_paint: self.pending_clip_paint_matches(request),
                 section: self.pending_section_matches(request),
@@ -97,6 +104,7 @@ impl EditorView {
                 track_clipboard: self.pending_track_clipboard_matches(request),
                 midi_drag: self.pending_midi_drag_matches(request),
                 fade: self.pending_fade_matches(request),
+                locator_move: self.locators.matches(request),
                 clip_gain: self.clip_gain_matches(request),
                 gain: self.pending_gain_matches(request),
                 gain_take: self.pending_gain_take_matches(request),
@@ -175,6 +183,9 @@ impl EditorView {
                 device,
             }));
         }
+        if kinds.modulation_depth {
+            self.modulation_depth_submitted();
+        }
         if kinds.clip_move {
             self.clip_move_submitted();
         }
@@ -195,6 +206,9 @@ impl EditorView {
         }
         if kinds.midi_drag {
             self.midi_drag_submitted();
+        }
+        if kinds.locator_move {
+            self.locators.submitted(self.worker_requests_pending);
         }
         if kinds.fade {
             self.fade_submitted();
@@ -231,7 +245,8 @@ impl EditorView {
         }
         self.midi_take_not_submitted(request);
         self.gain_take_not_submitted(request);
-        self.native_automation_request_not_submitted(request);
+        self.native_automation_request_not_submitted(request, refusal == Refusal::Closed);
+        self.automation_take_recovery_not_submitted(request, refusal == Refusal::Closed);
         if refusal == Refusal::Closed {
             visible |= self.cancel_new_preparation();
         }
@@ -279,6 +294,9 @@ impl EditorView {
         if kinds.bypass.is_some() {
             visible |= self.retire_unsubmitted_bypass(request);
         }
+        if kinds.modulation_depth {
+            visible |= self.retire_pending_modulation_depth();
+        }
         if kinds.clip_move {
             visible |= self.retire_pending_clip_move();
         }
@@ -302,6 +320,9 @@ impl EditorView {
         }
         if kinds.fade {
             visible |= self.retire_pending_fade();
+        }
+        if kinds.locator_move {
+            visible |= self.locators.refuse();
         }
         if kinds.clip_gain {
             visible |= self.retire_clip_gain();
@@ -328,3 +349,17 @@ impl EditorView {
 
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests;
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+
+    #[test]
+    fn recovery_reads_do_not_count_as_editor_mutations() {
+        assert!(is_initial_observation(
+            &Request::QueryFailedPluginAutomation { request_id: 7 }
+        ));
+        assert!(!is_initial_observation(&Request::ContinuePluginParameters));
+        assert!(!is_initial_observation(&Request::Undo));
+    }
+}

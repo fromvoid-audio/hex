@@ -32,6 +32,7 @@ fn working_controls_preserve_the_explicit_envelope_selection(cx: &mut TestAppCon
         (11, "-12 db", 10.0_f32.powf(-12.0 / 20.0)),
         (7, "2", 2.0),
         (610, "150 hz", 150.0),
+        (81, "25%", 0.25),
     ] {
         let field = visual
             .debug_bounds(selector(format!(
@@ -51,7 +52,8 @@ fn working_controls_preserve_the_explicit_envelope_selection(cx: &mut TestAppCon
                 view.device_panel.operator_pages[&device],
                 operator_panel::OperatorPanelState {
                     selected_operator: 0,
-                    page: operator_panel::OperatorPage::Envelope
+                    page: operator_panel::OperatorPage::Envelope,
+                    ..Default::default()
                 }
             );
             assert_eq!(
@@ -84,7 +86,8 @@ fn row_background_selection_is_explicit_and_refuses_invalid_or_stale_contexts(
             view.device_panel.operator_pages[&device],
             operator_panel::OperatorPanelState {
                 selected_operator: 3,
-                page: operator_panel::OperatorPage::Envelope
+                page: operator_panel::OperatorPage::Envelope,
+                ..Default::default()
             }
         );
         assert_eq!(view.state.as_ref().unwrap().project, original);

@@ -617,7 +617,7 @@ fn resize_delta(
     Ok(requested.clamp(lower, upper))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::{
         GroupContext, GroupGesture, GroupNote, GroupParameter, GroupStart, capture_selected_notes,

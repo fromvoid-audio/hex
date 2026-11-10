@@ -25,6 +25,23 @@ pub(crate) fn control_style() -> hex_widgets::ControlStyle {
     device_style(DeviceStyleRole::Control)
 }
 
+/// Workspace outlines stay visible above graphite surfaces without changing the
+/// darker borders used by meters and controls. Custom palette roles still apply.
+pub(crate) fn workspace_panel_style() -> hex_widgets::PanelStyle {
+    hex_widgets::PanelStyle {
+        surface: color(PaletteRole::Surface),
+        border: mix(
+            color(PaletteRole::Background),
+            color(PaletteRole::Text),
+            0.15,
+        ),
+    }
+}
+
+pub(crate) fn workspace_gutter_fill() -> u32 {
+    mix(color(PaletteRole::Background), 0x000000, 0.33)
+}
+
 /// Shared product colors for all sample-level meters; widgets own no palette.
 pub(crate) fn meter_colors() -> hex_widgets::MeterColors {
     hex_widgets::MeterColors {
@@ -182,6 +199,8 @@ pub enum PaletteRole {
     Waveform,
     WaveBackground,
     Secondary,
+    /// Warm ornamental feedback on native displays, drawn from the orange identity.
+    WarmAccent,
 }
 
 #[derive(Clone, Copy)]
@@ -274,6 +293,9 @@ impl ThemeTokens {
             PaletteRole::PrimaryDark => self.primary_dark,
             PaletteRole::Waveform => self.waveform,
             PaletteRole::Secondary => self.colors.secondary.packed(),
+            PaletteRole::WarmAccent => {
+                self.elements[hex_project::ElementColor::Orange as usize].accent
+            }
         }
     }
 }
@@ -730,7 +752,7 @@ pub(crate) fn section_colors(
     (fill, text, border)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::*;
 
@@ -866,6 +888,9 @@ mod tests {
         assert_eq!(color(PaletteRole::Primary), defaults.primary.packed());
         assert_eq!(color(PaletteRole::Secondary), defaults.secondary.packed());
         assert_eq!(track_selection_fill(), 0xa4ccd7);
+        assert_eq!(workspace_panel_style().surface, 0x202020);
+        assert_eq!(workspace_panel_style().border, 0x363636);
+        assert_eq!(workspace_gutter_fill(), 0x121212);
         assert_eq!(color(PaletteRole::ClipOutline), 0x000000);
         assert!(colors_are_legible(defaults));
         assert!(contrast_ratio(color(PaletteRole::ClipFill), color(PaletteRole::ClipText)) >= 4.5);
@@ -1086,9 +1111,6 @@ mod tests {
                                 >= 4.5
                         );
                     }
-                    println!(
-                        "palette_swatch surface={surface:06x} hue={hue:?} selected={selected} regular={regular:06x} accent={accent:06x} separation={separation:.4}"
-                    );
                 }
             }
         }
@@ -1102,7 +1124,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod element_palette_tests {
     use super::*;
     #[test]

@@ -743,3 +743,214 @@ fn flexible_eq_output_gain_reaches_all_owners_both_renderers_and_read_selections
         close(&out, &expected);
     }
 }
+
+#[test]
+fn flexible_eq_nodes_reach_all_owners_renderers_base_and_seek() {
+    use hex_devices::eq::{EQ_TYPE_ID, EqState, Node, NodeId, NodeKind, NodeParameter};
+    use hex_project::AutomationReadSelection as Read;
+    for owner in 0..3 {
+        for field in NodeParameter::ALL {
+            let mut settings = EqState::default();
+            let node_id = NodeId::new(7).unwrap();
+            let mut node = Node::new(node_id, 700.0, 6.0, 0).unwrap();
+            if field == NodeParameter::Slope {
+                node.kind = NodeKind::LowCut;
+            }
+            settings.add(node).unwrap();
+            let parameter = node_id.parameter(field).unwrap();
+            let value = match field {
+                NodeParameter::Enabled => hex_lattice_contract::ParameterValue::Bool(false),
+                NodeParameter::Kind => hex_lattice_contract::ParameterValue::Choice(5),
+                NodeParameter::Frequency => hex_lattice_contract::ParameterValue::Float(1700.0),
+                NodeParameter::Gain => hex_lattice_contract::ParameterValue::Float(-3.0),
+                NodeParameter::Q => hex_lattice_contract::ParameterValue::Float(1.2),
+                NodeParameter::Slope => hex_lattice_contract::ParameterValue::Choice(3),
+                NodeParameter::Bank => hex_lattice_contract::ParameterValue::Choice(4),
+            };
+            let mut base = fixture_owner(EQ_TYPE_ID, 1024, owner);
+            state(&mut base, settings.encode().unwrap());
+            let base_pcm = render(&base, true, 1024, 17);
+            let patched = hex_lattice_contract::NativeDeviceMetadata::patch_parameter(
+                &hex_devices::eq::EQ_DEFINITION,
+                &settings.encode().unwrap(),
+                parameter,
+                value,
+            )
+            .unwrap();
+            let mut canonical = fixture_owner(EQ_TYPE_ID, 1024, owner);
+            state(&mut canonical, patched);
+            let expected = render(&canonical, true, 1024, 31);
+            let mut actual = fixture_owner(EQ_TYPE_ID, 1024, owner);
+            state(&mut actual, settings.encode().unwrap());
+            lane(
+                &mut actual,
+                Target::Parameter(parameter),
+                vec![AutomationPoint {
+                    beat: BeatTime::ZERO,
+                    value: AutomationValue::new(field.normalized(value).unwrap()).unwrap(),
+                    outgoing: Curve::Step,
+                }],
+            );
+            close(&render(&actual, true, 1024, 127), &expected);
+            close(&render(&actual, false, 1024, 17), &expected);
+            let saved = actual
+                .e
+                .project()
+                .device(actual.device)
+                .unwrap()
+                .automation()[0]
+                .points
+                .clone();
+            for selection in [Read::Base, Read::Authored] {
+                actual
+                    .e
+                    .execute(Command::SetDeviceAutomationReadSelection {
+                        device: actual.device,
+                        target: Target::Parameter(parameter),
+                        selection,
+                    })
+                    .unwrap();
+                close(
+                    &render(&actual, true, 1024, 19),
+                    if selection == Read::Base {
+                        &base_pcm
+                    } else {
+                        &expected
+                    },
+                );
+                assert_eq!(
+                    actual
+                        .e
+                        .project()
+                        .device(actual.device)
+                        .unwrap()
+                        .automation()[0]
+                        .points,
+                    saved
+                );
+            }
+            let revision = Arc::new(
+                PreparedRevision::prepare(
+                    actual.e.project(),
+                    &actual.media,
+                    Arc::new(SineTable::new()),
+                    None,
+                )
+                .unwrap(),
+            );
+            assert_eq!(revision.arrangement().main_latency_frames(), 0);
+            let mut playback = SessionPlayback::new(revision).unwrap();
+            playback.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut out = vec![[0.0; 2]; 1024];
+            playback.render(&mut out).unwrap();
+            playback.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+            playback.render(&mut out).unwrap();
+            close(&out, &expected);
+        }
+    }
+}
+
+#[test]
+fn flexible_eq_modes_reach_all_owners_renderers_base_and_seek() {
+    use hex_devices::eq::{EQ_TYPE_ID, EqState, MODE, Node, NodeId};
+    use hex_project::AutomationReadSelection as Read;
+    for owner in 0..3 {
+        for mode in 0..3 {
+            let mut settings = EqState::default();
+            for bank in 0..5 {
+                settings
+                    .add(
+                        Node::new(
+                            NodeId::new(bank as u64 + 7).unwrap(),
+                            700.0,
+                            bank as f32 * 3.0 - 6.0,
+                            bank,
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+            }
+            let parameter = MODE;
+            let value = hex_lattice_contract::ParameterValue::Choice(mode);
+            let mut base = fixture_owner(EQ_TYPE_ID, 1024, owner);
+            state(&mut base, settings.encode().unwrap());
+            let base_pcm = render(&base, true, 1024, 17);
+            let patched = hex_lattice_contract::NativeDeviceMetadata::patch_parameter(
+                &hex_devices::eq::EQ_DEFINITION,
+                &settings.encode().unwrap(),
+                parameter,
+                value,
+            )
+            .unwrap();
+            let mut canonical = fixture_owner(EQ_TYPE_ID, 1024, owner);
+            state(&mut canonical, patched);
+            let expected = render(&canonical, true, 1024, 31);
+            let mut actual = fixture_owner(EQ_TYPE_ID, 1024, owner);
+            state(&mut actual, settings.encode().unwrap());
+            lane(
+                &mut actual,
+                Target::Parameter(parameter),
+                vec![AutomationPoint {
+                    beat: BeatTime::ZERO,
+                    value: AutomationValue::new(mode as f32 / 2.0).unwrap(),
+                    outgoing: Curve::Step,
+                }],
+            );
+            close(&render(&actual, true, 1024, 127), &expected);
+            close(&render(&actual, false, 1024, 17), &expected);
+            let saved = actual
+                .e
+                .project()
+                .device(actual.device)
+                .unwrap()
+                .automation()[0]
+                .points
+                .clone();
+            for selection in [Read::Base, Read::Authored] {
+                actual
+                    .e
+                    .execute(Command::SetDeviceAutomationReadSelection {
+                        device: actual.device,
+                        target: Target::Parameter(parameter),
+                        selection,
+                    })
+                    .unwrap();
+                close(
+                    &render(&actual, true, 1024, 19),
+                    if selection == Read::Base {
+                        &base_pcm
+                    } else {
+                        &expected
+                    },
+                );
+                assert_eq!(
+                    actual
+                        .e
+                        .project()
+                        .device(actual.device)
+                        .unwrap()
+                        .automation()[0]
+                        .points,
+                    saved
+                );
+            }
+            let revision = Arc::new(
+                PreparedRevision::prepare(
+                    actual.e.project(),
+                    &actual.media,
+                    Arc::new(SineTable::new()),
+                    None,
+                )
+                .unwrap(),
+            );
+            assert_eq!(revision.arrangement().main_latency_frames(), 0);
+            let mut playback = SessionPlayback::new(revision).unwrap();
+            playback.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut out = vec![[0.0; 2]; 1024];
+            playback.render(&mut out).unwrap();
+            playback.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+            playback.render(&mut out).unwrap();
+            close(&out, &expected);
+        }
+    }
+}
