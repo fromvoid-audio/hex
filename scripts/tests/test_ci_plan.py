@@ -2395,6 +2395,36 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertIn("output_meter::", parent[owner])
         self.assertIn("editor::output_meter_ui_test::", parent[owner])
 
+    def test_loop_projection_keeps_real_waveform_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        for source in ("waveform_loop/projection.rs", "waveform_loop.rs",
+                       "waveform_stretch/accepted_root.rs", "waveform_stretch.rs", "waveform_source.rs"):
+            names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + source], inventory, [owner])
+            for required in ("editor::waveform_loop::", "editor::waveform_stretch::",
+                             "editor::waveform_source::", "editor::waveform_geometry::"):
+                self.assertIn(required, names[owner])
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": names}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                      "cargo_inventory": inventory, "paths": []})
+            self.assertTrue(any("editor::waveform_loop::" in step.argv and step.requires_tests
+                                for step in steps if "unit_editor_logic" in step.argv))
+            feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+            self.assertIn("editor::waveform_loop::", feature.argv)
+            self.assertIn("editor::waveform_geometry::", feature.argv)
+            for consumer in (
+                "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
+                "editor::sampler_parameter::tests::source_hints_and_paint_require_same_view_source_facts_and_context",
+                "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",
+                "editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform",
+            ):
+                self.assertIn(consumer, feature.argv)
+
     def test_refresh_state_keeps_unit_and_window_coverage(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
