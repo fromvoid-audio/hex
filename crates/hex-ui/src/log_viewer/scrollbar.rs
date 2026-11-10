@@ -4,7 +4,7 @@
 use super::{Viewer, theme};
 use gpui::{
     Bounds, Context, CursorStyle, Div, MouseButton, MouseMoveEvent, MouseUpEvent, Pixels, Window,
-    canvas, div, fill, point, prelude::*, px, rgb, size,
+    canvas, div, fill, point, prelude::*, px, rgb,
 };
 use std::{cell::Cell, rc::Rc};
 
@@ -21,77 +21,8 @@ struct Drag {
     grab: f32,
 }
 
-#[derive(Clone, Copy)]
-struct Geometry {
-    generation: u64,
-    rows: usize,
-    track: Bounds<Pixels>,
-    thumb: Bounds<Pixels>,
-    maximum: f32,
-}
-impl Geometry {
-    fn new(
-        bounds: Bounds<Pixels>,
-        viewport: f32,
-        maximum: f32,
-        offset: f32,
-        rows: usize,
-        generation: u64,
-    ) -> Option<Self> {
-        let x = f32::from(bounds.left());
-        let y = f32::from(bounds.top());
-        let width = f32::from(bounds.size.width) - 4.0;
-        let height = f32::from(bounds.size.height) - 4.0;
-        if rows == 0
-            || [x, y, width, height, viewport, maximum, offset]
-                .iter()
-                .any(|n| !n.is_finite())
-            || width <= 0.0
-            || height <= 0.0
-            || viewport <= 0.0
-            || maximum < 0.0
-        {
-            return None;
-        }
-        let total = viewport + maximum;
-        if !total.is_finite() {
-            return None;
-        }
-        if !(x + 2.0 + width).is_finite() || !(y + 2.0 + height).is_finite() {
-            return None;
-        }
-        let length = (height * (viewport / total)).clamp(20.0_f32.min(height), height);
-        let travel = height - length;
-        let ratio = if maximum > 0.0 {
-            (-offset / maximum).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let track = Bounds::new(point(px(x + 2.0), px(y + 2.0)), size(px(width), px(height)));
-        let thumb = Bounds::new(
-            point(track.left(), track.top() + px(travel * ratio)),
-            size(track.size.width, px(length)),
-        );
-        Some(Self {
-            generation,
-            rows,
-            track,
-            thumb,
-            maximum,
-        })
-    }
-
-    fn position(self, pointer: f32, grab: f32) -> Option<f32> {
-        let travel = f32::from(self.track.size.height - self.thumb.size.height);
-        if !pointer.is_finite() || !grab.is_finite() || self.maximum <= 0.0 || travel <= 0.0 {
-            return None;
-        }
-        let top = pointer
-            - f32::from(self.track.top())
-            - grab.clamp(0.0, 1.0) * f32::from(self.thumb.size.height);
-        Some((top / travel).clamp(0.0, 1.0) * self.maximum)
-    }
-}
+mod geometry;
+use geometry::Geometry;
 
 impl Viewer {
     pub(super) fn log_scrollbar(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
@@ -255,6 +186,6 @@ impl Viewer {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 #[path = "scrollbar_tests.rs"]
 mod tests;
