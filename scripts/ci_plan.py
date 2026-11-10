@@ -271,7 +271,9 @@ def module_declarations(source_root: Path) -> dict[Path, list[tuple[Path, list[s
 TEST_ATTRIBUTE = re.compile(r"#\[(?:gpui::)?test\b")
 # Unit test targets which compile the owning source directly. Keep their libtest
 # names under the original module path so scoped coverage remains observable.
-UI_UNIT_TARGETS = {"editor::device_panel::eq_panel::axes::": "unit_editor_logic",
+UI_UNIT_TARGETS = {"editor::overview_waveform::": "unit_editor_logic",
+                   "editor::waveform_columns::": "unit_editor_logic",
+                   "editor::device_panel::eq_panel::axes::": "unit_editor_logic",
                    "editor::device_panel::eq_panel::response::": "unit_editor_logic",
                    "editor::session_audio_panel::playhead::": "unit_editor_logic",
                    "editor::device_panel::vst3_parameters::row_projection::": "unit_device",
@@ -337,13 +339,18 @@ UI_UNIT_COHORTS = [{"editor::device_panel::eq_panel::axes::", "editor::device_pa
                    {"editor::midi_cue::", "editor::midi_cue::timing::", "editor::clip_range_fit::"},
                    {"editor::device_panel::vst3_parameters::", "editor::device_panel::vst3_parameters::row_projection::"},
                    {"editor::session_audio_panel::", "editor::session_audio_panel::playhead::"},
-                   {"editor::waveform_source::", "editor::waveform::", "editor::waveform_geometry::",
+                   {"editor::overview_waveform::", "editor::waveform_columns::",
+                    "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
+                    "editor::sampler_parameter::tests::source_hints_and_paint_require_same_view_source_facts_and_context",
+                    "editor::waveform_source::", "editor::waveform::", "editor::waveform_geometry::",
                     "editor::waveform_loop::", "editor::waveform_stretch::",
                     "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",
                     "editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform"}]
 # Recovery's real prepared-audio test is a sibling so importing its state into
 # the unit binary cannot also compile and run the integration fixture there.
-UI_INTEGRATION_PAIRS = {"editor::device_panel::eq_panel::response::": "editor::device_panel::tests::eq_ui_tests::graph_layout_tests::eq_axis_labels_are_logarithmic_nonoverlapping_and_keep_the_plot_hit_map",
+UI_INTEGRATION_PAIRS = {"editor::overview_waveform::": "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
+                        "editor::waveform_columns::": "editor::sampler_parameter::tests::source_hints_and_paint_require_same_view_source_facts_and_context",
+                        "editor::device_panel::eq_panel::response::": "editor::device_panel::tests::eq_ui_tests::graph_layout_tests::eq_axis_labels_are_logarithmic_nonoverlapping_and_keep_the_plot_hit_map",
                         "editor::computer_keyboard::state::": "editor::computer_keyboard::tests::",
                         "editor::recovery_state::": "editor::recovery_state_integration_tests::",
                         "editor::audio_import_settings::admission::": "editor::track_defaults::",
