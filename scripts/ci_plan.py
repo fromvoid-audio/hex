@@ -271,7 +271,8 @@ def module_declarations(source_root: Path) -> dict[Path, list[tuple[Path, list[s
 TEST_ATTRIBUTE = re.compile(r"#\[(?:gpui::)?test\b")
 # Unit test targets which compile the owning source directly. Keep their libtest
 # names under the original module path so scoped coverage remains observable.
-UI_UNIT_TARGETS = {"editor::waveform_loop::projection::": "unit_editor_logic",
+UI_UNIT_TARGETS = {"editor::waveform_geometry::grid::": "unit_editor_logic",
+                   "editor::waveform_loop::projection::": "unit_editor_logic",
                    "editor::waveform_stretch::accepted_root::": "unit_editor_logic",
                    "editor::drag::geometry::": "unit_editor_logic",
                    "output_meter::logic::": "unit_editor_logic",
@@ -337,7 +338,9 @@ UI_UNIT_FEATURES = {"unit_piano_roll": "ui-unit-tier", "unit_timeline": "ui-unit
 # complete pure boundary rather than only its own test-name prefix.
 # These consumers live in larger test modules; a selected ancestor must retain
 # the unit owner as well as the specific consumer checks.
-UI_PREFIX_COHORTS = [{"editor::drag::geometry::", "editor::drag::tests::",
+UI_PREFIX_COHORTS = [{"editor::waveform_geometry::grid::",
+                      "editor::waveform::resize_tests::silent_left_prefix_keeps_waveform_and_geometry_through_real_worker_ack"},
+                     {"editor::drag::geometry::", "editor::drag::tests::",
                       "editor::clip_drag_ui_test::rendered_move_retains_destination_until_real_worker_ack",
                       "editor::drag::group_drag_ui_test::stationary_group_snap_modifier_uses_one_anchor_delta_and_authoritative_release"},
                      {"editor::session_grid::actions::", "editor::delete_ui_tests::",
@@ -357,13 +360,15 @@ UI_UNIT_COHORTS = [{"editor::device_panel::eq_panel::axes::", "editor::device_pa
                     "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
                     "editor::sampler_parameter::tests::source_hints_and_paint_require_same_view_source_facts_and_context",
                     "editor::waveform_source::", "editor::waveform::", "editor::waveform_geometry::",
+                    "editor::waveform_geometry::grid::",
                     "editor::waveform_loop::", "editor::waveform_loop::projection::",
                     "editor::waveform_stretch::", "editor::waveform_stretch::accepted_root::",
                     "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",
                     "editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform"}]
 # Recovery's real prepared-audio test is a sibling so importing its state into
 # the unit binary cannot also compile and run the integration fixture there.
-UI_INTEGRATION_PAIRS = {"output_meter::logic::": "output_meter::tests::",
+UI_INTEGRATION_PAIRS = {"editor::waveform_geometry::grid::": "editor::waveform_geometry::tests::",
+                        "output_meter::logic::": "output_meter::tests::",
                         "editor::overview_waveform::": "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
                         "editor::waveform_columns::": "editor::sampler_parameter::tests::source_hints_and_paint_require_same_view_source_facts_and_context",
                         "editor::device_panel::eq_panel::response::": "editor::device_panel::tests::eq_ui_tests::graph_layout_tests::eq_axis_labels_are_logarithmic_nonoverlapping_and_keep_the_plot_hit_map",
@@ -497,6 +502,10 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
             whole.add(owner)
         else:
             filters.setdefault(owner, set()).add(module + "::")
+    # The real viewport is an input to the waveform grid. Select its owner
+    # when that source changes, including the grid's geometry consumers.
+    if "crates/hex-ui/src/editor/viewport.rs" in executable and "hex-ui" in tested:
+        filters.setdefault("hex-ui", set()).add("editor::waveform_geometry::grid::")
     # The theme source is compiled by path in each consumer. Run its own text
     # contract alongside storage's test, without widening other storage edits.
     if "crates/hex-storage/src/text.rs" in executable:

@@ -138,7 +138,7 @@ cargo test -p hex-ui --features ui-unit-tier --test unit_section --locked
 ```
 
 Editor logic tests, including Session route view state, EQ response sampling,
-overview-waveform, loop-projection and clip-drag geometry, and output-meter logic, use:
+overview-waveform, loop-projection, waveform-grid and clip-drag geometry, and output-meter logic, use:
 
 ```sh
 cargo test -p hex-ui --features ui-unit-tier --test unit_editor_logic --locked
