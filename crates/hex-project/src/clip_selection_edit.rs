@@ -532,6 +532,10 @@ impl Command {
             | Self::DuplicateSessionCell { .. }
             | Self::ReverseClips(_) => ClipCommandScope::Explicit,
             Self::InitializeDevice(_)
+            | Self::AddArrangementLocator { .. }
+            | Self::MoveArrangementLocator { .. }
+            | Self::RenameArrangementLocator { .. }
+            | Self::RemoveArrangementLocator(_)
             | Self::AddArrangementSection { .. }
             | Self::SetArrangementSectionRange { .. }
             | Self::MoveArrangementSectionMarker { .. }

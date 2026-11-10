@@ -9055,7 +9055,11 @@ fn latest_timeline_content_end(project: &Project) -> u64 {
         .filter_map(|section| project.tempo_map().beat_to_frame(section.end()).ok())
         .max()
         .unwrap_or(0);
-    audio_end.max(midi_end).max(section_end)
+    let locator_end = project
+        .arrangement_locators()
+        .last()
+        .map_or(0, |locator| locator.frame());
+    audio_end.max(midi_end).max(section_end).max(locator_end)
 }
 
 fn run_export_worker(
