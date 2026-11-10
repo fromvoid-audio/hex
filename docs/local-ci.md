@@ -404,15 +404,24 @@ cooperative target lock remain outside this observation; it is not a sandbox.
 A target-wide `.admission-pending` sentinel beside its lock makes cooperating
 lock users refuse before cleanup or build, including explicit adoption and
 release recovery. Its contents are not trusted: any entry, including a dangling
-symlink, requires preserving it and choosing a fresh target. This guard does not
-create or remove the sentinel and does not complete fresh-target publication.
-Older runner versions and raw Cargo do not honor it; the current guarded paths
-may run initial Cargo metadata before acquiring the lock.
+symlink, requires preserving it and choosing a fresh target. The standalone dev
+publisher syncs this sentinel before creating the existing dev owner record,
+verifies and syncs that record, then removes the sentinel before transferring the
+same lock to the runner. A failed publication before removal preserves the
+sentinel. A failed final directory sync denies handoff after the verified owner
+has been made durable. After a crash the sentinel can still be present, in which
+case the target remains unavailable to cooperating consumers.
+The refusal relies on the same intact lock-state directory; a replaced state
+directory can hide the sentinel. Older runner versions and raw Cargo do not
+honor it. Current guarded paths may run initial Cargo metadata before locking.
 For the opt-in identity-resolution API, the caller must acquire a reservation
 before its first Cargo operation and retain it through the later custody
 decision. Metadata must report exactly the explicit target and leave it fresh;
 resolution alone neither admits the target nor publishes ownership. A target
 inferred only from Cargo configuration does not meet this API's proof contract.
+The standalone dev publisher currently accepts existing empty directories after
+the caller has captured Git, Cargo and dependency inputs. Release publication,
+absent-target creation and guarded entrypoint adoption are separate boundaries.
 
 The summary records the identified filesystem, probe duration and dev cleanup
 duration (including failed cleanup). A target
