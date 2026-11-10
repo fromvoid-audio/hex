@@ -2128,10 +2128,13 @@ class ModuleScopeTests(unittest.TestCase):
                                   "log_viewer::copy_tests::copy_all_uses_frozen_filters_and_real_clipboard_and_read_failures_keep_previous_copy",
                                   "log_viewer::copy_tests::filtered_excerpt_reports_empty_limits_and_failed_clipboard_confirmation",
                                   "log_viewer::filter::",
+                                  "log_viewer::presentation::",
                                   "log_viewer::scrollbar::geometry::",
                                   "log_viewer::scrollbar::tests::native_scrollbar_tracks_wheel_outside_release_escape_and_preserves_selection_copy",
                                   "log_viewer::scrollbar::tests::page_refresh_resize_and_deactivation_retire_old_scroll_captures",
+                                  "log_viewer::tests::long_log_rows_stay_within_their_visual_bounds",
                                   "log_viewer::tests::rapid_filter_changes_install_only_the_latest_result",
+                                  "log_viewer::tests::severity_badges_keep_rows_readable_and_copy_original_records",
                                   "output_meter::logic::", "output_meter::tests::", "theme::"]})
         meter_consumer = "editor::track_meters::tests::steady_state_meter_ticks_reuse_the_staging_buffers"
         self.assertTrue(any(meter_consumer.startswith(selected) for selected in
@@ -3326,6 +3329,50 @@ class ModuleScopeTests(unittest.TestCase):
             unit_step = next(step for step in steps if "unit_editor_logic" in step.argv)
             self.assertTrue(any(unit.startswith(selected) for selected in unit_step.argv))
             self.assertTrue(unit_step.requires_tests)
+            feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv))
+
+    def test_log_viewer_presentation_selects_unit_and_rendered_copy_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []},
+                      "dependencies": [], "targets": [{"kind": ["lib"]}]}]
+        unit = "log_viewer::presentation::"
+        consumers = [
+            "log_viewer::tests::severity_badges_keep_rows_readable_and_copy_original_records",
+            "log_viewer::tests::long_log_rows_stay_within_their_visual_bounds",
+            "log_viewer::copy_tests::copy_all_uses_frozen_filters_and_real_clipboard_and_read_failures_keep_previous_copy",
+            "log_viewer::copy_tests::filtered_excerpt_reports_empty_limits_and_failed_clipboard_confirmation",
+        ]
+        presentation_path = "crates/hex-ui/src/log_viewer/presentation.rs"
+        parent_path = "crates/hex-ui/src/log_viewer.rs"
+        copy_path = "crates/hex-ui/src/log_viewer/copy_tests.rs"
+        modules = plan.module_paths(root / "crates/hex-ui/src")
+        self.assertEqual(modules[(root / presentation_path).resolve()], "log_viewer::presentation")
+        self.assertEqual(modules[(root / parent_path).resolve()], "log_viewer")
+        self.assertEqual(modules[(root / copy_path).resolve()], "log_viewer::copy_tests")
+        for path in (presentation_path, parent_path, copy_path):
+            names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
+            self.assertTrue(any(unit.startswith(selected) for selected in names))
+            if path == parent_path:
+                self.assertEqual(names, ["log_viewer::"])
+            else:
+                self.assertNotIn("log_viewer::", names)
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in names))
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": {owner: names}}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                      "boundary": boundary, "cargo_inventory": inventory,
+                                      "paths": [path]})
+            unit_step = next(step for step in steps if "unit_editor_logic" in step.argv)
+            self.assertTrue(any(unit.startswith(selected) for selected in unit_step.argv))
+            self.assertTrue(unit_step.requires_tests)
+            if path == parent_path:
+                self.assertIn("log_viewer::", unit_step.argv)
             feature = next(step for step in steps if step.step_id == "ui-feature-tests")
             for consumer in consumers:
                 self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv))
