@@ -2068,6 +2068,8 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::arrangement_main_track_ui_test::clips_and_main_sections_share_grid_endpoints_through_fractional_pan_and_resize",
                                   "editor::arrangement_map::model::",
                                   "editor::arrangement_map::tests::main_lane_paints_canonical_intervals_at_the_ruler_scale",
+                                  "editor::arrangement_sections::tests::launch_action_geometry_matches_raw_exclusion_without_enlarging_tiny_sections",
+                                  "editor::arrangement_sections::tests::section_autoplay_click_dispatches_stateless_loop_and_toggle_off_cancels",
                                   "editor::arrangement_sections::tests::section_has_opaque_chamfered_fill_and_compact_header_across_palettes_and_layouts",
                                   "editor::arrangement_sections::tests::section_lower_body_paints_all_tracks_without_section_edit_even_when_focused",
                                   "editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform",
@@ -2112,6 +2114,7 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::missing_media::ui_tests::sample_catalog_matches_are_offered_then_relinked_all_at_once",
                                   "editor::output_meter_ui_test::", "editor::overview_waveform::", "editor::refresh_state::",
                                   "editor::sampler_parameter::tests::source_hints_and_paint_require_same_view_source_facts_and_context",
+                                  "editor::section_launch::geometry::",
                                   "editor::session_audio_panel::",
                                   "editor::session_grid::actions::", "editor::session_grid::tests::",
                                   "editor::session_navigation::", "editor::session_navigation_ui_test::",
@@ -2689,6 +2692,51 @@ class ModuleScopeTests(unittest.TestCase):
             unit_step = next(step for step in steps if "unit_section" in step.argv)
             self.assertTrue(unit_step.requires_tests)
             self.assertTrue(any(unit.startswith(selected) for selected in unit_step.argv))
+            feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv))
+
+    def test_section_launch_geometry_keeps_action_and_autoplay_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::section_launch::geometry::"
+        consumers = [
+            "editor::arrangement_sections::tests::launch_action_geometry_matches_raw_exclusion_without_enlarging_tiny_sections",
+            "editor::arrangement_sections::tests::section_autoplay_click_dispatches_stateless_loop_and_toggle_off_cancels",
+        ]
+        parent = "editor::section_launch::"
+        paths = [
+            ("crates/hex-ui/src/editor/section_launch/geometry.rs", "editor::section_launch::geometry"),
+            ("crates/hex-ui/src/editor/section_launch.rs", "editor::section_launch"),
+            ("crates/hex-ui/src/editor/arrangement_sections.rs", "editor::arrangement_sections"),
+        ]
+        modules = plan.module_paths(root / "crates/hex-ui/src")
+        for path, module in paths:
+            self.assertEqual(modules[(root / path).resolve()], module)
+            names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
+            if path == paths[0][0]:
+                self.assertEqual(names, sorted([unit, *consumers]))
+            self.assertTrue(any(unit.startswith(selected) for selected in names),
+                            f"{path} does not select {unit}: {names}")
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in names),
+                                f"{path} does not select {consumer}: {names}")
+            if path == paths[1][0]:
+                self.assertIn(parent, names)
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": {owner: names}}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                      "boundary": boundary, "cargo_inventory": inventory,
+                                      "paths": [path]})
+            unit_step = next(step for step in steps if "unit_editor_logic" in step.argv)
+            self.assertTrue(unit_step.requires_tests)
+            self.assertTrue(any(unit.startswith(selected) for selected in unit_step.argv))
+            if path == paths[1][0]:
+                self.assertIn(parent, unit_step.argv)
             feature = next(step for step in steps if step.step_id == "ui-feature-tests")
             for consumer in consumers:
                 self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv))
