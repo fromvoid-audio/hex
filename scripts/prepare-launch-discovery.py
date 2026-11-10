@@ -16,8 +16,12 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location("hex_launch_delivery", ROOT / "scripts/hex-test-build.py")
+if SPEC is None or SPEC.loader is None:
+    raise RuntimeError("launch delivery dependency unavailable")
 delivery = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(delivery)
+# Delivery authority must reflect source bytes, not a timestamp-valid pyc.
+_SOURCE = Path(SPEC.origin).read_bytes()
+exec(compile(_SOURCE, SPEC.origin, "exec", dont_inherit=True), delivery.__dict__)
 
 
 def optimized_scanner() -> Path:

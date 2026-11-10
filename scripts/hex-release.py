@@ -38,7 +38,12 @@ def module(name, filename):
         raise RuntimeError("release dependency unavailable")
     value = importlib.util.module_from_spec(spec)
     sys.modules[name] = value
-    spec.loader.exec_module(value)
+    if filename == "hex-test-build.py":
+        # Delivery authority must reflect source bytes, not a timestamp-valid pyc.
+        source = Path(spec.origin).read_bytes()
+        exec(compile(source, spec.origin, "exec", dont_inherit=True), value.__dict__)
+    else:
+        spec.loader.exec_module(value)
     return value
 
 

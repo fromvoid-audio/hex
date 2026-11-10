@@ -1,5 +1,9 @@
 """Release channel/custody regressions; native gates remain separate acceptance."""
 import importlib.util
+import os
+import py_compile
+import shutil
+import sys
 import json
 from pathlib import Path
 import plistlib
@@ -12,6 +16,56 @@ from unittest.mock import patch
 SPEC = importlib.util.spec_from_file_location("release_fixture", Path(__file__).resolve().parents[1] / "hex-release.py")
 release = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(release)
+
+
+class DeliveryImportSourceTests(unittest.TestCase):
+    def test_release_and_launch_import_current_delivery_source_with_stale_pyc(self):
+        source_scripts = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as temporary:
+            scripts = Path(temporary).resolve() / "scripts"
+            scripts.mkdir()
+            for name in ("hex-release.py", "prepare-launch-discovery.py", "hex-test-build.py",
+                         "local-ci.py", "ci_plan.py", "python_test_plan.py", "build_inputs.py",
+                         "ci_checkpoint.py", "ci_target_storage.py", "release_notes.py",
+                         "changelog.py", "manual.py"):
+                shutil.copyfile(source_scripts / name, scripts / name)
+            delivery_path = scripts / "hex-test-build.py"
+            original = delivery_path.read_bytes()
+            before = b'IDENTITY = "org.portalsurfer.hex.dev"'
+            after = b'IDENTITY = "org.portalsurfer.hex.dex"'
+            self.assertEqual(original.count(before), 1)
+            self.assertEqual(len(before), len(after))
+            py_compile.compile(str(delivery_path), doraise=True,
+                               invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP)
+            stamp = delivery_path.stat()
+            delivery_path.write_bytes(original.replace(before, after, 1))
+            os.utime(delivery_path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+
+            # Sensitivity control: standard timestamp-based loading really sees
+            # the stale bytecode; runtime-only name avoids CI imports.
+            control_spec = importlib.util.spec_from_file_location("hex_update_runtime", delivery_path)
+            control = importlib.util.module_from_spec(control_spec)
+            with patch.dict(sys.modules, {control_spec.name: control}):
+                control_spec.loader.exec_module(control)
+            self.assertEqual(control.IDENTITY, "org.portalsurfer.hex.dev")
+            self.assertFalse(hasattr(control, "ci"))
+            self.assertFalse(hasattr(control, "changelog"))
+
+            for filename, name, delivery_name in (
+                ("hex-release.py", "release_source_probe", "hex_release_delivery"),
+                ("prepare-launch-discovery.py", "launch_source_probe", "hex_launch_delivery"),
+            ):
+                with self.subTest(filename=filename), patch.dict(sys.modules):
+                    spec = importlib.util.spec_from_file_location(name, scripts / filename)
+                    entry = importlib.util.module_from_spec(spec)
+                    sys.modules[name] = entry
+                    spec.loader.exec_module(entry)
+                    self.assertEqual(entry.delivery.IDENTITY, "org.portalsurfer.hex.dex")
+                    self.assertEqual(entry.delivery.__name__, delivery_name)
+                    self.assertEqual(Path(entry.delivery.__file__), delivery_path)
+                    self.assertEqual(entry.delivery.__spec__.origin, str(delivery_path))
+                    self.assertTrue(hasattr(entry.delivery, "ci"))
+                    self.assertTrue(hasattr(entry.delivery, "changelog"))
 
 
 class ReleaseTests(unittest.TestCase):
