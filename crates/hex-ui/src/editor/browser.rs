@@ -117,45 +117,9 @@ fn clamped_panel_width(requested: f32, window_width: f32) -> f32 {
     )
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct ScanRequest {
-    generation: u64,
-    directory: PathBuf,
-}
-
-#[derive(Default)]
-struct ScanCoordinator {
-    pub(super) generation: u64,
-    in_flight: bool,
-    pending: Option<ScanRequest>,
-}
-
-impl ScanCoordinator {
-    fn request(&mut self, directory: PathBuf) -> Option<ScanRequest> {
-        self.generation = self.generation.saturating_add(1);
-        let request = ScanRequest {
-            generation: self.generation,
-            directory,
-        };
-        if self.in_flight {
-            self.pending = Some(request);
-            None
-        } else {
-            self.in_flight = true;
-            Some(request)
-        }
-    }
-
-    fn complete(&mut self, generation: u64) -> (bool, Option<ScanRequest>) {
-        self.in_flight = false;
-        let current = generation == self.generation;
-        let next = self.pending.take();
-        if next.is_some() {
-            self.in_flight = true;
-        }
-        (current, next)
-    }
-}
+#[path = "browser/scan.rs"]
+mod scan;
+use scan::{ScanCoordinator, ScanRequest};
 
 /// The one selected source across all picker groups during this session. `directory` is only
 /// the current bounded folder location, never another selected source.
@@ -2889,9 +2853,7 @@ impl EditorView {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        MIN_WIDTH, PathBuf, ScanCoordinator, browser_audio_drag_ghost_position, clamped_panel_width,
-    };
+    use super::{MIN_WIDTH, browser_audio_drag_ghost_position, clamped_panel_width};
 
     #[test]
     fn browser_drag_ghost_position_uses_window_relative_pointer_coordinates() {
@@ -2908,24 +2870,6 @@ mod tests {
         assert_eq!(clamped_panel_width(280.0, 1_240.0), 280.0);
         assert_eq!(clamped_panel_width(500.0, 880.0), 297.0);
         assert_eq!(clamped_panel_width(100.0, 880.0), MIN_WIDTH);
-    }
-
-    #[test]
-    fn stale_directory_scan_results_are_not_current() {
-        let mut scans = ScanCoordinator::default();
-        let first = scans
-            .request(PathBuf::from("/one"))
-            .expect("first scan starts");
-        assert!(scans.request(PathBuf::from("/two")).is_none());
-        assert!(scans.request(PathBuf::from("/three")).is_none());
-        let (first_is_current, next) = scans.complete(first.generation);
-        assert!(!first_is_current);
-        assert_eq!(
-            next.expect("latest scan starts next").directory,
-            PathBuf::from("/three")
-        );
-        assert!(scans.in_flight);
-        assert!(scans.pending.is_none());
     }
 }
 

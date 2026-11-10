@@ -3,3 +3,6 @@ mod tree;
 
 #[path = "browser_samples.rs"]
 mod samples;
+
+#[path = "../../src/editor/browser/scan.rs"]
+mod scan;
