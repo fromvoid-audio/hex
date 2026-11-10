@@ -140,7 +140,7 @@ cargo test -p hex-ui --features ui-unit-tier --test unit_section --locked
 Editor logic tests, including Session route view state, EQ response sampling,
 overview-waveform, loop and stretch projections, waveform-grid, peak and fade paint geometry,
 clip-drag geometry,
-arrangement-map and group-overview projections, browser tree and sample state, session-receipt reconciliation,
+arrangement-map and group-overview projections, browser tree and sample state, recent-project labels, session-receipt reconciliation,
 output-meter logic, project tempo value conversion, and passive time-move interval splitting, use:
 
 ```sh

@@ -114,3 +114,6 @@ mod track_latency;
 
 #[path = "tracks.rs"]
 mod tracks;
+
+#[path = "recent_projects.rs"]
+mod recent_projects;
