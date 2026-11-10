@@ -2125,6 +2125,9 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::track_meters::selection::", "editor::track_meters::tests::", *names,
                                   "editor::waveform::", "editor::waveform_columns::", "editor::waveform_geometry::", "editor::waveform_loop::",
                                   "editor::waveform_source::", "editor::waveform_stretch::",
+                                  "log_viewer::scrollbar::geometry::",
+                                  "log_viewer::scrollbar::tests::native_scrollbar_tracks_wheel_outside_release_escape_and_preserves_selection_copy",
+                                  "log_viewer::scrollbar::tests::page_refresh_resize_and_deactivation_retire_old_scroll_captures",
                                   "output_meter::logic::", "output_meter::tests::", "theme::"]})
         meter_consumer = "editor::track_meters::tests::steady_state_meter_ticks_reuse_the_staging_buffers"
         self.assertTrue(any(meter_consumer.startswith(selected) for selected in
@@ -3240,6 +3243,47 @@ class ModuleScopeTests(unittest.TestCase):
             self.assertEqual(select("crates/owner/tests/it.rs"), {})
             (root / "crates/owner/src/plain.rs").write_text('include!("generated.rs");\n')
             self.assertEqual(select("crates/owner/src/parent/child.rs"), {})
+
+    def test_log_viewer_scrollbar_geometry_selects_nested_unit_and_real_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []},
+                      "dependencies": [], "targets": [{"kind": ["lib"]}]}]
+        unit = "log_viewer::scrollbar::geometry::"
+        consumers = [
+            "log_viewer::scrollbar::tests::native_scrollbar_tracks_wheel_outside_release_escape_and_preserves_selection_copy",
+            "log_viewer::scrollbar::tests::page_refresh_resize_and_deactivation_retire_old_scroll_captures",
+        ]
+        geometry_path = "crates/hex-ui/src/log_viewer/scrollbar/geometry.rs"
+        parent_path = "crates/hex-ui/src/log_viewer/scrollbar.rs"
+        consumer_path = "crates/hex-ui/src/log_viewer/scrollbar_tests.rs"
+        modules = plan.module_paths(root / "crates/hex-ui/src")
+        self.assertEqual(modules[(root / geometry_path).resolve()], "log_viewer::scrollbar::geometry")
+        self.assertEqual(modules[(root / parent_path).resolve()], "log_viewer::scrollbar")
+        self.assertEqual(modules[(root / consumer_path).resolve()], "log_viewer::scrollbar::tests")
+        for path in (geometry_path, parent_path, consumer_path):
+            names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
+            self.assertTrue(any(unit.startswith(selected) for selected in names))
+            if path == parent_path:
+                self.assertIn("log_viewer::scrollbar::", names)
+            self.assertNotIn("log_viewer::", names)
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in names))
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": {owner: names}}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                      "boundary": boundary, "cargo_inventory": inventory,
+                                      "paths": [path]})
+            unit_step = next(step for step in steps if "unit_editor_logic" in step.argv)
+            self.assertTrue(any(unit.startswith(selected) for selected in unit_step.argv))
+            if path == parent_path:
+                self.assertIn("log_viewer::scrollbar::", unit_step.argv)
+            self.assertTrue(unit_step.requires_tests)
+            feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv))
 
     def test_changed_module_roots_run_the_complete_test_subtree(self):
         root = SCRIPTS.parent

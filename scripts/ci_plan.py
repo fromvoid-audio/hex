@@ -272,6 +272,7 @@ TEST_ATTRIBUTE = re.compile(r"#\[(?:gpui::)?test\b")
 # Unit test targets which compile the owning source directly. Keep their libtest
 # names under the original module path so scoped coverage remains observable.
 UI_UNIT_TARGETS = {"editor::tempo_input::value::": "unit_editor_logic",
+                   "log_viewer::scrollbar::geometry::": "unit_editor_logic",
                    "editor::console_track_page::": "unit_editor_logic",
                    "editor::time_move_preview::intervals::tests::": "unit_editor_logic",
                    "editor::browser::samples::state::": "unit_editor_logic",
@@ -405,7 +406,10 @@ UI_PREFIX_COHORTS = [{"editor::tempo_input::value::",
                      "editor::session_track_reorder_ui_test::console_page_turn_rejects_fold_and_window_changes",
                      "editor::track_clipboard_ui_test::console_fold_hides_cells_navigation_and_invalidates_column_frame",
                      "editor::track_meters::selection::",
-                     "editor::track_meters::tests::steady_state_meter_ticks_reuse_the_staging_buffers"}]
+                     "editor::track_meters::tests::steady_state_meter_ticks_reuse_the_staging_buffers"},
+                    {"log_viewer::scrollbar::geometry::",
+                     "log_viewer::scrollbar::tests::native_scrollbar_tracks_wheel_outside_release_escape_and_preserves_selection_copy",
+                     "log_viewer::scrollbar::tests::page_refresh_resize_and_deactivation_retire_old_scroll_captures"}]
 UI_UNIT_COHORTS = [{"editor::device_panel::eq_panel::axes::", "editor::device_panel::eq_panel::response::"},
                    {"editor::midi_drag::", "editor::midi_group_drag::", "editor::midi_scene::", "editor::midi_selection::", "editor::midi_stroke::", "editor::midi_velocity::", "editor::midi_viewport_grid::"},
                    {"editor::device_panel::eq_panel::group_move::", "editor::device_panel::eq_panel::gestures::"},
