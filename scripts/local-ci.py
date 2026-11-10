@@ -690,6 +690,11 @@ def target_state_paths(target_directory: Path, state_dir: Path | None = None) ->
     return location / f"{identity}.lock", location / f"{identity}.owner.json"
 
 
+def target_admission_pending_path(lock_path: Path) -> Path:
+    """Name the target-wide incomplete-admission sentinel next to its lock."""
+    return lock_path.with_suffix(".admission-pending")
+
+
 class CargoTargetLock:
     """Nonblocking cooperative lock; direct Cargo commands do not participate."""
 
@@ -735,9 +740,43 @@ class CargoTargetLock:
             if error.errno in (errno.EACCES, errno.EAGAIN):
                 raise TargetCacheError("Cargo target is already in use by another local CI run") from error
             raise TargetCacheError(f"could not open or lock Cargo target: {detail}") from error
+        except BaseException:
+            if self.file is not None:
+                try:
+                    self.file.close()
+                except OSError:
+                    pass  # Preserve the original interruption.
+                finally:
+                    self.file = None
+            raise
         try:
+            # A pending admission is target-wide and must survive a crash. Do
+            # not let either profile or an adoption path consume its owner.
+            directory = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                def verify_lock_identity() -> None:
+                    parent = os.stat(self.path.parent)
+                    pinned = os.fstat(directory)
+                    entry = os.stat(self.path.name, dir_fd=directory, follow_symlinks=False)
+                    locked = os.fstat(self.file.fileno())
+                    if ((parent.st_dev, parent.st_ino) != (pinned.st_dev, pinned.st_ino)
+                            or not stat.S_ISREG(entry.st_mode)
+                            or (entry.st_dev, entry.st_ino) != (locked.st_dev, locked.st_ino)):
+                        raise TargetCacheError("Cargo target lock or state directory identity changed")
+
+                verify_lock_identity()
+                pending = target_admission_pending_path(self.path).name
+                try:
+                    os.stat(pending, dir_fd=directory, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise TargetCacheError("Cargo target admission is incomplete; preserve the pending marker and use a fresh target")
+                verify_lock_identity()
+            finally:
+                os.close(directory)
             self._write({"active_holder": self.holder})
-        except OSError as error:
+        except BaseException as error:
             detail = str(error)
             if self.file is not None:
                 try:
@@ -750,7 +789,9 @@ class CargoTargetLock:
                     except OSError as close_error:
                         detail = f"{detail}; closing lock file also failed: {close_error}"
                     self.file = None
-            raise TargetCacheError(f"could not record Cargo target lock holder: {detail}") from error
+            if not isinstance(error, (OSError, TargetCacheError)):
+                raise
+            raise TargetCacheError(f"could not admit Cargo target lock: {detail}") from error
 
     def _write(self, value: dict[str, object]) -> None:
         if self.file is None:
