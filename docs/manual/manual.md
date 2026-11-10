@@ -581,8 +581,10 @@ can leave a large selection scrollable.
 ## create fades from a time selection
 
 select a positive time range at the beginning or end of an audio clip and press
-**command+f**. the selected portion becomes a linear fade-in or fade-out; the
-opposite authored ramp stays unchanged. a range entirely inside a clip, or one
+**command+f**. the selected portion becomes an s-shaped fade-in or fade-out; the
+opposite authored ramp stays unchanged. dragging a new fade also starts with an
+s-curve. drag the diamond to reshape it, or double-click the diamond to
+straighten an s-curve. a range entirely inside a clip, or one
 covering both ends, is refused with a message.
 
 across a join between two ordinary audio clips, **command+f** extends the source
@@ -624,8 +626,9 @@ sources. choose **src** again to return to the grouped event.
 
 drag an upper square to change a fade length. drag a diamond horizontally and
 vertically to shape its curve. lower squares trim the event; they move freely by
-default, with **command** opting into the event grid. double-click a fade control
-to reset that event's fades. one undo restores each completed gesture.
+default, with **command** opting into the event grid. double-click an s-curve
+diamond to straighten that ramp. double-click an endpoint to reset the event's
+fades. one undo restores each completed gesture.
 
 the preview becomes prepared audio after release. **escape** or leaving the
 editor cancels a held gesture. splitting retains the source fade, moving keeps

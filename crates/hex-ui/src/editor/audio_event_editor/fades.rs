@@ -685,8 +685,16 @@ impl EditorView {
                         cx.new(|_| crate::editor::waveform::ClipTooltip {
                             kind: crate::tooltips::Kind::control(handle.name().replace('-', " ")),
                             name: format!(
-                                "{} · double click to reset event fades",
-                                handle.name().replace('-', " ")
+                                "{} · double click to {}",
+                                handle.name().replace('-', " "),
+                                if handle.curve_side().is_some_and(|out| {
+                                    controls.curve_laws()[usize::from(out)]
+                                        == ClipFade::DEFAULT_S_CURVE
+                                }) {
+                                    "straighten"
+                                } else {
+                                    "reset event fades"
+                                }
                             ),
                         })
                         .into()
@@ -705,9 +713,19 @@ impl EditorView {
                                 v.audio_event_editor.selected = Some(event.id);
                                 v.audio_event_editor.range = None;
                                 if e.click_count >= 2 {
+                                    let straightened = event.fade.and_then(|fade| {
+                                        let out = handle.curve_side()?;
+                                        let shape = fade.shape();
+                                        if shape.curve_laws()[usize::from(out)]
+                                            != ClipFade::DEFAULT_S_CURVE
+                                        {
+                                            return None;
+                                        }
+                                        Some(fade.straighten_ramp(out))
+                                    });
                                     v.event_commit(AudioEventEdit::SetFade {
                                         event: event.id,
-                                        fade: None,
+                                        fade: straightened,
                                     });
                                 } else if let Some((_, root, _)) = v.event_context()
                                     && let Some(anchor) = v.fade_pointer_source_frame(

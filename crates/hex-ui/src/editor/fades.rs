@@ -195,41 +195,36 @@ impl EditorView {
         {
             return;
         }
-        if fade.has_shape() {
-            let Ok(local) = fade.reanchor(duration) else {
-                return;
-            };
-            let Ok(next) = ClipFade::new(
-                duration,
-                0,
-                fade_in.min(duration - local.in_start()),
-                fade_out.min(duration - local.out_end_offset()),
-            )
-            .and_then(|next| {
-                next.with_shape(
-                    local.in_start(),
-                    local.out_end_offset(),
-                    local.in_curve(),
-                    local.out_curve(),
-                )?
-                .with_curve_positions(local.in_position(), local.out_position())
-                .map(|next| next.with_curve_laws(local.curve_laws()))
-            }) else {
-                return;
-            };
-            if next != fade {
-                self.enqueue(Request::Edit(Command::SetClipFadeEnvelope {
-                    clip: clip_id,
-                    fade: next,
-                }));
-            }
+        let Ok(local) = fade.reanchor(duration) else {
             return;
+        };
+        let Ok(next) = ClipFade::new(
+            duration,
+            0,
+            fade_in.min(duration - local.in_start()),
+            fade_out.min(duration - local.out_end_offset()),
+        )
+        .and_then(|next| {
+            next.with_shape(
+                local.in_start(),
+                local.out_end_offset(),
+                local.in_curve(),
+                local.out_curve(),
+            )?
+            .with_curve_positions(local.in_position(), local.out_position())
+            .map(|next| {
+                next.with_curve_laws(local.curve_laws())
+                    .with_new_ramp_defaults(local)
+            })
+        }) else {
+            return;
+        };
+        if next != fade {
+            self.enqueue(Request::Edit(Command::SetClipFadeEnvelope {
+                clip: clip_id,
+                fade: next,
+            }));
         }
-        self.enqueue(Request::Edit(Command::SetClipFades {
-            clip: clip_id,
-            fade_in,
-            fade_out,
-        }));
     }
 
     fn reset_selected_fades(&mut self) {

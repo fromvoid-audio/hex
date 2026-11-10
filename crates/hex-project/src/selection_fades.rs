@@ -50,7 +50,7 @@ fn fitted(shape: ClipFade, first: u64, end: u64, incoming: bool) -> Result<ClipF
             )
         };
     let mut laws = shape.curve_laws();
-    laws[usize::from(!incoming)] = crate::FadeCurveLaw::Linear;
+    laws[usize::from(!incoming)] = ClipFade::DEFAULT_S_CURVE;
     Ok(ClipFade::new(span, shape.offset(), fade_in, fade_out)?
         .with_shape(
             in_start,
