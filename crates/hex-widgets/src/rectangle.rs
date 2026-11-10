@@ -88,8 +88,9 @@ pub enum RectangleSelection {
 pub enum RectangleSelectionPolicy {
     /// Clip headers: Shift range, Command toggle, Command+Shift additive range.
     Range,
-    /// Section markers: Shift toggles membership.
-    Toggle,
+    /// Section markers: Shift range, Command+Shift toggle. Command alone
+    /// belongs to the lane's marker-only edit latch, not selection.
+    Section,
 }
 impl RectangleSelectionPolicy {
     pub fn intent(self, modifiers: Modifiers) -> RectangleSelection {
@@ -98,7 +99,8 @@ impl RectangleSelectionPolicy {
                 additive: modifiers.platform,
             },
             Self::Range if modifiers.platform => RectangleSelection::Toggle,
-            Self::Toggle if modifiers.shift => RectangleSelection::Toggle,
+            Self::Section if modifiers.shift && modifiers.platform => RectangleSelection::Toggle,
+            Self::Section if modifiers.shift => RectangleSelection::Range { additive: false },
             _ => RectangleSelection::Replace,
         }
     }

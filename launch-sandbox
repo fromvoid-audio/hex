@@ -2,4 +2,4 @@
 # Build and run the optimized native widget sandbox from this checkout.
 set -eu
 cd -- "$(dirname -- "$0")"
-exec cargo run --release --locked -p hex-ui --example layout_review
+exec cargo run --release --locked -p hex-sandbox

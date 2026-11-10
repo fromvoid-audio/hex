@@ -263,6 +263,13 @@ impl EditorView {
             ) => *clip == p.clip && looping == actual,
             (
                 Preview::Midi(v),
+                Request::Edit(Command::ResizeMidiClipView {
+                    clip,
+                    operation: hex_project::MidiViewResizeOperation::PlayStart { source_start },
+                }),
+            ) => *clip == p.clip && source_start.raw() == v.source_start,
+            (
+                Preview::Midi(v),
                 Request::Edit(Command::SetMidiClipSource {
                     clip,
                     source_length,
@@ -325,19 +332,17 @@ impl EditorView {
                     event.request_complete,
                 )
             });
-        if disposition != Disposition::Waiting {
-            if let Some(pending) = self.clip_loop.pending.take() {
-                if disposition == Disposition::Terminal {
-                    if let Some(camera) = pending.start_camera {
-                        self.install_audio_play_start_camera(
-                            pending.clip,
-                            pending.generation,
-                            camera,
-                            &event.state.project,
-                        );
-                    }
-                }
-            }
+        if disposition != Disposition::Waiting
+            && let Some(pending) = self.clip_loop.pending.take()
+            && disposition == Disposition::Terminal
+            && let Some(camera) = pending.start_camera
+        {
+            self.install_audio_play_start_camera(
+                pending.clip,
+                pending.generation,
+                camera,
+                &event.state.project,
+            );
         }
     }
 }

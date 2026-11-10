@@ -93,18 +93,55 @@ fn painted_range(visual: &mut VisualTestContext) -> Bounds<gpui::Pixels> {
     );
     bounds
 }
+fn painted_guides(visual: &mut VisualTestContext) -> [Bounds<gpui::Pixels>; 2] {
+    ["loop-guide-start", "loop-guide-end"].map(|name| {
+        let bounds = visual.debug_bounds(name).expect("rendered loop guide");
+        assert!(!visual.rendered_quad_paint_layers(name, false).is_empty());
+        bounds
+    })
+}
 #[gpui::test]
 fn replacement_loop_stays_painted_until_its_real_response_installs(cx: &mut TestAppContext) {
     let old = LoopRegion::new(24_000, 48_000, true).unwrap();
     let (_environment, editor, mut visual) = fixture(cx, old);
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
     let old_paint = painted_range(&mut visual);
+    let old_guides = painted_guides(&mut visual);
+    let rail = visual.debug_bounds("arrangement-loop-rail").unwrap();
+    for (guide, frame) in old_guides.iter().zip([24_000.0, 48_000.0]) {
+        let expected = rail.left() + rail.size.width * (frame / 384_000.0);
+        assert!((f32::from(guide.left() - expected)).abs() < 1.0);
+    }
+    editor.update(&mut visual, |v, cx| {
+        v.viewport = Some(Viewport {
+            start: 0,
+            length: 192_000,
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let zoomed = painted_guides(&mut visual);
+    for (guide, frame) in zoomed.iter().zip([24_000.0, 48_000.0]) {
+        let expected = rail.left() + rail.size.width * (frame / 192_000.0);
+        assert!((f32::from(guide.left() - expected)).abs() < 1.0);
+    }
+    editor.update(&mut visual, |v, cx| {
+        v.viewport = Some(Viewport {
+            start: 0,
+            length: 384_000,
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
     let start = rail_point(&mut visual, 0.25);
     let end = rail_point(&mut visual, 0.5);
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
     visual.run_until_parked();
     let held = painted_range(&mut visual);
+    let held_guides = painted_guides(&mut visual);
+    assert!((f32::from(held_guides[0].left() - held.left())).abs() < 1.0);
+    assert!((f32::from(held_guides[1].left() - held.right())).abs() < 1.0);
     assert_ne!(held, old_paint);
     let expected = editor.read_with(&visual, |v, _| {
         v.loop_rail_gesture.unwrap().preview.unwrap()
@@ -128,12 +165,14 @@ fn replacement_loop_stays_painted_until_its_real_response_installs(cx: &mut Test
         held,
         "accepted replacement must not flash the old canonical bar before its actual response"
     );
+    assert_eq!(painted_guides(&mut visual), held_guides);
     editor.update(&mut visual, |v, cx| {
         v.receive(response);
         cx.notify();
     });
     visual.run_until_parked();
     assert_eq!(painted_range(&mut visual), held);
+    assert_eq!(painted_guides(&mut visual), held_guides);
     editor.read_with(&visual, |v, _| {
         assert_eq!(
             v.state.as_ref().unwrap().project.loop_region(),
@@ -151,6 +190,12 @@ fn replacement_loop_stays_painted_until_its_real_response_installs(cx: &mut Test
     editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
     pump(&editor, &mut visual);
     assert_eq!(painted_range(&mut visual), held);
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::ClearLoopRegion)))
+    });
+    pump(&editor, &mut visual);
+    assert!(visual.debug_bounds("loop-guide-start").is_none());
+    assert!(visual.debug_bounds("loop-guide-end").is_none());
 }
 
 fn install(editor: &Entity<EditorView>, visual: &mut VisualTestContext, event: Event) {

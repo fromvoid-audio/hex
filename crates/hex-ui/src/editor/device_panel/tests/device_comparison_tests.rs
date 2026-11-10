@@ -218,9 +218,9 @@ fn compressor_generic_ab_return_mix_banks_copy_and_persistence(cx: &mut TestAppC
     compressor_banks_roundtrip(cx, true);
 }
 
-struct Directory(std::path::PathBuf);
+pub(super) struct Directory(pub(super) std::path::PathBuf);
 impl Directory {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
             "hex-device-ab-ui-{}-{}",
@@ -231,7 +231,7 @@ impl Directory {
         std::fs::create_dir(path.join("samples")).unwrap();
         Self(path)
     }
-    fn window(
+    pub(super) fn window(
         &self,
         cx: &mut TestAppContext,
         service: Service,
@@ -971,7 +971,7 @@ fn device_comparison_review_enqueue_cancels_published_seek_before_callback(
     let mut pending = PendingSeek::from_intent(
         91,
         &SeekIntent {
-            section: None,
+            kind: crate::editor::arrangement_seek::SeekKind::Fresh,
             recovery_generation: None,
             destination_frame: 128,
             start_playing: true,
@@ -1175,9 +1175,24 @@ fn device_comparison_review_metadata_keeps_actual_callback_graph_and_worker_arc(
             PublicationPolicy::InheritRuntime,
         )
         .unwrap();
+    // The changed static matrix ramps over `rate.div_ceil(200)` frames
+    // (240 at 48 kHz, Pulse #4101), so the first block is still in transit.
     callback.begin_block();
     callback.render(&mut actual).unwrap();
     oracle.render(&mut expected).unwrap();
+    assert!(
+        actual
+            .iter()
+            .flatten()
+            .zip(expected.iter().flatten())
+            .any(|(a, e)| (a - e * 0.25).abs() > 1e-6),
+        "the gain edit ramps instead of stepping"
+    );
+    for _ in 0..2 {
+        callback.begin_block();
+        callback.render(&mut actual).unwrap();
+        oracle.render(&mut expected).unwrap();
+    }
     for (a, e) in actual.iter().flatten().zip(expected.iter().flatten()) {
         assert!((a - e * 0.25).abs() < 1e-6);
     }
@@ -1208,7 +1223,8 @@ fn device_comparison_review_metadata_keeps_actual_callback_graph_and_worker_arc(
     callback.render(&mut actual).unwrap();
     oracle.render(&mut expected).unwrap();
     assert_eq!(control.status.applied_revision.load(Acquire), applied);
-    assert_eq!(control.status.position.load(Acquire), 512);
+    // Two extra 128-frame blocks let the gain edit's matrix ramp settle.
+    assert_eq!(control.status.position.load(Acquire), 768);
     for (a, e) in actual.iter().flatten().zip(expected.iter().flatten()) {
         assert!((a - e * 0.25).abs() < 1e-6);
     }

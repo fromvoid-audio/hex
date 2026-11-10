@@ -277,7 +277,8 @@ impl OperatorFeedbackRuntime {
     fn apply_event(&mut self, event: NativeInstrumentEvent) {
         match event {
             // Unsupported controllers are rejected by preflight before processing.
-            NativeInstrumentEvent::Expression { .. } => {}
+            NativeInstrumentEvent::Expression { .. }
+            | NativeInstrumentEvent::NotePressure { .. } => {}
             NativeInstrumentEvent::NoteOn {
                 occurrence_id,
                 pitch,
@@ -523,16 +524,15 @@ impl MutableInstrumentRuntime for OperatorFeedbackRuntime {
         let mut proof = self.proof();
         let mut previous_offset = 0;
         for event in events.iter().copied() {
-            let offset = match event {
-                NativeInstrumentEvent::NoteOn { frame_offset, .. }
-                | NativeInstrumentEvent::NoteOff { frame_offset, .. }
-                | NativeInstrumentEvent::Expression { frame_offset, .. } => frame_offset,
-            };
+            let offset = event.frame_offset();
             if offset >= frame_count || offset < previous_offset {
                 return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
             }
             Self::advance_proof(&mut proof, offset - previous_offset, self.release_frames)?;
             match event {
+                NativeInstrumentEvent::NotePressure { .. } => {
+                    return Err(NativeInstrumentRuntimeError::UnsupportedNotePressure);
+                }
                 NativeInstrumentEvent::Expression { .. } => {
                     return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
                 }
@@ -637,13 +637,10 @@ impl MutableInstrumentRuntime for OperatorFeedbackRuntime {
         // admitted note construction and sampling are allocation-free.
         let mut event_index = 0;
         for (frame_index, frame) in frames.iter_mut().enumerate() {
-            while events.get(event_index).is_some_and(|event| match *event {
-                NativeInstrumentEvent::NoteOn { frame_offset, .. }
-                | NativeInstrumentEvent::NoteOff { frame_offset, .. }
-                | NativeInstrumentEvent::Expression { frame_offset, .. } => {
-                    frame_offset == frame_index
-                }
-            }) {
+            while events
+                .get(event_index)
+                .is_some_and(|event| event.frame_offset() == frame_index)
+            {
                 self.apply_event(events[event_index]);
                 event_index += 1;
             }
@@ -812,6 +809,8 @@ pub(super) fn export_harmonic_history(
     };
     let spectrum = builtin_spectrum(&base)?;
     Some(Legacy {
+        fine_offsets: runtime.configuration.fine_offsets_hz(),
+        pitch_keytrack: runtime.configuration.pitch_keytrack_percent(),
         tuning: None,
         rate: runtime.sample_rate,
         companion: super::companion::Settings::default(),

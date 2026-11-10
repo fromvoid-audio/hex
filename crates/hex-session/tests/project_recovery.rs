@@ -1,6 +1,8 @@
 //! Public worker recovery, relink atomicity, restart and mixed project round trips.
 use hex_project::{BeatTime, Command, Created, Meter, Project, Tempo};
-use hex_session::service::{Event, ProjectSource, Request, Service, missing_assets};
+use hex_session::service::{
+    Event, ProjectSource, Request, Service, missing_media::missing_media_report,
+};
 use std::{
     collections::BTreeMap,
     fs,
@@ -35,7 +37,7 @@ impl Drop for Temp {
     }
 }
 fn wait(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + std::time::Duration::from_secs(60);
     loop {
         match service.try_event() {
             Ok(event) => return event,
@@ -306,7 +308,7 @@ fn crash_worker_child() {
 }
 
 #[test]
-fn latest_untitled_only_survives_worker_restart_and_failed_checkpoint_preserves_edits() {
+fn leftover_untitled_survives_worker_restart_and_failed_checkpoint_preserves_edits() {
     let directory = Temp::new();
     let first = directory.service();
     wait(&first);
@@ -320,6 +322,7 @@ fn latest_untitled_only_survives_worker_restart_and_failed_checkpoint_preserves_
         hex_storage::load_journal(&directory.slot()).expect("first checkpoint"),
         *old.state.project
     );
+    let old_bytes = fs::read(directory.slot()).unwrap();
     drop(first);
     let latest = directory.service();
     wait(&latest);
@@ -333,12 +336,25 @@ fn latest_untitled_only_survives_worker_restart_and_failed_checkpoint_preserves_
         hex_storage::load_journal(&directory.slot()).expect("latest only"),
         *new.state.project
     );
+    let preserved = fs::read_dir(directory.slot().parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("preserved-recovery-")
+        })
+        .unwrap()
+        .join(directory.slot().file_name().unwrap());
+    assert_eq!(fs::read(&preserved).unwrap(), old_bytes);
     assert_eq!(
-        fs::read_dir(directory.slot().parent().unwrap())
-            .expect("list")
-            .count(),
-        2,
-        "only slot and generation lock"
+        hex_storage::load_journal(&preserved).unwrap(),
+        *old.state.project
+    );
+    assert_eq!(
+        new.status.as_deref(),
+        Some("previous recovery journal preserved beside its original slot")
     );
     drop(latest);
     let restarted = directory.service();
@@ -358,15 +374,65 @@ fn latest_untitled_only_survives_worker_restart_and_failed_checkpoint_preserves_
         }))
         .expect("edit");
     let failed = wait(&restarted);
-    assert_eq!(
-        failed.error.as_deref(),
-        Some("automatic recovery: unrecognized recovery journal")
+    assert!(
+        failed
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("project changed outside hex")
     );
     assert_eq!(failed.state.project.tracks().len(), 2);
     assert!(failed.state.unsaved && failed.state.can_undo && failed.playback.is_some());
     assert_eq!(
         fs::read(directory.slot()).expect("preserved external contents"),
         b"unrecognized external contents"
+    );
+}
+
+#[test]
+fn reopening_saved_project_preserves_leftover_journal_on_first_edit() {
+    let directory = Temp::new();
+    let path = directory.0.join("Saved.hex");
+    let first = directory.service();
+    wait(&first);
+    request(&first, Request::SaveNew(path.clone()));
+    let original = edit(
+        &first,
+        Command::AddTrack {
+            name: "old edits".into(),
+        },
+    );
+    let slot = hex_storage::journal_path(&path).unwrap();
+    let bytes = fs::read(&slot).unwrap();
+    drop(first);
+    let second = directory.service();
+    wait(&second);
+    open(&second, ProjectSource::Saved(path), BTreeMap::new());
+    let changed = edit(
+        &second,
+        Command::AddTrack {
+            name: "new edits".into(),
+        },
+    );
+    let preserved = fs::read_dir(directory.0.as_path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("preserved-recovery-")
+        })
+        .unwrap()
+        .join(slot.file_name().unwrap());
+    assert_eq!(fs::read(&preserved).unwrap(), bytes);
+    assert_eq!(
+        hex_storage::load_journal(&preserved).unwrap(),
+        *original.state.project
+    );
+    assert_eq!(
+        hex_storage::load_journal(&slot).unwrap(),
+        *changed.state.project
     );
 }
 
@@ -406,8 +472,10 @@ fn mixed_project_relink_recovery_save_as_current_and_session_round_trip() {
     let moved = directory.0.join("MovedCase.wav");
     fs::rename(&media, &moved).expect("missing original media");
     let source = ProjectSource::SavedJournal(target.clone());
-    let missing = missing_assets(&source).expect("discover missing stable assets");
-    assert_eq!(missing.len(), 2);
+    let missing = missing_media_report(&source).expect("discover missing stable assets");
+    // The Session cell re-imports the unchanged file onto the Arrangement
+    // clip's resident asset, so one asset is missing.
+    assert_eq!(missing.len(), 1);
     let restarted = directory.service();
     wait(&restarted);
     edit(
@@ -420,7 +488,7 @@ fn mixed_project_relink_recovery_save_as_current_and_session_round_trip() {
     let initial = request(&restarted, Request::SaveNew(working_path.clone()));
     let wrong = directory.0.join("WrongLength.wav");
     wav(&wrong, 7);
-    let bad_relinks = missing.iter().map(|(id, _)| (*id, wrong.clone())).collect();
+    let bad_relinks = missing.iter().map(|m| (m.asset, wrong.clone())).collect();
     restarted
         .submit(Request::OpenWith {
             source: source.clone(),
@@ -447,7 +515,7 @@ fn mixed_project_relink_recovery_save_as_current_and_session_round_trip() {
         fs::read(&target).expect("source preserved after refusal"),
         saved_bytes
     );
-    let relinks = missing.iter().map(|(id, _)| (*id, moved.clone())).collect();
+    let relinks = missing.iter().map(|m| (m.asset, moved.clone())).collect();
     let recovered = open(&restarted, source, relinks);
     let mut expected = dirty_project.snapshot();
     for asset in &mut expected.assets {

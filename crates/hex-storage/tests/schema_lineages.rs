@@ -87,7 +87,7 @@ fn original_lineages_roundtrip_and_malformed_relabelled_envelopes_refuse_without
         assert_eq!(original, before);
     }
     let current: Value = serde_json::from_slice(&encode(&fixture()).unwrap()).unwrap();
-    for version in (0..34).chain([hex_storage::CURRENT_SCHEMA_VERSION + 1, u32::MAX]) {
+    for version in (0..34).chain([hex_storage::NEWEST_SCHEMA_VERSION + 1, u32::MAX]) {
         let mut old = current.clone();
         old["version"] = version.into();
         assert!(

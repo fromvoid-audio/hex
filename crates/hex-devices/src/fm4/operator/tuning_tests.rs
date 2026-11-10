@@ -47,7 +47,7 @@ fn review_ratio_mixed_fixed_and_velocity_paths_refuse_zero_phase_quantization() 
     assert!(
         context
             .prepare_note_with_tuning(0, 127, Some(&nyquist))
-            .is_err()
+            .is_ok()
     );
 }
 
@@ -189,10 +189,139 @@ fn fixed_shapes_keep_pitch_independent_caps_and_defensive_validation() {
         [OperatorTuning::fixed(12_000.0, 2.0).expect("valid domain"); 4],
         [OperatorWaveform::Sine; 4],
     );
-    assert!(nyquist.prepare_note(0, 127).is_err());
+    assert!(nyquist.prepare_note(0, 127).is_ok());
     let below = configuration(
         [OperatorTuning::fixed(11_999.0, 2.0).expect("below"); 4],
         [OperatorWaveform::Sine; 4],
     );
     assert!(below.prepare_note(127, 127).is_ok());
+}
+
+/// Pulse #3957: a modulator at or above nyquist is silenced for that note only.
+/// The note renders exactly like the same patch with that modulator muted.
+#[test]
+fn nyquist_modulator_is_silenced_for_that_note_only() {
+    let mut modulation = [[0.0; 4]; 4];
+    modulation[3][0] = 1.0;
+    let routing = Routing::new(modulation, [1.0, 0.0, 0.0, 0.0]).expect("routing");
+    let envelopes = [OperatorEnvelope::new(1.0, 1.0, 1.0, 0.0, 0.0, 0.0).expect("envelope"); 4];
+    let oscillators = |modulator_level| {
+        let mut oscillators = [Oscillator::new(1.0, 1.0, 0.0).expect("oscillator"); 4];
+        oscillators[3] = Oscillator::new(16.0, modulator_level, 0.0).expect("modulator");
+        oscillators
+    };
+    let table = SineTable::new();
+    for shapes in [[OperatorWaveform::Sine; 4], [OperatorWaveform::Square; 4]] {
+        let prepare = |modulator_level| {
+            PreparedOperatorConfiguration::new_with_waveforms(
+                44_100,
+                oscillators(modulator_level),
+                routing,
+                envelopes,
+                shapes,
+            )
+            .expect("configuration")
+        };
+        let (patch, muted) = (prepare(1.0), prepare(0.0));
+        let render = |context: &PreparedOperatorConfiguration, pitch| {
+            let note = context.prepare_note(pitch, 100).expect("note admitted");
+            (0..64)
+                .map(|age| context.sample(&table, &note, age, u64::MAX))
+                .collect::<Vec<_>>()
+        };
+        let high = render(&patch, 120);
+        assert!(high.iter().any(|sample| *sample != 0.0));
+        assert_eq!(high, render(&muted, 120), "{shapes:?}");
+        assert_ne!(render(&patch, 60), render(&muted, 60), "{shapes:?}");
+        // The silenced note stays valid across the shared-context payload.
+        let note = patch.prepare_note(120, 100).expect("note admitted");
+        assert!(patch.note_matches_configuration(&note));
+        let decoded = PreparedOperatorNote::from_shared_payload(&note.into_shared_payload());
+        assert_eq!(decoded, Some(note));
+        let lfo = patch.prepare_lfo_note(120, 100).expect("lfo note admitted");
+        assert_eq!(
+            PreparedOperatorConfiguration::lfo_steps(&lfo)[3],
+            super::tuning::SILENCED_STEP
+        );
+    }
+}
+
+#[test]
+fn fine_offsets_follow_tuning_table_and_keep_untouched_oscillators_identical() {
+    let original = configuration([OperatorTuning::Ratio; 4], [OperatorWaveform::Sine; 4]);
+    let table = hex_lattice::TuningTable::new([300.0; 128]).unwrap();
+    let changed = original
+        .clone()
+        .with_fine_offsets([25.0, 0.0, 0.0, 0.0])
+        .unwrap();
+    let reference = configuration(
+        [OperatorTuning::fixed(325.0, 1.0).unwrap(); 4],
+        [OperatorWaveform::Sine; 4],
+    );
+    let a = changed
+        .prepare_note_with_tuning(69, 127, Some(&table))
+        .unwrap();
+    let b = reference.prepare_note(69, 127).unwrap();
+    let sine = SineTable::new();
+    for age in [1, 97, 1024, 8192] {
+        assert_eq!(
+            changed.sample(&sine, &a, age, u64::MAX).to_bits(),
+            reference.sample(&sine, &b, age, u64::MAX).to_bits()
+        );
+    }
+    assert!(!original.retarget_compatible_with(&changed));
+    assert!(
+        original.retarget_compatible_with(&original.clone().with_fine_offsets([0.0; 4]).unwrap())
+    );
+    for bad in [f32::NAN, f32::INFINITY, -1000.01, 1000.01] {
+        assert!(original.clone().with_fine_offsets([bad; 4]).is_err());
+    }
+}
+
+#[test]
+fn fine_offsets_silence_only_out_of_band_oscillators() {
+    for (base, offset) in [
+        (440.0, -1000.0),
+        (440.0, -440.0),
+        (23_500.0, 1000.0),
+        (23_500.0, 500.0),
+    ] {
+        let tuning = [
+            OperatorTuning::fixed(base / 2.0, 2.0).unwrap(),
+            OperatorTuning::Ratio,
+            OperatorTuning::Ratio,
+            OperatorTuning::Ratio,
+        ];
+        let make = |first_level| {
+            PreparedOperatorConfiguration::new_with_tuning(
+                48_000,
+                [
+                    Oscillator::new(1.0, first_level, 0.0).unwrap(),
+                    Oscillator::new(1.0, 1.0, 0.0).unwrap(),
+                    Oscillator::new(1.0, 0.0, 0.0).unwrap(),
+                    Oscillator::new(1.0, 0.0, 0.0).unwrap(),
+                ],
+                Routing::new([[0.0; 4]; 4], [1.0, 1.0, 0.0, 0.0]).unwrap(),
+                [OperatorEnvelope::new(1.0, 1.0, 1.0, 0.0, 0.0, 0.0).unwrap(); 4],
+                [OperatorWaveform::Sine; 4],
+                tuning,
+            )
+            .unwrap()
+        };
+        let actual = make(1.0)
+            .with_fine_offsets([offset, 0.0, 0.0, 0.0])
+            .unwrap();
+        let expected = make(0.0);
+        let a = actual.prepare_note(69, 127).unwrap();
+        let b = expected.prepare_note(69, 127).unwrap();
+        let table = SineTable::new();
+        for age in [1, 97, 1024, 8192] {
+            let sample = actual.sample(&table, &a, age, u64::MAX);
+            assert_eq!(
+                sample.to_bits(),
+                expected.sample(&table, &b, age, u64::MAX).to_bits()
+            );
+        }
+        assert_ne!(actual.sample(&table, &a, 97, u64::MAX), 0.0);
+    }
 }

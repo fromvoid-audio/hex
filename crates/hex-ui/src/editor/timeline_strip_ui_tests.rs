@@ -38,7 +38,7 @@ fn arrangement_audio_and_midi_paint_the_same_compact_timeline_surfaces(cx: &mut 
         assert!(visual.debug_bounds("midi-loop-start-marker").is_some());
         assert!(visual.debug_bounds("midi-loop-end-marker").is_some());
         editor.update(&mut visual, |v, cx| {
-            v.piano_beat_start = hex_project::BeatTime::ONE;
+            v.piano_beat_start = i128::from(hex_project::BeatTime::ONE.raw());
             v.piano_beat_span = hex_project::BeatTime::from_quarters(2).unwrap();
             cx.notify();
         });
@@ -116,7 +116,8 @@ fn loop_endpoints_exactly_at_viewport_edges_remain_painted(cx: &mut TestAppConte
         (4, "midi-loop-end-marker", "midi-loop-start-marker", false),
     ] {
         editor.update(&mut visual, |v, cx| {
-            v.piano_beat_start = hex_project::BeatTime::from_quarters(first).unwrap();
+            v.piano_beat_start =
+                i128::from(hex_project::BeatTime::from_quarters(first).unwrap().raw());
             v.piano_beat_span = hex_project::BeatTime::from_quarters(2).unwrap();
             cx.notify();
         });

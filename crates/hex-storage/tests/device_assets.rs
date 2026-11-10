@@ -52,6 +52,7 @@ fn replacement(
         .with_asset_references(references)
         .unwrap();
     Command::ReplaceDeviceStateWithIdentityReservation {
+        automation: None,
         device,
         expected_state,
         expected_variant: editor.project().device(device).unwrap().active_variant(),

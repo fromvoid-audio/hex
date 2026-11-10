@@ -1,10 +1,11 @@
-//! Exact channel-note messages from the existing byte decoder. This is an input
+//! Exact note and per-key expression messages from the existing byte decoder. This is an input
 //! contract, not a timestamp, scheduler, audio lease or recording authority.
 use crate::HeldNoteFault;
 
-/// Messages retain wire order, pitch, channel and the original MIDI velocity.
+/// Messages retain wire order, pitch, channel and seven-bit velocity or pressure.
 /// Zero-velocity NoteOn has NoteOff semantics; release velocity is preserved.
-/// AllNotesOff also represents MIDI reset. InputLost requires terminal host
+/// AllNotesOff also represents MIDI reset and dropped burst input. InputLost
+/// (a held-note fault) requires terminal host
 /// cancellation outside any bounded event queue, so overflow cannot stick notes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NoteEvent {
@@ -17,6 +18,12 @@ pub enum NoteEvent {
         channel: u8,
         pitch: u8,
         velocity: u8,
+    },
+    /// Polyphonic key pressure for one channel and pitch.
+    PolyPressure {
+        channel: u8,
+        pitch: u8,
+        value: u8,
     },
     AllNotesOff,
     InputLost(HeldNoteFault),
@@ -40,6 +47,11 @@ impl NoteEvent {
                 channel,
                 pitch,
                 velocity,
+            }),
+            0xa0 => Some(Self::PolyPressure {
+                channel,
+                pitch,
+                value: velocity,
             }),
             0xb0 if matches!(pitch, 120 | 123) => Some(Self::AllNotesOff),
             _ => None,
@@ -105,6 +117,69 @@ mod tests {
     }
 
     #[test]
+    fn poly_pressure_keeps_wire_order_without_changing_held_notes_or_channel_pressure() {
+        let mut decoder = Decoder::default();
+        let held = HeldNoteInput::default();
+        let events = RefCell::new(Vec::new());
+        let controllers = RefCell::new(Vec::new());
+        let last = deliver_packets_with_notes(
+            &mut decoder,
+            2,
+            Controllers::default(),
+            [
+                &[0x92, 60, 101, 64, 90, 0xa2, 60][..],
+                &[0xf8, 127, 64, 0, 0xa1, 60, 100, 0xd2, 23, 0x82, 60, 11][..],
+            ],
+            &held,
+            &|snapshot| controllers.borrow_mut().push(snapshot),
+            &|event| events.borrow_mut().push(event),
+        );
+        assert_eq!(last.pressure, 23);
+        assert_eq!(*controllers.borrow(), vec![last]);
+        assert_eq!(
+            *events.borrow(),
+            [
+                NoteEvent::On {
+                    channel: 2,
+                    pitch: 60,
+                    velocity: 101
+                },
+                NoteEvent::On {
+                    channel: 2,
+                    pitch: 64,
+                    velocity: 90
+                },
+                NoteEvent::PolyPressure {
+                    channel: 2,
+                    pitch: 60,
+                    value: 127
+                },
+                NoteEvent::PolyPressure {
+                    channel: 2,
+                    pitch: 64,
+                    value: 0
+                },
+                NoteEvent::Off {
+                    channel: 2,
+                    pitch: 60,
+                    velocity: 11
+                },
+            ]
+        );
+        let HeldNotesRead::Snapshot(snapshot) = held.read() else {
+            panic!("expected snapshot");
+        };
+        assert_eq!(snapshot.through(), 2);
+        assert_eq!(
+            snapshot
+                .after(0)
+                .map(|note| (note.pitch, note.velocity))
+                .collect::<Vec<_>>(),
+            [(64, 90)]
+        );
+    }
+
+    #[test]
     fn reset_and_channel_scoped_all_notes_off_preserve_wire_order() {
         let mut decoder = Decoder::default();
         let held = HeldNoteInput::default();
@@ -132,34 +207,115 @@ mod tests {
         );
     }
 
+    fn deliver<'a>(
+        decoder: &mut Decoder,
+        held: &HeldNoteInput,
+        events: &RefCell<Vec<NoteEvent>>,
+        packets: impl IntoIterator<Item = &'a [u8]>,
+    ) {
+        deliver_packets_with_notes(
+            decoder,
+            0,
+            Controllers::default(),
+            packets,
+            held,
+            &|_| {},
+            &|event| events.borrow_mut().push(event),
+        );
+    }
+
     #[test]
-    fn packet_loss_is_explicit_and_terminal_even_if_more_input_arrives() {
+    fn exact_packet_and_byte_budgets_deliver_without_loss() {
         let mut decoder = Decoder::default();
         let held = HeldNoteInput::default();
         let events = RefCell::new(Vec::new());
-        let bytes = vec![0xf8; super::super::CALLBACK_BYTES];
-        deliver_packets_with_notes(
-            &mut decoder,
-            0,
-            Controllers::default(),
-            [bytes.as_slice()],
-            &held,
-            &|_| {},
-            &|event| events.borrow_mut().push(event),
-        );
-        deliver_packets_with_notes(
-            &mut decoder,
-            0,
-            Controllers::default(),
-            [&[0x90, 60, 127][..]],
-            &held,
-            &|_| {},
-            &|event| events.borrow_mut().push(event),
-        );
-        assert!(held.is_cancelled());
+        // The final permitted packet carries the note; nothing exceeds the limit.
+        let mut packets = vec![&[0xf8][..]; crate::CALLBACK_PACKETS - 1];
+        packets.push(&[0x90, 60, 100]);
+        deliver(&mut decoder, &held, &events, packets);
+        // A single packet that exactly fills the byte budget ends with a note.
+        let mut bytes = vec![0xf8; crate::CALLBACK_BYTES - 3];
+        bytes.extend([0x90, 62, 90]);
+        deliver(&mut decoder, &held, &events, [bytes.as_slice()]);
+        assert!(!held.is_cancelled());
         assert_eq!(
             *events.borrow(),
-            vec![NoteEvent::InputLost(HeldNoteFault::PacketLimit)]
+            vec![
+                NoteEvent::On {
+                    channel: 0,
+                    pitch: 60,
+                    velocity: 100
+                },
+                NoteEvent::On {
+                    channel: 0,
+                    pitch: 62,
+                    velocity: 90
+                },
+            ]
         );
+        let HeldNotesRead::Snapshot(snapshot) = held.read() else {
+            panic!("expected snapshot")
+        };
+        assert_eq!(
+            snapshot.after(0).map(|n| n.pitch).collect::<Vec<_>>(),
+            [60, 62]
+        );
+    }
+
+    #[test]
+    fn dense_burst_releases_held_notes_and_input_keeps_working() {
+        for mut burst in [
+            vec![vec![0xf8]; crate::CALLBACK_PACKETS + 1],
+            vec![vec![0xf8; crate::CALLBACK_BYTES + 1]],
+        ] {
+            let mut decoder = Decoder::default();
+            let held = HeldNoteInput::default();
+            let events = RefCell::new(Vec::new());
+            deliver(&mut decoder, &held, &events, [&[0x90, 60, 100][..]]);
+            // The excess carries a running-status fragment; it must not
+            // combine with the next call's bytes into a phantom note.
+            if let Some(packet) = burst.last_mut() {
+                packet.push(0x90);
+            }
+            deliver(
+                &mut decoder,
+                &held,
+                &events,
+                burst.iter().map(Vec::as_slice),
+            );
+            let HeldNotesRead::Snapshot(released) = held.read() else {
+                panic!("expected snapshot after a burst")
+            };
+            assert_eq!(released.after(0).count(), 0);
+            deliver(&mut decoder, &held, &events, [&[64, 70, 0x90, 67, 80][..]]);
+            assert!(!held.is_cancelled());
+            assert_eq!(
+                *events.borrow(),
+                vec![
+                    NoteEvent::On {
+                        channel: 0,
+                        pitch: 60,
+                        velocity: 100
+                    },
+                    NoteEvent::AllNotesOff,
+                    NoteEvent::On {
+                        channel: 0,
+                        pitch: 67,
+                        velocity: 80
+                    },
+                ]
+            );
+            let HeldNotesRead::Snapshot(snapshot) = held.read() else {
+                panic!("expected snapshot")
+            };
+            // Tokens stay monotonic so a control-side floor cannot hide new keys.
+            assert_eq!(
+                snapshot
+                    .after(released.through())
+                    .map(|n| n.pitch)
+                    .collect::<Vec<_>>(),
+                [67]
+            );
+        }
     }
 }

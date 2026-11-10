@@ -29,28 +29,104 @@ import uuid
 
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def _read_policy_source(path: Path) -> bytes:
+    """Read exact regular policy source without links or blocking on FIFOs."""
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise RuntimeError(f"CI policy source is not a regular file: {path.name}")
+            with os.fdopen(descriptor, "rb", closefd=False) as source:
+                return source.read()
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(directory)
+
+
 _PLAN_SPEC = importlib.util.spec_from_file_location("hex_ci_plan", Path(__file__).with_name("ci_plan.py"))
 if _PLAN_SPEC is None or _PLAN_SPEC.loader is None:
     raise RuntimeError("local CI planner unavailable")
 ci_plan = importlib.util.module_from_spec(_PLAN_SPEC)
-_PLAN_SPEC.loader.exec_module(ci_plan)
+# Execute and retain the exact source witness; timestamp-valid .pyc files can
+# otherwise contain different code than the source currently on disk.
+_PLAN_SOURCE_BYTES = _read_policy_source(Path(_PLAN_SPEC.origin))
+_PLAN_SOURCE_SHA256 = hashlib.sha256(_PLAN_SOURCE_BYTES).hexdigest()
+exec(compile(_PLAN_SOURCE_BYTES, _PLAN_SPEC.origin, "exec", dont_inherit=True), ci_plan.__dict__)
+
+
 _INPUT_SPEC = importlib.util.spec_from_file_location("hex_build_inputs", Path(__file__).with_name("build_inputs.py"))
 if _INPUT_SPEC is None or _INPUT_SPEC.loader is None:
     raise RuntimeError("Cargo input identity helper unavailable")
 build_inputs = importlib.util.module_from_spec(_INPUT_SPEC)
-_INPUT_SPEC.loader.exec_module(build_inputs)
+_INPUT_SOURCE_BYTES = _read_policy_source(Path(_INPUT_SPEC.origin))
+_INPUT_SOURCE_SHA256 = hashlib.sha256(_INPUT_SOURCE_BYTES).hexdigest()
+exec(compile(_INPUT_SOURCE_BYTES, _INPUT_SPEC.origin, "exec", dont_inherit=True), build_inputs.__dict__)
 _CHECKPOINT_SPEC = importlib.util.spec_from_file_location("hex_ci_checkpoint", Path(__file__).with_name("ci_checkpoint.py"))
 if _CHECKPOINT_SPEC is None or _CHECKPOINT_SPEC.loader is None:
     raise RuntimeError("CI checkpoint helper unavailable")
 ci_checkpoint = importlib.util.module_from_spec(_CHECKPOINT_SPEC)
-_CHECKPOINT_SPEC.loader.exec_module(ci_checkpoint)
+_CHECKPOINT_SOURCE_BYTES = _read_policy_source(Path(_CHECKPOINT_SPEC.origin))
+_CHECKPOINT_SOURCE_SHA256 = hashlib.sha256(_CHECKPOINT_SOURCE_BYTES).hexdigest()
+exec(compile(_CHECKPOINT_SOURCE_BYTES, _CHECKPOINT_SPEC.origin, "exec", dont_inherit=True), ci_checkpoint.__dict__)
 _STORAGE_SPEC = importlib.util.spec_from_file_location("hex_ci_target_storage", Path(__file__).with_name("ci_target_storage.py"))
 if _STORAGE_SPEC is None or _STORAGE_SPEC.loader is None:
     raise RuntimeError("Cargo target storage helper unavailable")
 ci_target_storage = importlib.util.module_from_spec(_STORAGE_SPEC)
-_STORAGE_SPEC.loader.exec_module(ci_target_storage)
+_STORAGE_SOURCE_BYTES = _read_policy_source(Path(_STORAGE_SPEC.origin))
+_STORAGE_SOURCE_SHA256 = hashlib.sha256(_STORAGE_SOURCE_BYTES).hexdigest()
+exec(compile(_STORAGE_SOURCE_BYTES, _STORAGE_SPEC.origin, "exec", dont_inherit=True), ci_target_storage.__dict__)
 GIB = 1024 ** 3
 DEFAULT_FULL_MIN_FREE_BYTES = 2 * GIB
+
+
+def cli_policy_error(root: Path) -> str | None:
+    """Compare the CLI's executed policy and helper bytes with regular source files."""
+    expected = {"ci_plan.py": _PLAN_SOURCE_SHA256,
+                "python_test_plan.py": ci_plan._PYTHON_SOURCE_SHA256,
+                "build_inputs.py": _INPUT_SOURCE_SHA256,
+                "ci_checkpoint.py": _CHECKPOINT_SOURCE_SHA256,
+                "ci_target_storage.py": _STORAGE_SOURCE_SHA256}
+    try:
+        directory = os.open(root / "scripts", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            for name, digest in expected.items():
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                try:
+                    if not stat.S_ISREG(os.fstat(fd).st_mode):
+                        raise ValueError(f"planner source is not a regular file: {name}")
+                    with os.fdopen(fd, "rb", closefd=False) as source:
+                        if hashlib.sha256(source.read()).hexdigest() != digest:
+                            raise ValueError(f"executed planner differs from current source: {name}")
+                finally:
+                    os.close(fd)
+        finally:
+            os.close(directory)
+    except (OSError, ValueError) as error:
+        return str(error)
+    return None
+
+
+def delivery_source_error(root: Path) -> str | None:
+    """Bind a source-loaded runner and its helpers to a delivery candidate.
+
+    The supported importer installs the digest of the exact compiled bytes
+    before execution. Direct or legacy imports without that witness cannot
+    qualify delivery evidence.
+    """
+    witness = globals().get("_DELIVERY_RUNNER_SOURCE_SHA256")
+    if not isinstance(witness, str) or re.fullmatch(r"[0-9a-f]{64}", witness) is None:
+        return "runner source witness is unavailable"
+    try:
+        actual = hashlib.sha256(_read_policy_source(root / "scripts" / "local-ci.py")).hexdigest()
+    except (OSError, RuntimeError, ValueError) as error:
+        return f"runner source unavailable: {error}"
+    if actual != witness:
+        return "executed runner differs from candidate source"
+    return cli_policy_error(root)
 
 
 @contextmanager
@@ -129,6 +205,19 @@ QUICK_STEPS = (
     Step("format", ("cargo", "fmt", "--all", "--check")),
 )
 
+# One source of truth schedules every feature-gated UI unit binary in full,
+# health and whole-package plans. Preserve the established piano step ID.
+def ui_unit_label(target: str) -> str:
+    return "piano" if target == "unit_piano_roll" else target.removeprefix("unit_").replace("_", "-")
+
+
+UI_UNIT_STEPS = tuple(
+    Step(f"ui-{ui_unit_label(target)}-unit-tests",
+         ("cargo", "test", "-p", "hex-ui", "--features", feature, "--test", target, "--locked"))
+    for target, feature in ci_plan.UI_UNIT_FEATURES.items()
+)
+UI_UNIT_STEP_IDS = frozenset(step.step_id for step in UI_UNIT_STEPS)
+
 # Cheap failures should stop before self-tests; keep every configuration once.
 FULL_STEPS = (
     *QUICK_STEPS,
@@ -141,16 +230,29 @@ FULL_STEPS = (
     Step("workspace-tests", ("cargo", "test", "--workspace", "--locked")),
     Step("prepared-export-instrument-tests", ("cargo", "test", "-p", "hex-export", "--features", "instrument-test-support", "--locked")),
     Step("ui-feature-tests", ("cargo", "test", "-p", "hex-ui", "--features", "ui-test-support", "--locked")),
+    *UI_UNIT_STEPS,
+    Step("sandbox-unit-tests", ("cargo", "test", "-p", "hex-sandbox", "--features", "ui-unit-tier", "--locked", "theme::"), requires_tests=True),
     Step("device-gallery-tests", ("cargo", "test", "-p", "hex-ui", "--example", "layout_review", "--features", "ui-test-support", "--locked")),
-    Step("audio-allocation-probe", ("cargo", "test", "-p", "hex-audio", "-p", "hex-desktop", "-p", "hex-plugin-host", "--features", "allocation-probe", "--locked")),
+    Step("audio-allocation-probe", ("cargo", "test", "-p", "hex-audio", "-p", "hex-plugin-host", "--features", "allocation-probe", "--locked")),
+    # Native fixtures serialize on hex-desktop's process-wide output lease;
+    # disjoint test processes each own one, so their chains run concurrently.
+    Step("desktop-allocation-probe", ("python3", "scripts/test_shards.py", "--shards", "4", "--",
+                                      "cargo", "test", "-p", "hex-desktop", "--features", "allocation-probe", "--locked")),
     Step("stream-allocation-probe", ("cargo", "test", "-p", "hex-stream", "--features", "allocation-probe", "--locked")),
     Step("workspace-clippy", ("cargo", "clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings")),
     Step("prepared-export-instrument-clippy", ("cargo", "clippy", "-p", "hex-export", "--all-targets", "--features", "instrument-test-support", "--locked", "--", "-D", "warnings")),
     Step("ui-feature-clippy", ("cargo", "clippy", "-p", "hex-ui", "--all-targets", "--features", "ui-test-support", "--locked", "--", "-D", "warnings")),
+    Step("ui-unit-clippy", ("cargo", "clippy", "-p", "hex-ui", "--all-targets", "--features", "ui-unit-tier", "--locked", "--", "-D", "warnings")),
+    Step("sandbox-unit-clippy", ("cargo", "clippy", "-p", "hex-sandbox", "--all-targets", "--features", "ui-unit-tier", "--locked", "--", "-D", "warnings")),
     Step("audio-feature-clippy", ("cargo", "clippy", "-p", "hex-audio", "-p", "hex-desktop", "-p", "hex-plugin-host", "--all-targets", "--features", "allocation-probe", "--locked", "--", "-D", "warnings")),
     Step("stream-feature-clippy", ("cargo", "clippy", "-p", "hex-stream", "--all-targets", "--features", "allocation-probe", "--locked", "--", "-D", "warnings")),
     Step("desktop-build", ("cargo", "build", "-p", "hex-desktop", "--locked")),
 )
+
+
+def runs_rust_tests(argv: tuple[str, ...]) -> bool:
+    """Plain `cargo test` or the same command run through the test sharder."""
+    return argv[:2] == ("cargo", "test") or argv[:2] == ("python3", "scripts/test_shards.py")
 
 
 def log_timing_estimates(text: str, duration: float) -> dict[str, float | None]:
@@ -170,6 +272,40 @@ def log_timing_estimates(text: str, duration: float) -> dict[str, float | None]:
     known = sum(value for value in result.values() if value is not None)
     result["unclassified_seconds"] = round(duration - known, 6) if known <= duration else None
     return result
+
+
+# Merge test-execution budget (user policy, 1 November 2026): owner-boundary
+# merge checks aim to keep test setup and execution, excluding Cargo's build
+# phase, under one minute. Exceeding it is a warning, not a merge failure (user
+# decision, 1 November 2026; overruns are investigated in Pulse #4100). Carried
+# steps cost nothing in this run and are excluded.
+MERGE_TEST_BUDGET_SECONDS = 60.0
+
+
+def merge_test_budget(entries: list, reason: str | None) -> dict:
+    """Test-only seconds of executed test steps: wall time minus the build phase.
+
+    Harness overhead and doctest compilation count as test time, so this is a
+    conservative upper bound. Lint, format and build-only steps are excluded.
+    """
+    spent = []
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("execution") == "carried":
+            continue
+        timing = entry.get("timing_estimates") or {}
+        argv = tuple(entry.get("argv") or ())
+        tests = (runs_rust_tests(argv) or timing.get("rust_harness_seconds") is not None
+                 or timing.get("python_harness_seconds") is not None)
+        if not tests or not isinstance(entry.get("duration_seconds"), (int, float)):
+            continue
+        seconds = max(0.0, entry["duration_seconds"] - (timing.get("cargo_build_phase_seconds") or 0.0))
+        spent.append((round(seconds, 3), entry.get("step_id")))
+    total = round(sum(seconds for seconds, _ in spent), 3)
+    return {"limit_seconds": MERGE_TEST_BUDGET_SECONDS, "test_seconds": total,
+            "exceeded": total > MERGE_TEST_BUDGET_SECONDS,
+            "slowest": [{"step_id": step, "seconds": seconds}
+                        for seconds, step in sorted(spent, reverse=True)[:3]],
+            "over_budget_reason": reason}
 
 
 def edit_selection(inventory: list[dict], *, package: str, test_filter: str,
@@ -216,14 +352,57 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
     if sorted(affected) != sorted(plan["affected_packages"]):
         raise ValueError("boundary consumers do not match resolved Cargo closure")
     packages = tuple(arg for p in affected for arg in ("-p", p))
-    steps = [*QUICK_STEPS, next(s for s in FULL_STEPS if s.step_id == "runner-tests")]
+    # Main is formatted; only the changed owners' sources can need it.
+    owners = boundary.get("test_packages") or affected
+    steps = [*(Step("format", ("cargo", "fmt", *(a for p in owners for a in ("-p", p)), "--check"))
+               if s.step_id == "format" else s for s in QUICK_STEPS),
+             next(s for s in FULL_STEPS if s.step_id == "runner-tests")]
     if any(path.endswith(("Cargo.toml", "/build.rs")) for path in plan.get("paths", [])):
         steps.append(next(s for s in FULL_STEPS if s.step_id == "dependency-future-lints"))
     tests = boundary["tests"]
+    # Owners test; every affected consumer still compiles and lints below.
+    tested = boundary.get("test_packages", [])
+    module_filters = boundary.get("module_filters", {})
+    by_name = {p["name"]: p for p in inventory}
+    doc_examples = set(boundary.get("doc_example_owners", []))
+
+    def scoped(argv: tuple[str, ...]) -> tuple[str, ...]:
+        """Restrict a test command to the changed modules when every owner it tests is module-scoped."""
+        owners = [argv[i + 1] for i, arg in enumerate(argv) if arg == "-p"]
+        if not owners or any(owner not in module_filters for owner in owners):
+            return argv
+        names = sorted({name for owner in owners for name in module_filters[owner]})
+        # Module paths name only unit tests in the library or binary; integration
+        # tests, examples and benches would build and link only to match nothing.
+        if "--doc" not in argv and not {"--test", "--example", "--bench", "--lib", "--bins"} & set(argv):
+            kinds = {kind for owner in owners for target in by_name[owner]["targets"] for kind in target["kind"]}
+            selector = ("--lib",) if "lib" in kinds else ("--bins",)
+            argv = (*(a for a in argv if a != "--all-targets"), *selector)
+        if argv[:2] == ("python3", "scripts/test_shards.py"):
+            split = argv.index("--")
+            # Coverage is verified across module-scoped configurations together.
+            return (*argv[:split], "--allow-empty",
+                    *(a for name in names for a in ("--filter", name)), *argv[split:])
+        return (*argv, "--", *names)
     if boundary["kind"] == "packages":
-        if sorted(boundary["test_packages"]) != sorted(affected) or tests:
-            raise ValueError("package boundary must test every affected consumer")
-        steps.append(Step("affected-tests", ("cargo", "test", *packages, "--locked")))
+        if not tested or set(tested) - set(affected) or tests:
+            raise ValueError("package boundary must test its owners within the affected closure")
+        # Reviewed additive test features run once, with the feature (below);
+        # their doctests stay here because --all-targets feature runs omit them.
+        single = boundary.get("single_run", {})
+        defaults = tuple(arg for p in tested if p not in single and p not in module_filters for arg in ("-p", p))
+        if defaults:
+            steps.append(Step("affected-tests", ("cargo", "test", *defaults, "--locked")))
+        for package in tested:
+            if package in module_filters and package not in single:
+                steps.append(Step(f"module-tests-{package}", scoped(("cargo", "test", "-p", package, "--locked"))))
+        if single:
+            for package in (p for p in tested if p in single):
+                # Module-scoped doctests run only when the changed files carry doc examples.
+                if package in module_filters and package not in doc_examples:
+                    continue
+                steps.append(Step("single-run-doctests" if package not in module_filters else f"module-doctests-{package}",
+                                  scoped(("cargo", "test", "--doc", "-p", package, "--locked"))))
     elif boundary["kind"] == "compressor":
         if not tests:
             raise ValueError("device boundary has no contract targets")
@@ -244,21 +423,52 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
     steps.append(Step("affected-clippy", ("cargo", "clippy", *packages, "--all-targets", "--locked", "--", "-D", "warnings")))
     # Keep separate default/feature configurations, including feature-gated
     # examples and allocation probes. Do not deduplicate by overlapping names.
-    covered_features = {"hex-plugin-host": {"allocation-probe"}, "hex-ui": {"ui-test-support"}, "hex-export": {"instrument-test-support"},
+    covered_features = {"hex-plugin-host": {"allocation-probe"}, "hex-ui": {"ui-test-support", "ui-unit-tier"}, "hex-export": {"instrument-test-support"},
+                        "hex-sandbox": {"ui-unit-tier"},
                         "hex-audio": {"allocation-probe"}, "hex-stream": {"allocation-probe"},
                         "hex-desktop": {"allocation-probe"}}
+    # Every consumer's reviewed feature configurations lint in ONE invocation:
+    # separate invocations recompiled the shared dependency chain per feature
+    # (55-112 s against 38-42 s measured, 1 November 2026). The default-feature
+    # affected-clippy above keeps cfg(not(feature)) branches compiling.
+    lint_features: set[str] = set()
     for step in FULL_STEPS:
         if "--features" not in step.argv:
             continue
+        if step.step_id in UI_UNIT_STEP_IDS | {"ui-unit-clippy"} and (
+                "hex-ui" not in by_name or "ui-unit-tier" not in by_name["hex-ui"]["features"]):
+            continue
         owners = [step.argv[i + 1] for i, arg in enumerate(step.argv) if arg == "-p"]
-        selected = [p for p in owners if p in affected]
-        if not selected or boundary["kind"] == "compressor" and step.argv[1] == "test":
+        # Feature test suites run for tested owners; feature lints for every consumer.
+        scope = tested if runs_rust_tests(step.argv) else affected
+        selected = [p for p in owners if p in scope]
+        if not selected or boundary["kind"] == "compressor" and runs_rust_tests(step.argv):
+            continue
+        # Scoped UI changes select mapped unit targets below; a whole-package
+        # run retains this explicit feature-gated target from FULL_STEPS.
+        if step.step_id in UI_UNIT_STEP_IDS and "hex-ui" in module_filters:
+            continue
+        # Example targets are separate crates: a src module filter cannot name
+        # their tests. A module-scoped owner's own module tests cover the change.
+        if "--example" in step.argv and runs_rust_tests(step.argv) and all(p in module_filters for p in selected):
+            continue
+        if not runs_rust_tests(step.argv):
+            # Feature lints are folded into one invocation below.
+            feature = step.argv[step.argv.index("--features") + 1]
+            lint_features.update(f"{p}/{feature}" for p in selected)
             continue
         argv = list(step.argv)
         for owner in set(owners) - set(selected):
             index = argv.index(owner)
             del argv[index - 1:index + 1]
-        steps.append(Step(step.step_id, tuple(argv)))
+        if step.step_id == "sandbox-unit-tests" and "hex-sandbox" in module_filters:
+            # Scoped changes use the owning module filters in place of the
+            # full/health theme filter, not both filters together.
+            argv.remove("theme::")
+        sandbox_theme = (step.step_id == "sandbox-unit-tests" and
+                         ("hex-sandbox" not in module_filters or
+                          any(name.startswith("theme::") for name in module_filters["hex-sandbox"])))
+        steps.append(Step(step.step_id, scoped(tuple(argv)), requires_tests=sandbox_theme))
     for package in inventory:
         if package["name"] not in affected:
             continue
@@ -268,13 +478,43 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
         # need reviewed configuration rules rather than a guessed power set.
         # Compressor plans run reviewed contract tests, but still lint every
         # extra configuration so an unexercised cfg branch cannot stop compiling.
-        commands = ("clippy",) if boundary["kind"] == "compressor" else ("test", "clippy")
+        lint_features.update(f"{package['name']}/{feature}" for feature in extra)
+        if boundary["kind"] == "compressor" or package["name"] not in tested:
+            continue
         for index, feature in enumerate(sorted(extra)):
-            for command in commands:
-                steps.append(Step(f"feature-{command}-{package['name']}-{index}",
-                                  ("cargo", command, "-p", package["name"], "--features", feature, "--all-targets", "--locked",
-                                   *(("--", "-D", "warnings") if command == "clippy" else ()))))
-    if "hex-desktop" in affected:
+            steps.append(Step(f"feature-test-{package['name']}-{index}",
+                              scoped(("cargo", "test", "-p", package["name"], "--features", feature,
+                                      "--all-targets", "--locked"))))
+    # The normal whole-package run already includes these targets. A lib-only
+    # module selection must explicitly retain tests moved to a small unit binary.
+    unit_targets: dict[str, set[str]] = {}
+    if "hex-ui" in tested:
+        for module, target in ci_plan.UI_UNIT_TARGETS.items():
+            names = {name for name in module_filters.get("hex-ui", [])
+                     if module.startswith(name) or name.startswith(module)}
+            if names:
+                unit_targets.setdefault(target, set()).update(names)
+    for target, names in sorted(unit_targets.items()):
+        feature = ci_plan.UI_UNIT_FEATURES.get(target)
+        feature_args = ("--features", feature) if feature else ()
+        steps.append(Step(f"ui-unit-{target}", ("cargo", "test", "-p", "hex-ui", *feature_args,
+                                                  "--test", target, "--locked", "--", *sorted(names)),
+                          requires_tests=True))
+    extra_targets = {target for module, target in ci_plan.UI_EXTRA_TEST_TARGETS.items()
+                     if "hex-ui" in tested and any(module.startswith(name) or name.startswith(module)
+                                                    for name in module_filters.get("hex-ui", []))}
+    for target in sorted(extra_targets):
+        feature = ci_plan.UI_EXTRA_TEST_FEATURES.get(target)
+        feature_args = ("--features", feature) if feature else ()
+        steps.append(Step(f"ui-consumer-{target}",
+                          ("cargo", "test", "-p", "hex-ui", *feature_args, "--test", target, "--locked"),
+                          requires_tests=True))
+    if lint_features:
+        lint_packages = sorted({feature.split("/")[0] for feature in lint_features})
+        steps.append(Step("affected-feature-clippy",
+                          ("cargo", "clippy", *(a for p in lint_packages for a in ("-p", p)), "--all-targets",
+                           "--locked", "--features", ",".join(sorted(lint_features)), "--", "-D", "warnings")))
+    if "hex-desktop" in (tested if boundary["kind"] == "packages" else affected):
         steps.append(next(s for s in FULL_STEPS if s.step_id == "desktop-build"))
     return tuple(steps)
 
@@ -291,6 +531,26 @@ def planned_steps(plan: dict) -> tuple[Step, ...]:
                      requires_tests=True),
                 Step("edit-clippy", ("cargo", "clippy", "-p", edit["package"], *feature, "--all-targets", "--locked", "--", "-D", "warnings")),
                 next(s for s in QUICK_STEPS if s.step_id == "format"))
+    if plan.get("health"):
+        health = plan["health"]
+        steps = [next(s for s in QUICK_STEPS if s.step_id == "format")]
+        if health["python"]:
+            steps.append(Step("health-runner-tests", ci_plan.python_tests.argv(plan["python_tests"]), True, True))
+        if health["workspace_inputs"]:
+            steps.append(Step("health-tests", ("cargo", "test", "--workspace", "--locked"), requires_tests=True))
+        elif health["packages"]:
+            steps.append(Step("health-tests", ("cargo", "test", *(a for p in health["packages"] for a in ("-p", p)),
+                                               "--locked"), requires_tests=True))
+        if health["workspace_inputs"] or "hex-ui" in health["packages"]:
+            steps.extend(Step("health-" + step.step_id.removesuffix("-tests"), step.argv, requires_tests=True)
+                         for step in UI_UNIT_STEPS)
+        if health["workspace_inputs"] or "hex-sandbox" in health["packages"]:
+            step = next(s for s in FULL_STEPS if s.step_id == "sandbox-unit-tests")
+            steps.append(Step("health-sandbox-unit", step.argv, requires_tests=True))
+        if len(steps) == 1:
+            steps.append(Step("metadata", ("python3", "scripts/ci_plan.py", "--check-metadata",
+                                           "--base", plan["base"], "--source", plan["source"])))
+        return tuple(steps)
     if plan.get("reuse"):
         return (Step("metadata-continuation", ("python3", "scripts/ci_plan.py", "--check-metadata",
                                              "--base", plan["reuse"]["source"], "--source", plan["source"]),
@@ -304,13 +564,18 @@ def planned_steps(plan: dict) -> tuple[Step, ...]:
                                   "--base", plan["base"], "--source", plan["source"])),)
     elif scope == "tooling":
         steps = (*QUICK_STEPS, next(s for s in FULL_STEPS if s.step_id == "runner-tests"))
+    elif scope == "ui" and plan.get("boundary"):
+        # UI owners follow the same owner/module boundary as Rust packages.
+        steps = boundary_steps(plan)
     elif scope == "ui":
         steps = (*QUICK_STEPS, next(s for s in FULL_STEPS if s.step_id == "runner-tests"),
                  Step("ui-default-tests", ("cargo", "test", "-p", "hex-ui", "-p", "hex-widgets", "--locked")),
                  next(s for s in FULL_STEPS if s.step_id == "ui-feature-tests"),
+                 *UI_UNIT_STEPS,
                  next(s for s in FULL_STEPS if s.step_id == "device-gallery-tests"),
                  Step("ui-default-clippy", ("cargo", "clippy", "-p", "hex-ui", "-p", "hex-widgets", "-p", "hex-desktop", "--all-targets", "--locked", "--", "-D", "warnings")),
                  next(s for s in FULL_STEPS if s.step_id == "ui-feature-clippy"),
+                 next(s for s in FULL_STEPS if s.step_id == "ui-unit-clippy"),
                  next(s for s in FULL_STEPS if s.step_id == "desktop-build"))
     else:
         raise ValueError("unsupported resolved scope")
@@ -318,7 +583,18 @@ def planned_steps(plan: dict) -> tuple[Step, ...]:
                       ci_plan.python_tests.argv(plan["python_tests"])
                       if s.step_id == "runner-tests" and "python_tests" in plan else s.argv,
                       s.uses_cargo_target,
-                      s.argv[:2] == ("cargo", "test") or s.step_id == "runner-tests") for s in steps)
+                      s.requires_tests or (runs_rust_tests(s.argv) and "--doc" not in s.argv and not module_scoped(s.argv))
+                      or s.step_id == "runner-tests") for s in steps)
+
+
+def module_scoped(argv: tuple[str, ...]) -> bool:
+    """A test command restricted to changed modules by a libtest filter.
+
+    One configuration may hold none of a module's tests (for example a
+    feature-gated test module), so these steps are checked together instead:
+    a merge whose module-scoped steps pass no test at all fails."""
+    return "--filter" in argv or ("--" in argv and argv[:2] == ("cargo", "test")
+                                   and any(a.endswith("::") for a in argv[argv.index("--") + 1:]))
 
 
 def utc_now() -> str:
@@ -342,6 +618,57 @@ def reusable_plan(root: Path, plan: dict, report: Path) -> dict:
     return ci_plan.reuse_checks(root, plan, report)
 
 
+def carry_decisions(steps: tuple[Step, ...], evidence: dict, basis: dict,
+                    inventory: list[dict]) -> list[dict]:
+    """Per planned step: carry an identical passed result, narrow, or run.
+
+    A Cargo step carries only when the dependency closure of every package it
+    names excludes each package the base advance changed; workspace-wide steps
+    carry only when no package changed. Cheap guards always rerun. The Python
+    step reruns just the selection the changed paths require. Unknown shapes run.
+    """
+    previous = {}
+    for entry in evidence.get("steps", []):
+        planned = entry.get("carry", {}).get("planned_argv", entry.get("argv"))
+        if entry.get("status") in {"passed", "carried"} and isinstance(planned, list):
+            previous[(entry.get("step_id"), tuple(planned))] = entry
+    owners = set(basis["delta_owners"])
+    decisions = []
+    for step in steps:
+        entry = previous.get((step.step_id, step.argv))
+        results = (entry or {}).get("test_results", {})
+        counted = sum(results.get("rust_passed_by_binary", [])) + sum(
+            results.get("python_executions", [])) - sum(results.get("python_skipped", []))
+        if entry is None:
+            decisions.append({"action": "run", "reason": "no identical passed step in the carried report"})
+        elif step.requires_tests and counted <= 0:
+            decisions.append({"action": "run", "reason": "carried step has no counted passing tests"})
+        elif step.step_id == "runner-tests":
+            selection = basis["python_tests"]
+            if selection["mode"] == "none":
+                decisions.append({"action": "carry", "entry": entry, "reason": "no executable change"})
+            elif selection["mode"] == "shared":
+                decisions.append({"action": "narrow", "entry": entry,
+                                  "argv": ci_plan.python_tests.argv(selection),
+                                  "reason": "; ".join(selection["reasons"])})
+            else:
+                decisions.append({"action": "run", "reason": "; ".join(selection["reasons"])})
+        elif (step.argv[:1] != ("cargo",) or step.argv[1:2] == ("fmt",)) and not runs_rust_tests(step.argv):
+            decisions.append({"action": "run", "reason": "guard steps always rerun"})
+        else:
+            packages = [step.argv[i + 1] for i, arg in enumerate(step.argv[:-1]) if arg == "-p"]
+            if "--workspace" in step.argv or not packages:
+                hit = owners
+            else:
+                hit = ci_plan.dependency_closure(packages, inventory) & owners
+            if hit:
+                decisions.append({"action": "run", "reason": "depends on changed " + ", ".join(sorted(hit))})
+            else:
+                decisions.append({"action": "carry", "entry": entry,
+                                  "reason": "dependency closure excludes " + (", ".join(sorted(owners)) or "nothing")})
+    return decisions
+
+
 def command_output(argv: list[str], cwd: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, check=False)
 
@@ -363,6 +690,11 @@ def target_state_paths(target_directory: Path, state_dir: Path | None = None) ->
     identity = hashlib.sha256(os.fsencode(str(target_directory))).hexdigest()
     location = state_dir or (Path(tempfile.gettempdir()) / "hex-local-ci-targets")
     return location / f"{identity}.lock", location / f"{identity}.owner.json"
+
+
+def target_admission_pending_path(lock_path: Path) -> Path:
+    """Name the target-wide incomplete-admission sentinel next to its lock."""
+    return lock_path.with_suffix(".admission-pending")
 
 
 class CargoTargetLock:
@@ -410,9 +742,43 @@ class CargoTargetLock:
             if error.errno in (errno.EACCES, errno.EAGAIN):
                 raise TargetCacheError("Cargo target is already in use by another local CI run") from error
             raise TargetCacheError(f"could not open or lock Cargo target: {detail}") from error
+        except BaseException:
+            if self.file is not None:
+                try:
+                    self.file.close()
+                except OSError:
+                    pass  # Preserve the original interruption.
+                finally:
+                    self.file = None
+            raise
         try:
+            # A pending admission is target-wide and must survive a crash. Do
+            # not let either profile or an adoption path consume its owner.
+            directory = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                def verify_lock_identity() -> None:
+                    parent = os.stat(self.path.parent)
+                    pinned = os.fstat(directory)
+                    entry = os.stat(self.path.name, dir_fd=directory, follow_symlinks=False)
+                    locked = os.fstat(self.file.fileno())
+                    if ((parent.st_dev, parent.st_ino) != (pinned.st_dev, pinned.st_ino)
+                            or not stat.S_ISREG(entry.st_mode)
+                            or (entry.st_dev, entry.st_ino) != (locked.st_dev, locked.st_ino)):
+                        raise TargetCacheError("Cargo target lock or state directory identity changed")
+
+                verify_lock_identity()
+                pending = target_admission_pending_path(self.path).name
+                try:
+                    os.stat(pending, dir_fd=directory, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise TargetCacheError("Cargo target admission is incomplete; preserve the pending marker and use a fresh target")
+                verify_lock_identity()
+            finally:
+                os.close(directory)
             self._write({"active_holder": self.holder})
-        except OSError as error:
+        except BaseException as error:
             detail = str(error)
             if self.file is not None:
                 try:
@@ -425,7 +791,9 @@ class CargoTargetLock:
                     except OSError as close_error:
                         detail = f"{detail}; closing lock file also failed: {close_error}"
                     self.file = None
-            raise TargetCacheError(f"could not record Cargo target lock holder: {detail}") from error
+            if not isinstance(error, (OSError, TargetCacheError)):
+                raise
+            raise TargetCacheError(f"could not admit Cargo target lock: {detail}") from error
 
     def _write(self, value: dict[str, object]) -> None:
         if self.file is None:
@@ -460,7 +828,285 @@ class CargoTargetLock:
         return failure
 
 
+class FreshTargetReservation:
+    """Reserve an explicit empty target under the existing cooperative lock.
+
+    This standalone primitive performs no Cargo command and does not authorize
+    existing entrypoints. Callers acquire before their first Cargo operation,
+    revalidate after it and immediately before consuming the reservation, and
+    hold this object through admission. Raw Cargo and other non-cooperating
+    processes can mutate the target; this is not a filesystem sandbox.
+    """
+
+    MAX_COMPONENTS = 128
+    MAX_PATH_BYTES = 4096
+
+    def __init__(self, root: Path, target: str, lock: CargoTargetLock, handles: list[int], absent: bool, state_fd: int) -> None:
+        self._root = root
+        self._target = target
+        self._lock = lock
+        self._handles = handles
+        self._absent = absent
+        self._lock_file = lock.file
+        self._state_fd = state_fd
+        self._active = True
+        self._close_failure: str | None = None
+
+    @staticmethod
+    def _target_path(target: str) -> str:
+        if (not isinstance(target, str) or not os.path.isabs(target)
+                or target == "/" or target.startswith("//") or "\0" in target
+                or os.path.normpath(target) != target
+                or len(os.fsencode(target)) > FreshTargetReservation.MAX_PATH_BYTES
+                or len(Path(target).parts) > FreshTargetReservation.MAX_COMPONENTS):
+            raise TargetCacheError("fresh target requires a bounded canonical absolute path")
+        return target
+
+    @staticmethod
+    def _empty(descriptor: int) -> bool:
+        # Stop at the first entry; never allocate an unbounded directory list.
+        with os.scandir(descriptor) as entries:
+            return next(entries, None) is None
+
+    @classmethod
+    def _open_chain(cls, target: str) -> tuple[list[int], bool]:
+        handles: list[int] = []
+        try:
+            flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            handles.append(os.open("/", flags))
+            parts = Path(target).parts[1:]
+            absent = False
+            for index, part in enumerate(parts):
+                try:
+                    handles.append(os.open(part, flags, dir_fd=handles[-1]))
+                except FileNotFoundError:
+                    if index != len(parts) - 1:
+                        raise
+                    absent = True
+                    break
+            if not absent and not cls._empty(handles[-1]):
+                raise TargetCacheError("fresh target is not empty")
+            return handles, absent
+        except BaseException:
+            for descriptor in reversed(handles):
+                os.close(descriptor)
+            raise
+
+    @classmethod
+    def acquire(cls, root: Path, target: str, holder: dict[str, object], *,
+                state_dir: Path | None = None) -> "FreshTargetReservation":
+        root = root.resolve()
+        if (error := delivery_source_error(root)) is not None:
+            raise TargetCacheError("fresh target source mismatch: " + error)
+        selected = cls._target_path(target)
+        lock_path, owner_path = target_state_paths(Path(selected), state_dir)
+        lock = CargoTargetLock(lock_path, holder)
+        lock.acquire()  # Before target probing and before any caller Cargo command.
+        state_fd = None
+        try:
+            state_fd = os.open(lock_path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            cls._require_state_entry(state_fd, owner_path.name, None)
+            cls._require_state_entry(state_fd, cls._release_marker_name(owner_path.name), None)
+            handles, absent = cls._open_chain(selected)
+            result = cls(root, selected, lock, handles, absent, state_fd)
+            state_fd = None  # The reservation owns it now.
+            try:
+                result.revalidate(selected)
+            except BaseException:
+                result.close()
+                raise
+            return result
+        except OSError as error:
+            if state_fd is not None:
+                os.close(state_fd)
+            lock.release()
+            raise TargetCacheError(f"cannot reserve fresh target: {error}") from error
+        except BaseException:
+            if state_fd is not None:
+                os.close(state_fd)
+            lock.release()
+            raise
+
+    def revalidate(self, selected_target: str) -> None:
+        """Fail closed and revoke authority on any failed validation."""
+        try:
+            self._verify(selected_target)
+        except BaseException:
+            self.close()
+            raise
+
+    @staticmethod
+    def _release_marker_name(dev_name: str) -> str:
+        return dev_name.removesuffix(".owner.json") + ".release-owner.json"
+
+    @staticmethod
+    def _same_regular_file(actual: os.stat_result, expected: os.stat_result) -> bool:
+        return (stat.S_ISREG(actual.st_mode)
+                and (actual.st_dev, actual.st_ino) == (expected.st_dev, expected.st_ino))
+
+    @classmethod
+    def _require_state_entry(cls, directory: int, name: str, expected: os.stat_result | None) -> None:
+        try:
+            actual = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            if expected is None:
+                return
+            raise TargetCacheError(f"fresh target state entry disappeared: {name}") from None
+        if expected is None:
+            raise TargetCacheError(f"fresh target already has an owner marker or pending admission: {name}")
+        if not cls._same_regular_file(actual, expected):
+            raise TargetCacheError(f"fresh target state entry identity changed: {name}")
+
+    def _verify_lock_identity(self) -> None:
+        state = os.stat(self._lock.path.parent, follow_symlinks=False)
+        pinned_state = os.fstat(self._state_fd)
+        lock_path = os.stat(self._lock.path.name, dir_fd=self._state_fd, follow_symlinks=False)
+        locked = os.fstat(self._lock.file.fileno())
+        if (not stat.S_ISDIR(state.st_mode)
+                or (state.st_dev, state.st_ino) != (pinned_state.st_dev, pinned_state.st_ino)
+                or not self._same_regular_file(lock_path, locked)):
+            raise TargetCacheError("fresh target lock identity changed")
+
+    def _verify(self, selected_target: str, *, pending: os.stat_result | None = None,
+                dev_owner: os.stat_result | None = None) -> None:
+        """Refuse if the source, target, lock, ancestry, emptiness or state changed."""
+        if (error := delivery_source_error(self._root)) is not None:
+            raise TargetCacheError("fresh target source mismatch: " + error)
+        if (not self._active or self._lock.file is None or self._lock.file is not self._lock_file
+                or self._lock.file.closed or not self._handles):
+            raise TargetCacheError("fresh target reservation is no longer live")
+        if self._target_path(selected_target) != self._target:
+            raise TargetCacheError("selected Cargo target differs from reservation")
+        try:
+            self._verify_lock_identity()
+            current, absent = self._open_chain(self._target)
+            try:
+                if absent != self._absent or len(current) != len(self._handles):
+                    raise TargetCacheError("fresh target presence or ancestry changed")
+                for pinned, observed in zip(self._handles, current):
+                    old, new = os.fstat(pinned), os.fstat(observed)
+                    if (old.st_dev, old.st_ino) != (new.st_dev, new.st_ino):
+                        raise TargetCacheError("fresh target identity or ancestry changed")
+                if not absent and not self._empty(self._handles[-1]):
+                    raise TargetCacheError("fresh target is no longer empty")
+            finally:
+                for descriptor in reversed(current):
+                    os.close(descriptor)
+            _, owner_path = target_state_paths(Path(self._target), self._lock.path.parent)
+            self._require_state_entry(self._state_fd, owner_path.name, dev_owner)
+            self._require_state_entry(self._state_fd, self._release_marker_name(owner_path.name), None)
+            self._require_state_entry(
+                self._state_fd, target_admission_pending_path(self._lock.path).name, pending)
+            self._verify_lock_identity()
+        except OSError as error:
+            raise TargetCacheError(f"cannot revalidate fresh target or lock identity: {error}") from error
+
+    def _publish_dev_owner(self, owner_name: str, payload: bytes) -> None:
+        """Publish a verified owner while retaining the same cooperative lock."""
+        directory = self._state_fd
+        pending_name = target_admission_pending_path(self._lock.path).name
+        temporary = f".{owner_name}.{uuid.uuid4().hex}.tmp"
+
+        def open_new(name, flags):
+            return os.open(name, flags | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+
+        def open_owner(name, flags):
+            return os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+
+        try:
+            # Guarded consumers must see a durable refusal before an owner
+            # can appear. This sentinel stays on every precommit failure.
+            with open(pending_name, "xb", opener=open_new) as stream:
+                pending = os.fstat(stream.fileno())
+                os.fsync(stream.fileno())
+            os.fsync(directory)
+            owner = None
+            try:
+                with open(temporary, "xb", opener=open_new) as stream:
+                    owner = os.fstat(stream.fileno())
+                    stream.write(payload)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                    self._verify(self._target, pending=pending)
+                    self._require_state_entry(directory, temporary, owner)
+                    os.link(temporary, owner_name, src_dir_fd=directory, dst_dir_fd=directory,
+                            follow_symlinks=False)
+            finally:
+                original_error = sys.exc_info()[1]
+                try:
+                    if owner is not None:
+                        # Never remove a competing entry or the published owner.
+                        self._require_state_entry(directory, temporary, owner)
+                        os.unlink(temporary, dir_fd=directory)
+                except BaseException as cleanup_error:
+                    if original_error is not None:
+                        raise original_error from cleanup_error
+                    raise
+            os.fsync(directory)
+            self._verify(self._target, pending=pending, dev_owner=owner)
+            with open(owner_name, "rb", opener=open_owner) as stream:
+                if (not self._same_regular_file(os.fstat(stream.fileno()), owner)
+                        or stream.read(len(payload) + 1) != payload):
+                    raise TargetCacheError("published dev owner marker identity or bytes changed")
+            self._require_state_entry(directory, owner_name, owner)
+            self._require_state_entry(directory, self._release_marker_name(owner_name), None)
+            self._require_state_entry(directory, pending_name, pending)
+            self._verify_lock_identity()
+            # Commit point. The verified owner is already durable. If removal
+            # or its sync is interrupted, a crash may restore the sentinel or
+            # leave a usable verified owner. The current caller still fails.
+            os.unlink(pending_name, dir_fd=directory)
+            os.fsync(directory)
+        except OSError as error:
+            raise TargetCacheError(f"fresh dev owner publication failed: {error}") from error
+
+    def close(self) -> str | None:
+        """Invalidate authority before closing pinned handles and releasing lock."""
+        return self._finish(transfer_lock=False)
+
+    def _finish(self, *, transfer_lock: bool) -> str | None:
+        if not self._active:
+            return self._close_failure
+        self._active = False
+        failure = None
+        interruption = None
+        descriptors = [*reversed(self._handles), self._state_fd]
+        self._handles.clear()
+        for descriptor in descriptors:
+            try:
+                os.close(descriptor)
+            except OSError as error:
+                failure = failure or f"cannot close fresh target descriptor: {error}"
+            except BaseException as error:
+                interruption = interruption or error
+        if not transfer_lock:
+            try:
+                failure = self._lock.release() or failure
+            except BaseException as error:
+                interruption = interruption or error
+        self._close_failure = failure
+        if interruption is not None:
+            raise interruption
+        return failure
+
+    def __enter__(self) -> "FreshTargetReservation":
+        self.revalidate(self._target)
+        return self
+
+    def __exit__(self, kind, value, traceback) -> None:
+        failure = self.close()
+        if failure and kind is None:
+            raise TargetCacheError(failure)
+
+
 class LocalCiRunner:
+    def delivery_source_error(self) -> str | None:
+        """Check this runner module, even when another import shares its name."""
+        return delivery_source_error(self.root)
+
+    def _execution_policy_error(self) -> str | None:
+        return cli_policy_error(self.root) if self._cli_policy_bound else delivery_source_error(self.root)
+
     def __init__(
         self,
         root: Path = ROOT,
@@ -474,8 +1120,13 @@ class LocalCiRunner:
         target_state_dir: Path | None = None,
         plan: dict | None = None,
         resume_report: Path | None = None,
+        carry_report: Path | None = None,
+        over_budget_reason: str | None = None,
     ) -> None:
         self.root = root.resolve()
+        # The CLI retains its existing policy path; imported runners require a source witness.
+        self._cli_policy_bound = False
+        self.over_budget_reason = over_budget_reason
         default_floor = DEFAULT_FULL_MIN_FREE_BYTES if mode in {"full", "merge", "release"} else 0
         self.min_free_bytes = default_floor if min_free_bytes is None else min_free_bytes
         if (
@@ -487,6 +1138,9 @@ class LocalCiRunner:
         self.mode = mode
         self.plan = plan
         self.resume_report = resume_report
+        self.carry_report = carry_report
+        self._carry: list[dict] | None = None
+        self._carry_dependency_inputs: object = None
         self._resume_evidence = None
         self._checkpoint_inputs = None
         self._checkpoint_target = None
@@ -525,6 +1179,7 @@ class LocalCiRunner:
         self.git_identity: dict[str, object] | None = None
         self.cargo_identity: dict[str, object] | None = None
         self._lexical_cargo_target: Path | None = None
+        self._cargo_reservation: FreshTargetReservation | None = None
         self.target_lock: CargoTargetLock | None = None
         self.target_owner_path: Path | None = None
         self.target_owner_claimed = False
@@ -664,7 +1319,36 @@ class LocalCiRunner:
             ]
         return True
 
-    def _resolve_cargo_identity(self) -> bool:
+    def _resolve_cargo_identity(self, reservation: FreshTargetReservation | None = None) -> bool:
+        """Resolve Cargo identity, optionally validating a pre-metadata reservation.
+
+        A caller using the reservation must acquire it before its first Cargo
+        operation and keep it alive until the eventual custody decision. This
+        method resolves identity only; it does not admit or publish ownership.
+        """
+        self.cargo_identity = None
+        self.target_owner_path = None
+        self._lexical_cargo_target = None
+        self.summary.pop("cargo_identity", None)
+        self.summary.pop("cargo_metadata_error", None)
+        self._cargo_reservation = None
+        resolved = False
+        try:
+            resolved = self._resolve_cargo_identity_inner(reservation)
+            if resolved:
+                self._cargo_reservation = reservation
+            return resolved
+        finally:
+            if not resolved:
+                self.cargo_identity = None
+                self.target_owner_path = None
+                self._lexical_cargo_target = None
+                self.summary.pop("cargo_identity", None)
+                if reservation is not None:
+                    if failure := reservation.close():
+                        self.summary["reservation_close_error"] = failure
+
+    def _resolve_cargo_identity_inner(self, reservation: FreshTargetReservation | None) -> bool:
         command = [
             "cargo",
             "metadata",
@@ -676,6 +1360,18 @@ class LocalCiRunner:
             str(self.root / "Cargo.toml"),
         ]
         configured_target = self.env.get("CARGO_TARGET_DIR")
+        if reservation is not None:
+            try:
+                if reservation._root != self.root or configured_target is None:
+                    raise TargetCacheError("fresh target requires the same workspace and explicit target")
+                reservation.revalidate(configured_target)
+                expected_lock, _ = target_state_paths(Path(configured_target), self.target_state_dir)
+                if expected_lock != reservation._lock.path:
+                    raise TargetCacheError("fresh target lock namespace differs from runner")
+            except TargetCacheError as error:
+                reservation.close()
+                self.summary["cargo_metadata_error"] = str(error)
+                return False
         try:
             result = subprocess.run(
                 command,
@@ -686,9 +1382,13 @@ class LocalCiRunner:
                 check=False,
             )
         except OSError as error:
+            if reservation is not None:
+                reservation.close()
             self.summary["cargo_metadata_error"] = f"could not resolve Cargo target: {error}"
             return False
         if result.returncode != 0:
+            if reservation is not None:
+                reservation.close()
             self.summary["cargo_metadata_error"] = {
                 "exit_code": result.returncode,
                 "stderr": result.stderr.strip(),
@@ -708,12 +1408,15 @@ class LocalCiRunner:
                 or not isinstance(packages, list)
             ):
                 raise ValueError("Cargo metadata fields have invalid types")
+            if reservation is not None:
+                reservation.revalidate(raw_target)
             workspace_root = Path(raw_workspace_root).resolve()
             target = Path(raw_target)
             if not target.is_absolute():
                 target = self.root / target
             self._lexical_cargo_target = target.absolute()
-            target = target.resolve()
+            if reservation is None:
+                target = target.resolve()
             by_id = {
                 package["id"]: package
                 for package in packages
@@ -737,15 +1440,25 @@ class LocalCiRunner:
                 )
             if not workspace_packages:
                 raise ValueError("Cargo workspace has no members to clean safely")
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError, TargetCacheError) as error:
+            if reservation is not None:
+                reservation.close()
             self.summary["cargo_metadata_error"] = f"Cargo metadata was incomplete or invalid: {error}"
             return False
 
         if workspace_root != self.root:
+            if reservation is not None:
+                reservation.close()
             self.summary["cargo_metadata_error"] = (
                 f"Cargo workspace root {workspace_root} does not match local CI root {self.root}"
             )
             return False
+        if reservation is not None:
+            try:
+                reservation.revalidate(str(target))
+            except TargetCacheError as error:
+                self.summary["cargo_metadata_error"] = str(error)
+                return False
         self.env["CARGO_TARGET_DIR"] = str(target)
         lock_path, owner_path = target_state_paths(target, self.target_state_dir)
         self.target_owner_path = owner_path
@@ -783,13 +1496,16 @@ class LocalCiRunner:
             raise TargetCacheError("resolved Cargo target path is not a directory")
         return {"device": status.st_dev, "inode": status.st_ino}
 
-    def _load_target_owner(self, owner_path: Path, target: Path) -> dict[str, object] | None:
-        if not owner_path.exists() and not owner_path.is_symlink():
+    def _load_target_owner(self, owner_path: Path, target: Path, *,
+                           snapshot: bytes | None = None) -> dict[str, object] | None:
+        if snapshot is None and not owner_path.exists() and not owner_path.is_symlink():
             return None
         try:
-            if owner_path.is_symlink():
-                raise ValueError("owner marker is a symlink")
-            value = json.loads(owner_path.read_text(encoding="utf-8"))
+            if snapshot is None:
+                if owner_path.is_symlink():
+                    raise ValueError("owner marker is a symlink")
+                snapshot = owner_path.read_bytes()
+            value = json.loads(snapshot.decode("utf-8"))
             if not isinstance(value, dict):
                 raise ValueError("owner marker is not an object")
             owner = value.get("workspace_owner")
@@ -831,9 +1547,9 @@ class LocalCiRunner:
                 "use a fresh target or explicitly adopt it after checking ownership"
             ) from error
 
-    def _write_target_owner(self, path: Path, owner: dict[str, object], *, checked=False) -> None:
-        temporary = path.with_name(f"{path.name}.{os.getpid()}.{self.run_id}.tmp")
-        payload = {
+    def _target_owner_record(self, owner: dict[str, object], *, checked=False) -> dict[str, object]:
+        """Construct the existing dev owner schema for its writer and future admission."""
+        return {
             "schema_version": 2,
             "dependency_inputs": self._dependency_inputs,
             "cache_inputs": self._cache_provenance(checked=checked),
@@ -847,8 +1563,73 @@ class LocalCiRunner:
             ) if self.cargo_identity else None,
             "recorded_at": utc_now(),
         }
+
+    def _write_target_owner(self, path: Path, owner: dict[str, object], *, checked=False) -> None:
+        temporary = path.with_name(f"{path.name}.{os.getpid()}.{self.run_id}.tmp")
+        payload = self._target_owner_record(owner, checked=checked)
         temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         temporary.replace(path)
+
+    def _claim_fresh_dev_owner(self, reservation: FreshTargetReservation) -> None:
+        """Publish existing dev schema and consume a pre-metadata reservation.
+
+        The caller captures Git identity and dependency inputs before claiming.
+        After success the runner must release its transferred lock. Any failure
+        closes the reservation and preserves any marker that reached the disk.
+        """
+        transfer = None
+        try:
+            if (self.target_lock is not None or self._cargo_reservation is not reservation
+                    or self.cargo_identity is None or self.git_identity is None):
+                raise TargetCacheError("fresh dev ownership requires reserved Cargo and Git identity")
+            selected = self.cargo_identity["target_directory"]
+            reservation._verify(selected)
+            if reservation._absent:
+                raise TargetCacheError("fresh dev publication requires an existing empty target")
+            if (reservation._root != self.root or self.env.get("CARGO_TARGET_DIR") != selected
+                    or self.cargo_identity["workspace_root"] != str(self.root)
+                    or self.git_identity["workspace_root"] != str(self.root)):
+                raise TargetCacheError("fresh dev ownership workspace or target changed")
+            target = Path(selected)
+            lock_path, owner_path = target_state_paths(target, self.target_state_dir)
+            if lock_path != reservation._lock.path or owner_path != self.target_owner_path:
+                raise TargetCacheError("fresh dev ownership lock namespace differs from runner")
+            self._check_target_filesystem(target)
+            if (error := self._execution_policy_error()) is not None:
+                raise TargetCacheError("runner policy source changed before fresh dev publication: " + error)
+            record = self._target_owner_record(self.git_identity)
+            pinned = os.fstat(reservation._handles[-1])
+            if record["target_identity"] != {"device": pinned.st_dev, "inode": pinned.st_ino}:
+                raise TargetCacheError("fresh dev owner target identity differs from reservation")
+            payload = (json.dumps(record, indent=2, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
+            if len(payload) > 1024 * 1024:
+                raise TargetCacheError("fresh dev owner marker exceeds the bounded publication size")
+            self._load_target_owner(owner_path, target, snapshot=payload)
+            reservation._publish_dev_owner(owner_path.name, payload)
+            transfer = reservation._lock
+            self.target_lock = transfer
+            if failure := reservation._finish(transfer_lock=True):
+                raise TargetCacheError(failure)
+            self.target_owner_claimed = True
+        except BaseException:
+            try:
+                if failure := reservation.close():
+                    self.summary["reservation_close_error"] = failure
+            except BaseException as error:
+                self.summary["reservation_close_error"] = f"cleanup interrupted: {type(error).__name__}"
+            if transfer is not None and self.target_lock is transfer:
+                try:
+                    if failure := transfer.release():
+                        self.summary["target_lock_release_error"] = failure
+                except BaseException as error:
+                    self.summary["target_lock_release_error"] = f"cleanup interrupted: {type(error).__name__}"
+                finally:
+                    self.target_lock = None
+                    self.target_owner_claimed = False
+            raise
+        finally:
+            if self._cargo_reservation is reservation:
+                self._cargo_reservation = None
 
     def _check_target_filesystem(self, target: Path) -> None:
         try:
@@ -882,6 +1663,10 @@ class LocalCiRunner:
             return False
         self.target_lock = lock
         try:
+            if (error := self._execution_policy_error()) is not None:
+                prefix = ("CLI planner source changed before target lock: " if self._cli_policy_bound
+                          else "runner policy source changed before target lock: ")
+                raise TargetCacheError(prefix + error)
             self._check_target_filesystem(target)
             malformed_owner = False
             try:
@@ -996,6 +1781,8 @@ class LocalCiRunner:
                 "dependency_inputs": dependency_inputs,
             }
             if cleanup_argv is not None:
+                if (error := self._execution_policy_error()) is not None:
+                    raise TargetCacheError("runner policy source changed before target cleanup: " + error)
                 result = self._run_target_cleanup(cleanup_argv)
                 target_cache = self.summary["target_cache"]
                 assert isinstance(target_cache, dict)
@@ -1004,6 +1791,8 @@ class LocalCiRunner:
                     self.summary["target_cache_error"] = "workspace dev-artifact cleanup failed; previous owner was preserved"
                     return False
 
+            if (error := self._execution_policy_error()) is not None:
+                raise TargetCacheError("runner policy source changed before target publication: " + error)
             self._write_target_owner(owner_path, current_workspace)
             self.target_owner_claimed = True
             return True
@@ -1311,6 +2100,8 @@ class LocalCiRunner:
         """
         if self.target_lock is not None:
             raise TargetCacheError("release preparation requires an unheld runner")
+        if (error := self._execution_policy_error()) is not None:
+            raise TargetCacheError("runner policy source mismatch at release admission: " + error)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         if not self._capture_repository_state("start_tree") or self.summary["start_tree"]["dirty"]:
             raise TargetCacheError("release preparation requires exact clean source")
@@ -1330,6 +2121,8 @@ class LocalCiRunner:
         lock.acquire()
         self.target_lock = lock
         try:
+            if (error := self._execution_policy_error()) is not None:
+                raise TargetCacheError("runner policy source changed before release lock: " + error)
             self._check_target_filesystem(target)
             # Full Cargo metadata can create .rustc_info.json. Record the target
             # before that command while holding the same lock used for handoff.
@@ -1485,6 +2278,8 @@ class LocalCiRunner:
                     raise TargetCacheError("recreated target or owner changed before mutation")
                 report["explicit_recreated_target"] = inspected
             self.summary["release_target_cache"] = report
+            if (error := self._execution_policy_error()) is not None:
+                raise TargetCacheError("runner policy source changed before release publication: " + error)
             self._write_release_owner(owner_path, pending)
             if (not reuse or invalidated or self._invalidate_dependency_profile) and populated:
                 argv = self._workspace_clean_argv(target) if not reuse and not self._invalidate_dependency_profile else self._workspace_clean_argv(target)[:8]
@@ -1495,6 +2290,8 @@ class LocalCiRunner:
                         argv.extend(("--package", name))
                 report["cleanup_argv"] = argv
                 report["cleanup_status"] = "pending"
+                if (error := self._execution_policy_error()) is not None:
+                    raise TargetCacheError("runner policy source changed before release cleanup: " + error)
                 # Keep release and dev cleanup evidence independent.
                 log_path = self.output_dir / "release-handoff-clean.log"
                 with log_path.open("w") as log:
@@ -1505,6 +2302,8 @@ class LocalCiRunner:
                     report["cleanup_status"] = "failed"
                     raise TargetCacheError("release cleanup failed; pending owner retained")
                 report["cleanup_status"] = "passed"
+            if (error := self._execution_policy_error()) is not None:
+                raise TargetCacheError("runner policy source changed during release preparation: " + error)
             yield report
             if requested_build_argv is not None and report.get("build_argv") != requested_build_argv:
                 raise TargetCacheError("release build arguments differ from locked cache identity")
@@ -1521,6 +2320,8 @@ class LocalCiRunner:
             pending["cache_inputs"] = self._cache_provenance(checked=True)
             pending.update(state="ready", target_identity=self._directory_identity(target),
                            artifact=report["artifact"], build_argv=report.get("build_argv"), recorded_at=utc_now())
+            if (error := self._execution_policy_error()) is not None:
+                raise TargetCacheError("runner policy source changed during release: " + error)
             self._write_release_owner(owner_path, pending)
             report["state"] = "ready"
         except BaseException as error:
@@ -1630,6 +2431,57 @@ class LocalCiRunner:
                 )
                 return False
         return True
+
+    def _prepare_carry(self) -> None:
+        """Decide per step from an earlier passed report; any refusal runs everything."""
+        record: dict[str, object] = {"report": str(self.carry_report)}
+        self.summary["carry"] = record
+        try:
+            raw = self.carry_report.read_bytes()
+            evidence = json.loads(raw)
+            record["sha256"] = hashlib.sha256(raw).hexdigest()
+            if not self.plan:
+                raise ValueError("base-advance carry requires a resolved merge plan")
+            basis = ci_plan.carry_basis(self.root, self.plan, evidence, env=self.env)
+            decisions = carry_decisions(self.steps, evidence, basis, self.plan["cargo_inventory"])
+            dependency = evidence.get("target_cache", {}).get("dependency_inputs")
+            if not isinstance(dependency, dict):
+                raise ValueError("carried report lacks guarded toolchain/dependency identity")
+        except (ValueError, OSError, KeyError, TypeError) as error:
+            record["refused"] = f"{error}; every step runs fresh"
+            print(f"carry refused: {record['refused']}", flush=True)
+            return
+        record.update(report_commit=basis["report_commit"], delta_paths=basis["delta_paths"],
+                      delta_owners=basis["delta_owners"],
+                      decisions=[{"step_id": step.step_id, "action": d["action"], "reason": d["reason"]}
+                                 for step, d in zip(self.steps, decisions)])
+        self._carry = decisions
+        self._carry_dependency_inputs = dependency
+        self._carry_report_path = str(self.carry_report.resolve())
+
+    def _drop_carry(self, reason: str) -> None:
+        self._carry = None
+        self.summary["carry"]["refused"] = f"{reason}; remaining steps run fresh"
+        print(f"carry refused: {self.summary['carry']['refused']}", flush=True)
+
+    def _carry_origin(self, entry: dict) -> dict:
+        """The run that actually executed a result, preserved through carry chains."""
+        return entry.get("carried_from") or entry.get("carry", {}).get("carried_remainder_from") or {
+            "report": self._carry_report_path, "commit": self.summary["carry"]["report_commit"],
+            "log": entry.get("log")}
+
+    def _record_carried(self, step: Step, index: int, decision: dict) -> None:
+        entry = decision["entry"]
+        self.summary["steps"].append({
+            "step_id": step.step_id, "argv": list(step.argv), "status": "carried",
+            "started_at": None, "ended_at": None, "start_offset_seconds": None,
+            "duration_seconds": 0.0, "timing_estimates": None, "exit_code": 0,
+            "log": None, "error": None, "execution": "carried",
+            "test_results": entry.get("test_results", {}),
+            "carried_from": self._carry_origin(entry), "carry_reason": decision["reason"],
+        })
+        self._write_summary()
+        print(f"[{index}/{len(self.steps)}] {step.step_id}: carried ({decision['reason']})", flush=True)
 
     def _run_step(self, step: Step, index: int) -> dict[str, object]:
         started = time.monotonic()
@@ -1860,6 +2712,9 @@ class LocalCiRunner:
                                     step_id_error=f"invalid step IDs: {invalid_ids!r}; expected 1–100 ASCII characters: "
                                                   "alphanumeric first, then alphanumeric, underscore or hyphen")
                 print(self.summary["step_id_error"], file=sys.stderr, flush=True)
+            elif (error := self._execution_policy_error()) is not None:
+                key = "cli_policy_error" if self._cli_policy_bound else "runner_policy_error"
+                self.summary.update(status="failed", exit_code=2, **{key: error})
             elif not self._capture_repository_state("start_tree"):
                 self.summary["status"] = "failed"
                 self.summary["exit_code"] = 2
@@ -1907,6 +2762,8 @@ class LocalCiRunner:
                     except (ValueError, OSError, KeyError, TypeError) as error:
                         self.summary["resume_error"] = str(error)
                         failed = True
+                if self.carry_report is not None:
+                    self._prepare_carry()
                 self._write_summary()
                 for index, step in enumerate(self.steps, start=1):
                     if failed:
@@ -1933,7 +2790,21 @@ class LocalCiRunner:
                             self.summary["reuse_error"] = "runtime report toolchain/config/dependency inputs differ"
                             failed = True
                             break
-                    result = self._run_step(step, index)
+                        if self._carry is not None and self._carry_dependency_inputs != self._dependency_inputs:
+                            self._drop_carry("carried report toolchain/config/dependency inputs differ")
+                    decision = self._carry[index - 1] if self._carry is not None else {"action": "run"}
+                    if decision["action"] == "carry" and self.target_lock is not None:
+                        self._record_carried(step, index, decision)
+                        continue
+                    if decision["action"] == "narrow" and self.target_lock is not None:
+                        result = self._run_step(Step(step.step_id, tuple(decision["argv"]),
+                                                     step.uses_cargo_target, step.requires_tests), index)
+                        result["carry"] = {"planned_argv": list(step.argv),
+                                           "carried_remainder_from": self._carry_origin(decision["entry"]),
+                                           "reason": decision["reason"]}
+                        self._write_summary()
+                    else:
+                        result = self._run_step(step, index)
                     if result["status"] != "passed":
                         failed = True
                         break
@@ -1945,6 +2816,18 @@ class LocalCiRunner:
                     except (ValueError, OSError, KeyError, TypeError) as error:
                         self.summary["resume_error"] = str(error)
                         failed = True
+                if self.mode == "merge" and not failed:
+                    scoped_passed = [sum(entry.get("test_results", {}).get("rust_passed_by_binary", []))
+                                     for entry in self.summary["steps"]
+                                     if isinstance(entry, dict) and module_scoped(tuple(entry.get("argv") or ()))
+                                     and "--doc" not in (entry.get("argv") or ())]
+                    if scoped_passed and sum(scoped_passed) <= 0:
+                        self.summary["module_scope_error"] = (
+                            "changed modules ran no tests: add boundary tests to the changed module")
+                        failed = True
+                if self.mode == "merge" and not failed:
+                    self.summary["test_budget"] = merge_test_budget(
+                        self.summary["steps"], self.over_budget_reason)
                 partial = self.mode == "quick" or self.plan and not self.plan["qualifies_merge"]
                 self.summary["verification_status"] = "failed" if failed else ("partial" if partial else "passed")
                 self.summary["status"] = self.summary["verification_status"]
@@ -1967,6 +2850,8 @@ class LocalCiRunner:
                     try:
                         if self.target_owner_claimed and self.target_owner_path is not None and self.git_identity is not None:
                             try:
+                                if (error := self._execution_policy_error()) is not None:
+                                    raise TargetCacheError("runner policy changed during checks: " + error)
                                 if self._dependency_context() != self._dependency_inputs:
                                     raise TargetCacheError("dependency inputs changed during guarded checks")
                                 self._completed_workspace_inputs()
@@ -1999,6 +2884,9 @@ class LocalCiRunner:
                                                 target_lock_release_error=f"{type(error).__name__}: {error}")
                         finally:
                             self.target_lock = None
+                if (error := self._execution_policy_error()) is not None:
+                    key = "cli_policy_error" if self._cli_policy_bound else "runner_policy_error"
+                    self.summary.update(status="incomplete", exit_code=2, **{key: error})
                 self.summary["ended_at"] = utc_now()
                 if self.summary.get("start_tree") is not None:
                     if self._capture_repository_state("end_tree"):
@@ -2043,6 +2931,9 @@ class LocalCiRunner:
                     except (ValueError, OSError, KeyError, TypeError) as error:
                         if self.summary.get("disk_refusal"):
                             self.summary["checkpoint_unavailable"] = str(error)
+                if (error := self._execution_policy_error()) is not None:
+                    key = "cli_policy_error" if self._cli_policy_bound else "runner_policy_error"
+                    self.summary.update(status="incomplete", exit_code=2, **{key: error})
                 if self.summary.get("report_publication_error"):
                     self._fail_report_publication()
                 try:
@@ -2068,12 +2959,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="run architecture/UI/GPUI guards and formatting only; this is not full CI",
     )
-    parser.add_argument("--profile", choices=("edit", "merge", "full", "release"),
+    parser.add_argument("--profile", choices=("edit", "merge", "full", "release", "health"),
                         help="explicit deterministic scope; default remains full audit")
     parser.add_argument("--base", help="immutable integrated comparison base for scoped checks")
     parser.add_argument("--source", help="exact current candidate commit for scoped checks")
     parser.add_argument("--reuse-report", type=Path,
                         help="explicit prior runtime certificate for a prose-only continuation")
+    parser.add_argument("--over-budget-reason",
+                        help="record why a merge run exceeds the one-minute test budget (cite the Pulse issue)")
+    parser.add_argument("--carry-report", type=Path,
+                        help="after merging a newer base, reuse unaffected steps of this passed merge summary")
     parser.add_argument("--resume-report", type=Path,
                         help="continue an exact-source plan stopped solely by a pre-step disk refusal")
     parser.add_argument("--package", help="explicit workspace package for partial edit feedback")
@@ -2100,6 +2995,9 @@ def main(argv: list[str] | None = None) -> int:
                                     or arguments.quick or arguments.profile == "edit"
                                     or arguments.prepare_changelog):
         parser.error("--resume-report cannot combine reuse/adoption/quick/edit/changelog preparation")
+    if arguments.carry_report and (arguments.reuse_report or arguments.resume_report or arguments.quick
+                                   or arguments.profile != "merge"):
+        parser.error("--carry-report requires --profile merge and cannot combine reuse/resume/quick")
     if arguments.prepare_changelog:
         command = [sys.executable, str(ROOT / "scripts/changelog.py"), "prepare",
                    "--source", arguments.changelog_through]
@@ -2110,13 +3008,17 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("changelog range arguments require --prepare-changelog")
     if arguments.min_free_gib is not None and not 0 <= arguments.min_free_gib <= sys.maxsize // GIB:
         parser.error("--min-free-gib must be a bounded nonnegative integer")
+    if (error := cli_policy_error(ROOT)) is not None:
+        parser.error("cannot bind CLI planner source: " + error)
     mode = "quick" if arguments.quick else "full"
     plan = None
-    if arguments.profile in {"merge", "edit"} or arguments.base or arguments.source:
+    if arguments.profile in {"merge", "edit", "health"} or arguments.base or arguments.source:
         if arguments.quick or not arguments.profile or not arguments.base or not arguments.source:
             parser.error("scoped profiles require --profile, --base and --source; cannot combine --quick")
         try:
             metadata = json.loads(command_output(["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"], ROOT, dict(os.environ)).stdout)
+            if (error := cli_policy_error(ROOT)) is not None:
+                raise ValueError("CLI planner changed before resolution: " + error)
             plan = ci_plan.resolve(ROOT, profile=arguments.profile, base=arguments.base,
                                    source=arguments.source, metadata=metadata)
             if arguments.reuse_report:
@@ -2138,13 +3040,18 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--reuse-report requires an explicit merge plan")
     elif arguments.package or arguments.test_filter or arguments.features or arguments.lib or arguments.test is not None:
         parser.error("package/filter/features require an explicit edit plan")
+    if (error := cli_policy_error(ROOT)) is not None:
+        parser.error("CLI planner changed during resolution: " + error)
     runner = LocalCiRunner(
         mode=mode,
         min_free_bytes=None if arguments.min_free_gib is None else arguments.min_free_gib * GIB,
         adopt_target=arguments.adopt_target,
         plan=plan,
         resume_report=arguments.resume_report,
+        carry_report=arguments.carry_report,
+        over_budget_reason=arguments.over_budget_reason,
     )
+    runner._cli_policy_bound = True
     try:
         exit_code = runner.run()
     except FileExistsError:
@@ -2153,7 +3060,22 @@ def main(argv: list[str] | None = None) -> int:
     except OSError as error:
         print(f"local ci could not retain its complete report at {runner.summary_path}: {error}", file=sys.stderr)
         return 2
+    carried = [s for s in runner.summary.get("steps", []) if isinstance(s, dict) and s.get("execution") == "carried"]
+    if carried:
+        print(f"{len(carried)} step(s) carried from {runner.summary['carry']['report']}, not re-executed")
+    budget = runner.summary.get("test_budget")
+    if isinstance(budget, dict) and budget.get("exceeded"):
+        slowest = ", ".join(f"{s['step_id']} {s['seconds']:.0f}s" for s in budget["slowest"])
+        verdict = (f"reason: {budget['over_budget_reason']}" if budget.get("over_budget_reason") else
+                   "not a merge failure; record a recurring slow suite in Pulse")
+        print(f"warning: merge test time {budget['test_seconds']:.0f}s exceeds the "
+              f"{budget['limit_seconds']:.0f}s budget ({slowest}); {verdict}", file=sys.stderr)
     print(f"local ci {runner.summary['status']}: {runner.summary_path}")
+    if mode == "health" and runner.summary["status"] == "failed":
+        print(f"main is red after merge {plan['source']}: owning checks did not pass; "
+              "fix forward before further merges", file=sys.stderr)
+    if runner.summary["status"] == "passed" and mode == "merge":
+        print(f"if the base advances: merge it, then rerun with --carry-report {runner.summary_path}")
     return exit_code
 
 
