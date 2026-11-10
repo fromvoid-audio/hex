@@ -6,8 +6,8 @@ fn editor_receipt_requires_exact_controller_operation_and_discriminant() {
     let config = config();
     for (request, code) in [
         (ControllerRequest::ToggleEditor, 6),
-        (ControllerRequest::DetachEditor, 9),
-        (ControllerRequest::ReopenEditor, 10),
+        (ControllerRequest::DetachEditor, 11),
+        (ControllerRequest::ReopenEditor(None), 12),
     ] {
         let wire = parameter_page_request(&config, 1, 7, request, false).unwrap();
         assert_eq!(&wire[..4], b"HXVM");
@@ -27,6 +27,43 @@ fn editor_receipt_requires_exact_controller_operation_and_discriminant() {
         assert!(parameter_page(&reply, &config, 1, 7, ParameterPageQuery::default()).is_err());
         reply.push(0);
         assert!(parameter_page(&reply, &config, 1, 7, request).is_err());
+    }
+}
+#[test]
+fn editor_detach_placement_is_bounded_and_reopen_copies_its_exact_coordinates() {
+    let config = config();
+    let x = -342.25_f64;
+    let y = 809.5_f64;
+    let position = PluginEditorPosition::new(x, y).unwrap();
+    let reopen = ControllerRequest::ReopenEditor(Some(position));
+    for poll in [false, true] {
+        let wire = parameter_page_request(&config, 1, 7, reopen, poll).unwrap();
+        assert_eq!(wire[82], 12);
+        assert_eq!(&wire[74..82], &x.to_le_bytes());
+        assert_eq!(&wire[83..87], &1_u32.to_le_bytes());
+        assert_eq!(&wire[87..95], &y.to_le_bytes());
+        assert!(wire[95..].iter().all(|&byte| byte == 0));
+    }
+
+    let mut reply = Vec::new();
+    stamp(&mut reply, config.binding);
+    for value in [1_u64, u64::from(config.quantum), 7] {
+        reply.extend(value.to_le_bytes());
+    }
+    reply.extend([4, 3]);
+    let prefix = reply.len();
+    reply.extend(x.to_le_bytes());
+    reply.extend(y.to_le_bytes());
+    let detach = ControllerRequest::DetachEditor;
+    assert_eq!(
+        parameter_page(&reply, &config, 1, 7, detach).unwrap(),
+        ParameterPageProgress::Editor(PluginEditorState::Detached(position))
+    );
+    assert!(parameter_page(&reply, &config, 1, 7, reopen).is_err());
+    assert!(parameter_page(&reply[..reply.len() - 1], &config, 1, 7, detach).is_err());
+    for invalid in [f64::NAN, f64::INFINITY, -1_000_001.0] {
+        reply[prefix..prefix + 8].copy_from_slice(&invalid.to_le_bytes());
+        assert!(parameter_page(&reply, &config, 1, 7, detach).is_err());
     }
 }
 #[path = "protocol_tests/conversion.rs"]
