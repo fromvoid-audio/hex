@@ -94,3 +94,6 @@ mod test_environment;
 
 #[path = "group_overview.rs"]
 mod group_overview;
+
+// Compile the production interval splitter without pulling in GPUI or Service.
+mod time_move_preview;
