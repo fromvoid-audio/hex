@@ -1615,6 +1615,94 @@ class MainHealthTests(unittest.TestCase):
 
 
 class CacheIdentityTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("cargo") and shutil.which("git"), "requires real Cargo and Git")
+    def test_selector_hidden_build_input_requires_guarded_cache_invalidation(self):
+        # A build script can read workspace-root policy without registering it
+        # as a Cargo watch. The selector is outside every member directory.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            install_delivery_source_fixture(root)
+            (root / "app/src").mkdir(parents=True)
+            (root / "Cargo.toml").write_text('[workspace]\nmembers=["app"]\nresolver="2"\n')
+            (root / ".gitignore").write_text('/target/\n/artifacts/\n')
+            (root / "app/Cargo.toml").write_text(
+                '[package]\nname="selector-cache-fixture"\nversion="0.1.0"\nedition="2021"\n')
+            (root / "app/build.rs").write_text(
+                'fn main() {\n'
+                '    println!("cargo:rerun-if-changed=build.rs");\n'
+                '    let s = std::fs::read_to_string("../scripts/ci_plan.py").unwrap();\n'
+                '    let v = if s.contains("# CACHE_PROBE=B") { "B" } else { "A" };\n'
+                '    println!("cargo:rustc-env=SELECTOR_PROBE={v}");\n'
+                '}\n')
+            (root / "app/src/main.rs").write_text(
+                'fn main() { println!("{}", env!("SELECTOR_PROBE")); }\n')
+            selector = root / "scripts/ci_plan.py"
+            selector.write_bytes(selector.read_bytes() + b"\n# CACHE_PROBE=A\n")
+            env = {**os.environ, "CARGO_TARGET_DIR": str(root / "target")}
+
+            def command(*argv):
+                return subprocess.check_output(argv, cwd=root, env=env, text=True).strip()
+
+            command("git", "init", "-q")
+            command("git", "config", "user.name", "selector cache fixture")
+            command("git", "config", "user.email", "fixture@invalid")
+            command("cargo", "generate-lockfile", "--offline")
+            command("git", "add", ".")
+            command("git", "commit", "-qm", "selector A")
+
+            def load_runner_module(name):
+                path = root / "scripts/local-ci.py"
+                spec = importlib.util.spec_from_file_location(name, path)
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[name] = module
+                self.addCleanup(sys.modules.pop, name, None)
+                source = path.read_bytes()
+                module._DELIVERY_RUNNER_SOURCE_SHA256 = hashlib.sha256(source).hexdigest()
+                exec(compile(source, str(path), "exec", dont_inherit=True), module.__dict__)
+                return module
+
+            def runner(module, name):
+                return module.LocalCiRunner(
+                    root, mode="component", run_id=name, env=env, min_free_bytes=0,
+                    steps=(module.Step("build", ("cargo", "build", "--offline", "--locked")),))
+
+            first = runner(load_runner_module("selector_cache_a"), "selector-a")
+            self.assertEqual(first.run(), 0, first.summary)
+            binary = root / "target/debug/selector-cache-fixture"
+            self.assertEqual(command(str(binary)), "A")
+            unrelated = root / "target/release/unrelated-artifact"
+            unrelated.parent.mkdir(parents=True, exist_ok=True)
+            unrelated.write_bytes(b"unrelated release artifact")
+
+            selector.write_bytes(selector.read_bytes().replace(b"# CACHE_PROBE=A", b"# CACHE_PROBE=B"))
+            command("git", "add", ".")
+            command("git", "commit", "-qm", "selector B")
+            candidate = load_runner_module("selector_cache_b")
+            control = runner(candidate, "selector-unsafe-control")
+            observe = control._dependency_context
+
+            def unsafe_previous_witness():
+                # Test-only simulation of excluding the selector from the
+                # invalidation and guarded Cargo config token. Retain all real
+                # target ownership, compiler, metadata and Cargo behavior.
+                observe()
+                return first._dependency_inputs
+
+            with patch.object(control, "_dependency_context", side_effect=unsafe_previous_witness):
+                self.assertEqual(control.run(), 0, control.summary)
+            self.assertEqual(control.summary["target_cache"]["action"], "reuse")
+            self.assertIsNone(control.summary["target_cache"]["cleanup_argv"])
+            self.assertEqual(command(str(binary)), "A", "unsafe reuse must demonstrate stale output")
+            self.assertEqual(unrelated.read_bytes(), b"unrelated release artifact")
+
+            guarded = runner(candidate, "selector-guarded")
+            self.assertEqual(guarded.run(), 0, guarded.summary)
+            self.assertNotEqual(guarded._dependency_inputs, first._dependency_inputs)
+            self.assertEqual(guarded.summary["target_cache"]["action"], "dependency-input-handoff")
+            self.assertEqual(guarded.summary["target_cache"]["cleanup_status"], "passed")
+            self.assertEqual(command(str(binary)), "B")
+            self.assertEqual(unrelated.read_bytes(), b"unrelated release artifact")
+
     def test_actual_cargo_restored_mtime_dependency_api_is_invalidated(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
