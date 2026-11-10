@@ -392,7 +392,7 @@ impl Asset {
 }
 
 mod clip_fade;
-pub use clip_fade::ClipFade;
+pub use clip_fade::{ClipFade, FadeCurveLaw};
 
 /// Edge used by clip trimming and structural section resizing.
 /// Clip trim uses an absolute frame. Section resize changes the prefix/suffix
