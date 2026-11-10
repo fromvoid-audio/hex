@@ -2026,6 +2026,7 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",
                                   "editor::audio_import_settings::admission::",
                                   "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
+                                  "editor::clip_drag_ui_test::rendered_move_retains_destination_until_real_worker_ack",
                                   "editor::computer_keyboard::state::", "editor::computer_keyboard::tests::",
                                   "editor::controller::audio_event_correlation::",
                                   "editor::controller::sampler_native_ui_protocol_tests::",
@@ -2035,6 +2036,9 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::device_panel::eq_panel::response::",
                                   "editor::device_panel::tests::device_comparison_tests::device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_new_ack",
                                   "editor::device_panel::tests::eq_ui_tests::graph_layout_tests::eq_axis_labels_are_logarithmic_nonoverlapping_and_keep_the_plot_hit_map",
+                                  "editor::drag::geometry::",
+                                  "editor::drag::group_drag_ui_test::stationary_group_snap_modifier_uses_one_anchor_delta_and_authoritative_release",
+                                  "editor::drag::tests::",
                                   "editor::fade_calculation::", "editor::fade_handle_geometry::",
                                   "editor::fade_handles::", "editor::fades::",
                                   "editor::output_meter_ui_test::", "editor::overview_waveform::", "editor::refresh_state::",
@@ -2059,6 +2063,32 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertTrue(any(step.step_id == "ui-editor-logic-unit-tests" for step in ci.planned_steps({"scope": "full"})))
         health = ci.planned_steps({"scope": "rust", "health": {"python": False, "workspace_inputs": True, "packages": []}})
         self.assertTrue(any(step.step_id == "health-ui-editor-logic-unit" for step in health))
+
+    def test_clip_drag_geometry_keeps_unit_and_runtime_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::drag::geometry::"
+        drag = "editor::drag::tests::"
+        worker = "editor::clip_drag_ui_test::rendered_move_retains_destination_until_real_worker_ack"
+        group = "editor::drag::group_drag_ui_test::stationary_group_snap_modifier_uses_one_anchor_delta_and_authoritative_release"
+        names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/drag/geometry.rs"], inventory, [owner])
+        self.assertEqual(names, {owner: sorted([unit, drag, worker, group])})
+        parent = plan.module_test_filters(root, ["crates/hex-ui/src/editor/drag.rs"], inventory, [owner])
+        self.assertEqual(parent, {owner: sorted(["editor::drag::", worker])})
+        for path in ("clip_drag_ui_test.rs", "group_drag_ui_test.rs"):
+            selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            self.assertIn(unit, selected[owner])
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
+                    "single_run": {owner: "ui-test-support"}, "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": []})
+        self.assertTrue(any(unit in step.argv and step.requires_tests
+                            for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(all(name in step.argv for name in (drag, worker, group))
+                            for step in steps if step.step_id == "ui-feature-tests"))
 
     def test_computer_keyboard_state_selects_unit_and_integration(self):
         root = SCRIPTS.parent

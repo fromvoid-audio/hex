@@ -63,3 +63,6 @@ mod waveform {
 #[allow(dead_code)]
 #[path = "../../src/editor/overview_waveform.rs"]
 mod overview_waveform;
+
+#[path = "drag.rs"]
+mod drag;
