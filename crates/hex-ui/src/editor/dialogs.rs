@@ -98,6 +98,7 @@ impl EditorView {
         if !self.finalize_track_name_for_open(window, cx)
             || !self.finalize_clip_name_for_open(window, cx)
             || !self.finalize_section_name_for_open(window, cx)
+            || !self.finalize_locator_name_for_open(window, cx)
         {
             cx.notify();
             return;
@@ -246,6 +247,7 @@ impl EditorView {
             || !self.finalize_track_name_for_open(window, cx)
             || !self.finalize_clip_name_for_open(window, cx)
             || !self.finalize_section_name_for_open(window, cx)
+            || !self.finalize_locator_name_for_open(window, cx)
         {
             return;
         }

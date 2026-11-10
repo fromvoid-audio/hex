@@ -135,6 +135,7 @@ impl EditorView {
         let ruler_width = (self.workspace_body_width(window) - self.track_header_width()).max(0.0);
         if self.arrangement_track_index(0).is_none() {
             let empty_viewport = self.visible_viewport(state.timeline_frames);
+            self.refresh_locators(&state, empty_viewport);
             let grid = super::musical_time::grid_lines(
                 &state.project,
                 empty_viewport,
@@ -154,6 +155,7 @@ impl EditorView {
                 .flex_col()
                 .bg(rgb(theme::color(theme::PaletteRole::Background)))
                 .child(self.ruler(&state, ruler_width, clip_move_guide, cx))
+                .children(self.locator_strip(&state, empty_viewport, ruler_width, cx))
                 .child(super::loop_rail::view(
                     self,
                     &state,
@@ -199,6 +201,11 @@ impl EditorView {
                                 self,
                                 empty_viewport,
                                 self.track_header_width(),
+                            )])
+                            .children([self.locator_lines(
+                                empty_viewport,
+                                self.track_header_width(),
+                                "locator-line",
                             )]),
                     ),
                     cx,
@@ -216,6 +223,7 @@ impl EditorView {
         }
 
         let viewport = self.visible_viewport(state.timeline_frames);
+        self.refresh_locators(&state, viewport);
         let grid =
             super::musical_time::grid_lines(&state.project, viewport, ruler_width, self.snap_grid);
         let bands = super::musical_time::adaptive_grid_bands_for_grid(
@@ -282,6 +290,11 @@ impl EditorView {
             viewport,
             self.track_header_width(),
         )]);
+        content = content.children([self.locator_lines(
+            viewport,
+            self.track_header_width(),
+            "locator-line",
+        )]);
         content = content.children(self.edit_cursor_layer(viewport, clip_move_guide, cx));
         content = content.children(self.track_reorder_line());
         let upper = div()
@@ -290,6 +303,7 @@ impl EditorView {
             .flex_1()
             .min_h_0()
             .child(self.ruler(&state, ruler_width, clip_move_guide, cx))
+            .children(self.locator_strip(&state, viewport, ruler_width, cx))
             .child(super::loop_rail::view(self, &state, viewport, &grid, cx))
             .children([self.arrangement_body(content, cx)])
             .children(super::gain_lane::view(
@@ -878,7 +892,8 @@ impl EditorView {
                 .absolute()
                 .inset_0(),
             )
-            .children(self.time_selection_cursor_layer());
+            .children(self.time_selection_cursor_layer())
+            .children([self.locator_lines(viewport, 0.0, "locator-main-line")]);
         let row = div()
             .on_scroll_wheel(cx.listener(|view, event: &ScrollWheelEvent, _, cx| {
                 view.resize_row_wheel(None, event, cx);

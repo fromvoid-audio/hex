@@ -15,6 +15,7 @@ mod arrangement_device_drop;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod arrangement_device_drop_ui_test;
 mod arrangement_focus;
+mod arrangement_locators;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod arrangement_main_track_ui_test;
 mod arrangement_sections;
@@ -475,6 +476,7 @@ actions!(
         DuplicateClip,
         DuplicateAudioEvent,
         DuplicateAliasClip,
+        AddLocator,
         MakeClipUnique,
         SplitClip,
         LoopSelection,
@@ -603,7 +605,8 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-d", DuplicateClip, Some("hex_audio_events")),
         KeyBinding::new("d", DuplicateAudioEvent, Some("hex_audio_events && !hex_text_editing")),
         KeyBinding::new("d", DuplicateClip, Some("hex_editor && !hex_text_editing && !hex_midi && !hex_audio_events && !hex_device_selection")),
-        KeyBinding::new("i", MakeClipUnique, Some("hex_editor && !hex_text_editing && !hex_midi && !hex_audio_events && !hex_device_selection")),
+        KeyBinding::new("i", AddLocator, Some("hex_editor && !hex_text_editing && !hex_midi && !hex_audio_events && !hex_device_selection")),
+        KeyBinding::new("shift-i", MakeClipUnique, Some("hex_editor && !hex_text_editing && !hex_midi && !hex_audio_events && !hex_device_selection")),
         KeyBinding::new("cmd-alt-up", MoveSceneUp, Some("hex_editor")),
         KeyBinding::new("cmd-alt-down", MoveSceneDown, Some("hex_editor")),
         KeyBinding::new("e", SplitClip, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
@@ -853,6 +856,7 @@ pub(super) struct EditorView {
     clip_selection: clip_selection::ClipSelection,
     clip_name_edit: Option<clip_name::NameEdit>,
     sections: arrangement_sections::Sections,
+    locators: arrangement_locators::Locators,
     section_autoplay: bool,
     track_name: track_name::TrackNameState,
     track_tags: track_tags::State,
@@ -1533,7 +1537,8 @@ impl EditorView {
                 let paint_cancelled = view.cancel_audio_loop_gesture()
                     | view.cancel_clip_paint()
                     | view.cancel_section_pointer()
-                    | view.cancel_track_reorder();
+                    | view.cancel_track_reorder()
+                    | view.locators.cancel_drag();
                 if let Some(audio) = view.audio.as_mut() {
                     let _ = audio.control.audition_cancel();
                 }
@@ -1550,6 +1555,7 @@ impl EditorView {
         });
         let window_bounds = cx.observe_window_bounds(window, |view, window, cx| {
             device_panel::cancel_sampler_boundary(view);
+            view.locators.cancel_drag();
             view.cancel_fade_gesture(cx);
             view.cancel_clip_gain(cx);
             view.cancel_project_spectrum_resize(cx);
@@ -1638,6 +1644,7 @@ impl EditorView {
             clip_selection: clip_selection::ClipSelection::default(),
             clip_name_edit: None,
             sections: arrangement_sections::Sections::default(),
+            locators: arrangement_locators::Locators::new(cx),
             section_autoplay: false,
             track_name: track_name::TrackNameState::default(),
             track_tags: track_tags::State::default(),

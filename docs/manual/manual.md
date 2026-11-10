@@ -462,7 +462,7 @@ linked copies. a small link icon in the clip title identifies each alias. linked
 audio shares its events, pitch and warp edits; linked midi shares its notes.
 each copy keeps its own arrangement position, trims, loop window and fades.
 
-press **i** or choose **make unique** from the clip menu to detach the selected
+press **shift+i** or choose **make unique** from the clip menu to detach the selected
 copies. their current content and sound stay unchanged. **apply settings to aliases** in
 the clip menu copies the picked alias's local settings to every member of its
 group, preserving each arrangement position. there is no privileged original:
@@ -577,6 +577,24 @@ extent. **z** fits the selection or content in time and the selected track span
 vertically in arrange. **x** restores the prior time view, track heights and
 vertical scroll, including former visible trailing space. minimum row heights
 can leave a large selection scrollable.
+
+## arrangement locators
+
+place the insert cursor or select a time range, then press **i**. a locator appears
+at the cursor or the start of the range. pressing **i** again at the same frame
+keeps the existing locator. computer-keyboard midi keeps priority.
+
+click a locator triangle to play from its position. drag the triangle to move it
+on the arrangement grid. hold **command** to invert snapping. double-click the
+name to edit it, or select the locator and press **command+r**. clear the name to
+restore automatic naming. select a locator and press **backspace** to delete it.
+
+inside a section, locators use its colour and take names such as **verse.1** and
+**verse.2** from left to right. custom names still count in the sequence. outside
+sections, locators are grey and use names such as **locator 1**. section edits
+that move, copy, or delete music carry locators with it. marker-only edits
+change the section bounds around the locators. locators are saved with the
+project and support undo and redo.
 
 ## create fades from a time selection
 
