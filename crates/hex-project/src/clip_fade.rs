@@ -157,6 +157,36 @@ impl ClipFade {
         Self { laws, ..self }
     }
 
+    /// Activate default S curves only on newly drawn ramps. Length changes
+    /// to already-authored ramps keep the caller's existing coordinates.
+    #[must_use]
+    pub fn with_new_ramp_defaults(mut self, previous: Self) -> Self {
+        for (out, before, after) in [
+            (false, previous.fade_in, self.fade_in),
+            (true, previous.fade_out, self.fade_out),
+        ] {
+            if before == 0 && after > 0 {
+                self = self.straighten_ramp(out);
+                self.laws[usize::from(out)] = Self::DEFAULT_S_CURVE;
+            }
+        }
+        self
+    }
+
+    /// Straighten one ramp without changing its lengths or silent endpoints.
+    #[must_use]
+    pub fn straighten_ramp(mut self, out: bool) -> Self {
+        self.laws[usize::from(out)] = FadeCurveLaw::Linear;
+        if out {
+            self.out_curve = 0;
+            self.out_position = 500;
+        } else {
+            self.in_curve = 0;
+            self.in_position = 500;
+        }
+        self
+    }
+
     pub fn ramp_is_curved(self, out: bool) -> bool {
         self.laws[usize::from(out)] != FadeCurveLaw::Linear
             || if out {

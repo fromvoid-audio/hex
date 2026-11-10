@@ -545,3 +545,42 @@ fn two_axis_fades_render_independent_anchor_gains_in_both_players() {
     assert_eq!(actual, chunked);
     assert_ne!(actual[250][0], 0.125); // x has changed actual PCM from the linear ramp.
 }
+
+#[test]
+fn new_selection_fades_render_the_s_curve_in_both_directions() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { track, asset, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "audio".into(),
+            path: "constant.wav".into(),
+            sample_rate: 48_000,
+            frames: 202,
+        })
+        .unwrap()
+    else {
+        panic!("import");
+    };
+    for (start, end) in [(0, 101), (101, 202)] {
+        editor
+            .execute(Command::CreateArrangementFades {
+                range: hex_project::TimeRange::new(vec![track], start, end).unwrap(),
+            })
+            .unwrap();
+    }
+    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![[1.0, -1.0]; 202]).unwrap())]);
+    let compiled = compile::project(editor.project(), &media).unwrap();
+    let mut renderer = Renderer::new(&compiled);
+    renderer.play();
+    let mut output = [[0.0; 2]; 202];
+    renderer.render(&mut output).unwrap();
+    for (frame, gain) in [
+        (0, 0.0),
+        (25, 0.15625),
+        (50, 0.5),
+        (75, 0.84375),
+        (100, 1.0),
+    ] {
+        assert_eq!(output[frame], [gain, -gain]);
+        assert_eq!(output[201 - frame], [gain, -gain]);
+    }
+}
