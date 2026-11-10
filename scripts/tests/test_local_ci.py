@@ -2194,6 +2194,251 @@ runpy.run_path(sys.argv[1], run_name='__main__')
         self.assertEqual(record["cache_inputs"], {"witness": "fixture"})
         self.assertEqual(provenance.call_args_list, [unittest.mock.call(checked=True)] * 2)
 
+    def _reserved_dev_runner(self, name, *, real_cargo=False):
+        target = self.repo / name
+        target.mkdir()
+        env = dict(self.env, CARGO_TARGET_DIR=str(target), FAKE_METADATA_TARGET=str(target))
+        if real_cargo:
+            # Use real offline Cargo metadata and provenance, with the same
+            # deterministic Git witness as the other runner fixtures.
+            git_bin = self.base / "git-only"
+            git_bin.mkdir()
+            (git_bin / "git").symlink_to(self.bin / "git")
+            env = dict(os.environ, **env)
+            env.update(PATH=str(git_bin) + os.pathsep + os.environ["PATH"],
+                       CARGO_NET_OFFLINE="true", CARGO_CACHE_RUSTC_INFO="0",
+                       FAKE_FILE_LIST="Cargo.toml")
+            (self.repo / "Cargo.toml").write_text('[package]\nname = "fixture"\nversion = "0.1.0"\nedition = "2021"\n')
+            (self.repo / "Cargo.lock").write_text('version = 4\n\n[[package]]\nname = "fixture"\nversion = "0.1.0"\n')
+            (self.repo / "src").mkdir()
+            (self.repo / "src/lib.rs").write_text("")
+        runner = self.runner(name, env=env)
+        self.assertTrue(runner._capture_repository_state("start_tree"), runner.summary.get("repository_error"))
+        reservation = local_ci.FreshTargetReservation.acquire(
+            runner.root, str(target), {"run_id": name}, state_dir=self.target_state_dir)
+        self.addCleanup(reservation.close)
+        self.assertTrue(runner._resolve_cargo_identity(reservation), runner.summary.get("cargo_metadata_error"))
+        if real_cargo:
+            runner._dependency_inputs = runner._dependency_context()
+            runner._workspace_inputs = local_ci.build_inputs.workspace_snapshot(
+                runner.root, runner.env, runner._release_metadata)
+        else:
+            runner._dependency_inputs = {"version": 1, "sha256": "a" * 64, "packages": []}
+        return runner, reservation, target
+
+    def test_fresh_dev_publication_transfers_same_lock_and_real_owner_schema(self):
+        runner, reservation, target = self._reserved_dev_runner("fresh-owner-real", real_cargo=True)
+        owner = runner.target_owner_path
+        lock = reservation._lock
+        locked_file = lock.file
+        with reservation:
+            runner._claim_fresh_dev_owner(reservation)
+            self.addCleanup(lock.release)
+        self.assertIs(runner.target_lock, lock)
+        self.assertIs(lock.file, locked_file)
+        self.assertTrue(runner.target_owner_claimed)
+        record = runner._load_target_owner(owner, target)
+        self.assertEqual(record["workspace_owner"], {key: runner.git_identity[key]
+                                                    for key in ("workspace_root", "git_common_dir")})
+        self.assertEqual(record["target_identity"], runner._directory_identity(target))
+        self.assertEqual(record["dependency_inputs"], runner._dependency_inputs)
+        self.assertFalse(record["cache_inputs"]["workspace"]["checked"])
+        self.assertEqual(list(target.iterdir()), [])
+        self.assertFalse(local_ci.target_admission_pending_path(lock.path).exists())
+        with self.assertRaises(local_ci.TargetCacheError):
+            runner._claim_fresh_dev_owner(reservation)
+        contender = local_ci.CargoTargetLock(lock.path, {"run_id": "contender"})
+        with self.assertRaisesRegex(local_ci.TargetCacheError, "already in use"):
+            contender.acquire()
+        self.assertIs(lock.file, locked_file)
+        self.assertEqual(runner._load_target_owner(owner, target), record)
+
+    def _assert_pending_consumers_refuse(self, name, target):
+        env = dict(self.env, CARGO_TARGET_DIR=str(target), FAKE_METADATA_TARGET=str(target))
+        calls = self.call_log.read_text()
+        for adopt in (False, True):
+            consumer = self.runner(f"{name}-dev-{adopt}", env=env, adopt_target=adopt)
+            self.assertEqual(consumer.run(), 1)
+            self.assertIn("admission is incomplete", consumer.summary["target_cache_error"])
+            self.assertIsNone(consumer.target_lock)
+            release = self.runner(f"{name}-release-{adopt}", env=env)
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "admission is incomplete"):
+                with release.guarded_release(adopt=adopt):
+                    self.fail("release accepted a pending target")
+            self.assertIsNone(release.target_lock)
+        new_calls = self.call_log.read_text()[len(calls):]
+        self.assertNotIn("cargo clean", new_calls)
+        self.assertNotIn("cargo build", new_calls)
+
+    def test_fresh_dev_publication_keeps_durable_refusal_after_precommit_failure(self):
+        for event in ("same-profile", "opposite-profile", "target-contents", "target-replaced",
+                      "lock", "state", "owner-bytes", "owner-inode", "temporary",
+                      "link-error", "link-interrupt", "pending-file-sync", "pending-directory-sync",
+                      "owner-file-sync", "owner-directory-sync"):
+            with self.subTest(event=event):
+                runner, reservation, target = self._reserved_dev_runner("fresh-" + event)
+                owner = runner.target_owner_path
+                opposite = owner.with_name(owner.name.replace(".owner.json", ".release-owner.json"))
+                lock_path = reservation._lock.path
+                pending = local_ci.target_admission_pending_path(lock_path)
+                observed_pending = pending
+                link, fsync = os.link, os.fsync
+                expected = {}
+                synced = []
+
+                def change(source, destination, **kwargs):
+                    nonlocal observed_pending
+                    identity = pending.stat()
+                    self.assertIn((identity.st_dev, identity.st_ino), synced)
+                    self.assertIn("directory", synced)
+                    if event == "same-profile":
+                        owner.write_bytes(b"other dev owner")
+                        expected[owner] = owner.read_bytes()
+                    link(source, destination, **kwargs)
+                    expected[owner] = owner.read_bytes()
+                    if event == "opposite-profile":
+                        opposite.write_bytes(b"release owner")
+                        expected[opposite] = opposite.read_bytes()
+                    elif event in {"target-contents", "target-replaced"}:
+                        if event == "target-replaced":
+                            target.rename(target.with_suffix(".old"))
+                            target.mkdir()
+                        (target / "keep").write_bytes(b"unowned target")
+                        expected[target / "keep"] = b"unowned target"
+                    elif event == "lock":
+                        lock_path.rename(lock_path.with_suffix(".old"))
+                        lock_path.write_bytes(b"replacement lock")
+                        expected[lock_path] = lock_path.read_bytes()
+                    elif event == "state":
+                        old_state = self.target_state_dir.with_suffix(".old")
+                        self.target_state_dir.rename(old_state)
+                        self.target_state_dir.mkdir()
+                        expected[old_state / owner.name] = expected.pop(owner)
+                        observed_pending = old_state / pending.name
+                    elif event == "owner-bytes":
+                        owner.write_bytes(b"changed in place")
+                        expected[owner] = owner.read_bytes()
+                    elif event == "owner-inode":
+                        owner.rename(owner.with_suffix(".old"))
+                        owner.write_bytes(expected[owner])
+                        expected[owner.with_suffix(".old")] = expected[owner]
+                    elif event == "temporary":
+                        temporary = owner.parent / source
+                        temporary.unlink()
+                        temporary.write_bytes(b"replacement temporary")
+                        expected[temporary] = temporary.read_bytes()
+                    elif event == "link-error":
+                        raise OSError(errno.EIO, "ambiguous link")
+                    elif event == "link-interrupt":
+                        raise KeyboardInterrupt()
+
+                def sync(descriptor):
+                    if descriptor == reservation._state_fd:
+                        key = "directory"
+                        stage = "owner-directory-sync" if owner.exists() else "pending-directory-sync"
+                    else:
+                        info = os.fstat(descriptor)
+                        key = (info.st_dev, info.st_ino)
+                        identity = pending.stat()
+                        stage = ("pending-file-sync" if key == (identity.st_dev, identity.st_ino)
+                                 else "owner-file-sync")
+                    if event == stage:
+                        raise OSError(errno.EIO, "failed " + stage)
+                    fsync(descriptor)
+                    synced.append(key)
+
+                error = KeyboardInterrupt if event == "link-interrupt" else local_ci.TargetCacheError
+                with patch.object(local_ci.os, "link", side_effect=change), \
+                        patch.object(local_ci.os, "fsync", side_effect=sync), self.assertRaises(error):
+                    runner._claim_fresh_dev_owner(reservation)
+                self.assertIsNone(runner.target_lock)
+                self.assertFalse(runner.target_owner_claimed)
+                self.assertIsNone(reservation._lock.file)
+                with self.assertRaisesRegex(local_ci.TargetCacheError, "no longer live"):
+                    reservation.revalidate(str(target))
+                self.assertEqual(observed_pending.read_bytes(), b"")
+                self.assertEqual(owner.exists(), owner in expected)
+                for path, preserved in expected.items():
+                    self.assertEqual(path.read_bytes(), preserved)
+                self.assertEqual(set(self.target_state_dir.glob(f".{owner.name}.*.tmp")),
+                                 {path for path in expected if path.suffix == ".tmp"})
+                if event in {"opposite-profile", "target-contents", "link-interrupt"}:
+                    self._assert_pending_consumers_refuse(event, target)
+                    self.assertEqual(observed_pending.read_bytes(), b"")
+                    for path, preserved in expected.items():
+                        self.assertEqual(path.read_bytes(), preserved)
+
+    def test_fresh_dev_link_interrupt_survives_temp_cleanup_failure(self):
+        runner, reservation, _ = self._reserved_dev_runner("fresh-link-double-failure")
+        pending = local_ci.target_admission_pending_path(reservation._lock.path)
+        replacement = []
+        def interrupt(source, destination, **kwargs):
+            temporary = self.target_state_dir / source
+            temporary.unlink()
+            temporary.write_bytes(b"replacement temporary")
+            replacement.append(temporary)
+            raise KeyboardInterrupt()
+        with patch.object(local_ci.os, "link", side_effect=interrupt):
+            with self.assertRaises(KeyboardInterrupt) as caught:
+                runner._claim_fresh_dev_owner(reservation)
+        self.assertIsInstance(caught.exception.__cause__, local_ci.TargetCacheError)
+        self.assertEqual(replacement[0].read_bytes(), b"replacement temporary")
+        self.assertTrue(pending.exists())
+        self.assertIsNone(reservation._lock.file)
+        self.assertIsNone(runner.target_lock)
+
+    def test_fresh_dev_handoff_interruption_closes_remaining_pins_and_lock(self):
+        runner, reservation, target = self._reserved_dev_runner("fresh-close-interrupt")
+        descriptors = set(reservation._handles + [reservation._state_fd])
+        attempted = []
+        original_finish, original_close = reservation._finish, os.close
+        def interrupted_finish(*, transfer_lock):
+            if not transfer_lock:
+                return original_finish(transfer_lock=False)
+            def close_then_interrupt(descriptor):
+                original_close(descriptor)
+                attempted.append(descriptor)
+                if len(attempted) == 1:
+                    raise KeyboardInterrupt()
+            with patch.object(local_ci.os, "close", side_effect=close_then_interrupt):
+                return original_finish(transfer_lock=True)
+        with patch.object(reservation, "_finish", side_effect=interrupted_finish):
+            with self.assertRaises(KeyboardInterrupt):
+                runner._claim_fresh_dev_owner(reservation)
+        self.assertEqual(set(attempted), descriptors)
+        self.assertIsNone(runner.target_lock)
+        self.assertIsNone(reservation._lock.file)
+        self.assertFalse(runner.target_owner_claimed)
+        self.assertIsNotNone(runner._load_target_owner(runner.target_owner_path, target))
+        self.assertFalse(local_ci.target_admission_pending_path(reservation._lock.path).exists())
+
+    def test_fresh_dev_publication_sync_failure_after_commit_does_not_transfer_lock(self):
+        runner, reservation, target = self._reserved_dev_runner("fresh-final-sync")
+        owner = runner.target_owner_path
+        lock = reservation._lock
+        pending = local_ci.target_admission_pending_path(lock.path)
+        fsync = os.fsync
+
+        def sync(descriptor):
+            if descriptor == reservation._state_fd and not pending.exists():
+                raise OSError(errno.EIO, "failed final directory sync")
+            fsync(descriptor)
+
+        with patch.object(local_ci.os, "fsync", side_effect=sync):
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "failed final directory sync"):
+                runner._claim_fresh_dev_owner(reservation)
+        self.assertIsNone(runner.target_lock)
+        self.assertFalse(runner.target_owner_claimed)
+        self.assertIsNone(lock.file)
+        self.assertFalse(pending.exists())
+        self.assertEqual(runner._load_target_owner(owner, target)["target_identity"],
+                         runner._directory_identity(target))
+        # The verified owner was durable before commit. If the deletion is
+        # lost on crash, the restored sentinel would instead refuse admission.
+        contender = local_ci.CargoTargetLock(lock.path, {"run_id": "later"})
+        contender.acquire()
+        self.assertIsNone(contender.release())
+
     def test_full_pipeline_claims_fresh_target_before_python_cargo_wrapper(self) -> None:
         target = Path(self.env["FAKE_METADATA_TARGET"])
         _lock, owner = local_ci.target_state_paths(target.resolve(), self.target_state_dir)

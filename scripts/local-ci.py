@@ -903,7 +903,8 @@ class FreshTargetReservation:
         state_fd = None
         try:
             state_fd = os.open(lock_path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-            cls._require_unowned(owner_path)
+            cls._require_state_entry(state_fd, owner_path.name, None)
+            cls._require_state_entry(state_fd, cls._release_marker_name(owner_path.name), None)
             handles, absent = cls._open_chain(selected)
             result = cls(root, selected, lock, handles, absent, state_fd)
             state_fd = None  # The reservation owns it now.
@@ -933,13 +934,40 @@ class FreshTargetReservation:
             raise
 
     @staticmethod
-    def _require_unowned(owner_path: Path) -> None:
-        release_owner = owner_path.with_name(owner_path.name.replace(".owner.json", ".release-owner.json"))
-        if os.path.lexists(owner_path) or os.path.lexists(release_owner):
-            raise TargetCacheError("fresh target already has an owner marker")
+    def _release_marker_name(dev_name: str) -> str:
+        return dev_name.removesuffix(".owner.json") + ".release-owner.json"
 
-    def _verify(self, selected_target: str) -> None:
-        """Refuse if the source, target, lock, ancestry or emptiness changed."""
+    @staticmethod
+    def _same_regular_file(actual: os.stat_result, expected: os.stat_result) -> bool:
+        return (stat.S_ISREG(actual.st_mode)
+                and (actual.st_dev, actual.st_ino) == (expected.st_dev, expected.st_ino))
+
+    @classmethod
+    def _require_state_entry(cls, directory: int, name: str, expected: os.stat_result | None) -> None:
+        try:
+            actual = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            if expected is None:
+                return
+            raise TargetCacheError(f"fresh target state entry disappeared: {name}") from None
+        if expected is None:
+            raise TargetCacheError(f"fresh target already has an owner marker or pending admission: {name}")
+        if not cls._same_regular_file(actual, expected):
+            raise TargetCacheError(f"fresh target state entry identity changed: {name}")
+
+    def _verify_lock_identity(self) -> None:
+        state = os.stat(self._lock.path.parent, follow_symlinks=False)
+        pinned_state = os.fstat(self._state_fd)
+        lock_path = os.stat(self._lock.path.name, dir_fd=self._state_fd, follow_symlinks=False)
+        locked = os.fstat(self._lock.file.fileno())
+        if (not stat.S_ISDIR(state.st_mode)
+                or (state.st_dev, state.st_ino) != (pinned_state.st_dev, pinned_state.st_ino)
+                or not self._same_regular_file(lock_path, locked)):
+            raise TargetCacheError("fresh target lock identity changed")
+
+    def _verify(self, selected_target: str, *, pending: os.stat_result | None = None,
+                dev_owner: os.stat_result | None = None) -> None:
+        """Refuse if the source, target, lock, ancestry, emptiness or state changed."""
         if (error := delivery_source_error(self._root)) is not None:
             raise TargetCacheError("fresh target source mismatch: " + error)
         if (not self._active or self._lock.file is None or self._lock.file is not self._lock_file
@@ -948,19 +976,7 @@ class FreshTargetReservation:
         if self._target_path(selected_target) != self._target:
             raise TargetCacheError("selected Cargo target differs from reservation")
         try:
-            state = os.stat(self._lock.path.parent, follow_symlinks=False)
-            pinned_state = os.fstat(self._state_fd)
-            lock_path = os.stat(self._lock.path.name, dir_fd=self._state_fd, follow_symlinks=False)
-            locked = os.fstat(self._lock.file.fileno())
-            if (not stat.S_ISDIR(state.st_mode) or not stat.S_ISREG(lock_path.st_mode)
-                    or (state.st_dev, state.st_ino) != (pinned_state.st_dev, pinned_state.st_ino)
-                    or (lock_path.st_dev, lock_path.st_ino) != (locked.st_dev, locked.st_ino)):
-                raise TargetCacheError("fresh target lock identity changed")
-        except OSError as error:
-            raise TargetCacheError(f"cannot verify fresh target lock identity: {error}") from error
-        _, owner_path = target_state_paths(Path(self._target), self._lock.path.parent)
-        self._require_unowned(owner_path)
-        try:
+            self._verify_lock_identity()
             current, absent = self._open_chain(self._target)
             try:
                 if absent != self._absent or len(current) != len(self._handles):
@@ -974,26 +990,102 @@ class FreshTargetReservation:
             finally:
                 for descriptor in reversed(current):
                     os.close(descriptor)
+            _, owner_path = target_state_paths(Path(self._target), self._lock.path.parent)
+            self._require_state_entry(self._state_fd, owner_path.name, dev_owner)
+            self._require_state_entry(self._state_fd, self._release_marker_name(owner_path.name), None)
+            self._require_state_entry(
+                self._state_fd, target_admission_pending_path(self._lock.path).name, pending)
+            self._verify_lock_identity()
         except OSError as error:
-            raise TargetCacheError(f"cannot revalidate fresh target: {error}") from error
+            raise TargetCacheError(f"cannot revalidate fresh target or lock identity: {error}") from error
+
+    def _publish_dev_owner(self, owner_name: str, payload: bytes) -> None:
+        """Publish a verified owner while retaining the same cooperative lock."""
+        directory = self._state_fd
+        pending_name = target_admission_pending_path(self._lock.path).name
+        temporary = f".{owner_name}.{uuid.uuid4().hex}.tmp"
+
+        def open_new(name, flags):
+            return os.open(name, flags | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+
+        def open_owner(name, flags):
+            return os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+
+        try:
+            # Guarded consumers must see a durable refusal before an owner
+            # can appear. This sentinel stays on every precommit failure.
+            with open(pending_name, "xb", opener=open_new) as stream:
+                pending = os.fstat(stream.fileno())
+                os.fsync(stream.fileno())
+            os.fsync(directory)
+            owner = None
+            try:
+                with open(temporary, "xb", opener=open_new) as stream:
+                    owner = os.fstat(stream.fileno())
+                    stream.write(payload)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                    self._verify(self._target, pending=pending)
+                    self._require_state_entry(directory, temporary, owner)
+                    os.link(temporary, owner_name, src_dir_fd=directory, dst_dir_fd=directory,
+                            follow_symlinks=False)
+            finally:
+                original_error = sys.exc_info()[1]
+                try:
+                    if owner is not None:
+                        # Never remove a competing entry or the published owner.
+                        self._require_state_entry(directory, temporary, owner)
+                        os.unlink(temporary, dir_fd=directory)
+                except BaseException as cleanup_error:
+                    if original_error is not None:
+                        raise original_error from cleanup_error
+                    raise
+            os.fsync(directory)
+            self._verify(self._target, pending=pending, dev_owner=owner)
+            with open(owner_name, "rb", opener=open_owner) as stream:
+                if (not self._same_regular_file(os.fstat(stream.fileno()), owner)
+                        or stream.read(len(payload) + 1) != payload):
+                    raise TargetCacheError("published dev owner marker identity or bytes changed")
+            self._require_state_entry(directory, owner_name, owner)
+            self._require_state_entry(directory, self._release_marker_name(owner_name), None)
+            self._require_state_entry(directory, pending_name, pending)
+            self._verify_lock_identity()
+            # Commit point. The verified owner is already durable. If removal
+            # or its sync is interrupted, a crash may restore the sentinel or
+            # leave a usable verified owner. The current caller still fails.
+            os.unlink(pending_name, dir_fd=directory)
+            os.fsync(directory)
+        except OSError as error:
+            raise TargetCacheError(f"fresh dev owner publication failed: {error}") from error
 
     def close(self) -> str | None:
         """Invalidate authority before closing pinned handles and releasing lock."""
+        return self._finish(transfer_lock=False)
+
+    def _finish(self, *, transfer_lock: bool) -> str | None:
         if not self._active:
             return self._close_failure
         self._active = False
         failure = None
-        while self._handles:
+        interruption = None
+        descriptors = [*reversed(self._handles), self._state_fd]
+        self._handles.clear()
+        for descriptor in descriptors:
             try:
-                os.close(self._handles.pop())
+                os.close(descriptor)
             except OSError as error:
                 failure = failure or f"cannot close fresh target descriptor: {error}"
-        try:
-            os.close(self._state_fd)
-        except OSError as error:
-            failure = failure or f"cannot close fresh target state descriptor: {error}"
-        self._close_failure = self._lock.release() or failure
-        return self._close_failure
+            except BaseException as error:
+                interruption = interruption or error
+        if not transfer_lock:
+            try:
+                failure = self._lock.release() or failure
+            except BaseException as error:
+                interruption = interruption or error
+        self._close_failure = failure
+        if interruption is not None:
+            raise interruption
+        return failure
 
     def __enter__(self) -> "FreshTargetReservation":
         self.revalidate(self._target)
@@ -1085,6 +1177,7 @@ class LocalCiRunner:
         self.git_identity: dict[str, object] | None = None
         self.cargo_identity: dict[str, object] | None = None
         self._lexical_cargo_target: Path | None = None
+        self._cargo_reservation: FreshTargetReservation | None = None
         self.target_lock: CargoTargetLock | None = None
         self.target_owner_path: Path | None = None
         self.target_owner_claimed = False
@@ -1236,9 +1329,12 @@ class LocalCiRunner:
         self._lexical_cargo_target = None
         self.summary.pop("cargo_identity", None)
         self.summary.pop("cargo_metadata_error", None)
+        self._cargo_reservation = None
         resolved = False
         try:
             resolved = self._resolve_cargo_identity_inner(reservation)
+            if resolved:
+                self._cargo_reservation = reservation
             return resolved
         finally:
             if not resolved:
@@ -1398,13 +1494,16 @@ class LocalCiRunner:
             raise TargetCacheError("resolved Cargo target path is not a directory")
         return {"device": status.st_dev, "inode": status.st_ino}
 
-    def _load_target_owner(self, owner_path: Path, target: Path) -> dict[str, object] | None:
-        if not owner_path.exists() and not owner_path.is_symlink():
+    def _load_target_owner(self, owner_path: Path, target: Path, *,
+                           snapshot: bytes | None = None) -> dict[str, object] | None:
+        if snapshot is None and not owner_path.exists() and not owner_path.is_symlink():
             return None
         try:
-            if owner_path.is_symlink():
-                raise ValueError("owner marker is a symlink")
-            value = json.loads(owner_path.read_text(encoding="utf-8"))
+            if snapshot is None:
+                if owner_path.is_symlink():
+                    raise ValueError("owner marker is a symlink")
+                snapshot = owner_path.read_bytes()
+            value = json.loads(snapshot.decode("utf-8"))
             if not isinstance(value, dict):
                 raise ValueError("owner marker is not an object")
             owner = value.get("workspace_owner")
@@ -1468,6 +1567,67 @@ class LocalCiRunner:
         payload = self._target_owner_record(owner, checked=checked)
         temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         temporary.replace(path)
+
+    def _claim_fresh_dev_owner(self, reservation: FreshTargetReservation) -> None:
+        """Publish existing dev schema and consume a pre-metadata reservation.
+
+        The caller captures Git identity and dependency inputs before claiming.
+        After success the runner must release its transferred lock. Any failure
+        closes the reservation and preserves any marker that reached the disk.
+        """
+        transfer = None
+        try:
+            if (self.target_lock is not None or self._cargo_reservation is not reservation
+                    or self.cargo_identity is None or self.git_identity is None):
+                raise TargetCacheError("fresh dev ownership requires reserved Cargo and Git identity")
+            selected = self.cargo_identity["target_directory"]
+            reservation._verify(selected)
+            if reservation._absent:
+                raise TargetCacheError("fresh dev publication requires an existing empty target")
+            if (reservation._root != self.root or self.env.get("CARGO_TARGET_DIR") != selected
+                    or self.cargo_identity["workspace_root"] != str(self.root)
+                    or self.git_identity["workspace_root"] != str(self.root)):
+                raise TargetCacheError("fresh dev ownership workspace or target changed")
+            target = Path(selected)
+            lock_path, owner_path = target_state_paths(target, self.target_state_dir)
+            if lock_path != reservation._lock.path or owner_path != self.target_owner_path:
+                raise TargetCacheError("fresh dev ownership lock namespace differs from runner")
+            self._check_target_filesystem(target)
+            if (error := self._execution_policy_error()) is not None:
+                raise TargetCacheError("runner policy source changed before fresh dev publication: " + error)
+            record = self._target_owner_record(self.git_identity)
+            pinned = os.fstat(reservation._handles[-1])
+            if record["target_identity"] != {"device": pinned.st_dev, "inode": pinned.st_ino}:
+                raise TargetCacheError("fresh dev owner target identity differs from reservation")
+            payload = (json.dumps(record, indent=2, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
+            if len(payload) > 1024 * 1024:
+                raise TargetCacheError("fresh dev owner marker exceeds the bounded publication size")
+            self._load_target_owner(owner_path, target, snapshot=payload)
+            reservation._publish_dev_owner(owner_path.name, payload)
+            transfer = reservation._lock
+            self.target_lock = transfer
+            if failure := reservation._finish(transfer_lock=True):
+                raise TargetCacheError(failure)
+            self.target_owner_claimed = True
+        except BaseException:
+            try:
+                if failure := reservation.close():
+                    self.summary["reservation_close_error"] = failure
+            except BaseException as error:
+                self.summary["reservation_close_error"] = f"cleanup interrupted: {type(error).__name__}"
+            if transfer is not None and self.target_lock is transfer:
+                try:
+                    if failure := transfer.release():
+                        self.summary["target_lock_release_error"] = failure
+                except BaseException as error:
+                    self.summary["target_lock_release_error"] = f"cleanup interrupted: {type(error).__name__}"
+                finally:
+                    self.target_lock = None
+                    self.target_owner_claimed = False
+            raise
+        finally:
+            if self._cargo_reservation is reservation:
+                self._cargo_reservation = None
 
     def _check_target_filesystem(self, target: Path) -> None:
         try:
