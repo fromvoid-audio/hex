@@ -28,7 +28,18 @@ if SPEC is None or SPEC.loader is None:
     raise RuntimeError("could not load local-ci.py")
 local_ci = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = local_ci
-SPEC.loader.exec_module(local_ci)
+_runner_source = SCRIPT.read_bytes()
+local_ci._DELIVERY_RUNNER_SOURCE_SHA256 = hashlib.sha256(_runner_source).hexdigest()
+exec(compile(_runner_source, str(SCRIPT), "exec", dont_inherit=True), local_ci.__dict__)
+
+
+def install_delivery_source_fixture(root: Path) -> None:
+    """Install independent copies of the actual delivery input sources."""
+    scripts = root / "scripts"
+    scripts.mkdir(parents=True, exist_ok=True)
+    for name in ("local-ci.py", "ci_plan.py", "python_test_plan.py", "build_inputs.py",
+                 "ci_checkpoint.py", "ci_target_storage.py"):
+        (scripts / name).write_bytes((SCRIPT.parent / name).read_bytes())
 
 
 FAKE_TOOL = """#!/bin/sh
@@ -886,10 +897,12 @@ class LocalCiRunnerTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 local_ci.LocalCiRunner(self.repo, min_free_bytes=value)
 
-    def checkpoint_fixture(self, name, *, stop="disk", env_overrides=None):
+    def checkpoint_fixture(self, name, *, stop="disk", env_overrides=None, delivery_sources=False):
         """Real runner/owner/log behavior, with only tools and disk capacity faked."""
         root = self.repo / name
         root.mkdir()
+        if delivery_sources:
+            install_delivery_source_fixture(root)
         (root / "source.rs").write_text("original source\n")
         target = root / "cargo-target"
         target.mkdir()
@@ -958,7 +971,7 @@ fi
         return result, resumed
 
     def test_checkpoint_continuation_runs_only_suffix_after_owned_cache_cleanup(self):
-        case = self.checkpoint_fixture("checkpoint-success")
+        case = self.checkpoint_fixture("checkpoint-success", delivery_sources=True)
         original_bytes = case.path.read_bytes()
         prefix_log = case.root / case.report["steps"][0]["log"]
         log_bytes = prefix_log.read_bytes()

@@ -110,6 +110,25 @@ def cli_policy_error(root: Path) -> str | None:
     return None
 
 
+def delivery_source_error(root: Path) -> str | None:
+    """Bind a source-loaded runner and its helpers to a delivery candidate.
+
+    The supported importer installs the digest of the exact compiled bytes
+    before execution. Direct or legacy imports without that witness cannot
+    qualify delivery evidence.
+    """
+    witness = globals().get("_DELIVERY_RUNNER_SOURCE_SHA256")
+    if not isinstance(witness, str) or re.fullmatch(r"[0-9a-f]{64}", witness) is None:
+        return "runner source witness is unavailable"
+    try:
+        actual = hashlib.sha256(_read_policy_source(root / "scripts" / "local-ci.py")).hexdigest()
+    except (OSError, RuntimeError, ValueError) as error:
+        return f"runner source unavailable: {error}"
+    if actual != witness:
+        return "executed runner differs from candidate source"
+    return cli_policy_error(root)
+
+
 @contextmanager
 def terminal_progress(label: str, *, announce: bool = True):
     """Show activity only around work whose child output is captured/logged.
@@ -760,6 +779,10 @@ class CargoTargetLock:
 
 
 class LocalCiRunner:
+    def delivery_source_error(self) -> str | None:
+        """Check this runner module, even when another import shares its name."""
+        return delivery_source_error(self.root)
+
     def __init__(
         self,
         root: Path = ROOT,
