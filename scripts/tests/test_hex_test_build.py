@@ -1504,6 +1504,7 @@ class ReleaseCargoTests(unittest.TestCase):
                     self.fail(f"fixture executable did not finish within 120 seconds: {argv[0]}")
                 self.assertEqual(result.returncode, 0, result.stderr)
                 return result.stdout.strip()
+            install_delivery_source_fixture(root)
             command(["git", "init", "-q"])
             command(["git", "config", "user.name", "release fixture"])
             command(["git", "config", "user.email", "fixture@example.invalid"])

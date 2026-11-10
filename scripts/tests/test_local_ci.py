@@ -131,6 +131,7 @@ class LocalCiRunnerTests(unittest.TestCase):
         self.base = Path(self.temp.name).resolve()
         self.repo = self.base / "repo"
         self.repo.mkdir()
+        install_delivery_source_fixture(self.repo)
         self.bin = self.base / "bin"
         self.bin.mkdir()
         self.call_log = self.base / "calls.log"
@@ -162,6 +163,144 @@ class LocalCiRunnerTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def test_programmatic_source_admission_and_missing_witness_refuse(self):
+        for missing_witness in (False, True):
+            with self.subTest(missing_witness=missing_witness):
+                source = self.repo / "scripts/build_inputs.py"
+                original = source.read_bytes()
+                if not missing_witness:
+                    source.write_bytes(original + b"\n# changed\n")
+                with patch.dict(local_ci.__dict__, {"_DELIVERY_RUNNER_SOURCE_SHA256": None} if missing_witness else {}):
+                    runner = self.runner(f"source-refusal-{missing_witness}")
+                    self.assertEqual(runner.run(), 2)
+                    self.assertIn("runner_policy_error", runner.summary)
+                    self.assertTrue(all(row["status"] == "not_run" for row in runner.summary["steps"]))
+                    with self.assertRaisesRegex(local_ci.TargetCacheError, "source mismatch"):
+                        with self.runner(f"release-refusal-{missing_witness}").guarded_release():
+                            self.fail("unattested release entered")
+                source.write_bytes(original)
+        self.assertEqual(self.runner("source-match").run(), 0)
+
+    def test_programmatic_policy_mutation_after_lock_refuses_owner(self):
+        source = self.repo / "scripts/ci_plan.py"
+        original = source.read_bytes()
+        acquire = local_ci.CargoTargetLock.acquire
+        def changed(lock):
+            acquire(lock)
+            source.write_bytes(original + b"\n# changed under lock\n")
+        for release in (False, True):
+            with self.subTest(release=release), patch.object(local_ci.CargoTargetLock, "acquire", changed):
+                runner = self.runner(f"under-lock-{release}")
+                if release:
+                    with self.assertRaisesRegex(local_ci.TargetCacheError, "source changed before release lock"):
+                        with runner.guarded_release():
+                            self.fail("release entered")
+                else:
+                    self.assertEqual(runner.run(), 2)
+                    self.assertIn("source changed before target lock", runner.summary["target_cache_error"])
+                self.assertIsNone(runner.target_lock)
+                source.write_bytes(original)
+
+    def test_programmatic_mutation_before_cleanup_preserves_owner_and_unlocks(self):
+        first = self.runner("cleanup-source-first")
+        self.assertEqual(first.run(), 0)
+        owner = first.target_owner_path
+        before = owner.read_bytes()
+        worktree = self.base / "cleanup-source-other"
+        worktree.mkdir()
+        install_delivery_source_fixture(worktree)
+        helper = worktree / "scripts/ci_plan.py"
+        env = {**self.env, "FAKE_TOPLEVEL": str(worktree),
+               "FAKE_COMMON_DIR": str((self.repo / ".git").resolve()),
+               "FAKE_WORKSPACE_ROOT": str(worktree)}
+        runner = self.runner("cleanup-source-second", root=worktree, env=env)
+        clean_argv = runner._workspace_clean_argv
+        def mutate_before_cleanup(*args):
+            argv = clean_argv(*args)
+            helper.write_bytes(helper.read_bytes() + b"\n# mutated after lock\n")
+            return argv
+        with patch.object(runner, "_workspace_clean_argv", side_effect=mutate_before_cleanup) as select, \
+                patch.object(runner, "_run_target_cleanup") as cleanup:
+            self.assertEqual(runner.run(), 2)
+            select.assert_called()
+            cleanup.assert_not_called()
+        self.assertIn("source changed before target cleanup", runner.summary["target_cache_error"])
+        self.assertEqual(owner.read_bytes(), before)
+        self.assertIsNone(runner.target_lock)
+
+    def test_programmatic_policy_mutation_prevents_final_publication(self):
+        source = self.repo / "scripts/ci_plan.py"
+        original = source.read_bytes()
+        runner = self.runner("final-source")
+        run_step = runner._run_step
+        def changed(*args):
+            result = run_step(*args)
+            source.write_bytes(original + b"\n# changed during checks\n")
+            return result
+        with patch.object(runner, "_run_step", side_effect=changed):
+            self.assertEqual(runner.run(), 2)
+        self.assertNotEqual(runner.summary["status"], "passed")
+        self.assertIn("target_owner_update_error", runner.summary)
+        source.write_bytes(original)
+        release = self.runner("final-release-source")
+        with self.assertRaisesRegex(local_ci.TargetCacheError, "source changed during release"):
+            with release.guarded_release() as report:
+                target = Path(release.cargo_identity["target_directory"])
+                target.mkdir(exist_ok=True)
+                artifact = target / "release-fixture"
+                artifact.write_bytes(b"optimized fixture")
+                argv = ["cargo", "build", "--release"]
+                report.update(build_argv=argv, build_exit_code=0,
+                              artifact=release.identify_release_artifact(artifact, argv))
+                source.write_bytes(original + b"\n# changed during release\n")
+        self.assertEqual(json.loads(Path(report["owner_path"]).read_text())["state"], "pending")
+        source.write_bytes(original)
+
+    def test_programmatic_mutation_before_release_cleanup_preserves_target(self):
+        target = self.repo / "cargo-target"
+        target.mkdir()
+        retained = target / "retained"
+        retained.write_bytes(b"existing artifact")
+        source = self.repo / "scripts/ci_plan.py"
+        runner = self.runner("release-cleanup-source")
+        write_owner = runner._write_release_owner
+
+        def mutate_after_pending(*args):
+            write_owner(*args)
+            source.write_bytes(source.read_bytes() + b"\n# changed before cleanup\n")
+
+        with patch.object(runner, "_write_release_owner", side_effect=mutate_after_pending):
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "before release cleanup"):
+                with runner.guarded_release(adopt=True):
+                    self.fail("release entered after source mutation")
+        self.assertEqual(retained.read_bytes(), b"existing artifact")
+        self.assertNotIn("cargo clean", self.call_log.read_text())
+        self.assertIsNone(runner.target_lock)
+        owner = Path(runner.summary["release_target_cache"]["owner_path"])
+        self.assertEqual(json.loads(owner.read_text())["state"], "pending")
+
+    def test_programmatic_mutation_during_release_cleanup_refuses_build(self):
+        target = self.repo / "cargo-target"
+        target.mkdir()
+        (target / "existing").write_bytes(b"artifact")
+        source = self.repo / "scripts/ci_plan.py"
+        runner = self.runner("release-during-cleanup")
+        original_run = subprocess.run
+
+        def mutate_during_cleanup(argv, **kwargs):
+            result = original_run(argv, **kwargs)
+            if argv[:2] == ["cargo", "clean"]:
+                source.write_bytes(source.read_bytes() + b"\n# changed during cleanup\n")
+            return result
+
+        with patch.object(local_ci.subprocess, "run", side_effect=mutate_during_cleanup):
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "during release preparation"):
+                with runner.guarded_release(adopt=True):
+                    self.fail("release entered after source mutation")
+        self.assertIsNone(runner.target_lock)
+        owner = Path(runner.summary["release_target_cache"]["owner_path"])
+        self.assertEqual(json.loads(owner.read_text())["state"], "pending")
 
     def release_attempt(self, run_id, *, adopt=False):
         runner = self.runner(run_id)
@@ -897,12 +1036,11 @@ class LocalCiRunnerTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 local_ci.LocalCiRunner(self.repo, min_free_bytes=value)
 
-    def checkpoint_fixture(self, name, *, stop="disk", env_overrides=None, delivery_sources=False):
+    def checkpoint_fixture(self, name, *, stop="disk", env_overrides=None):
         """Real runner/owner/log behavior, with only tools and disk capacity faked."""
         root = self.repo / name
         root.mkdir()
-        if delivery_sources:
-            install_delivery_source_fixture(root)
+        install_delivery_source_fixture(root)
         (root / "source.rs").write_text("original source\n")
         target = root / "cargo-target"
         target.mkdir()
@@ -971,7 +1109,7 @@ fi
         return result, resumed
 
     def test_checkpoint_continuation_runs_only_suffix_after_owned_cache_cleanup(self):
-        case = self.checkpoint_fixture("checkpoint-success", delivery_sources=True)
+        case = self.checkpoint_fixture("checkpoint-success")
         original_bytes = case.path.read_bytes()
         prefix_log = case.root / case.report["steps"][0]["log"]
         log_bytes = prefix_log.read_bytes()
@@ -1808,6 +1946,7 @@ runpy.run_path(sys.argv[1], run_name='__main__')
         self.assertEqual(self.runner("handoff-a").run(), 0)
         worktree_b = self.base / "repo-worktree-b"
         worktree_b.mkdir()
+        install_delivery_source_fixture(worktree_b)
         env_b = {
             **self.env,
             "FAKE_TOPLEVEL": str(worktree_b),
@@ -1844,6 +1983,7 @@ runpy.run_path(sys.argv[1], run_name='__main__')
 
         worktree_b = self.base / "repo-worktree-b"
         worktree_b.mkdir()
+        install_delivery_source_fixture(worktree_b)
         env_b = {
             **self.env,
             "FAKE_TOPLEVEL": str(worktree_b),
@@ -1865,6 +2005,7 @@ runpy.run_path(sys.argv[1], run_name='__main__')
         calls_before_handoff = self.call_log.read_text()
         worktree_b = self.base / "repo-worktree-b"
         worktree_b.mkdir()
+        install_delivery_source_fixture(worktree_b)
         env_b = {
             **self.env,
             "FAIL_MATCH": "clean",
@@ -2021,6 +2162,7 @@ runpy.run_path(sys.argv[1], run_name='__main__')
     def test_real_cargo_worktree_handoff_cleans_only_workspace_dev_artifacts(self) -> None:
         """Exercise the API-mismatch handoff against Cargo in an isolated temporary target."""
         root = self.base / "real-workspace"
+        install_delivery_source_fixture(root)
         api = root / "crates/fixture-api"
         app = root / "crates/fixture-app"
         helper = self.base / "shared-external-helper"
@@ -2198,6 +2340,7 @@ runpy.run_path(sys.argv[1], run_name='__main__')
     def test_real_duplicate_path_package_names_refuse_without_cleaning_artifacts(self):
         root = self.base / "collision-workspace"
         (root / "src").mkdir(parents=True)
+        install_delivery_source_fixture(root)
         dependencies = []
         for alias, version in (("first", "0.1.0"), ("second", "0.2.0")):
             dependency = self.base / alias
