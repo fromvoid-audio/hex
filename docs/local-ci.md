@@ -228,9 +228,11 @@ Module-scoped test steps build only the library (or, for a binary-only crate,
 the binaries): a `module::path::` filter can never match an integration test,
 example or bench, so building and linking those targets was pure overhead
 (hex-session has 28 test and 7 example targets, hex-storage 34). Explicit
-source-by-path consumers are exceptions: arrangement focus, track indentation
-and track-reorder subtree changes also select the separate `hex-ui`
-`track_group_focus` integration target.
+source-by-path targets are exceptions. Arrangement focus, track indentation and
+track-reorder subtree changes also select the standalone `hex-ui`
+`track_group_focus` unit target. It owns the in-memory visibility and indentation
+assertions. Changes to those sources also select the rendered consumers in the
+`ui-test-support` library.
 
 **One-minute budget.** Merge runs keep test setup and execution, excluding Cargo's
 build phase, under 60 s. local-ci sums executed test steps (wall time minus the
