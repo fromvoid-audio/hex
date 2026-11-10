@@ -72,6 +72,33 @@ impl ComputerKeyboardRuntime {
                         .copied()
                 })
                 .flatten();
+            // If preview voices fill the native pool, let them release and
+            // keep the hardware onset at the head of its ordered queue. Its
+            // activation must never be faulted because a preview took a slot.
+            let live = if matches!(live, Some(LiveNoteEvent::NoteOn { .. }))
+                && self.scratch.iter().flatten().count() >= self.voice_capacity()
+                && self
+                    .scratch
+                    .iter()
+                    .flatten()
+                    .any(|voice| voice.source == VoiceSource::Audition)
+            {
+                if self.scratch_audition_gate.active() {
+                    self.scratch_audition_gate.finish();
+                    self.desired.fill(0);
+                }
+                if self
+                    .scratch
+                    .iter()
+                    .flatten()
+                    .any(|voice| voice.source == VoiceSource::Audition && voice.gate.is_none())
+                {
+                    self.boundary = true;
+                }
+                None
+            } else {
+                live
+            };
             let key = self
                 .capture
                 .as_ref()
@@ -211,7 +238,7 @@ impl ComputerKeyboardRuntime {
         len: &mut usize,
     ) {
         for voice in self.scratch.iter_mut().flatten() {
-            if voice.source != VoiceSource::Physical
+            if matches!(voice.source, VoiceSource::Hardware { .. })
                 && voice.gate.is_none()
                 && source.is_none_or(|source| source == voice.source)
             {

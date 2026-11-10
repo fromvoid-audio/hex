@@ -1472,8 +1472,7 @@ impl EditorView {
                 }
                 view.cancel_track_resize(cx);
             }
-            view.cancel_computer_keyboard();
-            view.computer_keyboard.suspended = true;
+            view.blur_computer_keyboard(window);
             view.midi_step.cancel_pending();
             view.invalidate_hardware_step();
             if view.cancel_loop_rail_gesture() {
@@ -1494,8 +1493,7 @@ impl EditorView {
         let midi_focus = cx.focus_handle();
         let focus_blur = cx.on_blur(&midi_focus, window, |view, window, cx| {
             view.clear_time_selection_key_on_blur(window, cx);
-            view.cancel_computer_keyboard();
-            view.computer_keyboard.suspended = true;
+            view.blur_computer_keyboard(window);
             view.midi_step.cancel_pending();
             view.invalidate_hardware_step();
             let midi_cancelled = view.cancel_midi_note_gesture();
