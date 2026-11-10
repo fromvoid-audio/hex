@@ -353,11 +353,12 @@ UI_UNIT_TARGETS = {"editor::tempo_input::value::": "unit_editor_logic",
                    "section_selection::": "unit_section",
                    "theme::": "unit_editor_logic"}
 UI_UNIT_FEATURES = {"unit_piano_roll": "ui-unit-tier", "unit_timeline": "ui-unit-tier", "unit_automation": "ui-unit-tier", "unit_device": "ui-unit-tier", "unit_section": "ui-unit-tier", "unit_editor_logic": "ui-unit-tier"}
-# These integration targets compile an owner's real source by path and are not
-# included in a module-scoped library run.
+# These integration consumers are not included in a module-scoped library run.
 UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
                          "editor::track_hierarchy_indent::": "track_group_focus",
-                         "editor::track_reorder::subtree::": "track_group_focus"}
+                         "editor::track_reorder::subtree::": "track_group_focus",
+                         "editor::midi_recording::pressure_fixture::": "midi_pressure_boundary"}
+UI_EXTRA_TEST_FEATURES = {"midi_pressure_boundary": "ui-test-support"}
 # These geometry modules call one another; a change to one must exercise the
 # complete pure boundary rather than only its own test-name prefix.
 # These consumers live in larger test modules; a selected ancestor must retain
@@ -605,6 +606,9 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
             # owner-and-harness changes scoped while selecting its full binary.
             if file == directory / "tests" / "track_group_focus.rs" and file.is_file():
                 filters.setdefault(owner, set()).add("editor::arrangement_focus::")
+                continue
+            if file == directory / "tests" / "midi_pressure_boundary.rs" and file.is_file():
+                filters.setdefault(owner, set()).add("editor::midi_recording::")
                 continue
             unit_modules = {module for module, target in UI_UNIT_TARGETS.items()
                             if file == directory / "tests" / f"{target}.rs"}
