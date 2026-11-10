@@ -2078,6 +2078,9 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::drag::geometry::",
                                   "editor::drag::group_drag_ui_test::stationary_group_snap_modifier_uses_one_anchor_delta_and_authoritative_release",
                                   "editor::drag::tests::",
+                                  "editor::edit_cursor_ui_test::audio_time_move_preview_masks_overlaps_and_restores_when_cancelled",
+                                  "editor::edit_cursor_ui_test::midi_time_move_preview_translates_cached_notes_to_the_destination",
+                                  "editor::edit_cursor_ui_test::pending_time_move_preview_survives_until_worker_failure_then_restores_source",
                                   "editor::fade_calculation::", "editor::fade_handle_geometry::",
                                   "editor::fade_handles::", "editor::fades::", "editor::group_overview::model::", "editor::group_overview::tests::",
                                   "editor::missing_media::ui_tests::sample_catalog_matches_are_offered_then_relinked_all_at_once",
@@ -2086,7 +2089,10 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::session_audio_panel::",
                                   "editor::session_grid::actions::", "editor::session_grid::tests::",
                                   "editor::session_navigation::", "editor::session_navigation_ui_test::",
-                                  "editor::session_route_view::", "editor::theme_settings::tests::", "editor::track_defaults::",
+                                  "editor::session_route_view::", "editor::theme_settings::tests::",
+                                  "editor::time_move_preview::intervals::tests::",
+                                  "editor::time_move_preview::visual_tests::fragment_titles_cuts_crops_and_compact_body_preserve_source_mapping",
+                                  "editor::track_defaults::",
                                   "editor::track_meters::decay::", "editor::track_meters::follower::",
                                   "editor::track_meters::main_output::tests::", "editor::track_meters::scale::",
                                   "editor::track_meters::selection::", "editor::track_meters::tests::", *names,
@@ -2270,6 +2276,36 @@ class ModuleScopeTests(unittest.TestCase):
         for path in ("browser/tree.rs", "browser_ui_test.rs", "browser.rs"):
             selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
             self.assertTrue(any(unit.startswith(name) for name in selected[owner]))
+
+    def test_time_move_interval_split_keeps_unit_and_window_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []},
+                      "dependencies": [], "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::time_move_preview::intervals::"
+        visual = "editor::time_move_preview::visual_tests::fragment_titles_cuts_crops_and_compact_body_preserve_source_mapping"
+        move = "editor::edit_cursor_ui_test::audio_time_move_preview_masks_overlaps_and_restores_when_cancelled"
+        midi = "editor::edit_cursor_ui_test::midi_time_move_preview_translates_cached_notes_to_the_destination"
+        acknowledgement = "editor::edit_cursor_ui_test::pending_time_move_preview_survives_until_worker_failure_then_restores_source"
+        expected = sorted([unit, visual, move, midi, acknowledgement])
+        names = plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/time_move_preview/intervals.rs"], inventory, [owner])
+        self.assertEqual(names, {owner: expected})
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                  "boundary": boundary, "cargo_inventory": inventory, "paths": []})
+        self.assertTrue(any(unit in step.argv and step.requires_tests
+                            for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(all(name in step.argv for name in (visual, move, midi, acknowledgement))
+                            for step in steps if step.step_id == "ui-feature-tests"))
+        # Editing the GPUI owner still retains its real visual test.
+        owner_names = plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/time_move_preview.rs"], inventory, [owner])
+        self.assertTrue(any(visual.startswith(name) for name in owner_names[owner]))
+        self.assertTrue(any(unit.startswith(name) for name in owner_names[owner]))
 
     def test_clip_drag_geometry_keeps_unit_and_runtime_consumers(self):
         root = SCRIPTS.parent
