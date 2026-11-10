@@ -33,6 +33,9 @@ mod submission;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod verified_gain_tests;
 
+mod session_feedback;
+use session_feedback::{SessionTicketOutcome, reconcile_session_receipt, reconcile_session_ticket};
+
 mod audio_event_correlation;
 pub(super) use audio_event_correlation::PublicationObservationDisposition;
 use audio_event_correlation::{
@@ -5204,58 +5207,6 @@ fn queued_action_is_current(
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SessionTicketOutcome {
-    Consumed,
-    Rejected,
-    Superseded,
-    Interrupted,
-}
-
-fn reconcile_session_receipt(
-    pending: Option<(u64, u64)>,
-    current_generation: u64,
-    receipt: hex_audio::prepared::ActionOutcomeReceipt,
-) -> (Option<(u64, u64)>, Option<SessionTicketOutcome>) {
-    let Some((ticket, generation)) = pending else {
-        return (None, None);
-    };
-    if generation != current_generation {
-        return (None, None);
-    }
-    if ticket != receipt.ticket {
-        return (Some((ticket, generation)), None);
-    }
-    let outcome = match receipt.outcome {
-        hex_audio::prepared::ActionOutcome::Applied => SessionTicketOutcome::Consumed,
-        hex_audio::prepared::ActionOutcome::Rejected(_) => SessionTicketOutcome::Rejected,
-        hex_audio::prepared::ActionOutcome::Superseded => SessionTicketOutcome::Superseded,
-        hex_audio::prepared::ActionOutcome::Interrupted => SessionTicketOutcome::Interrupted,
-    };
-    (None, Some(outcome))
-}
-
-fn reconcile_session_ticket(
-    pending: Option<(u64, u64)>,
-    current_generation: u64,
-    consumed_high_water: u64,
-    rejected_ticket: Option<u64>,
-) -> (Option<(u64, u64)>, Option<SessionTicketOutcome>) {
-    let Some((ticket, generation)) = pending else {
-        return (None, None);
-    };
-    if generation != current_generation {
-        return (None, None);
-    }
-    if rejected_ticket == Some(ticket) {
-        return (None, Some(SessionTicketOutcome::Rejected));
-    }
-    if consumed_high_water >= ticket {
-        return (None, Some(SessionTicketOutcome::Consumed));
-    }
-    (Some((ticket, generation)), None)
-}
-
 fn fault_with_action_errors(
     existing: &Option<super::display_error::DisplayError>,
     diagnostic: &str,
@@ -5323,8 +5274,8 @@ mod tests {
         SessionTicketOutcome, allows_non_open_request, clear_rejected_scene_duplicate,
         intent_desired_playing, latest_applied_canonical_candidate, pending_playback_for_state,
         preview_source_is_current, promote_playback_candidates, queued_action_is_current,
-        reconcile_session_receipt, reconcile_session_ticket, rejected_candidate_project,
-        rejected_preview_candidate, retained_install_fresh_policy,
+        reconcile_session_receipt, rejected_candidate_project, rejected_preview_candidate,
+        retained_install_fresh_policy,
     };
     use crate::editor::audio_admission::{AudioAdmissionStatus, ProjectRevision};
     use crate::editor::{PendingPlaybackAction, PendingSceneDuplicate, PlaybackCandidate};
@@ -5789,26 +5740,6 @@ mod tests {
             .unwrap();
         callback.begin_block();
         control.reclaim();
-    }
-
-    #[test]
-    fn session_ticket_feedback_clears_on_consumption_or_matching_rejection() {
-        assert_eq!(
-            reconcile_session_ticket(Some((5, 7)), 7, 4, None),
-            (Some((5, 7)), None)
-        );
-        assert_eq!(
-            reconcile_session_ticket(Some((5, 7)), 7, 5, None),
-            (None, Some(SessionTicketOutcome::Consumed))
-        );
-        assert_eq!(
-            reconcile_session_ticket(Some((5, 7)), 7, 5, Some(5)),
-            (None, Some(SessionTicketOutcome::Rejected))
-        );
-        assert_eq!(
-            reconcile_session_ticket(Some((5, 7)), 8, 5, None),
-            (None, None)
-        );
     }
 
     #[test]

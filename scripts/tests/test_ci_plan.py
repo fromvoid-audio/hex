@@ -2033,7 +2033,8 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/editor/user_errors.rs"], inventory, [owner]),
                          {owner: names})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_editor_logic.rs"], inventory, [owner]),
-                         {owner: ["editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform",
+                         {owner: ["editor::action_outcome_ui_tests::editor_reports_each_rejection_and_keeps_reader_through_retirement",
+                                  "editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform",
                                   "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",
                                   "editor::audio_import_settings::admission::",
                                   "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
@@ -2041,6 +2042,8 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::computer_keyboard::state::", "editor::computer_keyboard::tests::",
                                   "editor::controller::audio_event_correlation::",
                                   "editor::controller::sampler_native_ui_protocol_tests::",
+                                  "editor::controller::session_feedback::",
+                                  "editor::controller::tests::earlier_session_rejection_is_not_reported_as_consumed",
                                   "editor::controller::tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions",
                                   "editor::delete_ui_tests::",
                                   "editor::device_panel::eq_panel::axes::",
@@ -2099,6 +2102,31 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertTrue(any(unit in step.argv and step.requires_tests
                             for step in steps if "unit_editor_logic" in step.argv))
         self.assertTrue(any(all(name in step.argv for name in (drag, worker, group))
+                            for step in steps if step.step_id == "ui-feature-tests"))
+
+    def test_session_feedback_keeps_real_callback_and_window_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::controller::session_feedback::"
+        callback = "editor::controller::tests::earlier_session_rejection_is_not_reported_as_consumed"
+        window = "editor::action_outcome_ui_tests::editor_reports_each_rejection_and_keeps_reader_through_retirement"
+        names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/controller/session_feedback.rs"], inventory, [owner])
+        self.assertEqual(names, {owner: sorted([unit, callback, window])})
+        parent = plan.module_test_filters(root, ["crates/hex-ui/src/editor/controller.rs"], inventory, [owner])
+        self.assertIn("editor::controller::", parent[owner])
+        self.assertIn(window, parent[owner])
+        reverse = plan.module_test_filters(root, ["crates/hex-ui/src/editor/action_outcome_ui_tests.rs"], inventory, [owner])
+        self.assertIn(unit, reverse[owner])
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
+                    "single_run": {owner: "ui-test-support"}, "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": []})
+        self.assertTrue(any(unit in step.argv and step.requires_tests
+                            for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(callback in step.argv and window in step.argv
                             for step in steps if step.step_id == "ui-feature-tests"))
 
     def test_computer_keyboard_state_selects_unit_and_integration(self):

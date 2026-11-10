@@ -271,7 +271,8 @@ def module_declarations(source_root: Path) -> dict[Path, list[tuple[Path, list[s
 TEST_ATTRIBUTE = re.compile(r"#\[(?:gpui::)?test\b")
 # Unit test targets which compile the owning source directly. Keep their libtest
 # names under the original module path so scoped coverage remains observable.
-UI_UNIT_TARGETS = {"editor::waveform_geometry::grid::": "unit_editor_logic",
+UI_UNIT_TARGETS = {"editor::controller::session_feedback::": "unit_editor_logic",
+                   "editor::waveform_geometry::grid::": "unit_editor_logic",
                    "editor::waveform_loop::projection::": "unit_editor_logic",
                    "editor::waveform_stretch::accepted_root::": "unit_editor_logic",
                    "editor::drag::geometry::": "unit_editor_logic",
@@ -338,7 +339,10 @@ UI_UNIT_FEATURES = {"unit_piano_roll": "ui-unit-tier", "unit_timeline": "ui-unit
 # complete pure boundary rather than only its own test-name prefix.
 # These consumers live in larger test modules; a selected ancestor must retain
 # the unit owner as well as the specific consumer checks.
-UI_PREFIX_COHORTS = [{"editor::waveform_geometry::grid::",
+UI_PREFIX_COHORTS = [{"editor::controller::session_feedback::",
+                      "editor::controller::tests::earlier_session_rejection_is_not_reported_as_consumed",
+                      "editor::action_outcome_ui_tests::editor_reports_each_rejection_and_keeps_reader_through_retirement"},
+                     {"editor::waveform_geometry::grid::",
                       "editor::waveform::resize_tests::silent_left_prefix_keeps_waveform_and_geometry_through_real_worker_ack"},
                      {"editor::drag::geometry::", "editor::drag::tests::",
                       "editor::clip_drag_ui_test::rendered_move_retains_destination_until_real_worker_ack",
