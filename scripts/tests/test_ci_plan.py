@@ -1859,7 +1859,7 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::controller::sampler_native_ui_protocol_tests::",
                                   "editor::fade_calculation::", "editor::fade_handle_geometry::",
                                   "editor::fade_handles::", "editor::fades::",
-                                  "editor::output_meter_ui_test::", "editor::refresh_state::",
+                                  "editor::output_meter_ui_test::", "editor::refresh_state::", "editor::session_audio_panel::",
                                   "editor::session_navigation::", "editor::session_navigation_ui_test::",
                                   "editor::session_route_view::", "editor::theme_settings::tests::", "editor::track_defaults::",
                                   "editor::track_meters::decay::", "editor::track_meters::follower::",
@@ -2026,6 +2026,27 @@ class ModuleScopeTests(unittest.TestCase):
             steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
                                       "cargo_inventory": inventory, "paths": [path]})
             unit = next(step for step in steps if "unit_device" in step.argv)
+            integration = next(step for step in steps if step.step_id == "ui-feature-tests")
+            self.assertIn(name, unit.argv)
+            self.assertTrue(unit.requires_tests)
+            self.assertIn(name, integration.argv)
+
+    def test_session_audio_playhead_selects_unit_and_panel_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        name = "editor::session_audio_panel::"
+        for path in ("crates/hex-ui/src/editor/session_audio_panel.rs",
+                     "crates/hex-ui/src/editor/session_audio_panel/playhead.rs"):
+            self.assertEqual(plan.module_test_filters(root, [path], inventory, [owner]), {owner: [name]})
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": {owner: [name]}}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                      "cargo_inventory": inventory, "paths": [path]})
+            unit = next(step for step in steps if "unit_editor_logic" in step.argv)
             integration = next(step for step in steps if step.step_id == "ui-feature-tests")
             self.assertIn(name, unit.argv)
             self.assertTrue(unit.requires_tests)
