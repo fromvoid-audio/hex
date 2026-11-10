@@ -2100,6 +2100,9 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::browser::ui_test::place_correctness_reselect_gates_cached_rows_and_old_audition_callbacks",
                                   "editor::browser::ui_test::samples_catalog_combines_roots_and_active_place_indexed_search",
                                   "editor::browser::ui_test::search_selection::toggle_fixture_same_root_retains_actual_catalog_job_after_view_and_caller_drop",
+                                  "editor::clip_drag_ui_test::rendered_audio_trim_release_upper_rail_commits_captured_clip_and_actual_worker_ack",
+                                  "editor::clip_drag_ui_test::rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_snap",
+                                  "editor::clip_drag_ui_test::rendered_midi_trim_previews_note_geometry_and_commits_release_snap",
                                   "editor::clip_drag_ui_test::rendered_move_retains_destination_until_real_worker_ack",
                                   "editor::clip_drag_ui_test::shift_edge_stretch_previews_live_and_stationary_modifier_changes_dispatch_one_edit",
                                   "editor::computer_keyboard::state::", "editor::computer_keyboard::tests::",
@@ -2149,6 +2152,7 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::time_move_preview::intervals::tests::",
                                   "editor::time_move_preview::visual_tests::fragment_titles_cuts_crops_and_compact_body_preserve_source_mapping",
                                   "editor::track_clipboard_ui_test::console_fold_hides_cells_navigation_and_invalidates_column_frame",
+                                  "editor::track_compact_ui_test::compact_audio_and_midi_trim_edges_keep_title_and_exact_preview_until_cancel",
                                   "editor::track_defaults::",
                                   "editor::track_latency::presentation::",
                                   "editor::track_latency::tests::view_action_mounts_the_indicator_in_actual_headers",
@@ -2162,6 +2166,7 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::tracks::overlap_tests::held_looped_warp_drag_keeps_last_ready_content_in_mixed_copy_group",
                                   "editor::tracks::overlap_tests::held_midi_drag_keeps_actual_note_paint_and_colored_name_below_header",
                                   "editor::tracks::overlap_tests::held_processed_audio_drag_reuses_ready_root_on_lane_and_floating",
+                                  "editor::trim::geometry::",
                                   "editor::trim::resize_release_tests::shift_resize_preserves_visible_extent_through_release_and_real_worker_ack",
                                   "editor::trim::stretch_limit_tests::",
                                   "editor::trim::stretch_preview::resolver::",
@@ -2578,6 +2583,35 @@ class ModuleScopeTests(unittest.TestCase):
             root, ["crates/hex-ui/src/editor/time_move_preview.rs"], inventory, [owner])
         self.assertTrue(any(visual.startswith(name) for name in owner_names[owner]))
         self.assertTrue(any(unit.startswith(name) for name in owner_names[owner]))
+
+    def test_trim_geometry_keeps_rendered_audio_and_midi_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        source = "crates/hex-ui/src/editor/trim/geometry.rs"
+        unit = "editor::trim::geometry::"
+        consumers = [
+            "editor::clip_drag_ui_test::rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_snap",
+            "editor::clip_drag_ui_test::rendered_audio_trim_release_upper_rail_commits_captured_clip_and_actual_worker_ack",
+            "editor::clip_drag_ui_test::rendered_midi_trim_previews_note_geometry_and_commits_release_snap",
+            "editor::track_compact_ui_test::compact_audio_and_midi_trim_edges_keep_title_and_exact_preview_until_cancel",
+        ]
+        names = plan.module_test_filters(root, [source], inventory, [owner])
+        self.assertEqual(names, {owner: sorted([unit, *consumers])})
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": [source]})
+        self.assertTrue(any(unit in step.argv and step.requires_tests
+                            for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(all(name in step.argv for name in consumers)
+                            for step in steps if step.step_id == "ui-feature-tests"))
+        for path in ("trim.rs", "clip_drag_ui_test.rs", "track_compact_ui_test.rs"):
+            selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            self.assertTrue(any(unit.startswith(name) for name in selected[owner]))
 
     def test_clip_drag_geometry_keeps_unit_and_runtime_consumers(self):
         root = SCRIPTS.parent
