@@ -4120,7 +4120,7 @@ fn drag_guides_preserve_locked_play_start_through_cancel_and_ack(cx: &mut TestAp
             let track = &view.state.as_ref().unwrap().project.tracks()[0];
             let clip = track.clips()[0].id();
             let cursor = super::edit_cursor::EditCursor {
-                track: track.id(),
+                track: Some(track.id()),
                 frame: 24_000,
                 generation: view.project_generation,
                 pulse_color: crate::theme::time_position_marker_color(),

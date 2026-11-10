@@ -1189,11 +1189,7 @@ impl super::EditorView {
         })
     }
 
-    pub(super) fn painted_track_insertion_target(
-        &self,
-        pointer_x: f32,
-        pointer_y: f32,
-    ) -> Option<(Option<TrackId>, LaneBounds, f32)> {
+    fn painted_arrangement_timeline_at(&self, x: f32, y: f32) -> Option<LaneBounds> {
         let body = self
             .arrangement_bounds
             .filter(|_| self.arrangement_bounds_epoch == self.drag_layout_generation)?;
@@ -1203,9 +1199,34 @@ impl super::EditorView {
             top: body.top,
             height: body.height,
         };
-        if !lane_contains_pointer(pointer_x, pointer_y, timeline) {
-            return None;
-        }
+        lane_contains_pointer(x, y, timeline).then_some(timeline)
+    }
+
+    // Use the last painted full row, including attached automation lanes.
+    // A virtualized or stale last row cannot claim the trailing hit region.
+    fn painted_arrangement_tail_boundary(&self, pointer_y: f32) -> Option<f32> {
+        let state = self.state.as_ref()?;
+        let Some(index) = self.arrangement_track_indices().last() else {
+            return Some(pointer_y);
+        };
+        let last = state.project.tracks().get(*index)?;
+        let row = self.painted_track_drop_lane(last.id())?;
+        let bottom = row.top + row.height;
+        (pointer_y >= bottom).then_some(bottom)
+    }
+
+    pub(super) fn painted_arrangement_tail(&self, x: f32, y: f32) -> Option<LaneBounds> {
+        let timeline = self.painted_arrangement_timeline_at(x, y)?;
+        self.painted_arrangement_tail_boundary(y)?;
+        Some(timeline)
+    }
+
+    pub(super) fn painted_track_insertion_target(
+        &self,
+        pointer_x: f32,
+        pointer_y: f32,
+    ) -> Option<(Option<TrackId>, LaneBounds, f32)> {
+        let timeline = self.painted_arrangement_timeline_at(pointer_x, pointer_y)?;
         let state = self.state.as_ref()?;
         let tracks = self.arrangement_track_indices();
         if tracks.is_empty() {
@@ -1217,7 +1238,7 @@ impl super::EditorView {
             let first_lane = self.painted_track_drop_lane(first.id())?;
             // Reserve the same narrow insertion band at the first row's top,
             // without adding empty layout space above the tracks.
-            if first_lane.top >= body.top && pointer_y <= first_lane.top + 3.0 {
+            if first_lane.top >= timeline.top && pointer_y <= first_lane.top + 3.0 {
                 return Some((Some(first.id()), timeline, first_lane.top));
             }
         }
@@ -1238,16 +1259,8 @@ impl super::EditorView {
             }
         }
 
-        let last = state.project.tracks().get(*tracks.last()?)?;
-        if self.drag_lane_epochs.get(&last.id()) != Some(&self.drag_layout_generation) {
-            return None;
-        }
-        let last_lane = self.painted_track_drop_lane(last.id())?;
-        let bottom = last_lane.top + last_lane.height;
-        if pointer_y >= bottom && pointer_y < body.top + body.height {
-            return Some((None, timeline, bottom));
-        }
-        None
+        self.painted_arrangement_tail_boundary(pointer_y)
+            .map(|bottom| (None, timeline, bottom))
     }
 
     pub(super) fn browser_audio_drop_position(

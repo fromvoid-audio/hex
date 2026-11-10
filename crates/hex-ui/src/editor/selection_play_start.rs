@@ -14,6 +14,9 @@ impl EditorView {
     /// so split-at-cursor stays visible. While this applies the point cursor is
     /// hidden but retained, and returns when the whole-rectangle selection clears.
     pub(super) fn selected_arrangement_play_start(&self) -> Option<u64> {
+        if self.project_point_cursor().is_some() {
+            return None;
+        }
         let project = &self.state.as_ref()?.project;
         let Some(primary) = self.selected_clip else {
             // Q can retain section IDs while ordinary lanes own the selection.
@@ -87,7 +90,7 @@ mod tests {
             view.reconcile_clip_selection();
             view.section_autoplay = false;
             view.edit_cursor = Some(EditCursor {
-                track,
+                track: Some(track),
                 frame: 73_000,
                 generation: view.project_generation,
                 pulse_color: 0xffffff,
@@ -153,7 +156,7 @@ mod tests {
             );
         });
         editor.update(&mut visual, |view, _| {
-            let track = view.edit_cursor.unwrap().track;
+            let track = view.edit_cursor.unwrap().track.unwrap();
             view.time_selection = Some(TimeSelection {
                 anchor_track: track,
                 end_track: track,
