@@ -1615,6 +1615,94 @@ class MainHealthTests(unittest.TestCase):
 
 
 class CacheIdentityTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("cargo") and shutil.which("git"), "requires real Cargo and Git")
+    def test_selector_hidden_build_input_requires_guarded_cache_invalidation(self):
+        # A build script can read workspace-root policy without registering it
+        # as a Cargo watch. The selector is outside every member directory.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            install_delivery_source_fixture(root)
+            (root / "app/src").mkdir(parents=True)
+            (root / "Cargo.toml").write_text('[workspace]\nmembers=["app"]\nresolver="2"\n')
+            (root / ".gitignore").write_text('/target/\n/artifacts/\n')
+            (root / "app/Cargo.toml").write_text(
+                '[package]\nname="selector-cache-fixture"\nversion="0.1.0"\nedition="2021"\n')
+            (root / "app/build.rs").write_text(
+                'fn main() {\n'
+                '    println!("cargo:rerun-if-changed=build.rs");\n'
+                '    let s = std::fs::read_to_string("../scripts/ci_plan.py").unwrap();\n'
+                '    let v = if s.contains("# CACHE_PROBE=B") { "B" } else { "A" };\n'
+                '    println!("cargo:rustc-env=SELECTOR_PROBE={v}");\n'
+                '}\n')
+            (root / "app/src/main.rs").write_text(
+                'fn main() { println!("{}", env!("SELECTOR_PROBE")); }\n')
+            selector = root / "scripts/ci_plan.py"
+            selector.write_bytes(selector.read_bytes() + b"\n# CACHE_PROBE=A\n")
+            env = {**os.environ, "CARGO_TARGET_DIR": str(root / "target")}
+
+            def command(*argv):
+                return subprocess.check_output(argv, cwd=root, env=env, text=True).strip()
+
+            command("git", "init", "-q")
+            command("git", "config", "user.name", "selector cache fixture")
+            command("git", "config", "user.email", "fixture@invalid")
+            command("cargo", "generate-lockfile", "--offline")
+            command("git", "add", ".")
+            command("git", "commit", "-qm", "selector A")
+
+            def load_runner_module(name):
+                path = root / "scripts/local-ci.py"
+                spec = importlib.util.spec_from_file_location(name, path)
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[name] = module
+                self.addCleanup(sys.modules.pop, name, None)
+                source = path.read_bytes()
+                module._DELIVERY_RUNNER_SOURCE_SHA256 = hashlib.sha256(source).hexdigest()
+                exec(compile(source, str(path), "exec", dont_inherit=True), module.__dict__)
+                return module
+
+            def runner(module, name):
+                return module.LocalCiRunner(
+                    root, mode="component", run_id=name, env=env, min_free_bytes=0,
+                    steps=(module.Step("build", ("cargo", "build", "--offline", "--locked")),))
+
+            first = runner(load_runner_module("selector_cache_a"), "selector-a")
+            self.assertEqual(first.run(), 0, first.summary)
+            binary = root / "target/debug/selector-cache-fixture"
+            self.assertEqual(command(str(binary)), "A")
+            unrelated = root / "target/release/unrelated-artifact"
+            unrelated.parent.mkdir(parents=True, exist_ok=True)
+            unrelated.write_bytes(b"unrelated release artifact")
+
+            selector.write_bytes(selector.read_bytes().replace(b"# CACHE_PROBE=A", b"# CACHE_PROBE=B"))
+            command("git", "add", ".")
+            command("git", "commit", "-qm", "selector B")
+            candidate = load_runner_module("selector_cache_b")
+            control = runner(candidate, "selector-unsafe-control")
+            observe = control._dependency_context
+
+            def unsafe_previous_witness():
+                # Test-only simulation of excluding the selector from the
+                # invalidation and guarded Cargo config token. Retain all real
+                # target ownership, compiler, metadata and Cargo behavior.
+                observe()
+                return first._dependency_inputs
+
+            with patch.object(control, "_dependency_context", side_effect=unsafe_previous_witness):
+                self.assertEqual(control.run(), 0, control.summary)
+            self.assertEqual(control.summary["target_cache"]["action"], "reuse")
+            self.assertIsNone(control.summary["target_cache"]["cleanup_argv"])
+            self.assertEqual(command(str(binary)), "A", "unsafe reuse must demonstrate stale output")
+            self.assertEqual(unrelated.read_bytes(), b"unrelated release artifact")
+
+            guarded = runner(candidate, "selector-guarded")
+            self.assertEqual(guarded.run(), 0, guarded.summary)
+            self.assertNotEqual(guarded._dependency_inputs, first._dependency_inputs)
+            self.assertEqual(guarded.summary["target_cache"]["action"], "dependency-input-handoff")
+            self.assertEqual(guarded.summary["target_cache"]["cleanup_status"], "passed")
+            self.assertEqual(command(str(binary)), "B")
+            self.assertEqual(unrelated.read_bytes(), b"unrelated release artifact")
+
     def test_actual_cargo_restored_mtime_dependency_api_is_invalidated(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1940,14 +2028,18 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::computer_keyboard::state::", "editor::computer_keyboard::tests::",
                                   "editor::controller::audio_event_correlation::",
                                   "editor::controller::sampler_native_ui_protocol_tests::",
+                                  "editor::controller::tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions",
+                                  "editor::delete_ui_tests::",
                                   "editor::device_panel::eq_panel::axes::",
                                   "editor::device_panel::eq_panel::response::",
+                                  "editor::device_panel::tests::device_comparison_tests::device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_new_ack",
                                   "editor::device_panel::tests::eq_ui_tests::graph_layout_tests::eq_axis_labels_are_logarithmic_nonoverlapping_and_keep_the_plot_hit_map",
                                   "editor::fade_calculation::", "editor::fade_handle_geometry::",
                                   "editor::fade_handles::", "editor::fades::",
                                   "editor::output_meter_ui_test::", "editor::overview_waveform::", "editor::refresh_state::",
                                   "editor::sampler_parameter::tests::source_hints_and_paint_require_same_view_source_facts_and_context",
                                   "editor::session_audio_panel::",
+                                  "editor::session_grid::actions::", "editor::session_grid::tests::",
                                   "editor::session_navigation::", "editor::session_navigation_ui_test::",
                                   "editor::session_route_view::", "editor::theme_settings::tests::", "editor::track_defaults::",
                                   "editor::track_meters::decay::", "editor::track_meters::follower::",
@@ -2191,9 +2283,13 @@ class ModuleScopeTests(unittest.TestCase):
                       "targets": [{"kind": ["lib"]}]}]
         unit = "editor::session_navigation::"
         window = "editor::session_navigation_ui_test::"
+        related = ["editor::controller::tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions",
+                   "editor::delete_ui_tests::",
+                   "editor::device_panel::tests::device_comparison_tests::device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_new_ack",
+                   "editor::session_grid::actions::", "editor::session_grid::tests::", unit, window]
         for path in ("session_navigation.rs", "session_navigation_ui_test.rs"):
             names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
-            self.assertEqual(names, {owner: [unit, window]})
+            self.assertEqual(names, {owner: sorted(related)})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/editor/mode.rs"], inventory, [owner]),
                          {owner: ["editor::"]})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
@@ -2493,6 +2589,37 @@ class ModuleScopeTests(unittest.TestCase):
                                   "cargo_inventory": inventory, "paths": []})
         self.assertTrue(any(unit in step.argv for step in steps if "unit_editor_logic" in step.argv))
         self.assertTrue(any(integration in step.argv for step in steps if step.step_id == "ui-feature-tests"))
+
+    def test_session_grid_actions_keep_unit_and_parent_coverage(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::session_grid::actions::"
+        integration = "editor::session_grid::tests::"
+        delete = "editor::delete_ui_tests::"
+        launch = ("editor::device_panel::tests::device_comparison_tests::"
+                  "device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_new_ack")
+        queued = "editor::controller::tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions"
+        navigation = "editor::session_navigation_ui_test::"
+        navigation_unit = "editor::session_navigation::"
+        names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/session_grid/actions.rs"], inventory, [owner])
+        self.assertEqual(names, {owner: sorted([unit, integration, delete, launch, queued, navigation, navigation_unit])})
+        parent = plan.module_test_filters(root, ["crates/hex-ui/src/editor/session_grid.rs"], inventory, [owner])
+        self.assertEqual(parent, {owner: sorted(["editor::session_grid::", delete, launch, queued, navigation, navigation_unit])})
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
+                    "single_run": {owner: "ui-test-support"}, "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": []})
+        self.assertTrue(any(unit in step.argv for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(integration in step.argv for step in steps if step.step_id == "ui-feature-tests"))
+        self.assertTrue(any(delete in step.argv and launch in step.argv and queued in step.argv and navigation in step.argv
+                            for step in steps if step.step_id == "ui-feature-tests"))
+        for path in ("delete_ui_tests.rs", "controller.rs", "session_navigation_ui_test.rs",
+                     "device_panel/tests/device_comparison_tests.rs"):
+            consumers = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            self.assertIn(unit, consumers[owner])
 
     def crate(self, root: Path) -> list[dict]:
         files = {
