@@ -84,3 +84,10 @@ mod waveform_geometry;
 mod arrangement_focus;
 #[path = "arrangement_map.rs"]
 mod arrangement_map;
+
+// Compile the real test gate; unit tests never start a filesystem worker.
+#[path = "browser.rs"]
+mod browser;
+#[allow(dead_code)]
+#[path = "../../src/editor/test_environment.rs"]
+mod test_environment;

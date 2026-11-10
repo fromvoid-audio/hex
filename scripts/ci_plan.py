@@ -271,7 +271,8 @@ def module_declarations(source_root: Path) -> dict[Path, list[tuple[Path, list[s
 TEST_ATTRIBUTE = re.compile(r"#\[(?:gpui::)?test\b")
 # Unit test targets which compile the owning source directly. Keep their libtest
 # names under the original module path so scoped coverage remains observable.
-UI_UNIT_TARGETS = {"editor::arrangement_map::model::": "unit_editor_logic",
+UI_UNIT_TARGETS = {"editor::browser::tree::state::": "unit_editor_logic",
+                   "editor::arrangement_map::model::": "unit_editor_logic",
                    "editor::controller::session_feedback::": "unit_editor_logic",
                    "editor::waveform_geometry::grid::": "unit_editor_logic",
                    "editor::waveform_loop::projection::": "unit_editor_logic",
@@ -345,7 +346,12 @@ UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
 # complete pure boundary rather than only its own test-name prefix.
 # These consumers live in larger test modules; a selected ancestor must retain
 # the unit owner as well as the specific consumer checks.
-UI_PREFIX_COHORTS = [{"editor::arrangement_map::model::",
+UI_PREFIX_COHORTS = [{"editor::browser::tree::state::",
+                      "editor::browser::ui_test::browser_inline_tree_nested_keyboard_refresh_and_hover_retain_identity",
+                      "editor::browser::ui_test::browser_tree_same_name_files_keep_distinct_preview_paths_and_bounded_labels",
+                      "editor::browser::ui_test::browser_tree_refresh_updates_expanded_branch_hidden_by_indexed_query",
+                      "editor::browser::ui_test::browser_history_ui_test::review_readiness_obsolete_tree_worker_does_not_hold_saved_root"},
+                     {"editor::arrangement_map::model::",
                       "editor::arrangement_map::tests::main_lane_paints_canonical_intervals_at_the_ruler_scale",
                       "editor::arrangement_focus::visibility::",
                       "editor::group_overview::tests::",

@@ -2049,7 +2049,12 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform",
                                   "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",
                                   "editor::audio_import_settings::admission::",
+                                  "editor::browser::tree::state::",
+                                  "editor::browser::ui_test::browser_history_ui_test::review_readiness_obsolete_tree_worker_does_not_hold_saved_root",
                                   "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
+                                  "editor::browser::ui_test::browser_inline_tree_nested_keyboard_refresh_and_hover_retain_identity",
+                                  "editor::browser::ui_test::browser_tree_refresh_updates_expanded_branch_hidden_by_indexed_query",
+                                  "editor::browser::ui_test::browser_tree_same_name_files_keep_distinct_preview_paths_and_bounded_labels",
                                   "editor::clip_drag_ui_test::rendered_move_retains_destination_until_real_worker_ack",
                                   "editor::computer_keyboard::state::", "editor::computer_keyboard::tests::",
                                   "editor::controller::audio_event_correlation::",
@@ -2175,6 +2180,32 @@ class ModuleScopeTests(unittest.TestCase):
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner, "hex-session"],
                                   "boundary": consumer_only, "cargo_inventory": [*inventory, other], "paths": []})
         self.assertFalse(any(step.step_id == "ui-consumer-track_group_focus" for step in steps))
+
+    def test_browser_tree_state_keeps_real_worker_and_window_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::browser::tree::state::"
+        consumers = ["editor::browser::ui_test::browser_inline_tree_nested_keyboard_refresh_and_hover_retain_identity",
+                     "editor::browser::ui_test::browser_tree_same_name_files_keep_distinct_preview_paths_and_bounded_labels",
+                     "editor::browser::ui_test::browser_tree_refresh_updates_expanded_branch_hidden_by_indexed_query",
+                     "editor::browser::ui_test::browser_history_ui_test::review_readiness_obsolete_tree_worker_does_not_hold_saved_root"]
+        names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/browser/tree/state.rs"], inventory, [owner])
+        self.assertEqual(names, {owner: sorted([unit, *consumers])})
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": []})
+        self.assertTrue(any(unit in step.argv and step.requires_tests
+                            for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(all(name in step.argv for name in consumers)
+                            for step in steps if step.step_id == "ui-feature-tests"))
+        for path in ("browser/tree.rs", "browser_ui_test.rs", "browser.rs"):
+            selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            self.assertTrue(any(unit.startswith(name) for name in selected[owner]))
 
     def test_clip_drag_geometry_keeps_unit_and_runtime_consumers(self):
         root = SCRIPTS.parent
