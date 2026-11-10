@@ -2166,8 +2166,11 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::tracks::overlap_tests::held_looped_warp_drag_keeps_last_ready_content_in_mixed_copy_group",
                                   "editor::tracks::overlap_tests::held_midi_drag_keeps_actual_note_paint_and_colored_name_below_header",
                                   "editor::tracks::overlap_tests::held_processed_audio_drag_reuses_ready_root_on_lane_and_floating",
+                                  "editor::trim::admission::",
                                   "editor::trim::geometry::",
+                                  "editor::trim::resize_release_tests::resize_escape_stale_generation_pending_refusal_and_no_motion_do_not_retain_a_commit",
                                   "editor::trim::resize_release_tests::shift_resize_preserves_visible_extent_through_release_and_real_worker_ack",
+                                  "editor::trim::resize_terminal_tests::restart_offline_pending_work_blocks_actual_resize_capture_until_completion",
                                   "editor::trim::stretch_limit_tests::",
                                   "editor::trim::stretch_preview::resolver::",
                                   *names,
@@ -2583,6 +2586,33 @@ class ModuleScopeTests(unittest.TestCase):
             root, ["crates/hex-ui/src/editor/time_move_preview.rs"], inventory, [owner])
         self.assertTrue(any(visual.startswith(name) for name in owner_names[owner]))
         self.assertTrue(any(unit.startswith(name) for name in owner_names[owner]))
+
+    def test_trim_admission_keeps_rendered_refusal_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        source = "crates/hex-ui/src/editor/trim/admission.rs"
+        unit = "editor::trim::admission::"
+        consumers = [
+            "editor::trim::resize_terminal_tests::restart_offline_pending_work_blocks_actual_resize_capture_until_completion",
+            "editor::trim::resize_release_tests::resize_escape_stale_generation_pending_refusal_and_no_motion_do_not_retain_a_commit",
+        ]
+        names = plan.module_test_filters(root, [source], inventory, [owner])
+        self.assertEqual(names, {owner: sorted([unit, *consumers])})
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": [source]})
+        self.assertTrue(any(unit in step.argv and step.requires_tests
+                            for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(all(name in step.argv for name in consumers)
+                            for step in steps if step.step_id == "ui-feature-tests"))
+        for path in ("trim.rs", "resize_terminal_tests.rs", "resize_release_tests.rs"):
+            selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            self.assertTrue(any(unit.startswith(name) for name in selected[owner]))
 
     def test_trim_geometry_keeps_rendered_audio_and_midi_consumers(self):
         root = SCRIPTS.parent
