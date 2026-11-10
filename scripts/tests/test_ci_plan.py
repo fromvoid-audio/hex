@@ -14,6 +14,7 @@ import sys
 import tempfile
 import time
 import unittest
+from test_local_ci import install_delivery_source_fixture
 from unittest.mock import patch
 
 
@@ -24,7 +25,12 @@ def module(name, file):
     spec = importlib.util.spec_from_file_location(name, SCRIPTS / file)
     value = importlib.util.module_from_spec(spec)
     sys.modules[name] = value
-    spec.loader.exec_module(value)
+    if file == "local-ci.py":
+        source = (SCRIPTS / file).read_bytes()
+        value._DELIVERY_RUNNER_SOURCE_SHA256 = hashlib.sha256(source).hexdigest()
+        exec(compile(source, str(SCRIPTS / file), "exec", dont_inherit=True), value.__dict__)
+    else:
+        spec.loader.exec_module(value)
     return value
 
 
@@ -258,6 +264,7 @@ class ScopeTests(unittest.TestCase):
     def test_edit_target_runs_only_owner_and_rejects_zero_matches_or_regression(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
+            install_delivery_source_fixture(root)
             (root / "src").mkdir()
             (root / "tests").mkdir()
             (root / "Cargo.toml").write_text('[package]\nname="edit-target-fixture"\nversion="0.1.0"\nedition="2021"\n')
@@ -379,6 +386,7 @@ class ScopeTests(unittest.TestCase):
     def test_review_workspace_restored_mtime_runs_current_test_and_normal_edit_stays_incremental(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            install_delivery_source_fixture(root)
             (root / "src").mkdir()
             (root / "Cargo.toml").write_text('[package]\nname="workspace-source-fixture"\nversion="0.1.0"\nedition="2021"\n')
             (root / ".gitignore").write_text('/target/\n/artifacts/\n')
@@ -450,6 +458,7 @@ class ScopeTests(unittest.TestCase):
     def test_review_changed_wrapper_rebuilds_unchanged_dependency(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            install_delivery_source_fixture(root)
             for folder in ("app/src", "vendor/src"):
                 (root / folder).mkdir(parents=True)
             (root / "Cargo.toml").write_text('[workspace]\nmembers=["app"]\nexclude=["vendor"]\nresolver="2"\n')
@@ -570,6 +579,7 @@ class ScopeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "repo"
             root.mkdir()
+            install_delivery_source_fixture(root)
             def git(*args):
                 return subprocess.check_output(["git", *args], cwd=root).decode().strip()
             git("init", "-q"); git("config", "user.name", "source fixture"); git("config", "user.email", "fixture@invalid")
@@ -669,7 +679,7 @@ class ScopeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             (root / "src").mkdir()
-            (root / "scripts").mkdir()
+            install_delivery_source_fixture(root)
             (root / "src/lib.rs").write_text("")
             (root / "Cargo.toml").write_text(
                 '[package]\nname="unregistered-boundary"\nversion="0.1.0"\nedition="2021"\n')
@@ -932,6 +942,7 @@ class ScopeTests(unittest.TestCase):
     def test_prose_continuation_requires_complete_original_runtime_certificate(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            install_delivery_source_fixture(root)
             def git(*args):
                 return subprocess.check_output(["git", *args], cwd=root).decode().strip()
             git("init", "-q")
@@ -1607,6 +1618,7 @@ class CacheIdentityTests(unittest.TestCase):
     def test_actual_cargo_restored_mtime_dependency_api_is_invalidated(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            install_delivery_source_fixture(root)
             (root / "app/src").mkdir(parents=True)
             (root / "vendor/src").mkdir(parents=True)
             (root / "Cargo.toml").write_text('[workspace]\nmembers=["app"]\nexclude=["vendor"]\nresolver="2"\n')
