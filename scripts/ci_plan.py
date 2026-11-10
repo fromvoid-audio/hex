@@ -271,7 +271,9 @@ def module_declarations(source_root: Path) -> dict[Path, list[tuple[Path, list[s
 TEST_ATTRIBUTE = re.compile(r"#\[(?:gpui::)?test\b")
 # Unit test targets which compile the owning source directly. Keep their libtest
 # names under the original module path so scoped coverage remains observable.
-UI_UNIT_TARGETS = {"editor::drag::geometry::": "unit_editor_logic",
+UI_UNIT_TARGETS = {"editor::waveform_loop::projection::": "unit_editor_logic",
+                   "editor::waveform_stretch::accepted_root::": "unit_editor_logic",
+                   "editor::drag::geometry::": "unit_editor_logic",
                    "output_meter::logic::": "unit_editor_logic",
                    "editor::overview_waveform::": "unit_editor_logic",
                    "editor::waveform_columns::": "unit_editor_logic",
@@ -355,7 +357,8 @@ UI_UNIT_COHORTS = [{"editor::device_panel::eq_panel::axes::", "editor::device_pa
                     "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
                     "editor::sampler_parameter::tests::source_hints_and_paint_require_same_view_source_facts_and_context",
                     "editor::waveform_source::", "editor::waveform::", "editor::waveform_geometry::",
-                    "editor::waveform_loop::", "editor::waveform_stretch::",
+                    "editor::waveform_loop::", "editor::waveform_loop::projection::",
+                    "editor::waveform_stretch::", "editor::waveform_stretch::accepted_root::",
                     "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",
                     "editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform"}]
 # Recovery's real prepared-audio test is a sibling so importing its state into

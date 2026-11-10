@@ -66,3 +66,9 @@ mod overview_waveform;
 
 #[path = "drag.rs"]
 mod drag;
+
+// Compile the real peak projection and stretch root against the shared source mapper.
+#[path = "waveform_loop.rs"]
+mod waveform_loop;
+#[path = "waveform_stretch.rs"]
+mod waveform_stretch;
