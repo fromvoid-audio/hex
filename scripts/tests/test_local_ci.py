@@ -78,6 +78,180 @@ def bounded_checkpoint_case(function):
     return function
 
 
+class FreshTargetReservationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        install_delivery_source_fixture(self.root)
+        self.state = self.root / "locks"
+        self.target = self.root / "cargo-target"
+
+    def reserve(self, target=None):
+        return local_ci.FreshTargetReservation.acquire(
+            self.root, str(self.target if target is None else target), {"run_id": "fixture"}, state_dir=self.state)
+
+    def test_empty_and_absent_hold_exact_lock_until_close(self):
+        for absent in (True, False):
+            with self.subTest(absent=absent):
+                if not absent:
+                    self.target.mkdir()
+                with self.reserve() as reservation:
+                    reservation.revalidate(str(self.target))
+                    with self.assertRaisesRegex(local_ci.TargetCacheError, "already in use"):
+                        self.reserve()
+                    with self.assertRaisesRegex(local_ci.TargetCacheError, "differs"):
+                        reservation.revalidate(str(self.root / "other"))
+                with self.assertRaisesRegex(local_ci.TargetCacheError, "no longer live"):
+                    reservation.revalidate(str(self.target))
+                if not absent:
+                    self.target.rmdir()
+
+    def test_relative_alias_symlink_and_missing_parent_refuse(self):
+        self.target.mkdir()
+        alias = self.root / "alias"
+        alias.symlink_to(self.target, target_is_directory=True)
+        parent_alias = self.root / "parent-alias"
+        parent_alias.symlink_to(self.root, target_is_directory=True)
+        for value in ("relative", "//tmp/alias", str(self.target) + "\0bad", str(alias), str(parent_alias / "cargo-target"),
+                      str(self.root / "missing" / "target"), str(self.target) + "/."):
+            with self.subTest(value=value), self.assertRaises(local_ci.TargetCacheError):
+                self.reserve(value)
+        self.assertFalse(any(self.target.iterdir()))
+
+    def test_metadata_entries_and_target_presence_changes_refuse(self):
+        self.target.mkdir()
+        with self.reserve() as reservation:
+            (self.target / ".rustc_info.json").write_text("metadata")
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "not empty"):
+                reservation.revalidate(str(self.target))
+            (self.target / ".rustc_info.json").unlink()
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "no longer live"):
+                reservation.revalidate(str(self.target))
+        with self.reserve() as replacement:
+            replacement.revalidate(str(self.target))
+        self.target.rmdir()
+        with self.reserve() as reservation:
+            self.target.mkdir()
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "presence"):
+                reservation.revalidate(str(self.target))
+            self.target.rmdir()
+
+    def test_replacement_of_target_or_ancestor_refuses(self):
+        parent = self.root / "parent"
+        parent.mkdir()
+        target = parent / "target"
+        target.mkdir()
+        with self.reserve(target) as reservation:
+            target.rename(parent / "old-target")
+            target.mkdir()
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "identity"):
+                reservation.revalidate(str(target))
+        target.rmdir()
+        (parent / "old-target").rename(target)
+        with self.reserve(target) as reservation:
+            parent.rename(self.root / "old-parent")
+            parent.mkdir()
+            (parent / "target").mkdir()
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "identity"):
+                reservation.revalidate(str(target))
+
+    def test_source_change_revokes_reservation(self):
+        self.target.mkdir()
+        with self.reserve() as reservation:
+            helper = self.root / "scripts/ci_plan.py"
+            helper.write_bytes(helper.read_bytes() + b"\n# changed\n")
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "source mismatch"):
+                reservation.revalidate(str(self.target))
+            self.assertIsNone(reservation._lock.file)
+            self.assertEqual(reservation._handles, [])
+
+    def test_failure_closes_descriptors_and_preserves_target_and_owner(self):
+        self.target.mkdir()
+        sentinel = self.target / "keep"
+        sentinel.write_bytes(b"preserve")
+        _, owner = local_ci.target_state_paths(self.target, self.state)
+        owner.parent.mkdir(parents=True)
+        opened = []
+        original = os.open
+        def record(*args, **kwargs):
+            descriptor = original(*args, **kwargs)
+            opened.append(descriptor)
+            return descriptor
+        with patch.object(local_ci.os, "open", side_effect=record):
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "not empty"):
+                self.reserve()
+        self.assertTrue(opened)
+        for descriptor in opened:
+            with self.assertRaises(OSError):
+                os.fstat(descriptor)
+        self.assertEqual(sentinel.read_bytes(), b"preserve")
+        self.assertFalse(owner.exists())
+        sentinel.unlink()
+        owner.write_bytes(b"existing owner")
+        with self.assertRaisesRegex(local_ci.TargetCacheError, "owner marker"):
+            self.reserve()
+        self.assertEqual(owner.read_bytes(), b"existing owner")
+        owner.unlink()
+        with self.reserve() as reservation:
+            self.assertTrue(reservation._handles)
+            reservation._lock.release()  # Unusual external unlock invalidates authority.
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "no longer live"):
+                reservation.revalidate(str(self.target))
+
+    def test_owner_markers_revoke_fresh_authority(self):
+        self.target.mkdir()
+        _, owner = local_ci.target_state_paths(self.target, self.state)
+        release = owner.with_name(owner.name.replace(".owner.json", ".release-owner.json"))
+        for marker in (owner, release):
+            with self.subTest(marker=marker.name):
+                with self.reserve() as reservation:
+                    marker.write_bytes(b"other owner")
+                    with self.assertRaisesRegex(local_ci.TargetCacheError, "owner marker"):
+                        reservation.revalidate(str(self.target))
+                self.assertEqual(marker.read_bytes(), b"other owner")
+                marker.unlink()
+
+    def test_existing_release_marker_and_dangling_marker_refuse(self):
+        self.target.mkdir()
+        _, owner = local_ci.target_state_paths(self.target, self.state)
+        release = owner.with_name(owner.name.replace(".owner.json", ".release-owner.json"))
+        self.state.mkdir(parents=True)
+        for dangling in (False, True):
+            with self.subTest(dangling=dangling):
+                if dangling:
+                    release.symlink_to(self.root / "missing")
+                else:
+                    release.write_bytes(b"existing")
+                with self.assertRaisesRegex(local_ci.TargetCacheError, "owner marker"):
+                    self.reserve()
+                self.assertTrue(os.path.lexists(release))
+                release.unlink()
+                with self.reserve():
+                    pass
+
+    def test_replaced_lock_or_state_directory_revokes_authority(self):
+        self.target.mkdir()
+        for replace_state in (False, True):
+            with self.subTest(replace_state=replace_state):
+                with self.reserve() as reservation:
+                    lock_path = reservation._lock.path
+                    if replace_state:
+                        self.state.rename(self.root / "old-locks")
+                        self.state.mkdir()
+                    else:
+                        lock_path.unlink()
+                    lock_path.write_text("replacement")
+                    with self.assertRaisesRegex(local_ci.TargetCacheError, "lock identity"):
+                        reservation.revalidate(str(self.target))
+                    self.assertIsNone(reservation._lock.file)
+                    self.assertEqual(lock_path.read_text(), "replacement")
+                if replace_state:
+                    lock_path.unlink()
+                    self.state.rmdir()
+                    (self.root / "old-locks").rename(self.state)
+
+
 class LocalCiRunnerTests(unittest.TestCase):
     def test_module_shard_empty_configs_require_aggregate_passes(self):
         (self.bin / "python3").write_text(

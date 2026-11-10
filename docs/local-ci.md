@@ -390,6 +390,13 @@ the previous target and failed report; changing the location is not evidence tha
 every test meets its time limit. Measure test setup and execution, including any
 copying or other setup, and investigate any remaining slow test separately.
 
+`FreshTargetReservation` is an explicit, bounded, lock-owning primitive for a
+canonical absolute target which is absent or empty before the caller starts
+Cargo. It pins directory ancestry, revalidates exact identity and emptiness,
+and invalidates authority when closed. Existing CLI, programmatic and release
+entrypoints do not use it yet. Raw Cargo and other processes which ignore the
+cooperative target lock remain outside this observation; it is not a sandbox.
+
 The summary records the identified filesystem, probe duration and dev cleanup
 duration (including failed cleanup). A target
 preparation failure names that phase and the next unstarted stage; a failed

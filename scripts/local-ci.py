@@ -778,6 +778,183 @@ class CargoTargetLock:
         return failure
 
 
+class FreshTargetReservation:
+    """Reserve an explicit empty target under the existing cooperative lock.
+
+    This standalone primitive performs no Cargo command and does not authorize
+    existing entrypoints. Callers acquire before their first Cargo operation,
+    revalidate after it and immediately before consuming the reservation, and
+    hold this object through admission. Raw Cargo and other non-cooperating
+    processes can mutate the target; this is not a filesystem sandbox.
+    """
+
+    MAX_COMPONENTS = 128
+    MAX_PATH_BYTES = 4096
+
+    def __init__(self, root: Path, target: str, lock: CargoTargetLock, handles: list[int], absent: bool, state_fd: int) -> None:
+        self._root = root
+        self._target = target
+        self._lock = lock
+        self._handles = handles
+        self._absent = absent
+        self._lock_file = lock.file
+        self._state_fd = state_fd
+        self._active = True
+
+    @staticmethod
+    def _target_path(target: str) -> str:
+        if (not isinstance(target, str) or not os.path.isabs(target)
+                or target == "/" or target.startswith("//") or "\0" in target
+                or os.path.normpath(target) != target
+                or len(os.fsencode(target)) > FreshTargetReservation.MAX_PATH_BYTES
+                or len(Path(target).parts) > FreshTargetReservation.MAX_COMPONENTS):
+            raise TargetCacheError("fresh target requires a bounded canonical absolute path")
+        return target
+
+    @staticmethod
+    def _empty(descriptor: int) -> bool:
+        # Stop at the first entry; never allocate an unbounded directory list.
+        with os.scandir(descriptor) as entries:
+            return next(entries, None) is None
+
+    @classmethod
+    def _open_chain(cls, target: str) -> tuple[list[int], bool]:
+        handles: list[int] = []
+        try:
+            flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            handles.append(os.open("/", flags))
+            parts = Path(target).parts[1:]
+            absent = False
+            for index, part in enumerate(parts):
+                try:
+                    handles.append(os.open(part, flags, dir_fd=handles[-1]))
+                except FileNotFoundError:
+                    if index != len(parts) - 1:
+                        raise
+                    absent = True
+                    break
+            if not absent and not cls._empty(handles[-1]):
+                raise TargetCacheError("fresh target is not empty")
+            return handles, absent
+        except BaseException:
+            for descriptor in reversed(handles):
+                os.close(descriptor)
+            raise
+
+    @classmethod
+    def acquire(cls, root: Path, target: str, holder: dict[str, object], *,
+                state_dir: Path | None = None) -> "FreshTargetReservation":
+        root = root.resolve()
+        if (error := delivery_source_error(root)) is not None:
+            raise TargetCacheError("fresh target source mismatch: " + error)
+        selected = cls._target_path(target)
+        lock_path, owner_path = target_state_paths(Path(selected), state_dir)
+        lock = CargoTargetLock(lock_path, holder)
+        lock.acquire()  # Before target probing and before any caller Cargo command.
+        state_fd = None
+        try:
+            state_fd = os.open(lock_path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            cls._require_unowned(owner_path)
+            handles, absent = cls._open_chain(selected)
+            result = cls(root, selected, lock, handles, absent, state_fd)
+            state_fd = None  # The reservation owns it now.
+            try:
+                result.revalidate(selected)
+            except BaseException:
+                result.close()
+                raise
+            return result
+        except OSError as error:
+            if state_fd is not None:
+                os.close(state_fd)
+            lock.release()
+            raise TargetCacheError(f"cannot reserve fresh target: {error}") from error
+        except BaseException:
+            if state_fd is not None:
+                os.close(state_fd)
+            lock.release()
+            raise
+
+    def revalidate(self, selected_target: str) -> None:
+        """Fail closed and revoke authority on any failed validation."""
+        try:
+            self._verify(selected_target)
+        except BaseException:
+            self.close()
+            raise
+
+    @staticmethod
+    def _require_unowned(owner_path: Path) -> None:
+        release_owner = owner_path.with_name(owner_path.name.replace(".owner.json", ".release-owner.json"))
+        if os.path.lexists(owner_path) or os.path.lexists(release_owner):
+            raise TargetCacheError("fresh target already has an owner marker")
+
+    def _verify(self, selected_target: str) -> None:
+        """Refuse if the source, target, lock, ancestry or emptiness changed."""
+        if (error := delivery_source_error(self._root)) is not None:
+            raise TargetCacheError("fresh target source mismatch: " + error)
+        if (not self._active or self._lock.file is None or self._lock.file is not self._lock_file
+                or self._lock.file.closed or not self._handles):
+            raise TargetCacheError("fresh target reservation is no longer live")
+        if self._target_path(selected_target) != self._target:
+            raise TargetCacheError("selected Cargo target differs from reservation")
+        try:
+            state = os.stat(self._lock.path.parent, follow_symlinks=False)
+            pinned_state = os.fstat(self._state_fd)
+            lock_path = os.stat(self._lock.path.name, dir_fd=self._state_fd, follow_symlinks=False)
+            locked = os.fstat(self._lock.file.fileno())
+            if (not stat.S_ISDIR(state.st_mode) or not stat.S_ISREG(lock_path.st_mode)
+                    or (state.st_dev, state.st_ino) != (pinned_state.st_dev, pinned_state.st_ino)
+                    or (lock_path.st_dev, lock_path.st_ino) != (locked.st_dev, locked.st_ino)):
+                raise TargetCacheError("fresh target lock identity changed")
+        except OSError as error:
+            raise TargetCacheError(f"cannot verify fresh target lock identity: {error}") from error
+        _, owner_path = target_state_paths(Path(self._target), self._lock.path.parent)
+        self._require_unowned(owner_path)
+        try:
+            current, absent = self._open_chain(self._target)
+            try:
+                if absent != self._absent or len(current) != len(self._handles):
+                    raise TargetCacheError("fresh target presence or ancestry changed")
+                for pinned, observed in zip(self._handles, current):
+                    old, new = os.fstat(pinned), os.fstat(observed)
+                    if (old.st_dev, old.st_ino) != (new.st_dev, new.st_ino):
+                        raise TargetCacheError("fresh target identity or ancestry changed")
+                if not absent and not self._empty(self._handles[-1]):
+                    raise TargetCacheError("fresh target is no longer empty")
+            finally:
+                for descriptor in reversed(current):
+                    os.close(descriptor)
+        except OSError as error:
+            raise TargetCacheError(f"cannot revalidate fresh target: {error}") from error
+
+    def close(self) -> str | None:
+        """Invalidate authority before closing pinned handles and releasing lock."""
+        if not self._active:
+            return None
+        self._active = False
+        failure = None
+        while self._handles:
+            try:
+                os.close(self._handles.pop())
+            except OSError as error:
+                failure = failure or f"cannot close fresh target descriptor: {error}"
+        try:
+            os.close(self._state_fd)
+        except OSError as error:
+            failure = failure or f"cannot close fresh target state descriptor: {error}"
+        return self._lock.release() or failure
+
+    def __enter__(self) -> "FreshTargetReservation":
+        self.revalidate(self._target)
+        return self
+
+    def __exit__(self, kind, value, traceback) -> None:
+        failure = self.close()
+        if failure and kind is None:
+            raise TargetCacheError(failure)
+
+
 class LocalCiRunner:
     def delivery_source_error(self) -> str | None:
         """Check this runner module, even when another import shares its name."""
