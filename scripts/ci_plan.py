@@ -369,12 +369,26 @@ UI_UNIT_HARNESS_MODULES = {
     },
 }
 UI_UNIT_FEATURES = {"unit_piano_roll": "ui-unit-tier", "unit_timeline": "ui-unit-tier", "unit_automation": "ui-unit-tier", "unit_device": "ui-unit-tier", "unit_section": "ui-unit-tier", "unit_editor_logic": "ui-unit-tier"}
-# These integration consumers are not included in a module-scoped library run.
+# These standalone targets run separately from a module-scoped library run.
 UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
                          "editor::track_hierarchy_indent::": "track_group_focus",
                          "editor::track_reorder::subtree::": "track_group_focus",
                          "editor::midi_recording::pressure_fixture::": "midi_pressure_boundary"}
 UI_EXTRA_TEST_FEATURES = {"midi_pressure_boundary": "ui-test-support"}
+# The standalone track-group tests own these sources. Retain the rendered
+# projection consumers when a change touches either source.
+UI_TRACK_GROUP_FOCUS_OWNERS = {
+    "editor::arrangement_focus::visibility::": (
+        "editor::arrangement_focus::tests::section_focus_renders_visible_child_with_nested_group_headers",
+        "editor::track_tags::tests::rendered_tag_selection_modifiers_overflow_and_filter_are_view_only",
+        "editor::track_tags::tests::folded_matches_stay_selected_and_filter_applies_to_console_headers",
+    ),
+    "editor::track_hierarchy_indent::": (
+        "editor::track_clipboard_ui_test::nested_group_plates_and_poles_join_follow_selection_and_close_at_visible_ends",
+        "editor::track_clipboard_ui_test::group_track_header_menu_arrangement",
+        "editor::track_clipboard_ui_test::group_track_header_menu_session",
+    ),
+}
 # These geometry modules call one another; a change to one must exercise the
 # complete pure boundary rather than only its own test-name prefix.
 # These consumers live in larger test modules; a selected ancestor must retain
@@ -682,8 +696,9 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
             whole.add(owner)
             continue
         def has_tests(candidate: str) -> bool:
-            if owner == "hex-ui" and any(name.startswith(candidate + "::")
-                                         for name in UI_UNIT_TARGETS):
+            prefix = candidate + "::"
+            if owner == "hex-ui" and (prefix in UI_TRACK_GROUP_FOCUS_OWNERS
+                                      or any(name.startswith(prefix) for name in UI_UNIT_TARGETS)):
                 return True
             return any(TEST_ATTRIBUTE.search(f.read_text(errors="replace"))
                        for f, name in modules.items()
@@ -693,7 +708,11 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
         if not module:
             whole.add(owner)
         else:
-            filters.setdefault(owner, set()).add(module + "::")
+            prefix = module + "::"
+            owner_filters = filters.setdefault(owner, set())
+            owner_filters.add(prefix)
+            if owner == "hex-ui":
+                owner_filters.update(UI_TRACK_GROUP_FOCUS_OWNERS.get(prefix, ()))
     # The real viewport is an input to the waveform grid. Select its owner
     # when that source changes, including the grid's geometry consumers.
     if "crates/hex-ui/src/editor/viewport.rs" in executable and "hex-ui" in tested:
