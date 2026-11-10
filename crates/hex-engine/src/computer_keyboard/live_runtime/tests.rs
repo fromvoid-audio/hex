@@ -402,3 +402,34 @@ fn a_full_preview_pool_yields_without_losing_the_pending_hardware_onset() {
     assert!(live.same_current_activation(activation));
     assert!(!input.rejected());
 }
+
+#[test]
+fn recording_prefix_preempts_live_audition_and_preview_can_resume_after_seal() {
+    let (project, track) = fixture();
+    let input = Arc::new(
+        ComputerKeyboardInput::default()
+            .with_live_notes()
+            .unwrap()
+            .with_recording_support()
+            .unwrap(),
+    );
+    let mut tested = playback(&project, track, &input);
+    input
+        .trigger_live_note_audition_on_control(&[(60, 37)], 128)
+        .unwrap();
+    let keys = input.begin_ordered_keys_on_control().unwrap();
+    assert!(
+        input
+            .trigger_live_note_audition_on_control(&[(60, 37)], 128)
+            .is_err()
+    );
+    let mut frames = [[0.0; 2]; 64];
+    tested.render(&mut frames).unwrap();
+    assert_eq!(frames, [[0.0; 2]; 64]);
+    input.seal_ordered_keys_on_control(keys).unwrap();
+    input
+        .trigger_live_note_audition_on_control(&[(60, 37)], 128)
+        .unwrap();
+    tested.render(&mut frames).unwrap();
+    assert!(frames.iter().flatten().any(|sample| *sample != 0.0));
+}

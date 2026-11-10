@@ -151,7 +151,10 @@ impl ComputerKeyboardInput {
         ))?;
         if !valid_bank(notes, gate_frames)
             || self.is_cancelled()
-            || self.ordered_keys.is_some()
+            || self
+                .ordered_keys
+                .as_ref()
+                .is_some_and(|keys| keys.has_recording_prefix())
             || self.sequence.load(Acquire) >= (u64::MAX >> 15) - 1
             || self.notes.iter().any(|word| word.load(Acquire) != 0)
         {

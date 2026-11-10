@@ -1472,19 +1472,19 @@ impl ComputerKeyboardRuntime {
             events[len..len + 3].copy_from_slice(&expression.events());
             len += 3;
         }
-        if self.boundary
-            && self
+        if self.boundary {
+            let snapshot_physical = self
                 .capture
                 .as_ref()
-                .is_none_or(|capture| capture.key_batch.is_none())
-        {
+                .is_none_or(|capture| capture.key_batch.is_none());
             let desired_source = if self.scratch_audition_gate.active() {
                 VoiceSource::Audition
             } else {
                 VoiceSource::Physical
             };
             for voice in self.scratch.iter_mut().flatten() {
-                if matches!(voice.source, VoiceSource::Physical | VoiceSource::Audition)
+                if (voice.source == VoiceSource::Audition
+                    || (snapshot_physical && voice.source == VoiceSource::Physical))
                     && voice.gate.is_none()
                     && (voice.source != desired_source || self.desired[voice.key] != voice.token)
                 {
@@ -1497,7 +1497,8 @@ impl ComputerKeyboardRuntime {
                 }
             }
             for (key, token) in self.desired.into_iter().enumerate() {
-                if token == 0
+                if !snapshot_physical
+                    || token == 0
                     || self.scratch_rejected_desired[key] == token
                     || self.scratch.iter().flatten().any(|voice| {
                         voice.source == desired_source && voice.key == key && voice.token == token

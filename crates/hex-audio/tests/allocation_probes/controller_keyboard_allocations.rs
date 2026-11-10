@@ -171,26 +171,30 @@ fn live_audition_trigger_expiry_and_hardware_release_are_allocation_free()
         .publish_with_policy_and_context_generation(playback, PublicationPolicy::InheritRuntime, 0)
         .map_err(|error| error.reason)?;
 
-    hardware.publish(
-        activation,
-        LiveNoteEvent::NoteOn {
-            channel: 1,
-            pitch: 60,
-            velocity: 37,
-        },
-    )?;
+    hardware
+        .publish(
+            activation,
+            LiveNoteEvent::NoteOn {
+                channel: 1,
+                pitch: 60,
+                velocity: 37,
+            },
+        )
+        .map_err(|_| "could not publish hardware onset")?;
     root.trigger_live_note_audition_on_control(&[(60, 93)], 64)?;
     let mut frames = [[0.0; 2]; 64];
     for step in 0..3 {
         if step == 2 {
-            hardware.publish(
-                activation,
-                LiveNoteEvent::NoteOff {
-                    channel: 1,
-                    pitch: 60,
-                    velocity: 0,
-                },
-            )?;
+            hardware
+                .publish(
+                    activation,
+                    LiveNoteEvent::NoteOff {
+                        channel: 1,
+                        pitch: 60,
+                        velocity: 0,
+                    },
+                )
+                .map_err(|_| "could not publish hardware release")?;
         }
         let mut rendered = None;
         let counts = measure(|| {
