@@ -38,3 +38,7 @@ mod fade_handle_geometry;
 
 #[path = "computer_keyboard.rs"]
 mod computer_keyboard;
+
+#[allow(dead_code)]
+#[path = "../../src/editor/waveform_source.rs"]
+mod waveform_source;

@@ -1851,7 +1851,9 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/editor/user_errors.rs"], inventory, [owner]),
                          {owner: names})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_editor_logic.rs"], inventory, [owner]),
-                         {owner: ["editor::audio_import_settings::admission::",
+                         {owner: ["editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform",
+                                  "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",
+                                  "editor::audio_import_settings::admission::",
                                   "editor::computer_keyboard::state::", "editor::computer_keyboard::tests::",
                                   "editor::controller::audio_event_correlation::",
                                   "editor::controller::sampler_native_ui_protocol_tests::",
@@ -1862,7 +1864,9 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::session_route_view::", "editor::theme_settings::tests::", "editor::track_defaults::",
                                   "editor::track_meters::decay::", "editor::track_meters::follower::",
                                   "editor::track_meters::main_output::tests::", "editor::track_meters::scale::",
-                                  "editor::track_meters::selection::", "editor::track_meters::tests::", *names, "theme::"]})
+                                  "editor::track_meters::selection::", "editor::track_meters::tests::", *names,
+                                  "editor::waveform::", "editor::waveform_geometry::", "editor::waveform_loop::",
+                                  "editor::waveform_source::", "editor::waveform_stretch::", "theme::"]})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_session.rs"], inventory, [owner]), {})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
                     "single_run": {owner: "ui-test-support"}, "module_filters": {owner: names}}
@@ -1893,6 +1897,30 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertIn(names[0], unit.argv)
         self.assertTrue(unit.requires_tests)
         self.assertIn(names[1], integration.argv)
+
+    def test_waveform_source_selects_unit_and_projection_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        names = ["editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform",
+                 "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",
+                 "editor::waveform::", "editor::waveform_geometry::", "editor::waveform_loop::",
+                 "editor::waveform_source::", "editor::waveform_stretch::"]
+        for path in ("crates/hex-ui/src/editor/waveform_source.rs", "crates/hex-ui/src/editor/waveform.rs"):
+            self.assertEqual(plan.module_test_filters(root, [path], inventory, [owner]), {owner: names})
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": {owner: names}}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                      "cargo_inventory": inventory, "paths": [path]})
+            unit = next(step for step in steps if "unit_editor_logic" in step.argv)
+            integration = next(step for step in steps if step.step_id == "ui-feature-tests")
+            self.assertIn("editor::waveform_source::", unit.argv)
+            self.assertTrue(unit.requires_tests)
+            for name in names:
+                self.assertIn(name, integration.argv)
 
     def test_section_hit_unit_target_follows_its_owner(self):
         root = SCRIPTS.parent
