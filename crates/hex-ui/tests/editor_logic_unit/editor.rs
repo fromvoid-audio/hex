@@ -91,3 +91,6 @@ mod browser;
 #[allow(dead_code)]
 #[path = "../../src/editor/test_environment.rs"]
 mod test_environment;
+
+#[path = "group_overview.rs"]
+mod group_overview;
