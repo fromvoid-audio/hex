@@ -251,6 +251,118 @@ class FreshTargetReservationTests(unittest.TestCase):
                     self.state.rmdir()
                     (self.root / "old-locks").rename(self.state)
 
+    def test_reserved_metadata_matches_target_and_preserves_live_lock(self):
+        self.target.mkdir()
+        runner = local_ci.LocalCiRunner(self.root, env={"CARGO_TARGET_DIR": str(self.target)},
+                                        target_state_dir=self.state)
+        metadata = {"target_directory": str(self.target), "workspace_root": str(self.root),
+                    "workspace_members": ["fixture"],
+                    "packages": [{"id": "fixture", "name": "fixture", "version": "0.1.0"}]}
+        result = subprocess.CompletedProcess([], 0, json.dumps(metadata), "")
+        with self.reserve() as reservation, patch.object(local_ci.subprocess, "run", return_value=result):
+            self.assertTrue(runner._resolve_cargo_identity(reservation))
+            reservation.revalidate(str(self.target))
+            self.assertEqual(runner.cargo_identity["target_directory"], str(self.target))
+            self.assertIsNone(runner.target_lock)  # Identity resolution grants no custody.
+
+    def test_reserved_metadata_mismatch_or_mutation_refuses(self):
+        self.target.mkdir()
+        for scenario in ("configured", "selected", "created"):
+            with self.subTest(scenario=scenario):
+                env_target = self.root / "other" if scenario == "configured" else self.target
+                runner = local_ci.LocalCiRunner(self.root, env={"CARGO_TARGET_DIR": str(env_target)},
+                                                target_state_dir=self.state)
+                metadata = {"target_directory": str(self.root / "other" if scenario == "selected" else self.target),
+                            "workspace_root": str(self.root), "workspace_members": ["fixture"],
+                            "packages": [{"id": "fixture", "name": "fixture", "version": "0.1.0"}]}
+                def run(*args, **kwargs):
+                    if scenario == "created":
+                        (self.target / "entry").write_text("preserve")
+                    return subprocess.CompletedProcess([], 0, json.dumps(metadata), "")
+                with self.reserve() as reservation, patch.object(local_ci.subprocess, "run", side_effect=run) as cargo:
+                    self.assertFalse(runner._resolve_cargo_identity(reservation))
+                    self.assertIsNone(runner.cargo_identity)
+                    self.assertIsNone(reservation._lock.file)
+                    if scenario == "configured":
+                        cargo.assert_not_called()
+                if scenario == "created":
+                    self.assertEqual((self.target / "entry").read_text(), "preserve")
+                    (self.target / "entry").unlink()
+
+    def test_reserved_real_cargo_metadata_on_empty_target(self):
+        (self.root / "Cargo.toml").write_text('[package]\nname = "fixture"\nversion = "0.1.0"\nedition = "2021"\n')
+        (self.root / "Cargo.lock").write_text('version = 4\n\n[[package]]\nname = "fixture"\nversion = "0.1.0"\n')
+        (self.root / "src").mkdir()
+        (self.root / "src/lib.rs").write_text("")
+        self.target.mkdir()
+        env = dict(os.environ, CARGO_TARGET_DIR=str(self.target), CARGO_NET_OFFLINE="true")
+        runner = local_ci.LocalCiRunner(self.root, env=env, target_state_dir=self.state)
+        with self.reserve() as reservation:
+            self.assertTrue(runner._resolve_cargo_identity(reservation), runner.summary.get("cargo_metadata_error"))
+            reservation.revalidate(str(self.target))
+            self.assertEqual(runner.cargo_identity["target_directory"], str(self.target))
+
+    def test_reserved_metadata_refuses_other_lock_namespace_before_cargo(self):
+        self.target.mkdir()
+        other_state = self.root / "other-locks"
+        runner = local_ci.LocalCiRunner(self.root, env={"CARGO_TARGET_DIR": str(self.target)},
+                                        target_state_dir=other_state)
+        _, owner = local_ci.target_state_paths(self.target, other_state)
+        owner.parent.mkdir(parents=True)
+        owner.write_text("existing owner")
+        with self.reserve() as reservation, patch.object(local_ci.subprocess, "run") as cargo:
+            self.assertFalse(runner._resolve_cargo_identity(reservation))
+            cargo.assert_not_called()
+            self.assertIsNone(reservation._lock.file)
+        self.assertEqual(owner.read_text(), "existing owner")
+
+    def test_failed_or_interrupted_resolution_revokes_prior_identity(self):
+        self.target.mkdir()
+        runner = local_ci.LocalCiRunner(self.root, env={"CARGO_TARGET_DIR": str(self.target)},
+                                        target_state_dir=self.state)
+        metadata = {"target_directory": str(self.target), "workspace_root": str(self.root),
+                    "workspace_members": ["fixture"],
+                    "packages": [{"id": "fixture", "name": "fixture", "version": "0.1.0"}]}
+        success = subprocess.CompletedProcess([], 0, json.dumps(metadata), "")
+        for interruption in (False, True):
+            with self.subTest(interruption=interruption), self.reserve() as reservation:
+                with patch.object(local_ci.subprocess, "run", return_value=success):
+                    self.assertTrue(runner._resolve_cargo_identity(reservation))
+                failure = KeyboardInterrupt() if interruption else subprocess.CompletedProcess([], 1, "", "failure")
+                with patch.object(local_ci.subprocess, "run", side_effect=failure if interruption else None,
+                                  return_value=None if interruption else failure):
+                    if interruption:
+                        with self.assertRaises(KeyboardInterrupt):
+                            runner._resolve_cargo_identity(reservation)
+                    else:
+                        self.assertFalse(runner._resolve_cargo_identity(reservation))
+                self.assertIsNone(runner.cargo_identity)
+                self.assertIsNone(runner.target_owner_path)
+                self.assertIsNone(runner._lexical_cargo_target)
+                self.assertNotIn("cargo_identity", runner.summary)
+                self.assertIsNone(reservation._lock.file)
+            with self.reserve():
+                pass
+
+    def test_metadata_refusal_reports_cleanup_failure_without_masking_cause(self):
+        self.target.mkdir()
+        runner = local_ci.LocalCiRunner(self.root, env={"CARGO_TARGET_DIR": str(self.target)},
+                                        target_state_dir=self.state)
+        reservation = self.reserve()
+        release = reservation._lock.release
+        def failed_release():
+            release()
+            return "simulated release failure"
+        metadata = {"target_directory": str(self.root / "other"), "workspace_root": str(self.root),
+                    "workspace_members": ["fixture"], "packages": []}
+        result = subprocess.CompletedProcess([], 0, json.dumps(metadata), "")
+        with patch.object(reservation._lock, "release", side_effect=failed_release), \
+                patch.object(local_ci.subprocess, "run", return_value=result):
+            self.assertFalse(runner._resolve_cargo_identity(reservation))
+        self.assertIn("differs", runner.summary["cargo_metadata_error"])
+        self.assertEqual(runner.summary["reservation_close_error"], "simulated release failure")
+        self.assertIsNone(reservation._lock.file)
+
 
 class LocalCiRunnerTests(unittest.TestCase):
     def test_module_shard_empty_configs_require_aggregate_passes(self):

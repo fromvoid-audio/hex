@@ -396,6 +396,11 @@ Cargo. It pins directory ancestry, revalidates exact identity and emptiness,
 and invalidates authority when closed. Existing CLI, programmatic and release
 entrypoints do not use it yet. Raw Cargo and other processes which ignore the
 cooperative target lock remain outside this observation; it is not a sandbox.
+For the opt-in identity-resolution API, the caller must acquire a reservation
+before its first Cargo operation and retain it through the later custody
+decision. Metadata must report exactly the explicit target and leave it fresh;
+resolution alone neither admits the target nor publishes ownership. A target
+inferred only from Cargo configuration does not meet this API's proof contract.
 
 The summary records the identified filesystem, probe duration and dev cleanup
 duration (including failed cleanup). A target

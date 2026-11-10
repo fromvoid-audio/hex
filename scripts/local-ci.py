@@ -800,6 +800,7 @@ class FreshTargetReservation:
         self._lock_file = lock.file
         self._state_fd = state_fd
         self._active = True
+        self._close_failure: str | None = None
 
     @staticmethod
     def _target_path(target: str) -> str:
@@ -931,7 +932,7 @@ class FreshTargetReservation:
     def close(self) -> str | None:
         """Invalidate authority before closing pinned handles and releasing lock."""
         if not self._active:
-            return None
+            return self._close_failure
         self._active = False
         failure = None
         while self._handles:
@@ -943,7 +944,8 @@ class FreshTargetReservation:
             os.close(self._state_fd)
         except OSError as error:
             failure = failure or f"cannot close fresh target state descriptor: {error}"
-        return self._lock.release() or failure
+        self._close_failure = self._lock.release() or failure
+        return self._close_failure
 
     def __enter__(self) -> "FreshTargetReservation":
         self.revalidate(self._target)
@@ -1174,7 +1176,33 @@ class LocalCiRunner:
             ]
         return True
 
-    def _resolve_cargo_identity(self) -> bool:
+    def _resolve_cargo_identity(self, reservation: FreshTargetReservation | None = None) -> bool:
+        """Resolve Cargo identity, optionally validating a pre-metadata reservation.
+
+        A caller using the reservation must acquire it before its first Cargo
+        operation and keep it alive until the eventual custody decision. This
+        method resolves identity only; it does not admit or publish ownership.
+        """
+        self.cargo_identity = None
+        self.target_owner_path = None
+        self._lexical_cargo_target = None
+        self.summary.pop("cargo_identity", None)
+        self.summary.pop("cargo_metadata_error", None)
+        resolved = False
+        try:
+            resolved = self._resolve_cargo_identity_inner(reservation)
+            return resolved
+        finally:
+            if not resolved:
+                self.cargo_identity = None
+                self.target_owner_path = None
+                self._lexical_cargo_target = None
+                self.summary.pop("cargo_identity", None)
+                if reservation is not None:
+                    if failure := reservation.close():
+                        self.summary["reservation_close_error"] = failure
+
+    def _resolve_cargo_identity_inner(self, reservation: FreshTargetReservation | None) -> bool:
         command = [
             "cargo",
             "metadata",
@@ -1186,6 +1214,18 @@ class LocalCiRunner:
             str(self.root / "Cargo.toml"),
         ]
         configured_target = self.env.get("CARGO_TARGET_DIR")
+        if reservation is not None:
+            try:
+                if reservation._root != self.root or configured_target is None:
+                    raise TargetCacheError("fresh target requires the same workspace and explicit target")
+                reservation.revalidate(configured_target)
+                expected_lock, _ = target_state_paths(Path(configured_target), self.target_state_dir)
+                if expected_lock != reservation._lock.path:
+                    raise TargetCacheError("fresh target lock namespace differs from runner")
+            except TargetCacheError as error:
+                reservation.close()
+                self.summary["cargo_metadata_error"] = str(error)
+                return False
         try:
             result = subprocess.run(
                 command,
@@ -1196,9 +1236,13 @@ class LocalCiRunner:
                 check=False,
             )
         except OSError as error:
+            if reservation is not None:
+                reservation.close()
             self.summary["cargo_metadata_error"] = f"could not resolve Cargo target: {error}"
             return False
         if result.returncode != 0:
+            if reservation is not None:
+                reservation.close()
             self.summary["cargo_metadata_error"] = {
                 "exit_code": result.returncode,
                 "stderr": result.stderr.strip(),
@@ -1218,12 +1262,15 @@ class LocalCiRunner:
                 or not isinstance(packages, list)
             ):
                 raise ValueError("Cargo metadata fields have invalid types")
+            if reservation is not None:
+                reservation.revalidate(raw_target)
             workspace_root = Path(raw_workspace_root).resolve()
             target = Path(raw_target)
             if not target.is_absolute():
                 target = self.root / target
             self._lexical_cargo_target = target.absolute()
-            target = target.resolve()
+            if reservation is None:
+                target = target.resolve()
             by_id = {
                 package["id"]: package
                 for package in packages
@@ -1247,15 +1294,25 @@ class LocalCiRunner:
                 )
             if not workspace_packages:
                 raise ValueError("Cargo workspace has no members to clean safely")
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError, TargetCacheError) as error:
+            if reservation is not None:
+                reservation.close()
             self.summary["cargo_metadata_error"] = f"Cargo metadata was incomplete or invalid: {error}"
             return False
 
         if workspace_root != self.root:
+            if reservation is not None:
+                reservation.close()
             self.summary["cargo_metadata_error"] = (
                 f"Cargo workspace root {workspace_root} does not match local CI root {self.root}"
             )
             return False
+        if reservation is not None:
+            try:
+                reservation.revalidate(str(target))
+            except TargetCacheError as error:
+                self.summary["cargo_metadata_error"] = str(error)
+                return False
         self.env["CARGO_TARGET_DIR"] = str(target)
         lock_path, owner_path = target_state_paths(target, self.target_state_dir)
         self.target_owner_path = owner_path
