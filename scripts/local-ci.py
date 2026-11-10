@@ -1405,9 +1405,9 @@ class LocalCiRunner:
                 "use a fresh target or explicitly adopt it after checking ownership"
             ) from error
 
-    def _write_target_owner(self, path: Path, owner: dict[str, object], *, checked=False) -> None:
-        temporary = path.with_name(f"{path.name}.{os.getpid()}.{self.run_id}.tmp")
-        payload = {
+    def _target_owner_record(self, owner: dict[str, object], *, checked=False) -> dict[str, object]:
+        """Construct the existing dev owner schema for its writer and future admission."""
+        return {
             "schema_version": 2,
             "dependency_inputs": self._dependency_inputs,
             "cache_inputs": self._cache_provenance(checked=checked),
@@ -1421,6 +1421,10 @@ class LocalCiRunner:
             ) if self.cargo_identity else None,
             "recorded_at": utc_now(),
         }
+
+    def _write_target_owner(self, path: Path, owner: dict[str, object], *, checked=False) -> None:
+        temporary = path.with_name(f"{path.name}.{os.getpid()}.{self.run_id}.tmp")
+        payload = self._target_owner_record(owner, checked=checked)
         temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         temporary.replace(path)
 
