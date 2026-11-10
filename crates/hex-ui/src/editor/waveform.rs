@@ -2,7 +2,7 @@ use crate::theme;
 use gpui::{Context, Div, Window, prelude::*, px};
 use hex_project::{Clip, ClipFade};
 use hex_session::{CachedPeak, CachedWaveform};
-use hex_widgets::{MAX_WAVEFORM_COLUMNS, WaveformColors, WaveformEmphasis, waveform_plot};
+use hex_widgets::{WaveformColors, WaveformEmphasis, waveform_plot};
 use std::{ops::Range, rc::Rc, sync::Arc};
 
 use super::waveform_geometry::{
@@ -524,12 +524,7 @@ pub(super) fn waveform_canvas(
     )
 }
 
-pub(super) fn waveform_column_count(width: f32, scale: f32) -> usize {
-    if !width.is_finite() || width <= 0.0 || !scale.is_finite() || scale <= 0.0 {
-        return 1;
-    }
-    ((width * scale).ceil() as usize).clamp(1, MAX_WAVEFORM_COLUMNS)
-}
+pub(super) use super::waveform_columns::waveform_column_count;
 
 pub(super) fn peak_vertical_bounds(peak: CachedPeak, center: f32, amplitude: f32) -> (f32, f32) {
     let top = center - peak.max.clamp(-1.0, 1.0) * amplitude;
@@ -799,14 +794,6 @@ mod tests {
             let bounds = painted.get().expect("waveform paint callback ran");
             assert_eq!(bounds.size, size(px(width), px(44.0)));
         }
-    }
-
-    #[test]
-    fn waveform_density_tracks_device_pixels_and_stays_bounded() {
-        assert_eq!(waveform_column_count(120.0, 1.0), 120);
-        assert_eq!(waveform_column_count(120.0, 2.0), 240);
-        assert_eq!(waveform_column_count(100_000.0, 2.0), MAX_WAVEFORM_COLUMNS);
-        assert_eq!(waveform_column_count(f32::NAN, 2.0), 1);
     }
 
     #[test]
