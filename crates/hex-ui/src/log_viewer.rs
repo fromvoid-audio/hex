@@ -5,12 +5,12 @@ use gpui::{
     StatefulInteractiveElement, Styled, Subscription, UniformListScrollHandle, Window,
     WindowBounds, WindowOptions, div, prelude::*, px, rgb, size, uniform_list,
 };
-use hex_diagnostics::reader::{LogFilter, LogLine, LogSnapshot, read_session_page};
+use hex_diagnostics::reader::{LogLine, LogSnapshot, read_session_page};
 use hex_widgets::{TextInput, TextInputChanged, TextInputConfig, TextInputKind};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 const CATEGORIES: &[&str] = &[
@@ -37,41 +37,8 @@ const COPY_CLIPPED: &str = "[excerpt clipped at 1 mib]\n";
 
 mod scrollbar;
 
-/// One action's owned filters, with a fixed inclusive relative-time window.
-/// Moving between pages never reanchors a range to that page's last event.
-struct ViewerFilter {
-    category: &'static str,
-    query: String,
-    window: &'static str,
-    since: Option<u128>,
-    until: Option<u128>,
-}
-impl ViewerFilter {
-    fn new(
-        category: &'static str,
-        query: String,
-        window: (&'static str, Option<u64>),
-        now: u128,
-    ) -> Self {
-        Self {
-            category,
-            query,
-            window: window.0,
-            since: window
-                .1
-                .map(|seconds| now.saturating_sub(Duration::from_secs(seconds).as_nanos())),
-            until: window.1.map(|_| now),
-        }
-    }
-    fn borrowed(&self) -> LogFilter<'_> {
-        LogFilter {
-            category: (self.category != "all").then_some(self.category),
-            text: (!self.query.is_empty()).then_some(self.query.as_str()),
-            since_unix_nanos: self.since,
-            until_unix_nanos: self.until,
-        }
-    }
-}
+mod filter;
+use filter::ViewerFilter;
 
 struct FilteredCopy {
     text: String,
