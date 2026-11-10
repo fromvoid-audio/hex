@@ -1927,6 +1927,9 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::computer_keyboard::state::", "editor::computer_keyboard::tests::",
                                   "editor::controller::audio_event_correlation::",
                                   "editor::controller::sampler_native_ui_protocol_tests::",
+                                  "editor::device_panel::eq_panel::axes::",
+                                  "editor::device_panel::eq_panel::response::",
+                                  "editor::device_panel::tests::eq_ui_tests::graph_layout_tests::eq_axis_labels_are_logarithmic_nonoverlapping_and_keep_the_plot_hit_map",
                                   "editor::fade_calculation::", "editor::fade_handle_geometry::",
                                   "editor::fade_handles::", "editor::fades::",
                                   "editor::output_meter_ui_test::", "editor::refresh_state::", "editor::session_audio_panel::",
@@ -2320,6 +2323,50 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertTrue(any(step.step_id == "ui-piano-unit-tests" for step in full))
         health = ci.planned_steps({"scope": "rust", "health": {"python": False, "workspace_inputs": True, "packages": []}})
         self.assertTrue(any(step.step_id == "health-ui-piano-unit" for step in health))
+
+    def test_eq_response_keeps_axes_unit_and_window_coverage(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        axes = "editor::device_panel::eq_panel::axes::"
+        response = "editor::device_panel::eq_panel::response::"
+        window = ("editor::device_panel::tests::eq_ui_tests::graph_layout_tests::"
+                  "eq_axis_labels_are_logarithmic_nonoverlapping_and_keep_the_plot_hit_map")
+        expected = sorted([axes, response, window])
+        for path in ("axes.rs", "response.rs"):
+            names = plan.module_test_filters(
+                root, ["crates/hex-ui/src/editor/device_panel/eq_panel/" + path], inventory, [owner])
+            self.assertEqual(names, {owner: expected})
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
+                        "single_run": {owner: "ui-test-support"}, "module_filters": names}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                      "cargo_inventory": inventory, "paths": []})
+            self.assertTrue(any(axes in step.argv and response in step.argv and step.requires_tests
+                                for step in steps if "unit_editor_logic" in step.argv))
+            self.assertTrue(any(window in step.argv
+                                for step in steps if step.step_id == "ui-feature-tests"))
+        sampling = plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/device_panel/eq_panel/sampling.rs"], inventory, [owner])
+        self.assertIn("editor::device_panel::eq_panel::", sampling[owner])
+        self.assertIn(window, sampling[owner])
+        boundary["module_filters"] = sampling
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": []})
+        self.assertTrue(any("editor::device_panel::eq_panel::" in step.argv
+                            for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(window in step.argv for step in steps if step.step_id == "ui-feature-tests"))
+        graph = "editor::device_panel::tests::eq_ui_tests::graph_layout_tests::"
+        names = plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/device_panel/tests/eq_graph_layout_tests.rs"], inventory, [owner])
+        self.assertEqual(names, {owner: sorted([axes, response, graph])})
+        boundary["module_filters"] = names
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": []})
+        self.assertTrue(any(axes in step.argv and response in step.argv
+                            for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(graph in step.argv for step in steps if step.step_id == "ui-feature-tests"))
 
     def test_midi_wheel_mapping_keeps_unit_and_window_coverage(self):
         root = SCRIPTS.parent
