@@ -271,6 +271,7 @@ mod tuning;
 mod update_flow;
 mod viewport;
 mod waveform;
+mod waveform_columns;
 mod waveform_geometry;
 mod waveform_loop;
 mod waveform_source;

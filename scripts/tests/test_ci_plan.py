@@ -1936,6 +1936,7 @@ class ModuleScopeTests(unittest.TestCase):
                          {owner: ["editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform",
                                   "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",
                                   "editor::audio_import_settings::admission::",
+                                  "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
                                   "editor::computer_keyboard::state::", "editor::computer_keyboard::tests::",
                                   "editor::controller::audio_event_correlation::",
                                   "editor::controller::sampler_native_ui_protocol_tests::",
@@ -1944,13 +1945,15 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::device_panel::tests::eq_ui_tests::graph_layout_tests::eq_axis_labels_are_logarithmic_nonoverlapping_and_keep_the_plot_hit_map",
                                   "editor::fade_calculation::", "editor::fade_handle_geometry::",
                                   "editor::fade_handles::", "editor::fades::",
-                                  "editor::output_meter_ui_test::", "editor::refresh_state::", "editor::session_audio_panel::",
+                                  "editor::output_meter_ui_test::", "editor::overview_waveform::", "editor::refresh_state::",
+                                  "editor::sampler_parameter::tests::source_hints_and_paint_require_same_view_source_facts_and_context",
+                                  "editor::session_audio_panel::",
                                   "editor::session_navigation::", "editor::session_navigation_ui_test::",
                                   "editor::session_route_view::", "editor::theme_settings::tests::", "editor::track_defaults::",
                                   "editor::track_meters::decay::", "editor::track_meters::follower::",
                                   "editor::track_meters::main_output::tests::", "editor::track_meters::scale::",
                                   "editor::track_meters::selection::", "editor::track_meters::tests::", *names,
-                                  "editor::waveform::", "editor::waveform_geometry::", "editor::waveform_loop::",
+                                  "editor::waveform::", "editor::waveform_columns::", "editor::waveform_geometry::", "editor::waveform_loop::",
                                   "editor::waveform_source::", "editor::waveform_stretch::", "theme::"]})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_session.rs"], inventory, [owner]), {})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
@@ -1991,7 +1994,10 @@ class ModuleScopeTests(unittest.TestCase):
                       "targets": [{"kind": ["lib"]}]}]
         names = ["editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform",
                  "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",
-                 "editor::waveform::", "editor::waveform_geometry::", "editor::waveform_loop::",
+                 "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
+                 "editor::overview_waveform::",
+                 "editor::sampler_parameter::tests::source_hints_and_paint_require_same_view_source_facts_and_context",
+                 "editor::waveform::", "editor::waveform_columns::", "editor::waveform_geometry::", "editor::waveform_loop::",
                  "editor::waveform_source::", "editor::waveform_stretch::"]
         for path in ("crates/hex-ui/src/editor/waveform_source.rs", "crates/hex-ui/src/editor/waveform.rs"):
             self.assertEqual(plan.module_test_filters(root, [path], inventory, [owner]), {owner: names})
@@ -2379,6 +2385,36 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertTrue(any(axes in step.argv and response in step.argv
                             for step in steps if "unit_editor_logic" in step.argv))
         self.assertTrue(any(graph in step.argv for step in steps if step.step_id == "ui-feature-tests"))
+
+    def test_overview_waveform_unit_cohort_keeps_real_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::overview_waveform::"
+        columns = "editor::waveform_columns::"
+        browser = ("editor::browser::ui_test::"
+                   "browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable")
+        sampler = ("editor::sampler_parameter::tests::"
+                   "source_hints_and_paint_require_same_view_source_facts_and_context")
+        for source in ("overview_waveform.rs", "waveform_columns.rs", "waveform.rs"):
+            names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + source], inventory, [owner])
+            for name in (unit, columns, browser, sampler, "editor::waveform::"):
+                self.assertIn(name, names[owner])
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": names}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                      "cargo_inventory": inventory, "paths": []})
+            self.assertTrue(any(unit in step.argv and columns in step.argv and step.requires_tests
+                                for step in steps if "unit_editor_logic" in step.argv))
+            self.assertTrue(any(browser in step.argv and sampler in step.argv
+                                for step in steps if step.step_id == "ui-feature-tests"))
+        for source in ("browser_ui_test.rs", "sampler_parameter/tests.rs"):
+            names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + source], inventory, [owner])
+            self.assertIn(unit, names[owner])
+            self.assertIn(columns, names[owner])
 
     def test_midi_wheel_mapping_keeps_unit_and_window_coverage(self):
         root = SCRIPTS.parent
