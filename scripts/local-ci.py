@@ -29,53 +29,104 @@ import uuid
 
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def _read_policy_source(path: Path) -> bytes:
+    """Read exact regular policy source without links or blocking on FIFOs."""
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise RuntimeError(f"CI policy source is not a regular file: {path.name}")
+            with os.fdopen(descriptor, "rb", closefd=False) as source:
+                return source.read()
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(directory)
+
+
 _PLAN_SPEC = importlib.util.spec_from_file_location("hex_ci_plan", Path(__file__).with_name("ci_plan.py"))
 if _PLAN_SPEC is None or _PLAN_SPEC.loader is None:
     raise RuntimeError("local CI planner unavailable")
 ci_plan = importlib.util.module_from_spec(_PLAN_SPEC)
 # Execute and retain the exact source witness; timestamp-valid .pyc files can
 # otherwise contain different code than the source currently on disk.
-_PLAN_SOURCE_BYTES = Path(_PLAN_SPEC.origin).read_bytes()
+_PLAN_SOURCE_BYTES = _read_policy_source(Path(_PLAN_SPEC.origin))
 _PLAN_SOURCE_SHA256 = hashlib.sha256(_PLAN_SOURCE_BYTES).hexdigest()
 exec(compile(_PLAN_SOURCE_BYTES, _PLAN_SPEC.origin, "exec", dont_inherit=True), ci_plan.__dict__)
+
+
 _INPUT_SPEC = importlib.util.spec_from_file_location("hex_build_inputs", Path(__file__).with_name("build_inputs.py"))
 if _INPUT_SPEC is None or _INPUT_SPEC.loader is None:
     raise RuntimeError("Cargo input identity helper unavailable")
 build_inputs = importlib.util.module_from_spec(_INPUT_SPEC)
-_INPUT_SPEC.loader.exec_module(build_inputs)
+_INPUT_SOURCE_BYTES = _read_policy_source(Path(_INPUT_SPEC.origin))
+_INPUT_SOURCE_SHA256 = hashlib.sha256(_INPUT_SOURCE_BYTES).hexdigest()
+exec(compile(_INPUT_SOURCE_BYTES, _INPUT_SPEC.origin, "exec", dont_inherit=True), build_inputs.__dict__)
 _CHECKPOINT_SPEC = importlib.util.spec_from_file_location("hex_ci_checkpoint", Path(__file__).with_name("ci_checkpoint.py"))
 if _CHECKPOINT_SPEC is None or _CHECKPOINT_SPEC.loader is None:
     raise RuntimeError("CI checkpoint helper unavailable")
 ci_checkpoint = importlib.util.module_from_spec(_CHECKPOINT_SPEC)
-_CHECKPOINT_SPEC.loader.exec_module(ci_checkpoint)
+_CHECKPOINT_SOURCE_BYTES = _read_policy_source(Path(_CHECKPOINT_SPEC.origin))
+_CHECKPOINT_SOURCE_SHA256 = hashlib.sha256(_CHECKPOINT_SOURCE_BYTES).hexdigest()
+exec(compile(_CHECKPOINT_SOURCE_BYTES, _CHECKPOINT_SPEC.origin, "exec", dont_inherit=True), ci_checkpoint.__dict__)
 _STORAGE_SPEC = importlib.util.spec_from_file_location("hex_ci_target_storage", Path(__file__).with_name("ci_target_storage.py"))
 if _STORAGE_SPEC is None or _STORAGE_SPEC.loader is None:
     raise RuntimeError("Cargo target storage helper unavailable")
 ci_target_storage = importlib.util.module_from_spec(_STORAGE_SPEC)
-_STORAGE_SPEC.loader.exec_module(ci_target_storage)
+_STORAGE_SOURCE_BYTES = _read_policy_source(Path(_STORAGE_SPEC.origin))
+_STORAGE_SOURCE_SHA256 = hashlib.sha256(_STORAGE_SOURCE_BYTES).hexdigest()
+exec(compile(_STORAGE_SOURCE_BYTES, _STORAGE_SPEC.origin, "exec", dont_inherit=True), ci_target_storage.__dict__)
 GIB = 1024 ** 3
 DEFAULT_FULL_MIN_FREE_BYTES = 2 * GIB
 
 
 def cli_policy_error(root: Path) -> str | None:
-    """Compare the CLI's executed policy bytes with regular source files."""
+    """Compare the CLI's executed policy and helper bytes with regular source files."""
     expected = {"ci_plan.py": _PLAN_SOURCE_SHA256,
-                "python_test_plan.py": ci_plan._PYTHON_SOURCE_SHA256}
+                "python_test_plan.py": ci_plan._PYTHON_SOURCE_SHA256,
+                "build_inputs.py": _INPUT_SOURCE_SHA256,
+                "ci_checkpoint.py": _CHECKPOINT_SOURCE_SHA256,
+                "ci_target_storage.py": _STORAGE_SOURCE_SHA256}
     try:
         directory = os.open(root / "scripts", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             for name, digest in expected.items():
                 fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
-                with os.fdopen(fd, "rb") as source:
-                    if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                try:
+                    if not stat.S_ISREG(os.fstat(fd).st_mode):
                         raise ValueError(f"planner source is not a regular file: {name}")
-                    if hashlib.sha256(source.read()).hexdigest() != digest:
-                        raise ValueError(f"executed planner differs from current source: {name}")
+                    with os.fdopen(fd, "rb", closefd=False) as source:
+                        if hashlib.sha256(source.read()).hexdigest() != digest:
+                            raise ValueError(f"executed planner differs from current source: {name}")
+                finally:
+                    os.close(fd)
         finally:
             os.close(directory)
     except (OSError, ValueError) as error:
         return str(error)
     return None
+
+
+def delivery_source_error(root: Path) -> str | None:
+    """Bind a source-loaded runner and its helpers to a delivery candidate.
+
+    The supported importer installs the digest of the exact compiled bytes
+    before execution. Direct or legacy imports without that witness cannot
+    qualify delivery evidence.
+    """
+    witness = globals().get("_DELIVERY_RUNNER_SOURCE_SHA256")
+    if not isinstance(witness, str) or re.fullmatch(r"[0-9a-f]{64}", witness) is None:
+        return "runner source witness is unavailable"
+    try:
+        actual = hashlib.sha256(_read_policy_source(root / "scripts" / "local-ci.py")).hexdigest()
+    except (OSError, RuntimeError, ValueError) as error:
+        return f"runner source unavailable: {error}"
+    if actual != witness:
+        return "executed runner differs from candidate source"
+    return cli_policy_error(root)
 
 
 @contextmanager
@@ -728,6 +779,13 @@ class CargoTargetLock:
 
 
 class LocalCiRunner:
+    def delivery_source_error(self) -> str | None:
+        """Check this runner module, even when another import shares its name."""
+        return delivery_source_error(self.root)
+
+    def _execution_policy_error(self) -> str | None:
+        return cli_policy_error(self.root) if self._cli_policy_bound else delivery_source_error(self.root)
+
     def __init__(
         self,
         root: Path = ROOT,
@@ -745,7 +803,7 @@ class LocalCiRunner:
         over_budget_reason: str | None = None,
     ) -> None:
         self.root = root.resolve()
-        # Set by main(); programmatic/release binding remains separate.
+        # The CLI retains its existing policy path; imported runners require a source witness.
         self._cli_policy_bound = False
         self.over_budget_reason = over_budget_reason
         default_floor = DEFAULT_FULL_MIN_FREE_BYTES if mode in {"full", "merge", "release"} else 0
@@ -1157,8 +1215,10 @@ class LocalCiRunner:
             return False
         self.target_lock = lock
         try:
-            if self._cli_policy_bound and (error := cli_policy_error(self.root)) is not None:
-                raise TargetCacheError("CLI planner source changed before target lock: " + error)
+            if (error := self._execution_policy_error()) is not None:
+                prefix = ("CLI planner source changed before target lock: " if self._cli_policy_bound
+                          else "runner policy source changed before target lock: ")
+                raise TargetCacheError(prefix + error)
             self._check_target_filesystem(target)
             malformed_owner = False
             try:
@@ -1273,6 +1333,8 @@ class LocalCiRunner:
                 "dependency_inputs": dependency_inputs,
             }
             if cleanup_argv is not None:
+                if (error := self._execution_policy_error()) is not None:
+                    raise TargetCacheError("runner policy source changed before target cleanup: " + error)
                 result = self._run_target_cleanup(cleanup_argv)
                 target_cache = self.summary["target_cache"]
                 assert isinstance(target_cache, dict)
@@ -1281,6 +1343,8 @@ class LocalCiRunner:
                     self.summary["target_cache_error"] = "workspace dev-artifact cleanup failed; previous owner was preserved"
                     return False
 
+            if (error := self._execution_policy_error()) is not None:
+                raise TargetCacheError("runner policy source changed before target publication: " + error)
             self._write_target_owner(owner_path, current_workspace)
             self.target_owner_claimed = True
             return True
@@ -1588,6 +1652,8 @@ class LocalCiRunner:
         """
         if self.target_lock is not None:
             raise TargetCacheError("release preparation requires an unheld runner")
+        if (error := self._execution_policy_error()) is not None:
+            raise TargetCacheError("runner policy source mismatch at release admission: " + error)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         if not self._capture_repository_state("start_tree") or self.summary["start_tree"]["dirty"]:
             raise TargetCacheError("release preparation requires exact clean source")
@@ -1607,6 +1673,8 @@ class LocalCiRunner:
         lock.acquire()
         self.target_lock = lock
         try:
+            if (error := self._execution_policy_error()) is not None:
+                raise TargetCacheError("runner policy source changed before release lock: " + error)
             self._check_target_filesystem(target)
             # Full Cargo metadata can create .rustc_info.json. Record the target
             # before that command while holding the same lock used for handoff.
@@ -1762,6 +1830,8 @@ class LocalCiRunner:
                     raise TargetCacheError("recreated target or owner changed before mutation")
                 report["explicit_recreated_target"] = inspected
             self.summary["release_target_cache"] = report
+            if (error := self._execution_policy_error()) is not None:
+                raise TargetCacheError("runner policy source changed before release publication: " + error)
             self._write_release_owner(owner_path, pending)
             if (not reuse or invalidated or self._invalidate_dependency_profile) and populated:
                 argv = self._workspace_clean_argv(target) if not reuse and not self._invalidate_dependency_profile else self._workspace_clean_argv(target)[:8]
@@ -1772,6 +1842,8 @@ class LocalCiRunner:
                         argv.extend(("--package", name))
                 report["cleanup_argv"] = argv
                 report["cleanup_status"] = "pending"
+                if (error := self._execution_policy_error()) is not None:
+                    raise TargetCacheError("runner policy source changed before release cleanup: " + error)
                 # Keep release and dev cleanup evidence independent.
                 log_path = self.output_dir / "release-handoff-clean.log"
                 with log_path.open("w") as log:
@@ -1782,6 +1854,8 @@ class LocalCiRunner:
                     report["cleanup_status"] = "failed"
                     raise TargetCacheError("release cleanup failed; pending owner retained")
                 report["cleanup_status"] = "passed"
+            if (error := self._execution_policy_error()) is not None:
+                raise TargetCacheError("runner policy source changed during release preparation: " + error)
             yield report
             if requested_build_argv is not None and report.get("build_argv") != requested_build_argv:
                 raise TargetCacheError("release build arguments differ from locked cache identity")
@@ -1798,6 +1872,8 @@ class LocalCiRunner:
             pending["cache_inputs"] = self._cache_provenance(checked=True)
             pending.update(state="ready", target_identity=self._directory_identity(target),
                            artifact=report["artifact"], build_argv=report.get("build_argv"), recorded_at=utc_now())
+            if (error := self._execution_policy_error()) is not None:
+                raise TargetCacheError("runner policy source changed during release: " + error)
             self._write_release_owner(owner_path, pending)
             report["state"] = "ready"
         except BaseException as error:
@@ -2188,8 +2264,9 @@ class LocalCiRunner:
                                     step_id_error=f"invalid step IDs: {invalid_ids!r}; expected 1–100 ASCII characters: "
                                                   "alphanumeric first, then alphanumeric, underscore or hyphen")
                 print(self.summary["step_id_error"], file=sys.stderr, flush=True)
-            elif self._cli_policy_bound and (error := cli_policy_error(self.root)) is not None:
-                self.summary.update(status="failed", exit_code=2, cli_policy_error=error)
+            elif (error := self._execution_policy_error()) is not None:
+                key = "cli_policy_error" if self._cli_policy_bound else "runner_policy_error"
+                self.summary.update(status="failed", exit_code=2, **{key: error})
             elif not self._capture_repository_state("start_tree"):
                 self.summary["status"] = "failed"
                 self.summary["exit_code"] = 2
@@ -2325,8 +2402,8 @@ class LocalCiRunner:
                     try:
                         if self.target_owner_claimed and self.target_owner_path is not None and self.git_identity is not None:
                             try:
-                                if self._cli_policy_bound and (error := cli_policy_error(self.root)) is not None:
-                                    raise TargetCacheError("CLI planner changed during checks: " + error)
+                                if (error := self._execution_policy_error()) is not None:
+                                    raise TargetCacheError("runner policy changed during checks: " + error)
                                 if self._dependency_context() != self._dependency_inputs:
                                     raise TargetCacheError("dependency inputs changed during guarded checks")
                                 self._completed_workspace_inputs()
@@ -2359,8 +2436,9 @@ class LocalCiRunner:
                                                 target_lock_release_error=f"{type(error).__name__}: {error}")
                         finally:
                             self.target_lock = None
-                if self._cli_policy_bound and (error := cli_policy_error(self.root)) is not None:
-                    self.summary.update(status="incomplete", exit_code=2, cli_policy_error=error)
+                if (error := self._execution_policy_error()) is not None:
+                    key = "cli_policy_error" if self._cli_policy_bound else "runner_policy_error"
+                    self.summary.update(status="incomplete", exit_code=2, **{key: error})
                 self.summary["ended_at"] = utc_now()
                 if self.summary.get("start_tree") is not None:
                     if self._capture_repository_state("end_tree"):
@@ -2405,6 +2483,9 @@ class LocalCiRunner:
                     except (ValueError, OSError, KeyError, TypeError) as error:
                         if self.summary.get("disk_refusal"):
                             self.summary["checkpoint_unavailable"] = str(error)
+                if (error := self._execution_policy_error()) is not None:
+                    key = "cli_policy_error" if self._cli_policy_bound else "runner_policy_error"
+                    self.summary.update(status="incomplete", exit_code=2, **{key: error})
                 if self.summary.get("report_publication_error"):
                     self._fail_report_publication()
                 try:

@@ -45,3 +45,6 @@ mod waveform_source;
 
 #[path = "session_audio_panel.rs"]
 mod session_audio_panel;
+
+#[path = "eq_response.rs"]
+mod device_panel;

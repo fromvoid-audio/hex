@@ -14,6 +14,7 @@ import sys
 import tempfile
 import time
 import unittest
+from test_local_ci import install_delivery_source_fixture
 from unittest.mock import patch
 
 
@@ -24,7 +25,12 @@ def module(name, file):
     spec = importlib.util.spec_from_file_location(name, SCRIPTS / file)
     value = importlib.util.module_from_spec(spec)
     sys.modules[name] = value
-    spec.loader.exec_module(value)
+    if file == "local-ci.py":
+        source = (SCRIPTS / file).read_bytes()
+        value._DELIVERY_RUNNER_SOURCE_SHA256 = hashlib.sha256(source).hexdigest()
+        exec(compile(source, str(SCRIPTS / file), "exec", dont_inherit=True), value.__dict__)
+    else:
+        spec.loader.exec_module(value)
     return value
 
 
@@ -39,6 +45,26 @@ METER_BOUNDARY = ["editor::output_meter_ui_test::", "editor::refresh_state::",
 
 
 class PlannerSourceLoaderTests(unittest.TestCase):
+    def test_nested_policy_descriptors_close_when_wrapping_fails(self):
+        spec = importlib.util.spec_from_file_location("planner_close_probe", SCRIPTS / "ci_plan.py")
+        loaded = importlib.util.module_from_spec(spec)
+        original_open = os.open
+        opened = []
+
+        def track_open(*args, **kwargs):
+            descriptor = original_open(*args, **kwargs)
+            opened.append(descriptor)
+            return descriptor
+
+        with patch.object(os, "open", side_effect=track_open), \
+                patch.object(os, "fdopen", side_effect=OSError("fixture wrap failure")):
+            with self.assertRaisesRegex(OSError, "fixture wrap failure"):
+                spec.loader.exec_module(loaded)
+        self.assertEqual(len(opened), 2)
+        for descriptor in opened:
+            with self.assertRaises(OSError):
+                os.fstat(descriptor)
+
     def test_timestamp_valid_stale_bytecode_never_selects_either_planner(self):
         with tempfile.TemporaryDirectory() as directory:
             scripts = Path(directory) / "scripts"
@@ -238,6 +264,7 @@ class ScopeTests(unittest.TestCase):
     def test_edit_target_runs_only_owner_and_rejects_zero_matches_or_regression(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
+            install_delivery_source_fixture(root)
             (root / "src").mkdir()
             (root / "tests").mkdir()
             (root / "Cargo.toml").write_text('[package]\nname="edit-target-fixture"\nversion="0.1.0"\nedition="2021"\n')
@@ -359,6 +386,7 @@ class ScopeTests(unittest.TestCase):
     def test_review_workspace_restored_mtime_runs_current_test_and_normal_edit_stays_incremental(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            install_delivery_source_fixture(root)
             (root / "src").mkdir()
             (root / "Cargo.toml").write_text('[package]\nname="workspace-source-fixture"\nversion="0.1.0"\nedition="2021"\n')
             (root / ".gitignore").write_text('/target/\n/artifacts/\n')
@@ -398,7 +426,8 @@ class ScopeTests(unittest.TestCase):
             (root / "Cargo.toml").write_text('[package]\nname="metadata-receiver"\nversion="0.1.0"\nedition="2021"\n')
             (root / ".gitignore").write_text('/target/\n/artifacts/\n__pycache__/\n')
             (root / "scripts").mkdir()
-            for name in ("ci_plan.py", "python_test_plan.py"):
+            for name in ("local-ci.py", "ci_plan.py", "python_test_plan.py", "build_inputs.py",
+                         "ci_checkpoint.py", "ci_target_storage.py"):
                 (root / "scripts" / name).write_bytes((SCRIPTS / name).read_bytes())
             def command(*argv):
                 return subprocess.check_output(argv, cwd=root).decode().strip()
@@ -429,6 +458,7 @@ class ScopeTests(unittest.TestCase):
     def test_review_changed_wrapper_rebuilds_unchanged_dependency(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            install_delivery_source_fixture(root)
             for folder in ("app/src", "vendor/src"):
                 (root / folder).mkdir(parents=True)
             (root / "Cargo.toml").write_text('[workspace]\nmembers=["app"]\nexclude=["vendor"]\nresolver="2"\n')
@@ -549,6 +579,7 @@ class ScopeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "repo"
             root.mkdir()
+            install_delivery_source_fixture(root)
             def git(*args):
                 return subprocess.check_output(["git", *args], cwd=root).decode().strip()
             git("init", "-q"); git("config", "user.name", "source fixture"); git("config", "user.email", "fixture@invalid")
@@ -648,7 +679,7 @@ class ScopeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             (root / "src").mkdir()
-            (root / "scripts").mkdir()
+            install_delivery_source_fixture(root)
             (root / "src/lib.rs").write_text("")
             (root / "Cargo.toml").write_text(
                 '[package]\nname="unregistered-boundary"\nversion="0.1.0"\nedition="2021"\n')
@@ -911,6 +942,7 @@ class ScopeTests(unittest.TestCase):
     def test_prose_continuation_requires_complete_original_runtime_certificate(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            install_delivery_source_fixture(root)
             def git(*args):
                 return subprocess.check_output(["git", *args], cwd=root).decode().strip()
             git("init", "-q")
@@ -1586,6 +1618,7 @@ class CacheIdentityTests(unittest.TestCase):
     def test_actual_cargo_restored_mtime_dependency_api_is_invalidated(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            install_delivery_source_fixture(root)
             (root / "app/src").mkdir(parents=True)
             (root / "vendor/src").mkdir(parents=True)
             (root / "Cargo.toml").write_text('[workspace]\nmembers=["app"]\nexclude=["vendor"]\nresolver="2"\n')
@@ -1906,6 +1939,9 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::computer_keyboard::state::", "editor::computer_keyboard::tests::",
                                   "editor::controller::audio_event_correlation::",
                                   "editor::controller::sampler_native_ui_protocol_tests::",
+                                  "editor::device_panel::eq_panel::axes::",
+                                  "editor::device_panel::eq_panel::response::",
+                                  "editor::device_panel::tests::eq_ui_tests::graph_layout_tests::eq_axis_labels_are_logarithmic_nonoverlapping_and_keep_the_plot_hit_map",
                                   "editor::fade_calculation::", "editor::fade_handle_geometry::",
                                   "editor::fade_handles::", "editor::fades::",
                                   "editor::output_meter_ui_test::", "editor::refresh_state::", "editor::session_audio_panel::",
@@ -2299,6 +2335,50 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertTrue(any(step.step_id == "ui-piano-unit-tests" for step in full))
         health = ci.planned_steps({"scope": "rust", "health": {"python": False, "workspace_inputs": True, "packages": []}})
         self.assertTrue(any(step.step_id == "health-ui-piano-unit" for step in health))
+
+    def test_eq_response_keeps_axes_unit_and_window_coverage(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        axes = "editor::device_panel::eq_panel::axes::"
+        response = "editor::device_panel::eq_panel::response::"
+        window = ("editor::device_panel::tests::eq_ui_tests::graph_layout_tests::"
+                  "eq_axis_labels_are_logarithmic_nonoverlapping_and_keep_the_plot_hit_map")
+        expected = sorted([axes, response, window])
+        for path in ("axes.rs", "response.rs"):
+            names = plan.module_test_filters(
+                root, ["crates/hex-ui/src/editor/device_panel/eq_panel/" + path], inventory, [owner])
+            self.assertEqual(names, {owner: expected})
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
+                        "single_run": {owner: "ui-test-support"}, "module_filters": names}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                      "cargo_inventory": inventory, "paths": []})
+            self.assertTrue(any(axes in step.argv and response in step.argv and step.requires_tests
+                                for step in steps if "unit_editor_logic" in step.argv))
+            self.assertTrue(any(window in step.argv
+                                for step in steps if step.step_id == "ui-feature-tests"))
+        sampling = plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/device_panel/eq_panel/sampling.rs"], inventory, [owner])
+        self.assertIn("editor::device_panel::eq_panel::", sampling[owner])
+        self.assertIn(window, sampling[owner])
+        boundary["module_filters"] = sampling
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": []})
+        self.assertTrue(any("editor::device_panel::eq_panel::" in step.argv
+                            for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(window in step.argv for step in steps if step.step_id == "ui-feature-tests"))
+        graph = "editor::device_panel::tests::eq_ui_tests::graph_layout_tests::"
+        names = plan.module_test_filters(
+            root, ["crates/hex-ui/src/editor/device_panel/tests/eq_graph_layout_tests.rs"], inventory, [owner])
+        self.assertEqual(names, {owner: sorted([axes, response, graph])})
+        boundary["module_filters"] = names
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": []})
+        self.assertTrue(any(axes in step.argv and response in step.argv
+                            for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(graph in step.argv for step in steps if step.step_id == "ui-feature-tests"))
 
     def test_midi_wheel_mapping_keeps_unit_and_window_coverage(self):
         root = SCRIPTS.parent
