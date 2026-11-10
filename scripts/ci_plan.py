@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 from urllib.parse import unquote
 
@@ -16,7 +17,17 @@ if _PYTHON_SPEC is None or _PYTHON_SPEC.loader is None:
     raise RuntimeError("Python self-test impact policy unavailable")
 python_tests = importlib.util.module_from_spec(_PYTHON_SPEC)
 # Use the exact source rather than a timestamp-valid stale bytecode cache.
-_PYTHON_SOURCE_BYTES = Path(_PYTHON_SPEC.origin).read_bytes()
+_PYTHON_SOURCE_PATH = Path(_PYTHON_SPEC.origin)
+_PYTHON_SOURCE_DIR = os.open(_PYTHON_SOURCE_PATH.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+try:
+    _PYTHON_SOURCE_FD = os.open(_PYTHON_SOURCE_PATH.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                                dir_fd=_PYTHON_SOURCE_DIR)
+    with os.fdopen(_PYTHON_SOURCE_FD, "rb") as _python_source:
+        if not stat.S_ISREG(os.fstat(_python_source.fileno()).st_mode):
+            raise RuntimeError("Python test policy source is not a regular file")
+        _PYTHON_SOURCE_BYTES = _python_source.read()
+finally:
+    os.close(_PYTHON_SOURCE_DIR)
 _PYTHON_SOURCE_SHA256 = hashlib.sha256(_PYTHON_SOURCE_BYTES).hexdigest()
 exec(compile(_PYTHON_SOURCE_BYTES, _PYTHON_SPEC.origin, "exec", dont_inherit=True), python_tests.__dict__)
 
