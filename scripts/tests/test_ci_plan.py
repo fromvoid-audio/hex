@@ -2874,6 +2874,47 @@ class ModuleScopeTests(unittest.TestCase):
             ):
                 self.assertIn(consumer, feature.argv)
 
+    def test_accepted_loop_root_keeps_waveform_resize_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::waveform_loop::accepted_root::"
+        parent = "editor::waveform_loop::"
+        consumers = [
+            "editor::waveform::resize_tests::shift_stretch_keeps_live_sample_varied_waveforms_visible",
+            "editor::waveform::resize_tests::trim_keeps_sample_varied_waveforms_visible_with_warp_on_and_off",
+        ]
+        source_path = "crates/hex-ui/src/editor/waveform_loop/accepted_root.rs"
+        parent_path = "crates/hex-ui/src/editor/waveform_loop.rs"
+        consumer_path = "crates/hex-ui/src/editor/waveform_resize_ui_test.rs"
+        modules = plan.module_paths(root / "crates/hex-ui/src")
+        self.assertEqual(modules[(root / source_path).resolve()], "editor::waveform_loop::accepted_root")
+        self.assertEqual(modules[(root / parent_path).resolve()], "editor::waveform_loop")
+        self.assertEqual(modules[(root / consumer_path).resolve()], "editor::waveform::resize_tests")
+        for path in (source_path, parent_path, consumer_path):
+            names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
+            self.assertTrue(any(unit.startswith(selected) for selected in names))
+            if path == parent_path:
+                self.assertIn(parent, names)
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in names))
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": {owner: names}}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                      "boundary": boundary, "cargo_inventory": inventory,
+                                      "paths": [path]})
+            unit_step = next(step for step in steps if "unit_editor_logic" in step.argv)
+            self.assertTrue(any(unit.startswith(selected) for selected in unit_step.argv))
+            self.assertTrue(unit_step.requires_tests)
+            if path == parent_path:
+                self.assertIn(parent, unit_step.argv)
+            feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+            for consumer in consumers:
+                self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv))
+
     def test_refresh_state_keeps_unit_and_window_coverage(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
