@@ -33,7 +33,11 @@ _PLAN_SPEC = importlib.util.spec_from_file_location("hex_ci_plan", Path(__file__
 if _PLAN_SPEC is None or _PLAN_SPEC.loader is None:
     raise RuntimeError("local CI planner unavailable")
 ci_plan = importlib.util.module_from_spec(_PLAN_SPEC)
-_PLAN_SPEC.loader.exec_module(ci_plan)
+# Execute and retain the exact source witness; timestamp-valid .pyc files can
+# otherwise contain different code than the source currently on disk.
+_PLAN_SOURCE_BYTES = Path(_PLAN_SPEC.origin).read_bytes()
+_PLAN_SOURCE_SHA256 = hashlib.sha256(_PLAN_SOURCE_BYTES).hexdigest()
+exec(compile(_PLAN_SOURCE_BYTES, _PLAN_SPEC.origin, "exec", dont_inherit=True), ci_plan.__dict__)
 _INPUT_SPEC = importlib.util.spec_from_file_location("hex_build_inputs", Path(__file__).with_name("build_inputs.py"))
 if _INPUT_SPEC is None or _INPUT_SPEC.loader is None:
     raise RuntimeError("Cargo input identity helper unavailable")
