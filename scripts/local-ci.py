@@ -800,6 +800,7 @@ class FreshTargetReservation:
         self._lock_file = lock.file
         self._state_fd = state_fd
         self._active = True
+        self._close_failure: str | None = None
 
     @staticmethod
     def _target_path(target: str) -> str:
@@ -931,7 +932,7 @@ class FreshTargetReservation:
     def close(self) -> str | None:
         """Invalidate authority before closing pinned handles and releasing lock."""
         if not self._active:
-            return None
+            return self._close_failure
         self._active = False
         failure = None
         while self._handles:
@@ -943,7 +944,8 @@ class FreshTargetReservation:
             os.close(self._state_fd)
         except OSError as error:
             failure = failure or f"cannot close fresh target state descriptor: {error}"
-        return self._lock.release() or failure
+        self._close_failure = self._lock.release() or failure
+        return self._close_failure
 
     def __enter__(self) -> "FreshTargetReservation":
         self.revalidate(self._target)

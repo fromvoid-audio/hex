@@ -344,6 +344,25 @@ class FreshTargetReservationTests(unittest.TestCase):
             with self.reserve():
                 pass
 
+    def test_metadata_refusal_reports_cleanup_failure_without_masking_cause(self):
+        self.target.mkdir()
+        runner = local_ci.LocalCiRunner(self.root, env={"CARGO_TARGET_DIR": str(self.target)},
+                                        target_state_dir=self.state)
+        reservation = self.reserve()
+        release = reservation._lock.release
+        def failed_release():
+            release()
+            return "simulated release failure"
+        metadata = {"target_directory": str(self.root / "other"), "workspace_root": str(self.root),
+                    "workspace_members": ["fixture"], "packages": []}
+        result = subprocess.CompletedProcess([], 0, json.dumps(metadata), "")
+        with patch.object(reservation._lock, "release", side_effect=failed_release), \
+                patch.object(local_ci.subprocess, "run", return_value=result):
+            self.assertFalse(runner._resolve_cargo_identity(reservation))
+        self.assertIn("differs", runner.summary["cargo_metadata_error"])
+        self.assertEqual(runner.summary["reservation_close_error"], "simulated release failure")
+        self.assertIsNone(reservation._lock.file)
+
 
 class LocalCiRunnerTests(unittest.TestCase):
     def test_module_shard_empty_configs_require_aggregate_passes(self):
