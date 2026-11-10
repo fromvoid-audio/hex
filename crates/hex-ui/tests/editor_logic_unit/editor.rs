@@ -42,3 +42,6 @@ mod computer_keyboard;
 #[allow(dead_code)]
 #[path = "../../src/editor/waveform_source.rs"]
 mod waveform_source;
+
+#[path = "session_audio_panel.rs"]
+mod session_audio_panel;
