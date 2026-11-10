@@ -971,12 +971,10 @@ fn returned_open_refused_deferred_tuning_save_releases_intent_and_future_actions
     visual.update(|window, cx| {
         editor.update(cx, |view, cx| {
             assert!(!view.request_window_close(window, cx));
-            assert!(
-                view.close_prompt_open,
-                "close must reach its normal unsaved-work prompt"
-            );
+            assert!(view.automation_close_preflight.frozen());
         });
     });
+    super::super::close::wait_for_close_prompt(&editor, cx);
     cx.simulate_prompt_answer("cancel");
     visual.run_until_parked();
     visual.dispatch_action(NewProject);

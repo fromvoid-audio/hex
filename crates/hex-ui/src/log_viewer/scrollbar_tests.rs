@@ -1,22 +1,6 @@
 use super::*;
-
-#[test]
-fn thumb_extent_and_pointer_mapping_remain_bounded_without_dividing_empty_ranges() {
-    let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(12.0), px(204.0)));
-    let short = Geometry::new(bounds, 200.0, 0.0, 0.0, 3, 1).unwrap();
-    assert_eq!(short.thumb, short.track);
-    assert!(short.position(100.0, 0.5).is_none());
-    assert!(Geometry::new(bounds, 200.0, 0.0, 0.0, 0, 1).is_none());
-    for invalid in [f32::NAN, f32::INFINITY, -1.0] {
-        assert!(Geometry::new(bounds, 200.0, invalid, 0.0, 100_000, 1).is_none());
-    }
-    let long = Geometry::new(bounds, 200.0, 2_000_000.0, -2_000_000.0, 100_000, 1).unwrap();
-    assert_eq!(long.thumb.size.height, px(20.0));
-    assert_eq!(long.thumb.bottom(), long.track.bottom());
-    assert_eq!(long.position(-1000.0, 0.5), Some(0.0));
-    assert_eq!(long.position(1000.0, 0.5), Some(long.maximum));
-    assert!(long.position(f32::NAN, 0.5).is_none());
-}
+#[cfg(feature = "ui-test-support")]
+use gpui::size;
 
 #[cfg(feature = "ui-test-support")]
 #[gpui::test]

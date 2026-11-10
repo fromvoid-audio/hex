@@ -2875,7 +2875,7 @@ fn split_browser_keeps_results_between_sidebar_tags_and_preview(cx: &mut TestApp
         .expect("resized outer divider");
     assert!((resized.left() - target.x).abs() < px(1.0));
     editor.update(visual, |view, cx| {
-        view.browser.width = super::MIN_WIDTH;
+        view.browser.width = super::geometry::MIN_WIDTH;
         cx.notify();
     });
     visual.run_until_parked();

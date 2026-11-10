@@ -1,5 +1,6 @@
 pub(crate) mod alias_projection_v60;
 pub(crate) mod appearance;
+pub(crate) mod arrangement_locators;
 mod arrangement_sections;
 mod audio_alias_projection;
 pub(crate) mod audio_events;
@@ -45,6 +46,7 @@ pub(crate) mod provenance;
 pub(crate) mod retained_receiver;
 pub(crate) mod return_feeds;
 pub(crate) mod routing;
+pub(crate) mod s_curve_fades;
 pub(crate) mod sample_rate_mode;
 pub(crate) mod sampler_crossfade;
 pub(crate) mod serial_units;
@@ -1306,6 +1308,7 @@ impl DocumentV8 {
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -1351,6 +1354,7 @@ impl DocumentV8 {
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -1396,6 +1400,7 @@ impl DocumentV8 {
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -1448,6 +1453,7 @@ impl DocumentV8 {
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -1500,6 +1506,7 @@ impl DocumentV8 {
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -1552,6 +1559,7 @@ impl DocumentV8 {
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -1604,6 +1612,7 @@ impl DocumentV8 {
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -1674,6 +1683,7 @@ impl DocumentV8 {
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -2127,6 +2137,7 @@ impl DocumentV13 {
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
+            arrangement_locators: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
             return_feeds: Vec::new(),
@@ -2497,6 +2508,7 @@ impl DocumentV10 {
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -2653,6 +2665,7 @@ impl DocumentV9 {
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
+            arrangement_locators: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
             return_feeds: Vec::new(),

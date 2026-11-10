@@ -239,6 +239,18 @@ pub enum Command {
     },
     /// Replace validated project tuning and audition settings in one history step.
     SetTuning(hex_tuning::ProjectTuning),
+    AddArrangementLocator {
+        frame: u64,
+    },
+    MoveArrangementLocator {
+        locator: crate::LocatorId,
+        frame: u64,
+    },
+    RenameArrangementLocator {
+        locator: crate::LocatorId,
+        name: Option<String>,
+    },
+    RemoveArrangementLocator(crate::LocatorId),
     /// Event IDs come from the clip/revision-scoped editable_audio_events view.
     EditAudioEvents {
         clip: ClipId,
@@ -1329,6 +1341,7 @@ pub struct MidiNoteInsert {
 pub enum Created {
     NativeSource(crate::SourceId),
     ArrangementSection(crate::SectionId),
+    ArrangementLocator(crate::LocatorId),
     Track(TrackId),
     /// Inclusive track-only ID range born in one atomic paste.
     Tracks {
@@ -2052,6 +2065,12 @@ impl Project {
             | Command::SplitArrangementSection { .. }
             | Command::MergeArrangementSections(_)) => {
                 crate::arrangement_sections::apply(self, command)
+            }
+            command @ (Command::AddArrangementLocator { .. }
+            | Command::MoveArrangementLocator { .. }
+            | Command::RenameArrangementLocator { .. }
+            | Command::RemoveArrangementLocator(_)) => {
+                crate::arrangement_locators::apply(self, command)
             }
             Command::SetTuning(tuning) => {
                 self.tuning = tuning;

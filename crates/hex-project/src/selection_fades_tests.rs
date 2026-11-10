@@ -120,6 +120,8 @@ fn selection_crossfade_keeps_source_alignment_other_ramps_ids_and_one_history_ac
         (256, -200, 700)
     );
     assert_eq!((a.fade().fade_out(), b.fade().fade_in()), (8_000, 8_000));
+    assert_eq!(a.fade().curve_laws()[1], ClipFade::DEFAULT_S_CURVE);
+    assert_eq!(b.fade().curve_laws()[0], ClipFade::DEFAULT_S_CURVE);
     for frame in 92_000..100_000 {
         assert!(
             (a.fade().gain_at(frame) + b.fade().gain_at(frame - b.start()) - 1.0).abs() <= 1e-7
@@ -148,6 +150,10 @@ fn unary_selection_and_refusals_are_atomic_across_tracks() {
         })
         .unwrap();
     assert_eq!(editor.project().clip(left).unwrap().fade().fade_in(), 8_000);
+    assert_eq!(
+        editor.project().clip(left).unwrap().fade().curve_laws()[0],
+        ClipFade::DEFAULT_S_CURVE
+    );
     let before = editor.project().snapshot();
     for (start, end) in [(1, 100), (0, 96_000)] {
         assert!(
@@ -439,6 +445,10 @@ fn event_selection_fade_retains_source_domain_and_other_authored_knots() {
         .copied()
         .unwrap();
     let fade = event.fade.unwrap();
+    assert_eq!(
+        fade.shape().curve_laws(),
+        [ClipFade::DEFAULT_S_CURVE, shape.curve_laws()[1]]
+    );
     assert_eq!((fade.source_start(), fade.shape().span()), (0, 96_000));
     assert_eq!(
         (fade.shape().in_start(), fade.shape().fade_in()),
@@ -448,8 +458,11 @@ fn event_selection_fade_retains_source_domain_and_other_authored_knots() {
         (fade.shape().fade_out(), fade.shape().out_curve()),
         (shape.fade_out(), shape.out_curve())
     );
+    let accepted = editor.project().snapshot();
     assert!(editor.undo());
     assert_eq!(editor.project().snapshot(), before);
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), accepted);
 }
 
 #[test]

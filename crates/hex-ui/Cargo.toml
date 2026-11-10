@@ -7,6 +7,38 @@ publish.workspace = true
 
 [features]
 ui-test-support = ["gpui/test-support", "hex-session/source-overview-test-support"]
+# Enables source-local pure tests in separately selected unit targets.
+ui-unit-tier = []
+
+[[test]]
+name = "unit_piano_roll"
+path = "tests/unit_piano_roll.rs"
+required-features = ["ui-unit-tier"]
+
+[[test]]
+name = "unit_timeline"
+path = "tests/unit_timeline.rs"
+required-features = ["ui-unit-tier"]
+
+[[test]]
+name = "unit_automation"
+path = "tests/unit_automation.rs"
+required-features = ["ui-unit-tier"]
+
+[[test]]
+name = "unit_device"
+path = "tests/unit_device.rs"
+required-features = ["ui-unit-tier"]
+
+[[test]]
+name = "unit_section"
+path = "tests/unit_section.rs"
+required-features = ["ui-unit-tier"]
+
+[[test]]
+name = "unit_editor_logic"
+path = "tests/unit_editor_logic.rs"
+required-features = ["ui-unit-tier"]
 
 [dependencies]
 # UI-only random result selection; already pinned in the workspace lock graph.

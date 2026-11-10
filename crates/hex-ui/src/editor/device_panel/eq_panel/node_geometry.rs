@@ -2,12 +2,8 @@
 use super::{
     axes,
     eq::{Node, NodeKind},
+    group_move::edits_q,
 };
-
-/// Cut and notch nodes edit Q vertically; other shapes edit gain.
-pub(super) fn edits_q(kind: NodeKind) -> bool {
-    matches!(kind, NodeKind::LowCut | NodeKind::HighCut | NodeKind::Notch)
-}
 
 /// Normalized graph position, matching the editor's inverse drag mapping.
 pub(super) fn node_position(node: &Node, rate: u32) -> [f32; 2] {
