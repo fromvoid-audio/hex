@@ -3711,6 +3711,42 @@ class ModuleScopeTests(unittest.TestCase):
             for consumer in consumers:
                 self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv))
 
+        combined_paths = [
+            "crates/hex-ui/src/editor/session_grid.rs",
+            "crates/hex-ui/src/editor/console_track_page.rs",
+        ]
+        combined = plan.module_test_filters(root, combined_paths, inventory, [owner])[owner]
+        self.assertIn(unit, combined)
+        self.assertTrue(any(meter_unit.startswith(selected) for selected in combined))
+        self.assertTrue(any("editor::session_grid::" == selected for selected in combined))
+        self.assertTrue(all(any(consumer.startswith(selected) for selected in combined)
+                            for consumer in consumers))
+        action_consumers = [
+            "editor::delete_ui_tests::",
+            "editor::controller::tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions",
+            "editor::session_navigation_ui_test::scene_launch_leads_the_caption_and_uses_the_guarded_offline_action",
+            "editor::context_menu::tests::global_launch_dropdown_renders_all_choices_and_restores_focus_without_project_edits",
+            "editor::device_panel::tests::device_comparison_tests::device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_new_ack",
+        ]
+        self.assertTrue(all(any(consumer.startswith(selected) for selected in combined)
+                            for consumer in action_consumers))
+        combined_boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                             "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                             "module_filters": {owner: combined}}
+        combined_steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                           "boundary": combined_boundary,
+                                           "cargo_inventory": inventory, "paths": combined_paths})
+        combined_unit = next(step for step in combined_steps
+                             if step.step_id == "ui-unit-unit_editor_logic")
+        self.assertIn(unit, combined_unit.argv)
+        self.assertTrue(any(meter_unit.startswith(selected) for selected in combined_unit.argv))
+        self.assertIn("editor::session_grid::", combined_unit.argv)
+        self.assertTrue(combined_unit.requires_tests)
+        combined_feature = next(step for step in combined_steps if step.step_id == "ui-feature-tests")
+        self.assertIn("editor::session_grid::", combined_feature.argv)
+        for consumer in [*consumers, *action_consumers]:
+            self.assertTrue(any(consumer.startswith(selected) for selected in combined_feature.argv))
+
     def test_session_grid_quantization_keeps_unit_parent_and_ui_coverage(self):
         root = SCRIPTS.parent
         owner = "hex-ui"

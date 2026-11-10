@@ -57,7 +57,7 @@ impl TrackPage {
 
 #[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
-    use super::TrackPage;
+    use super::{TrackPage, visible_track_range};
     use hex_project::{Command, Created, Editor, Project};
 
     #[test]
@@ -113,5 +113,14 @@ mod tests {
         editor.execute(Command::RemoveTrack(ids[0])).unwrap();
         assert_eq!((old.index, old.id), (2, ids[2]));
         assert_ne!(editor.project().tracks()[old.index].id(), old.id);
+    }
+
+    #[test]
+    fn track_paging_keeps_a_bounded_last_page_reachable() {
+        assert_eq!(visible_track_range(256, 0, 8), 0..8);
+        assert_eq!(visible_track_range(256, 248, 8), 248..256);
+        assert_eq!(visible_track_range(256, usize::MAX, 8), 248..256);
+        assert_eq!(visible_track_range(10, 8, 8), 2..10);
+        assert_eq!(visible_track_range(0, 0, 8), 0..0);
     }
 }
