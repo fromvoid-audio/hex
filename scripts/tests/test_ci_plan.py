@@ -2168,6 +2168,11 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::tracks::overlap_tests::held_processed_audio_drag_reuses_ready_root_on_lane_and_floating",
                                   "editor::trim::admission::",
                                   "editor::trim::geometry::",
+                                  "editor::trim::loop_ui_tests::clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_edge",
+                                  "editor::trim::midi_stretch_ui_tests::midi_shift_stretch_both_edges_projects_notes_through_release_ack_and_one_undo",
+                                  "editor::trim::preview_state::",
+                                  "editor::trim::resize_release_tests::midi_resize_keeps_released_geometry_until_actual_worker_ack_and_one_history_step",
+                                  "editor::trim::resize_release_tests::normal_resize_preserves_visible_extent_and_source_through_release_and_ack",
                                   "editor::trim::resize_release_tests::resize_escape_stale_generation_pending_refusal_and_no_motion_do_not_retain_a_commit",
                                   "editor::trim::resize_release_tests::shift_resize_preserves_visible_extent_through_release_and_real_worker_ack",
                                   "editor::trim::resize_terminal_tests::restart_offline_pending_work_blocks_actual_resize_capture_until_completion",
@@ -2586,6 +2591,35 @@ class ModuleScopeTests(unittest.TestCase):
             root, ["crates/hex-ui/src/editor/time_move_preview.rs"], inventory, [owner])
         self.assertTrue(any(visual.startswith(name) for name in owner_names[owner]))
         self.assertTrue(any(unit.startswith(name) for name in owner_names[owner]))
+
+    def test_trim_preview_state_keeps_rendered_release_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        source = "crates/hex-ui/src/editor/trim/preview_state.rs"
+        unit = "editor::trim::preview_state::"
+        consumers = [
+            "editor::trim::resize_release_tests::normal_resize_preserves_visible_extent_and_source_through_release_and_ack",
+            "editor::trim::resize_release_tests::midi_resize_keeps_released_geometry_until_actual_worker_ack_and_one_history_step",
+            "editor::trim::loop_ui_tests::clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_edge",
+            "editor::trim::midi_stretch_ui_tests::midi_shift_stretch_both_edges_projects_notes_through_release_ack_and_one_undo",
+        ]
+        names = plan.module_test_filters(root, [source], inventory, [owner])
+        self.assertEqual(names, {owner: sorted([unit, *consumers])})
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": [source]})
+        self.assertTrue(any(unit in step.argv and step.requires_tests
+                            for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(all(name in step.argv for name in consumers)
+                            for step in steps if step.step_id == "ui-feature-tests"))
+        for path in ("trim.rs", "resize_release_tests.rs", "clip_loop_ui_tests.rs", "midi_stretch_ui_tests.rs"):
+            selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            self.assertTrue(any(unit.startswith(name) for name in selected[owner]))
 
     def test_trim_admission_keeps_rendered_refusal_consumers(self):
         root = SCRIPTS.parent
