@@ -15,7 +15,10 @@ _PYTHON_SPEC = importlib.util.spec_from_file_location(
 if _PYTHON_SPEC is None or _PYTHON_SPEC.loader is None:
     raise RuntimeError("Python self-test impact policy unavailable")
 python_tests = importlib.util.module_from_spec(_PYTHON_SPEC)
-_PYTHON_SPEC.loader.exec_module(python_tests)
+# Use the exact source rather than a timestamp-valid stale bytecode cache.
+_PYTHON_SOURCE_BYTES = Path(_PYTHON_SPEC.origin).read_bytes()
+_PYTHON_SOURCE_SHA256 = hashlib.sha256(_PYTHON_SOURCE_BYTES).hexdigest()
+exec(compile(_PYTHON_SOURCE_BYTES, _PYTHON_SPEC.origin, "exec", dont_inherit=True), python_tests.__dict__)
 
 POLICY_VERSION = 54
 UI_PACKAGES = {"hex-ui", "hex-widgets"}

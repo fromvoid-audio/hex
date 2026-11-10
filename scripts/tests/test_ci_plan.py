@@ -1,5 +1,8 @@
 """Scope boundaries, input freshness, and zero-match qualification regressions."""
 import importlib.util
+import hashlib
+import py_compile
+import shutil
 from contextlib import contextmanager
 import json
 import os
@@ -33,6 +36,52 @@ METER_BOUNDARY = ["editor::output_meter_ui_test::", "editor::refresh_state::",
                   "editor::track_meters::decay::", "editor::track_meters::follower::",
                   "editor::track_meters::main_output::tests::", "editor::track_meters::scale::",
                   "editor::track_meters::selection::", "editor::track_meters::tests::"]
+
+
+class PlannerSourceLoaderTests(unittest.TestCase):
+    def test_timestamp_valid_stale_bytecode_never_selects_either_planner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            scripts = Path(directory) / "scripts"
+            scripts.mkdir()
+            for name in ("local-ci.py", "ci_plan.py", "python_test_plan.py", "build_inputs.py",
+                         "ci_checkpoint.py", "ci_target_storage.py"):
+                shutil.copyfile(SCRIPTS / name, scripts / name)
+
+            replacement_version = plan.POLICY_VERSION ^ 1
+            replacements = {
+                "ci_plan.py": (f"POLICY_VERSION = {plan.POLICY_VERSION}".encode(),
+                               f"POLICY_VERSION = {replacement_version}".encode()),
+                "python_test_plan.py": (b'"test_changelog", "test_ci_plan"',
+                                        b'"test_changemog", "test_ci_plan"'),
+            }
+            for name, (before, after) in replacements.items():
+                path = scripts / name
+                original = path.read_bytes()
+                self.assertEqual(original.count(before), 1)
+                self.assertEqual(len(before), len(after))
+                # Timestamp-mode pyc remains valid after a same-size edit with
+                # the original mtime restored; the loader must still see bytes.
+                py_compile.compile(str(path), doraise=True,
+                                   invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP)
+                timestamp = path.stat()
+                path.write_bytes(original.replace(before, after, 1))
+                os.utime(path, ns=(timestamp.st_atime_ns, timestamp.st_mtime_ns))
+
+            path = scripts / "local-ci.py"
+            spec = importlib.util.spec_from_file_location("source_loader_regression", path)
+            self.assertIsNotNone(spec)
+            loaded = importlib.util.module_from_spec(spec)
+            with patch.dict(sys.modules, {spec.name: loaded}):
+                spec.loader.exec_module(loaded)
+            self.assertEqual(loaded.ci_plan.POLICY_VERSION, replacement_version)
+            self.assertIn("test_changemog", loaded.ci_plan.python_tests.REVIEWED_MODULES)
+            self.assertNotIn("test_changelog", loaded.ci_plan.python_tests.REVIEWED_MODULES)
+            self.assertEqual(loaded._PLAN_SOURCE_SHA256,
+                             hashlib.sha256((scripts / "ci_plan.py").read_bytes()).hexdigest())
+            self.assertEqual(loaded.ci_plan._PYTHON_SOURCE_SHA256,
+                             hashlib.sha256((scripts / "python_test_plan.py").read_bytes()).hexdigest())
+            self.assertEqual(Path(loaded.ci_plan.__file__), scripts / "ci_plan.py")
+            self.assertEqual(Path(loaded.ci_plan.python_tests.__file__), scripts / "python_test_plan.py")
 
 
 class ScopeTests(unittest.TestCase):
