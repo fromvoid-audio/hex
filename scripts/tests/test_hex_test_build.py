@@ -1,5 +1,6 @@
 """Deterministic tests for exact-source delivery and interruption recovery."""
 import importlib.util
+import hashlib
 import errno
 import io
 import json
@@ -17,6 +18,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from contextlib import contextmanager, redirect_stderr
 from test_ci_target_storage import reuse_fixed_scratch_observations
+from test_local_ci import install_delivery_source_fixture
 
 SPEC = importlib.util.spec_from_file_location("hex_test_build", Path(__file__).resolve().parents[1] / "hex-test-build.py")
 delivery = importlib.util.module_from_spec(SPEC)
@@ -28,6 +30,115 @@ SIGNED = {"identifier": delivery.IDENTITY, "team_identifier": SIGNING["team_iden
 
 
 class DeliveryTests(unittest.TestCase):
+    def test_delivery_refuses_changed_or_missing_candidate_source_before_validation(self):
+        runner = delivery.ci.LocalCiRunner(self.root)
+        report = self.root / "unused.json"
+        report.write_text("{}")
+        for name in ("local-ci.py", "ci_plan.py", "python_test_plan.py", "build_inputs.py",
+                     "ci_checkpoint.py", "ci_target_storage.py"):
+            path = self.root / "scripts" / name
+            original = path.read_bytes()
+            for change in ("changed", "missing", "symlink", "fifo"):
+                with self.subTest(name=name, change=change):
+                    if change == "changed":
+                        path.write_bytes(original + b"\n# changed\n")
+                    else:
+                        path.unlink()
+                        if change == "symlink":
+                            target = self.root / "other-source"
+                            target.write_bytes(original)
+                            path.symlink_to(target)
+                        elif change == "fifo":
+                            os.mkfifo(path)
+                    with patch.object(runner, "_capture_repository_state") as capture:
+                        with self.assertRaisesRegex(delivery.DeliveryError, "source"):
+                            delivery.validate_source(runner, "a" * 40)
+                        with self.assertRaisesRegex(delivery.DeliveryError, "source"):
+                            delivery.validate_ci(report, runner, "a" * 40)
+                        capture.assert_not_called()
+                    if path.is_symlink() or path.exists():
+                        path.unlink()
+                    path.write_bytes(original)
+
+    def test_delivery_checks_supplied_runner_module_not_sys_modules(self):
+        source_path = Path(__file__).resolve().parents[1] / "local-ci.py"
+        source = source_path.read_bytes() + b"\n# independently loaded runner\n"
+        spec = importlib.util.spec_from_file_location("hex_local_ci", source_path)
+        other = importlib.util.module_from_spec(spec)
+        other._DELIVERY_RUNNER_SOURCE_SHA256 = hashlib.sha256(source).hexdigest()
+        with patch.dict(sys.modules, {spec.name: other}):
+            exec(compile(source, str(source_path), "exec", dont_inherit=True), other.__dict__)
+        runner = other.LocalCiRunner(self.root)
+        tree = {"commit": "a" * 40, "dirty": False, "content_sha256": "fixture"}
+        runner.summary["start_tree"] = tree
+        with patch.object(runner, "_capture_repository_state", return_value=True) as capture, \
+                patch.dict(sys.modules, {"hex_local_ci": delivery.ci}):
+            with self.assertRaisesRegex(delivery.DeliveryError, "runner CI source mismatch"):
+                delivery.validate_source(runner, tree["commit"])
+            capture.assert_not_called()
+
+    def test_delivery_checks_independently_loaded_runner_helpers(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            other_root = Path(temporary).resolve()
+            install_delivery_source_fixture(other_root)
+            path = other_root / "scripts/local-ci.py"
+            source = path.read_bytes()
+            tree = {"commit": "a" * 40, "dirty": False, "content_sha256": "fixture"}
+
+            def load_runner(name):
+                spec = importlib.util.spec_from_file_location(name, path)
+                module = importlib.util.module_from_spec(spec)
+                module._DELIVERY_RUNNER_SOURCE_SHA256 = hashlib.sha256(source).hexdigest()
+                with patch.dict(sys.modules, {name: module}):
+                    exec(compile(source, str(path), "exec", dont_inherit=True), module.__dict__)
+                runner = module.LocalCiRunner(self.root)
+                runner.summary["start_tree"] = tree
+                return runner
+
+            matching = load_runner("matching_independent_ci")
+            with patch.object(matching, "_capture_repository_state", return_value=True):
+                self.assertEqual(delivery.validate_source(matching, tree["commit"]), tree)
+
+            helper = other_root / "scripts/build_inputs.py"
+            helper.write_bytes(helper.read_bytes() + b"\n# independently loaded helper\n")
+            mismatched = load_runner("mismatched_independent_ci")
+            with patch.object(mismatched, "_capture_repository_state") as capture:
+                with self.assertRaisesRegex(delivery.DeliveryError, "runner CI source mismatch"):
+                    delivery.validate_source(mismatched, tree["commit"])
+                capture.assert_not_called()
+
+    def test_delivery_rejects_unattested_runner(self):
+        runner = SimpleNamespace(root=self.root)
+        with self.assertRaisesRegex(delivery.DeliveryError, "witness is unavailable"):
+            delivery.validate_source(runner, "a" * 40)
+        source_path = Path(__file__).resolve().parents[1] / "local-ci.py"
+        spec = importlib.util.spec_from_file_location("unattested_runner", source_path)
+        loaded = importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules, {spec.name: loaded}):
+            spec.loader.exec_module(loaded)
+        runner = loaded.LocalCiRunner(self.root)
+        with self.assertRaisesRegex(delivery.DeliveryError, "witness is unavailable"):
+            delivery.validate_source(runner, "a" * 40)
+
+    def test_delivery_refuses_source_change_during_metadata_before_plan_resolution(self):
+        runner = delivery.ci.LocalCiRunner(self.root)
+        tree = {"commit": "a" * 40, "dirty": False, "content_sha256": "fixture"}
+        runner.summary["start_tree"] = tree
+        report = self.root / "scoped.json"
+        report.write_text(json.dumps({"schema_version": 2, "steps": [], "start_tree": tree,
+            "end_tree": tree, "plan": {"scope": "full", "profile": "merge",
+            "qualifies_merge": True, "source": tree["commit"], "base": "b" * 40}}))
+        policy = self.root / "scripts/python_test_plan.py"
+        def metadata(*args, **kwargs):
+            policy.write_bytes(policy.read_bytes() + b"\n# changed during metadata\n")
+            return "{}"
+        with patch.object(runner, "_capture_repository_state", return_value=True), \
+                patch.object(delivery, "run", side_effect=metadata), \
+                patch.object(delivery.ci.ci_plan, "resolve") as resolve:
+            with self.assertRaisesRegex(delivery.DeliveryError, "source mismatch"):
+                delivery.validate_ci(report, runner, tree["commit"])
+            resolve.assert_not_called()
+
     def test_delivery_runner_descriptors_close_when_wrapping_fails(self):
         path = Path(__file__).resolve().parents[1] / "hex-test-build.py"
         spec = importlib.util.spec_from_file_location("delivery_close_probe", path)
@@ -287,6 +398,7 @@ class DeliveryTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name).resolve()
+        install_delivery_source_fixture(self.root)
         self.app = self.root / "hex.app"
         self.workspace = delivery.install_workspace(self.app)
         self.workspace.mkdir()
@@ -780,6 +892,7 @@ class DeliveryTests(unittest.TestCase):
         source.mkdir()
         for relative in ("scripts", "assets/fonts/ioskeley-mono", "third_party/gpui"):
             (source / relative).mkdir(parents=True)
+        install_delivery_source_fixture(source)
         (source / "scripts/hex-test-build.json").write_text(json.dumps({"app_path":"artifacts/hex.app", "signing": SIGNING}))
         (source / "assets/fonts/ioskeley-mono/OFL.txt").write_text("font license")
         (source / "third_party/gpui/LICENSE-APACHE").write_text("gpui license")
@@ -1231,6 +1344,7 @@ class DeliveryTests(unittest.TestCase):
         fixture = fixtures.LocalCiRunnerTests()
         fixture.setUp()
         self.addCleanup(fixture.tearDown)
+        install_delivery_source_fixture(fixture.repo)
         runner = fixture.runner("core-python-consumer")
         self.assertTrue(runner._capture_repository_state("start_tree"))
         tree = runner.summary["start_tree"]

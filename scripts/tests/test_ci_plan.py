@@ -418,7 +418,8 @@ class ScopeTests(unittest.TestCase):
             (root / "Cargo.toml").write_text('[package]\nname="metadata-receiver"\nversion="0.1.0"\nedition="2021"\n')
             (root / ".gitignore").write_text('/target/\n/artifacts/\n__pycache__/\n')
             (root / "scripts").mkdir()
-            for name in ("ci_plan.py", "python_test_plan.py"):
+            for name in ("local-ci.py", "ci_plan.py", "python_test_plan.py", "build_inputs.py",
+                         "ci_checkpoint.py", "ci_target_storage.py"):
                 (root / "scripts" / name).write_bytes((SCRIPTS / name).read_bytes())
             def command(*argv):
                 return subprocess.check_output(argv, cwd=root).decode().strip()
