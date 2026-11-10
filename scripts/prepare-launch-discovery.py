@@ -10,17 +10,36 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def _delivery_source(path: Path) -> bytes:
+    """Read the delivery source from an opened regular file without links."""
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise RuntimeError("delivery source is not a regular file")
+            with os.fdopen(descriptor, "rb", closefd=False) as source:
+                return source.read()
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(directory)
+
+
 SPEC = importlib.util.spec_from_file_location("hex_launch_delivery", ROOT / "scripts/hex-test-build.py")
 if SPEC is None or SPEC.loader is None:
     raise RuntimeError("launch delivery dependency unavailable")
 delivery = importlib.util.module_from_spec(SPEC)
 # Delivery authority must reflect source bytes, not a timestamp-valid pyc.
-_SOURCE = Path(SPEC.origin).read_bytes()
+_SOURCE = _delivery_source(Path(SPEC.origin))
 exec(compile(_SOURCE, SPEC.origin, "exec", dont_inherit=True), delivery.__dict__)
 
 

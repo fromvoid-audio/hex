@@ -22,10 +22,13 @@ _PYTHON_SOURCE_DIR = os.open(_PYTHON_SOURCE_PATH.parent, os.O_RDONLY | os.O_DIRE
 try:
     _PYTHON_SOURCE_FD = os.open(_PYTHON_SOURCE_PATH.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
                                 dir_fd=_PYTHON_SOURCE_DIR)
-    with os.fdopen(_PYTHON_SOURCE_FD, "rb") as _python_source:
-        if not stat.S_ISREG(os.fstat(_python_source.fileno()).st_mode):
+    try:
+        if not stat.S_ISREG(os.fstat(_PYTHON_SOURCE_FD).st_mode):
             raise RuntimeError("Python test policy source is not a regular file")
-        _PYTHON_SOURCE_BYTES = _python_source.read()
+        with os.fdopen(_PYTHON_SOURCE_FD, "rb", closefd=False) as _python_source:
+            _PYTHON_SOURCE_BYTES = _python_source.read()
+    finally:
+        os.close(_PYTHON_SOURCE_FD)
 finally:
     os.close(_PYTHON_SOURCE_DIR)
 _PYTHON_SOURCE_SHA256 = hashlib.sha256(_PYTHON_SOURCE_BYTES).hexdigest()

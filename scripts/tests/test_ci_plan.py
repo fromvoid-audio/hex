@@ -39,6 +39,26 @@ METER_BOUNDARY = ["editor::output_meter_ui_test::", "editor::refresh_state::",
 
 
 class PlannerSourceLoaderTests(unittest.TestCase):
+    def test_nested_policy_descriptors_close_when_wrapping_fails(self):
+        spec = importlib.util.spec_from_file_location("planner_close_probe", SCRIPTS / "ci_plan.py")
+        loaded = importlib.util.module_from_spec(spec)
+        original_open = os.open
+        opened = []
+
+        def track_open(*args, **kwargs):
+            descriptor = original_open(*args, **kwargs)
+            opened.append(descriptor)
+            return descriptor
+
+        with patch.object(os, "open", side_effect=track_open), \
+                patch.object(os, "fdopen", side_effect=OSError("fixture wrap failure")):
+            with self.assertRaisesRegex(OSError, "fixture wrap failure"):
+                spec.loader.exec_module(loaded)
+        self.assertEqual(len(opened), 2)
+        for descriptor in opened:
+            with self.assertRaises(OSError):
+                os.fstat(descriptor)
+
     def test_timestamp_valid_stale_bytecode_never_selects_either_planner(self):
         with tempfile.TemporaryDirectory() as directory:
             scripts = Path(directory) / "scripts"
