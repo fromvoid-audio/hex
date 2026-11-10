@@ -2287,7 +2287,22 @@ class ModuleScopeTests(unittest.TestCase):
         inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
                       "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
                       "targets": [{"kind": ["lib"]}]}]
-        for path in ("arrangement_focus/visibility.rs", "track_hierarchy_indent.rs", "track_reorder/subtree.rs"):
+        rendered_consumers = {
+            "arrangement_focus/visibility.rs": (
+                "editor::arrangement_focus::visibility::",
+                "editor::arrangement_focus::tests::section_focus_renders_visible_child_with_nested_group_headers",
+                "editor::track_tags::tests::rendered_tag_selection_modifiers_overflow_and_filter_are_view_only",
+                "editor::track_tags::tests::folded_matches_stay_selected_and_filter_applies_to_console_headers",
+                "editor::arrangement_sections::tests::section_lower_body_paints_all_tracks_without_section_edit_even_when_focused",
+            ),
+            "track_hierarchy_indent.rs": (
+                "editor::track_hierarchy_indent::",
+                "editor::track_clipboard_ui_test::nested_group_plates_and_poles_join_follow_selection_and_close_at_visible_ends",
+                "editor::track_clipboard_ui_test::group_track_header_menu_arrangement",
+                "editor::track_clipboard_ui_test::group_track_header_menu_session",
+            ),
+        }
+        for path in (*rendered_consumers, "track_reorder/subtree.rs"):
             names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
             boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
                         "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
@@ -2295,6 +2310,11 @@ class ModuleScopeTests(unittest.TestCase):
             steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
                                       "boundary": boundary, "cargo_inventory": inventory, "paths": []})
             self.assertEqual(sum(step.step_id == "ui-consumer-track_group_focus" for step in steps), 1)
+            if path in rendered_consumers:
+                feature = next(step for step in steps if step.step_id == "ui-feature-tests")
+                self.assertNotIn("editor::", feature.argv)
+                for name in rendered_consumers[path]:
+                    self.assertIn(name, feature.argv)
         harness = "crates/hex-ui/tests/track_group_focus.rs"
         target_only = plan.module_test_filters(root, [harness], inventory, [owner])
         self.assertIn("editor::arrangement_focus::", target_only[owner])
