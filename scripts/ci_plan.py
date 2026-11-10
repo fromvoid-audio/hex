@@ -271,7 +271,9 @@ def module_declarations(source_root: Path) -> dict[Path, list[tuple[Path, list[s
 TEST_ATTRIBUTE = re.compile(r"#\[(?:gpui::)?test\b")
 # Unit test targets which compile the owning source directly. Keep their libtest
 # names under the original module path so scoped coverage remains observable.
-UI_UNIT_TARGETS = {"editor::session_audio_panel::playhead::": "unit_editor_logic",
+UI_UNIT_TARGETS = {"editor::device_panel::eq_panel::axes::": "unit_editor_logic",
+                   "editor::device_panel::eq_panel::response::": "unit_editor_logic",
+                   "editor::session_audio_panel::playhead::": "unit_editor_logic",
                    "editor::device_panel::vst3_parameters::row_projection::": "unit_device",
                    "editor::midi_cue::timing::": "unit_timeline",
                    "editor::waveform_source::": "unit_editor_logic",
@@ -326,7 +328,8 @@ UI_UNIT_TARGETS = {"editor::session_audio_panel::playhead::": "unit_editor_logic
 UI_UNIT_FEATURES = {"unit_piano_roll": "ui-unit-tier", "unit_timeline": "ui-unit-tier", "unit_automation": "ui-unit-tier", "unit_device": "ui-unit-tier", "unit_section": "ui-unit-tier", "unit_editor_logic": "ui-unit-tier"}
 # These geometry modules call one another; a change to one must exercise the
 # complete pure boundary rather than only its own test-name prefix.
-UI_UNIT_COHORTS = [{"editor::midi_drag::", "editor::midi_group_drag::", "editor::midi_scene::", "editor::midi_selection::", "editor::midi_stroke::", "editor::midi_velocity::", "editor::midi_viewport_grid::"},
+UI_UNIT_COHORTS = [{"editor::device_panel::eq_panel::axes::", "editor::device_panel::eq_panel::response::"},
+                   {"editor::midi_drag::", "editor::midi_group_drag::", "editor::midi_scene::", "editor::midi_selection::", "editor::midi_stroke::", "editor::midi_velocity::", "editor::midi_viewport_grid::"},
                    {"editor::device_panel::eq_panel::group_move::", "editor::device_panel::eq_panel::gestures::"},
                    {"editor::musical_time::", "editor::seek::", "editor::signed_frame_viewport::", "editor::viewport::"},
                    {"editor::refresh_state::", "editor::track_meters::decay::", "editor::track_meters::follower::", "editor::track_meters::scale::"},
@@ -340,7 +343,8 @@ UI_UNIT_COHORTS = [{"editor::midi_drag::", "editor::midi_group_drag::", "editor:
                     "editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform"}]
 # Recovery's real prepared-audio test is a sibling so importing its state into
 # the unit binary cannot also compile and run the integration fixture there.
-UI_INTEGRATION_PAIRS = {"editor::computer_keyboard::state::": "editor::computer_keyboard::tests::",
+UI_INTEGRATION_PAIRS = {"editor::device_panel::eq_panel::response::": "editor::device_panel::tests::eq_ui_tests::graph_layout_tests::eq_axis_labels_are_logarithmic_nonoverlapping_and_keep_the_plot_hit_map",
+                        "editor::computer_keyboard::state::": "editor::computer_keyboard::tests::",
                         "editor::recovery_state::": "editor::recovery_state_integration_tests::",
                         "editor::audio_import_settings::admission::": "editor::track_defaults::",
                         "editor::controller::audio_event_correlation::": "editor::controller::sampler_native_ui_protocol_tests::",

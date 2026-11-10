@@ -137,7 +137,7 @@ Section hit tests use:
 cargo test -p hex-ui --features ui-unit-tier --test unit_section --locked
 ```
 
-Editor logic tests, including Session route view state, use:
+Editor logic tests, including Session route view state and EQ response sampling, use:
 
 ```sh
 cargo test -p hex-ui --features ui-unit-tier --test unit_editor_logic --locked

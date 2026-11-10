@@ -335,6 +335,7 @@ class FixturePathTests(unittest.TestCase):
 class ReleaseFixture(unittest.TestCase):
     def setUp(self):
         self.f = fixtures.LocalCiRunnerTests(); self.f.setUp(); self.addCleanup(self.f.tearDown)
+        fixtures.install_delivery_source_fixture(self.f.repo)
         self.runner = self.f.runner('restart-preflight')
         self.assertTrue(self.runner._capture_repository_state('start_tree'))
         self.assertTrue(self.runner._resolve_cargo_identity())
