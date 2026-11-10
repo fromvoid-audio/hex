@@ -1,5 +1,7 @@
 //! Editor logic unit tests without a window or service.
-use hex_ui::output_meter;
+// Compile the production peak logic without the meter rendering tests.
+#[path = "editor_logic_unit/output_meter.rs"]
+mod output_meter;
 
 #[path = "editor_logic_unit/editor.rs"]
 mod editor;
