@@ -55,6 +55,14 @@ GRID_CONSUMERS = [
     "editor::waveform_loop::", "editor::waveform_source::", "editor::waveform_stretch::",
 ]
 
+ARRANGEMENT_CONSUMERS = [
+    "editor::arrangement_focus::visibility::",
+    "editor::arrangement_map::model::",
+    "editor::arrangement_map::tests::main_lane_paints_canonical_intervals_at_the_ruler_scale",
+    "editor::arrangement_sections::tests::section_lower_body_paints_all_tracks_without_section_edit_even_when_focused",
+    "editor::group_overview::tests::",
+]
+
 
 class PlannerSourceLoaderTests(unittest.TestCase):
     def test_nested_policy_descriptors_close_when_wrapping_fails(self):
@@ -1936,7 +1944,7 @@ class ModuleScopeTests(unittest.TestCase):
         timeline = ["editor::musical_time::", "editor::seek::", "editor::signed_frame_viewport::", viewport]
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/src/editor/viewport.rs"], inventory, [owner]),
-            {owner: sorted([*timeline, *GRID_CONSUMERS])})
+            {owner: sorted([*timeline, *GRID_CONSUMERS, *ARRANGEMENT_CONSUMERS])})
         disk = "editor::disk_overload::"
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/src/editor/disk_overload.rs"], inventory, [owner]),
@@ -2034,6 +2042,10 @@ class ModuleScopeTests(unittest.TestCase):
                          {owner: names})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_editor_logic.rs"], inventory, [owner]),
                          {owner: ["editor::action_outcome_ui_tests::editor_reports_each_rejection_and_keeps_reader_through_retirement",
+                                  "editor::arrangement_focus::visibility::",
+                                  "editor::arrangement_map::model::",
+                                  "editor::arrangement_map::tests::main_lane_paints_canonical_intervals_at_the_ruler_scale",
+                                  "editor::arrangement_sections::tests::section_lower_body_paints_all_tracks_without_section_edit_even_when_focused",
                                   "editor::audio_event_editor::free_placement_tests::finite_frame_drag_preserves_the_cycle_markers_and_root_waveform",
                                   "editor::audio_event_editor::tests::moved_and_pasted_waveform_positions_read_event_composed_pcm",
                                   "editor::audio_import_settings::admission::",
@@ -2054,7 +2066,7 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::drag::group_drag_ui_test::stationary_group_snap_modifier_uses_one_anchor_delta_and_authoritative_release",
                                   "editor::drag::tests::",
                                   "editor::fade_calculation::", "editor::fade_handle_geometry::",
-                                  "editor::fade_handles::", "editor::fades::",
+                                  "editor::fade_handles::", "editor::fades::", "editor::group_overview::tests::",
                                   "editor::output_meter_ui_test::", "editor::overview_waveform::", "editor::refresh_state::",
                                   "editor::sampler_parameter::tests::source_hints_and_paint_require_same_view_source_facts_and_context",
                                   "editor::session_audio_panel::",
@@ -2077,6 +2089,92 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertTrue(any(step.step_id == "ui-editor-logic-unit-tests" for step in ci.planned_steps({"scope": "full"})))
         health = ci.planned_steps({"scope": "rust", "health": {"python": False, "workspace_inputs": True, "packages": []}})
         self.assertTrue(any(step.step_id == "health-ui-editor-logic-unit" for step in health))
+
+    def test_arrangement_map_projection_keeps_real_focus_and_render_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::arrangement_map::model::"
+        required = [unit, "editor::arrangement_focus::visibility::", "editor::group_overview::tests::",
+                    "editor::arrangement_map::tests::main_lane_paints_canonical_intervals_at_the_ruler_scale",
+                    "editor::arrangement_sections::tests::section_lower_body_paints_all_tracks_without_section_edit_even_when_focused"]
+        for path in ("arrangement_map/model.rs", "arrangement_focus/interval.rs", "arrangement_focus/visibility.rs"):
+            names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            for name in required:
+                self.assertTrue(any(name.startswith(selected) for selected in names[owner]))
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": names}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                      "cargo_inventory": inventory, "paths": []})
+            self.assertTrue(any(unit in step.argv and step.requires_tests
+                                for step in steps if "unit_editor_logic" in step.argv))
+            self.assertTrue(any(required[3] in step.argv and required[4] in step.argv
+                                for step in steps if step.step_id == "ui-feature-tests"))
+            self.assertTrue(any("track_group_focus" in step.argv and step.requires_tests
+                                for step in steps if step.step_id == "ui-consumer-track_group_focus"))
+        for path in ("arrangement_map.rs", "group_overview.rs", "arrangement_sections.rs", "viewport.rs"):
+            names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            self.assertTrue(any(unit.startswith(name) for name in names[owner]))
+        mixed = plan.module_test_filters(root, ["crates/hex-ui/src/editor/arrangement_focus/interval.rs",
+                                                "crates/hex-ui/tests/track_group_focus.rs"], inventory, [owner])
+        self.assertIn("editor::arrangement_focus::", mixed[owner])
+        mixed_boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                          "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                          "module_filters": mixed}
+        mixed_steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                        "boundary": mixed_boundary, "cargo_inventory": inventory, "paths": []})
+        consumers = [step for step in mixed_steps if step.step_id == "ui-consumer-track_group_focus"]
+        self.assertEqual(len(consumers), 1)
+        self.assertEqual(consumers[0].argv, ("cargo", "test", "-p", "hex-ui", "--test", "track_group_focus", "--locked"))
+        self.assertTrue(consumers[0].requires_tests)
+        unrelated = {"kind": "packages", "tests": [], "test_packages": [owner],
+                     "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                     "module_filters": {owner: ["editor::user_errors::"]}}
+        unrelated_steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                            "boundary": unrelated, "cargo_inventory": inventory, "paths": []})
+        self.assertFalse(any(step.step_id == "ui-consumer-track_group_focus" for step in unrelated_steps))
+
+    def test_track_group_focus_source_consumers_and_full_run_deduplication(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        for path in ("arrangement_focus/visibility.rs", "track_hierarchy_indent.rs", "track_reorder/subtree.rs"):
+            names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                        "module_filters": names}
+            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                      "boundary": boundary, "cargo_inventory": inventory, "paths": []})
+            self.assertEqual(sum(step.step_id == "ui-consumer-track_group_focus" for step in steps), 1)
+        harness = "crates/hex-ui/tests/track_group_focus.rs"
+        target_only = plan.module_test_filters(root, [harness], inventory, [owner])
+        self.assertIn("editor::arrangement_focus::", target_only[owner])
+        target_boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                           "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                           "module_filters": target_only}
+        target_steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                        "boundary": target_boundary, "cargo_inventory": inventory, "paths": []})
+        self.assertEqual(sum(step.step_id == "ui-consumer-track_group_focus" for step in target_steps), 1)
+        unknown = plan.module_test_filters(root, [harness, "crates/hex-ui/unknown-input.txt"], inventory, [owner])
+        self.assertNotIn(owner, unknown)
+        full = {"kind": "packages", "tests": [], "test_packages": [owner],
+                "lint_packages": [owner], "single_run": {owner: "ui-test-support"}, "module_filters": {}}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                  "boundary": full, "cargo_inventory": inventory, "paths": []})
+        self.assertFalse(any(step.step_id == "ui-consumer-track_group_focus" for step in steps))
+        other = {"name": "hex-session", "manifest": "crates/hex-session/Cargo.toml",
+                 "features": {}, "dependencies": [], "targets": [{"kind": ["lib"]}]}
+        consumer_only = {"kind": "packages", "tests": [], "test_packages": ["hex-session"],
+                         "lint_packages": [owner, "hex-session"], "single_run": {},
+                         "module_filters": {owner: ["editor::arrangement_focus::"]}}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner, "hex-session"],
+                                  "boundary": consumer_only, "cargo_inventory": [*inventory, other], "paths": []})
+        self.assertFalse(any(step.step_id == "ui-consumer-track_group_focus" for step in steps))
 
     def test_clip_drag_geometry_keeps_unit_and_runtime_consumers(self):
         root = SCRIPTS.parent
@@ -2530,7 +2628,7 @@ class ModuleScopeTests(unittest.TestCase):
                       "targets": [{"kind": ["lib"]}]}]
         timeline = ["editor::musical_time::", "editor::seek::", "editor::signed_frame_viewport::", "editor::viewport::"]
         for path in ("musical_time.rs", "seek.rs", "signed_frame_viewport.rs", "viewport.rs"):
-            expected = sorted([*timeline, *GRID_CONSUMERS]) if path == "viewport.rs" else timeline
+            expected = sorted([*timeline, *GRID_CONSUMERS, *ARRANGEMENT_CONSUMERS]) if path == "viewport.rs" else timeline
             self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner]),
                              {owner: expected})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_timeline.rs"], inventory, [owner]),

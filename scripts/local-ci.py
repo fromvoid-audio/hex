@@ -500,6 +500,13 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
         steps.append(Step(f"ui-unit-{target}", ("cargo", "test", "-p", "hex-ui", *feature_args,
                                                   "--test", target, "--locked", "--", *sorted(names)),
                           requires_tests=True))
+    extra_targets = {target for module, target in ci_plan.UI_EXTRA_TEST_TARGETS.items()
+                     if "hex-ui" in tested and any(module.startswith(name) or name.startswith(module)
+                                                    for name in module_filters.get("hex-ui", []))}
+    for target in sorted(extra_targets):
+        steps.append(Step(f"ui-consumer-{target}",
+                          ("cargo", "test", "-p", "hex-ui", "--test", target, "--locked"),
+                          requires_tests=True))
     if lint_features:
         lint_packages = sorted({feature.split("/")[0] for feature in lint_features})
         steps.append(Step("affected-feature-clippy",
