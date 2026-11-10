@@ -11,6 +11,7 @@ import ast
 import hashlib
 import json
 import os
+import py_compile
 from pathlib import Path
 import shutil
 import sys
@@ -418,10 +419,197 @@ class LocalCiRunnerTests(unittest.TestCase):
         scripts.mkdir(exist_ok=True)
         (scripts / "ci_plan.py").write_bytes(local_ci._PLAN_SOURCE_BYTES)
         (scripts / "python_test_plan.py").write_bytes(local_ci.ci_plan._PYTHON_SOURCE_BYTES)
+        for name, content in (("build_inputs.py", local_ci._INPUT_SOURCE_BYTES),
+                              ("ci_checkpoint.py", local_ci._CHECKPOINT_SOURCE_BYTES),
+                              ("ci_target_storage.py", local_ci._STORAGE_SOURCE_BYTES)):
+            (scripts / name).write_bytes(content)
+
+    def test_helper_source_load_ignores_timestamp_valid_stale_bytecode(self):
+        scripts = self.base / "loader" / "scripts"
+        scripts.mkdir(parents=True)
+        source_scripts = SCRIPT.parent
+        for name in ("local-ci.py", "ci_plan.py", "python_test_plan.py", "build_inputs.py",
+                     "ci_checkpoint.py", "ci_target_storage.py"):
+            shutil.copyfile(source_scripts / name, scripts / name)
+        for name in ("build_inputs.py", "ci_checkpoint.py", "ci_target_storage.py"):
+            path = scripts / name
+            path.write_bytes(path.read_bytes() + b"\nHELPER_SOURCE_PROBE = 1\n")
+            py_compile.compile(str(path), doraise=True,
+                               invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP)
+            stamp = path.stat()
+            path.write_bytes(path.read_bytes().replace(b"HELPER_SOURCE_PROBE = 1",
+                                                       b"HELPER_SOURCE_PROBE = 2"))
+            os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            control_spec = importlib.util.spec_from_file_location("stale_helper_control", path)
+            control = importlib.util.module_from_spec(control_spec)
+            control_spec.loader.exec_module(control)
+            self.assertEqual(control.HELPER_SOURCE_PROBE, 1)
+        spec = importlib.util.spec_from_file_location("helper_loader_fixture", scripts / "local-ci.py")
+        loaded = importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules, {spec.name: loaded}):
+            spec.loader.exec_module(loaded)
+        for helper in (loaded.build_inputs, loaded.ci_checkpoint, loaded.ci_target_storage):
+            with self.subTest(helper=helper.__name__):
+                self.assertEqual(helper.HELPER_SOURCE_PROBE, 2)
+        self.assertIsNone(loaded.cli_policy_error(scripts.parent))
+
+    def test_policy_loaders_refuse_symlinks_and_fifos_before_execution(self):
+        cases = [(name, kind, "local-ci.py") for name, kind in (
+            ("ci_plan.py", "symlink"), ("python_test_plan.py", "symlink"),
+            ("build_inputs.py", "symlink"), ("ci_checkpoint.py", "symlink"),
+            ("ci_target_storage.py", "symlink"), ("ci_plan.py", "fifo"),
+            ("python_test_plan.py", "fifo"), ("build_inputs.py", "fifo"),
+            ("ci_plan.py", "directory"), ("python_test_plan.py", "directory"),
+            ("build_inputs.py", "directory"), ("ci_checkpoint.py", "directory"),
+            ("ci_target_storage.py", "directory"))]
+        cases.extend(("python_test_plan.py", kind, "ci_plan.py") for kind in ("symlink", "fifo"))
+        for name, kind, entry in cases:
+            with self.subTest(name=name, kind=kind, entry=entry), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                scripts = root / "scripts"
+                scripts.mkdir()
+                for source in ("local-ci.py", "ci_plan.py", "python_test_plan.py", "build_inputs.py",
+                               "ci_checkpoint.py", "ci_target_storage.py"):
+                    shutil.copyfile(SCRIPT.parent / source, scripts / source)
+                helper = scripts / name
+                helper.unlink()
+                marker = root / "executed"
+                if kind == "symlink":
+                    payload = root / "payload.py"
+                    payload.write_text(f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n")
+                    helper.symlink_to(payload)
+                elif kind == "fifo":
+                    os.mkfifo(helper)
+                else:
+                    helper.mkdir()
+                result = subprocess.run([sys.executable, str(scripts / entry), "--help"],
+                                        capture_output=True, timeout=2)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(marker.exists())
+
+    def test_policy_source_descriptors_close_when_wrapping_fails(self):
+        self._install_cli_policy_fixture()
+        policy = self.repo / "scripts" / "ci_plan.py"
+        original_open = os.open
+        opened = []
+
+        def track_open(*args, **kwargs):
+            descriptor = original_open(*args, **kwargs)
+            opened.append(descriptor)
+            return descriptor
+
+        with patch.object(os, "open", side_effect=track_open), \
+                patch.object(os, "fdopen", side_effect=OSError("fixture wrap failure")):
+            with self.assertRaisesRegex(OSError, "fixture wrap failure"):
+                local_ci._read_policy_source(policy)
+        self.assertEqual(len(opened), 2)
+        for descriptor in opened:
+            with self.assertRaises(OSError):
+                os.fstat(descriptor)
+
+    def test_cli_policy_descriptors_close_when_wrapping_fails(self):
+        self._install_cli_policy_fixture()
+        original_open = os.open
+        opened = []
+
+        def track_open(*args, **kwargs):
+            descriptor = original_open(*args, **kwargs)
+            opened.append(descriptor)
+            return descriptor
+
+        with patch.object(os, "open", side_effect=track_open), \
+                patch.object(os, "fdopen", side_effect=OSError("fixture wrap failure")):
+            self.assertIn("fixture wrap failure", local_ci.cli_policy_error(self.repo))
+        self.assertEqual(len(opened), 2)
+        for descriptor in opened:
+            with self.assertRaises(OSError):
+                os.fstat(descriptor)
+
+    def test_cli_policy_closes_previous_file_before_later_wrap_failure(self):
+        self._install_cli_policy_fixture()
+        original_fdopen = os.fdopen
+        original_close = os.close
+        calls = []
+        closed = []
+
+        def fail_second(fd, *args, **kwargs):
+            calls.append(fd)
+            if len(calls) == 2:
+                raise OSError("later fixture wrap failure")
+            return original_fdopen(fd, *args, **kwargs)
+
+        def track_close(fd):
+            closed.append(fd)
+            return original_close(fd)
+
+        with patch.object(os, "fdopen", side_effect=fail_second), \
+                patch.object(os, "close", side_effect=track_close):
+            self.assertIn("later fixture wrap failure", local_ci.cli_policy_error(self.repo))
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(closed[:2], calls)
+        self.assertEqual(len(closed), 3)  # Both files and the scripts directory.
+        with self.assertRaises(OSError):
+            os.fstat(calls[-1])
+
+    def test_helper_mutation_under_lock_preserves_owner_and_releases_lock(self):
+        self._install_cli_policy_fixture()
+        first = self.runner("helper-owner-first")
+        first._cli_policy_bound = True
+        self.assertEqual(first.run(), 0)
+        owner = first.target_owner_path
+        original_owner = owner.read_bytes()
+        helper = self.repo / "scripts" / "ci_checkpoint.py"
+        before = helper.read_bytes()
+        second = self.runner("helper-owner-second")
+        second._cli_policy_bound = True
+        acquire = local_ci.CargoTargetLock.acquire
+        def mutate_after_lock(lock):
+            acquire(lock)
+            helper.write_bytes(before + b"\n# changed\n")
+        with patch.object(local_ci.CargoTargetLock, "acquire", mutate_after_lock):
+            self.assertNotEqual(second.run(), 0)
+        self.assertEqual(owner.read_bytes(), original_owner)
+        self.assertIsNone(second.target_lock)
+        self.assertIn("planner source", second.summary["target_cache_error"])
+
+    def test_helper_mutation_during_cargo_leaves_owner_unchecked(self):
+        self._install_cli_policy_fixture()
+        first = self.runner("helper-cargo-first")
+        first._cli_policy_bound = True
+        self.assertEqual(first.run(), 0)
+        helper = self.repo / "scripts" / "ci_target_storage.py"
+        original = helper.read_bytes()
+        runner = self.runner("helper-cargo-mutated")
+        runner._cli_policy_bound = True
+        original_step = runner._run_step
+        def mutate_after_step(step, index):
+            result = original_step(step, index)
+            helper.write_bytes(original + b"\n# changed during cargo\n")
+            return result
+        with patch.object(runner, "_run_step", side_effect=mutate_after_step):
+            self.assertNotEqual(runner.run(), 0)
+        self.assertFalse(json.loads(runner.target_owner_path.read_text())["cache_inputs"]["workspace"]["checked"])
+        self.assertIsNone(runner.target_lock)
+        self.assertNotEqual(runner.summary["status"], "passed")
+
+    def test_cli_helper_policy_is_checked_against_selected_root(self):
+        self._install_cli_policy_fixture()
+        other = self.base / "other-source"
+        shutil.copytree(self.repo / "scripts", other / "scripts")
+        self.assertIsNone(local_ci.cli_policy_error(other))
+        path = other / "scripts" / "build_inputs.py"
+        path.write_bytes(path.read_bytes() + b"\n# different root\n")
+        self.assertIsNotNone(local_ci.cli_policy_error(other))
+        self.assertIsNone(local_ci.cli_policy_error(self.repo))
+        runner = self.runner("helper-other", root=other)
+        runner._cli_policy_bound = True
+        self.assertNotEqual(runner.run(), 0)
+        self.assertIn("cli_policy_error", runner.summary)
 
     def test_cli_policy_refuses_change_before_plan_resolution(self):
         self._install_cli_policy_fixture()
-        for name in ("ci_plan.py", "python_test_plan.py"):
+        for name in ("ci_plan.py", "python_test_plan.py", "build_inputs.py",
+                     "ci_checkpoint.py", "ci_target_storage.py"):
             with self.subTest(name=name):
                 policy = self.repo / "scripts" / name
                 original = policy.read_bytes()
@@ -477,7 +665,8 @@ class LocalCiRunnerTests(unittest.TestCase):
         self._install_cli_policy_fixture()
         self.assertIsNone(local_ci.cli_policy_error(self.repo))
         scripts = self.repo / "scripts"
-        for name in ("ci_plan.py", "python_test_plan.py"):
+        for name in ("ci_plan.py", "python_test_plan.py", "build_inputs.py",
+                     "ci_checkpoint.py", "ci_target_storage.py"):
             path = scripts / name
             original = path.read_bytes()
             path.write_bytes(original + b"\n# mutation\n")

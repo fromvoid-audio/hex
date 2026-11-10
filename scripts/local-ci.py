@@ -29,48 +29,80 @@ import uuid
 
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def _read_policy_source(path: Path) -> bytes:
+    """Read exact regular policy source without links or blocking on FIFOs."""
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise RuntimeError(f"CI policy source is not a regular file: {path.name}")
+            with os.fdopen(descriptor, "rb", closefd=False) as source:
+                return source.read()
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(directory)
+
+
 _PLAN_SPEC = importlib.util.spec_from_file_location("hex_ci_plan", Path(__file__).with_name("ci_plan.py"))
 if _PLAN_SPEC is None or _PLAN_SPEC.loader is None:
     raise RuntimeError("local CI planner unavailable")
 ci_plan = importlib.util.module_from_spec(_PLAN_SPEC)
 # Execute and retain the exact source witness; timestamp-valid .pyc files can
 # otherwise contain different code than the source currently on disk.
-_PLAN_SOURCE_BYTES = Path(_PLAN_SPEC.origin).read_bytes()
+_PLAN_SOURCE_BYTES = _read_policy_source(Path(_PLAN_SPEC.origin))
 _PLAN_SOURCE_SHA256 = hashlib.sha256(_PLAN_SOURCE_BYTES).hexdigest()
 exec(compile(_PLAN_SOURCE_BYTES, _PLAN_SPEC.origin, "exec", dont_inherit=True), ci_plan.__dict__)
+
+
 _INPUT_SPEC = importlib.util.spec_from_file_location("hex_build_inputs", Path(__file__).with_name("build_inputs.py"))
 if _INPUT_SPEC is None or _INPUT_SPEC.loader is None:
     raise RuntimeError("Cargo input identity helper unavailable")
 build_inputs = importlib.util.module_from_spec(_INPUT_SPEC)
-_INPUT_SPEC.loader.exec_module(build_inputs)
+_INPUT_SOURCE_BYTES = _read_policy_source(Path(_INPUT_SPEC.origin))
+_INPUT_SOURCE_SHA256 = hashlib.sha256(_INPUT_SOURCE_BYTES).hexdigest()
+exec(compile(_INPUT_SOURCE_BYTES, _INPUT_SPEC.origin, "exec", dont_inherit=True), build_inputs.__dict__)
 _CHECKPOINT_SPEC = importlib.util.spec_from_file_location("hex_ci_checkpoint", Path(__file__).with_name("ci_checkpoint.py"))
 if _CHECKPOINT_SPEC is None or _CHECKPOINT_SPEC.loader is None:
     raise RuntimeError("CI checkpoint helper unavailable")
 ci_checkpoint = importlib.util.module_from_spec(_CHECKPOINT_SPEC)
-_CHECKPOINT_SPEC.loader.exec_module(ci_checkpoint)
+_CHECKPOINT_SOURCE_BYTES = _read_policy_source(Path(_CHECKPOINT_SPEC.origin))
+_CHECKPOINT_SOURCE_SHA256 = hashlib.sha256(_CHECKPOINT_SOURCE_BYTES).hexdigest()
+exec(compile(_CHECKPOINT_SOURCE_BYTES, _CHECKPOINT_SPEC.origin, "exec", dont_inherit=True), ci_checkpoint.__dict__)
 _STORAGE_SPEC = importlib.util.spec_from_file_location("hex_ci_target_storage", Path(__file__).with_name("ci_target_storage.py"))
 if _STORAGE_SPEC is None or _STORAGE_SPEC.loader is None:
     raise RuntimeError("Cargo target storage helper unavailable")
 ci_target_storage = importlib.util.module_from_spec(_STORAGE_SPEC)
-_STORAGE_SPEC.loader.exec_module(ci_target_storage)
+_STORAGE_SOURCE_BYTES = _read_policy_source(Path(_STORAGE_SPEC.origin))
+_STORAGE_SOURCE_SHA256 = hashlib.sha256(_STORAGE_SOURCE_BYTES).hexdigest()
+exec(compile(_STORAGE_SOURCE_BYTES, _STORAGE_SPEC.origin, "exec", dont_inherit=True), ci_target_storage.__dict__)
 GIB = 1024 ** 3
 DEFAULT_FULL_MIN_FREE_BYTES = 2 * GIB
 
 
 def cli_policy_error(root: Path) -> str | None:
-    """Compare the CLI's executed policy bytes with regular source files."""
+    """Compare the CLI's executed policy and helper bytes with regular source files."""
     expected = {"ci_plan.py": _PLAN_SOURCE_SHA256,
-                "python_test_plan.py": ci_plan._PYTHON_SOURCE_SHA256}
+                "python_test_plan.py": ci_plan._PYTHON_SOURCE_SHA256,
+                "build_inputs.py": _INPUT_SOURCE_SHA256,
+                "ci_checkpoint.py": _CHECKPOINT_SOURCE_SHA256,
+                "ci_target_storage.py": _STORAGE_SOURCE_SHA256}
     try:
         directory = os.open(root / "scripts", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             for name, digest in expected.items():
                 fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
-                with os.fdopen(fd, "rb") as source:
-                    if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                try:
+                    if not stat.S_ISREG(os.fstat(fd).st_mode):
                         raise ValueError(f"planner source is not a regular file: {name}")
-                    if hashlib.sha256(source.read()).hexdigest() != digest:
-                        raise ValueError(f"executed planner differs from current source: {name}")
+                    with os.fdopen(fd, "rb", closefd=False) as source:
+                        if hashlib.sha256(source.read()).hexdigest() != digest:
+                            raise ValueError(f"executed planner differs from current source: {name}")
+                finally:
+                    os.close(fd)
         finally:
             os.close(directory)
     except (OSError, ValueError) as error:
