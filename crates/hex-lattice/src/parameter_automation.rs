@@ -2,7 +2,7 @@
 //! Programs own only bounded flat metadata/point vectors. Providers never retain
 //! these borrows; the existing prepared/runtime owner inventories their backing.
 //! Missing content-origin clocks use base values (None), never performance beats.
-use crate::NativeInstrumentClock;
+use crate::{NativeInstrumentClock, PreparedForeignAutomation};
 use hex_lattice_contract::{
     DeviceAutomationTarget, DeviceContractError as Error, HostGain, ParameterAccess,
     ParameterAutomation, ParameterDescriptor, ParameterId, ParameterKind, ParameterSemantics,
@@ -12,6 +12,7 @@ use hex_lattice_contract::{
 pub const MAX_AUTOMATION_LANES: usize = 256;
 pub const MAX_AUTOMATION_POINTS: usize = 65_536;
 pub const MAX_AUTOMATION_POINTS_PER_LANE: usize = 1_024;
+const MAX_AUTOMATION_TOUCH_STEPS_PER_LANE: usize = 16_384;
 
 /// Validated normalized scalar, independent of project storage and device units.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -80,12 +81,27 @@ impl NativeTransientOperation {
     }
 }
 
-/// Borrowed final canonical values, independent of their producing control
-/// source. The historical automation name remains the shared delivery seam for
-/// future host composition; providers never inspect envelopes or modulators.
-/// IDs remain stable throughout this borrow. None selects immutable base.
+/// Borrowed final canonical values from the host's shared composition seam.
+/// Providers receive typed values and route presence while the host owns the
+/// envelopes, modulator graph, and clocks. IDs stay stable during this borrow.
+/// None selects immutable base.
 pub trait NativeParameterAutomation {
     fn parameter_ids(&self) -> &[ParameterId];
+
+    /// A routed normalized value before the final clamp, if available. A
+    /// provider with a subsequent per-occurrence contribution can sum it
+    /// without losing offsets that temporarily exceeded the target range.
+    fn normalized_before_clamp(&self, _parameter: ParameterId, _offset: usize) -> Option<f64> {
+        None
+    }
+
+    /// Whether an active sample-rate route targets this value in the block.
+    /// A route remains present at zero offset. Authored automation alone
+    /// never reports a modulation route.
+    fn has_sample_rate_modulation(&self, _parameter: ParameterId) -> bool {
+        false
+    }
+
     /// Canonical units at this segment's sample offset. None means no authored
     /// lane or unavailable content origin; callers use their immutable base.
     fn value_at(&self, parameter: ParameterId, sample_offset: usize) -> Option<ParameterValue>;
@@ -126,6 +142,15 @@ pub struct HostAutomationLane {
     pub target: DeviceAutomationTarget,
     pub points: std::ops::Range<usize>,
 }
+/// Exact half-open step range over one native parameter or host trim.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParameterAutomationTouchSpan {
+    pub target: DeviceAutomationTarget,
+    pub start_beat: u64,
+    pub end_beat: u64,
+    pub points: std::ops::Range<usize>,
+}
+
 /// Opaque, validated runtime mapping. Descriptor text is retained only for
 /// control admission; sample queries use this compiled scalar law exclusively.
 #[derive(Clone, Debug, PartialEq)]
@@ -133,6 +158,7 @@ pub struct PreparedParameterAutomationLane {
     descriptor: Option<ParameterDescriptor>,
     mapping: Mapping,
     source: PreparedLaneSource,
+    touch: std::ops::Range<usize>,
 }
 /// BaseFallback is runtime delivery metadata, not an authored empty curve.
 /// It keeps a cleared transient target in the provider's stable query inventory.
@@ -157,26 +183,29 @@ pub struct PreparedParameterAutomationPoint {
 /// prepared by the canonical integer-millidB HostGain law exactly once for each
 /// authored held/constant point; interpolated host values use that same law.
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum CanonicalValue {
+pub(crate) enum CanonicalValue {
     Provider(ParameterValue),
-    HostGainLinear(f32),
+    HostGain {
+        normalized: NormalizedAutomationValue,
+        linear: f32,
+    },
 }
 impl CanonicalValue {
-    fn provider(self) -> Option<ParameterValue> {
+    pub(crate) fn provider(self) -> Option<ParameterValue> {
         match self {
             Self::Provider(value) => Some(value),
-            Self::HostGainLinear(_) => None,
+            Self::HostGain { .. } => None,
         }
     }
-    fn host_gain(self) -> Option<f32> {
+    fn host_gain(self) -> Option<(NormalizedAutomationValue, f32)> {
         match self {
-            Self::HostGainLinear(value) => Some(value),
+            Self::HostGain { normalized, linear } => Some((normalized, linear)),
             Self::Provider(_) => None,
         }
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Mapping {
+pub(crate) enum Mapping {
     HostGain,
     Float {
         min: f64,
@@ -190,7 +219,7 @@ enum Mapping {
     },
 }
 impl Mapping {
-    fn prepare(
+    pub(crate) fn prepare(
         descriptor: ParameterDescriptor,
         semantics: ParameterSemantics,
     ) -> Result<Self, Error> {
@@ -229,11 +258,12 @@ impl Mapping {
     fn discrete(self) -> bool {
         matches!(self, Self::Bool | Self::Choice { .. })
     }
-    fn value(self, normalized: f32) -> Result<CanonicalValue, Error> {
+    pub(crate) fn value(self, normalized: f32) -> Result<CanonicalValue, Error> {
         Ok(match self {
-            Self::HostGain => {
-                CanonicalValue::HostGainLinear(HostGain::from_normalized(normalized)?.linear())
-            }
+            Self::HostGain => CanonicalValue::HostGain {
+                normalized: NormalizedAutomationValue(normalized),
+                linear: HostGain::from_normalized(normalized)?.linear(),
+            },
             Self::Bool => CanonicalValue::Provider(ParameterValue::Bool(normalized >= 0.5)),
             Self::Choice { last } => CanonicalValue::Provider(ParameterValue::Choice(
                 (normalized * last as f32).round() as u32,
@@ -266,7 +296,9 @@ fn compile_points(
     points: &[ParameterAutomationPoint],
     compiled: &mut Vec<PreparedParameterAutomationPoint>,
 ) -> Result<Option<CanonicalValue>, Error> {
-    let first = points.first().ok_or(Error::InvalidDescriptor)?;
+    let Some(first) = points.first() else {
+        return Ok(None);
+    };
     if points
         .iter()
         .any(|point| !point.normalized.is_finite() || !(0.0..=1.0).contains(&point.normalized))
@@ -297,8 +329,83 @@ pub struct PreparedParameterAutomation {
     host_input: Option<usize>,
     host_output: Option<usize>,
     input_target: Option<DeviceAutomationTarget>,
+    foreign: Option<PreparedForeignAutomation>,
+    touch: Vec<ParameterAutomationTouchSpan>,
 }
 impl PreparedParameterAutomation {
+    /// A foreign processor consumes the SDK queue rather than the native
+    /// canonical parameter or host trim queries.
+    pub fn for_foreign(program: PreparedForeignAutomation) -> Self {
+        Self {
+            foreign: Some(program),
+            ..Self::default()
+        }
+    }
+
+    pub fn foreign(&self) -> Option<&PreparedForeignAutomation> {
+        self.foreign.as_ref()
+    }
+
+    pub(crate) fn shares_foreign_program_history_with(
+        &self,
+        other: &Self,
+        binding: hex_lattice_contract::ForeignProcessorBinding,
+    ) -> bool {
+        let Self {
+            ids,
+            lanes,
+            points,
+            host_input,
+            host_output,
+            input_target,
+            foreign,
+            touch,
+        } = self;
+        ids == &other.ids
+            && lanes == &other.lanes
+            && points == &other.points
+            && host_input == &other.host_input
+            && host_output == &other.host_output
+            && input_target == &other.input_target
+            && touch == &other.touch
+            && match (foreign, &other.foreign) {
+                (Some(a), Some(b)) => {
+                    a.borrow().binding == binding
+                        && b.borrow().binding == binding
+                        && a.shares_current_program_history_with(b)
+                }
+                _ => false,
+            }
+    }
+
+    /// Carry the exact predecessor's immutable foreign quantum programs while
+    /// preparing a new graph on control. Native/host envelopes stay unchanged.
+    /// The host must obtain the optional frontier from this original worker.
+    pub fn retain_foreign_history_on_control(
+        &mut self,
+        previous: &Self,
+        received: Option<std::num::NonZeroU64>,
+    ) -> Result<(), Error> {
+        let current = self
+            .foreign
+            .as_mut()
+            .ok_or(Error::ForeignProcessingFailed)?;
+        let previous = previous
+            .foreign
+            .as_ref()
+            .ok_or(Error::ForeignProcessingFailed)?;
+        if current.shares_storage_with(previous) {
+            return Ok(());
+        }
+        if current.borrow().revision <= previous.borrow().revision {
+            return Err(Error::ForeignProcessingFailed);
+        }
+        match received {
+            Some(received) => current.retain_received_on_control(previous, received),
+            None => current.retain_previous_on_control(previous),
+        }
+    }
+
     pub fn new(
         lanes: Vec<ParameterAutomationLane>,
         points: Vec<ParameterAutomationPoint>,
@@ -309,6 +416,15 @@ impl PreparedParameterAutomation {
         lanes: Vec<ParameterAutomationLane>,
         host: Vec<HostAutomationLane>,
         points: Vec<ParameterAutomationPoint>,
+    ) -> Result<Self, Error> {
+        Self::new_with_host_and_touch(lanes, host, points, Vec::new())
+    }
+
+    pub fn new_with_host_and_touch(
+        lanes: Vec<ParameterAutomationLane>,
+        host: Vec<HostAutomationLane>,
+        points: Vec<ParameterAutomationPoint>,
+        touch: Vec<ParameterAutomationTouchSpan>,
     ) -> Result<Self, Error> {
         let count = lanes
             .len()
@@ -340,7 +456,7 @@ impl PreparedParameterAutomation {
                 || matches!(lane.semantics.stepping, ParameterStepping::Unspecified)
                 || ids.last().is_some_and(|id| *id >= lane.descriptor.id)
                 || lane.points.start != end
-                || lane.points.start >= lane.points.end
+                || lane.points.start > lane.points.end
                 || lane.points.len() > MAX_AUTOMATION_POINTS_PER_LANE
             {
                 return Err(Error::InvalidDescriptor);
@@ -354,6 +470,7 @@ impl PreparedParameterAutomation {
             prepared.push(PreparedParameterAutomationLane {
                 descriptor: Some(lane.descriptor),
                 mapping,
+                touch: 0..0,
                 source: PreparedLaneSource::Curve {
                     points: lane.points.clone(),
                     constant,
@@ -368,7 +485,7 @@ impl PreparedParameterAutomation {
             if !lane.target.is_host()
                 || previous.is_some_and(|target| target >= lane.target)
                 || lane.points.start != end
-                || lane.points.is_empty()
+                || lane.points.start > lane.points.end
                 || lane.points.len() > MAX_AUTOMATION_POINTS_PER_LANE
             {
                 return Err(Error::InvalidDescriptor);
@@ -381,29 +498,100 @@ impl PreparedParameterAutomation {
             match lane.target {
                 DeviceAutomationTarget::HostInputGain => host_input = Some(prepared.len()),
                 DeviceAutomationTarget::HostOutputGain => host_output = Some(prepared.len()),
-                DeviceAutomationTarget::Parameter(_) => return Err(Error::InvalidDescriptor),
+                DeviceAutomationTarget::Parameter(_) | DeviceAutomationTarget::Vst3 { .. } => {
+                    return Err(Error::InvalidDescriptor);
+                }
             }
             end = lane.points.end;
             prepared.push(PreparedParameterAutomationLane {
                 descriptor: None,
                 mapping: Mapping::HostGain,
+                touch: 0..0,
                 source: PreparedLaneSource::Curve {
                     points: lane.points,
                     constant,
                 },
             });
         }
-        if end != points.len() {
-            return Err(Error::InvalidDescriptor);
-        }
-        Ok(Self {
+        let mut result = Self {
             ids,
             lanes: prepared,
             points: compiled_points,
             host_input,
             host_output,
             input_target: None,
-        })
+            foreign: None,
+            touch,
+        };
+        result.compile_touch(&points, end)?;
+        Ok(result)
+    }
+
+    fn compile_touch(
+        &mut self,
+        points: &[ParameterAutomationPoint],
+        mut end: usize,
+    ) -> Result<(), Error> {
+        let mut previous: Option<&ParameterAutomationTouchSpan> = None;
+        let mut lane_count = 0usize;
+        for (index, span) in self.touch.iter().enumerate() {
+            if span.start_beat >= span.end_beat || span.points.start != end {
+                return Err(Error::InvalidDescriptor);
+            }
+            let lane_index = match span.target {
+                DeviceAutomationTarget::Parameter(id) => self.ids.binary_search(&id).ok(),
+                DeviceAutomationTarget::HostInputGain => self.host_input,
+                DeviceAutomationTarget::HostOutputGain => self.host_output,
+                DeviceAutomationTarget::Vst3 { .. } => None,
+            };
+            let lane = self
+                .lanes
+                .get_mut(lane_index.ok_or(Error::InvalidDescriptor)?)
+                .ok_or(Error::InvalidDescriptor)?;
+            let PreparedLaneSource::Curve { .. } = &lane.source else {
+                return Err(Error::InvalidDescriptor);
+            };
+            if previous.is_some_and(|prior| {
+                prior.target > span.target
+                    || (prior.target == span.target && prior.end_beat > span.start_beat)
+            }) {
+                return Err(Error::InvalidDescriptor);
+            }
+            if previous.is_none_or(|prior| prior.target != span.target) {
+                lane.touch = index..index;
+                lane_count = 0;
+            }
+            lane_count = lane_count
+                .checked_add(span.points.len())
+                .ok_or(Error::RuntimeBudgetExceeded)?;
+            if lane_count > MAX_AUTOMATION_TOUCH_STEPS_PER_LANE || lane.touch.len() == 128 {
+                return Err(Error::RuntimeBudgetExceeded);
+            }
+            let values = points
+                .get(span.points.clone())
+                .ok_or(Error::InvalidDescriptor)?;
+            if values
+                .first()
+                .is_none_or(|first| first.beat_raw != span.start_beat)
+                || values
+                    .last()
+                    .is_some_and(|last| last.beat_raw >= span.end_beat)
+                || values.iter().any(|point| !point.step)
+            {
+                return Err(Error::InvalidDescriptor);
+            }
+            compile_points(lane.mapping, values, &mut self.points)?;
+            lane.touch.end += 1;
+            previous = Some(span);
+            end = span.points.end;
+        }
+        if end != points.len() || self.lanes.iter().any(|lane| {
+            matches!(&lane.source, PreparedLaneSource::Curve { points, .. } if points.is_empty())
+                && lane.touch.is_empty()
+        }) {
+            return Err(Error::InvalidDescriptor);
+        }
+        Ok(())
     }
     /// Exactly one control-prepared transient target; authored constructors do
     /// not arm anything. This metadata is never a saved-project envelope.
@@ -448,6 +636,9 @@ impl PreparedParameterAutomation {
         descriptor: ParameterDescriptor,
         semantics: ParameterSemantics,
     ) -> Result<(), Error> {
+        if self.foreign.is_some() {
+            return Err(Error::UnsupportedProcessingClass);
+        }
         semantics.validate(descriptor)?;
         if semantics.access != ParameterAccess::ReadWrite
             || semantics.automation != ParameterAutomation::DeviceArrangementEnvelope
@@ -484,6 +675,7 @@ impl PreparedParameterAutomation {
                     PreparedParameterAutomationLane {
                         descriptor: Some(descriptor),
                         mapping,
+                        touch: 0..0,
                         source: PreparedLaneSource::BaseFallback,
                     },
                 );
@@ -502,7 +694,9 @@ impl PreparedParameterAutomation {
         let slot = match target {
             DeviceAutomationTarget::HostInputGain => self.host_input,
             DeviceAutomationTarget::HostOutputGain => self.host_output,
-            DeviceAutomationTarget::Parameter(_) => return Err(Error::InvalidDescriptor),
+            DeviceAutomationTarget::Parameter(_) | DeviceAutomationTarget::Vst3 { .. } => {
+                return Err(Error::InvalidDescriptor);
+            }
         };
         if slot.is_some() {
             return Ok(());
@@ -517,12 +711,15 @@ impl PreparedParameterAutomation {
         self.lanes.push(PreparedParameterAutomationLane {
             descriptor: None,
             mapping: Mapping::HostGain,
+            touch: 0..0,
             source: PreparedLaneSource::BaseFallback,
         });
         match target {
             DeviceAutomationTarget::HostInputGain => self.host_input = Some(index),
             DeviceAutomationTarget::HostOutputGain => self.host_output = Some(index),
-            DeviceAutomationTarget::Parameter(_) => return Err(Error::InvalidDescriptor),
+            DeviceAutomationTarget::Parameter(_) | DeviceAutomationTarget::Vst3 { .. } => {
+                return Err(Error::InvalidDescriptor);
+            }
         }
         Ok(())
     }
@@ -537,7 +734,7 @@ impl PreparedParameterAutomation {
         Ok(())
     }
     fn validate_input_target(&self, target: DeviceAutomationTarget) -> Result<(), Error> {
-        if self.input_target.is_some_and(|current| current != target) {
+        if self.foreign.is_some() || self.input_target.is_some_and(|current| current != target) {
             return Err(Error::InvalidDescriptor);
         }
         Ok(())
@@ -554,13 +751,23 @@ impl PreparedParameterAutomation {
         Ok(())
     }
     pub fn is_empty(&self) -> bool {
-        self.lanes.is_empty() && self.input_target.is_none()
+        self.lanes.is_empty() && self.input_target.is_none() && self.foreign.is_none()
+    }
+    /// The tail split can stage output-gain control while input gain stays
+    /// static. Provider controls, authored curves and input-gain windows need
+    /// their own verified combined-signal contracts.
+    pub(crate) fn supports_tail_split_controls(&self) -> bool {
+        self.foreign.is_none()
+            && self.points.is_empty()
+            && self.ids.is_empty()
+            && self.host_input.is_none()
+            && self.input_target != Some(DeviceAutomationTarget::HostInputGain)
     }
     pub fn has_host_target(&self, target: DeviceAutomationTarget) -> bool {
         match target {
             DeviceAutomationTarget::HostInputGain => self.host_input.is_some(),
             DeviceAutomationTarget::HostOutputGain => self.host_output.is_some(),
-            DeviceAutomationTarget::Parameter(_) => false,
+            DeviceAutomationTarget::Parameter(_) | DeviceAutomationTarget::Vst3 { .. } => false,
         }
     }
     pub fn has_host_targets(&self) -> bool {
@@ -585,6 +792,9 @@ impl PreparedParameterAutomation {
     ) {
         (&self.ids, &self.lanes, &self.points)
     }
+    pub fn touch_storage(&self) -> &Vec<ParameterAutomationTouchSpan> {
+        &self.touch
+    }
     pub fn storage_bytes(&self) -> Option<usize> {
         self.ids
             .capacity()
@@ -598,7 +808,16 @@ impl PreparedParameterAutomation {
                 self.points
                     .capacity()
                     .checked_mul(std::mem::size_of::<PreparedParameterAutomationPoint>())?,
-            )
+            )?
+            .checked_add(
+                self.foreign()
+                    .map_or(0, PreparedForeignAutomation::storage_bytes),
+            )?
+            .checked_add(Self::quoted_touch_storage_bytes(self.touch.capacity())?)
+    }
+
+    pub fn quoted_touch_storage_bytes(spans: usize) -> Option<usize> {
+        spans.checked_mul(std::mem::size_of::<ParameterAutomationTouchSpan>())
     }
     pub fn quoted_storage_bytes(lanes: usize, points: usize) -> Option<usize> {
         Self::quoted_storage_bytes_with_host(lanes, 0, points)
@@ -663,9 +882,10 @@ impl PreparedParameterAutomation {
             block.input = Some(match input {
                 NativeTransientValue::Parameter { value, .. } => CanonicalValue::Provider(value),
                 NativeTransientValue::HostInputGain(gain)
-                | NativeTransientValue::HostOutputGain(gain) => {
-                    CanonicalValue::HostGainLinear(gain.linear())
-                }
+                | NativeTransientValue::HostOutputGain(gain) => CanonicalValue::HostGain {
+                    normalized: NormalizedAutomationValue(gain.normalized()),
+                    linear: gain.linear(),
+                },
             });
         }
         Ok(block)
@@ -723,6 +943,26 @@ impl ParameterAutomationBlock<'_> {
     /// Native host gain in linear amplitude units, from the same exact integer
     /// HostGain conversion used by base state. Missing origin uses base fallback.
     pub fn host_gain_at(&self, target: DeviceAutomationTarget, offset: usize) -> Option<f32> {
+        self.host_gain_frame(target, offset)
+            .map(|(_, linear)| linear)
+    }
+
+    /// Host trim in normalized dB space before millidB rounding. This uses the
+    /// same host target, precedence and clock as the linear amplitude read.
+    pub fn host_gain_normalized_at(
+        &self,
+        target: DeviceAutomationTarget,
+        offset: usize,
+    ) -> Option<NormalizedAutomationValue> {
+        self.host_gain_frame(target, offset)
+            .map(|(normalized, _)| normalized)
+    }
+
+    fn host_gain_frame(
+        &self,
+        target: DeviceAutomationTarget,
+        offset: usize,
+    ) -> Option<(NormalizedAutomationValue, f32)> {
         if offset >= self.frames {
             return None;
         }
@@ -734,7 +974,9 @@ impl ParameterAutomationBlock<'_> {
         let index = match target {
             DeviceAutomationTarget::HostInputGain => self.program.host_input?,
             DeviceAutomationTarget::HostOutputGain => self.program.host_output?,
-            DeviceAutomationTarget::Parameter(_) => return None,
+            DeviceAutomationTarget::Parameter(_) | DeviceAutomationTarget::Vst3 { .. } => {
+                return None;
+            }
         };
         self.external_value(index, target, offset)
             .or_else(|| self.value_at_beat(index, self.clock?.arrangement_beat_at_offset(offset)?))?
@@ -758,6 +1000,19 @@ impl ParameterAutomationBlock<'_> {
     }
     fn value_at_beat(&self, index: usize, beat: u64) -> Option<CanonicalValue> {
         let lane = self.program.lanes.get(index)?;
+        if !lane.touch.is_empty() {
+            let spans = self.program.touch.get(lane.touch.clone())?;
+            let next = spans.partition_point(|span| span.start_beat <= beat);
+            if let Some(span) = next.checked_sub(1).and_then(|index| spans.get(index))
+                && beat < span.end_beat
+            {
+                let steps = self.program.points.get(span.points.clone())?;
+                let point = steps.partition_point(|point| point.point.beat_raw <= beat);
+                return steps
+                    .get(point.checked_sub(1)?)
+                    .map(|point| point.canonical);
+            }
+        }
         let PreparedLaneSource::Curve { points, constant } = &lane.source else {
             return None;
         };

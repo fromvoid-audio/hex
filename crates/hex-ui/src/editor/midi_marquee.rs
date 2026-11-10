@@ -26,7 +26,7 @@ impl EditorView {
                 generation: self.project_generation,
                 revision: self.state.as_ref()?.revision,
                 clip: self.detail_clip_id()?,
-                beat_start: self.piano_beat_start.raw(),
+                beat_start: self.piano_beat_start,
                 beat_span: self.piano_beat_span.raw(),
                 pitch_low: self.piano_pitch_low,
                 pitch_rows: self.piano_pitch_rows,

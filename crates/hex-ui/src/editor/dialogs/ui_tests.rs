@@ -971,12 +971,10 @@ fn returned_open_refused_deferred_tuning_save_releases_intent_and_future_actions
     visual.update(|window, cx| {
         editor.update(cx, |view, cx| {
             assert!(!view.request_window_close(window, cx));
-            assert!(
-                view.close_prompt_open,
-                "close must reach its normal unsaved-work prompt"
-            );
+            assert!(view.automation_close_preflight.frozen());
         });
     });
+    super::super::close::wait_for_close_prompt(&editor, cx);
     cx.simulate_prompt_answer("cancel");
     visual.run_until_parked();
     visual.dispatch_action(NewProject);
@@ -1232,9 +1230,9 @@ fn one_new_save_waits_for_current_or_new_save_and_replaces_once(cx: &mut TestApp
             );
         });
         // A duplicate/late save terminal cannot run the captured New again.
-        editor.update(cx, |view, _| {
-            view.complete_open_save(true, saved_revision);
-            view.complete_open_save(false, saved_revision);
+        editor.update(cx, |view, cx| {
+            view.complete_open_save(true, saved_revision, cx);
+            view.complete_open_save(false, saved_revision, cx);
             assert_eq!(view.worker_requests_pending, 0);
             assert_eq!(view.project_generation, generation + 1);
         });

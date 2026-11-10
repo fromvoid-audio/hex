@@ -182,7 +182,7 @@ fn browser_reveal_resolves_remapped_identity_and_keeps_filters(cx: &mut TestAppC
     assert!(visual.debug_bounds("browser-entry-150").is_some());
     assert_eq!(
         visual.rendered_background("browser-entry-150").unwrap(),
-        gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Hover)).into()
+        gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Secondary)).into()
     );
     visual.simulate_keystrokes("cmd-f");
     visual.simulate_input("loop");

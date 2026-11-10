@@ -8,7 +8,7 @@ use gpui::{
     LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ShapedLine,
     SharedString, Style, Window, actions, canvas, div, prelude::*, px, relative, rgb,
 };
-use std::ops::Range;
+use std::{cell::Cell, ops::Range, rc::Rc};
 
 actions!(
     hex_widgets_numeric,
@@ -103,8 +103,9 @@ pub enum NumericControlPresentation {
     CompactSlider,
     LabeledSlider,
     FilledSlider,
+    /// Textless12×32 strip; scrub/keyboard/accessibility edits, with no text-entry target.
+    FilledVerticalSlider,
     VerticalSlider,
-    DeviceMeters,
     /// Input-level well with a ceiling triangle and editable numeric readout.
     MeterFader,
 }
@@ -119,7 +120,7 @@ impl NumericControlPresentation {
             | Self::CompactSlider
             | Self::LabeledSlider
             | Self::FilledSlider => NumericControlKind::HorizontalSlider,
-            Self::VerticalSlider | Self::DeviceMeters | Self::MeterFader => {
+            Self::VerticalSlider | Self::FilledVerticalSlider | Self::MeterFader => {
                 NumericControlKind::VerticalSlider
             }
         }
@@ -135,8 +136,9 @@ impl NumericControlPresentation {
             Self::InlineValue => NumericControlAppearance::InlineValue,
             Self::CompactSlider => NumericControlAppearance::CompactSlider,
             Self::LabeledSlider => NumericControlAppearance::LabeledSlider,
-            Self::FilledSlider => NumericControlAppearance::FilledSlider,
-            Self::DeviceMeters => NumericControlAppearance::DeviceMeters,
+            Self::FilledSlider | Self::FilledVerticalSlider => {
+                NumericControlAppearance::FilledSlider
+            }
             Self::MeterFader => NumericControlAppearance::MeterFader,
         }
     }
@@ -168,12 +170,14 @@ enum NumericControlAppearance {
     /// One filled mixer field with centered editable text and upward scrubbing.
     /// Bipolar specs fill from the marked center; other scales fill from the left.
     FilledSlider,
-    DeviceMeters,
     MeterFader,
 }
 
 #[cfg(test)]
 mod compact_slider_tests;
+mod compact_vertical;
+#[cfg(test)]
+mod edit_state_tests;
 mod vertical_fader;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,10 +188,24 @@ pub enum NumericEventPhase {
     Cancel,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Identity of one pointer drag, unique while any queued event or owner holds it.
+/// Clones share the same identity. No counter or rollover is involved.
+#[derive(Debug, Clone)]
+pub struct NumericGestureId(Rc<()>);
+
+impl PartialEq for NumericGestureId {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for NumericGestureId {}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct NumericControlEvent {
     pub phase: NumericEventPhase,
     pub value: f64,
+    /// Present for pointer drags; other edit paths do not promise an identity.
+    pub gesture: Option<NumericGestureId>,
 }
 
 /// Final value returned to an owner performing a lifecycle barrier. It lets
@@ -199,6 +217,8 @@ pub struct NumericControlFinalValue {
     pub explicit_edit: bool,
     pub previous: f64,
     pub value: f64,
+    /// Identity of an active pointer drag finalized by the owner, if any.
+    pub gesture: Option<NumericGestureId>,
     formatted: String,
 }
 
@@ -216,6 +236,7 @@ pub struct NumericControlConfig {
     dial_layout: DialLayout,
     command_fine_steps: bool,
     value_drag_steps: bool,
+    slider_center_mark: bool,
 }
 
 impl NumericControlConfig {
@@ -243,6 +264,7 @@ impl NumericControlConfig {
             dial_layout: DialLayout::ReadoutGap,
             command_fine_steps: false,
             value_drag_steps: false,
+            slider_center_mark: true,
         })
     }
 
@@ -261,6 +283,13 @@ impl NumericControlConfig {
     /// Every control supports stepping a valid local text draft.
     pub fn with_command_fine_steps(mut self) -> Self {
         self.command_fine_steps = true;
+        self
+    }
+
+    /// Show or hide the center line of bipolar filled fields. The fill still
+    /// grows from the center; input geometry and all value semantics stay intact.
+    pub fn with_slider_center_mark(mut self, visible: bool) -> Self {
+        self.slider_center_mark = visible;
         self
     }
 
@@ -308,6 +337,18 @@ struct TextMouseSelection {
     dragging: bool,
 }
 
+/// A read-only view of a numeric control's current text-edit state.
+/// This shares only the boolean state, not the control or its GPUI entity.
+#[derive(Clone)]
+pub struct NumericEditState(Rc<Cell<bool>>);
+
+impl NumericEditState {
+    /// Whether the control currently owns a text-edit draft.
+    pub fn is_editing(&self) -> bool {
+        self.0.get()
+    }
+}
+
 pub struct NumericControl {
     accessibility_binding: Option<gpui::AccessibilityBinding>,
     accessibility_pending: bool,
@@ -320,10 +361,11 @@ pub struct NumericControl {
     pub(crate) draft: f64,
     availability: crate::ControlAvailability,
     commit_unchanged_text: bool,
-    pub(crate) editing: bool,
+    pub(crate) editing: NumericEditState,
     pub(crate) invalid_text: bool,
     pub(crate) text: String,
     pub(crate) text_modified: bool,
+    pub(crate) caret_activity: u64,
     pub(crate) selected: Range<usize>,
     pub(crate) reversed: bool,
     pub(crate) marked: Option<Range<usize>>,
@@ -331,6 +373,7 @@ pub struct NumericControl {
     pub(crate) last_bounds: Option<Bounds<Pixels>>,
     pub(crate) last_origin_x: Option<Pixels>,
     press: Option<Press>,
+    active_gesture: Option<NumericGestureId>,
     text_mouse: Option<TextMouseSelection>,
     pub(crate) text_click: crate::TextClickSelection,
     pub(crate) style: ControlStyle,
@@ -341,9 +384,16 @@ pub struct NumericControl {
     tab_navigation: bool,
     command_fine_steps: bool,
     value_drag_steps: bool,
+    slider_center_mark: bool,
     pub(crate) focus: FocusHandle,
     focus_blur: Option<gpui::Subscription>,
     window_activation: Option<gpui::Subscription>,
+}
+
+impl Drop for NumericControl {
+    fn drop(&mut self) {
+        self.editing.0.set(false);
+    }
 }
 
 impl NumericControl {
@@ -407,6 +457,7 @@ impl NumericControl {
             dial_layout,
             command_fine_steps,
             value_drag_steps,
+            slider_center_mark,
         } = config;
         Self {
             accessibility_binding: None,
@@ -420,8 +471,9 @@ impl NumericControl {
             draft: value,
             availability: crate::ControlAvailability::Available,
             commit_unchanged_text: false,
-            editing: false,
+            editing: NumericEditState(Rc::new(Cell::new(false))),
             text_modified: false,
+            caret_activity: 0,
             invalid_text: false,
             text,
             selected: 0..0,
@@ -431,6 +483,7 @@ impl NumericControl {
             last_bounds: None,
             last_origin_x: None,
             press: None,
+            active_gesture: None,
             text_mouse: None,
             text_click: crate::TextClickSelection::default(),
             style,
@@ -441,6 +494,7 @@ impl NumericControl {
             tab_navigation: false,
             command_fine_steps,
             value_drag_steps,
+            slider_center_mark,
             focus: cx.focus_handle(),
             focus_blur: None,
             window_activation: None,
@@ -499,11 +553,16 @@ impl NumericControl {
     }
 
     pub fn is_interacting(&self) -> bool {
-        self.press.is_some() || self.editing
+        self.press.is_some() || self.editing.is_editing()
     }
 
     pub fn is_editing(&self) -> bool {
-        self.editing
+        self.editing.is_editing()
+    }
+
+    /// Read the live text-edit state without borrowing the GPUI entity.
+    pub fn edit_state(&self) -> NumericEditState {
+        self.editing.clone()
     }
 
     /// Synchronize from caller state without disrupting an active local draft.
@@ -571,19 +630,21 @@ impl NumericControl {
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
         self.text_mouse = None;
         self.text_click.clear();
-        if let Some(press) = self.press.take() {
-            if press.dragging {
-                self.value = press.start_value;
-                self.draft = press.start_value;
-                self.text = self.spec.format(self.draft).unwrap_or_default();
-                cx.emit(NumericControlEvent {
-                    phase: NumericEventPhase::Cancel,
-                    value: self.draft,
-                });
-            }
+        if let Some(press) = self.press.take()
+            && press.dragging
+        {
+            self.value = press.start_value;
+            self.draft = press.start_value;
+            self.text = self.spec.format(self.draft).unwrap_or_default();
+            cx.emit(NumericControlEvent {
+                phase: NumericEventPhase::Cancel,
+                value: self.draft,
+                gesture: self.active_gesture.clone(),
+            });
         }
-        if self.editing {
-            self.editing = false;
+        self.active_gesture = None;
+        if self.editing.is_editing() {
+            self.editing.0.set(false);
             self.text_modified = false;
             self.invalid_text = false;
             self.text = self.spec.format(self.value).unwrap_or_default();
@@ -603,8 +664,7 @@ impl NumericControl {
         if !self.availability.interactive() || event.button != MouseButton::Left {
             return;
         }
-        if (matches!(self.kind, NumericControlKind::Knob)
-            || self.appearance == NumericControlAppearance::DeviceMeters)
+        if matches!(self.kind, NumericControlKind::Knob)
             && matches!(target, PressTarget::Control)
             && event.click_count >= 2
         {
@@ -636,7 +696,8 @@ impl NumericControl {
         // default. A pending invalid text/IME draft must not retain focus-mode
         // or pointer capture and block later keyboard/external updates.
         self.press = None;
-        self.editing = false;
+        self.active_gesture = None;
+        self.editing.0.set(false);
         self.invalid_text = false;
         self.selected = 0..0;
         self.reversed = false;
@@ -646,16 +707,19 @@ impl NumericControl {
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Begin,
                 value: start,
+                gesture: None,
             });
             self.value = value;
             self.draft = value;
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Change,
                 value,
+                gesture: None,
             });
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Commit,
                 value,
+                gesture: None,
             });
         }
         cx.notify();
@@ -750,13 +814,13 @@ impl NumericControl {
                 gesture.selection_for_down(
                     event.click_count,
                     focused
-                        && self.editing
+                        && self.editing.is_editing()
                         && !self.text.is_empty()
                         && self.selected == (0..self.text.len()),
                 )
             })
             .flatten();
-        if self.editing {
+        if self.editing.is_editing() {
             if !self.capture_pointer(PressTarget::Value, window, cx) {
                 return;
             }
@@ -780,6 +844,7 @@ impl NumericControl {
                 self.move_to(offset);
             }
             self.press = None;
+            self.active_gesture = None;
             self.text_mouse = Some(TextMouseSelection {
                 anchor,
                 origin: event.position,
@@ -852,7 +917,7 @@ impl NumericControl {
 
     fn pointer_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) -> (bool, bool) {
         if let Some(mut selection) = self.text_mouse {
-            if !self.editing || event.pressed_button != Some(MouseButton::Left) {
+            if !self.editing.is_editing() || event.pressed_button != Some(MouseButton::Left) {
                 self.text_mouse = None;
                 self.text_click.clear();
                 return (true, false);
@@ -890,7 +955,9 @@ impl NumericControl {
                 cx.emit(NumericControlEvent {
                     phase: NumericEventPhase::Cancel,
                     value: self.draft,
+                    gesture: self.active_gesture.clone(),
                 });
+                self.active_gesture = None;
                 cx.notify();
                 return (true, true);
             }
@@ -900,15 +967,17 @@ impl NumericControl {
         let total_y = f32::from(event.position.y - press.origin.y);
         if !press.dragging && total_x.hypot(total_y) >= 3.0 {
             press.dragging = true;
+            self.active_gesture = Some(NumericGestureId(Rc::new(())));
             // Cursor visibility changes even at a value bound or on horizontal motion.
             cx.notify();
-            self.editing = false;
+            self.editing.0.set(false);
             self.invalid_text = false;
             self.text = self.spec.format(press.start_value).unwrap_or_default();
             self.selected = 0..0;
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Begin,
                 value: press.start_value,
+                gesture: self.active_gesture.clone(),
             });
         }
         if !press.dragging {
@@ -969,6 +1038,7 @@ impl NumericControl {
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Change,
                 value: next,
+                gesture: self.active_gesture.clone(),
             });
             cx.notify();
             (true, true)
@@ -998,13 +1068,15 @@ impl NumericControl {
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Commit,
                 value: self.draft,
+                gesture: self.active_gesture.clone(),
             });
+            self.active_gesture = None;
         } else if matches!(press.target, PressTarget::Value)
             && f32::from(event.position.x - press.origin.x)
                 .hypot(f32::from(event.position.y - press.origin.y))
                 < 3.0
         {
-            self.editing = true;
+            self.editing.0.set(true);
             self.text_modified = false;
             self.invalid_text = false;
             self.text = self.spec.format(self.draft).unwrap_or_default();
@@ -1022,13 +1094,13 @@ impl NumericControl {
         if !self.availability.interactive() {
             return;
         }
-        if self.editing {
+        if self.editing.is_editing() {
             // A composing or invalid draft must never be replaced with the old
             // canonical value. Stepping remains local until Enter/blur commits.
             if self.marked.is_some() {
                 return;
             }
-            if let Ok(current) = self.spec.parse(&self.text)
+            if let Ok(current) = self.spec.parse_with_current(&self.text, Some(self.value))
                 && let Ok(value) = self.spec.step(current, direction, fine)
                 && let Ok(text) = self.spec.format(value)
             {
@@ -1047,7 +1119,7 @@ impl NumericControl {
     }
 
     fn emit_accessible_value(&mut self, value: f64, cx: &mut Context<Self>) -> bool {
-        if !self.availability.interactive() || self.editing {
+        if !self.availability.interactive() || self.editing.is_editing() {
             return false;
         }
         let Ok(value) = self.spec.validate(value) else {
@@ -1057,6 +1129,7 @@ impl NumericControl {
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Begin,
                 value: self.draft,
+                gesture: None,
             });
             self.draft = value;
             self.value = value;
@@ -1064,10 +1137,12 @@ impl NumericControl {
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Change,
                 value,
+                gesture: None,
             });
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Commit,
                 value,
+                gesture: None,
             });
             cx.notify();
         }
@@ -1118,35 +1193,39 @@ impl NumericControl {
         self.text_mouse = None;
         self.text_click.clear();
         cx.stop_propagation();
-        if !self.editing {
+        if !self.editing.is_editing() {
             return;
         }
-        match self.spec.parse(&self.text) {
+        match self.spec.parse_with_current(&self.text, Some(self.value)) {
             Ok(value) => {
                 let old = self.value;
                 if old != value {
                     cx.emit(NumericControlEvent {
                         phase: NumericEventPhase::Begin,
                         value: old,
+                        gesture: None,
                     });
                     self.value = value;
                     self.draft = value;
                     cx.emit(NumericControlEvent {
                         phase: NumericEventPhase::Change,
                         value,
+                        gesture: None,
                     });
                     cx.emit(NumericControlEvent {
                         phase: NumericEventPhase::Commit,
                         value,
+                        gesture: None,
                     });
                 } else if self.commit_unchanged_text && self.text_modified {
                     cx.emit(NumericControlEvent {
                         phase: NumericEventPhase::Commit,
                         value,
+                        gesture: None,
                     });
                 }
                 self.text = self.spec.format(value).unwrap_or_default();
-                self.editing = false;
+                self.editing.0.set(false);
                 self.invalid_text = false;
                 self.marked = None;
                 cx.notify();
@@ -1169,11 +1248,13 @@ impl NumericControl {
                 cx.emit(NumericControlEvent {
                     phase: NumericEventPhase::Commit,
                     value: self.draft,
+                    gesture: self.active_gesture.clone(),
                 });
             }
+            self.active_gesture = None;
             cx.notify();
         }
-        if !self.editing {
+        if !self.editing.is_editing() {
             return Ok(());
         }
         let value = match self.finalized_text_value() {
@@ -1189,25 +1270,29 @@ impl NumericControl {
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Begin,
                 value: old,
+                gesture: None,
             });
             self.value = value;
             self.draft = value;
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Change,
                 value,
+                gesture: None,
             });
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Commit,
                 value,
+                gesture: None,
             });
         } else if self.commit_unchanged_text && self.text_modified {
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Commit,
                 value,
+                gesture: None,
             });
         }
         self.text = self.spec.format(value)?;
-        self.editing = false;
+        self.editing.0.set(false);
         self.text_modified = false;
         self.invalid_text = false;
         self.selected = 0..0;
@@ -1229,6 +1314,7 @@ impl NumericControl {
                     explicit_edit: press.value_changed,
                     previous: press.start_value,
                     value: self.draft,
+                    gesture: self.active_gesture.clone(),
                     formatted: self.spec.format(self.draft)?,
                 }));
             }
@@ -1236,10 +1322,11 @@ impl NumericControl {
                 explicit_edit: false,
                 previous: self.value,
                 value: self.value,
+                gesture: None,
                 formatted: self.spec.format(self.value)?,
             }));
         }
-        if !self.editing {
+        if !self.editing.is_editing() {
             return Ok(None);
         }
         let value = match self.finalized_text_value() {
@@ -1256,6 +1343,7 @@ impl NumericControl {
             explicit_edit: self.text_modified || previous != value,
             previous,
             value,
+            gesture: None,
             formatted,
         }))
     }
@@ -1266,7 +1354,7 @@ impl NumericControl {
         if !self.text_modified && self.text == self.spec.format(self.value)? {
             Ok(self.value)
         } else {
-            self.spec.parse(&self.text)
+            self.spec.parse_with_current(&self.text, Some(self.value))
         }
     }
 
@@ -1285,21 +1373,22 @@ impl NumericControl {
                 self.draft = finalized.value;
                 self.text = finalized.formatted;
             }
-            self.editing = false;
+            self.editing.0.set(false);
             self.text_modified = false;
             self.invalid_text = false;
             self.selected = 0..0;
             self.marked = None;
+            self.active_gesture = None;
             cx.notify();
             return;
         }
-        if !self.editing {
+        if !self.editing.is_editing() {
             return;
         }
         self.value = finalized.value;
         self.draft = finalized.value;
         self.text = finalized.formatted;
-        self.editing = false;
+        self.editing.0.set(false);
         self.text_modified = false;
         self.invalid_text = false;
         self.selected = 0..0;
@@ -1316,8 +1405,8 @@ impl NumericControl {
         self.text_click.clear();
         if self.press.is_some() {
             self.cancel(cx);
-        } else if self.editing {
-            self.editing = false;
+        } else if self.editing.is_editing() {
+            self.editing.0.set(false);
             self.invalid_text = false;
             self.text = self.spec.format(self.value).unwrap_or_default();
             self.selected = 0..0;
@@ -1327,7 +1416,7 @@ impl NumericControl {
     }
 
     fn edit_left(&mut self, extend: bool, cx: &mut Context<Self>) {
-        if self.editing {
+        if self.editing.is_editing() {
             let cursor = self.cursor();
             let target = previous_boundary(&self.text, cursor);
             if extend {
@@ -1342,7 +1431,7 @@ impl NumericControl {
     }
 
     fn edit_right(&mut self, extend: bool, cx: &mut Context<Self>) {
-        if self.editing {
+        if self.editing.is_editing() {
             let cursor = self.cursor();
             let target = next_boundary(&self.text, cursor);
             if extend {
@@ -1359,7 +1448,7 @@ impl NumericControl {
     fn select_all(&mut self, _: &NumericSelectAll, _: &mut Window, cx: &mut Context<Self>) {
         self.invalidate_text_pointer_selection();
         cx.stop_propagation();
-        if self.editing {
+        if self.editing.is_editing() {
             self.selected = 0..self.text.len();
             self.reversed = false;
             cx.notify();
@@ -1368,7 +1457,7 @@ impl NumericControl {
 
     fn home(&mut self, _: &NumericHome, _: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
-        if self.editing {
+        if self.editing.is_editing() {
             self.move_to(0);
             cx.notify();
         }
@@ -1376,7 +1465,7 @@ impl NumericControl {
 
     fn end(&mut self, _: &NumericEnd, _: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
-        if self.editing {
+        if self.editing.is_editing() {
             self.move_to(self.text.len());
             cx.notify();
         }
@@ -1384,21 +1473,21 @@ impl NumericControl {
 
     fn backspace(&mut self, _: &NumericBackspace, window: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
-        if self.editing {
+        if self.editing.is_editing() {
             self.delete_backward(window, cx);
         }
     }
 
     fn delete(&mut self, _: &NumericDelete, window: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
-        if self.editing {
+        if self.editing.is_editing() {
             self.delete_forward(window, cx);
         }
     }
 
     fn copy(&mut self, _: &NumericCopy, _: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
-        if self.editing
+        if self.editing.is_editing()
             && let Some(text) = self.text.get(self.selected.clone())
             && !text.is_empty()
         {
@@ -1408,7 +1497,7 @@ impl NumericControl {
 
     fn cut(&mut self, _: &NumericCut, window: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
-        if self.editing
+        if self.editing.is_editing()
             && let Some(text) = self.text.get(self.selected.clone())
             && !text.is_empty()
         {
@@ -1419,7 +1508,7 @@ impl NumericControl {
 
     fn paste(&mut self, _: &NumericPaste, window: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
-        if self.editing
+        if self.editing.is_editing()
             && let Some(text) = cx.read_from_clipboard().and_then(|item| item.text())
         {
             let clean = text.replace(['\n', '\r'], " ");
@@ -1439,9 +1528,10 @@ impl NumericControl {
             SliderPresentation {
                 value,
                 bipolar: self.spec.scale() == crate::NumericScale::Bipolar,
+                center_mark: self.slider_center_mark,
                 field: ValueFieldPresentation {
                     invalid: self.invalid_text,
-                    editing: self.editing,
+                    editing: self.editing.is_editing(),
                     enabled: self.availability.painted_enabled(),
                     style: self.style,
                     width: px(60.0),
@@ -1467,7 +1557,7 @@ impl NumericControl {
     }
 
     pub(crate) fn value_string(&self) -> String {
-        if self.editing {
+        if self.editing.is_editing() {
             self.style.text_case.present(&self.text)
         } else {
             self.style
@@ -1490,6 +1580,7 @@ impl NumericControl {
     }
 
     pub(crate) fn move_to(&mut self, offset: usize) {
+        self.caret_activity = self.caret_activity.wrapping_add(1);
         self.invalidate_text_pointer_selection();
         let offset = offset.min(self.text.len());
         self.selected = offset..offset;
@@ -1497,6 +1588,7 @@ impl NumericControl {
     }
 
     pub(crate) fn select_to(&mut self, offset: usize) {
+        self.caret_activity = self.caret_activity.wrapping_add(1);
         self.invalidate_text_pointer_selection();
         let offset = offset.min(self.text.len());
         if self.reversed {
@@ -1560,7 +1652,7 @@ impl gpui::Render for NumericControl {
         }
         // A text draft owns printable keys even beneath editor shortcut contexts.
         // Keep numeric editing actions available in the same focused node.
-        let key_context = match (self.editing, self.command_fine_steps) {
+        let key_context = match (self.editing.is_editing(), self.command_fine_steps) {
             (true, true) => "hex_numeric_control hex_text_editing hex_numeric_command_steps",
             (false, true) => "hex_numeric_control hex_numeric_command_steps",
             (true, false) => "hex_numeric_control hex_text_editing",
@@ -1606,24 +1698,6 @@ impl gpui::Render for NumericControl {
             crate::MICRO_DIAL_WIDTH
         };
         let mut root = match (self.kind, self.appearance) {
-            (_, NumericControlAppearance::DeviceMeters) => div()
-                .id(self.id.clone())
-                .w(px(10.0))
-                .h(px(self.meter_readout.height))
-                .flex()
-                .py(px(4.0))
-                .track_focus(&self.focus)
-                .key_context(key_context)
-                .child(
-                    crate::device_meters::well(
-                        self.id.clone(),
-                        self.meter_readout.index,
-                        &self.meter_readout,
-                        style,
-                    )
-                    .cursor(gpui::CursorStyle::ResizeUpDown)
-                    .on_mouse_down(MouseButton::Left, self.control_mouse_down_listener(cx)),
-                ),
             (
                 NumericControlKind::Knob,
                 NumericControlAppearance::MicroDial | NumericControlAppearance::WideMicroDial,
@@ -1663,7 +1737,7 @@ impl gpui::Render for NumericControl {
                             value_text,
                             ValueFieldPresentation {
                                 invalid: self.invalid_text,
-                                editing: self.editing,
+                                editing: self.editing.is_editing(),
                                 enabled,
                                 style: ControlStyle {
                                     font_size: 8.0,
@@ -1713,7 +1787,7 @@ impl gpui::Render for NumericControl {
                         value_text,
                         ValueFieldPresentation {
                             invalid: self.invalid_text,
-                            editing: self.editing,
+                            editing: self.editing.is_editing(),
                             enabled,
                             style,
                             width: px(width),
@@ -1736,7 +1810,7 @@ impl gpui::Render for NumericControl {
                         value_text,
                         ValueFieldPresentation {
                             invalid: self.invalid_text,
-                            editing: self.editing,
+                            editing: self.editing.is_editing(),
                             enabled,
                             style,
                             width: px(self
@@ -1749,7 +1823,7 @@ impl gpui::Render for NumericControl {
                     .rounded_none()
                     .bg(rgb(style.background))
                     .border_color(rgb(if self.invalid_text {
-                        0xff554c
+                        style.invalid
                     } else {
                         style.border
                     })),
@@ -1781,7 +1855,7 @@ impl gpui::Render for NumericControl {
                     self.id.clone(),
                     value_text,
                     self.invalid_text,
-                    self.editing,
+                    self.editing.is_editing(),
                     enabled,
                     style,
                     self.value_mouse_down_listener(cx),
@@ -1857,6 +1931,13 @@ impl gpui::Render for NumericControl {
                         .child(label),
                 )
                 .child(self.slider_element(value, value_text, cx)),
+            (NumericControlKind::VerticalSlider, NumericControlAppearance::FilledSlider) => div()
+                .id(self.id.clone())
+                .w(px(12.0))
+                .h(px(32.0))
+                .track_focus(&self.focus)
+                .key_context(key_context)
+                .child(self.compact_vertical(value, cx)),
             (NumericControlKind::VerticalSlider, _) => div()
                 .id(self.id.clone())
                 .flex()
@@ -1888,15 +1969,15 @@ impl gpui::Render for NumericControl {
                     self.id.clone(),
                     value_text,
                     self.invalid_text,
-                    self.editing,
+                    self.editing.is_editing(),
                     enabled,
                     style,
                     self.value_mouse_down_listener(cx),
                 )),
         };
 
-        let selected =
-            enabled && (self.focus.is_focused(window) || self.press.is_some() || self.editing);
+        let selected = enabled
+            && (self.focus.is_focused(window) || self.press.is_some() || self.editing.is_editing());
         root = root
             .relative()
             .debug_selector(|| self.id.to_string())
@@ -2161,7 +2242,7 @@ fn value_field_sized(
         .justify_center()
         .border_1()
         .border_color(if invalid {
-            rgb(0xff554c)
+            rgb(style.invalid)
         } else {
             gpui::rgba(0)
         })
@@ -2177,6 +2258,7 @@ fn value_field_sized(
 struct SliderPresentation {
     value: f32,
     bipolar: bool,
+    center_mark: bool,
     field: ValueFieldPresentation,
 }
 
@@ -2189,6 +2271,7 @@ fn filled_slider(
     let SliderPresentation {
         value,
         bipolar,
+        center_mark,
         field,
     } = presentation;
     let origin = if bipolar { 0.5 } else { 0.0 };
@@ -2218,7 +2301,7 @@ fn filled_slider(
         .overflow_hidden()
         .bg(rgb(field.style.rail))
         .child(fill)
-        .when(bipolar, |bar| {
+        .when(bipolar && center_mark, |bar| {
             bar.child(
                 div()
                     .debug_selector(move || center_id.clone())
@@ -2243,7 +2326,7 @@ fn filled_slider(
                 .inset_0()
                 .border_1()
                 .border_color(rgb(if field.invalid {
-                    0xff554c
+                    field.style.invalid
                 } else {
                     field.style.border
                 })),

@@ -106,6 +106,10 @@ fn native_source() -> String {
             include_bytes!("../../native/macos_parameters.hpp"),
         ),
         (
+            "macos_editor_touch.hpp",
+            include_bytes!("../../native/macos_editor_touch.hpp"),
+        ),
+        (
             "macos_parameter_page.hpp",
             include_bytes!("../../native/macos_parameter_page.hpp"),
         ),
@@ -140,6 +144,14 @@ fn native_source() -> String {
         (
             "macos_instance_wire.hpp",
             include_bytes!("../../native/macos_instance_wire.hpp"),
+        ),
+        (
+            "macos_input_notes.hpp",
+            include_bytes!("../../native/macos_input_notes.hpp"),
+        ),
+        (
+            "macos_editor.hpp",
+            include_bytes!("../../native/macos_editor.hpp"),
         ),
         (
             "macos_instance_worker.mm",

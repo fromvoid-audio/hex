@@ -11,6 +11,7 @@ mod beats;
 pub mod fft;
 mod granular;
 mod resample;
+pub use resample::{Resampler, V2_MAX_TAPS};
 mod spectral;
 use std::fmt;
 
@@ -322,6 +323,7 @@ struct Work<'a> {
     used: u64,
     scratch: usize,
     base_scratch: usize,
+    resampler: Resampler,
 }
 impl Work<'_> {
     fn check(&mut self, amount: u64) -> Result<(), Error> {
@@ -362,7 +364,18 @@ fn finite(frame: [f64; 2]) -> Result<Frame, Error> {
     }
     Ok(frame)
 }
+/// Render with the frozen v1 reconstruction law.
 pub fn render(request: &Request<'_>, cancel: &mut dyn FnMut() -> bool) -> Result<Rendered, Error> {
+    render_with_resampler(request, Resampler::V1, cancel)
+}
+
+/// Render with an explicit reconstruction law. Every mode's fractional reads
+/// use it; analysis and grain/beat/spectral decisions are unchanged.
+pub fn render_with_resampler(
+    request: &Request<'_>,
+    resampler: Resampler,
+    cancel: &mut dyn FnMut() -> bool,
+) -> Result<Rendered, Error> {
     request.input.validate()?;
     if request.attacks.len() > MAX_POINTS
         || (!request.attacks.is_empty() && request.attacks.first() != Some(&0))
@@ -429,6 +442,7 @@ pub fn render(request: &Request<'_>, cancel: &mut dyn FnMut() -> bool) -> Result
         used: 0,
         scratch: base_scratch,
         base_scratch,
+        resampler,
     };
     work.check(0)?;
     let frames = match request.mode {

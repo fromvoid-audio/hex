@@ -1,9 +1,15 @@
 //! Compact source-window and cycle controls for the selected Console audio cell.
+//! The waveform also shows the accepted Session playback position of that cell.
+#[path = "session_audio_panel/playhead.rs"]
+mod playhead;
+
 use super::EditorView;
 use crate::theme;
-use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px, rgb};
-use hex_project::{AssetId, ClipId, Command, SessionCellContent};
+use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px, relative, rgb};
+use hex_audio::prepared::SessionRouteOwner;
+use hex_project::{AssetId, ClipId, Command, SessionAudioClip, SessionCellContent, TrackId};
 use hex_session::CachedWaveform;
+use playhead::playhead_fraction;
 use std::ops::Range;
 
 const WAVEFORM_COLUMNS: usize = 48;
@@ -29,6 +35,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
     let name = clip.name().to_lowercase();
     let gain = clip.gain();
     let loop_range = clip.loop_range();
+    let playhead = view.session_audio_playhead(track, clip);
     let captured = SourceWindow {
         clip: id,
         asset: asset_id,
@@ -207,6 +214,8 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
     if let Some(amplitudes) = waveform {
         let linear_gain = gain.linear();
         let mut bars = div()
+            .debug_selector(|| "session-audio-waveform".into())
+            .relative()
             .h(px(24.0))
             .flex_1()
             .min_w_0()
@@ -225,9 +234,77 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
                 ),
             );
         }
+        if let Some(fraction) = playhead {
+            bars = bars.child(
+                div()
+                    .debug_selector(|| "session-audio-playback-position".into())
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(relative(fraction))
+                    .w(px(1.0))
+                    .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
+            );
+        }
         row = row.child(bars);
     }
     Some(row)
+}
+
+impl EditorView {
+    /// Accepted Session playback of this cell only: the same revision, fault
+    /// and route-owner guards as the piano roll's Session cursor, reading the
+    /// launch published with the route snapshot. Never an optimistic launch.
+    fn session_audio_playhead(&self, track: TrackId, clip: &SessionAudioClip) -> Option<f32> {
+        use std::sync::atomic::Ordering::Acquire;
+        if !clip.active() {
+            return None;
+        }
+        let state = self.state.as_ref()?;
+        let audible = self.audible_playback.as_ref()?;
+        if audible.project_generation != self.project_generation
+            || audible.state.revision != state.revision
+        {
+            return None;
+        }
+        let audio = self.audio.as_ref()?;
+        let status = audio.control.status()?;
+        if status.applied_revision.load(Acquire) != audible.audio_revision
+            || status.device_fault.load(Acquire)
+            || status.render_fault.load(Acquire)
+            || status.shutdown_complete.load(Acquire)
+        {
+            return None;
+        }
+        let snapshot = self.session_routes.matching_snapshot(
+            audio.control.output_identity()?,
+            Some((
+                audible.audio_revision,
+                state.revision,
+                self.project_generation,
+            )),
+            state.revision,
+            self.project_generation,
+        )?;
+        let route = self
+            .session_routes
+            .entry_for_track(snapshot, true, track.value())?;
+        if route.owner
+            != (SessionRouteOwner::Session {
+                clip_id: clip.id().value(),
+            })
+        {
+            return None;
+        }
+        let fraction = playhead_fraction(
+            clip,
+            route.audio_launch_frame?,
+            status.performance_frame.load(Acquire),
+        )?;
+        // A publication can change during scalar reads; never paint it against
+        // another compiled revision's launch.
+        (status.applied_revision.load(Acquire) == audible.audio_revision).then_some(fraction)
+    }
 }
 
 fn session_audio_loop_button(
@@ -517,7 +594,7 @@ fn adjusted_source_range(
 }
 
 fn waveform_bars(waveform: &CachedWaveform, start: u64, end: u64) -> Vec<f32> {
-    let source_frames = waveform.source_frames;
+    let source_frames = waveform.source_frames();
     let start = usize::try_from(start)
         .unwrap_or(usize::MAX)
         .min(source_frames);
@@ -525,7 +602,7 @@ fn waveform_bars(waveform: &CachedWaveform, start: u64, end: u64) -> Vec<f32> {
         .unwrap_or(usize::MAX)
         .min(source_frames)
         .max(start);
-    if start == end || source_frames == 0 || waveform.bins.is_empty() {
+    if start == end || source_frames == 0 || waveform.bins().is_empty() {
         return vec![0.0; WAVEFORM_COLUMNS];
     }
     (0..WAVEFORM_COLUMNS)
@@ -539,7 +616,7 @@ fn waveform_bars(waveform: &CachedWaveform, start: u64, end: u64) -> Vec<f32> {
                 .min(end);
             let bins = bin_range(waveform, left, right);
             waveform
-                .bins
+                .bins()
                 .get(bins)
                 .unwrap_or(&[])
                 .iter()
@@ -556,14 +633,14 @@ fn fraction(length: usize, numerator: usize, denominator: usize) -> usize {
 }
 
 fn bin_range(waveform: &CachedWaveform, start: usize, end: usize) -> Range<usize> {
-    let start = start.min(waveform.source_frames);
-    let end = end.min(waveform.source_frames).max(start);
-    let count = waveform.bins.len();
-    if start == end || count == 0 || waveform.source_frames == 0 {
+    let start = start.min(waveform.source_frames());
+    let end = end.min(waveform.source_frames()).max(start);
+    let count = waveform.bins().len();
+    if start == end || count == 0 || waveform.source_frames() == 0 {
         return 0..0;
     }
-    let width = waveform.source_frames / count;
-    let extra = waveform.source_frames % count;
+    let width = waveform.source_frames() / count;
+    let extra = waveform.source_frames() % count;
     let wide_frames = (width + 1).saturating_mul(extra);
     let at = |frame: usize| {
         if frame < wide_frames {

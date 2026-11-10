@@ -17,6 +17,7 @@ pub(super) struct PendingLoop {
     remaining: Option<usize>,
     // Selection intent for automatic focus after a successful section-loop ACK.
     focus_intent: Option<u64>,
+    start_intent: Option<u64>,
 }
 
 const EDGE_HIT_PIXELS: f32 = 6.0;
@@ -70,6 +71,7 @@ impl EditorView {
         if self.mode != EditorMode::Arrangement
             || self.edit_pending()
             || self.context_menu.is_some()
+            || super::device_panel::picker_is_open(self)
             || self.theme_settings.open
             || self.opening_project
             || self.close_prompt_open
@@ -169,6 +171,7 @@ impl EditorView {
             || modifiers.alt
             || modifiers.control
             || self.context_menu.is_some()
+            || super::device_panel::picker_is_open(self)
             || self.opening_project
             || self.close_prompt_open
             || !x.is_finite()
@@ -342,6 +345,20 @@ impl EditorView {
     }
 }
 
+pub(super) fn displayed_region(view: &EditorView, state: &ViewState) -> Option<LoopRegion> {
+    let current_region = state.project.loop_region();
+    let gesture = view.loop_rail_gesture.filter(|gesture| {
+        gesture.generation == view.project_generation
+            && gesture.revision == state.revision
+            && gesture.loop_region == state.project.loop_region()
+            && view.mode == EditorMode::Arrangement
+    });
+    gesture
+        .and_then(|gesture| gesture.preview)
+        .or_else(|| view.pending_loop_region())
+        .or(current_region)
+}
+
 pub(super) fn view(
     view: &EditorView,
     state: &ViewState,
@@ -350,16 +367,7 @@ pub(super) fn view(
     cx: &mut Context<EditorView>,
 ) -> Div {
     let current_region = state.project.loop_region();
-    let gesture = view.loop_rail_gesture.filter(|gesture| {
-        gesture.generation == view.project_generation
-            && gesture.revision == state.revision
-            && gesture.loop_region == state.project.loop_region()
-            && view.mode == EditorMode::Arrangement
-    });
-    let shown_region = gesture
-        .and_then(|gesture| gesture.preview)
-        .or_else(|| view.pending_loop_region())
-        .or(current_region);
+    let shown_region = displayed_region(view, state);
     let entity = cx.entity();
     let rail = super::timeline_strip::loop_surface()
         .flex()

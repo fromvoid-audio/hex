@@ -1,5 +1,11 @@
 //! Sparse EQ editing. Opaque edits use atomic canonical state replacement;
 //! scalar graph drags use the existing paired-parameter gesture protocol.
+//! Selection is view state: `selected` drives the footer controls and a
+//! marquee `group` holds a multi-selection. A blank press creates a node;
+//! shift-drag draws a marquee, and shift-cmd toggles its hits. Shift-press on
+//! a node adds it to the group. Dragging a grouped
+//! node moves the group as one parameter-snapshot gesture, and removal deletes
+//! the group in one atomic replacement, so one Undo reverts either.
 use super::*;
 use gpui::{Entity, Subscription};
 use hex_engine::eq::{self, EqState, Node, NodeId, NodeParameter};
@@ -8,15 +14,23 @@ use hex_session::device_gesture::{
     EqNodeCreationSnapshot, GestureKey, GesturePhase, GestureTarget, ParameterPairValue,
 };
 use hex_widgets::{
-    ResponseGraph, ResponseGraphCreationHint, ResponseGraphEvent, ResponseGraphModel,
+    ResponseGraph, ResponseGraphEvent, ResponseGraphMarqueeEvent, ResponseGraphModel,
     ResponseGraphNode, ResponseGraphPhase,
 };
 
 mod axes;
 mod gestures;
+mod group_move;
+mod state_edit;
+use group_move::{frequency_from_x, q_from_y};
+mod node_geometry;
+use node_geometry::{creation_kind, node_position};
 mod scroll_queue;
 pub(in crate::editor) use scroll_queue::after_worker_event as after_scroll_worker_event;
 mod response;
+mod sampling;
+mod selection;
+mod slope;
 mod spectrum;
 pub(super) use spectrum::SpectrumSelection;
 pub(in crate::editor) use spectrum::reconcile as reconcile_spectrum;
@@ -24,10 +38,6 @@ pub(super) use spectrum::{
     is_eq as is_spectrum_eq, result as spectrum_result, sync_visible as sync_visible_spectra,
     toggle as spectrum_toggle,
 };
-
-// Outer five percent of the inset plot: side cuts precede bottom notches.
-// Existing node hits retain priority through the response graph owner.
-const CUT_CREATION_EDGE: f32 = 0.05;
 
 // Commands and latched settings share text geometry, retaining distinct paint.
 fn text_action_button(
@@ -64,9 +74,15 @@ pub(super) struct Panel {
     entity: Entity<ResponseGraph>,
     _subscription: Subscription,
     _scroll_subscription: Subscription,
+    _marquee_subscription: Subscription,
     generation: u64,
     authored_state: NativeDeviceState,
     selected: Option<NodeId>,
+    /// Marquee multi-selection (two or more nodes, including `selected`).
+    group: Vec<NodeId>,
+    /// A stationary press on a grouped node collapses the group on release.
+    collapse: Option<NodeId>,
+    group_drag: Option<gestures::GroupDrag>,
     armed: bool,
     show_input: bool,
     focus_subscription: Option<Subscription>,
@@ -145,9 +161,11 @@ pub(super) fn render_body(
         let entity = cx.new(|cx| {
             let mut graph =
                 ResponseGraph::new(cx, format!("eq-response-{}", device.value()), style);
+            graph.set_circular_nodes(true, cx);
             graph.set_editable(true, cx);
             graph.set_tab_navigation(true, cx);
             graph.set_creation_enabled(true);
+            graph.set_marquee_enabled(true, cx);
             graph.set_backspace_removal(true);
             graph
         });
@@ -161,15 +179,25 @@ pub(super) fn render_body(
                 gestures::scroll_event(view, cx, device, generation, *event);
             },
         );
+        let marquee_subscription = cx.subscribe(
+            &entity,
+            move |view, _, event: &ResponseGraphMarqueeEvent, cx| {
+                marquee_event(view, cx, device, generation, event);
+            },
+        );
         view.device_panel.eq_panels.insert(
             device,
             Panel {
                 entity,
                 _subscription: subscription,
                 _scroll_subscription: scroll_subscription,
+                _marquee_subscription: marquee_subscription,
                 generation,
                 authored_state: canonical.clone(),
                 selected: state.nodes.first().map(|n| n.id),
+                group: Vec::new(),
+                collapse: None,
+                group_drag: None,
                 armed: false,
                 show_input: true,
                 focus_subscription: None,
@@ -215,6 +243,10 @@ pub(super) fn render_body(
         // canonical state changes: a newly created node is selected optimistically
         // before its ID appears in the worker's published state.
         panel.selected = panel.selected.filter(|id| state.node(*id).is_ok());
+        panel.group.retain(|id| state.node(*id).is_ok());
+        if panel.group.len() < 2 {
+            panel.group.clear();
+        }
     }
     let displayed = panel
         .creation
@@ -226,6 +258,7 @@ pub(super) fn render_body(
     let show_creation_hint =
         creation_idle && displayed.nodes.len() < eq::MAX_NODES && panel.creation.is_none();
     let bank = panel.bank;
+    let group = panel.group.clone();
     let entity = panel.entity.clone();
     let model = response_model(
         view,
@@ -233,7 +266,7 @@ pub(super) fn render_body(
         &displayed,
         device_view,
         sample_rate,
-        (bank, selected),
+        (bank, selected, &group),
         owner,
     );
     let scroll_nodes = gestures::scroll_nodes(view, device, &displayed, cx);
@@ -246,7 +279,10 @@ pub(super) fn render_body(
     if let Some(model) = model {
         entity.update(cx, |graph, cx| {
             graph.set_creation_drag_enabled(true);
-            graph.set_creation_hint_resolver(show_creation_hint.then_some(creation_hint), cx);
+            graph.set_creation_hint_resolver(
+                show_creation_hint.then_some(node_geometry::creation_hint),
+                cx,
+            );
             let _ = graph.set_axes(Some(axes::frequency_axes(sample_rate)), cx);
             let _ = graph.set_analyzer_style(theme::device_analyzer_style(), cx);
             let _ = graph.set_scroll_nodes(scroll_nodes, cx);
@@ -301,10 +337,11 @@ pub(super) fn render_body(
                 index as u8 == bank,
             )
             .on_click(cx.listener(move |view, _, _, cx| {
-                if finalize_controls(view, cx) {
-                    if let Some(p) = view.device_panel.eq_panels.get_mut(&device) {
-                        p.bank = index as u8;
-                    }
+                if finalize_controls(view, cx)
+                    && let Some(p) = view.device_panel.eq_panels.get_mut(&device)
+                {
+                    p.bank = index as u8;
+                    p.group.clear();
                 }
                 cx.notify();
             })),
@@ -389,21 +426,22 @@ pub(super) fn render_body(
                 ));
             }
         }
+        let removed = if group.len() > 1 { group } else { vec![id] };
         actions = actions.child(
             text_action_button(
                 format!("eq-remove-{}", device.value()),
                 "remove",
-                "remove selected node and its automation",
+                "remove selected nodes and their automation",
                 theme::DeviceActionRole::Normal,
                 true,
             )
             .on_click(cx.listener(move |view, _, _, cx| {
-                edit(view, cx, device, 0, move |s, _| s.remove(id));
+                remove_nodes(view, cx, device, removed.clone());
             })),
         );
     } else {
         bottom = bottom.child(theme::text(
-            "click the response to add a node · select and drag to edit",
+            "click to add a node · option-drag to place and shape · shift-drag to select",
         ));
     }
     let body = bottom;
@@ -566,6 +604,17 @@ fn submit(
     else {
         return;
     };
+    let Some(entry) = project.device(device) else {
+        return;
+    };
+    let (state, automation) = match state_edit::prepare(entry, &expected, state) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            view.device_panel.message = Some(format!("eq edit refused · {error}"));
+            cx.notify();
+            return;
+        }
+    };
     let reserved_ids = if reserve == 0 {
         0
     } else {
@@ -575,6 +624,7 @@ fn submit(
     };
     view.enqueue_device_barrier(Request::Edit(
         Command::ReplaceDeviceStateWithIdentityReservation {
+            automation,
             device,
             expected_state: expected,
             expected_variant,
@@ -653,10 +703,10 @@ fn response_model(
     state: &EqState,
     device_view: &NativeDeviceView,
     rate: u32,
-    selection: (u8, Option<NodeId>),
+    selection: (u8, Option<NodeId>, &[NodeId]),
     owner: hex_engine::ProcessorChainOwner,
 ) -> Option<ResponseGraphModel> {
-    let (bank, selected) = selection;
+    let (bank, selected, group) = selection;
     let mut authored = state.encode().ok()?;
     for parameter in &device_view.parameters {
         let effective = effective_parameter_value(
@@ -710,19 +760,9 @@ fn response_model(
         .filter(|n| n.bank == bank)
         .map(|n| ResponseGraphNode {
             id: n.id.value(),
-            position: [
-                axes::x(n.frequency_hz, rate),
-                if matches!(
-                    n.kind,
-                    eq::NodeKind::LowCut | eq::NodeKind::HighCut | eq::NodeKind::Notch
-                ) {
-                    (n.q / 0.1).ln() / (18.0_f32 / 0.1).ln()
-                } else {
-                    (n.gain_db + 24.0) / 48.0
-                },
-            ],
+            position: node_position(n, rate),
             enabled: n.enabled,
-            selected: selected == Some(n.id),
+            selected: selected == Some(n.id) || group.contains(&n.id),
         })
         .collect();
     let identity = hex_engine::PostNodeIdentity::new(owner, device.value(), eq::EQ_TYPE_ID);
@@ -732,44 +772,38 @@ fn response_model(
         .eq_panels
         .get(&device)
         .is_some_and(|panel| panel.show_input);
-    let (analyzer, input_analyzer) = spectrum_layers(spectra, show_input, upper);
+    let (analyzer, input_analyzer, analyzer_peak) = spectrum_layers(spectra, show_input, upper);
     Some(ResponseGraphModel {
         primary,
         secondary,
         analyzer,
         input_analyzer,
+        analyzer_peak,
         nodes,
     })
 }
 type SpectrumCurve = Vec<[f32; 2]>;
 
+/// Output level, optional input level and output held-peak curves.
 fn spectrum_layers(
     spectra: Option<&hex_audio::spectrum_worker::PublishedSpectra>,
     show_input: bool,
     upper: f32,
-) -> (Option<SpectrumCurve>, Option<SpectrumCurve>) {
-    let curve = |frame: &hex_audio::spectrum::SpectrumFrame| {
-        frame
-            .bins_dbfs
-            .iter()
-            .enumerate()
-            .map(|(index, db)| {
-                let (low, high) = hex_audio::spectrum::band_bounds_hz(frame.sample_rate_hz, index)
-                    .unwrap_or((20.0, 20000.0));
-                [
-                    axes::x_with_upper((low * high).sqrt(), upper),
-                    super::spectrum_display::level(*db),
-                ]
-            })
-            .collect()
-    };
-    (
-        spectra.map(|pair| curve(&pair.output.frame)),
-        spectra
-            .and_then(|pair| pair.input.as_ref())
-            .filter(|_| show_input)
-            .map(curve),
-    )
+) -> (
+    Option<SpectrumCurve>,
+    Option<SpectrumCurve>,
+    Option<SpectrumCurve>,
+) {
+    let x = |hz| axes::x_with_upper(hz, upper);
+    let output = spectra.map(|pair| super::spectrum_display::curves(&pair.output.frame, x));
+    let input = spectra
+        .and_then(|pair| pair.input.as_ref())
+        .filter(|_| show_input)
+        .map(|frame| super::spectrum_display::curves(frame, x).level);
+    match output {
+        Some(curves) => (Some(curves.level), input, Some(curves.peak)),
+        None => (None, input, None),
+    }
 }
 
 fn audition(view: &mut EditorView, device: DeviceId, id: NodeId) {
@@ -839,71 +873,33 @@ fn audition(view: &mut EditorView, device: DeviceId, id: NodeId) {
         }
     }
 }
-fn frequency_from_x(x: f32, rate: u32) -> f32 {
-    let upper = (rate as f32 * 0.49).clamp(20.0, 20000.0);
-    (20.0 * ((upper / 20.0).ln() * x.clamp(0.0, 1.0)).exp()).clamp(20.0, upper)
+/// Removes `ids` in one atomic replacement, so one Undo restores them all.
+fn remove_nodes(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    ids: Vec<NodeId>,
+) {
+    edit(view, cx, device, 0, move |state, _| {
+        ids.iter().try_for_each(|id| state.remove(*id))
+    });
 }
-fn q_from_y(y: f32) -> f32 {
-    (0.1 * ((18.0_f32 / 0.1).ln() * y.clamp(0.0, 1.0)).exp()).clamp(0.1, 18.0)
-}
-fn creation_kind([x, y]: [f32; 2]) -> eq::NodeKind {
-    if x <= CUT_CREATION_EDGE {
-        eq::NodeKind::LowCut
-    } else if x >= 1.0 - CUT_CREATION_EDGE {
-        eq::NodeKind::HighCut
-    } else if y <= CUT_CREATION_EDGE {
-        eq::NodeKind::Notch
-    } else {
-        eq::NodeKind::Bell
+fn marquee_event(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    generation: u64,
+    event: &ResponseGraphMarqueeEvent,
+) {
+    if generation != view.project_generation || !finalize_controls(view, cx) {
+        return;
     }
-}
-
-/// Caller-owned shapes let the generic widget indicate the exact same action
-/// as the canonical EQ creation resolver without depending on device/DSP types.
-fn creation_hint(position: [f32; 2]) -> ResponseGraphCreationHint {
-    let (id, points): (&'static str, &'static [[f32; 2]]) = match creation_kind(position) {
-        eq::NodeKind::LowCut => (
-            "low-cut",
-            &[
-                [0.0, 0.05],
-                [0.25, 0.1],
-                [0.5, 0.7],
-                [0.75, 0.8],
-                [1.0, 0.8],
-            ],
-        ),
-        eq::NodeKind::HighCut => (
-            "high-cut",
-            &[
-                [0.0, 0.8],
-                [0.25, 0.8],
-                [0.5, 0.7],
-                [0.75, 0.1],
-                [1.0, 0.05],
-            ],
-        ),
-        eq::NodeKind::Notch => (
-            "notch",
-            &[
-                [0.0, 0.8],
-                [0.25, 0.8],
-                [0.5, 0.05],
-                [0.75, 0.8],
-                [1.0, 0.8],
-            ],
-        ),
-        _ => (
-            "bell",
-            &[
-                [0.0, 0.3],
-                [0.25, 0.35],
-                [0.5, 0.95],
-                [0.75, 0.35],
-                [1.0, 0.3],
-            ],
-        ),
+    let Some(panel) = view.device_panel.eq_panels.get_mut(&device) else {
+        return;
     };
-    ResponseGraphCreationHint { id, points }
+    selection::apply_marquee(&mut panel.selected, &mut panel.group, &event.selected);
+    panel.collapse = None;
+    cx.notify();
 }
 // Input cancellation is separate from admitted preview custody. The last
 // geometry stays with its key until the terminal/canonical installation event.
@@ -1149,13 +1145,18 @@ fn handle_event(
         return;
     };
     let (selected, bank) = (panel.selected, panel.bank);
+    let group = panel.group.clone();
     if event.phase == ResponseGraphPhase::Remove {
-        if panel.creation.is_some() || current(view, device).as_ref() != Some(&panel.authored_state)
+        if view.selection_delete_blocked()
+            || panel.creation.is_some()
+            || current(view, device).as_ref() != Some(&panel.authored_state)
         {
             return;
         }
-        if let Some(id) = selected.filter(|id| id.value() == event.node_id) {
-            edit(view, cx, device, 0, move |state, _| state.remove(id));
+        if group.len() > 1 {
+            remove_nodes(view, cx, device, group);
+        } else if let Some(id) = selected.filter(|id| id.value() == event.node_id) {
+            remove_nodes(view, cx, device, vec![id]);
         }
         return;
     }
@@ -1194,6 +1195,11 @@ fn handle_event(
             if let Some(audio) = view.audio.as_mut() {
                 let _ = audio.control.audition_release();
             }
+            if let Some(p) = view.device_panel.eq_panels.get_mut(&device)
+                && p.collapse.take() == Some(id)
+            {
+                p.group.clear();
+            }
         }
         ResponseGraphPhase::ReleaseOutside => {
             if let Some(audio) = view.audio.as_mut() {
@@ -1201,17 +1207,39 @@ fn handle_event(
             }
         }
         ResponseGraphPhase::Select => {
-            if finalize_controls(view, cx) {
-                if let Some(p) = view.device_panel.eq_panels.get_mut(&device) {
-                    p.selected = Some(id);
-                }
+            if finalize_controls(view, cx)
+                && let Some(p) = view.device_panel.eq_panels.get_mut(&device)
+            {
+                selection::select_node(
+                    &mut p.selected,
+                    &mut p.group,
+                    &mut p.collapse,
+                    id,
+                    event.modifiers.shift,
+                );
             }
         }
-        ResponseGraphPhase::Begin
-        | ResponseGraphPhase::Change
-        | ResponseGraphPhase::Commit
-        | ResponseGraphPhase::Cancel => {
-            gestures::paired_event(view, device, *node, event);
+        ResponseGraphPhase::Begin => {
+            if let Some(p) = view.device_panel.eq_panels.get_mut(&device) {
+                p.collapse = None;
+            }
+            if group.len() > 1 && group.contains(&id) {
+                gestures::group_event(view, device, &group, event);
+            } else {
+                gestures::paired_event(view, device, *node, event);
+            }
+        }
+        ResponseGraphPhase::Change | ResponseGraphPhase::Commit | ResponseGraphPhase::Cancel => {
+            if view
+                .device_panel
+                .eq_panels
+                .get(&device)
+                .is_some_and(|p| p.group_drag.is_some())
+            {
+                gestures::group_event(view, device, &group, event);
+            } else {
+                gestures::paired_event(view, device, *node, event);
+            }
         }
         _ => {}
     }
@@ -1230,6 +1258,15 @@ pub(super) fn spectrum_intent_for_test(view: &EditorView, device: DeviceId) -> (
 #[cfg(all(test, feature = "ui-test-support"))]
 pub(super) fn queued_scrolls_for_test(view: &EditorView, device: DeviceId) -> (usize, bool) {
     scroll_queue::counts(view, device)
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+pub(super) fn selection_for_test(
+    view: &EditorView,
+    device: DeviceId,
+) -> (Option<NodeId>, Vec<NodeId>) {
+    let panel = &view.device_panel.eq_panels[&device];
+    (panel.selected, panel.group.clone())
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -1383,6 +1420,7 @@ mod tests {
         let frame = SpectrumFrame {
             sample_rate_hz: 48_000,
             bins_dbfs: [-36.0; hex_audio::spectrum::SPECTRUM_BANDS],
+            peak_dbfs: [-36.0; hex_audio::spectrum::SPECTRUM_BANDS],
         };
         let pair = PublishedSpectra {
             input: Some(frame.clone()),
@@ -1403,47 +1441,48 @@ mod tests {
         let hidden = spectrum_layers(Some(&pair), false, 20_000.0);
         assert_eq!(hidden.0, shown.0, "input visibility cannot hide output");
         assert!(hidden.1.is_none());
-        assert_eq!(spectrum_layers(None, true, 20_000.0), (None, None));
+        assert_eq!(hidden.2, shown.2, "the held peak follows the output");
+        assert_eq!(spectrum_layers(None, true, 20_000.0), (None, None, None));
     }
 
     #[test]
     fn creation_zones_and_vertical_domains_have_explicit_boundaries() {
         assert_eq!(creation_kind([0.0, 0.5]), eq::NodeKind::LowCut);
         assert_eq!(
-            creation_kind([CUT_CREATION_EDGE, 0.5]),
+            creation_kind([node_geometry::CUT_CREATION_EDGE, 0.5]),
             eq::NodeKind::LowCut
         );
         assert_eq!(
-            creation_kind([CUT_CREATION_EDGE + 0.001, 0.5]),
+            creation_kind([node_geometry::CUT_CREATION_EDGE + 0.001, 0.5]),
             eq::NodeKind::Bell
         );
         assert_eq!(creation_kind([0.5, 0.5]), eq::NodeKind::Bell);
         assert_eq!(
-            creation_kind([1.0 - CUT_CREATION_EDGE - 0.001, 0.5]),
+            creation_kind([1.0 - node_geometry::CUT_CREATION_EDGE - 0.001, 0.5]),
             eq::NodeKind::Bell
         );
         assert_eq!(
-            creation_kind([1.0 - CUT_CREATION_EDGE, 0.5]),
+            creation_kind([1.0 - node_geometry::CUT_CREATION_EDGE, 0.5]),
             eq::NodeKind::HighCut
         );
         assert_eq!(creation_kind([1.0, 0.5]), eq::NodeKind::HighCut);
-        for x in [0.0, CUT_CREATION_EDGE] {
+        for x in [0.0, node_geometry::CUT_CREATION_EDGE] {
             assert_eq!(creation_kind([x, 0.0]), eq::NodeKind::LowCut);
         }
-        for x in [1.0 - CUT_CREATION_EDGE, 1.0] {
+        for x in [1.0 - node_geometry::CUT_CREATION_EDGE, 1.0] {
             assert_eq!(creation_kind([x, 0.0]), eq::NodeKind::HighCut);
         }
-        for y in [0.0, CUT_CREATION_EDGE] {
+        for y in [0.0, node_geometry::CUT_CREATION_EDGE] {
             assert_eq!(creation_kind([0.5, y]), eq::NodeKind::Notch);
-            assert_eq!(creation_hint([0.5, y]).id, "notch");
+            assert_eq!(node_geometry::creation_hint([0.5, y]).id, "notch");
         }
         assert_eq!(
-            creation_kind([0.5, CUT_CREATION_EDGE + 0.001]),
+            creation_kind([0.5, node_geometry::CUT_CREATION_EDGE + 0.001]),
             eq::NodeKind::Bell
         );
-        assert_eq!(creation_hint([0.0, 0.0]).id, "low-cut");
-        assert_eq!(creation_hint([1.0, 0.0]).id, "high-cut");
-        assert_eq!(creation_hint([0.5, 0.5]).id, "bell");
+        assert_eq!(node_geometry::creation_hint([0.0, 0.0]).id, "low-cut");
+        assert_eq!(node_geometry::creation_hint([1.0, 0.0]).id, "high-cut");
+        assert_eq!(node_geometry::creation_hint([0.5, 0.5]).id, "bell");
         assert_eq!(q_from_y(-1.0), 0.1);
         assert!((q_from_y(2.0) - 18.0).abs() < 0.0001);
     }

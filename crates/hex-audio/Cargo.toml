@@ -47,3 +47,24 @@ workspace = true
 [[example]]
 name = "profile_stream_callback"
 required-features = ["allocation-probe"]
+
+# Cargo gates these targets before linking and launching empty harnesses.
+[[test]]
+name = "allocation_probes"
+required-features = ["allocation-probe"]
+
+[[test]]
+name = "allocation_probe_calibration"
+required-features = ["allocation-probe"]
+
+[[test]]
+name = "callback_stage_clocks"
+required-features = ["allocation-probe"]
+
+[[test]]
+name = "device_comparison"
+required-features = ["allocation-probe"]
+
+[[test]]
+name = "stream_pressure_boundary"
+required-features = ["allocation-probe", "stream-test-support"]

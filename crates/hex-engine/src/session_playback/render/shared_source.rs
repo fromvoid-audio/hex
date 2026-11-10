@@ -150,6 +150,7 @@ pub(super) fn render_source_instrument_chunk<T: crate::prepared_tempo::MidiTempo
                 continuations: context.continuations,
                 index,
                 raw: true,
+                loop_fade: None,
                 timing: context.timing,
                 table: context.table,
             },
@@ -182,6 +183,7 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
         performance_frame,
         arrangement_frame,
         arrangement_loop_pass,
+        transient,
         chase_at_start,
         loop_region,
         timing,
@@ -337,6 +339,21 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
         &hex_lattice::EMPTY_DEVICE_RESOURCES as &dyn hex_lattice::DeviceResources,
         |resources| resources,
     );
+    let parameter_context = instrument_automation::SourceAutomation::new(
+        revision,
+        receiver,
+        instrument_automation::Origin {
+            arrangement: Some(arrangement_frame),
+            performance: performance_frame,
+            pass: arrangement_loop_pass,
+            running: true,
+        },
+        output.len(),
+    )?;
+    let parameter_block = parameter_context.block_with_input(transient)?;
+    let parameter_values = parameter_block
+        .as_ref()
+        .map(|values| values as &dyn hex_lattice::NativeParameterAutomation);
     let clock = InstrumentClock {
         timing,
         start: performance_frame,
@@ -352,6 +369,7 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
                 Some(&clock),
                 resources,
                 None,
+                parameter_values,
             )
             .map_err(crate::mutable_instrument::MutableInstrumentRuntimeError::render_error);
     }
@@ -524,6 +542,7 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
             Some(&clock),
             resources,
             &mut lookup,
+            parameter_values,
         )
         .map_err(crate::mutable_instrument::MutableInstrumentRuntimeError::render_error)
 }
@@ -540,31 +559,78 @@ mod tests {
     };
     use std::{collections::BTreeMap, sync::atomic::AtomicBool};
 
-    #[test]
-    fn shared_authored_sampler_combines_note_volume_once_and_keeps_local_audio_and_fx() {
-        std::thread::Builder::new().stack_size(8 * 1024 * 1024).spawn(|| {
+    /// Prepared release of the fixture's zero-authored envelope at 8 kHz.
+    /// Oracles derive from it so a host declick floor only lengthens the
+    /// release they expect.
+    fn release_frames_of_fixture() -> usize {
+        hex_devices::sampler::PreparedSamplerPlan::new(
+            hex_devices::sampler::SampleShape::new(
+                4,
+                8000,
+                hex_devices::sampler::SampleChannels::Stereo,
+            )
+            .unwrap(),
+            8000,
+            hex_devices::sampler::state::SamplerState::for_source_frames(4)
+                .unwrap()
+                .settings(),
+        )
+        .unwrap()
+        .prepare_voice_coefficients(60, 127)
+        .unwrap()
+        .unwrap()
+        .release_frames() as usize
+    }
+
+    /// Linear release level `steps` frames after note-off.
+    fn release_level(steps: u64) -> f32 {
+        let release = release_frames_of_fixture() as u64;
+        if steps >= release {
+            0.0
+        } else {
+            1.0 - steps as f32 / release as f32
+        }
+    }
+
+    fn shared_authored_sampler_case(mode: usize) {
+        std::thread::Builder::new().stack_size(8 * 1024 * 1024).spawn(move || {
             for delayed in [false, true] {
-                for mode in 0..4 {
-                    let (revision, resources, expected, scene, _) = fixture(delayed, mode == 2, false);
-                    for partition in [1, 7] {
-                        let mut playback = SessionPlayback::new_with_device_resources(Arc::clone(&revision), &resources).unwrap();
-                        if mode == 1 { playback.apply(SessionPlaybackCommand::LaunchScene { scene, quantization: LaunchQuantization::Immediate }).unwrap(); }
-                        if mode == 3 { playback.apply(SessionPlaybackCommand::StopTrack { track: revision.arrangement().tracks()[0].canonical_track_id().unwrap(), quantization: LaunchQuantization::Immediate }).unwrap(); }
-                        playback.apply(SessionPlaybackCommand::Play).unwrap();
-                        let mut pcm = vec![[0.0; 2]; 4008];
-                        for chunk in pcm.chunks_mut(partition) { playback.render(chunk).unwrap(); }
-                        let factor = if mode >= 2 { expected.1 } else { expected.0 };
-                        let latency = if delayed { 3 } else { 0 };
-                        let original = [[0.125, -0.25], [0.5, 0.0], [-0.125, 0.25], [0.0; 2]];
-                        for (index, frame) in pcm.iter().enumerate() {
-                            let sample = index.checked_sub(latency).and_then(|index| original.get(index)).copied().unwrap_or([0.0; 2]);
-                            let local = if mode == 1 { [0.0; 2] } else { index.checked_sub(latency + 4000).and_then(|index| original.get(index)).copied().unwrap_or([0.0; 2]) };
-                            for channel in 0..2 { assert!((frame[channel] - (sample[channel] * factor + local[channel] * expected.2)).abs() < 0.000_002, "mode={mode} delayed={delayed} partition={partition} index={index} frame={frame:?} factor={factor}"); }
-                        }
+                let (revision, resources, expected, scene, _) = fixture(delayed, mode == 2, false);
+                for partition in [1, 7] {
+                    let mut playback = SessionPlayback::new_with_device_resources(Arc::clone(&revision), &resources).unwrap();
+                    if mode == 1 { playback.apply(SessionPlaybackCommand::LaunchScene { scene, quantization: LaunchQuantization::Immediate }).unwrap(); }
+                    if mode == 3 { playback.apply(SessionPlaybackCommand::StopTrack { track: revision.arrangement().tracks()[0].canonical_track_id().unwrap(), quantization: LaunchQuantization::Immediate }).unwrap(); }
+                    playback.apply(SessionPlaybackCommand::Play).unwrap();
+                    let mut pcm = vec![[0.0; 2]; 4008];
+                    for chunk in pcm.chunks_mut(partition) { playback.render(chunk).unwrap(); }
+                    let factor = if mode >= 2 { expected.1 } else { expected.0 };
+                    let latency = if delayed { 3 } else { 0 };
+                    let original = [[0.125, -0.25], [0.5, 0.0], [-0.125, 0.25], [0.0; 2]];
+                    for (index, frame) in pcm.iter().enumerate() {
+                        let sample = index.checked_sub(latency).and_then(|index| original.get(index)).copied().unwrap_or([0.0; 2]);
+                        let local = if mode == 1 { [0.0; 2] } else { index.checked_sub(latency + 4000).and_then(|index| original.get(index)).copied().unwrap_or([0.0; 2]) };
+                        for channel in 0..2 { assert!((frame[channel] - (sample[channel] * factor + local[channel] * expected.2)).abs() < 0.000_002, "mode={mode} delayed={delayed} partition={partition} index={index} frame={frame:?} factor={factor}"); }
                     }
                 }
             }
         }).unwrap().join().unwrap();
+    }
+
+    #[test]
+    fn shared_authored_sampler_arrangement() {
+        shared_authored_sampler_case(0);
+    }
+    #[test]
+    fn shared_authored_sampler_session() {
+        shared_authored_sampler_case(1);
+    }
+    #[test]
+    fn shared_authored_sampler_muted_receiver() {
+        shared_authored_sampler_case(2);
+    }
+    #[test]
+    fn shared_authored_sampler_stopped_receiver() {
+        shared_authored_sampler_case(3);
     }
 
     #[test]
@@ -584,7 +650,10 @@ mod tests {
                 let original = [[0.125, -0.25], [0.5, 0.0], [-0.125, 0.25], [0.0; 2]];
                 for (offset, frame) in output.iter().enumerate() {
                     let frame_number = 64 + offset as u64;
-                    let factor = if frame_number < cutoff { expected.0 } else { expected.0 - expected.1 };
+                    let factor = match frame_number.checked_sub(cutoff) {
+                        None => expected.0,
+                        Some(steps) => expected.0 - expected.1 * (1.0 - release_level(steps)),
+                    };
                     for channel in 0..2 {
                         assert!((frame[channel] - original[frame_number as usize % 4][channel] * factor).abs() < 0.000_002, "quantization={quantization:?} frame={frame_number} cutoff={cutoff} pcm={frame:?}");
                     }
@@ -643,9 +712,11 @@ mod tests {
                         playback.render(chunk).unwrap();
                     }
                     for (index, frame) in paused.iter().enumerate() {
+                        // Pause releases the clip note while the key holds.
+                        let gain = live_gain + expected.0 * release_level(index as u64);
                         for channel in 0..2 {
                             assert!(
-                                (frame[channel] - original[index % 4][channel] * live_gain).abs()
+                                (frame[channel] - original[index % 4][channel] * gain).abs()
                                     < 0.000_002,
                                 "paused partition={partition} index={index} pcm={frame:?}"
                             );
@@ -654,12 +725,13 @@ mod tests {
                     assert_eq!(playback.performance_frame, 8);
                     assert_eq!(playback.arrangement_frame, 8);
                     input.set_key(0, None).unwrap();
-                    let mut silence = [[0.0; 2]; 32];
+                    // Silence follows the released key's prepared release.
+                    let mut silence = vec![[0.0; 2]; 32 + release_frames_of_fixture()];
                     for chunk in silence.chunks_mut(partition) {
                         playback.render(chunk).unwrap();
                     }
                     assert!(
-                        silence
+                        silence[release_frames_of_fixture()..]
                             .iter()
                             .flatten()
                             .all(|sample| sample.abs() < 0.000_002)
@@ -734,6 +806,8 @@ mod tests {
                     let original = [[0.125, -0.25], [0.5, 0.0], [-0.125, 0.25], [0.0; 2]];
                     let factor = expected.0 + expected.0 / 2.5;
                     for (index, frame) in output.iter().enumerate() {
+                        // Overflow releases the hardware note at this frame.
+                        let factor = factor + expected.0 / 2.5 * release_level(index as u64);
                         for channel in 0..2 {
                             assert!(
                                 (frame[channel] - original[index % 4][channel] * factor).abs()
@@ -1118,6 +1192,7 @@ mod tests {
                 .unwrap(),
             &cancel,
             &effects,
+            None,
         )
         .unwrap();
         let source_factor = 2.5 * source_gain * 0.25;

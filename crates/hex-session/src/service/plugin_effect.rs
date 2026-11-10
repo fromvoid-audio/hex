@@ -50,13 +50,14 @@ impl PluginEffectSelection {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PluginEffectDestination {
     Track(hex_project::TrackId),
+    Instrument(hex_project::TrackId),
     Return(hex_project::ReturnId),
     Main,
 }
 impl PluginEffectDestination {
     fn devices(self, project: &Project) -> Result<&[hex_project::Device], String> {
         match self {
-            Self::Track(id) => project
+            Self::Track(id) | Self::Instrument(id) => project
                 .track(id)
                 .map(|track| track.devices())
                 .ok_or_else(|| "effect destination no longer exists".into()),
@@ -69,9 +70,14 @@ impl PluginEffectDestination {
             Self::Main => Ok(project.main_devices()),
         }
     }
+    pub fn is_instrument(self) -> bool {
+        matches!(self, Self::Instrument(_))
+    }
     pub fn owner(self) -> hex_engine::ProcessorChainOwner {
         match self {
-            Self::Track(id) => hex_engine::ProcessorChainOwner::Track(id.value()),
+            Self::Track(id) | Self::Instrument(id) => {
+                hex_engine::ProcessorChainOwner::Track(id.value())
+            }
             Self::Return(id) => hex_engine::ProcessorChainOwner::Return(id.value()),
             Self::Main => hex_engine::ProcessorChainOwner::Main,
         }
@@ -127,9 +133,21 @@ impl PluginEffectInsertion {
         project: &Project,
     ) -> Result<(), String> {
         if self.context != context || self.control.phase.load(Ordering::Acquire) != 0 {
-            return Err("vst3 effect insertion cancelled · source changed".into());
+            return Err("vst3 insertion cancelled · source changed".into());
         }
         self.selection.validate()?;
+        if let PluginEffectDestination::Instrument(track) = self.destination {
+            let track = project
+                .track(track)
+                .ok_or("instrument destination no longer exists")?;
+            if track.is_group() || self.before.is_some() {
+                return Err("select an ordinary track for the vst3 instrument".into());
+            }
+            if track.instrument().is_some() {
+                return Err("instrument slot is already occupied".into());
+            }
+            return Ok(());
+        }
         let devices = self.destination.devices(project)?;
         if self
             .before
@@ -152,6 +170,9 @@ impl PluginEffectInsertion {
                 before: self.before,
                 state,
             },
+            PluginEffectDestination::Instrument(track) => {
+                Command::InsertInstrument { track, state }
+            }
             PluginEffectDestination::Return(return_track) => Command::InsertReturnDevice {
                 return_track,
                 before: self.before,
@@ -198,7 +219,7 @@ pub(super) struct Pending {
 impl Pending {
     pub fn new(insertion: PluginEffectInsertion, project: &Project) -> Result<Self, String> {
         if insertion.control.claimed.swap(true, Ordering::AcqRel) {
-            return Err("vst3 effect request was already submitted".into());
+            return Err("vst3 insertion request was already submitted".into());
         }
         Ok(Self {
             insertion,
@@ -218,9 +239,7 @@ impl Pending {
             || session.project().next_identity() != self.device_id
             || !sink.resident_publication_enabled()
         {
-            return Err(
-                "vst3 effect insertion requires its original resident audio context".into(),
-            );
+            return Err("vst3 insertion requires its original resident audio context".into());
         }
         self.native_started = true;
         sink.prepare_plugin_effect(PluginEffectPreparation {
