@@ -1,18 +1,19 @@
 //! Compact, ID-backed Session grid and guarded playback requests.
 mod actions;
+pub(crate) use actions::PendingPlaybackAction;
 use actions::with_quantization;
-pub(super) use actions::{DeleteTarget, action_is_current, resolve_delete_target};
+pub(super) use actions::{DeleteTarget, action_is_current, launch_action, resolve_delete_target};
 
 use super::console_columns::ColumnFrame;
 use super::console_track_page::TrackPage;
 use super::session_route_view::cell_route_markers;
-use super::{EditorMode, EditorView, PendingPlaybackAction};
+use super::{EditorMode, EditorView};
 use crate::theme;
 use gpui::{Context, Div, ElementId, Window, div, prelude::*, px, rgb, uniform_list};
 use hex_audio::prepared::{
     SessionRouteEntry, SessionRouteOwner, SessionRouteSnapshot, SessionRouteTarget,
 };
-use hex_engine::{LaunchQuantization, PlaybackAction, SessionPlaybackCommand};
+use hex_engine::{LaunchQuantization, SessionPlaybackCommand};
 use hex_project::{
     BeatTime, ClipId, Command, SceneId, SessionCellContent, SessionSceneTarget, TrackId,
 };
@@ -75,19 +76,6 @@ enum CellExpectation {
     Stop,
     Midi(ClipId),
     Audio(ClipId),
-}
-
-pub(super) fn launch_action(
-    command: SessionPlaybackCommand,
-    revision: u64,
-    generation: u64,
-) -> PendingPlaybackAction {
-    PendingPlaybackAction {
-        action: PlaybackAction::LaunchAndPlay(command),
-        generation,
-        revision: Some(revision),
-        intent_token: None,
-    }
 }
 
 impl EditorView {
@@ -2071,40 +2059,12 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
     use super::launch_action;
     use hex_engine::{LaunchQuantization, PlaybackAction, SessionPlaybackCommand};
     use hex_project::{Command, Created, Editor, Project};
 
-    #[test]
-    fn launch_and_play_is_one_revision_guarded_action() {
-        let mut editor = Editor::new(Project::new(48_000).unwrap(), 3).unwrap();
-        let Created::Scene(scene) = editor
-            .execute(Command::AddScene {
-                name: "scene".into(),
-            })
-            .unwrap()
-        else {
-            panic!("scene")
-        };
-        let pending = launch_action(
-            SessionPlaybackCommand::LaunchScene {
-                scene,
-                quantization: LaunchQuantization::Immediate,
-            },
-            19,
-            3,
-        );
-        assert!(matches!(
-            pending.action,
-            PlaybackAction::LaunchAndPlay(SessionPlaybackCommand::LaunchScene { .. })
-        ));
-        assert_eq!(pending.revision, Some(19));
-        assert_eq!(pending.generation, 3);
-    }
-
-    #[cfg(feature = "ui-test-support")]
     #[test]
     fn queued_scene_launch_retains_quantization_selected_before_launch() {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 3).unwrap();
