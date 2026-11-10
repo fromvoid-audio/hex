@@ -60,6 +60,7 @@ ARRANGEMENT_CONSUMERS = [
     "editor::arrangement_map::model::",
     "editor::arrangement_map::tests::main_lane_paints_canonical_intervals_at_the_ruler_scale",
     "editor::arrangement_sections::tests::section_lower_body_paints_all_tracks_without_section_edit_even_when_focused",
+    "editor::group_overview::model::",
     "editor::group_overview::tests::",
 ]
 
@@ -2071,7 +2072,7 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::drag::group_drag_ui_test::stationary_group_snap_modifier_uses_one_anchor_delta_and_authoritative_release",
                                   "editor::drag::tests::",
                                   "editor::fade_calculation::", "editor::fade_handle_geometry::",
-                                  "editor::fade_handles::", "editor::fades::", "editor::group_overview::tests::",
+                                  "editor::fade_handles::", "editor::fades::", "editor::group_overview::model::", "editor::group_overview::tests::",
                                   "editor::output_meter_ui_test::", "editor::overview_waveform::", "editor::refresh_state::",
                                   "editor::sampler_parameter::tests::source_hints_and_paint_require_same_view_source_facts_and_context",
                                   "editor::session_audio_panel::",
@@ -2094,6 +2095,31 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertTrue(any(step.step_id == "ui-editor-logic-unit-tests" for step in ci.planned_steps({"scope": "full"})))
         health = ci.planned_steps({"scope": "rust", "health": {"python": False, "workspace_inputs": True, "packages": []}})
         self.assertTrue(any(step.step_id == "health-ui-editor-logic-unit" for step in health))
+
+    def test_group_overview_projection_keeps_native_and_project_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit = "editor::group_overview::model::"
+        native = "editor::group_overview::tests::"
+        names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/group_overview/model.rs"], inventory, [owner])
+        self.assertEqual(names, {owner: sorted(ARRANGEMENT_CONSUMERS)})
+        boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                    "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                    "module_filters": names}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                                  "cargo_inventory": inventory, "paths": []})
+        self.assertTrue(any(unit in step.argv and step.requires_tests
+                            for step in steps if "unit_editor_logic" in step.argv))
+        self.assertTrue(any(native in step.argv
+                            for step in steps if step.step_id == "ui-feature-tests"))
+        self.assertTrue(any("track_group_focus" in step.argv and step.requires_tests
+                            for step in steps if step.step_id == "ui-consumer-track_group_focus"))
+        for path in ("group_overview.rs", "arrangement_map/model.rs", "arrangement_focus/visibility.rs"):
+            selected = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner])
+            self.assertTrue(any(unit.startswith(name) for name in selected[owner]))
 
     def test_arrangement_map_projection_keeps_real_focus_and_render_consumers(self):
         root = SCRIPTS.parent

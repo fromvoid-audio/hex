@@ -271,7 +271,8 @@ def module_declarations(source_root: Path) -> dict[Path, list[tuple[Path, list[s
 TEST_ATTRIBUTE = re.compile(r"#\[(?:gpui::)?test\b")
 # Unit test targets which compile the owning source directly. Keep their libtest
 # names under the original module path so scoped coverage remains observable.
-UI_UNIT_TARGETS = {"editor::browser::tree::state::": "unit_editor_logic",
+UI_UNIT_TARGETS = {"editor::group_overview::model::": "unit_editor_logic",
+                   "editor::browser::tree::state::": "unit_editor_logic",
                    "editor::arrangement_map::model::": "unit_editor_logic",
                    "editor::controller::session_feedback::": "unit_editor_logic",
                    "editor::waveform_geometry::grid::": "unit_editor_logic",
@@ -355,6 +356,7 @@ UI_PREFIX_COHORTS = [{"editor::browser::tree::state::",
                      {"editor::arrangement_map::model::",
                       "editor::arrangement_map::tests::main_lane_paints_canonical_intervals_at_the_ruler_scale",
                       "editor::arrangement_focus::visibility::",
+                      "editor::group_overview::model::",
                       "editor::group_overview::tests::",
                       "editor::arrangement_sections::tests::section_lower_body_paints_all_tracks_without_section_edit_even_when_focused"},
                      {"editor::controller::session_feedback::",
