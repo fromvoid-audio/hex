@@ -273,7 +273,10 @@ mod tests {
             assert!(status.playing.load(Acquire));
         });
         visual.simulate_keystrokes("space");
-        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        // The callback finishes the transport declick before reporting Pause.
+        for _ in 0..3 {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        }
         fixture.editor.update(&mut visual, |view, cx| {
             view.tick(cx);
             assert_eq!(
