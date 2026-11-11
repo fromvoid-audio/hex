@@ -1276,6 +1276,7 @@ impl EditorView {
         visible_change |= self.retire_abandoned_modulation_depth();
         visible_change |= self.retire_abandoned_duplicate();
         visible_change |= self.retire_abandoned_track_clipboard();
+        visible_change |= self.retire_abandoned_device_duplicate();
         visible_change |= self.retire_abandoned_group_copy();
         visible_change |= self.retire_abandoned_clip_detail();
         visible_change |= self.retire_abandoned_clip_move();
@@ -2636,6 +2637,7 @@ impl EditorView {
             .as_ref()
             .and_then(|state| state.project.loop_region())
             .is_some_and(|region| region.enabled());
+        self.complete_device_duplicate(&event);
         self.state = Some(event.state);
         if let Some(selection) = audio_placement_selection {
             self.install_audio_placement_selection(selection);
