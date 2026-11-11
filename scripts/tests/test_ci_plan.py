@@ -1381,6 +1381,82 @@ class SingleRunFeatureTests(unittest.TestCase):
             (root / "crates/hex-ui/src/lib.rs").write_text('#[cfg(not(feature = "ui-test-support"))]\nfn f() {}\n')
             self.assertEqual(plan.single_run_packages(root, ["hex-ui", "hex-session"], inventory), {})
 
+    def test_standalone_ui_unit_inputs_run_only_the_owning_targets(self):
+        root, inventory = self.live()
+        prefix = "crates/hex-ui/tests/"
+        tracks = ["editor::tracks::clone_source_window::", "editor::tracks::group_overlap::"]
+        cases = (
+            (["browser_disclosure_assets.rs"], {"browser_disclosure_assets": []}),
+            (["editor_logic_unit/tracks.rs"], {"unit_editor_logic": tracks}),
+            (["editor_logic_unit/tracks.rs", "unit_editor_logic.rs"], {"unit_editor_logic": []}),
+            (["unit_editor_state.rs", "unit_editor_logic.rs"], {"unit_editor_logic": [], "unit_editor_state": []}),
+        )
+        for inputs, expected in cases:
+            with self.subTest(inputs=inputs):
+                paths = [prefix + path for path in inputs]
+                boundary = plan.boundary_selection(root, paths, inventory, ["hex-ui"])
+                self.assertEqual(boundary["ui_standalone_unit_targets"], expected)
+                self.assertEqual(boundary["module_filters"], {})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": ["hex-ui"], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": paths})}
+                test_steps = {key: step for key, step in steps.items() if step.argv[:2] == ("cargo", "test")}
+                self.assertEqual(set(test_steps), {f"ui-unit-{target}" for target in expected})
+                for target, filters in expected.items():
+                    step = test_steps[f"ui-unit-{target}"]
+                    feature = ("--features", "ui-unit-tier") if target == "unit_editor_logic" else ()
+                    self.assertEqual(step.argv, ("cargo", "test", "-p", "hex-ui", *feature,
+                                                 "--test", target, "--locked", *(("--", *filters) if filters else ())))
+                    self.assertTrue(step.requires_tests)
+                self.assertIn("affected-clippy", steps)
+                feature_lint = steps["affected-feature-clippy"].argv
+                features = feature_lint[feature_lint.index("--features") + 1].split(",")
+                self.assertIn("hex-ui/ui-test-support", features)
+                self.assertIn("hex-ui/ui-unit-tier", features)
+
+    def test_standalone_ui_unit_selection_preserves_other_routes(self):
+        root, inventory = self.live()
+        unit = "crates/hex-ui/tests/unit_editor_state.rs"
+        prefix = "crates/hex-ui/"
+        cases = (
+            [unit, prefix + "src/editor/pending_edit.rs"],
+            [unit, prefix + "tests/unreviewed_fixture.rs"],
+            [unit, prefix + "tests/unreviewed_fixture.py"],
+            [unit, prefix + "assets/unreviewed.svg"],
+            [unit, prefix + "Cargo.toml"],
+            [prefix + "tests/midi_pressure_boundary.rs"],
+        )
+        for paths in cases:
+            with self.subTest(paths=paths):
+                boundary = plan.boundary_selection(root, paths, inventory, ["hex-ui"])
+                self.assertNotIn("ui_standalone_unit_targets", boundary)
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": ["hex-ui"], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": paths})}
+                feature = steps["ui-feature-tests"].argv
+                if prefix + "src/editor/pending_edit.rs" in paths:
+                    for witness in (
+                        "editor::clip_loop::audio::capture_tests::audio_loop_start_edge_keeps_input_and_pending_receipt_separate",
+                        "editor::fade_handles::ui_tests::real_refusal_retires_frozen_curve_with_its_canonical_state",
+                    ):
+                        self.assertIn(witness, feature)
+                elif paths == cases[-1]:
+                    self.assertIn("editor::midi_recording::", feature)
+                    self.assertIn("ui-test-support", steps["ui-consumer-midi_pressure_boundary"].argv)
+                else:
+                    self.assertNotIn("--", feature)
+
+        # An unexpected Cargo target source or feature cannot narrow the plan.
+        for override in ({"src_path": "tests/renamed_editor_state.rs"},
+                         {"required-features": ["ui-test-support"]}):
+            with self.subTest(override=override):
+                wrong_target = [{**package, "targets": [
+                    {**target, **override} if target.get("name") == "unit_editor_state" else target
+                    for target in package["targets"]]}
+                    if package["name"] == "hex-ui" else package for package in inventory]
+                boundary = plan.boundary_selection(root, [unit], wrong_target, ["hex-ui"])
+                self.assertNotIn("ui_standalone_unit_targets", boundary)
+
     def test_ui_default_lib_units_keep_scope_and_feature_consumers(self):
         root = SCRIPTS.parent
         path = "crates/hex-ui/src/editor/device_gesture.rs"
