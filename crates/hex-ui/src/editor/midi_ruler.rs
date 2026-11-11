@@ -645,7 +645,7 @@ mod tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 pub(in crate::editor) use tests::roundtrip;
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod geometry_tests {
     use super::*;
     use hex_project::{BeatTime, Command, Created, Editor, Project};
