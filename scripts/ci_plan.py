@@ -257,6 +257,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/console_returns.rs": ("editor::console_returns::tests::",),
     "src/editor/session_audio_panel.rs": ("editor::session_audio_panel::unit_tests::",),
     "src/editor/save.rs": ("editor::save::tests::",),
+    "src/editor/track_tags.rs": ("editor::track_tags::tests::normalized_tags_use_only_the_eight_musical_element_colors",),
     "src/editor/menus.rs": ("editor::menus::tests::",),
     "src/editor/device_panel.rs": ("editor::device_panel::chain_layout_unit_tests::", "editor::device_panel::header_style_unit_tests::",),
     "src/editor/device_panel/chain_window.rs": ("editor::device_panel::chain_window::tests::",),
