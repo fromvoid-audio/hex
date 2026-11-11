@@ -1333,6 +1333,69 @@ class SingleRunFeatureTests(unittest.TestCase):
             (root / "crates/hex-ui/src/lib.rs").write_text('#[cfg(not(feature = "ui-test-support"))]\nfn f() {}\n')
             self.assertEqual(plan.single_run_packages(root, ["hex-ui", "hex-session"], inventory), {})
 
+    def test_ui_default_lib_units_keep_scope_and_feature_consumers(self):
+        root = SCRIPTS.parent
+        path = "crates/hex-ui/src/editor/device_gesture.rs"
+        unit = "editor::device_gesture::unit_tests::"
+        inventory = [{"name": "hex-ui", "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        names = plan.module_test_filters(root, [path], inventory, ["hex-ui"])
+        self.assertEqual(names, {"hex-ui": ["editor::device_gesture::"]})
+        for single in ({}, {"hex-ui": "ui-test-support"}):
+            for filters in (names, {}):
+                boundary = {"kind": "packages", "tests": [], "test_packages": ["hex-ui"],
+                            "lint_packages": ["hex-ui"], "single_run": single,
+                            "module_filters": filters}
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": ["hex-ui"], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                feature = steps["ui-feature-tests"].argv
+                self.assertIn("ui-test-support", feature)
+                if filters:
+                    self.assertIn("editor::device_gesture::", feature)
+                    self.assertIn("--lib", feature)
+                default_id = "module-tests-hex-ui" if filters else "affected-tests"
+                if single:
+                    self.assertTrue(steps["ui-default-lib-unit-tests"].requires_tests)
+                    self.assertEqual(steps["ui-default-lib-unit-tests"].argv,
+                                     ("cargo", "test", "-p", "hex-ui", "--lib", "--locked", "--", unit))
+                    self.assertNotIn(default_id, steps)
+                else:
+                    default = steps[default_id].argv
+                    self.assertNotIn("--features", default)
+                    if filters:
+                        self.assertIn("editor::device_gesture::", default)
+                        self.assertIn("--lib", default)
+                    self.assertNotIn("ui-default-lib-unit-tests", steps)
+
+        unrelated = {"kind": "packages", "tests": [], "test_packages": ["hex-ui"],
+                     "lint_packages": ["hex-ui"], "single_run": {"hex-ui": "ui-test-support"},
+                     "module_filters": {"hex-ui": ["editor::recent_projects::"]}}
+        steps = ci.planned_steps({"scope": "rust", "affected_packages": ["hex-ui"], "boundary": unrelated,
+                                  "cargo_inventory": inventory, "paths": []})
+        self.assertFalse(any(step.step_id == "ui-default-lib-unit-tests" for step in steps))
+
+    def test_ui_default_lib_unit_cfg_exception_is_exact_and_local(self):
+        inventory = [{"name": "hex-ui", "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            src = root / "crates/hex-ui/src"
+            (src / "editor").mkdir(parents=True)
+            recognized = src / "editor/device_gesture.rs"
+            unknown = src / "editor/other.rs"
+            gate = '#[cfg(all(test, not(feature = "ui-test-support")))]'
+            recognized.write_text(gate + "\nmod unit_tests {}\n")
+            self.assertEqual(plan.single_run_packages(root, ["hex-ui"], inventory),
+                             {"hex-ui": "ui-test-support"})
+            unknown.write_text(gate + "\nmod unit_tests {}\n")
+            self.assertEqual(plan.single_run_packages(root, ["hex-ui"], inventory), {})
+            unknown.unlink()
+            recognized.write_text('#[cfg(not(feature = "ui-test-support"))]\nfn runtime() {}\n')
+            self.assertEqual(plan.single_run_packages(root, ["hex-ui"], inventory), {})
+
 
 class BaseAdvanceCarryTests(unittest.TestCase):
     """Fabricated reports exercise carry policy; no product test counts are claimed."""

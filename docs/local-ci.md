@@ -271,6 +271,9 @@ prints its own `test result`; every listed test runs exactly once (70 s).
 Packages whose only extra feature is reviewed as additive for tests (see
 `ADDITIVE_TEST_FEATURES` in `scripts/ci_plan.py`) run their tests once with the
 feature and keep a separate doctest run; default-feature Clippy still applies.
+The hex-ui gesture barrier unit tests use the default library, so merge plans
+also select the relevant unit module. Run that module directly with
+`cargo test -p hex-ui --lib --locked editor::device_gesture::unit_tests::`.
 
 Package plans run the owners' default tests and applicable allocation/UI/export
 feature tests. Consumers lint in two invocations: default features
