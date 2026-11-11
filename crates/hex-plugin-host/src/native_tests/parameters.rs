@@ -1010,7 +1010,9 @@ fn actual_sdk_playback_does_not_replay_stale_editor_values() {
         .unwrap();
         fs::write(case.release(), b"finish the editor drag").unwrap();
         let until = Instant::now() + Duration::from_secs(2);
-        while instance.poll_parameter_edits_on_worker().unwrap().ready == 0 {
+        while usize::from(instance.poll_parameter_edits_on_worker().unwrap().ready)
+            < protocol::MAX_PARAMETER_EDITS
+        {
             assert!(Instant::now() < until, "the drag must reach the worker");
             thread::yield_now();
         }
@@ -1053,6 +1055,19 @@ fn actual_sdk_playback_does_not_replay_stale_editor_values() {
         let expected = if authored { 0.5 } else { 0.875 };
         let first = page(&mut instance);
         assert_eq!(first.normalized, expected);
+        // Keep the completed receipt batch full so this second quantum
+        // reports processor feedback before it can admit the final Perform.
+        let input = request(instance.configuration(), 1);
+        let output = instance.exchange_on_worker(input).unwrap();
+        assert_eq!(
+            output.parameters.as_slice(),
+            &[ParameterPoint {
+                frame: input.frames - 1,
+                id: 7,
+                normalized: if authored { 0.5 } else { 0.25 },
+            }]
+        );
+        assert_eq!(page(&mut instance).normalized, expected);
         let edits = instance.poll_parameter_edits_on_worker().unwrap();
         let delayed = edits
             .as_slice()

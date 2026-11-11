@@ -532,6 +532,9 @@ fn one_open_save_as_completes_original_selection_only_after_save_success(cx: &mu
         "pending Save As cannot create a second Open"
     );
     cx.simulate_new_path_selection(|_| Some(current_path.clone()));
+    let current_path = current_path
+        .with_extension("")
+        .join("preserved-current.hex");
     visual.run_until_parked();
     pump(&editor, cx, |view| {
         settled(view) && view.project_generation == generation + 1
@@ -635,6 +638,7 @@ fn one_open_cancel_save_as_clears_intent_so_later_save_does_not_open(cx: &mut Te
         "cancel restores usable keyboard/action focus"
     );
     cx.simulate_new_path_selection(|_| Some(later.clone()));
+    let later = later.with_extension("").join("later.hex");
     visual.run_until_parked();
     pump(&editor, cx, |view| {
         settled(view) && view.state.as_ref().unwrap().document_path.as_ref() == Some(&later)
@@ -1236,6 +1240,11 @@ fn one_new_save_waits_for_current_or_new_save_and_replaces_once(cx: &mut TestApp
             assert_eq!(view.worker_requests_pending, 0);
             assert_eq!(view.project_generation, generation + 1);
         });
+        let path = if named {
+            path
+        } else {
+            path.with_extension("").join("preserved.hex")
+        };
         select_open(&mut visual, cx, path);
         assert!(!cx.has_pending_prompt());
         pump(&editor, cx, |view| {
@@ -1300,7 +1309,7 @@ fn one_new_cancelled_or_failed_save_aborts_continuation_before_a_later_save(
             assert_eq!(view.state.as_ref().unwrap().project, before.project);
             assert!(!view.project_open.busy());
         });
-        assert!(saved.is_file());
+        assert!(saved.with_extension("").join("later.hex").is_file());
     }
 }
 

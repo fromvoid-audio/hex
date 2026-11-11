@@ -3521,6 +3521,8 @@ impl Callback {
                     }
                 }
             }
+            next.playback
+                .bind_browser_audition_transport(self.status.transport_epoch.load(Acquire));
             let handoff = if forced_refusal {
                 Some(Err(hex_engine::PlaybackHandoffError::Session(
                     hex_engine::SessionPlaybackError::ReleaseBankFull,

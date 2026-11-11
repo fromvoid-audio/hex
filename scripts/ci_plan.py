@@ -202,8 +202,20 @@ ADDITIVE_TEST_FEATURES = {
 
 # Test-only cfg exclusions whose default lib module runs explicitly in merge plans.
 CONTROLLER_PUBLICATION_UNIT = "editor::controller::publication_unit_tests::"
+CONTROLLER_SESSION_ACTION_UNIT = "editor::controller::session_action_unit_tests::"
+CONTROLLER_SOURCE_BINDING_UNIT = "editor::controller::source_binding_unit_tests::"
 UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
-    "src/editor/device_panel.rs": ("editor::device_panel::chain_layout_unit_tests::",),
+    "src/editor/device_automation.rs": ("editor::device_automation::unit_tests::",),
+    "src/editor/drag_autoscroll.rs": ("editor::drag_autoscroll::tests::",),
+    "src/editor/changelog.rs": ("editor::changelog::tests::",),
+    "src/editor/device_panel/device_meter.rs": ("editor::device_panel::device_meter::tests::",),
+    "src/editor/controller_input/monitoring.rs": ("editor::controller_input::monitoring::unit_tests::",),
+    "src/editor/clip_range_fit.rs": ("editor::clip_range_fit::tests::",),
+    "src/output_meter/tests.rs": ("output_meter::tests::unit_tests::",),
+    "src/editor/gain_lane/tests.rs": ("editor::gain_lane::tests::unit_tests::",),
+    "src/editor/close.rs": ("editor::close::tests::",),
+    "src/editor/save.rs": ("editor::save::tests::",),
+    "src/editor/device_panel.rs": ("editor::device_panel::chain_layout_unit_tests::", "editor::device_panel::header_style_unit_tests::",),
     "src/editor/device_panel/chain_window.rs": ("editor::device_panel::chain_window::tests::",),
     "src/editor/device_panel/parameter_rows.rs": ("editor::device_panel::parameter_rows::tests::",),
     "src/editor/arrangement_seek.rs": ("editor::arrangement_seek::unit_tests::",),
@@ -211,7 +223,8 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/device_panel/eq8_panel/group.rs": ("editor::device_panel::eq8_panel::group::tests::",),
     "src/editor/device_panel/eq8_panel/selection.rs": ("editor::device_panel::eq8_panel::selection::tests::",),
     "src/editor/loop_rail.rs": ("editor::loop_rail::tests::",),
-    "src/editor/controller.rs": (CONTROLLER_PUBLICATION_UNIT,),
+    "src/editor/controller.rs": (CONTROLLER_PUBLICATION_UNIT, CONTROLLER_SESSION_ACTION_UNIT,
+                                   CONTROLLER_SOURCE_BINDING_UNIT),
     "src/editor/arrangement_audio_panel.rs": ("editor::arrangement_audio_panel::tests::",),
     "src/editor/arrangement_audio_panel/controls.rs": ("editor::arrangement_audio_panel::controls::tests::",),
     "src/editor/device_gesture.rs": ("editor::device_gesture::unit_tests::",),
@@ -425,6 +438,17 @@ UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
 UI_EXTRA_TEST_FEATURES = {"midi_pressure_boundary": "ui-test-support"}
 # Reviewed tests for owners whose direct coverage lives in sibling modules.
 UI_MODULE_TEST_DEPENDENCIES = {
+    "editor::device_automation::host_tests::": ("editor::device_automation::unit_tests::",),
+    "editor::device_automation::tests::": ("editor::device_automation::unit_tests::",),
+    "editor::clip_drag_ui_test::": ("editor::drag_autoscroll::tests::",),
+    "editor::drag_autoscroll::resize_pan_tests::": ("editor::drag_autoscroll::tests::",),
+    "editor::drag::": ("editor::drag_autoscroll::tests::",),
+    "editor::drag::group_drag_ui_test::": ("editor::drag_autoscroll::tests::",),
+    "editor::trim::midi_left_extension_ui_tests::": ("editor::drag_autoscroll::tests::",),
+    "editor::trim::": ("editor::drag_autoscroll::tests::",),
+    "editor::controller_input::": ("editor::controller_input::monitoring::unit_tests::",),
+    "editor::midi_canvas::audition_tests::": ("editor::controller_input::monitoring::unit_tests::",),
+    "editor::device_panel::tests::header_style_tests::": ("editor::device_panel::header_style_unit_tests::",),
     "editor::arrangement_seek::tests::": ("editor::arrangement_seek::unit_tests::",),
     "editor::arrangement_sections::": ("editor::arrangement_seek::unit_tests::",),
     "editor::edit_cursor_ui_test::": ("editor::arrangement_seek::unit_tests::",),
@@ -458,6 +482,13 @@ UI_PREFIX_COHORTS = [{"editor::tempo_input::value::",
                       "editor::tempo_input_ui_test::project_tempo_cursor_movement_cannot_retarget_an_active_draft"},
                     {"editor::midi_canvas::geometry::",
                      "editor::midi_canvas::creation_tests::held_creation_clamps_to_clip_end_and_positive_minimum"},
+                    {"editor::save::tests::",
+                     "editor::dialogs::ui_tests::one_open_save_current_completes_original_selection_after_success",
+                     "editor::save::ui_tests::older_format_explicit_overwrite_warns_once_and_save_as_keeps_original"},
+                    {"editor::gain_lane::tests::unit_tests::",
+                     "editor::automation_view::tests::foreground_curve_owns_pointer_and_released_marker_until_exact_worker_terminal",
+                     "editor::automation_view::tests::earlier_completion_cannot_retire_released_gain_preview_and_own_refusal_does",
+                     "editor::gain_lane::tests::native::occupied_pointer_move_refuses_before_actor_and_keeps_visible_draft"},
                     {"editor::midi_loop_notes::tests::",
                      "editor::midi_ruler::geometry_tests::",
                      "editor::midi_ruler::loop_brace::tests::",
@@ -599,8 +630,8 @@ UI_PREFIX_COHORTS = [{"editor::tempo_input::value::",
                       "editor::clip_drag_ui_test::rendered_move_retains_destination_until_real_worker_ack",
                       "editor::drag::group_drag_ui_test::stationary_group_snap_modifier_uses_one_anchor_delta_and_authoritative_release"},
                      {"editor::session_grid::actions::", "editor::delete_ui_tests::",
-                      "editor::controller::tests::launch_and_transport_actions_have_explicit_play_intents",
-                      "editor::controller::tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions",
+                      "editor::controller::session_action_unit_tests::launch_and_transport_actions_have_explicit_play_intents",
+                      "editor::controller::session_action_unit_tests::project_edit_backpressure_preserves_transport_but_invalidates_session_actions",
                       "editor::session_navigation_ui_test::scene_launch_leads_the_caption_and_uses_the_guarded_offline_action",
                       "editor::context_menu::tests::global_launch_dropdown_renders_all_choices_and_restores_focus_without_project_edits",
                       "editor::device_panel::tests::device_comparison_tests::device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_new_ack"},
@@ -662,6 +693,7 @@ UI_INTEGRATION_PAIRS = {"editor::waveform_geometry::grid::": "editor::waveform_g
                         "editor::recovery_state::": "editor::recovery_state_integration_tests::",
                         "editor::audio_import_settings::admission::": "editor::track_defaults::",
                         "editor::controller::audio_event_correlation::": "editor::controller::sampler_native_ui_protocol_tests::",
+                        "editor::controller::source_binding_unit_tests::": "editor::controller::sampler_native_ui_protocol_tests::worker_preview_ack_waits_for_exact_submission_metadata",
                         "editor::fade_calculation::": "editor::fades::",
                         "editor::fade_handle_geometry::": "editor::fade_handles::",
                         "editor::midi_wheel_mapping::": "editor::midi_wheel::",
@@ -889,6 +921,57 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                     "editor::arrangement_seek::tests::post_loop_cursor_survives_actual_seek_worker_and_fenced_callback_installation",
                     "editor::arrangement_sections::tests::section_autoplay_click_dispatches_stateless_loop_and_toggle_off_cancels",
                     "editor::edit_cursor_ui_test::stateful_space_queues_play_from_without_a_seek_worker",
+                ))
+            if any("editor::device_panel::header_style_unit_tests::".startswith(name) for name in names):
+                names.update((
+                    "editor::device_panel::tests::header_style_tests::retained_source_path_indicator_is_rendered_with_the_existing_chain",
+                    "editor::device_panel::tests::header_style_tests::device_shell_outline_is_visible_rounded_and_tracks_selection_across_owners",
+                    "editor::device_panel::tests::sine_and_effect_place_their_shared_header_to_the_left_of_the_body",
+                ))
+            if "crates/hex-ui/src/theme.rs" in executable:
+                names.update(("output_meter::tests::unit_tests::", "output_meter::tests::rendered::output_meter_uses_shared_level_colors_and_click_clear_clipping_caps"))
+            if "crates/hex-ui/src/editor/time_selection.rs" in executable:
+                names.update(("editor::clip_range_fit::tests::", "editor::clip_range_fit::ui_tests::"))
+            if any("editor::controller_input::monitoring::unit_tests::".startswith(name) for name in names):
+                names.update((
+                    "editor::controller_input::monitoring::tests::actual_wire_ingress_reaches_host_pcm_and_stale_sink_cannot_cancel_reconnect",
+                    "editor::controller_input::hardware_chord_step_uses_native_decoder_velocities_channel_ack_and_history",
+                    "editor::controller_input::hardware_step_discontinuity_excludes_old_keys_and_cancel_refuses_false_rest",
+                    "editor::midi_canvas::audition_tests::configured_controller_keeps_its_root_during_note_and_marquee_audition",
+                ))
+            if any("editor::device_panel::device_meter::tests::".startswith(name) for name in names):
+                names.update((
+                    "editor::device_panel::tests::clicking_a_device_meter_clears_its_held_overload_line",
+                ))
+            if {
+                "crates/hex-ui/src/editor/session_navigation.rs",
+                "crates/hex-ui/src/editor/session_navigation_ui_test.rs",
+            }.intersection(executable):
+                names.update((
+                    "editor::controller::session_action_unit_tests::close_prompt_allows_only_owned_duplicate_continuations",
+                    "editor::controller::session_action_unit_tests::rejected_scene_duplicate_clears_only_its_completion_selection_intent",
+                ))
+            if any(CONTROLLER_SESSION_ACTION_UNIT.startswith(name) for name in names):
+                names.update((
+                    "editor::controller::tests::earlier_session_rejection_is_not_reported_as_consumed",
+                    "editor::session_navigation_ui_test::scene_launch_leads_the_caption_and_uses_the_guarded_offline_action",
+                    "editor::session_navigation_ui_test::session_scene_duplicate_and_reorder_keys_use_worker_edits",
+                    "editor::session_navigation_ui_test::failed_scene_duplicate_clears_its_pending_selection_intent",
+                ))
+            if any("editor::drag_autoscroll::tests::".startswith(name) for name in names):
+                names.update((
+                    "editor::clip_drag_ui_test::held_clip_drag_scrolls_preview_without_editing_and_rejects_stale_project",
+                    "editor::clip_drag_ui_test::vertical_drag_scroll_invalidates_old_rows_before_fast_release",
+                    "editor::clip_drag_ui_test::vertical_drag_scroll_retargets_stationary_clip_before_release",
+                    "editor::drag_autoscroll::resize_pan_tests::resize_pan_preserves_stationary_snap_and_shift_stretch_preview_release",
+                    "editor::drag::group_drag_ui_test::group_vertical_autoscroll_invalidates_all_previews_before_repaint",
+                    "editor::trim::midi_left_extension_ui_tests::fresh_midi_left_extension_edge_pan_stops_interior_and_releases_exact_geometry",
+                ))
+            if any(unit.startswith(name) for unit in ('editor::device_automation::unit_tests::',)
+                   for name in names):
+                names.update((
+                    "editor::device_automation::host_tests::host_header_picker_assigns_real_lanes_for_utility_and_other_native_owners",
+                    "editor::device_automation::host_tests::utility_toggle_and_choice_offer_their_exact_recording_targets",
                 ))
         # A filter already covered by a broader selected module is redundant.
         selected[owner] = sorted(n for n in names if not any(n != o and n.startswith(o) for o in names))

@@ -25,6 +25,7 @@ use crate::{
 use hex_project::{BeatTime, ClipId, MAX_TRACKS, NoteId, SceneId, TrackId};
 use std::{fmt, sync::Arc};
 
+mod browser_audition;
 mod candidate_storage;
 mod foreign_arrangement;
 mod midi_capture;
@@ -489,6 +490,7 @@ pub struct SessionPlayback {
     revision: Arc<PreparedRevision>,
     /// Graph-local section audition; expires when the source graph is replaced.
     pub(crate) transient_loop: Option<hex_project::LoopRegion>,
+    browser_audition: browser_audition::BrowserAudition,
     pub(crate) midi_admission: Option<crate::session_inventory::PreparedSessionMidiAdmission>,
     periodic_tempo: Option<PreparedPeriodicSessionTempo>,
     anchor: Option<SessionClockAnchor>,
@@ -906,6 +908,7 @@ impl SessionPlayback {
             render_work: _,
             revision: _,
             transient_loop: _,
+            browser_audition: _,
             midi_admission: _,
             periodic_tempo: _,
             anchor: _,
@@ -2129,6 +2132,7 @@ impl SessionPlayback {
             render_work: Default::default(),
             revision,
             transient_loop,
+            browser_audition: Default::default(),
             midi_admission,
             periodic_tempo,
             anchor: None,

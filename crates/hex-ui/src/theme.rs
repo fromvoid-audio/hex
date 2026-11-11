@@ -91,28 +91,19 @@ pub(crate) fn time_position_marker_color() -> u32 {
     readable_text(color(PaletteRole::Surface), 0xffffff)
 }
 
-/// Color for a locked Arrangement play-start marker.
-///
-/// Preserve the theme accent where it separates from both the ordinary marker
-/// and the ruler surface; otherwise choose the better of two fixed fallbacks.
-pub(crate) fn locked_time_position_marker_color() -> u32 {
-    locked_marker_color_for(
-        color(PaletteRole::Surface),
-        time_position_marker_color(),
-        color(PaletteRole::Secondary),
-    )
+/// Both ends of the locked play-start pulse stay red and distinct from the ruler.
+pub(crate) fn locked_time_position_marker_color(blend: f32) -> u32 {
+    let [rest, peak] = ACTIVE_THEME.with(|theme| theme.get().locked_marker_colors);
+    mix(rest, peak, blend)
 }
 
-fn locked_marker_color_for(surface: u32, normal: u32, accent: u32) -> u32 {
+fn locked_marker_colors_for(surface: u32, normal: u32) -> [u32; 2] {
     let score = |candidate| {
         (contrast_ratio(candidate, surface) / 3.0).min(contrast_ratio(candidate, normal) / 1.5)
     };
-    if score(accent) >= 1.0 {
-        return accent;
-    }
-    let light = 0x00c8ff;
-    let dark = 0x0057c2;
-    if score(light) >= score(dark) {
+    let light = [0xef5350, 0xff9b90];
+    let dark = [0x742020, 0xb63838];
+    if score(light[0]).min(score(light[1])) >= score(dark[0]).min(score(dark[1])) {
         light
     } else {
         dark
@@ -210,6 +201,7 @@ struct ThemeTokens {
     muted_clip_fills: [u32; 10],
     clip_waveform_inks: [ClipWaveformInks; 10],
     inactive_waveform_inks: [u32; 2],
+    locked_marker_colors: [u32; 2],
     clip: u32,
     clip_fill: u32,
     clip_text: u32,
@@ -252,6 +244,10 @@ impl ThemeTokens {
             muted_clip_fills,
             clip_waveform_inks,
             inactive_waveform_inks,
+            locked_marker_colors: locked_marker_colors_for(
+                surface,
+                readable_text(surface, 0xffffff),
+            ),
             elements,
             clip: mix(background, text, 0.15),
             clip_fill: mix(primary, text, 0.15),
@@ -875,20 +871,19 @@ mod tests {
     }
 
     #[test]
-    fn locked_marker_color_avoids_matching_normal_and_surface() {
-        for (surface, normal) in [(0x000000, 0xffffff), (0xffffff, 0x000000)] {
-            for accent in [normal, surface] {
-                let locked = locked_marker_color_for(surface, normal, accent);
-                assert_ne!(locked, normal);
-                assert_ne!(locked, surface);
+    fn locked_marker_pulse_stays_red_and_visible_against_light_and_dark_surfaces() {
+        for surface in [0x000000, 0x202020, 0xffffff] {
+            let normal = readable_text(surface, 0xffffff);
+            let [rest, peak] = locked_marker_colors_for(surface, normal);
+            assert_ne!(rest, peak);
+            for blend in [0.0, 0.5, 1.0] {
+                let locked = mix(rest, peak, blend);
+                assert!(locked >> 16 > ((locked >> 8) & 0xff));
+                assert!(locked >> 16 > (locked & 0xff));
                 assert!(contrast_ratio(locked, normal) >= 1.5);
                 assert!(contrast_ratio(locked, surface) >= 3.0);
             }
         }
-        assert_eq!(
-            locked_marker_color_for(0x000000, 0xffffff, 0x00c8ff),
-            0x00c8ff
-        );
     }
 
     #[test]

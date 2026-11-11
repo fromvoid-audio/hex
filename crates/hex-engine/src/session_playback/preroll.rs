@@ -88,11 +88,9 @@ impl SessionPlayback {
             .ok_or(SessionPlaybackError::Allocation)?;
         Ok(bytes)
     }
-    /// Prepare a graph-local section audition using the same interactive seek
-    /// law and exact device-resource scope as an ordinary interactive seek.
-    /// Install the loop before construction so admission, gate clipping and
-    /// periodic timing use the loop; device history starts empty at the loop
-    /// start. Saved state is untouched.
+    /// Prepare a section start using the interactive seek law and exact
+    /// device-resource scope. If the region is the Arrangement loop, the
+    /// candidate inherits that loop directly from its prepared revision.
     pub fn prepare_section_arrangement_preroll(
         revision: Arc<PreparedRevision>,
         resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
@@ -437,7 +435,11 @@ impl SessionPlayback {
             matches!(policy, PrerollRuntimePolicy::LinearExport),
             resources,
             match policy {
-                PrerollRuntimePolicy::SectionLoop(region) => Some(region),
+                PrerollRuntimePolicy::SectionLoop(region)
+                    if revision.arrangement().loop_region() != Some(region) =>
+                {
+                    Some(region)
+                }
                 _ => None,
             },
         )?;
@@ -563,7 +565,8 @@ impl SessionPlayback {
             suppressions: self.suppressions.capacity(),
             suppression_scratch: self.suppression_scratch.capacity(),
         }
-        .bytes()
+        .bytes()?
+        .checked_add(self.browser_audition.retained_bytes()?)
     }
 }
 
