@@ -10,6 +10,85 @@ use hex_project::{
 use std::sync::atomic::Ordering;
 
 #[test]
+fn inserting_delay_keeps_in_flight_main_alignment_without_callback_allocations()
+-> Result<(), Box<dyn Error>> {
+    const LATENCY: usize = 288;
+    const SOURCE: Frame = [0.0625, -0.125];
+    let mut editor = Editor::new(Project::new(RATE)?, 8)?;
+    let Created::Imported { track, asset, .. } =
+        editor.execute(Command::ImportPreparedAudioTrack {
+            name: "aligned audio".into(),
+            path: "memory/aligned.wav".into(),
+            source_sample_rate: RATE,
+            source_frames: 2048,
+            playback_frames: 2048,
+            conversion_version: hex_project::IDENTITY_CONVERSION,
+        })?
+    else {
+        return Err("expected imported track".into());
+    };
+    let Created::Track(later) = editor.execute(Command::AddTrack {
+        name: "lookahead".into(),
+    })?
+    else {
+        return Err("expected second track".into());
+    };
+    let limiter = &hex_devices::limiter::DEFINITION;
+    editor.execute(Command::InsertDevice {
+        track: later,
+        before: None,
+        state: limiter.patch_parameter(
+            &limiter.default_state()?,
+            hex_devices::limiter::parameter::LOOKAHEAD,
+            ParameterValue::Choice(2),
+        )?,
+    })?;
+    let media = BTreeMap::from([(asset, Audio::new(RATE, vec![SOURCE; 2048])?)]);
+    let table = Arc::new(SineTable::new());
+    let prepare = |editor: &Editor| -> Result<Playback, Box<dyn Error>> {
+        let revision =
+            PreparedRevision::prepare(editor.project(), &media, Arc::clone(&table), None)?;
+        assert_eq!(revision.arrangement().main_latency_frames(), LATENCY as u32);
+        Ok(Playback::try_from_prepared_with_session(Arc::new(
+            revision,
+        ))?)
+    };
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(prepare(&editor)?)
+        .map_err(|_| "initial publication")?;
+    control.command(PlaybackCommand::Play).map_err(|_| "play")?;
+    let mut output = [[0.0; 2]; 512];
+    measured_block(&mut callback, &mut output);
+    compare_output(&output[..LATENCY], &[[0.0; 2]; LATENCY]);
+    compare_output(&output[LATENCY..], &[SOURCE; 512 - LATENCY]);
+
+    // Adding a device to the earlier track changes which independent owner
+    // renders first. Its existing alignment edge still holds 288 audio frames.
+    editor.execute(Command::InsertDevice {
+        track,
+        before: None,
+        state: hex_devices::delay::DelayDefinition.default_state()?,
+    })?;
+    let revision = control
+        .publish(prepare(&editor)?)
+        .map_err(|_| "delay publication")?;
+    measured_block(&mut callback, &mut output[..LATENCY]);
+    assert_eq!(
+        control.status.applied_revision.load(Ordering::Acquire),
+        revision
+    );
+    assert!(control.status.rejected_revision().is_none());
+    assert!(control.status.playing.load(Ordering::Acquire));
+    compare_output(&output[..LATENCY], &[SOURCE; LATENCY]);
+    assert!(control.reclaim() > 0);
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut output);
+    control.reclaim();
+    Ok(())
+}
+
+#[test]
 fn limiter_output_gain_uses_delayed_content_clock_without_callback_allocations()
 -> Result<(), Box<dyn Error>> {
     const SOURCE_FRAMES: usize = 4096;
