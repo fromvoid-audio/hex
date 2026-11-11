@@ -4058,6 +4058,29 @@ class ModuleScopeTests(unittest.TestCase):
                 names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
                 self.assertIn(f"editor::browser::{helper}::", names)
 
+    def test_close_policy_units_keep_real_prompt_and_window_consumers(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        path = "crates/hex-ui/src/editor/close.rs"
+        boundary = plan.boundary_selection(root, [path], inventory, [owner])
+        self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+        steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+            "cargo_inventory": inventory, "paths": [path]})}
+        self.assertNotIn("module-tests-hex-ui", steps)
+        self.assertIn("editor::close::tests::", steps["ui-default-lib-unit-tests"].argv)
+        self.assertNotIn("editor::close::", steps["ui-default-lib-unit-tests"].argv)
+        feature_args = steps["ui-feature-tests"].argv
+        for consumer in (
+            "editor::close::window_tests::automation_close_freezes_admission_until_prompt_cancellation",
+            "editor::close::window_tests::custom_close_button_keeps_cancelled_dirty_window_and_discards_on_second_close",
+            "editor::close::window_tests::clean_base_device_draft_is_committed_before_cancel_and_discard_prompt",
+        ):
+            self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args))
+
     def test_controller_publication_units_keep_worker_and_recovery_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
