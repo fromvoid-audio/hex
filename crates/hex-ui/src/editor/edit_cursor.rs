@@ -22,7 +22,24 @@ pub(super) struct EditCursor {
     pub(super) pulse_started: Instant,
 }
 
+pub(super) struct DropCursor {
+    pub(super) track: TrackId,
+    pub(super) frame: u64,
+    pub(super) generation: u64,
+    pub(super) epoch: u64,
+}
+
 impl EditCursor {
+    fn new(track: Option<TrackId>, frame: u64, generation: u64) -> Self {
+        Self {
+            track,
+            frame,
+            generation,
+            pulse_color: theme::color(theme::PaletteRole::Text),
+            pulse_started: Instant::now(),
+        }
+    }
+
     fn is_current(self, generation: u64, project: &hex_project::Project) -> bool {
         self.generation == generation
             && self
@@ -200,14 +217,43 @@ impl EditorView {
 
     fn set_point_cursor(&mut self, track: Option<TrackId>, frame: u64) {
         self.advance_selection_intent();
-        self.edit_cursor = Some(EditCursor {
-            track,
-            frame,
-            generation: self.project_generation,
-            pulse_color: theme::color(theme::PaletteRole::Text),
-            pulse_started: Instant::now(),
-        });
+        self.edit_cursor = Some(EditCursor::new(track, frame, self.project_generation));
         self.update_locked_play_start_from_point();
+        self.loop_start_over_clip = None;
+    }
+
+    /// A held or released drag only paints a point. Commit its placement in
+    /// the same receive as the canonical destination, so refusal or Escape
+    /// naturally restores the original cursor. A later choice or lock wins.
+    pub(super) fn install_drop_cursor(&mut self, cursor: DropCursor) {
+        if self.mode != EditorMode::Arrangement
+            || self.opening_project
+            || self.close_prompt_open
+            || self.project_generation != cursor.generation
+            || self.selection_intent_epoch != Some(cursor.epoch)
+            || self
+                .state
+                .as_ref()
+                .is_none_or(|s| s.project.track(cursor.track).is_none())
+        {
+            return;
+        }
+        self.advance_selection_intent();
+        self.edit_cursor = Some(EditCursor::new(
+            Some(cursor.track),
+            cursor.frame,
+            cursor.generation,
+        ));
+        self.time_selection = Some(TimeSelection {
+            anchor_track: cursor.track,
+            end_track: cursor.track,
+            anchor_frame: cursor.frame,
+            end_frame: cursor.frame,
+        });
+        self.time_selection_project_scope = false;
+        // The grabbed clip's point also supersedes whole-rectangle selection.
+        self.edit_cursor_in_selected_clip = self.selected_clip;
+        self.clip_drop_cursor_epoch = self.selection_intent_epoch;
         self.loop_start_over_clip = None;
     }
 
@@ -391,7 +437,7 @@ impl EditorView {
             .edit_cursor
             .filter(|cursor| cursor.generation == self.project_generation);
         let cursor = cursor.or(locked);
-        let reset = self.play_start_at_beginning;
+        let reset = self.play_start_at_beginning && guide.is_none();
         let cursor_frame = cursor
             .map(|cursor| cursor.frame)
             .or(guide)
@@ -506,6 +552,26 @@ impl EditorView {
                     .into_any_element(),
             );
         }
+        // A clip drop can place an edit cursor independently of an explicit
+        // locked play start. Only the lock's own marker can toggle that lock.
+        if !reset
+            && guide.is_none()
+            && start == end
+            && let (Some(locked), Some(cursor)) = (locked, cursor)
+            && cursor.frame != locked.frame
+            && self.selected_arrangement_play_start().is_none()
+            && let Some(marker) = viewport.fraction(cursor.frame).and_then(|position| {
+                time_position_marker(
+                    format!("time-marker-{edge_name}-start").into(),
+                    position,
+                    Endpoint::Point,
+                    edge,
+                    theme::time_position_marker_color(),
+                )
+            })
+        {
+            markers.push(marker.into_any_element());
+        }
         Some(
             div()
                 .absolute()
@@ -525,7 +591,9 @@ impl EditorView {
     ) -> Option<Div> {
         let markers =
             self.edit_cursor_markers(viewport, hex_widgets::TimeMarkerEdge::Bottom, guide, cx);
-        let line = if self.play_start_at_beginning {
+        let line = if guide.is_some() {
+            None
+        } else if self.play_start_at_beginning {
             Some((
                 0,
                 theme::time_position_marker_color(),

@@ -14,7 +14,14 @@ impl EditorView {
     /// so split-at-cursor stays visible. While this applies the point cursor is
     /// hidden but retained, and returns when the whole-rectangle selection clears.
     pub(super) fn selected_arrangement_play_start(&self) -> Option<u64> {
-        if self.project_point_cursor().is_some() {
+        if self.project_point_cursor().is_some()
+            || self.clip_drop_cursor_epoch.is_some_and(|epoch| {
+                self.selection_intent_epoch == Some(epoch)
+                    && self
+                        .edit_cursor
+                        .is_some_and(|cursor| cursor.generation == self.project_generation)
+            })
+        {
             return None;
         }
         let project = &self.state.as_ref()?.project;
@@ -189,6 +196,17 @@ mod tests {
                 None,
                 "old Main ownership cannot select reused section IDs"
             );
+            view.device_panel.main_selected = Some(view.project_generation);
+            view.install_drop_cursor(super::super::edit_cursor::DropCursor {
+                track,
+                frame: 48_000,
+                generation: view.project_generation,
+                epoch: view.selection_intent_epoch.unwrap(),
+            });
+            assert_eq!(view.playback_start_frame(), 48_000);
+            assert_eq!(view.sections.selected_ids().len(), 2);
+            view.advance_selection_intent();
+            assert_eq!(view.playback_start_frame(), 0);
         });
     }
     #[gpui::test]

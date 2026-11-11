@@ -1367,7 +1367,9 @@ impl EditorView {
         let viewport_end = viewport.end()?;
         let stroke = 1.0 / scale_factor.max(1.0);
         if raw_selection.anchor_frame == raw_selection.end_frame {
-            if self.play_start_at_beginning {
+            if self.play_start_at_beginning
+                || self.displayed_clip_move_guide_frame(viewport).is_some()
+            {
                 return None;
             }
             let frame = raw_selection.anchor_frame;
@@ -1489,7 +1491,9 @@ impl EditorView {
         let selection = self.time_selection?;
         let viewport_end = viewport.end()?;
         if selection.anchor_frame == selection.end_frame {
-            if self.play_start_at_beginning {
+            if self.play_start_at_beginning
+                || self.displayed_clip_move_guide_frame(viewport).is_some()
+            {
                 return None;
             }
             let frame = selection.anchor_frame;

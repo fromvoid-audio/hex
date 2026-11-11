@@ -6,7 +6,7 @@
 use super::{EditorMode, EditorView, drag::ClipDrag, drag::DropPreview};
 use gpui::{KeyUpEvent, Window};
 use hex_project::{BounceAdoption, BounceDrop, BounceTarget, TrackId};
-use hex_session::service::{ExportControl, Request};
+use hex_session::service::{Event, ExportControl, Request};
 
 const DRAG_BOUNCE_HINT: &str = "b held · drop bounces the dragged clips · release b to move";
 
@@ -15,6 +15,16 @@ const DRAG_BOUNCE_HINT: &str = "b held · drop bounces the dragged clips · rele
 pub(super) struct PendingBounceDrop {
     drag: ClipDrag,
     control: ExportControl,
+    cursor_epoch: Option<u64>,
+}
+
+impl PendingBounceDrop {
+    pub(super) fn complete(self, event: &Event) -> Option<super::edit_cursor::DropCursor> {
+        let cursor =
+            super::pending_clip_move::committed_drop_cursor(&self.drag, self.cursor_epoch, event);
+        self.drag.retire();
+        cursor
+    }
 }
 
 impl EditorView {
@@ -46,9 +56,11 @@ impl EditorView {
         self.pending_bounce_drop
             .as_ref()
             .filter(|p| {
-                self.bounce_control
-                    .as_ref()
-                    .is_some_and(|active| active.same_job(&p.control))
+                p.drag.project_generation == self.project_generation
+                    && self
+                        .bounce_control
+                        .as_ref()
+                        .is_some_and(|active| active.same_job(&p.control))
             })
             .map(|p| &p.drag)
     }
@@ -98,6 +110,7 @@ impl EditorView {
                 self.pending_bounce_drop = Some(PendingBounceDrop {
                     drag: active,
                     control,
+                    cursor_epoch: self.selection_intent_epoch,
                 });
             }
             None => active.retire(),
@@ -438,6 +451,8 @@ mod tests {
             let preview = v.active_clip_drag.as_ref().unwrap().preview.get();
             preview.expect("lane preview").start_frame
         });
+        let x = visual.debug_bounds("clip-drop-preview").unwrap().left();
+        crate::editor::clip_drag_ui_test::assert_clip_move_guides(&mut visual, x);
         visual.simulate_mouse_up(release, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
         // Before the worker's terminal is received the frozen ghost still paints
@@ -449,6 +464,7 @@ mod tests {
             assert_eq!(p.snapshot().tracks, original.tracks);
         });
         assert!(visual.debug_bounds("clip-drop-preview").is_some());
+        crate::editor::clip_drag_ui_test::assert_clip_move_guides(&mut visual, x);
         assert!(
             visual
                 .debug_bounds(Box::leak(
@@ -461,6 +477,8 @@ mod tests {
         let dropped = editor.read_with(&visual, |v, _| {
             assert!(v.error.is_none(), "{:?}", v.error);
             assert!(v.pending_bounce_drop.is_none() && v.bounce_control.is_none());
+            let cursor = v.edit_cursor.expect("cursor at the adopted bounce");
+            assert_eq!((cursor.track, cursor.frame), (Some(target_track), start));
             let p = &v.state.as_ref().unwrap().project;
             assert_eq!(p.tracks().len(), original.tracks.len());
             let source = p.clip(audio).unwrap();
@@ -474,6 +492,7 @@ mod tests {
             p.snapshot()
         });
         assert!(visual.debug_bounds("clip-drop-preview").is_none());
+        assert!(visual.debug_bounds("clip-move-guide-line").is_none());
         visual.simulate_keystrokes("cmd-z");
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
