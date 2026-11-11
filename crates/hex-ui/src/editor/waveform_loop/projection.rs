@@ -1,5 +1,5 @@
 //! Pure projection of cached source peaks through a loop placement.
-use super::super::waveform_source::{aggregate_peaks, aggregate_ranges, timeline_source_ranges_at};
+use super::super::waveform_source::{aggregate_ranges_with_detail, timeline_source_ranges_at};
 use hex_project::{AudioDomainClock, AudioViewProjection, Clip, TempoMap, audio_projection_frame};
 use hex_session::{CachedPeak, CachedWaveform};
 use std::ops::Range;
@@ -66,23 +66,30 @@ impl LoopProjection {
         &self,
         waveform: &CachedWaveform,
         range: Range<u64>,
+        budget: usize,
     ) -> Option<[CachedPeak; 2]> {
         if self.prepared {
-            aggregate_peaks(
-                waveform,
-                usize::try_from(range.start).ok()?,
-                usize::try_from(range.end).ok()?,
-            )
+            let range = usize::try_from(range.start).ok()?..usize::try_from(range.end).ok()?;
+            aggregate_ranges_with_detail(waveform, std::slice::from_ref(&range), budget)
         } else {
             let ranges =
                 timeline_source_ranges_at(&self.original, 0, range, waveform.source_frames());
-            aggregate_ranges(waveform, ranges.as_slice())
+            aggregate_ranges_with_detail(waveform, ranges.as_slice(), budget)
         }
     }
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     pub(in crate::editor) fn peaks(
         &self,
         waveform: &CachedWaveform,
         visible: Range<u64>,
+    ) -> Option<[CachedPeak; 2]> {
+        self.peaks_with_detail(waveform, visible, 0)
+    }
+    pub(in crate::editor) fn peaks_with_detail(
+        &self,
+        waveform: &CachedWaveform,
+        visible: Range<u64>,
+        budget: usize,
     ) -> Option<[CachedPeak; 2]> {
         let p = AudioViewProjection::new(&self.preview, &self.tempo).ok()?;
         let start = visible.start.max(self.preview.start());
@@ -105,7 +112,7 @@ impl LoopProjection {
             {
                 let a = self.root_frame(range.start)?;
                 let b = self.root_frame(range.end)?.max(a.checked_add(1)?);
-                if let Some(next) = self.peaks_for_root(waveform, a..b) {
+                if let Some(next) = self.peaks_for_root(waveform, a..b, budget / 2) {
                     if let Some(peaks) = peaks.as_mut() {
                         for c in 0..2 {
                             peaks[c].min = peaks[c].min.min(next[c].min);
@@ -138,6 +145,7 @@ impl LoopProjection {
             return self.peaks_for_root(
                 waveform,
                 self.root_frame(edit.view_start)?..self.root_frame(edit.view_end)?,
+                budget,
             );
         }
         let mut peaks: Option<[CachedPeak; 2]> = None;
@@ -150,7 +158,7 @@ impl LoopProjection {
             }
             let a = self.at(occurrence, a)?;
             let b = self.at(occurrence, b)?.max(a.saturating_add(1));
-            if let Some(next) = self.peaks_for_root(waveform, a..b) {
+            if let Some(next) = self.peaks_for_root(waveform, a..b, budget / 2) {
                 if let Some(peaks) = peaks.as_mut() {
                     for c in 0..2 {
                         peaks[c].min = peaks[c].min.min(next[c].min);
@@ -217,6 +225,55 @@ mod tests {
             .unwrap(),
         );
         (editor, clip, waveform)
+    }
+
+    #[test]
+    fn held_loop_projection_keeps_a_transient_in_its_source_column() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "source".into(),
+                path: "source.wav".into(),
+                sample_rate: 48_000,
+                frames: 1_024_000,
+            })
+            .unwrap()
+        else {
+            panic!("clip");
+        };
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents: 1 })
+            .unwrap();
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents: 0 })
+            .unwrap();
+        let original = editor.project().clip(clip).unwrap().clone();
+        let projection = LoopProjection {
+            preview: original.clone(),
+            original,
+            tempo: editor.project().tempo_map().clone(),
+            prepared: true,
+            accepted_origin: 0,
+            retimed: false,
+        };
+        let mut samples = vec![[0.0, 0.0]; 1_024_000];
+        samples[2_010] = [1.0, 1.0];
+        let audio = hex_engine::Audio::new(48_000, samples).unwrap();
+        let waveform = hex_media::waveform::summarize(&audio, 1_024).unwrap();
+        assert_eq!(
+            projection
+                .peaks_with_detail(&waveform, 1_950..2_015, 4_096)
+                .unwrap()[0]
+                .max,
+            1.0
+        );
+        assert_eq!(
+            projection
+                .peaks_with_detail(&waveform, 2_015..2_080, 4_096)
+                .unwrap()[0]
+                .max,
+            0.0
+        );
     }
 
     #[test]
