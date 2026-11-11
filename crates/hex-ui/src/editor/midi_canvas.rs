@@ -1860,6 +1860,9 @@ impl EditorView {
 
     pub(super) fn cancel_midi_note_gesture(&mut self) -> bool {
         let ruler = self.midi_ruler.cancel() | self.midi_time_selection.cancel();
+        if ruler {
+            self.sync_held_play_start_audition();
+        }
         let pan = self.midi_pan.gesture.take().is_some();
         let marquee = self.cancel_all_midi_marquees();
         let velocity = self.midi_velocity.cancel_value_state();

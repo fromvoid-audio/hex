@@ -311,6 +311,9 @@ impl EditorView {
                         }
                     };
                     if changed {
+                        if view.midi_ruler.gesture.is_none() {
+                            view.sync_held_play_start_audition();
+                        }
                         cx.notify();
                     }
                 });
@@ -319,6 +322,7 @@ impl EditorView {
                 let _ = cancelled.update(cx, |view, cx| {
                     if view.owns_midi_ruler_capture(context, handle) {
                         view.midi_ruler.cancel();
+                        view.sync_held_play_start_audition();
                         cx.notify();
                     }
                 });
@@ -364,31 +368,70 @@ impl EditorView {
             window.renew_pointer_capture(owner, gesture.handle.held_cursor());
         }
     }
+    pub(super) fn held_midi_play_start_audition(
+        &self,
+    ) -> Option<hex_session::service::ArrangementPlayStartAudition> {
+        use hex_session::service::{ArrangementPlayStartAudition, PlayStartEdit};
+        let gesture = self.midi_ruler.gesture?;
+        if gesture.handle != Handle::Start
+            || gesture.preview == gesture.context.values
+            || self.midi_ruler_context(gesture.context.bounds) != Some(gesture.context)
+        {
+            return None;
+        }
+        let command = midi_source_controls::edit_command(
+            &self.state.as_ref()?.project,
+            gesture.context.clip,
+            gesture.preview,
+        )?;
+        Some(ArrangementPlayStartAudition {
+            context: hex_engine::AudioSourceContext {
+                project_generation: gesture.context.generation,
+                editor_revision: gesture.context.revision,
+            },
+            edit: PlayStartEdit::from_midi_command(&command)?,
+        })
+    }
+
     fn update_midi_ruler(&mut self, bounds: CanvasBounds, x: f32, invert_snap: bool) -> bool {
         let Some(gesture) = self.midi_ruler.gesture else {
             return false;
         };
-        if !x.is_finite() || self.midi_ruler_context(bounds) != Some(gesture.context) {
-            return self.midi_ruler.cancel();
+        let changed = if !x.is_finite() || self.midi_ruler_context(bounds) != Some(gesture.context)
+        {
+            self.midi_ruler.cancel()
+        } else {
+            self.midi_ruler
+                .gesture
+                .as_mut()
+                .is_some_and(|gesture| gesture.update(x, invert_snap))
+        };
+        if changed && gesture.handle == Handle::Start {
+            self.sync_held_play_start_audition();
         }
-        self.midi_ruler
-            .gesture
-            .as_mut()
-            .is_some_and(|gesture| gesture.update(x, invert_snap))
+        changed
     }
     fn finish_midi_ruler(&mut self, bounds: CanvasBounds, x: f32, invert_snap: bool) {
         let Some(mut gesture) = self.midi_ruler.gesture.take() else {
             return;
         };
         if !x.is_finite() || self.midi_ruler_context(bounds) != Some(gesture.context) {
+            self.sync_held_play_start_audition();
             return;
         }
         gesture.update(x, invert_snap);
         if gesture.preview == gesture.context.values {
+            self.sync_held_play_start_audition();
             return;
         }
-        let changed = gesture.preview;
-        self.commit_midi_clip_loop(gesture.context.clip, changed);
+        let play_start = gesture.handle == Handle::Start;
+        if play_start {
+            self.finish_held_play_start_audition();
+        }
+        self.commit_midi_clip_loop(gesture.context.clip, gesture.preview);
+        if play_start {
+            self.settle_released_play_start_audition(gesture.context.clip);
+        }
     }
     pub(super) fn midi_header_loop_values(
         &self,

@@ -1133,6 +1133,7 @@ pub(in crate::editor) fn view(
                 view.advance_selection_intent();
                 view.audio_event_editor.gesture = None;
                 view.audio_event_editor.range = None;
+                view.sync_held_play_start_audition();
             }
             cx.stop_propagation();
             cx.notify();

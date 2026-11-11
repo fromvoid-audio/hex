@@ -1130,6 +1130,7 @@ impl EditorView {
         }
         visible_change |= self.poll_update(cx);
         self.sync_held_stretch_audition();
+        self.sync_held_play_start_audition();
         visible_change |= self.poll_browser_sample_playback();
         visible_change |= self.tick_gain_recording();
         visible_change |= self.tick_native_automation_recording();
