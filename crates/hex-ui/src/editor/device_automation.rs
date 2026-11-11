@@ -16,6 +16,9 @@ mod plot_geometry;
 mod read_selection;
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, not(feature = "ui-test-support")))]
+#[path = "device_automation/unit_tests.rs"]
+mod unit_tests;
 mod vst3;
 use super::pending_edit::{Disposition, Receipt};
 use super::{EditorView, ViewState, device_panel::DevicePanelOwner as Owner};

@@ -4394,6 +4394,38 @@ class ModuleScopeTests(unittest.TestCase):
                     self.assertTrue(any(consumer.startswith(prefix) for prefix in feature_args),
                                     f"{consumer} missing from {feature_args}")
 
+    def test_device_automation_entry_units_keep_rendered_targets(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        unit_prefixes = (
+            "editor::device_automation::unit_tests::",
+        )
+        consumers = (
+            "editor::device_automation::host_tests::host_header_picker_assigns_real_lanes_for_utility_and_other_native_owners",
+            "editor::device_automation::host_tests::utility_toggle_and_choice_offer_their_exact_recording_targets",
+        )
+        for path in (
+            "crates/hex-ui/src/editor/device_automation.rs",
+            "crates/hex-ui/src/editor/device_automation/tests.rs",
+            "crates/hex-ui/src/editor/device_automation/unit_tests.rs",
+            "crates/hex-ui/src/editor/device_automation/host_tests.rs",
+        ):
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                unit = steps["ui-default-lib-unit-tests"]
+                for prefix in unit_prefixes:
+                    self.assertIn(prefix, unit.argv)
+                self.assertTrue(unit.requires_tests)
+                for consumer in consumers:
+                    self.assertTrue(any(consumer.startswith(prefix) for prefix in steps["ui-feature-tests"].argv))
+
     def test_controller_publication_units_keep_worker_and_recovery_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
