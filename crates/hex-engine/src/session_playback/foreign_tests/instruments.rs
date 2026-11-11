@@ -1197,6 +1197,7 @@ fn moving_a_wrapped_loop_keeps_foreign_gates_and_allows_effect_insertion() {
             })
             .unwrap();
         let revision = prepare(&editor, instrument, true).unwrap();
+        let instrument_latency = revision.arrangement().main_latency_frames() as usize;
         let (mut onset_frame, mut release_frame) = (0, 0);
         revision.arrangement().tracks()[0]
             .for_each_mutable_midi_span(512, 1024, |span| {
@@ -1294,7 +1295,13 @@ fn moving_a_wrapped_loop_keeps_foreign_gates_and_allows_effect_insertion() {
             (inserted.arrangement_frame(), inserted.performance_frame()),
             (cut + 8, performance + 8)
         );
-        endpoint.effect = Some(Borrowed::new(owner, device.value()));
+        let mut effect = Borrowed::new(owner, device.value());
+        // Track insertion starts a fresh compensation epoch. Main can use
+        // the instrument origins already retained in the old delay bank.
+        if !on_main {
+            effect.initial_unstamped_frames = instrument_latency;
+        }
+        endpoint.effect = Some(effect);
         let release = (release_frame - cut - 8) as usize;
         let mut wet = vec![[0.0; 2]; release + 1];
         endpoint.render(&mut inserted, &mut wet).unwrap();

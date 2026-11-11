@@ -913,9 +913,12 @@ impl SessionPlayback {
         }
         let same_periodic_timing =
             previous.periodic_tempo() == self.periodic_tempo_at(previous.arrangement_frame);
+        // The planner anchors any changed periodic tempo at the current
+        // performance beat. Arrangement gates stay on their validated frame
+        // deadlines because the base map and both frame cursors are retained.
         let compatible_instrument_loop_edit = same_base_timing
             && new_loop_region != old_loop_region
-            && ((same_periodic_timing && foreign_handoff.keeps_unautomated_loop_clock)
+            && (foreign_handoff.keeps_unautomated_loop_clock
                 || (previous.anchor.is_none() && foreign_handoff.keeps_first_pass_loop_clock));
         // A fresh compensation epoch can start at the same running cursor
         // when the timing map and loop are unchanged.
